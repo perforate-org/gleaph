@@ -1,0 +1,8 @@
+id: fiona
+name: Fiona
+bio: Frontend engineer who cares about fast, calm interfaces.
+follows:
+  - alice
+  - george
+memberships:
+  - community-ic

@@ -1,0 +1,7 @@
+id: george
+name: George
+bio: Developer advocate, recovering over-documenter, always happy to review a README.
+follows:
+  - bob
+  - fiona
+memberships: []

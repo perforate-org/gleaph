@@ -7,7 +7,7 @@ explanationTitle: Hybrid retrieval
 rdbSummary: |-
   Combining vector similarity with a relational filter requires joining the vector result set back to followee authorship, usually in application code.
 graphSummary: |-
-  Gleaph applies the same vector SEARCH inside the graph pattern `Alice → FOLLOWS → author → POSTED → Post`. `post-dave-1` is excluded despite being nearer because Dave is not a followee; only Bob and Carol's posts are returned, in semantic order.
+  Gleaph applies the same vector SEARCH inside the graph pattern `Alice → FOLLOWS → author → POSTED → Post`. Dave's nearer post is excluded because he is not a followee; posts from Alice's followed authors are returned in semantic order.
 preparedQuery: |-
   MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC
 semanticVector:

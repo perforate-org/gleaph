@@ -1,13 +1,2 @@
-1:
-  name: post_vec
-  dims: 8
-  metric: L2Squared
-  values:
-    - 6
-    - 2
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
+1: { values: [6, 0, 0, 0, 0, 0, 0, 0] }
+2: { values: [-3, 0, 0, 0, 0, 0, 0, 0] }

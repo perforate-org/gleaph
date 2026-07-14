@@ -1,6 +1,5 @@
-id: post-bob-2
-body: Bob's second note
-created_at: 202607030500
+body: "The surprising part: the old query was not slow, it was just explaining the wrong relationship."
+created_at: 202607130818
 is_public: true
 topics: []
-reply_to: post-bob-1
+reply_to: bob/1

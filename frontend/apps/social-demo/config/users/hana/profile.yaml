@@ -1,0 +1,8 @@
+id: hana
+name: Hana
+bio: Protocol engineer, amateur baker, enthusiastic about boring reliability work.
+follows:
+  - alice
+  - carol
+memberships:
+  - community-ic

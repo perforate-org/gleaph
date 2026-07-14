@@ -1,7 +1,7 @@
 # Physical plan format
 
-Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 15:17:43 UTC +0000
+Last updated: 2026-07-13
+Anchor timestamp: 2026-07-13 08:38:44 UTC +0000
 
 ## Purpose
 
@@ -63,6 +63,10 @@ A `StatementBlock` chains statements with `NEXT`.  Two boundary shapes are suppo
 
 - **Explicit `YIELD`**: the prior statement emits only the yielded columns; downstream statements
   receive those bindings under their aliases.
+- **Top-level DML**: `INSERT`, `SET`, `REMOVE`, and `DELETE` retain their input binding table.
+  A following `NEXT` can therefore operate on the same matched elements, just as inline DML does
+  within a linear query. This is required for an update followed by a Graph-owned operational
+  `CALL` in one shard-local mutation plan.
 - **No `YIELD`**: every typed graph binding (vertex, edge, path) that survived the previous
   statement remains in scope for the next statement.  The planner must extend the boundary
   `Project`/`Materialize` with hidden columns for those bindings, and the executor must keep a

@@ -34,6 +34,12 @@ const fallbackCreatedAt = (relPath) => {
 };
 
 /**
+ * Stable opaque Post identity. Authors reference posts by `<author>/<stem>` in
+ * YAML; graph IDs are derived here so configuration never manages identifiers.
+ */
+const opaquePostId = (relPath) => `p_${sha256Hex(`social-demo:post:${relPath}`).slice(0, 20)}`;
+
+/**
  * Deterministic 8-dimensional L2Squared embedding fallback.
  */
 const fallbackEmbedding = (postId) => {
@@ -98,7 +104,12 @@ for (const userName of sortedDirNames(userDir)) {
     const stem = fileStem(postFile);
     const doc = readYaml(join(postsDir, postFile));
     const relPath = `users/${userName}/posts/${postFile}`;
-    const postId = doc.id ?? `post-${userName}-${stem}`;
+    if (doc.id !== undefined) {
+      throw new Error(
+        `Post ${relPath} must not declare id; Post IDs are generated from the file path`,
+      );
+    }
+    const postId = opaquePostId(relPath);
     const createdAt = doc.created_at ?? fallbackCreatedAt(relPath);
     const isPublic = doc.is_public ?? true;
 
@@ -123,15 +134,34 @@ for (const userName of sortedDirNames(userDir)) {
       id: postId,
       userId: userName,
       fileStem: stem,
+      reference: `${userName}/${stem}`,
       label: doc.body,
       body: doc.body,
       createdAt,
       isPublic,
       topics: doc.topics ?? [],
-      replyTo: doc.reply_to,
+      replyToReference: doc.reply_to,
       embedding,
     });
   }
+}
+
+const postIdByReference = new Map();
+for (const post of posts) {
+  if (postIdByReference.has(post.reference)) {
+    throw new Error(`Duplicate post reference: ${post.reference}`);
+  }
+  postIdByReference.set(post.reference, post.id);
+}
+for (const post of posts) {
+  if (!post.replyToReference) continue;
+  const replyTo = postIdByReference.get(post.replyToReference);
+  if (!replyTo) {
+    throw new Error(
+      `Unknown reply_to reference ${post.replyToReference} in ${post.reference}; expected <author>/<post-stem>`,
+    );
+  }
+  post.replyTo = replyTo;
 }
 
 const topics = [];
@@ -506,16 +536,16 @@ for (const edge of graph.edges) {
         `MATCH ${nodeMatch(source, "a")}, ${nodeMatch(target, "b")} RETURN a NEXT ` +
         `INSERT (a)-[:${edge.gqlLabel} ${edgeProperties(edge)}]->(b)`,
     });
-    continue;
+  } else {
+    seeds.push({
+      key: `${DEMO_GRAPH}-seed-edge-${edge.id}`,
+      gql:
+        `MATCH ${nodeMatch(source, "a")} RETURN a NEXT ` +
+        `INSERT (a)-[:${edge.gqlLabel} ${edgeProperties(edge)}]->${nodeCreate(target, "b")}`,
+    });
+    created.add(edge.target);
   }
 
-  seeds.push({
-    key: `${DEMO_GRAPH}-seed-edge-${edge.id}`,
-    gql:
-      `MATCH ${nodeMatch(source, "a")} RETURN a NEXT ` +
-      `INSERT (a)-[:${edge.gqlLabel} ${edgeProperties(edge)}]->${nodeCreate(target, "b")}`,
-  });
-  created.add(edge.target);
 }
 
 const hasPostEmbeddings = graph.nodes.some(
@@ -527,7 +557,7 @@ for (const node of graph.nodes) {
     if (node.kind !== "post") {
       throw new Error(`Non-Post node ${node.id} has embedding`);
     }
-    embeddings[node.id] = node.embedding;
+    embeddings[demoId(node.id).toString()] = node.embedding;
   } else if (hasPostEmbeddings && node.kind === "post") {
     throw new Error(`Post node ${node.id} is missing embedding`);
   }
@@ -698,9 +728,14 @@ if (nullVectors.length !== 3) {
 // Validate emitted seeds.
 const seedsText = readFileSync(join(KM_SEEDS_DIR, "social-seeds.json"), "utf8");
 const parsedSeeds = JSON.parse(seedsText);
-if (!Array.isArray(parsedSeeds.seeds) || parsedSeeds.seeds.length !== 37) {
+const expectedSeedCount =
+  graph.nodes.filter((node) => node.layer === 0).length + graph.edges.length;
+if (
+  !Array.isArray(parsedSeeds.seeds) ||
+  parsedSeeds.seeds.length !== expectedSeedCount
+) {
   throw new Error(
-    `Expected exactly 37 seeds, found ${parsedSeeds.seeds?.length ?? 0}`,
+    `Expected exactly ${expectedSeedCount} seeds, found ${parsedSeeds.seeds?.length ?? 0}`,
   );
 }
 const demoIdOccurrences = seedsText.match(/demo_id: [^,}]+/g) ?? [];

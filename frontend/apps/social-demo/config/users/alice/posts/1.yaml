@@ -1,6 +1,6 @@
-id: post-alice-1
-body: Alice's public reply
-created_at: 202607030600
+body: The tiny onboarding detail was the thing that finally made the flow click for me. Nice work, Bob.
+created_at: 202607130842
 is_public: true
-topics: []
-reply_to: post-bob-1
+topics:
+  - topic-graph
+reply_to: bob/1

@@ -1275,8 +1275,12 @@ pub fn gql_execute_idempotent_result_as_admin(
         .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Ok(result)) => result,
-        Ok(Err(err)) => panic!("gql_execute_idempotent rejected: {err:?}"),
-        Err(err) => panic!("decode gql_execute_idempotent: {err}"),
+        Ok(Err(err)) => panic!(
+            "gql_execute_idempotent rejected for client mutation key '{mutation_key}': {err:?}"
+        ),
+        Err(err) => {
+            panic!("decode gql_execute_idempotent for client mutation key '{mutation_key}': {err}")
+        }
     }
 }
 
@@ -2359,24 +2363,11 @@ pub fn admin_fully_activate_social_vector_index(
         .expect("router attaches shard");
 }
 
-/// Map a canonical social Post text key (e.g. `post-alice-1`) to its deterministic
-/// numeric `demo_id` assigned by `frontend/apps/social-demo/scripts/build-config.mjs`.
-fn social_post_demo_id_to_numeric(demo_id: &str) -> i64 {
-    match demo_id {
-        "post-alice-1" => 9,
-        "post-bob-1" => 10,
-        "post-bob-2" => 11,
-        "post-carol-1" => 12,
-        "post-dave-1" => 13,
-        "post-eve-1" => 14,
-        "post-eve-private" => 15,
-        other => panic!("unknown social post demo_id: {other}"),
-    }
-}
-
 /// Resolve the opaque encoded `ELEMENT_ID` for one seeded Post by its `demo_id`.
 pub fn resolve_social_post_element_id(env: &FederationEnv, demo_id: &str) -> Vec<u8> {
-    let numeric_id = social_post_demo_id_to_numeric(demo_id);
+    let numeric_id = demo_id
+        .parse::<i64>()
+        .unwrap_or_else(|_| panic!("social Post demo_id must be numeric: {demo_id}"));
     let query = format!(
         "MATCH (p:Post {{demo_id: {}}}) RETURN ELEMENT_ID(p) AS element_id",
         numeric_id
@@ -2660,7 +2651,7 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
     // Default descending fixed-label scan returns the latest inserted edge first.
     // Feed edges are materialized oldest-first, so the default scan yields newest posts first.
     let query = "\
-    MATCH (p:Post)-[e:IN_PUBLIC_FEED]->(f:Feed {demo_id: 16}) \
+    MATCH (p:Post)-[e:IN_PUBLIC_FEED]->(f:Feed {demo_id: 40}) \
     RETURN p.demo_id AS post_id, e.demo_edge_id AS edge_id";
     let result =
         gql_query_with_params_on_router(&env.pic, env.admin, env.router, query, Vec::new());
@@ -2671,7 +2662,10 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
         .collect();
     assert_eq!(
         public_ids,
-        vec!["9", "11", "12", "10", "14", "13"],
+        vec![
+            "17", "31", "20", "33", "24", "39", "29", "26", "37", "32", "35", "16", "22", "36",
+            "30", "15", "28", "19", "34", "38", "25", "21", "18", "23",
+        ],
         "IN_PUBLIC_FEED default descending scan should return newest posts first"
     );
 
@@ -2687,7 +2681,10 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
         .collect();
     assert_eq!(
         home_ids,
-        vec!["9", "11", "12", "10"],
+        vec![
+            "17", "31", "20", "33", "29", "37", "32", "16", "22", "36", "30", "15", "28", "19",
+            "21", "18",
+        ],
         "IN_HOME_FEED default descending scan should return newest posts first"
     );
 }
@@ -2739,54 +2736,38 @@ pub fn seed_social_graph(env: &FederationEnv) {
         assert_eq!(row_count, 0, "seed {key} should not return rows");
     }
 
-    // Verify every seeded Post body is readable from the graph.
+    // Verify every generated Post body is readable from the graph without coupling this helper
+    // to an authored Post identifier or a particular fixture size.
     use gleaph_gql::Value;
     use gleaph_gql_ic::IcWirePlanQueryResult;
 
-    let expected_bodies: std::collections::HashMap<&str, &str> = [
-        ("post-alice-1", "Alice's public reply"),
-        ("post-bob-1", "Bob's topic note"),
-        ("post-bob-2", "Bob's second note"),
-        ("post-carol-1", "Carol's public note"),
-        ("post-dave-1", "Dave's public note"),
-        ("post-eve-1", "Eve's public note"),
-        ("post-eve-private", "Eve's draft"),
-    ]
-    .into_iter()
-    .collect();
-    for (post_id, expected_body) in expected_bodies {
-        let numeric_id = social_post_demo_id_to_numeric(post_id);
-        let query = format!(
-            "MATCH (p:Post {{demo_id: {}}}) RETURN p.body AS body LIMIT 1",
-            numeric_id
+    let result = gql_query_with_params_on_router(
+        &env.pic,
+        env.admin,
+        env.router,
+        "MATCH (p:Post) RETURN p.demo_id AS post_id, p.body AS body",
+        Vec::new(),
+    );
+    let rows_blob = result
+        .rows_blob
+        .as_ref()
+        .expect("body query should return rows_blob");
+    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode body rows");
+    let expected_post_count = parsed["embeddings"]
+        .as_object()
+        .expect("social embeddings object")
+        .len();
+    assert_eq!(
+        wire.rows.len(),
+        expected_post_count,
+        "every generated Post should have one readable body"
+    );
+    for row in wire.rows {
+        let row = row.try_into_value_row().expect("wire row to value row");
+        assert!(
+            matches!(row.get("body"), Some(Value::Text(body)) if !body.is_empty()),
+            "generated Post body must be non-empty text: {row:?}"
         );
-        let result =
-            gql_query_with_params_on_router(&env.pic, env.admin, env.router, &query, Vec::new());
-        let rows_blob = result
-            .rows_blob
-            .as_ref()
-            .expect("body query should return rows_blob");
-        let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode body rows");
-        assert_eq!(
-            wire.rows.len(),
-            1,
-            "body query for {post_id} should return exactly one row"
-        );
-        let row = wire
-            .rows
-            .into_iter()
-            .next()
-            .expect("one row")
-            .try_into_value_row()
-            .expect("wire row to value row");
-        let body = match row
-            .get("body")
-            .unwrap_or_else(|| panic!("missing body column for {post_id}"))
-        {
-            Value::Text(value) => value.as_str(),
-            other => panic!("expected Text body for {post_id}, got {other:?}"),
-        };
-        assert_eq!(body, expected_body, "body mismatch for {post_id}");
     }
 }
 

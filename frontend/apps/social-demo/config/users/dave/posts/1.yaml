@@ -1,5 +1,5 @@
-id: post-dave-1
-body: Dave's public note
-created_at: 202607030100
+body: Semantic search is at its best when it helps you notice the useful thing you did not know to ask for.
+created_at: 202607130729
 is_public: true
-topics: []
+topics:
+  - topic-graph

@@ -1,5 +1,8 @@
 id: bob
 name: Bob
-bio: Demo user Bob
-follows: []
-memberships: []
+bio: Building developer tools and documenting the weird parts.
+follows:
+  - alice
+  - hana
+memberships:
+  - community-ic

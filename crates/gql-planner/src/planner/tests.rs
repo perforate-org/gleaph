@@ -126,6 +126,34 @@ fn next_insert_edge_reuses_matched_vertices() {
 }
 
 #[test]
+fn next_call_before_insert_reuses_matched_vertex() {
+    let block = parse_block(
+        "MATCH (a:BindNextUser {id: 'alice'}) RETURN a NEXT CALL GLEAPH.FINALIZE_FORWARD_EDGE_SPAN(a) RETURN a NEXT INSERT (a)-[:BIND_NEXT_FOLLOWS]->(a)",
+    );
+    let plan = build_block_plan(&block, None).expect("plan should build");
+
+    let call_index = plan
+        .ops
+        .iter()
+        .position(|op| matches!(
+            op,
+            PlanOp::CallProcedure { name, args, .. }
+                if name.iter().map(|part| part.as_ref()).eq(["GLEAPH", "FINALIZE_FORWARD_EDGE_SPAN"])
+                    && matches!(args.as_slice(), [gleaph_gql::ast::Expr { kind: gleaph_gql::ast::ExprKind::Variable(variable), .. }] if variable == "a")
+        ))
+        .expect("plan must finalize the matched vertex");
+    let insert_index = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::InsertEdge { src, .. } if src.as_ref() == "a"))
+        .expect("plan must insert the edge");
+    assert!(
+        call_index < insert_index,
+        "finalize must precede the edge insert"
+    );
+}
+
+#[test]
 fn next_insert_edge_without_yield_preserves_all_typed_bindings() {
     // Two non-returned matched vertices must both survive as typed bindings so two
     // separate NEXT INSERT edges can reuse them against a shared source.

@@ -2,7 +2,7 @@
 
 Date: 2026-07-13
 Status: Implemented
-Anchor timestamp: 2026-07-13 07:31:19 UTC +0000
+Anchor timestamp: 2026-07-13 08:52:06 UTC +0000
 Last updated: 2026-07-13 UTC
 
 ## Purpose
@@ -22,6 +22,11 @@ that the rest of the pipeline already consumes:
 All four artifacts are committed to the repository (option A), so the React app
 and deploy script can run without first regenerating them.
 
+The current fixture has 11 users, 25 Posts (24 public and one private), 8 reply
+edges, and Alice follows six active authors. It is deliberately small enough for
+deterministic E2E assertions while giving the timeline and reply tree varied,
+social-media-like content.
+
 ## Directory layout
 
 ```text
@@ -37,16 +42,13 @@ config/
 
 ## demo_id representation
 
-The per-file YAML keys (`alice`, `post-alice-1`, `community-ic`, `topic-graph`) remain
-human-readable text. At build time, `build-config.mjs` assigns a deterministic global
-numeric `demo_id` to every entity (stored as an Int64 in the graph, decoded as
-`bigint` on the Candid wire):
-
-- Users: `1..5` (sorted by directory name)
-- Communities: `6` (sorted by file stem)
-- Topics: `7..8` (sorted by file stem)
-- Posts: `9..15` (sorted by user directory, then post file stem)
-- Feeds: `16` (sorted by file stem, allocated after posts so existing ids stay stable)
+User, community, topic, and feed configuration keys remain human-readable. Post YAML has no
+identity field: `build-config.mjs` derives a stable opaque graph key as `p_<20 hex chars>` from a
+SHA-256 namespace plus `users/<author>/posts/<stem>.yaml`. It then assigns every entity a
+deterministic global numeric `demo_id` (stored as an Int64 in the graph and decoded as `bigint` on
+the Candid wire). Allocation is users, communities, topics, posts, then feeds; each group is sorted
+by its configuration path. The current fixture therefore allocates users `1..11`, its community
+as `12`, topics `13..14`, Posts `15..39`, and `public-feed` as `40`.
 
 The emitted seed GQL strings use plain integer literals `demo_id: <N>` (no `: u64`
 cast — the graph mutation property-expression evaluator does not support
@@ -70,15 +72,14 @@ values when needed.
 
 | Field        | Type              | Use                                                                                               |
 | ------------ | ----------------- | ------------------------------------------------------------------------------------------------- |
-| `id`         | string (optional) | Post `demo_id`; defaults to `post-<user>-<stem>`.                                                 |
 | `body`       | string            | Post `body` property and display label.                                                           |
 | `created_at` | nat64 (optional)  | Defaults to a deterministic value derived from the file path.                                     |
 | `is_public`  | bool (optional)   | Defaults to `true`; stored as a native GQL BOOL in the graph (compare with `= TRUE` / `= FALSE`). |
 | `topics`     | list of topic ids | Generates `HAS_TOPIC` edges.                                                                      |
-| `reply_to`   | post id (optional) | Generates one canonical outgoing `REPLY_TO` edge to the parent Post.                            |
+| `reply_to`   | `<author>/<stem>` (optional) | Resolves a parent config path and generates one canonical outgoing `REPLY_TO` edge.       |
 
-The post YAML does not declare `demo_id` directly; `build-config.mjs` derives the
-numeric `demo_id` from the global allocator above.
+An explicit post `id` is rejected. The generator owns opaque Post identity, resolves
+`reply_to` through `<author>/<stem>`, and derives the numeric `demo_id` from the global allocator.
 | `embedding` | object | `name`, `dims`, `metric`, `values`; required for deterministic seed equality. |
 
 ### `topics/<id>.yaml` and `communities/<id>.yaml`
@@ -125,16 +126,18 @@ truth for the emitted artifacts:
 5. Derive materialized feed edges `IN_PUBLIC_FEED` and `IN_HOME_FEED` from
    canonical `POSTED`, `FOLLOWS`, and `is_public` facts, emitting them oldest-first
    so the Graph's default descending fixed-label scan returns newest posts first.
-6. Emit `social-graph.json` and `social-seeds.json` in the exact shape consumed
+6. Emit ordinary edge `INSERT` mutations. Graph-owned deferred storage prepares a
+   dense leaf before the next write, so source fan-out is not a seed-writer concern.
+7. Emit `social-graph.json` and `social-seeds.json` in the exact shape consumed
    by the existing apply-knowledge-map-seeds path.
-7. Emit `scenarios.generated.ts` and `scenarios.generated.json` from the
+8. Emit `scenarios.generated.ts` and `scenarios.generated.json` from the
    scenario YAMLs.
 
 ## Deterministic post id allocator and ordering
 
-Post nodes are ordered by `created_at` descending (ties broken by
-`<user>/<stem>` lexical order) so re-running the build reproduces the same
-`social-graph.json` byte-for-byte. The deterministic walk applies to:
+Post graph keys and numeric `demo_id` values are allocated by `<user>/<stem>` lexical order;
+feed-edge insertion is independently ordered by `created_at`. Both deterministic passes make
+re-running the build reproduce the same `social-graph.json` byte-for-byte. The deterministic walk applies to:
 
 - User directories (alphabetical).
 - Community and topic files (alphabetical by id).
@@ -175,10 +178,16 @@ labeled-edge store records insertion order. The default descending fixed-label s
 The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
 to preserve the visible read contract and fail closed if the derivation rule ever changes.
 
+Because the seed runner applies every artifact entry as an independent idempotent mutation, it
+does not issue `GLEAPH.FINALIZE_*` before ordinary edges. Storage owns write-safety preparation;
+finalize procedures remain optional batch-ingest reclaim controls rather than social state or a
+per-mutation protocol.
+
 ## Reply threads
 
-`reply_to` is authored on the replying Post and is the only configuration source for a reply
-relationship. The generator validates that it resolves to a Post and emits `(reply)-[:REPLY_TO]->(parent)`
+`reply_to` is authored on the replying Post as `<author>/<stem>` and is the only configuration
+source for a reply relationship. The generator resolves that reference to the opaque Post key,
+validates it exists, and emits `(reply)-[:REPLY_TO]->(parent)`
 after all `POSTED` edges have created their Post endpoints. The public timeline and Alice home-feed
 prepared queries project `parent_post_id` through `OPTIONAL MATCH`, preserving root posts as `NULL`.
 The frontend reconstructs the visible tree only from rows returned by that feed; a reply whose

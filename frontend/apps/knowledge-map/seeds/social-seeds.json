@@ -21,20 +21,44 @@
       "gql": "INSERT (n:User {demo_id: 5, demo_graph: 'social', name: 'Eve'})"
     },
     {
+      "key": "social-seed-node-fiona",
+      "gql": "INSERT (n:User {demo_id: 6, demo_graph: 'social', name: 'Fiona'})"
+    },
+    {
+      "key": "social-seed-node-george",
+      "gql": "INSERT (n:User {demo_id: 7, demo_graph: 'social', name: 'George'})"
+    },
+    {
+      "key": "social-seed-node-hana",
+      "gql": "INSERT (n:User {demo_id: 8, demo_graph: 'social', name: 'Hana'})"
+    },
+    {
+      "key": "social-seed-node-ian",
+      "gql": "INSERT (n:User {demo_id: 9, demo_graph: 'social', name: 'Ian'})"
+    },
+    {
+      "key": "social-seed-node-jules",
+      "gql": "INSERT (n:User {demo_id: 10, demo_graph: 'social', name: 'Jules'})"
+    },
+    {
+      "key": "social-seed-node-kira",
+      "gql": "INSERT (n:User {demo_id: 11, demo_graph: 'social', name: 'Kira'})"
+    },
+    {
       "key": "social-seed-node-community-ic",
-      "gql": "INSERT (n:Community {demo_id: 6, demo_graph: 'social', name: 'IC builders'})"
+      "gql": "INSERT (n:Community {demo_id: 12, demo_graph: 'social', name: 'IC builders'})"
     },
     {
       "key": "social-seed-node-topic-graph",
-      "gql": "INSERT (n:Topic {demo_id: 7, demo_graph: 'social', name: 'Graph databases'})"
+      "gql": "INSERT (n:Topic {demo_id: 13, demo_graph: 'social', name: 'Graph databases'})"
     },
     {
       "key": "social-seed-node-topic-ic",
-      "gql": "INSERT (n:Topic {demo_id: 8, demo_graph: 'social', name: 'Decentralized identity'})"
+      "gql": "INSERT (n:Topic {demo_id: 14, demo_graph: 'social', name: 'Decentralized identity'})"
     },
     {
       "key": "social-seed-node-public-feed",
-      "gql": "INSERT (n:Feed {demo_id: 16, demo_graph: 'social', name: 'Public feed'})"
+      "gql": "INSERT (n:Feed {demo_id: 40, demo_graph: 'social', name: 'Public feed'})"
     },
     {
       "key": "social-seed-edge-alice-follows-bob",
@@ -45,118 +69,690 @@
       "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'alice-follows-carol', demo_kind: 'follows'}]->(b)"
     },
     {
+      "key": "social-seed-edge-alice-follows-fiona",
+      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'alice-follows-fiona', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-alice-follows-george",
+      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}), (b:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'alice-follows-george', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-alice-follows-hana",
+      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'alice-follows-hana', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-alice-follows-jules",
+      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}), (b:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'alice-follows-jules', demo_kind: 'follows'}]->(b)"
+    },
+    {
       "key": "social-seed-edge-alice-member-of-ic",
-      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}), (b:Community {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:MEMBER_OF {demo_edge_id: 'alice-member-of-ic', demo_kind: 'member of'}]->(b)"
+      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}), (b:Community {demo_id: 12, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:MEMBER_OF {demo_edge_id: 'alice-member-of-ic', demo_kind: 'member of'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-bob-follows-alice",
+      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'bob-follows-alice', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-bob-follows-hana",
+      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'bob-follows-hana', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-bob-member-of-ic",
+      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}), (b:Community {demo_id: 12, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:MEMBER_OF {demo_edge_id: 'bob-member-of-ic', demo_kind: 'member of'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-carol-follows-bob",
+      "gql": "MATCH (a:User {demo_id: 3, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'carol-follows-bob', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-carol-follows-fiona",
+      "gql": "MATCH (a:User {demo_id: 3, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'carol-follows-fiona', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-carol-member-of-ic",
+      "gql": "MATCH (a:User {demo_id: 3, demo_graph: 'social'}), (b:Community {demo_id: 12, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:MEMBER_OF {demo_edge_id: 'carol-member-of-ic', demo_kind: 'member of'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-dave-follows-eve",
+      "gql": "MATCH (a:User {demo_id: 4, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'dave-follows-eve', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-eve-follows-alice",
+      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'eve-follows-alice', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-eve-follows-jules",
+      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}), (b:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'eve-follows-jules', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-eve-member-of-ic",
+      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}), (b:Community {demo_id: 12, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:MEMBER_OF {demo_edge_id: 'eve-member-of-ic', demo_kind: 'member of'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-fiona-follows-alice",
+      "gql": "MATCH (a:User {demo_id: 6, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'fiona-follows-alice', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-fiona-follows-george",
+      "gql": "MATCH (a:User {demo_id: 6, demo_graph: 'social'}), (b:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'fiona-follows-george', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-fiona-member-of-ic",
+      "gql": "MATCH (a:User {demo_id: 6, demo_graph: 'social'}), (b:Community {demo_id: 12, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:MEMBER_OF {demo_edge_id: 'fiona-member-of-ic', demo_kind: 'member of'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-george-follows-bob",
+      "gql": "MATCH (a:User {demo_id: 7, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'george-follows-bob', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-george-follows-fiona",
+      "gql": "MATCH (a:User {demo_id: 7, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'george-follows-fiona', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-hana-follows-alice",
+      "gql": "MATCH (a:User {demo_id: 8, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'hana-follows-alice', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-hana-follows-carol",
+      "gql": "MATCH (a:User {demo_id: 8, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'hana-follows-carol', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-hana-member-of-ic",
+      "gql": "MATCH (a:User {demo_id: 8, demo_graph: 'social'}), (b:Community {demo_id: 12, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:MEMBER_OF {demo_edge_id: 'hana-member-of-ic', demo_kind: 'member of'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-ian-follows-dave",
+      "gql": "MATCH (a:User {demo_id: 9, demo_graph: 'social'}), (b:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'ian-follows-dave', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-jules-follows-carol",
+      "gql": "MATCH (a:User {demo_id: 10, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'jules-follows-carol', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-jules-follows-eve",
+      "gql": "MATCH (a:User {demo_id: 10, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'jules-follows-eve', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-kira-follows-hana",
+      "gql": "MATCH (a:User {demo_id: 11, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'kira-follows-hana', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-alice-posted-3",
+      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 17, demo_graph: 'social', body: 'This thread is exactly why I like small communities: somebody always has the missing context.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-george-posted-2",
+      "gql": "MATCH (a:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'george-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 31, demo_graph: 'social', body: 'If a setup guide needs \"just trust me\" halfway through, that is probably the part to rewrite.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-bob-posted-3",
+      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 20, demo_graph: 'social', body: 'Pairing session at 16:00 UTC if anyone wants to sanity-check a data model before it becomes permanent.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-hana-posted-2",
+      "gql": "MATCH (a:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'hana-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 33, demo_graph: 'social', body: 'Also: write down the rollback before the launch checklist. Future-you deserves the kindness.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-dave-posted-2",
+      "gql": "MATCH (a:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 24, demo_graph: 'social', body: 'Spent an hour tuning a model and the real bug was a stale cache key. Classic Tuesday.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-kira-posted-2",
+      "gql": "MATCH (a:User {demo_id: 11, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'kira-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 39, demo_graph: 'social', body: 'Logging off to run before the rain starts. Please deploy gently while I am gone.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-fiona-posted-2",
+      "gql": "MATCH (a:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'fiona-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 29, demo_graph: 'social', body: 'Small accessibility win: the focus ring is now visible in dark mode too. It should have been from day one.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-eve-posted-2",
+      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 26, demo_graph: 'social', body: 'If you are joining remotely, reply with your time zone and we will keep the notes friendly to late readers.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-jules-posted-2",
+      "gql": "MATCH (a:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'jules-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 37, demo_graph: 'social', body: 'This is a lovely framing. Saving it for the next time someone asks why context belongs next to a metric.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-hana-posted-1",
+      "gql": "MATCH (a:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'hana-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 32, demo_graph: 'social', body: 'The best identity systems make the safe path feel like the obvious path. Still thinking about that all week.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-ian-posted-2",
+      "gql": "MATCH (a:User {demo_id: 9, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ian-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 35, demo_graph: 'social', body: 'Tiny indie app update: exports are now boringly reliable, which is my favorite kind of release note.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-alice-posted-2",
+      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 16, demo_graph: 'social', body: 'Morning note to self: ship the helpful version first, then make it clever.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-carol-posted-2",
+      "gql": "MATCH (a:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 22, demo_graph: 'social', body: 'Bookmarking this. The distinction between a connection and a recommendation is easy to lose in a dashboard.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-jules-posted-1",
+      "gql": "MATCH (a:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'jules-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 36, demo_graph: 'social', body: 'Asking \"who is missing from this chart?\" has improved every project I have worked on.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-george-posted-1",
+      "gql": "MATCH (a:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'george-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 30, demo_graph: 'social', body: 'A five-line example in the docs beat my twenty-minute screen recording. Lesson learned.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-alice-posted-1",
-      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 9, demo_graph: 'social', body: 'Alice''s public reply', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 15, demo_graph: 'social', body: 'The tiny onboarding detail was the thing that finally made the flow click for me. Nice work, Bob.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-fiona-posted-1",
+      "gql": "MATCH (a:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'fiona-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 28, demo_graph: 'social', body: 'Replaced a loading spinner with useful skeleton copy and support tickets dropped almost immediately.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-bob-posted-2",
-      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 11, demo_graph: 'social', body: 'Bob''s second note', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 19, demo_graph: 'social', body: 'The surprising part: the old query was not slow, it was just explaining the wrong relationship.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-ian-posted-1",
+      "gql": "MATCH (a:User {demo_id: 9, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ian-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 34, demo_graph: 'social', body: 'Tried planning my week on paper again. The app did not crash once, which feels promising.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+    },
+    {
+      "key": "social-seed-edge-kira-posted-1",
+      "gql": "MATCH (a:User {demo_id: 11, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'kira-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 38, demo_graph: 'social', body: 'A reminder from threat modeling: clarity is a security feature, not a nice-to-have.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-carol-posted-1",
-      "gql": "MATCH (a:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 12, demo_graph: 'social', body: 'Carol''s public note', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 21, demo_graph: 'social', body: 'A good privacy setting is one you can explain to a friend without opening a second tab.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-bob-posted-1",
-      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 10, demo_graph: 'social', body: 'Bob''s topic note', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 18, demo_graph: 'social', body: 'I wrote up the little graph-modeling trick that saved us a migration. The diagram is in the replies.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-eve-posted-1",
-      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 14, demo_graph: 'social', body: 'Eve''s public note', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 25, demo_graph: 'social', body: 'The July meetup has a quiet room this time. Thank you to everyone who asked for one.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-dave-posted-1",
-      "gql": "MATCH (a:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 13, demo_graph: 'social', body: 'Dave''s public note', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 23, demo_graph: 'social', body: 'Semantic search is at its best when it helps you notice the useful thing you did not know to ask for.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-eve-posted-private",
-      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-private', demo_kind: 'posted'}]->(b:Post {demo_id: 15, demo_graph: 'social', body: 'Eve''s draft', created_at: CURRENT_TIMESTAMP, is_public: FALSE})"
+      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-private', demo_kind: 'posted'}]->(b:Post {demo_id: 27, demo_graph: 'social', body: 'Draft: volunteer rota and contact numbers before I publish the event post.', created_at: CURRENT_TIMESTAMP, is_public: FALSE})"
     },
     {
-      "key": "social-seed-edge-post-alice-1-reply-to-post-bob-1",
-      "gql": "MATCH (a:Post {demo_id: 9, demo_graph: 'social'}), (b:Post {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'post-alice-1-reply-to-post-bob-1', demo_kind: 'reply to'}]->(b)"
+      "key": "social-seed-edge-p_384b3fd3ef400d8f0997-reply-to-p_d837758c2032acdb19a0",
+      "gql": "MATCH (a:Post {demo_id: 17, demo_graph: 'social'}), (b:Post {demo_id: 32, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'p_384b3fd3ef400d8f0997-reply-to-p_d837758c2032acdb19a0', demo_kind: 'reply to'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-bob-2-reply-to-post-bob-1",
-      "gql": "MATCH (a:Post {demo_id: 11, demo_graph: 'social'}), (b:Post {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'post-bob-2-reply-to-post-bob-1', demo_kind: 'reply to'}]->(b)"
+      "key": "social-seed-edge-p_7ee887afb8bd964fec00-reply-to-p_527ca1ee79b9dbe7cbe5",
+      "gql": "MATCH (a:Post {demo_id: 20, demo_graph: 'social'}), (b:Post {demo_id: 15, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'p_7ee887afb8bd964fec00-reply-to-p_527ca1ee79b9dbe7cbe5', demo_kind: 'reply to'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-post-dave-1-in-public-feed",
-      "gql": "MATCH (a:Post {demo_id: 13, demo_graph: 'social'}), (b:Feed {demo_id: 16, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-post-dave-1-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+      "key": "social-seed-edge-p_e64442f3158619339629-reply-to-p_d837758c2032acdb19a0",
+      "gql": "MATCH (a:Post {demo_id: 33, demo_graph: 'social'}), (b:Post {demo_id: 32, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'p_e64442f3158619339629-reply-to-p_d837758c2032acdb19a0', demo_kind: 'reply to'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-post-eve-1-in-public-feed",
-      "gql": "MATCH (a:Post {demo_id: 14, demo_graph: 'social'}), (b:Feed {demo_id: 16, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-post-eve-1-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+      "key": "social-seed-edge-p_b36194e3f8d0b0c4b209-reply-to-p_d837758c2032acdb19a0",
+      "gql": "MATCH (a:Post {demo_id: 29, demo_graph: 'social'}), (b:Post {demo_id: 32, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'p_b36194e3f8d0b0c4b209-reply-to-p_d837758c2032acdb19a0', demo_kind: 'reply to'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-post-bob-1-in-public-feed",
-      "gql": "MATCH (a:Post {demo_id: 10, demo_graph: 'social'}), (b:Feed {demo_id: 16, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-post-bob-1-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+      "key": "social-seed-edge-p_ecb01d5d5c87aae5e75c-reply-to-p_20fa73e4909aa56c8d1a",
+      "gql": "MATCH (a:Post {demo_id: 37, demo_graph: 'social'}), (b:Post {demo_id: 21, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'p_ecb01d5d5c87aae5e75c-reply-to-p_20fa73e4909aa56c8d1a', demo_kind: 'reply to'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-post-carol-1-in-public-feed",
-      "gql": "MATCH (a:Post {demo_id: 12, demo_graph: 'social'}), (b:Feed {demo_id: 16, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-post-carol-1-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+      "key": "social-seed-edge-p_908ff6eeb14cf509302a-reply-to-p_23e7b97d27b0432b56b7",
+      "gql": "MATCH (a:Post {demo_id: 22, demo_graph: 'social'}), (b:Post {demo_id: 18, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'p_908ff6eeb14cf509302a-reply-to-p_23e7b97d27b0432b56b7', demo_kind: 'reply to'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-post-bob-2-in-public-feed",
-      "gql": "MATCH (a:Post {demo_id: 11, demo_graph: 'social'}), (b:Feed {demo_id: 16, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-post-bob-2-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+      "key": "social-seed-edge-p_527ca1ee79b9dbe7cbe5-reply-to-p_23e7b97d27b0432b56b7",
+      "gql": "MATCH (a:Post {demo_id: 15, demo_graph: 'social'}), (b:Post {demo_id: 18, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'p_527ca1ee79b9dbe7cbe5-reply-to-p_23e7b97d27b0432b56b7', demo_kind: 'reply to'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-post-alice-1-in-public-feed",
-      "gql": "MATCH (a:Post {demo_id: 9, demo_graph: 'social'}), (b:Feed {demo_id: 16, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-post-alice-1-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+      "key": "social-seed-edge-p_e7de9e807a5d38801adb-reply-to-p_23e7b97d27b0432b56b7",
+      "gql": "MATCH (a:Post {demo_id: 19, demo_graph: 'social'}), (b:Post {demo_id: 18, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'p_e7de9e807a5d38801adb-reply-to-p_23e7b97d27b0432b56b7', demo_kind: 'reply to'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-dave-1-in-home-dave",
-      "gql": "MATCH (a:Post {demo_id: 13, demo_graph: 'social'}), (b:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-dave-1-in-home-dave', demo_kind: 'in home feed'}]->(b)"
+      "key": "social-seed-edge-post-p_38f48fa92d37e88da97f-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 23, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_38f48fa92d37e88da97f-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-eve-1-in-home-eve",
-      "gql": "MATCH (a:Post {demo_id: 14, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-eve-1-in-home-eve', demo_kind: 'in home feed'}]->(b)"
+      "key": "social-seed-edge-post-p_9ba8c08932c3519c5c79-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 25, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_9ba8c08932c3519c5c79-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-bob-1-in-home-bob",
-      "gql": "MATCH (a:Post {demo_id: 10, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-bob-1-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+      "key": "social-seed-edge-post-p_23e7b97d27b0432b56b7-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 18, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_23e7b97d27b0432b56b7-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-bob-1-in-home-alice",
-      "gql": "MATCH (a:Post {demo_id: 10, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-bob-1-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+      "key": "social-seed-edge-post-p_20fa73e4909aa56c8d1a-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 21, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_20fa73e4909aa56c8d1a-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-carol-1-in-home-carol",
-      "gql": "MATCH (a:Post {demo_id: 12, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-carol-1-in-home-carol', demo_kind: 'in home feed'}]->(b)"
+      "key": "social-seed-edge-post-p_0a16972aa298f4fb5c75-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 38, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_0a16972aa298f4fb5c75-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-carol-1-in-home-alice",
-      "gql": "MATCH (a:Post {demo_id: 12, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-carol-1-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+      "key": "social-seed-edge-post-p_5af2ceebecccc91529dc-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 34, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_5af2ceebecccc91529dc-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-bob-2-in-home-bob",
-      "gql": "MATCH (a:Post {demo_id: 11, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-bob-2-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+      "key": "social-seed-edge-post-p_e7de9e807a5d38801adb-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 19, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_e7de9e807a5d38801adb-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-bob-2-in-home-alice",
-      "gql": "MATCH (a:Post {demo_id: 11, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-bob-2-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+      "key": "social-seed-edge-post-p_33c5c9e02a6ec9d0277c-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 28, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_33c5c9e02a6ec9d0277c-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-alice-1-in-home-alice",
-      "gql": "MATCH (a:Post {demo_id: 9, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-alice-1-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+      "key": "social-seed-edge-post-p_527ca1ee79b9dbe7cbe5-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 15, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_527ca1ee79b9dbe7cbe5-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
-      "key": "social-seed-edge-post-bob-1-topic-graph",
-      "gql": "MATCH (a:Post {demo_id: 10, demo_graph: 'social'}), (b:Topic {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'post-bob-1-topic-graph', demo_kind: 'has topic'}]->(b)"
+      "key": "social-seed-edge-post-p_835dec60e898af443b3f-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 30, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_835dec60e898af443b3f-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_3e48614ec19943b3953e-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 36, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_3e48614ec19943b3953e-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_908ff6eeb14cf509302a-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 22, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_908ff6eeb14cf509302a-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_d373f0f6c736c9b01eb3-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 16, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_d373f0f6c736c9b01eb3-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_4ee40311214ecc674271-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 35, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_4ee40311214ecc674271-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_d837758c2032acdb19a0-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 32, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_d837758c2032acdb19a0-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_ecb01d5d5c87aae5e75c-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 37, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_ecb01d5d5c87aae5e75c-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_8d35f0923adfcd762381-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 26, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_8d35f0923adfcd762381-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_b36194e3f8d0b0c4b209-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 29, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_b36194e3f8d0b0c4b209-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_e8d507b0783f3cc277fd-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 39, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_e8d507b0783f3cc277fd-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_7264349104bc7d26aef1-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 24, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_7264349104bc7d26aef1-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_e64442f3158619339629-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 33, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_e64442f3158619339629-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_7ee887afb8bd964fec00-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 20, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_7ee887afb8bd964fec00-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_813e48aa7cba92c18c80-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 31, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_813e48aa7cba92c18c80-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-p_384b3fd3ef400d8f0997-in-public-feed",
+      "gql": "MATCH (a:Post {demo_id: 17, demo_graph: 'social'}), (b:Feed {demo_id: 40, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-p_384b3fd3ef400d8f0997-in-public-feed', demo_kind: 'in public feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_38f48fa92d37e88da97f-in-home-dave",
+      "gql": "MATCH (a:Post {demo_id: 23, demo_graph: 'social'}), (b:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_38f48fa92d37e88da97f-in-home-dave', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_38f48fa92d37e88da97f-in-home-ian",
+      "gql": "MATCH (a:Post {demo_id: 23, demo_graph: 'social'}), (b:User {demo_id: 9, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_38f48fa92d37e88da97f-in-home-ian', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_9ba8c08932c3519c5c79-in-home-eve",
+      "gql": "MATCH (a:Post {demo_id: 25, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_9ba8c08932c3519c5c79-in-home-eve', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_9ba8c08932c3519c5c79-in-home-dave",
+      "gql": "MATCH (a:Post {demo_id: 25, demo_graph: 'social'}), (b:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_9ba8c08932c3519c5c79-in-home-dave', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_9ba8c08932c3519c5c79-in-home-jules",
+      "gql": "MATCH (a:Post {demo_id: 25, demo_graph: 'social'}), (b:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_9ba8c08932c3519c5c79-in-home-jules', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_23e7b97d27b0432b56b7-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 18, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_23e7b97d27b0432b56b7-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_23e7b97d27b0432b56b7-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 18, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_23e7b97d27b0432b56b7-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_23e7b97d27b0432b56b7-in-home-carol",
+      "gql": "MATCH (a:Post {demo_id: 18, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_23e7b97d27b0432b56b7-in-home-carol', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_23e7b97d27b0432b56b7-in-home-george",
+      "gql": "MATCH (a:Post {demo_id: 18, demo_graph: 'social'}), (b:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_23e7b97d27b0432b56b7-in-home-george', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_20fa73e4909aa56c8d1a-in-home-carol",
+      "gql": "MATCH (a:Post {demo_id: 21, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_20fa73e4909aa56c8d1a-in-home-carol', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_20fa73e4909aa56c8d1a-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 21, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_20fa73e4909aa56c8d1a-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_20fa73e4909aa56c8d1a-in-home-hana",
+      "gql": "MATCH (a:Post {demo_id: 21, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_20fa73e4909aa56c8d1a-in-home-hana', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_20fa73e4909aa56c8d1a-in-home-jules",
+      "gql": "MATCH (a:Post {demo_id: 21, demo_graph: 'social'}), (b:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_20fa73e4909aa56c8d1a-in-home-jules', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_0a16972aa298f4fb5c75-in-home-kira",
+      "gql": "MATCH (a:Post {demo_id: 38, demo_graph: 'social'}), (b:User {demo_id: 11, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_0a16972aa298f4fb5c75-in-home-kira', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_5af2ceebecccc91529dc-in-home-ian",
+      "gql": "MATCH (a:Post {demo_id: 34, demo_graph: 'social'}), (b:User {demo_id: 9, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_5af2ceebecccc91529dc-in-home-ian', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_e7de9e807a5d38801adb-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 19, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_e7de9e807a5d38801adb-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_e7de9e807a5d38801adb-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 19, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_e7de9e807a5d38801adb-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_e7de9e807a5d38801adb-in-home-carol",
+      "gql": "MATCH (a:Post {demo_id: 19, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_e7de9e807a5d38801adb-in-home-carol', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_e7de9e807a5d38801adb-in-home-george",
+      "gql": "MATCH (a:Post {demo_id: 19, demo_graph: 'social'}), (b:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_e7de9e807a5d38801adb-in-home-george', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_33c5c9e02a6ec9d0277c-in-home-fiona",
+      "gql": "MATCH (a:Post {demo_id: 28, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_33c5c9e02a6ec9d0277c-in-home-fiona', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_33c5c9e02a6ec9d0277c-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 28, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_33c5c9e02a6ec9d0277c-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_33c5c9e02a6ec9d0277c-in-home-carol",
+      "gql": "MATCH (a:Post {demo_id: 28, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_33c5c9e02a6ec9d0277c-in-home-carol', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_33c5c9e02a6ec9d0277c-in-home-george",
+      "gql": "MATCH (a:Post {demo_id: 28, demo_graph: 'social'}), (b:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_33c5c9e02a6ec9d0277c-in-home-george', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_527ca1ee79b9dbe7cbe5-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 15, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_527ca1ee79b9dbe7cbe5-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_527ca1ee79b9dbe7cbe5-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 15, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_527ca1ee79b9dbe7cbe5-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_527ca1ee79b9dbe7cbe5-in-home-eve",
+      "gql": "MATCH (a:Post {demo_id: 15, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_527ca1ee79b9dbe7cbe5-in-home-eve', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_527ca1ee79b9dbe7cbe5-in-home-fiona",
+      "gql": "MATCH (a:Post {demo_id: 15, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_527ca1ee79b9dbe7cbe5-in-home-fiona', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_527ca1ee79b9dbe7cbe5-in-home-hana",
+      "gql": "MATCH (a:Post {demo_id: 15, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_527ca1ee79b9dbe7cbe5-in-home-hana', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_835dec60e898af443b3f-in-home-george",
+      "gql": "MATCH (a:Post {demo_id: 30, demo_graph: 'social'}), (b:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_835dec60e898af443b3f-in-home-george', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_835dec60e898af443b3f-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 30, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_835dec60e898af443b3f-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_835dec60e898af443b3f-in-home-fiona",
+      "gql": "MATCH (a:Post {demo_id: 30, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_835dec60e898af443b3f-in-home-fiona', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_3e48614ec19943b3953e-in-home-jules",
+      "gql": "MATCH (a:Post {demo_id: 36, demo_graph: 'social'}), (b:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_3e48614ec19943b3953e-in-home-jules', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_3e48614ec19943b3953e-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 36, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_3e48614ec19943b3953e-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_3e48614ec19943b3953e-in-home-eve",
+      "gql": "MATCH (a:Post {demo_id: 36, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_3e48614ec19943b3953e-in-home-eve', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_908ff6eeb14cf509302a-in-home-carol",
+      "gql": "MATCH (a:Post {demo_id: 22, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_908ff6eeb14cf509302a-in-home-carol', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_908ff6eeb14cf509302a-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 22, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_908ff6eeb14cf509302a-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_908ff6eeb14cf509302a-in-home-hana",
+      "gql": "MATCH (a:Post {demo_id: 22, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_908ff6eeb14cf509302a-in-home-hana', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_908ff6eeb14cf509302a-in-home-jules",
+      "gql": "MATCH (a:Post {demo_id: 22, demo_graph: 'social'}), (b:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_908ff6eeb14cf509302a-in-home-jules', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d373f0f6c736c9b01eb3-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 16, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_d373f0f6c736c9b01eb3-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d373f0f6c736c9b01eb3-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 16, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_d373f0f6c736c9b01eb3-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d373f0f6c736c9b01eb3-in-home-eve",
+      "gql": "MATCH (a:Post {demo_id: 16, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_d373f0f6c736c9b01eb3-in-home-eve', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d373f0f6c736c9b01eb3-in-home-fiona",
+      "gql": "MATCH (a:Post {demo_id: 16, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_d373f0f6c736c9b01eb3-in-home-fiona', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d373f0f6c736c9b01eb3-in-home-hana",
+      "gql": "MATCH (a:Post {demo_id: 16, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_d373f0f6c736c9b01eb3-in-home-hana', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_4ee40311214ecc674271-in-home-ian",
+      "gql": "MATCH (a:Post {demo_id: 35, demo_graph: 'social'}), (b:User {demo_id: 9, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_4ee40311214ecc674271-in-home-ian', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d837758c2032acdb19a0-in-home-hana",
+      "gql": "MATCH (a:Post {demo_id: 32, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_d837758c2032acdb19a0-in-home-hana', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d837758c2032acdb19a0-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 32, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_d837758c2032acdb19a0-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d837758c2032acdb19a0-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 32, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_d837758c2032acdb19a0-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d837758c2032acdb19a0-in-home-kira",
+      "gql": "MATCH (a:Post {demo_id: 32, demo_graph: 'social'}), (b:User {demo_id: 11, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_d837758c2032acdb19a0-in-home-kira', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_ecb01d5d5c87aae5e75c-in-home-jules",
+      "gql": "MATCH (a:Post {demo_id: 37, demo_graph: 'social'}), (b:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_ecb01d5d5c87aae5e75c-in-home-jules', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_ecb01d5d5c87aae5e75c-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 37, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_ecb01d5d5c87aae5e75c-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_ecb01d5d5c87aae5e75c-in-home-eve",
+      "gql": "MATCH (a:Post {demo_id: 37, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_ecb01d5d5c87aae5e75c-in-home-eve', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_8d35f0923adfcd762381-in-home-eve",
+      "gql": "MATCH (a:Post {demo_id: 26, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_8d35f0923adfcd762381-in-home-eve', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_8d35f0923adfcd762381-in-home-dave",
+      "gql": "MATCH (a:Post {demo_id: 26, demo_graph: 'social'}), (b:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_8d35f0923adfcd762381-in-home-dave', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_8d35f0923adfcd762381-in-home-jules",
+      "gql": "MATCH (a:Post {demo_id: 26, demo_graph: 'social'}), (b:User {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_8d35f0923adfcd762381-in-home-jules', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_b36194e3f8d0b0c4b209-in-home-fiona",
+      "gql": "MATCH (a:Post {demo_id: 29, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_b36194e3f8d0b0c4b209-in-home-fiona', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_b36194e3f8d0b0c4b209-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 29, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_b36194e3f8d0b0c4b209-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_b36194e3f8d0b0c4b209-in-home-carol",
+      "gql": "MATCH (a:Post {demo_id: 29, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_b36194e3f8d0b0c4b209-in-home-carol', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_b36194e3f8d0b0c4b209-in-home-george",
+      "gql": "MATCH (a:Post {demo_id: 29, demo_graph: 'social'}), (b:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_b36194e3f8d0b0c4b209-in-home-george', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_e8d507b0783f3cc277fd-in-home-kira",
+      "gql": "MATCH (a:Post {demo_id: 39, demo_graph: 'social'}), (b:User {demo_id: 11, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_e8d507b0783f3cc277fd-in-home-kira', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_7264349104bc7d26aef1-in-home-dave",
+      "gql": "MATCH (a:Post {demo_id: 24, demo_graph: 'social'}), (b:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_7264349104bc7d26aef1-in-home-dave', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_7264349104bc7d26aef1-in-home-ian",
+      "gql": "MATCH (a:Post {demo_id: 24, demo_graph: 'social'}), (b:User {demo_id: 9, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_7264349104bc7d26aef1-in-home-ian', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_e64442f3158619339629-in-home-hana",
+      "gql": "MATCH (a:Post {demo_id: 33, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_e64442f3158619339629-in-home-hana', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_e64442f3158619339629-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 33, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_e64442f3158619339629-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_e64442f3158619339629-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 33, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_e64442f3158619339629-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_e64442f3158619339629-in-home-kira",
+      "gql": "MATCH (a:Post {demo_id: 33, demo_graph: 'social'}), (b:User {demo_id: 11, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_e64442f3158619339629-in-home-kira', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_7ee887afb8bd964fec00-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 20, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_7ee887afb8bd964fec00-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_7ee887afb8bd964fec00-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 20, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_7ee887afb8bd964fec00-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_7ee887afb8bd964fec00-in-home-carol",
+      "gql": "MATCH (a:Post {demo_id: 20, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_7ee887afb8bd964fec00-in-home-carol', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_7ee887afb8bd964fec00-in-home-george",
+      "gql": "MATCH (a:Post {demo_id: 20, demo_graph: 'social'}), (b:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_7ee887afb8bd964fec00-in-home-george', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_813e48aa7cba92c18c80-in-home-george",
+      "gql": "MATCH (a:Post {demo_id: 31, demo_graph: 'social'}), (b:User {demo_id: 7, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_813e48aa7cba92c18c80-in-home-george', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_813e48aa7cba92c18c80-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 31, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_813e48aa7cba92c18c80-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_813e48aa7cba92c18c80-in-home-fiona",
+      "gql": "MATCH (a:Post {demo_id: 31, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_813e48aa7cba92c18c80-in-home-fiona', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_384b3fd3ef400d8f0997-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 17, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_384b3fd3ef400d8f0997-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_384b3fd3ef400d8f0997-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 17, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_384b3fd3ef400d8f0997-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_384b3fd3ef400d8f0997-in-home-eve",
+      "gql": "MATCH (a:Post {demo_id: 17, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_384b3fd3ef400d8f0997-in-home-eve', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_384b3fd3ef400d8f0997-in-home-fiona",
+      "gql": "MATCH (a:Post {demo_id: 17, demo_graph: 'social'}), (b:User {demo_id: 6, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_384b3fd3ef400d8f0997-in-home-fiona', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_384b3fd3ef400d8f0997-in-home-hana",
+      "gql": "MATCH (a:Post {demo_id: 17, demo_graph: 'social'}), (b:User {demo_id: 8, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'p_384b3fd3ef400d8f0997-in-home-hana', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_384b3fd3ef400d8f0997-topic-ic",
+      "gql": "MATCH (a:Post {demo_id: 17, demo_graph: 'social'}), (b:Topic {demo_id: 14, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'p_384b3fd3ef400d8f0997-topic-ic', demo_kind: 'has topic'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_d837758c2032acdb19a0-topic-ic",
+      "gql": "MATCH (a:Post {demo_id: 32, demo_graph: 'social'}), (b:Topic {demo_id: 14, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'p_d837758c2032acdb19a0-topic-ic', demo_kind: 'has topic'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_527ca1ee79b9dbe7cbe5-topic-graph",
+      "gql": "MATCH (a:Post {demo_id: 15, demo_graph: 'social'}), (b:Topic {demo_id: 13, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'p_527ca1ee79b9dbe7cbe5-topic-graph', demo_kind: 'has topic'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_0a16972aa298f4fb5c75-topic-ic",
+      "gql": "MATCH (a:Post {demo_id: 38, demo_graph: 'social'}), (b:Topic {demo_id: 14, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'p_0a16972aa298f4fb5c75-topic-ic', demo_kind: 'has topic'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_20fa73e4909aa56c8d1a-topic-ic",
+      "gql": "MATCH (a:Post {demo_id: 21, demo_graph: 'social'}), (b:Topic {demo_id: 14, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'p_20fa73e4909aa56c8d1a-topic-ic', demo_kind: 'has topic'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_23e7b97d27b0432b56b7-topic-graph",
+      "gql": "MATCH (a:Post {demo_id: 18, demo_graph: 'social'}), (b:Topic {demo_id: 13, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'p_23e7b97d27b0432b56b7-topic-graph', demo_kind: 'has topic'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_9ba8c08932c3519c5c79-topic-ic",
+      "gql": "MATCH (a:Post {demo_id: 25, demo_graph: 'social'}), (b:Topic {demo_id: 14, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'p_9ba8c08932c3519c5c79-topic-ic', demo_kind: 'has topic'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-p_38f48fa92d37e88da97f-topic-graph",
+      "gql": "MATCH (a:Post {demo_id: 23, demo_graph: 'social'}), (b:Topic {demo_id: 13, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'p_38f48fa92d37e88da97f-topic-graph', demo_kind: 'has topic'}]->(b)"
     }
   ],
   "embeddings": {
-    "post-alice-1": {
+    "15": {
       "name": "post_vec",
       "dims": 8,
       "metric": "L2Squared",
       "values": [
         4,
-        4,
+        0,
         0,
         0,
         0,
@@ -165,13 +761,13 @@
         0
       ]
     },
-    "post-bob-2": {
+    "16": {
       "name": "post_vec",
       "dims": 8,
       "metric": "L2Squared",
       "values": [
-        7,
-        1,
+        -10,
+        0,
         0,
         0,
         0,
@@ -180,13 +776,13 @@
         0
       ]
     },
-    "post-carol-1": {
+    "17": {
       "name": "post_vec",
       "dims": 8,
       "metric": "L2Squared",
       "values": [
-        6,
-        2,
+        -11,
+        0,
         0,
         0,
         0,
@@ -195,42 +791,132 @@
         0
       ]
     },
-    "post-bob-1": {
+    "18": {
       "name": "post_vec",
       "dims": 8,
       "metric": "L2Squared",
       "values": [
         5,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "19": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        7,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "20": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "21": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        6,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "22": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "23": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "24": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -12,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "25": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
         3,
         0,
         0,
         0,
         0,
         0,
-        0
-      ]
-    },
-    "post-eve-1": {
-      "name": "post_vec",
-      "dims": 8,
-      "metric": "L2Squared",
-      "values": [
-        0,
-        8,
-        0,
-        0,
-        0,
-        0,
         0,
         0
       ]
     },
-    "post-dave-1": {
+    "26": {
       "name": "post_vec",
       "dims": 8,
       "metric": "L2Squared",
       "values": [
-        8,
+        -13,
         0,
         0,
         0,
@@ -240,14 +926,194 @@
         0
       ]
     },
-    "post-eve-private": {
+    "27": {
       "name": "post_vec",
       "dims": 8,
       "metric": "L2Squared",
       "values": [
+        -20,
         0,
         0,
-        8,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "28": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "29": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -5,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "30": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "31": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "32": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "33": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "34": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -14,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "35": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -15,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "36": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -6,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "37": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -7,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "38": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -16,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "39": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        -17,
+        0,
+        0,
         0,
         0,
         0,

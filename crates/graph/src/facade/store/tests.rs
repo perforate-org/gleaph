@@ -55,6 +55,64 @@ fn install_edge_label_weight_profile_stores_payload_and_derives_weight_view() {
 }
 
 #[test]
+fn social_style_leaf_sharing_keeps_alices_third_post_writable() {
+    let store = GraphStore::new();
+    let initial: Vec<_> = (0..15)
+        .map(|_| store.insert_vertex().expect("initial vertex"))
+        .collect();
+    let follows = crate::test_labels::edge_label_id_for_name("SocialFollow");
+    let member_of = crate::test_labels::edge_label_id_for_name("SocialMemberOf");
+    let posted = crate::test_labels::edge_label_id_for_name("SocialPosted");
+    let insert = |src: usize, dst: usize, label| {
+        store
+            .insert_directed_edge(initial[src], initial[dst], Some(label))
+            .expect("ordinary social edge");
+    };
+
+    for (src, dst, label) in [
+        (0, 1, follows),
+        (0, 2, follows),
+        (0, 5, follows),
+        (0, 6, follows),
+        (0, 7, follows),
+        (0, 9, follows),
+        (0, 11, member_of),
+        (1, 0, follows),
+        (1, 7, follows),
+        (1, 11, member_of),
+        (2, 1, follows),
+        (2, 5, follows),
+        (2, 11, member_of),
+        (3, 4, follows),
+        (4, 0, follows),
+        (4, 9, follows),
+        (4, 11, member_of),
+        (5, 0, follows),
+        (5, 6, follows),
+        (5, 11, member_of),
+        (6, 1, follows),
+        (6, 5, follows),
+        (7, 0, follows),
+        (7, 2, follows),
+        (7, 11, member_of),
+        (8, 3, follows),
+        (9, 2, follows),
+        (9, 4, follows),
+        (10, 7, follows),
+    ] {
+        insert(src, dst, label);
+    }
+
+    let post_sources = [0, 6, 1, 7, 3, 10, 5, 4, 9, 7, 8, 0, 2, 9, 6, 0];
+    for (post_index, source) in post_sources.into_iter().enumerate() {
+        let post = store.insert_vertex().expect("post vertex");
+        store
+            .insert_directed_edge(initial[source], post, Some(posted))
+            .unwrap_or_else(|err| panic!("ordinary post edge {post_index}: {err:?}"));
+    }
+}
+
+#[test]
 fn insert_rejects_inline_value_bytes_when_label_profile_expects_zero_width() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");

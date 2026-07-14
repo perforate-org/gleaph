@@ -1,0 +1,7 @@
+id: jules
+name: Jules
+bio: Data journalist following how technology changes everyday civic life.
+follows:
+  - carol
+  - eve
+memberships: []

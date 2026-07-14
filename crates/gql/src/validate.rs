@@ -135,6 +135,13 @@ fn statement_result_scopes(
 ) -> Result<(RapidHashSet<String>, RapidHashSet<String>), GqlError> {
     match stmt {
         Statement::Query(cq) => composite_query_result_scopes(cq, scope, graph_scope),
+        // A top-level data-modifying statement consumes the current binding table but
+        // does not replace it. This is the statement-block equivalent of inline DML
+        // in a linear query, and lets a following `NEXT CALL` use the matched graph
+        // element that the DML just updated.
+        Statement::Insert(_) | Statement::Set(_) | Statement::Remove(_) | Statement::Delete(_) => {
+            Ok((scope.clone(), graph_scope.clone()))
+        }
         _ => Ok((RapidHashSet::default(), RapidHashSet::default())),
     }
 }

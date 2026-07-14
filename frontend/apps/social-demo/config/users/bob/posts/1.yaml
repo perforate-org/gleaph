@@ -1,6 +1,5 @@
-id: post-bob-1
-body: Bob's topic note
-created_at: 202607030300
+body: I wrote up the little graph-modeling trick that saved us a migration. The diagram is in the replies.
+created_at: 202607130745
 is_public: true
 topics:
-- topic-graph
+  - topic-graph

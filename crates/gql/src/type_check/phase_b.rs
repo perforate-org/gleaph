@@ -5,7 +5,7 @@ use crate::ast::{GqlProgram, LinearQueryStatement, Statement, StatementBlock};
 use super::env::TypeEnv;
 use super::{
     BindingKind, EdgeTypeInfo, NoSchema, NodeTypeInfo, PathTypeInfo, PropertySchema, Type,
-    check_linear_query, check_program, check_statement, constraint, infer_statement_return_types,
+    check_linear_query, check_program, check_statement, constraint, infer_statement_output_types,
 };
 
 /// Run constraint-based (Phase B) type checking with schema awareness.
@@ -96,12 +96,12 @@ pub fn infer_statement_block_binding_kinds_with_schema(
 
     check_statement(&mut env, &block.first);
 
-    let mut prev_return_types = infer_statement_return_types(&env, &block.first);
+    let mut prev_output_types = infer_statement_output_types(&env, &block.first);
     for next in &block.next {
         if let Some(ref yield_items) = next.yield_items {
             for yi in yield_items {
                 let binding_name = yi.alias.as_deref().unwrap_or(&yi.name);
-                let ty = prev_return_types
+                let ty = prev_output_types
                     .iter()
                     .find(|(name, _)| name == &yi.name)
                     .map(|(_, t)| t.clone())
@@ -125,7 +125,7 @@ pub fn infer_statement_block_binding_kinds_with_schema(
 
         per_statement.push(binding_kinds_from_env(&env));
         check_statement(&mut env, &next.statement);
-        prev_return_types = infer_statement_return_types(&env, &next.statement);
+        prev_output_types = infer_statement_output_types(&env, &next.statement);
     }
 
     per_statement

@@ -204,7 +204,7 @@ fn check_statement_block(env: &mut TypeEnv<'_>, block: &StatementBlock) {
     check_statement(env, &block.first);
 
     // Propagate types across NEXT boundaries.
-    let mut prev_return_types = infer_statement_return_types(env, &block.first);
+    let mut prev_output_types = infer_statement_output_types(env, &block.first);
 
     for next in &block.next {
         // If there are yield items, project only those columns into the next scope.
@@ -213,7 +213,7 @@ fn check_statement_block(env: &mut TypeEnv<'_>, block: &StatementBlock) {
         if let Some(ref yield_items) = next.yield_items {
             for yi in yield_items {
                 let binding_name = yi.alias.as_deref().unwrap_or(&yi.name);
-                let ty = prev_return_types
+                let ty = prev_output_types
                     .iter()
                     .find(|(name, _)| name == &yi.name)
                     .map(|(_, t)| t.clone())
@@ -222,22 +222,29 @@ fn check_statement_block(env: &mut TypeEnv<'_>, block: &StatementBlock) {
             }
         } else {
             // No explicit yield → all columns pass through.
-            for (name, ty) in &prev_return_types {
+            for (name, ty) in &prev_output_types {
                 next_scope.insert(name.clone(), ty.clone());
             }
         }
         env.replace_scope(next_scope);
 
         check_statement(env, &next.statement);
-        prev_return_types = infer_statement_return_types(env, &next.statement);
+        prev_output_types = infer_statement_output_types(env, &next.statement);
     }
 }
 
-/// Infer the output column types from a statement's RETURN clause.
-/// Returns `Vec<(column_name, Type)>`.
-fn infer_statement_return_types(env: &TypeEnv<'_>, stmt: &Statement) -> Vec<(String, Type)> {
+/// Infer the bindings visible to the next statement in a statement block.
+/// Query statements expose their result columns; data-modifying statements retain
+/// their input bindings, matching inline DML's pass-through behavior.
+fn infer_statement_output_types(env: &TypeEnv<'_>, stmt: &Statement) -> Vec<(String, Type)> {
     match stmt {
         Statement::Query(cq) => infer_composite_query_return_types(env, cq),
+        Statement::Insert(_) | Statement::Set(_) | Statement::Remove(_) | Statement::Delete(_) => {
+            env.bindings
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty.clone()))
+                .collect()
+        }
         _ => Vec::new(),
     }
 }

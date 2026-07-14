@@ -1,5 +1,6 @@
 id: dave
 name: Dave
-bio: Demo user Dave
-follows: []
+bio: ML engineer. Mostly here for retrieval rabbit holes and coffee photos.
+follows:
+  - eve
 memberships: []

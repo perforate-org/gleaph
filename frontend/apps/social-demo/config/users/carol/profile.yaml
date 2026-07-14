@@ -1,5 +1,8 @@
 id: carol
 name: Carol
-bio: Demo user Carol
-follows: []
-memberships: []
+bio: Researcher working on humane systems and public-interest tech.
+follows:
+  - bob
+  - fiona
+memberships:
+  - community-ic

@@ -1,5 +1,8 @@
 id: eve
 name: Eve
-bio: Demo user Eve
-follows: []
-memberships: []
+bio: Community organizer, gardener, and keeper of the meetup spreadsheet.
+follows:
+  - alice
+  - jules
+memberships:
+  - community-ic

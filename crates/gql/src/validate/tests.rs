@@ -788,6 +788,14 @@ fn valid_next_yield() {
 }
 
 #[test]
+fn valid_next_call_after_insert_retains_input_bindings() {
+    assert!(parse_and_validate(
+        "MATCH (a:User {id: 'alice'}) RETURN a NEXT INSERT (a)-[:FOLLOWS]->(a) NEXT CALL GLEAPH.FINALIZE_FORWARD_EDGE_SPAN(a)"
+    )
+    .is_ok());
+}
+
+#[test]
 fn valid_next_yield_alias_propagates_scope() {
     assert!(parse_and_validate("MATCH (n) RETURN n AS x NEXT YIELD x MATCH (m) RETURN x").is_ok());
 }

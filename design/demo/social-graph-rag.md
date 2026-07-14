@@ -1,11 +1,15 @@
 # Social Graph and GraphRAG Comparison Demo
 
 Last updated: 2026-07-13
-Anchor timestamp: 2026-07-13 07:31:19 UTC +0000
+Anchor timestamp: 2026-07-13 08:15:23 UTC +0000
 
 ## Status
 
 **Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the five fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. As of 2026-07-13 the timeline and home feed use materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges so the read path is a single fixed-label expansion with no runtime sort key, and canonical `REPLY_TO` edges drive a Twitter-like reply tree in the frontend. The social-demo frontend now renders all five scenarios, including vector distance values and a comparison of vector-only versus graph-constrained results. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, authenticated ownership, runtime feed maintenance, and celebrity/hybrid feed strategies remain explicitly planned and out of scope for this slice.
+
+The deterministic fixture contains 11 users and 25 Posts (24 public), with Alice following six
+active authors. The posts use opaque generator-owned graph keys; authored reply references remain
+readable as `<author>/<post-stem>` paths.
 
 ## Phase 1 implementation note
 
@@ -46,7 +50,7 @@ As of 2026-07-11 10:51:54 UTC +0000:
   - deterministic Post embeddings written through Router `admin_ingest_vertex_embedding`, with
     the derived vector index hydrated through Router rather than direct vector-canister seeding;
   - vector-only semantic discovery over public Posts, returning exact L2-squared distance order
-    and including a deliberately nearer unfollowed post (`post-dave-1`);
+    and including Dave's deliberately nearer unfollowed retrieval post;
   - Alice graph-constrained semantic feed excluding the nearer unfollowed post and returning
     followed authors' Posts in semantic order;
   - Alice home feed through materialized own-author and `FOLLOWS -> POSTED` delivery, excluding
@@ -309,8 +313,8 @@ amplification for a zero-sort-key read path.
 
 Select Alice as a scenario subject and show:
 
-- Alice's own posts and followed authors' posts via materialized `IN_HOME_FEED` edges (Alice already
-  follows Bob and Carol in the seed data);
+- Alice's own posts and followed authors' posts via materialized `IN_HOME_FEED` edges (Alice follows
+  Bob, Carol, Fiona, George, Hana, and Jules in the seed data);
 - mutual connections;
 - two-hop author discovery;
 - the exact paths that explain each result.
@@ -419,7 +423,7 @@ adding arbitrary query controls or Router GQL entrypoints to the public UI.
 
 ### Phase 1: deterministic graph comparison
 
-- Define a small social seed graph with memorable users, posts, topics, replies, and communities.
+- Define a compact but active social seed graph with distinct users, posts, topics, replies, and communities.
 - Add a public Feed vertex and materialize `IN_PUBLIC_FEED` / `IN_HOME_FEED` edges so the public
   timeline and Alice's home feed are single fixed-label expansions with no runtime sort key.
 - Add public timeline, home/discovery, and propagation scenarios.
@@ -489,7 +493,7 @@ Internet Identity application integration by itself does not require a Gleaph AD
 
 1. Which existing knowledge-map components can support a timeline-plus-graph layout without creating
    a second frontend application?
-2. Which deterministic posts and relationships best make each retrieval model visibly different? (resolved: the manifest uses integer-valued 8-dimensional `post_vec` embeddings so vector-only results order `post-dave-1`, `post-bob-2`, `post-carol-1`, `post-bob-1`, `post-alice-1`, `post-eve-1`, and Alice's graph-constrained feed excludes the nearer `post-dave-1`).
+2. Which deterministic posts and relationships best make each retrieval model visibly different? (resolved: the manifest uses 8-dimensional `post_vec` embeddings; Dave's retrieval post is nearest in vector-only search, while Alice's graph-constrained feed excludes it because she does not follow Dave.)
 3. Should Phase 1 call registered prepared queries directly, or use a narrow Router-owned demo read
    endpoint before the prepared-query frontend wrapper exists?
 4. Which embedding provider should the application demo adapter support first, and which `ic-llm`

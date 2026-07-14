@@ -1,8 +1,12 @@
 id: alice
 name: Alice
-bio: Demo user Alice
+bio: Product designer, tea enthusiast, and occasional weekend cyclist.
 follows:
   - bob
   - carol
+  - fiona
+  - george
+  - hana
+  - jules
 memberships:
   - community-ic

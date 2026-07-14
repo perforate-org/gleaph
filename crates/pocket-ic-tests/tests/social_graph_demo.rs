@@ -28,7 +28,7 @@ use gleaph_pocket_ic_tests::{
 use gleaph_social_demo_gateway::SocialDemoScenario;
 
 const PUBLIC_TIMELINE_QUERY: &str = "\
-MATCH (feed:Feed {demo_id: 16})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+MATCH (feed:Feed {demo_id: 40})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
 OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) \
 RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
 ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20";
@@ -131,18 +131,21 @@ fn assert_public_timeline_through_gateway(
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
-        6,
-        "public timeline should return exactly the six public posts"
+        20,
+        "public timeline should return the newest twenty public posts"
     );
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
     assert_eq!(
         ids,
-        vec!["9", "11", "12", "10", "14", "13",],
+        vec![
+            "17", "31", "20", "33", "24", "39", "29", "26", "37", "32", "35", "16", "22", "36",
+            "30", "15", "28", "19", "34", "38",
+        ],
         "public posts should be in exact reverse chronological order"
     );
     assert!(
-        !ids.contains(&"15".to_string()),
-        "private post (15) must be excluded from the public timeline"
+        !ids.contains(&"27".to_string()),
+        "private post (27) must be excluded from the public timeline"
     );
     for row in &rows {
         assert_body_is_text(row, "public timeline should surface body");
@@ -151,15 +154,41 @@ fn assert_public_timeline_through_gateway(
     assert_author_names(
         &rows,
         &[
-            ("9", "Alice"),
-            ("11", "Bob"),
-            ("12", "Carol"),
-            ("10", "Bob"),
-            ("14", "Eve"),
-            ("13", "Dave"),
+            ("17", "Alice"),
+            ("31", "George"),
+            ("20", "Bob"),
+            ("33", "Hana"),
+            ("24", "Dave"),
+            ("39", "Kira"),
+            ("29", "Fiona"),
+            ("26", "Eve"),
+            ("37", "Jules"),
+            ("32", "Hana"),
+            ("35", "Ian"),
+            ("16", "Alice"),
+            ("22", "Carol"),
+            ("36", "Jules"),
+            ("30", "George"),
+            ("15", "Alice"),
+            ("28", "Fiona"),
+            ("19", "Bob"),
+            ("34", "Ian"),
+            ("38", "Kira"),
         ],
     );
-    assert_parent_post_ids(&rows, &[("9", "10"), ("11", "10")]);
+    assert_parent_post_ids(
+        &rows,
+        &[
+            ("17", "32"),
+            ("20", "15"),
+            ("33", "32"),
+            ("29", "32"),
+            ("37", "21"),
+            ("22", "18"),
+            ("15", "18"),
+            ("19", "18"),
+        ],
+    );
 }
 
 fn assert_author_names(
@@ -198,16 +227,19 @@ fn assert_alice_home_feed_through_gateway(
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
-        4,
-        "Alice's home feed should return her own public post plus the posts by followees (Bob and Carol)"
+        16,
+        "Alice's home feed should return her own public posts plus posts by her six active followees"
     );
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
     assert_eq!(
         ids,
-        vec!["9", "11", "12", "10"],
+        vec![
+            "17", "31", "20", "33", "29", "37", "32", "16", "22", "36", "30", "15", "28", "19",
+            "21", "18",
+        ],
         "home feed should be in exact reverse chronological order"
     );
-    for adversary in ["13", "14", "15"] {
+    for adversary in ["23", "24", "25", "26", "27", "34", "35", "38", "39"] {
         assert!(
             !ids.contains(&adversary.to_string()),
             "home feed must exclude private or public posts by unfollowed, non-author users: {adversary}"
@@ -220,13 +252,37 @@ fn assert_alice_home_feed_through_gateway(
     assert_author_names(
         &rows,
         &[
-            ("9", "Alice"),
-            ("11", "Bob"),
-            ("12", "Carol"),
-            ("10", "Bob"),
+            ("17", "Alice"),
+            ("31", "George"),
+            ("20", "Bob"),
+            ("33", "Hana"),
+            ("29", "Fiona"),
+            ("37", "Jules"),
+            ("32", "Hana"),
+            ("16", "Alice"),
+            ("22", "Carol"),
+            ("36", "Jules"),
+            ("30", "George"),
+            ("15", "Alice"),
+            ("28", "Fiona"),
+            ("19", "Bob"),
+            ("21", "Carol"),
+            ("18", "Bob"),
         ],
     );
-    assert_parent_post_ids(&rows, &[("9", "10"), ("11", "10")]);
+    assert_parent_post_ids(
+        &rows,
+        &[
+            ("17", "32"),
+            ("20", "15"),
+            ("33", "32"),
+            ("29", "32"),
+            ("37", "21"),
+            ("22", "18"),
+            ("15", "18"),
+            ("19", "18"),
+        ],
+    );
 }
 
 fn assert_parent_post_ids(
@@ -265,12 +321,12 @@ fn assert_topic_path_explanation_through_gateway(
     let row = &rows[0];
     assert_eq!(
         demo_id_text(row, "post_id"),
-        "10",
-        "path should go through Bob's topic note"
+        "18",
+        "path should go through Bob's graph-modeling post"
     );
     assert_eq!(
         demo_id_text(row, "topic_id"),
-        "7",
+        "13",
         "path should reach the Graph databases topic"
     );
     assert_eq!(
@@ -283,14 +339,13 @@ fn assert_topic_path_explanation_through_gateway(
         "bob-posted-1",
         "posted edge identity should explain the path"
     );
-    assert_eq!(
-        text(row, "topic_edge_id"),
-        "post-bob-1-topic-graph",
-        "HAS_TOPIC edge identity should explain the path"
+    assert!(
+        text(row, "topic_edge_id").ends_with("-topic-graph"),
+        "HAS_TOPIC edge identity should retain the topic suffix"
     );
     assert_eq!(
         text(row, "body"),
-        "Bob's topic note",
+        "I wrote up the little graph-modeling trick that saved us a migration. The diagram is in the replies.",
         "topic path should surface the Post body"
     );
     assert_eq!(
@@ -302,7 +357,7 @@ fn assert_topic_path_explanation_through_gateway(
     for row in &rows {
         assert_ne!(
             demo_id_text(row, "topic_id"),
-            "topic-ic",
+            "14",
             "topic path must not return the unrelated topic-ic topic"
         );
     }
@@ -321,17 +376,17 @@ fn assert_semantic_discovery_through_gateway(
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
-        6,
-        "vector-only semantic discovery should return exactly the six public posts"
+        10,
+        "vector-only semantic discovery should return its bounded ten nearest public posts"
     );
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
     assert_eq!(
         ids,
-        vec!["13", "11", "12", "10", "9", "14",],
+        vec!["23", "19", "21", "18", "15", "25", "30", "32", "20", "31"],
         "vector-only results must be in exact L2-squared distance order"
     );
     assert!(
-        !ids.contains(&"15".to_string()),
+        !ids.contains(&"27".to_string()),
         "private post must be excluded from vector-only semantic discovery"
     );
     for row in &rows {
@@ -341,24 +396,32 @@ fn assert_semantic_discovery_through_gateway(
     assert_author_names(
         &rows,
         &[
-            ("13", "Dave"),
-            ("11", "Bob"),
-            ("12", "Carol"),
-            ("10", "Bob"),
-            ("9", "Alice"),
-            ("14", "Eve"),
+            ("23", "Dave"),
+            ("19", "Bob"),
+            ("21", "Carol"),
+            ("18", "Bob"),
+            ("15", "Alice"),
+            ("25", "Eve"),
+            ("30", "George"),
+            ("32", "Hana"),
+            ("20", "Bob"),
+            ("31", "George"),
         ],
     );
 
     assert_exact_distances(
         &rows,
         &[
-            ("13", 0.0),
-            ("11", 2.0),
-            ("12", 8.0),
-            ("10", 18.0),
-            ("9", 32.0),
-            ("14", 128.0),
+            ("23", 0.0),
+            ("19", 1.0),
+            ("21", 4.0),
+            ("18", 9.0),
+            ("15", 16.0),
+            ("25", 25.0),
+            ("30", 36.0),
+            ("32", 49.0),
+            ("20", 64.0),
+            ("31", 81.0),
         ],
     );
 }
@@ -376,24 +439,52 @@ fn assert_alice_semantic_feed_through_gateway(
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
-        3,
-        "Alice's semantic feed should return exactly the followed-author posts"
+        10,
+        "Alice's semantic feed should return the ten nearest posts by followed authors"
     );
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
     assert_eq!(
         ids,
-        vec!["11", "12", "10"],
+        vec!["19", "21", "18", "30", "32", "20", "31", "28", "22", "33"],
         "graph-constrained semantic results must exclude the nearer unfollowed post"
     );
-    for adversary in ["13", "14", "15", "9"] {
+    for adversary in ["15", "23", "24", "25", "26", "27", "34", "35", "38", "39"] {
         assert!(
             !ids.contains(&adversary.to_string()),
             "Alice's semantic feed must exclude {adversary}"
         );
     }
 
-    assert_exact_distances(&rows, &[("11", 2.0), ("12", 8.0), ("10", 18.0)]);
-    assert_author_names(&rows, &[("11", "Bob"), ("12", "Carol"), ("10", "Bob")]);
+    assert_exact_distances(
+        &rows,
+        &[
+            ("19", 1.0),
+            ("21", 4.0),
+            ("18", 9.0),
+            ("30", 36.0),
+            ("32", 49.0),
+            ("20", 64.0),
+            ("31", 81.0),
+            ("28", 100.0),
+            ("22", 121.0),
+            ("33", 144.0),
+        ],
+    );
+    assert_author_names(
+        &rows,
+        &[
+            ("19", "Bob"),
+            ("21", "Carol"),
+            ("18", "Bob"),
+            ("30", "George"),
+            ("32", "Hana"),
+            ("20", "Bob"),
+            ("31", "George"),
+            ("28", "Fiona"),
+            ("22", "Carol"),
+            ("33", "Hana"),
+        ],
+    );
     // Plan 0068 fixed AliceSemanticFeed's body column by extending the planner's
     // property_uses collection to include row-local operator expressions (Project, etc.).
     // The body assertion for this scenario lives in `alice_semantic_feed_body_regression`
@@ -575,8 +666,8 @@ fn alice_semantic_feed_body_regression() {
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
-        3,
-        "Alice semantic feed should return exactly 3 rows"
+        10,
+        "Alice semantic feed should return exactly 10 rows"
     );
     for row in &rows {
         assert_body_is_text(

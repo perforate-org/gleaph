@@ -1,5 +1,5 @@
-id: post-eve-1
-body: Eve's public note
-created_at: 202607030200
+body: The July meetup has a quiet room this time. Thank you to everyone who asked for one.
+created_at: 202607130738
 is_public: true
-topics: []
+topics:
+  - topic-ic

@@ -1,5 +1,5 @@
-id: post-carol-1
-body: Carol's public note
-created_at: 202607030400
+body: A good privacy setting is one you can explain to a friend without opening a second tab.
+created_at: 202607130756
 is_public: true
-topics: []
+topics:
+  - topic-ic

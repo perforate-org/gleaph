@@ -6,7 +6,7 @@
 
 Define an **explicit commit hook** for tombstone-free bulk ingest: after a batch of edge inserts, optionally enqueue `CompactVertexEdgeSpan` on known hot vertices and drain the LARA deferred maintenance queue so overflow buckets become **dense-eligible** before read-heavy queries run.
 
-This closes the gap between:
+This closes a query-performance/reclaim gap, separate from ordinary insert safety, between:
 
 - **Incremental reclaim** (implemented): every `GraphStore` edge insert calls `run_post_edge_insert_maintenance()` — drain only, no extra `mark_compact_vertex_edge_span`.
 - **Aggressive reclaim** (this document): caller-declared batch boundary where vertex-edge-span compaction is safe and desirable.
@@ -202,6 +202,16 @@ flowchart LR
 ```
 
 Finalize **complements** post-insert drain; it does not remove it.
+
+## Ordinary mutation safety
+
+`DeferredLabeledLaraGraph` and `DeferredBidirectionalLabeledLaraGraph` prepare an already-dense
+PMA leaf before the next ordinary edge insert. The storage facade owns this capacity step, so a
+follow, post, reply, or feed edge never requires the caller to invoke `GLEAPH.FINALIZE_*` to avoid
+`CollectAllocationOverflow`. The deferred queue still receives post-insert maintenance as before.
+
+`GLEAPH.FINALIZE_*` remains for caller-declared tombstone-free batch boundaries where aggressive
+span compaction improves immediate read performance; it is not a prerequisite for normal DML.
 
 ## Observed canbench impact (post-insert maintenance, `c16a247f`)
 
