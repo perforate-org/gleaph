@@ -776,6 +776,10 @@ impl<M: Memory> EdgeInlineValueStore<M> {
             })
     }
 
+    pub(crate) fn reserve_retired_byte_spans(&self, additional: u64) -> Result<(), GrowFailed> {
+        self.free_spans.reserve_for_releases(additional)
+    }
+
     /// Returns retired byte ranges to the free list.
     ///
     /// Spans still covered by [`HeaderV1::slab_occupied_tail`] are ignored so a

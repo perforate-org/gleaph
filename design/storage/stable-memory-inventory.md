@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-07-11
+Last updated: 2026-07-14
 Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline value schema record + ADR 0035 Slice 1 provisioning-request catalog + Slice 5 Router outbound accept_envelope send (ROUTER_PROVISION_CONFIG durable binding) + Slice 6 owner-identity-bound intent lock release on Completed and four-branch invocation-owned rollback on send failure (only if current operation inserted the record and it is still AwaitingAck) (no new regions) (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 49 regions, 0–48; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 12 regions, 0–11)
-Anchor timestamp: 2026-07-11 04:55:51 UTC +0000
+Anchor timestamp: 2026-07-14 01:17:34 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 Planned production compatibility and migration policy: [ADR 0039](../adr/0039-production-stable-memory-evolution-and-upgrade-safety.md).
@@ -84,7 +84,7 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 | MemoryId | Symbol | Role | Class | Rebuild |
 |--------|--------|------|-------|---------|
 | 0 | `FWD_VERTICES` | Vertex rows | canonical | — |
-| 1 | `FWD_BUCKETS` | Per-vertex edge buckets | canonical | — |
+| 1 | `FWD_BUCKETS` | Per-vertex labeled edge buckets: edge slab/log locator plus independent payload slab/log split metadata | canonical | — |
 | 2 | `FWD_BUCKET_FREE_SPANS` | Retired bucket physical spans | maintenance | — |
 | 3 | `FWD_BUCKET_FREE_SPAN_BY_START` | Bucket free-span index | maintenance | — |
 | 4 | `FWD_EDGE_COUNTS` | Per-vertex edge counts | canonical | — |
@@ -93,10 +93,10 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 | 7 | `FWD_EDGE_SPAN_META` | Edge span metadata | maintenance | — |
 | 8 | `FWD_EDGE_FREE_SPANS` | Retired edge physical spans | maintenance | — |
 | 9 | `FWD_EDGE_FREE_SPAN_BY_START` | Edge free-span index | maintenance | — |
-| 10 | `FWD_PAYLOAD_SLAB` | Labeled edge inline value slab | canonical | — |
+| 10 | `FWD_PAYLOAD_SLAB` | Dense labeled edge inline-value prefix, independently allocated/relocated from edge slab | canonical | — |
 | 11 | `FWD_PAYLOAD_FREE_SPANS` | Payload free spans | maintenance | — |
 | 12 | `FWD_PAYLOAD_FREE_SPAN_BY_START` | Payload free-span index | maintenance | — |
-| 13 | `FWD_PAYLOAD_LOG` | Payload value log | canonical | — |
+| 13 | `FWD_PAYLOAD_LOG` | Ordered inline-value suffix log, independently folded from edge log | canonical | — |
 | 14 | `FWD_PAYLOAD_BLOBS` | Large payload blobs | canonical | — |
 
 ### Reverse orientation (derived adjacency + payloads)
@@ -104,15 +104,15 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 | MemoryId | Symbol | Role | Class | Rebuild |
 |--------|--------|------|-------|---------|
 | 15 | `REV_VERTICES` | Reverse vertex rows | derived | Co-update + `rebuild_reverse_adjacency`; `check_reverse_adjacency` oracle |
-| 16 | `REV_BUCKETS` | Reverse buckets | derived | Co-update + `rebuild_reverse_adjacency` |
+| 16 | `REV_BUCKETS` | Reverse buckets with independent edge/payload slab-log split metadata | derived | Co-update + `rebuild_reverse_adjacency` |
 | 17–18 | `REV_BUCKET_FREE_SPANS`, `REV_BUCKET_FREE_SPAN_BY_START` | Reverse bucket maintenance | maintenance | — |
 | 19 | `REV_EDGE_COUNTS` | Reverse edge counts | derived | Co-update + `rebuild_reverse_adjacency` |
 | 20 | `REV_EDGES` | Reverse edge slab | derived | Co-update + `rebuild_reverse_adjacency` |
 | 21 | `REV_EDGE_LOG` | Reverse edge log | derived | Co-update + `rebuild_reverse_adjacency` |
 | 22–24 | `REV_EDGE_SPAN_META`, `REV_EDGE_FREE_SPANS`, `REV_EDGE_FREE_SPAN_BY_START` | Reverse edge maintenance | maintenance | — |
-| 25 | `REV_PAYLOAD_SLAB` | Reverse payload slab | derived | Co-update + `rebuild_reverse_adjacency` |
+| 25 | `REV_PAYLOAD_SLAB` | Reverse inline-value prefix, independently allocated/relocated from reverse edge slab | derived | Co-update + `rebuild_reverse_adjacency` |
 | 26–27 | `REV_PAYLOAD_FREE_SPANS`, `REV_PAYLOAD_FREE_SPAN_BY_START` | Reverse payload maintenance | maintenance | — |
-| 28 | `REV_PAYLOAD_LOG` | Reverse payload log | derived | Co-update + `rebuild_reverse_adjacency` |
+| 28 | `REV_PAYLOAD_LOG` | Reverse ordered inline-value suffix log, independently folded from reverse edge log | derived | Co-update + `rebuild_reverse_adjacency` |
 | 29 | `REV_PAYLOAD_BLOBS` | Reverse payload blobs | derived | Co-update + `rebuild_reverse_adjacency` |
 
 ### LARA maintenance

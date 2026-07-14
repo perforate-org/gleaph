@@ -114,7 +114,7 @@ pub use bucket_label_key::{
 };
 pub use bucket_store::InitError as LabelBucketStoreInitError;
 pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
-pub use graph::EdgeSlotMove;
+pub use graph::{EdgeRemoval, EdgeSlotMove};
 pub use graph::{
     HybridOverflowEdgeReplay, InitError as LabeledGraphInitError, LabeledEdgeInlineValueBatch,
     LabeledEdgeInlineValueBatchScratch, LabeledLaraGraph, LabeledOperationError,

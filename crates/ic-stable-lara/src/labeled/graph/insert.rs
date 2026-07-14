@@ -1,5 +1,13 @@
 //! Labeled graph `insert` implementation.
 
+#[cfg(target_family = "wasm")]
+fn log_collect_overflow(message: &str) {
+    ic_cdk::println!("LARA CollectAllocationOverflow: {}", message);
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn log_collect_overflow(_message: &str) {}
+
 use crate::{
     VertexId,
     labeled::{
@@ -19,7 +27,7 @@ use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{BucketSearch, DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
+use super::{BucketSearch, LabeledLaraGraph};
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -156,29 +164,35 @@ where
                 bucket = self
                     .buckets
                     .read_label_bucket_slot(bucket_slot)
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                    .ok_or_else(|| {
+                        log_collect_overflow(
+                            "insert_edge_skip_leaf_cascade: cannot re-read bucket after payload log rebalance",
+                        );
+                        LaraOperationError::CollectAllocationOverflow
+                    })?;
                 continue;
             }
-            let successor_start =
-                self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
+            let successor_start = if vertex.degree() == 1 && !has_edge_inline_value {
+                self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?
+            } else {
+                self.bucket_slab_window_end_exclusive_after_bucket(&vertex, bucket_index, &bucket)?
+            };
             let slack_span = successor_start.saturating_sub(bucket.edge_start());
-            if bucket.overflow_log_head() < 0 && slack_span > u64::from(bucket.stored_slots) {
+            if bucket.overflow_log_head() < 0
+                && bucket.stored_slots > 0
+                && slack_span > u64::from(bucket.stored_slots)
+            {
                 let write_slot =
                     checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 debug_assert!(write_slot < successor_start);
                 self.edges.write_slot(write_slot, attempt_edge.clone())?;
-                let prev_stored_slots = bucket.stored_slots;
                 let bucket = bucket.grow_packed_slab_by_one();
-                let slot_index = bucket.stored_slots.saturating_sub(1);
                 let bucket = self.write_edge_inline_value_after_insert(
                     src,
                     bucket_slot,
                     bucket,
-                    prev_stored_slots,
-                    slot_index,
                     &attempt_edge,
-                    false,
                 )?;
                 self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                 let hdr = self.edges.header();
@@ -192,7 +206,13 @@ where
                     .map_err(LabeledOperationError::from)?;
                 return Ok(());
             }
-            let access = LabelEdgeSpanAccess::new(&self.buckets, bucket_slot, successor_start, src);
+            let access = LabelEdgeSpanAccess::with_bucket(
+                &self.buckets,
+                bucket_slot,
+                bucket,
+                successor_start,
+                src,
+            );
             match self
                 .edges
                 .insert_edge(&access, VertexId::from(0), attempt_edge.clone())
@@ -202,8 +222,12 @@ where
                     bucket = self
                         .buckets
                         .read_label_bucket_slot(bucket_slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    let prev_stored_slots = bucket.stored_slots;
+                        .ok_or_else(|| {
+                            log_collect_overflow(
+                                "insert_edge_skip_leaf_cascade: cannot re-read bucket after slab insert",
+                            );
+                            LaraOperationError::CollectAllocationOverflow
+                        })?;
                     let new_stored = written_slot.saturating_add(1).max(bucket.stored_slots);
                     if new_stored != bucket.stored_slots {
                         bucket = bucket.with_stored_slots(new_stored);
@@ -212,10 +236,7 @@ where
                         src,
                         bucket_slot,
                         bucket,
-                        prev_stored_slots,
-                        written_slot,
                         &attempt_edge,
-                        false,
                     )?;
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                     return Ok(());
@@ -225,17 +246,17 @@ where
                     bucket = self
                         .buckets
                         .read_label_bucket_slot(bucket_slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    let prev_payload_slots = self.bucket_resident_payload_slots_for(src, &bucket);
-                    let slot_index = bucket.degree().saturating_sub(1);
+                        .ok_or_else(|| {
+                            log_collect_overflow(
+                                "insert_edge_skip_leaf_cascade: cannot re-read bucket after log insert",
+                            );
+                            LaraOperationError::CollectAllocationOverflow
+                        })?;
                     let bucket = self.write_edge_inline_value_after_insert(
                         src,
                         bucket_slot,
                         bucket,
-                        prev_payload_slots,
-                        slot_index,
                         &attempt_edge,
-                        true,
                     )?;
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                     return Ok(());
@@ -254,7 +275,12 @@ where
                     bucket = self
                         .buckets
                         .read_label_bucket_slot(bucket_slot)
-                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                        .ok_or_else(|| {
+                            log_collect_overflow(
+                                "insert_edge_skip_leaf_cascade: cannot re-read bucket after log rebalance",
+                            );
+                            LaraOperationError::CollectAllocationOverflow
+                        })?;
                 }
                 Err(e) => return Err(LabeledOperationError::from(e)),
             }
@@ -262,6 +288,48 @@ where
         Err(LabeledOperationError::from(
             LaraOperationError::SegmentLogFull,
         ))
+    }
+
+    /// Storage-owned pre-insert capacity preparation for a new label bucket.
+    ///
+    /// When the next ordinary insert will create a new bucket for `(src, label_id)`,
+    /// the bucket needs a free `DEFAULT_SEGMENT_SIZE` span inside `src`'s pinned PMA
+    /// leaf block.  If the leaf is already dense or no free span fits, this helper
+    /// rebalances / relocates the leaf *before* any canonical edge write, keeping the
+    /// subsequent `find_or_create_bucket` path fail-closed.
+    ///
+    /// The operation is idempotent; any error leaves canonical edge state untouched.
+    /// Pinning a previously unpinned leaf is non-canonical physical preallocation and is
+    /// safe to retain after a rejected mutation.
+    pub(crate) fn prepare_labeled_edge_capacity_for_insert(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(());
+        }
+        if vertex.degree() > 0
+            && matches!(
+                self.find_bucket(src, &vertex, label_id)?,
+                BucketSearch::Found { .. }
+            )
+        {
+            return Ok(());
+        }
+
+        // New-bucket contract (ADR 0001): the bucket is created with stored_slots=0
+        // placed at the successor boundary. No edge-slab bytes are reserved for the
+        // bucket itself; the first edges go to the shared leaf overflow log. We only
+        // need to guarantee that the target PMA leaf block is pinned, so a zero-length
+        // placement is valid and subsequent edge inserts can use the leaf log.
+        self.ensure_labeled_leaf_block_pinned(src)?;
+        Ok(())
     }
 
     pub(super) fn ensure_labeled_bucket_edge_span_room(
@@ -277,33 +345,10 @@ where
         if self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
             return Ok(());
         }
-        // A fresh single-bucket vertex has no placed span yet, so the span-rebalance path
-        // below (which trusts an existing base) cannot site it. Grow the leaf block via a
-        // relocate and retry placement, which now finds room in the enlarged block.
-        if vertex.stored_slots == 0 && self.labeled_leaf_physical_range(src).is_some() {
-            self.relocate_labeled_leaf_physical_block(src)?;
-            let vertex = self.vertices.get(src);
-            let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-            if self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
-                return Ok(());
-            }
-        }
-        if self.labeled_leaf_physical_range(src).is_some() {
-            let buckets = self.read_vertex_label_buckets(&vertex)?;
-            if buckets.iter().any(|bucket| bucket.overflow_log_head() >= 0) {
-                self.rebalance_edge_log_vertex_for_labeled(src, true, true)?;
-            } else if vertex.degree() > 1 {
-                self.rebalance_vertex_edge_span_light(src, true)?;
-            }
-        }
-        self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
-        let vertex = self.vertices.get(src);
-        let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-        if self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
-            return Ok(());
-        }
-        self.rebalance_vertex_edge_span(src, Some(bucket_index), 1, true)?;
-        Ok(())
+        log_collect_overflow(
+            "ensure_labeled_bucket_edge_span_room: new bucket span placement failed",
+        );
+        Err(LaraOperationError::CollectAllocationOverflow.into())
     }
 
     pub(super) fn find_or_create_bucket(
@@ -353,71 +398,53 @@ where
         vertex: &LabeledVertex,
         slot: u64,
         bucket_index: u32,
-    ) -> Result<bool, LabeledOperationError> {
+    ) -> Result<bool, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(false);
         }
-        if vertex.degree() == 1 {
-            let new_alloc = DEFAULT_SEGMENT_SIZE;
-            // Ensure the leaf block exists, then place this vertex's first span in a free,
-            // non-overlapping slot. A leaf-mate's weighted span can exceed the fixed quota,
-            // so the fixed offset is not guaranteed free; fall back to the caller's
-            // relocate-and-retry path when the current block has no room.
-            let (leaf_start, leaf_len) = self.ensure_labeled_leaf_block_pinned(src)?;
-            let Some(edge_start) = self.find_free_labeled_leaf_edge_base(
-                src,
-                leaf_start,
-                leaf_len,
-                u64::from(new_alloc),
-            ) else {
-                return Ok(false);
-            };
-            let bucket = self
-                .buckets
-                .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?
-                .with_edge_range(edge_start, 0)
-                .with_overflow_log_head(-1);
-            self.buckets.write_label_bucket_slot(slot, bucket)?;
-            self.vertices.set(src, &vertex.with_stored_slots(new_alloc));
-            return Ok(true);
-        }
 
-        if bucket_index + 1 != vertex.degree() {
-            return Ok(false);
-        }
-        let prev_slot = slot
-            .checked_sub(1)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let prev = self
-            .buckets
-            .read_label_bucket_slot(prev_slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if prev.overflow_log_head() >= 0 {
-            return Ok(false);
-        }
-        if prev.stored_slots > DEFAULT_SEGMENT_SIZE {
-            return Ok(false);
-        }
-        let first = self
-            .buckets
-            .read_label_bucket_slot(vertex.base_slot_start())
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let span_end = checked_add_slot_index(first.edge_start(), u64::from(vertex.stored_slots))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let edge_start = checked_add_slot_index(prev.edge_start(), u64::from(prev.stored_slots))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let gap = span_end.saturating_sub(edge_start);
-        if gap == 0 {
-            return Ok(false);
-        }
+        // Pin even the first bucket's leaf before publishing its zero-length position.
+        // The pin owns physical capacity and PMA total counts; the bucket itself still
+        // reserves no edge slots.
+        self.ensure_labeled_leaf_block_pinned(src)?;
+
+        // A new bucket is always inserted with `stored_slots = 0`. Its edge_start is
+        // placed at the successor bucket's edge_start (or the vertex span end for the
+        // last bucket), giving it a zero-length reservation that is contiguous with its
+        // neighbors. Subsequent edge inserts go through the shared leaf overflow log.
+        let edge_start = if bucket_index == 0 {
+            // A zero-length first bucket still needs a valid physical anchor inside
+            // its pinned leaf. A leaf mate may already own more than its fixed quota;
+            // once this descriptor exists, relocate the whole leaf so the new active
+            // vertex participates in the weighted layout before retrying the anchor.
+            // Later buckets inherit an existing bucket boundary.
+            match self.ensure_labeled_leaf_edge_physical_pin(src) {
+                Ok(base) => base,
+                Err(LabeledOperationError::Store(
+                    LaraOperationError::CollectAllocationOverflow,
+                )) => {
+                    self.relocate_labeled_leaf_physical_block(src)?;
+                    self.labeled_edge_base_from_first_bucket(src)?
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            self.bucket_successor_start_after_bucket_for_new_bucket(vertex, bucket_index)?
+        };
         let bucket = self
             .buckets
             .read_label_bucket_slot(slot)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .ok_or_else(|| {
+                log_collect_overflow("try_place_new_bucket_edge_span: cannot read new bucket slot");
+                LaraOperationError::CollectAllocationOverflow
+            })?
             .with_edge_range(edge_start, 0)
             .with_overflow_log_head(-1);
         self.buckets.write_label_bucket_slot(slot, bucket)?;
+        // Do not update vertex.stored_slots here; the new bucket owns zero slots.
         Ok(true)
     }
 
@@ -672,6 +699,30 @@ mod tests {
             rewrite_vertex_edge_span_calls().saturating_sub(rewrites_before),
             0
         );
+    }
+
+    #[test]
+    fn single_label_log_fold_reserves_edge_only_tail_headroom() {
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let road = BucketLabelKey::from_raw(2);
+
+        for target in 0..171u32 {
+            graph.insert_edge(vid, road, TestEdge { target }).unwrap();
+        }
+
+        let vertex = graph.vertices().get(vid);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .unwrap();
+        assert_eq!(bucket.degree(), 171);
+        assert_eq!(graph.iter_edges_for_label(vid, road).unwrap().len(), 171);
+        assert!(vertex.stored_slots >= DEFAULT_SEGMENT_SIZE);
+        assert!(vertex.stored_slots > bucket.stored_slots);
+        assert_eq!(bucket.stored_slots, 171);
+        assert_eq!(bucket.overflow_log_head(), -1);
+        assert_eq!(bucket.inline_value_slab_slots(), 0);
     }
 
     #[test]

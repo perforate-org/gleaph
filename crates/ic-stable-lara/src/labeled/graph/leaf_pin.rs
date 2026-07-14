@@ -303,7 +303,14 @@ where
             buckets.first()?.edge_start()
         };
         let end = checked_add_slot_index(base, u64::from(new_alloc))?;
-        if end <= leaf_end { Some(base) } else { None }
+        if end > leaf_end {
+            return None;
+        }
+        let overlaps_leaf_mate = self
+            .labeled_leaf_occupied_spans(vid, vid)
+            .into_iter()
+            .any(|(start, mate_end)| end > start && base < mate_end);
+        (!overlaps_leaf_mate).then_some(base)
     }
 
     /// Maximum `stored_slots` for `vid` from its first bucket base through leaf block end.
@@ -768,6 +775,9 @@ mod tests {
             graph
                 .insert_edge_skip_leaf_cascade(VertexId::from(vid_u), label, TestEdge { target: 1 })
                 .unwrap();
+            graph
+                .compact_vertex_edge_span(VertexId::from(vid_u), 0)
+                .unwrap();
         }
         graph.assert_no_labeled_leaf_mate_overlap(VertexId::from(0));
 
@@ -837,7 +847,6 @@ mod tests {
                 expected[vi].push((label, targets));
             }
         }
-
         let check = |g: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
                      expected: &[Vec<(BucketLabelKey, Vec<u32>)>],
                      phase: &str| {

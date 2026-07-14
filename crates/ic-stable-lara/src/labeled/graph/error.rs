@@ -120,7 +120,8 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             | crate::labeled::record::LabelBucketFieldError::PayloadOffsetOverflow
             | crate::labeled::record::LabelBucketFieldError::PayloadLogHeadOutOfRange
             | crate::labeled::record::LabelBucketFieldError::PayloadLogLenOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::PayloadLogStateMismatch => {
+            | crate::labeled::record::LabelBucketFieldError::PayloadLogStateMismatch
+            | crate::labeled::record::LabelBucketFieldError::PayloadStateWithoutSchema => {
                 Self::CollectAllocationOverflow
             }
         }

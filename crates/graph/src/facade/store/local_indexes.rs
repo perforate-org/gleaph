@@ -75,7 +75,7 @@ impl GraphStore {
         );
     }
 
-    pub(super) fn commit_move_edge_local_indexes_for_compaction(
+    pub(super) fn commit_move_edge_local_indexes(
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,

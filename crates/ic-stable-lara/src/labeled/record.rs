@@ -21,16 +21,19 @@ use std::borrow::Cow;
 /// [`LabeledVertex::stored_slots`]; this row tracks one label's slab prefix and optional
 /// overflow log.
 ///
-/// [`Self::degree`] is the logical live edge count. [`Self::stored_slots`] is the stored
-/// width (on-slab cells plus overflow-log entries) and may be larger while tombstoned deletes
-/// await compaction.
+/// [`Self::degree`] is the logical live edge count. Edge and inline-value physical
+/// layouts are independent: [`Self::stored_slots`] counts edge slab slots, while
+/// [`Self::inline_value_slab_slots`] counts inline-value slab slots. Each store has
+/// its own overflow-log metadata and may fold or relocate without moving the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelBucket {
     word: u64,
     /// Logical live edge count for this label bucket.
     pub degree: u32,
-    /// Stored slab/log width (may exceed [`Self::degree`] while tombstones await compaction).
+    /// Stored edge-slab width (may exceed [`Self::degree`] while tombstones await compaction).
     pub stored_slots: u32,
+    /// Stored inline-value slab slots. Always zero when the payload width is zero.
+    inline_value_slab_slots: u32,
     /// Byte offset into [`EdgeInlineValueStore`] where this bucket's value span starts.
     inline_value_offset: u64,
     /// Physical byte width per edge inline value slot (`0` = no values).
@@ -49,7 +52,7 @@ impl Default for LabelBucket {
 
 impl LabelBucket {
     /// Fixed byte width of one encoded LabelBucket.
-    pub const BYTES: usize = 25;
+    pub const BYTES: usize = 29;
 
     /// Builds a row from logical fields.
     #[inline]
@@ -68,6 +71,7 @@ impl LabelBucket {
             overflow_log_head,
             0,
             0,
+            0,
             -1,
             0,
         )
@@ -84,6 +88,7 @@ impl LabelBucket {
         overflow_log_head: i32,
         inline_value_byte_width: u16,
         inline_value_offset: u64,
+        inline_value_slab_slots: u32,
         inline_value_log_head: i32,
         inline_value_log_len: u8,
     ) -> Self {
@@ -95,6 +100,7 @@ impl LabelBucket {
             overflow_log_head,
             inline_value_byte_width,
             inline_value_offset,
+            inline_value_slab_slots,
             inline_value_log_head,
             inline_value_log_len,
         )
@@ -111,6 +117,7 @@ impl LabelBucket {
         overflow_log_head: i32,
         inline_value_byte_width: u16,
         inline_value_offset: u64,
+        inline_value_slab_slots: u32,
         inline_value_log_head: i32,
         inline_value_log_len: u8,
     ) -> Result<Self, LabelBucketFieldError> {
@@ -130,10 +137,16 @@ impl LabelBucket {
         if (inline_value_log_head < 0) != (inline_value_log_len == 0) {
             return Err(LabelBucketFieldError::PayloadLogStateMismatch);
         }
+        if inline_value_byte_width == 0
+            && (inline_value_slab_slots != 0 || inline_value_log_len != 0)
+        {
+            return Err(LabelBucketFieldError::PayloadStateWithoutSchema);
+        }
         Ok(Self {
             word,
             degree,
             stored_slots,
+            inline_value_slab_slots,
             inline_value_offset,
             inline_value_byte_width,
             inline_value_log_byte,
@@ -163,6 +176,12 @@ impl LabelBucket {
     #[inline]
     pub fn inline_value_offset(self) -> u64 {
         self.inline_value_offset
+    }
+
+    /// Number of inline-value entries resident in the payload slab.
+    #[inline]
+    pub fn inline_value_slab_slots(self) -> u32 {
+        self.inline_value_slab_slots
     }
 
     /// Per-bucket payload overflow log head, or `-1` when all values are on the slab.
@@ -209,6 +228,15 @@ impl LabelBucket {
     pub fn with_inline_value_offset(self, inline_value_offset: u64) -> Self {
         Self {
             inline_value_offset,
+            ..self
+        }
+    }
+
+    /// Returns a copy with the payload slab slot count updated.
+    #[inline]
+    pub fn with_inline_value_slab_slots(self, inline_value_slab_slots: u32) -> Self {
+        Self {
+            inline_value_slab_slots,
             ..self
         }
     }
@@ -262,6 +290,7 @@ impl LabelBucket {
             word,
             degree,
             stored_slots,
+            inline_value_slab_slots,
             inline_value_offset,
             inline_value_byte_width,
             inline_value_log_byte,
@@ -270,13 +299,14 @@ impl LabelBucket {
         bytes[0..8].copy_from_slice(&word.to_le_bytes());
         bytes[8..12].copy_from_slice(&degree.to_le_bytes());
         bytes[12..16].copy_from_slice(&stored_slots.to_le_bytes());
-        let value_wire: &mut [u8; 5] = (&mut bytes[16..21])
+        bytes[16..20].copy_from_slice(&inline_value_slab_slots.to_le_bytes());
+        let value_wire: &mut [u8; 5] = (&mut bytes[20..25])
             .try_into()
             .expect("LabelBucket inline_value_offset wire slice must be 5 bytes");
         write_u40(inline_value_offset, value_wire);
-        bytes[21..23].copy_from_slice(&inline_value_byte_width.to_le_bytes());
-        bytes[23] = inline_value_log_byte;
-        bytes[24] = inline_value_log_len;
+        bytes[25..27].copy_from_slice(&inline_value_byte_width.to_le_bytes());
+        bytes[27] = inline_value_log_byte;
+        bytes[28] = inline_value_log_len;
     }
 
     /// Returns a copy with `edge_start` / [`Self::stored_slots`] updated.
@@ -356,26 +386,33 @@ impl LabelBucket {
         if head_byte != OVERFLOW_LOG_NONE && head_byte >= 170 {
             return Err(LabelBucketFieldError::OverflowLogHeadOutOfRange);
         }
-        let inline_value_offset = read_u40(&chunk[16..21].try_into().unwrap());
+        let inline_value_slab_slots = u32::from_le_bytes(chunk[16..20].try_into().unwrap());
+        let inline_value_offset = read_u40(&chunk[20..25].try_into().unwrap());
         if !byte_offset_fits(inline_value_offset) {
             return Err(LabelBucketFieldError::PayloadOffsetOverflow);
         }
-        let inline_value_byte_width = u16::from_le_bytes(chunk[21..23].try_into().unwrap());
-        let inline_value_log_byte = chunk[23];
+        let inline_value_byte_width = u16::from_le_bytes(chunk[25..27].try_into().unwrap());
+        let inline_value_log_byte = chunk[27];
         if inline_value_log_byte != OVERFLOW_LOG_NONE && inline_value_log_byte >= 170 {
             return Err(LabelBucketFieldError::PayloadLogHeadOutOfRange);
         }
-        let inline_value_log_len = chunk[24];
+        let inline_value_log_len = chunk[28];
         if inline_value_log_len > 170 {
             return Err(LabelBucketFieldError::PayloadLogLenOutOfRange);
         }
         if (inline_value_log_byte == OVERFLOW_LOG_NONE) != (inline_value_log_len == 0) {
             return Err(LabelBucketFieldError::PayloadLogStateMismatch);
         }
+        if inline_value_byte_width == 0
+            && (inline_value_slab_slots != 0 || inline_value_log_len != 0)
+        {
+            return Err(LabelBucketFieldError::PayloadStateWithoutSchema);
+        }
         Ok(Self {
             word,
             degree: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
             stored_slots: u32::from_le_bytes(chunk[12..16].try_into().unwrap()),
+            inline_value_slab_slots,
             inline_value_offset,
             inline_value_byte_width,
             inline_value_log_byte,
@@ -401,6 +438,8 @@ pub enum LabelBucketFieldError {
     PayloadLogLenOutOfRange,
     /// Value overflow log head and length disagree.
     PayloadLogStateMismatch,
+    /// Payload slots/log entries require a non-zero payload schema width.
+    PayloadStateWithoutSchema,
 }
 
 impl core::fmt::Display for LabelBucketFieldError {
@@ -427,6 +466,12 @@ impl core::fmt::Display for LabelBucketFieldError {
             }
             Self::PayloadLogStateMismatch => {
                 write!(f, "label bucket payload log head/length mismatch")
+            }
+            Self::PayloadStateWithoutSchema => {
+                write!(
+                    f,
+                    "label bucket payload state requires a non-zero byte width"
+                )
             }
         }
     }
@@ -467,13 +512,35 @@ impl CsrVertex for LabelBucket {
         self.with_overflow_log_head(idx)
     }
 
+    fn trusts_neighbor_boundary(self) -> bool {
+        // Label buckets are always viewed through a synthetic two-row accessor
+        // (LabelEdgeSpanAccess). The slab-window end is the next bucket's
+        // edge_start (or the vertex span end), never the PMA leaf block cap.
+        true
+    }
+
     fn after_slab_tombstone_delete(self) -> Self {
         self.with_degree(self.degree.saturating_sub(1))
     }
 
+    fn try_grow_packed_slab_by_one(self) -> Result<Self, ()> {
+        let next_degree = self.degree.checked_add(1).ok_or(())?;
+        if self.overflow_log_head() >= 0 {
+            // Log-backed growth: the edge lives in the shared leaf overflow log,
+            // not in the slab window. Only the logical degree grows; stored_slots
+            // (the slab prefix width) stays unchanged.
+            Ok(self.with_degree(next_degree))
+        } else {
+            // Packed slab append: the edge is appended inside the bucket's slab
+            // window, so both logical degree and stored width grow.
+            let next_stored = self.stored_slots.checked_add(1).ok_or(())?;
+            Ok(self.with_degree(next_degree).with_stored_slots(next_stored))
+        }
+    }
+
     fn grow_packed_slab_by_one(self) -> Self {
-        self.with_degree(self.degree.saturating_add(1))
-            .with_stored_slots(self.stored_slots.saturating_add(1))
+        self.try_grow_packed_slab_by_one()
+            .expect("LabelBucket::grow_packed_slab_by_one: degree overflow")
     }
 
     fn after_slab_insert_reuse_tail_tombstone(self) -> Self {
@@ -1151,7 +1218,7 @@ mod tests {
     #[test]
     fn wire_rows_match_documented_layout() {
         assert_eq!(LabeledVertex::BYTES, 21);
-        assert_eq!(LabelBucket::BYTES, 25);
+        assert_eq!(LabelBucket::BYTES, 29);
         assert!(mem::size_of::<LabeledVertex>() >= LabeledVertex::BYTES);
         assert!(mem::size_of::<LabelBucket>() >= LabelBucket::BYTES);
     }
@@ -1193,13 +1260,14 @@ mod tests {
                 -1,
                 0u16,
                 0,
+                0,
                 -1,
                 0,
             ),
             Err(LabelBucketFieldError::SlotIndexOverflow)
         );
         assert_eq!(
-            LabelBucket::try_from_parts(BucketLabelKey::default(), 0, 0, 0, 170, 0u16, 0, -1, 0,),
+            LabelBucket::try_from_parts(BucketLabelKey::default(), 0, 0, 0, 170, 0u16, 0, 0, -1, 0,),
             Err(LabelBucketFieldError::OverflowLogHeadOutOfRange)
         );
         assert_eq!(
@@ -1251,6 +1319,7 @@ mod tests {
             0,
             -1,
             64u16,
+            0,
             0,
             -1,
             0,
@@ -1307,13 +1376,14 @@ mod tests {
             -1,
             2u16,
             4,
+            2,
             -1,
             0,
         );
         assert_eq!(bucket.inline_value_offset(), 4);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
-        assert_eq!(bytes[16], 4);
+        assert_eq!(bytes[20], 4);
         let decoded = LabelBucket::read_from(&bytes);
         assert_eq!(decoded.inline_value_offset(), 4);
     }

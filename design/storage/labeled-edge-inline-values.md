@@ -1,7 +1,7 @@
 # Labeled edge inline value storage
 
-Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 09:35:13 UTC +0000
+Last updated: 2026-07-13
+Anchor timestamp: 2026-07-13 22:46:07 UTC +0000
 
 ## Overview
 
@@ -14,7 +14,7 @@ The default edge label never stores payloads (`payload_byte_width = 0`).
 | Record           | Size | Notes                                                              |
 | ---------------- | ---- | ------------------------------------------------------------------ |
 | `Edge` (CSR row) | 4 B  | `VertexRef` target only                                            |
-| `LabelBucket`    | 24 B | + `payload_offset` (u40), `payload_byte_width` (u16), `payload_log_byte` |
+| `LabelBucket`    | 29 B | edge locator/degree/slab slots + `inline_value_slab_slots` (u32), offset (u40), byte width (u16), payload log head/length |
 | `LabeledVertex`  | 21 B | + `payload_allocated_bytes` (u40)                                    |
 
 `payload_byte_width` is the physical width in bytes per slot (`0..=u16::MAX`). Signed vs unsigned vs float semantics live in the shard **edge inline value profile** catalog (`EdgeInlineValueProfile`).
@@ -22,11 +22,18 @@ The default edge label never stores payloads (`payload_byte_width = 0`).
 ## Invariant
 
 ```text
-(vertex_id, label_id, edge_slot) → target in EdgeStore
-                              → payload_byte_width bytes in EdgeInlineValueStore (if width > 0)
+(vertex_id, label_id, bucket-local live ordinal) → target in EdgeStore
+                                                → payload bytes in EdgeInlineValueStore (width > 0)
 ```
 
-Compaction and span rewrites must apply the **same logical order** to edges and payloads.
+Bucket-local live order is the association source of truth. Edge and payload physical slots are not equal and their log entries are not paired by entry index. Edge compaction preserves live order; payload deletion removes the same live ordinal.
+
+Physical ownership is independent:
+
+- edge slab slots: `stored_slots`; edge log: `overflow_log_head`;
+- payload slab slots: `inline_value_slab_slots`; payload log: `inline_value_log_head` + `inline_value_log_len`;
+- edge and payload rebalance, resize, and relocation may run in either order and do not mutate the other store's physical metadata;
+- a zero-width label owns no payload slab/log entries.
 
 ## Payload storage class (schema SSOT)
 
@@ -105,12 +112,12 @@ stable state and carried on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-
 - `payload_free_spans` / `payload_free_span_by_start` — retired byte-span index
 - `payload_log` — per-PMA-leaf overflow log (`LVL`, layout version 1). 12 B entries: `prev`,
   untagged 8 B `payload_cell`; inline/blob derived from bucket `payload_byte_width`, not cell tags.
-  Log-backed liveness follows the paired edge tombstone at the same ordinal ([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
+  Entries form the payload-owned ordered suffix; deletion folds/removes by live ordinal before the edge tombstone commit.
 - `payload_blobs` — overflow payload bodies for log entries whose bucket width exceeds 8 B
 
-When an edge insert lands in the edge overflow log, the paired payload bytes are written to the payload log at the same entry index; `LabelBucket::payload_log_head` tracks the chain head (parallel to `overflow_log_head`).
+Payload insertion chooses its own slab or log from payload capacity. It does not follow the edge insertion location. `LabelBucket::inline_value_log_head` and `inline_value_log_len` track the ordered payload suffix independently of `overflow_log_head`.
 
-**Delete (implemented):** edge liveness is the single source of truth. Log-backed edge delete rewrites the target log entry to the tombstone edge inline value without rewiring `prev`. Payload log entries at the same logical site are not separately marked dead; paired edge tombstone gates reads. Payload slab bytes and log cells/blobs may remain until maintenance.
+**Delete (implemented):** edge liveness remains canonical. Before the edge tombstone commit, storage resolves the physical edge slot to its bucket-local live ordinal and folds the payload log when necessary. The payload sequence removes that ordinal and stays dense; it does not consult an edge log entry index for payload liveness.
 
 ## Payload overflow log
 
@@ -123,9 +130,7 @@ When an edge insert lands in the edge overflow log, the paired payload bytes are
 
 Implemented as `LVL` layout version 1 with 12 B stride.
 
-Layout mirrors `EdgeStore` segment logs (`LLG`, `prev` + edge bytes per entry): one index word per leaf segment plus fixed-capacity
-entry slots. `push_vertex` grows the payload log segment tree in lockstep with the edge log. Span
-rewrites fold log-backed payloads back onto the byte slab and clear the segment log.
+Layout uses the same bounded per-leaf log primitive as `EdgeStore`, but capacity and entries are independent. `push_vertex` ensures both segment trees can address the leaf; ordinary append, fold, release, resize, and relocation are payload-owned. Edge span rewrites do not fold payload logs.
 
 ### Inline cell and blob map
 
@@ -133,9 +138,7 @@ When bucket schema says inline-on-log (`payload_byte_width <= 8`), the 8 B cell 
 (width from bucket on decode). When width exceeds 8 B, the cell is zero on wire and the body lives in
 `payload_blobs` at `(leaf_segment, entry_idx)` via `EdgeInlineValueBlobId::from_log_site`.
 
-Log-backed payload liveness matches the slab: the paired edge row tombstone is the delete signal.
-Unreachable inline cells and blob bodies may remain until maintenance fold/sweep
-([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
+Log-backed payload entries are an ordered suffix of the bucket-local live-value sequence. They are not paired to edge-log entry indices. Blob bodies remain keyed by payload log site and are swept when the payload log folds or its segment is released.
 
 ### Blob lifecycle
 

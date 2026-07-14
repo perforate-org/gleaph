@@ -137,7 +137,7 @@ impl GraphStore {
         });
     }
 
-    pub(super) fn commit_move_edge_properties_for_compaction(
+    pub(super) fn commit_move_edge_properties(
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
     ) -> Vec<(PropertyId, Value)> {

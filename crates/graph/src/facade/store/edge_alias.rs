@@ -149,9 +149,14 @@ impl GraphStore {
         forward_slot_index: u32,
     ) -> Result<(), GraphStoreError> {
         let removed = self.with_graph_mut(|graph| {
-            graph.remove_reverse_edge_at_slot(row_vertex_id, label_id, forward_slot_index)
+            graph.remove_reverse_edge_at_slot_with_move(row_vertex_id, label_id, forward_slot_index)
         })?;
-        if removed.is_some() {
+        if let Some(removed) = removed {
+            Self::apply_edge_slot_moves(
+                ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                row_vertex_id,
+                removed.moves,
+            );
             return Ok(());
         }
         let mut sole_slot = None;
@@ -165,13 +170,18 @@ impl GraphStore {
             })
         })?;
         if count == 1 {
-            let _ = self.with_graph_mut(|graph| {
-                graph.remove_reverse_edge_at_slot(
+            let removal = self.with_graph_mut(|graph| {
+                graph.remove_reverse_edge_at_slot_with_move(
                     row_vertex_id,
                     label_id,
                     sole_slot.expect("count == 1"),
                 )
             })?;
+            Self::apply_edge_slot_moves(
+                ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                row_vertex_id,
+                removal.into_iter().flat_map(|removal| removal.moves),
+            );
         }
         Ok(())
     }

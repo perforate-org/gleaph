@@ -95,13 +95,15 @@ pub struct HybridOverflowEdgeReplay {
     pub(super) edge_start: u64,
     pub(super) deleted_slab_offsets: Vec<u32>,
     pub(super) log_table: Vec<u8>,
-    pub(super) slot_to_log_idx: std::collections::BTreeMap<u32, u32>,
+    /// Overflow-log indices indexed by `raw_slot - slab_slots`. Tombstoned reserved slots are
+    /// retained as `None`, so replay lookup is direct and does not need a per-entry tree node.
+    pub(super) log_indices_by_slot: Vec<Option<u32>>,
 }
 
 impl HybridOverflowEdgeReplay {
     /// Returns whether this replay cache contains data that can satisfy a phase-2 topology read.
     pub fn is_active(&self) -> bool {
-        self.slab_slots > 0 || !self.slot_to_log_idx.is_empty()
+        self.slab_slots > 0 || !self.log_indices_by_slot.is_empty()
     }
 
     pub(super) fn clear(&mut self) {
@@ -115,7 +117,7 @@ impl HybridOverflowEdgeReplay {
         self.edge_start = 0;
         self.deleted_slab_offsets.clear();
         self.log_table.clear();
-        self.slot_to_log_idx.clear();
+        self.log_indices_by_slot.clear();
     }
 }
 
@@ -216,8 +218,9 @@ pub struct LabeledBucketScan<'a, E: CsrEdge, M: Memory> {
     bucket_index: u32,
     bucket: LabelBucket,
     label_id: BucketLabelKey,
-    log_chains: Option<(Vec<u32>, Vec<u32>)>,
+    log_chains: Option<Vec<u32>>,
     attach_payload: bool,
+    next_payload_ordinal: u32,
     kind: LabeledBucketScanKind<'a, E, M>,
 }
 
@@ -435,13 +438,20 @@ where
         let slot = edge.edge_slot_index_raw();
         let edge = edge.with_label_id(self.label_id.raw());
         if self.attach_payload {
-            Some(self.graph.attach_edge_inline_value(
+            let ordinal = self.next_payload_ordinal;
+            match self.kind {
+                LabeledBucketScanKind::Desc { .. } => {
+                    self.next_payload_ordinal = self.next_payload_ordinal.saturating_sub(1);
+                }
+                LabeledBucketScanKind::Asc { .. } => {
+                    self.next_payload_ordinal = self.next_payload_ordinal.saturating_add(1);
+                }
+            }
+            Some(self.graph.attach_edge_inline_value_at_ordinal(
                 self.src,
-                &self.vertex,
-                self.bucket_index,
-                self.bucket,
-                slot,
-                edge,
+                &self.bucket,
+                ordinal,
+                edge.with_slot_index(slot),
                 self.log_chains.as_ref(),
             ))
         } else {
@@ -494,10 +504,21 @@ where
         if n == 0 {
             return Ok(());
         }
-        match &mut self.kind {
+        let result = match &mut self.kind {
             LabeledBucketScanKind::Desc { iter } => iter.advance_by(n),
             LabeledBucketScanKind::Asc { iter } => iter.advance_by(n),
+        };
+        let skipped = n.saturating_sub(result.as_ref().err().map_or(0, |left| left.get()));
+        let skipped = u32::try_from(skipped).unwrap_or(u32::MAX);
+        match self.kind {
+            LabeledBucketScanKind::Desc { .. } => {
+                self.next_payload_ordinal = self.next_payload_ordinal.saturating_sub(skipped);
+            }
+            LabeledBucketScanKind::Asc { .. } => {
+                self.next_payload_ordinal = self.next_payload_ordinal.saturating_add(skipped);
+            }
         }
+        result
     }
 }
 
@@ -513,7 +534,7 @@ where
         bucket_index: u32,
         bucket: LabelBucket,
         label_id: BucketLabelKey,
-        log_chains: Option<(Vec<u32>, Vec<u32>)>,
+        log_chains: Option<Vec<u32>>,
         attach_payload: bool,
         iter: OutEdgesIter<'a, E, M>,
     ) -> LabeledSpanIter<'a, E, M> {
@@ -526,6 +547,7 @@ where
             label_id,
             log_chains,
             attach_payload,
+            next_payload_ordinal: bucket.degree().saturating_sub(1),
             kind: LabeledBucketScanKind::Desc { iter },
         })
     }
@@ -537,7 +559,7 @@ where
         bucket_index: u32,
         bucket: LabelBucket,
         label_id: BucketLabelKey,
-        log_chains: Option<(Vec<u32>, Vec<u32>)>,
+        log_chains: Option<Vec<u32>>,
         attach_payload: bool,
         iter: AscOutEdgesIter<'a, E, M>,
     ) -> LabeledSpanIter<'a, E, M> {
@@ -550,6 +572,7 @@ where
             label_id,
             log_chains,
             attach_payload,
+            next_payload_ordinal: 0,
             kind: LabeledBucketScanKind::Asc { iter },
         })
     }

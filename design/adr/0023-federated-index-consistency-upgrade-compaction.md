@@ -2,13 +2,15 @@
 
 Date: 2026-06-20
 Status: accepted
-Last revised: 2026-06-21
-Anchor timestamp: 2026-06-21 05:36:08 UTC +0000
+Last revised: 2026-07-14
+Anchor timestamp: 2026-07-14 02:55:40 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
+| 2026-07-14 | Labeled overflow delete now uses tombstone-free direct unlink while preserving newest-to-oldest scan order. `EdgeRemoval::moves` carries the bounded newer-suffix slot shifts through the same property/alias/posting re-key path immediately. Timer overflow folds normally emit no moves and retain bounded legacy-tombstone cleanup. |
+| 2026-07-14 | Clarified the slot-identity boundary: structural edge-log fold during rebalance/resize/relocation preserves slab and log tombstone positions; deferred overflow compaction drops tombstones only from the bounded log suffix and emits the resulting `EdgeSlotMove` batch before incremental slab compaction continues. Edge maintenance does not fold the independent inline-value log. |
 | 2026-06-21 | ADR 0029 Phase 2 sync: the durable repair journal (D5, region 41) value type is now `RepairJournalEntry { mutation_id, op }` so each deferred batch is linked to its originating federated `mutation_id` (`0` = untracked). This makes graph-index posting lag observable per mutation via `index_pending_min_mutation_id` (the mutation-linked index watermark). Backward-incompatible in-place repack of region 41. |
 | 2026-06-21 | ADR 0029 consistency-contract sync: distinguish shard-local canonical mutation completion from cross-canister projection completion; a repair-journaled flush may leave the distributed mutation `ProjectionPending`. |
 | 2026-06-20 | Proposed; follow-up to [0009](0009-edge-property-index-and-index-ddl.md) (Phase A shard index registry) and [0020](0020-deferred-maintenance-timer-drain.md) (timer drain). |
@@ -55,14 +57,17 @@ must not be interpreted as a cross-canister freshness barrier; see
 
 ### Established facts that scope this ADR
 
-- **Only compaction changes `slot_index`.** `EdgeSlotMove` is produced solely by
-  `crates/ic-stable-lara/src/labeled/graph/compact.rs`
-  (`labeled/graph.rs:85-99`). Physical leaf/segment **relocation/rebalance**
+- **Compaction and overflow direct unlink may change `slot_index`.** Compaction reports its moves to
+  the maintenance observer. Foreground log delete reports its bounded newer-suffix moves in `EdgeRemoval` and
+  Graph applies it before the mutation completes. Physical leaf/segment **relocation/rebalance**
   (`relocate_labeled_leaf_physical_block`) move physical addresses but preserve
   the bucket-relative `slot_index`. Posting keys
   `(property_id, value, label_id, shard_id, owner_vertex_id, slot_index)` are
   therefore **invariant under relocation/rebalance**; the only maintenance
   operation that touches postings is compaction.
+- New edge overflow deletes leave no tombstones and re-key only the newer overflow suffix.
+  Deferred overflow fold normally emits no moves; its bounded move batch exists for legacy
+  tombstones. Later slab compaction remains one `EdgeSlotMove` per maintenance work item.
 - **Vertex label membership is an always-on index** (not opt-in). There is no
   label registration in the registry, and `record_vertex_label_set`
   (`index/label_pending.rs:31-53`) emits label postings unconditionally. Only

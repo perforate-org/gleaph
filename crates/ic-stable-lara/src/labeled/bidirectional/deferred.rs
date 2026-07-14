@@ -9,7 +9,10 @@ use crate::{
     labeled::{
         BucketLabelKey,
         bucket_label_key::BucketDirectedness,
-        graph::{EdgeSlotMove, InitError, LabeledLaraGraph, LabeledOperationError, OutEdgeOrder},
+        graph::{
+            EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph, LabeledOperationError,
+            OutEdgeOrder,
+        },
     },
     lara::maintenance::{
         DeferredConfig, DeferredConfigError, MaintenanceBudget, MaintenanceWorkReport,
@@ -108,12 +111,12 @@ pub enum MaintenanceWorkItem {
         /// Vertex to compact.
         vid: VertexId,
     },
-    /// Compact only the vertex value byte span.
+    /// Reserved stable tag for independently scheduled value-span maintenance.
     CompactVertexValueSpan {
         orientation: Orientation,
         vid: VertexId,
     },
-    /// Compact edge and payload spans together (preferred when values are present).
+    /// Legacy stable tag. It now advances edge compaction only; value maintenance is independent.
     CompactVertexEdgeAndValueSpan {
         orientation: Orientation,
         vid: VertexId,
@@ -1005,6 +1008,15 @@ where
         forward_edge: E,
         reverse_edge: E,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
+        // Storage-owned capacity preparation: before any canonical edge write, make
+        // sure both orientations have room for a new label bucket.  This keeps
+        // ordinary writes writable when deferred leaf maintenance has not yet drained.
+        self.forward
+            .prepare_labeled_edge_capacity_for_insert(src, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        self.reverse
+            .prepare_labeled_edge_capacity_for_insert(dst, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         self.forward
             .insert_edge_skip_leaf_cascade(src, label_id, forward_edge)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
@@ -1585,6 +1597,21 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Removes one forward edge and reports the bounded slot shifts from overflow unlink.
+    pub fn remove_forward_edge_at_slot_with_move(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+    ) -> Result<Option<EdgeRemoval<E>>, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.forward
+            .remove_edge_at_slot_with_move(src, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Updates the edge-inline-value payload for one forward-out edge at `slot_index`.
     pub fn update_forward_edge_inline_value_at_slot(
         &self,
@@ -1632,6 +1659,21 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
+    /// Removes one reverse edge and reports the bounded slot shifts from overflow unlink.
+    pub fn remove_reverse_edge_at_slot_with_move(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+    ) -> Result<Option<EdgeRemoval<E>>, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.reverse
+            .remove_edge_at_slot_with_move(dst, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Removes one reverse-store edge from `dst` under `label_id`.
     pub fn remove_reverse_edge_matching<F>(
         &self,
@@ -1646,6 +1688,22 @@ where
         self.reverse
             .remove_edge_matching(dst, label_id, matches)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Removes one matching forward edge and reports the bounded slot shifts from overflow unlink.
+    pub fn remove_forward_edge_matching_with_move<F>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        matches: F,
+    ) -> Result<Option<EdgeRemoval<E>>, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+        F: FnMut(&E) -> bool,
+    {
+        self.forward
+            .remove_edge_matching_with_move(src, label_id, matches)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
     /// Processes queued maintenance work up to `budget`.
@@ -1789,9 +1847,12 @@ where
                                 for moved in moves {
                                     observer.edge_slot_moved(orientation, vid, moved);
                                 }
-                                report.work.rebalanced_segments =
-                                    report.work.rebalanced_segments.saturating_add(1);
-                                None
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
+                                    orientation,
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index: 0,
+                                })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::Finished) => {
                                 report.work.rebalanced_segments =
@@ -1853,8 +1914,15 @@ where
                                     resume_bucket_index: next,
                                 })
                             }
-                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_))
-                            | Ok(VertexEdgeSpanCompactOneStep::Finished) => {
+                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                                    orientation,
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index: 0,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::Finished) => {
                                 report.work.rebalanced_segments =
                                     report.work.rebalanced_segments.saturating_add(1);
                                 None
@@ -1867,8 +1935,12 @@ where
                     }
                 }
                 MaintenanceWorkItem::DeleteVertex { vid, removed_edges } => {
-                    let (next, did_step, completed) =
-                        self.process_delete_vertex_step(vid, removed_edges, delete_observer)?;
+                    let (next, did_step, completed) = self.process_delete_vertex_step(
+                        vid,
+                        removed_edges,
+                        observer,
+                        delete_observer,
+                    )?;
                     if did_step {
                         report.work.processed_delete_edge_steps =
                             report.work.processed_delete_edge_steps.saturating_add(1);
@@ -2327,13 +2399,15 @@ where
     /// incident edge (and its counterpart) if any remain, else finalizes.
     ///
     /// Returns `(next_work_item, did_edge_step, completed)`.
-    fn process_delete_vertex_step<D>(
+    fn process_delete_vertex_step<O, D>(
         &self,
         vid: VertexId,
         removed_edges: u32,
+        move_observer: &mut O,
         delete_observer: &mut D,
     ) -> Result<(Option<MaintenanceWorkItem>, bool, bool), DeferredBidirectionalLabeledError>
     where
+        O: EdgeSlotMoveObserver,
         D: DeleteEdgeObserver<E>,
         E: PartialEq + CsrEdgeTombstone,
     {
@@ -2351,12 +2425,20 @@ where
         // per-edge predicate re-find) to O(degree). Bypass rows are left as-is and
         // drained by a bounded descending scan.
         if removed_edges == 0 {
-            self.forward
-                .compact_vertex_edge_span(vid, 0)
-                .map_err(DeferredBidirectionalLabeledError::Forward)?;
-            self.reverse
-                .compact_vertex_edge_span(vid, 0)
-                .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+            for moved in self
+                .forward
+                .compact_vertex_edge_span_with_moves(vid, 0)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?
+            {
+                move_observer.edge_slot_moved(Orientation::Forward, vid, moved);
+            }
+            for moved in self
+                .reverse
+                .compact_vertex_edge_span_with_moves(vid, 0)
+                .map_err(DeferredBidirectionalLabeledError::Reverse)?
+            {
+                move_observer.edge_slot_moved(Orientation::Reverse, vid, moved);
+            }
         }
 
         // Drain one owner out-edge (forward) and remove only its counterpart row at the
@@ -2367,18 +2449,35 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)?
         {
             let dst = edge.neighbor_vid();
+            // Clear the removed canonical sidecars before any survivor is shifted into its slot.
+            delete_observer.on_delete_outgoing_edge(vid, edge.clone());
             if dst != vid {
                 if label.is_undirected() {
-                    self.forward
-                        .remove_edge_matching(dst, label, |cand| cand.neighbor_vid() == vid)
-                        .map_err(DeferredBidirectionalLabeledError::Forward)?;
+                    if let Some(removal) = self
+                        .forward
+                        .remove_edge_matching_with_move(dst, label, |cand| {
+                            cand.neighbor_vid() == vid
+                        })
+                        .map_err(DeferredBidirectionalLabeledError::Forward)?
+                    {
+                        for moved in removal.moves {
+                            move_observer.edge_slot_moved(Orientation::Forward, dst, moved);
+                        }
+                    }
                 } else {
-                    self.reverse
-                        .remove_edge_matching(dst, label, |cand| cand.neighbor_vid() == vid)
-                        .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+                    if let Some(removal) = self
+                        .reverse
+                        .remove_edge_matching_with_move(dst, label, |cand| {
+                            cand.neighbor_vid() == vid
+                        })
+                        .map_err(DeferredBidirectionalLabeledError::Reverse)?
+                    {
+                        for moved in removal.moves {
+                            move_observer.edge_slot_moved(Orientation::Reverse, dst, moved);
+                        }
+                    }
                 }
             }
-            delete_observer.on_delete_outgoing_edge(vid, edge);
             return Ok((next_item(removed_edges), true, false));
         }
 
@@ -2390,12 +2489,18 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)?
         {
             let src = edge.neighbor_vid();
-            if src != vid {
-                self.forward
-                    .remove_edge_matching(src, label, |cand| cand.neighbor_vid() == vid)
-                    .map_err(DeferredBidirectionalLabeledError::Forward)?;
+            // The counterpart forward unlink may shift a survivor into the removed canonical slot.
+            delete_observer.on_delete_incoming_edge(vid, edge.clone());
+            if src != vid
+                && let Some(removal) = self
+                    .forward
+                    .remove_edge_matching_with_move(src, label, |cand| cand.neighbor_vid() == vid)
+                    .map_err(DeferredBidirectionalLabeledError::Forward)?
+            {
+                for moved in removal.moves {
+                    move_observer.edge_slot_moved(Orientation::Forward, src, moved);
+                }
             }
-            delete_observer.on_delete_incoming_edge(vid, edge);
             return Ok((next_item(removed_edges), true, false));
         }
 
@@ -2417,6 +2522,14 @@ where
             label_id.is_undirected(),
             "insert_undirected_deferred requires an undirected bucket label"
         );
+        self.forward
+            .prepare_labeled_edge_capacity_for_insert(u, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        if u != v {
+            self.forward
+                .prepare_labeled_edge_capacity_for_insert(v, label_id)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        }
         self.forward
             .insert_edge_skip_leaf_cascade(u, label_id, edge_uv)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
@@ -2696,6 +2809,267 @@ mod tests {
             "the requeued item should drain once the fault clears"
         );
         assert!(retry.work.processed_work_items >= 1);
+    }
+
+    #[test]
+    fn new_label_in_middle_of_oversized_leaf_fits_without_drain() {
+        // Regression for the social-demo Post shape: a vertex already has label
+        // buckets that sort *around* the new label, and at least one bucket has
+        // stored_slots > DEFAULT_SEGMENT_SIZE.  The new bucket must be inserted in
+        // the middle of the row, not appended, so try_place_new_bucket_edge_span
+        // returns false and the fallback must rebalance the pinned leaf instead of
+        // tail-appending.
+        let graph = sized_graph(1 << 16);
+        let src = graph.push_vertex().expect("src");
+
+        // Fill the leaf with mates so src does not get an oversized quota for free.
+        let mut mates = Vec::new();
+        for _ in 0..31 {
+            mates.push(graph.push_vertex().expect("mate"));
+        }
+        let mate_label = BucketLabelKey::directed_from_index(2);
+        for mate in &mates {
+            let dst = graph.push_vertex().expect("dst for mate");
+            graph
+                .insert_directed_edge(
+                    *mate,
+                    dst,
+                    mate_label,
+                    TestEdge(u32::from(dst)),
+                    TestEdge(u32::from(*mate)),
+                )
+                .expect("mate edge");
+        }
+
+        // Existing buckets at indices 3 and 7 bracket the new label at index 5.
+        let before_label = BucketLabelKey::directed_from_index(3);
+        let after_label = BucketLabelKey::directed_from_index(7);
+        let before_dst = graph.push_vertex().expect("dst for before label");
+        graph
+            .insert_directed_edge(
+                src,
+                before_dst,
+                before_label,
+                TestEdge(u32::from(before_dst)),
+                TestEdge(u32::from(src)),
+            )
+            .expect("before label edge");
+
+        // Make the "before" bucket oversized so there is no slack to insert in the
+        // middle without a leaf-level rebalance.
+        for _ in 0..64 {
+            let dst = graph.push_vertex().expect("dst for before label growth");
+            graph
+                .insert_directed_edge(
+                    src,
+                    dst,
+                    before_label,
+                    TestEdge(u32::from(dst)),
+                    TestEdge(u32::from(src)),
+                )
+                .expect("before label growth edge");
+        }
+
+        let after_dst = graph.push_vertex().expect("dst for after label");
+        graph
+            .insert_directed_edge(
+                src,
+                after_dst,
+                after_label,
+                TestEdge(u32::from(after_dst)),
+                TestEdge(u32::from(src)),
+            )
+            .expect("after label edge");
+
+        // Insert a new label that sorts between before_label and after_label.
+        let new_label = BucketLabelKey::directed_from_index(5);
+        let dst = graph.push_vertex().expect("dst for new label");
+        graph
+            .insert_directed_edge(
+                src,
+                dst,
+                new_label,
+                TestEdge(u32::from(dst)),
+                TestEdge(u32::from(src)),
+            )
+            .expect("new label in middle");
+
+        graph
+            .maintenance(unbounded_budget())
+            .expect("drain before verification");
+        let mut forward = Vec::new();
+        graph
+            .for_each_out_edges_for_label(src, new_label, |edge| forward.push(edge))
+            .expect("read new label forward");
+        assert_eq!(forward.len(), 1);
+    }
+
+    #[test]
+    fn new_label_after_oversized_bucket_fits_without_drain() {
+        // Regression for the social-demo Post shape: a vertex has a label bucket
+        // whose stored_slots already exceeds DEFAULT_SEGMENT_SIZE, then a new label
+        // bucket is added without draining deferred maintenance.  The append path
+        // in try_place_new_bucket_edge_span refuses when prev.stored_slots > 32,
+        // so the preflight / ensure_labeled_bucket_edge_span_room path must rebalance
+        // or relocate the pinned leaf instead of falling back to tail append.
+        let graph = sized_graph(1 << 16);
+        let src = graph.push_vertex().expect("src");
+
+        // Fill the leaf with mates so src does not get an oversized quota for free.
+        let mut mates = Vec::new();
+        for _ in 0..31 {
+            mates.push(graph.push_vertex().expect("mate"));
+        }
+        let mate_label = BucketLabelKey::directed_from_index(2);
+        for mate in &mates {
+            let dst = graph.push_vertex().expect("dst for mate");
+            graph
+                .insert_directed_edge(
+                    *mate,
+                    dst,
+                    mate_label,
+                    TestEdge(u32::from(dst)),
+                    TestEdge(u32::from(*mate)),
+                )
+                .expect("mate edge");
+        }
+
+        // Give src one oversized bucket with more than DEFAULT_SEGMENT_SIZE edges.
+        let big_label = BucketLabelKey::directed_from_index(3);
+        for _ in 0..64 {
+            let dst = graph.push_vertex().expect("dst for big label");
+            graph
+                .insert_directed_edge(
+                    src,
+                    dst,
+                    big_label,
+                    TestEdge(u32::from(dst)),
+                    TestEdge(u32::from(src)),
+                )
+                .expect("big label edge");
+        }
+
+        // Now add a new label that sorts after the big bucket.  Without robust
+        // leaf-level capacity preparation this traps on CollectAllocationOverflow.
+        let new_label = BucketLabelKey::directed_from_index(4);
+        let dst = graph.push_vertex().expect("dst for new label");
+        graph
+            .insert_directed_edge(
+                src,
+                dst,
+                new_label,
+                TestEdge(u32::from(dst)),
+                TestEdge(u32::from(src)),
+            )
+            .expect("new label after oversized bucket");
+
+        graph
+            .maintenance(unbounded_budget())
+            .expect("drain before verification");
+        let mut forward = Vec::new();
+        graph
+            .for_each_out_edges_for_label(src, new_label, |edge| forward.push(edge))
+            .expect("read new label forward");
+        assert_eq!(forward.len(), 1);
+    }
+
+    #[test]
+    fn repeated_multi_label_inserts_without_drain_remain_writable_simple() {
+        // Minimal version: just src collecting labels, no leaf-mate pressure.
+        let graph = sized_graph(1024);
+        let src = graph.push_vertex().expect("src");
+        const EXTRA_LABELS: u32 = 40;
+        for i in 0..EXTRA_LABELS {
+            let dst = graph.push_vertex().expect("dst for src label");
+            let label = BucketLabelKey::directed_from_index(u16::try_from(3 + i).unwrap());
+            graph
+                .insert_directed_edge(
+                    src,
+                    dst,
+                    label,
+                    TestEdge(u32::from(dst)),
+                    TestEdge(u32::from(src)),
+                )
+                .unwrap_or_else(|_| panic!("src label {i}"));
+        }
+        graph
+            .maintenance(unbounded_budget())
+            .expect("drain before verification");
+        for i in 0..EXTRA_LABELS {
+            let label = BucketLabelKey::directed_from_index(u16::try_from(3 + i).unwrap());
+            let mut forward = Vec::new();
+            graph
+                .for_each_out_edges_for_label(src, label, |edge| forward.push(edge))
+                .expect("read forward");
+            assert_eq!(forward.len(), 1, "label {i} forward degree");
+        }
+    }
+
+    #[test]
+    fn repeated_multi_label_inserts_without_drain_remain_writable() {
+        // Regression for plan 0077: a vertex accumulates many new labels while
+        // deferred leaf maintenance is *not* drained.  Without storage-owned
+        // pre-insert capacity preparation, the pinned PMA leaf block eventually has
+        // no free span large enough for a new bucket and forward insertion traps
+        // with CollectAllocationOverflow.  With preflight, ordinary inserts stay
+        // writable and both orientations remain complete.
+        let graph = sized_graph(1 << 16);
+        let src = graph.push_vertex().expect("src");
+
+        // Fill the same PMA leaf (segment_size == DEFAULT_SEGMENT_SIZE == 32) with
+        // mates that pin the leaf block.  Each mate reserves its fixed per-vertex
+        // quota, leaving src only its own quota for new buckets until the leaf
+        // becomes dense and must be rebalanced / relocated.
+        let mut mates = Vec::new();
+        for _ in 0..31 {
+            mates.push(graph.push_vertex().expect("mate"));
+        }
+        let mate_label = BucketLabelKey::directed_from_index(2);
+        for mate in &mates {
+            let dst = graph.push_vertex().expect("dst for mate");
+            graph
+                .insert_directed_edge(
+                    *mate,
+                    dst,
+                    mate_label,
+                    TestEdge(u32::from(dst)),
+                    TestEdge(u32::from(*mate)),
+                )
+                .expect("mate edge");
+        }
+
+        // Add many new labels to src without draining deferred maintenance.  The
+        // 33rd+ label exceeds src's fixed quota and forces preflight rebalance.
+        const EXTRA_LABELS: u32 = 40;
+        for i in 0..EXTRA_LABELS {
+            let dst = graph.push_vertex().expect("dst for src label");
+            let label = BucketLabelKey::directed_from_index(u16::try_from(3 + i).unwrap());
+            graph
+                .insert_directed_edge(
+                    src,
+                    dst,
+                    label,
+                    TestEdge(u32::from(dst)),
+                    TestEdge(u32::from(src)),
+                )
+                .unwrap_or_else(|_| panic!("src label {i}"));
+        }
+
+        // Deferred queue is allowed to be non-empty (post-insert dense marks).
+        // What matters is that every src label is readable in both orientations.
+        // Drain any deferred compaction before reading so the regression isolates
+        // the *insert* path, not the scan path.
+        graph
+            .maintenance(unbounded_budget())
+            .expect("drain before verification");
+        for i in 0..EXTRA_LABELS {
+            let label = BucketLabelKey::directed_from_index(u16::try_from(3 + i).unwrap());
+            let mut forward = Vec::new();
+            graph
+                .for_each_out_edges_for_label(src, label, |edge| forward.push(edge))
+                .expect("read forward");
+            assert_eq!(forward.len(), 1, "label {i} forward degree");
+        }
     }
 
     #[test]
@@ -3347,6 +3721,7 @@ mod tests {
                 .insert_directed_edge(hub, dst, label, TestEdge(1), TestEdge(0))
                 .unwrap();
         }
+        graph.forward().compact_vertex_edge_span(hub, 0).unwrap();
         for _ in 0..72 {
             graph
                 .forward()
@@ -3814,6 +4189,58 @@ mod tests {
         assert!(
             rebuilds_without_replay >= 1,
             "no-replay reverse read takes the sparse fallback that rebuilds the overflow chain"
+        );
+    }
+
+    #[test]
+    fn directed_inline_value_adjacent_reverse_hub_stays_writable_after_skew() {
+        let graph = valued_bidirectional_graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let noise_dst = VertexId::from(0);
+        let target_dst = VertexId::from(1);
+        let hub = VertexId::from(2);
+        let road = BucketLabelKey::directed_from_index(2);
+        for edge_index in 0..2_000u32 {
+            let bytes = 1u16.to_le_bytes();
+            graph
+                .ensure_directed_edge_inline_value_width(hub, noise_dst, road, 2)
+                .unwrap_or_else(|error| panic!("noise payload schema {edge_index}: {error:?}"));
+            graph
+                .insert_directed_edge(
+                    hub,
+                    noise_dst,
+                    road,
+                    PayloadTestEdge::with_bytes(u32::from(noise_dst), &bytes),
+                    PayloadTestEdge::with_bytes(u32::from(hub), &bytes),
+                )
+                .unwrap_or_else(|error| panic!("noise edge {edge_index}: {error:?}"));
+        }
+
+        for edge_index in 0..100u32 {
+            let bytes = 7u16.to_le_bytes();
+            graph
+                .ensure_directed_edge_inline_value_width(hub, target_dst, road, 2)
+                .unwrap_or_else(|error| panic!("target payload schema {edge_index}: {error:?}"));
+            graph
+                .insert_directed_edge(
+                    hub,
+                    target_dst,
+                    road,
+                    PayloadTestEdge::with_bytes(u32::from(target_dst), &bytes),
+                    PayloadTestEdge::with_bytes(u32::from(hub), &bytes),
+                )
+                .unwrap_or_else(|error| panic!("target edge {edge_index}: {error:?}"));
+        }
+
+        assert_eq!(
+            graph.in_edges_for_label(noise_dst, road).unwrap().len(),
+            2_000
+        );
+        assert_eq!(
+            graph.in_edges_for_label(target_dst, road).unwrap().len(),
+            100
         );
     }
 }

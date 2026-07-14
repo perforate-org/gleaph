@@ -48,6 +48,15 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 next_base >= base,
                 "LARA CSR invariant: base_slot_start must be non-decreasing in VertexId order"
             );
+            // Synthetic accessors (label buckets) use the sorted neighbor boundary as the
+            // authoritative slab-window end; consulting PMA span metadata would make clean
+            // query scans depend on maintenance state.
+            if v.trusts_neighbor_boundary() {
+                return Self::max_slab_window_for_vertex(v, base, next_base);
+            }
+            if base == next_base {
+                return Self::max_slab_window_for_vertex(v, base, next_base);
+            }
             let span_rec = self.span_meta_store().get(u64::from(leaf));
             if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
                 return Self::max_slab_window_for_vertex(v, base, next_base);

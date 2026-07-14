@@ -17,7 +17,16 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{BucketSearch, LabeledLaraGraph};
+use super::{BucketSearch, DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
+
+pub(super) struct BucketPayloadDeletePlan {
+    bucket: LabelBucket,
+    trailing_bytes: Vec<u8>,
+    destination: u64,
+    retired_offset: u64,
+    retired_len: u64,
+    updated_vertex: LabeledVertex,
+}
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -33,42 +42,32 @@ where
     }
 
     pub(super) fn bucket_reserved_edge_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
-        let _ = src;
-        bucket.stored_slots
+        bucket
+            .stored_slots
+            .saturating_add(self.bucket_edge_log_slots(src, bucket))
     }
 
     pub(super) fn bucket_edge_log_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
-        if bucket.overflow_log_head() >= 0 {
-            let leaf = self.payload_log_leaf(src);
-            self.edges
-                .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-        } else {
-            0
+        if bucket.overflow_log_head() < 0 {
+            return 0;
         }
+        self.edges
+            .overflow_log_chain_len(self.payload_log_leaf(src), bucket.overflow_log_head())
     }
 
-    pub(super) fn bucket_slab_prefix_slots(&self, src: VertexId, bucket: &LabelBucket) -> u32 {
-        bucket
-            .stored_slots
-            .saturating_sub(self.bucket_edge_log_slots(src, bucket))
+    pub(super) fn bucket_slab_prefix_slots(&self, _src: VertexId, bucket: &LabelBucket) -> u32 {
+        bucket.stored_slots
     }
 
     pub(super) fn bucket_resident_payload_slots_for(
         &self,
-        src: VertexId,
+        _src: VertexId,
         bucket: &LabelBucket,
     ) -> u32 {
         if !bucket.is_payload_allocated() || bucket.inline_value_byte_width() == 0 {
             return 0;
         }
-        let inline_value_log_len = u32::from(bucket.inline_value_log_len());
-        if inline_value_log_len > 0 {
-            self.bucket_reserved_edge_slots(src, bucket)
-                .saturating_sub(inline_value_log_len)
-        } else {
-            self.bucket_reserved_edge_slots(src, bucket)
-                .max(bucket.degree())
-        }
+        bucket.inline_value_slab_slots()
     }
 
     pub(super) fn bucket_resident_payload_bytes_for(
@@ -115,23 +114,6 @@ where
 
     pub(super) fn payload_log_leaf(&self, src: VertexId) -> u32 {
         u32::from(src) / self.edges.header().segment_size.max(1)
-    }
-
-    pub(super) fn vertex_payload_spans_need_sync_after_rewrite(
-        old_buckets: &[LabelBucket],
-        moved: bool,
-        old_alloc: u32,
-        compact: bool,
-    ) -> bool {
-        if moved && old_alloc > 0 {
-            return true;
-        }
-        if compact {
-            return old_buckets.iter().any(|b| b.is_payload_allocated());
-        }
-        old_buckets
-            .iter()
-            .any(|b| b.is_payload_allocated() && b.inline_value_log_len() > 0)
     }
 
     pub(super) fn read_bucket_payloads_slab_dense(
@@ -190,50 +172,25 @@ where
                 .collect();
         }
         let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-        let successor = self.bucket_successor_start(vertex, bucket_index)?;
-        let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
+        let successor =
+            self.bucket_slab_window_end_exclusive_after_bucket(vertex, bucket_index, bucket)?;
+        let acc = LabelEdgeSpanAccess::with_bucket(&self.buckets, slot, *bucket, successor, src);
         let edges = self
             .edges
             .asc_out_edges(&acc, VertexId::from(0))
             .map_err(LabeledOperationError::from)?;
-        let log_chains =
-            (bucket.overflow_log_head() >= 0).then(|| self.bucket_log_chains(src, bucket));
+        let log_chains = (bucket.inline_value_log_head() >= 0)
+            .then(|| self.bucket_payload_log_chain(src, bucket));
         let mut out = Vec::with_capacity(edges.len());
-        for edge in edges {
+        for (ordinal, edge) in edges.into_iter().enumerate() {
             let slot_index = edge.edge_slot_index_raw();
-            out.push((
-                slot_index,
-                self.read_bucket_payload_for_edge(src, bucket, &edge, log_chains.as_ref())?,
-            ));
+            let ordinal = u32::try_from(ordinal)
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let value =
+                self.read_bucket_payload_for_slot(src, bucket, ordinal, log_chains.as_ref())?;
+            out.push((slot_index, value));
         }
         Ok(out)
-    }
-
-    fn overflow_log_edge_live_at_ordinal(
-        &self,
-        src: VertexId,
-        bucket: &LabelBucket,
-        asc_log_index: u32,
-        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
-    ) -> Result<bool, LabeledOperationError> {
-        if bucket.overflow_log_head() < 0 {
-            return Ok(false);
-        }
-        let leaf = self.payload_log_leaf(src);
-        let edge_entry_idx = match log_chains {
-            Some((edge_chain, _)) => edge_chain.get(asc_log_index as usize).copied(),
-            None => {
-                let chain = self
-                    .edges
-                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-                chain.get(asc_log_index as usize).copied()
-            }
-        };
-        let Some(edge_entry_idx) = edge_entry_idx else {
-            return Ok(false);
-        };
-        let (_, edge) = self.edges.read_overflow_log_entry(leaf, edge_entry_idx);
-        Ok(!edge.is_deleted_slot())
     }
 
     pub(super) fn read_bucket_payload_for_slot(
@@ -241,7 +198,7 @@ where
         src: VertexId,
         bucket: &LabelBucket,
         slot_index: u32,
-        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
+        log_chains: Option<&Vec<u32>>,
     ) -> Result<Vec<u8>, LabeledOperationError> {
         let width = bucket.inline_value_byte_width();
         if width == 0 {
@@ -256,10 +213,7 @@ where
         }
 
         let log_len = u32::from(bucket.inline_value_log_len());
-        let reserved_slots = self.bucket_reserved_edge_slots(src, bucket);
-        let slab_payload_slots = reserved_slots
-            .checked_sub(log_len)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let slab_payload_slots = bucket.inline_value_slab_slots();
         if slot_index < slab_payload_slots {
             let mut buf = vec![0u8; usize::from(width)];
             let offset =
@@ -270,13 +224,13 @@ where
         let asc_log_index = slot_index
             .checked_sub(slab_payload_slots)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if !self.overflow_log_edge_live_at_ordinal(src, bucket, asc_log_index, log_chains)? {
+        if asc_log_index >= log_len {
             return Err(LabeledOperationError::from(
                 InlineValueLogReadError::MissingAscLogIndex { asc_log_index },
             ));
         }
         let mut buf = vec![0u8; usize::from(width)];
-        if let Some((_, payload_chain)) = log_chains {
+        if let Some(payload_chain) = log_chains {
             self.values
                 .read_payload_log_chain_entry(
                     self.payload_log_leaf(src),
@@ -296,16 +250,6 @@ where
             )?;
         }
         Ok(buf)
-    }
-
-    pub(super) fn read_bucket_payload_for_edge(
-        &self,
-        src: VertexId,
-        bucket: &LabelBucket,
-        edge: &E,
-        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
-    ) -> Result<Vec<u8>, LabeledOperationError> {
-        self.read_bucket_payload_for_slot(src, bucket, edge.edge_slot_index_raw(), log_chains)
     }
 
     pub(super) fn write_edge_inline_value_to_log(
@@ -346,15 +290,23 @@ where
         src: VertexId,
         bucket_slot: u64,
         mut bucket: LabelBucket,
-        mut prev_payload_slots: u32,
-        mut slot_index: u32,
         edge: &E,
-        prefer_log: bool,
     ) -> Result<LabelBucket, LabeledOperationError> {
         if bucket.inline_value_byte_width() == 0 || edge.edge_inline_value_byte_width() == 0 {
             return Ok(bucket);
         }
-        if prefer_log || bucket.inline_value_log_len() > 0 {
+        let slot_index = bucket.degree().saturating_sub(1);
+        let slab_bytes = u64::from(bucket.inline_value_slab_slots())
+            .checked_mul(u64::from(bucket.inline_value_byte_width()))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let slab_ends_at_tail = bucket
+            .inline_value_offset()
+            .checked_add(slab_bytes)
+            .is_some_and(|end| end == self.values.header().slab_occupied_tail);
+        if bucket.inline_value_log_len() > 0
+            || bucket.inline_value_slab_slots() >= DEFAULT_SEGMENT_SIZE
+            || (bucket.inline_value_slab_slots() > 0 && !slab_ends_at_tail)
+        {
             match self.write_edge_inline_value_to_log(src, &bucket, -1, edge) {
                 Ok(updated) => return Ok(updated),
                 Err(LabeledOperationError::PayloadLogWrite(
@@ -365,17 +317,14 @@ where
                         .buckets
                         .read_label_bucket_slot(bucket_slot)
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                    prev_payload_slots = self.bucket_resident_payload_slots_for(src, &bucket);
-                    slot_index = bucket.degree().saturating_sub(1);
-                    if prefer_log {
-                        return self.write_edge_inline_value_to_log(src, &bucket, -1, edge);
-                    }
+                    return self.write_edge_inline_value_to_log(src, &bucket, -1, edge);
                 }
                 Err(err) => return Err(err),
             }
         }
+        let previous_slab_slots = bucket.inline_value_slab_slots();
         let bucket =
-            self.ensure_bucket_payload_span(src, bucket_slot, bucket, prev_payload_slots)?;
+            self.ensure_bucket_payload_span(src, bucket_slot, bucket, previous_slab_slots)?;
         self.write_edge_inline_value_at_slot(&bucket, slot_index, edge)?;
         Ok(bucket)
     }
@@ -416,14 +365,130 @@ where
         Ok(())
     }
 
-    pub(super) fn read_bucket_payloads_in_edge_slot_order(
+    /// Resolves an edge-store physical slot to the bucket-local live ordinal used
+    /// by the independent inline-value sequence.
+    pub(super) fn bucket_live_ordinal_at_edge_slot(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,
         bucket_index: u32,
+        bucket_slot: u64,
         bucket: &LabelBucket,
-    ) -> Result<Vec<Vec<u8>>, LabeledOperationError> {
-        self.collect_bucket_payloads_asc_order(src, vertex, bucket_index, bucket)
+        edge_slot_index: u32,
+    ) -> Result<Option<u32>, LabeledOperationError> {
+        // With no tombstones, both the slab prefix and overflow-log suffix use
+        // the same dense bucket-local edge order. Avoid a traversal scan on the
+        // normal log-backed read path; only sparse physical edge state needs
+        // rank resolution.
+        if self.bucket_reserved_edge_slots(src, bucket) == bucket.degree() {
+            return Ok((edge_slot_index < bucket.degree()).then_some(edge_slot_index));
+        }
+        let successor =
+            self.bucket_slab_window_end_exclusive_after_bucket(vertex, bucket_index, bucket)?;
+        let access =
+            LabelEdgeSpanAccess::with_bucket(&self.buckets, bucket_slot, *bucket, successor, src);
+        for (ordinal, edge) in self
+            .edges
+            .asc_out_edges(&access, VertexId::from(0))?
+            .into_iter()
+            .enumerate()
+        {
+            if edge.edge_slot_index_raw() == edge_slot_index {
+                return u32::try_from(ordinal)
+                    .map(Some)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow.into());
+            }
+        }
+        Ok(None)
+    }
+
+    /// Removes one value from the dense payload slab sequence. The payload log must
+    /// already be folded; this operation never reads or rewrites edge storage.
+    pub(super) fn plan_bucket_payload_delete(
+        &self,
+        src: VertexId,
+        bucket: LabelBucket,
+        ordinal: u32,
+    ) -> Result<Option<BucketPayloadDeletePlan>, LabeledOperationError> {
+        let width = bucket.inline_value_byte_width();
+        if width == 0 {
+            return Ok(None);
+        }
+        if bucket.inline_value_log_head() >= 0
+            || bucket.inline_value_slab_slots() != bucket.degree()
+            || ordinal >= bucket.inline_value_slab_slots()
+        {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
+
+        let old_slots = bucket.inline_value_slab_slots();
+        let new_slots = old_slots - 1;
+        let trailing_slots = old_slots - ordinal - 1;
+        let destination = bucket
+            .inline_value_offset()
+            .checked_add(u64::from(ordinal) * u64::from(width))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let trailing_bytes = if trailing_slots > 0 {
+            let trailing_bytes = u64::from(trailing_slots)
+                .checked_mul(u64::from(width))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let source = bucket
+                .inline_value_offset()
+                .checked_add(u64::from(ordinal + 1) * u64::from(width))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let mut bytes = vec![
+                0u8;
+                usize::try_from(trailing_bytes)
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?
+            ];
+            self.values.read_bytes(source, &mut bytes);
+            bytes
+        } else {
+            Vec::new()
+        };
+
+        // The retired tail no longer belongs to this bucket. Releasing it is
+        // payload-owned physical bookkeeping and does not touch edge metadata.
+        let retired_offset = bucket
+            .inline_value_offset()
+            .checked_add(u64::from(new_slots) * u64::from(width))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.values
+            .reserve_retired_byte_spans(1)
+            .map_err(LabeledOperationError::from)?;
+        let vertex = self.vertices.get(src);
+        let allocated = vertex
+            .inline_value_allocated_bytes()
+            .checked_sub(u64::from(width))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let updated_vertex = vertex
+            .try_with_inline_value_allocated_bytes(allocated)
+            .map_err(LabeledOperationError::from)?;
+        Ok(Some(BucketPayloadDeletePlan {
+            bucket: bucket.with_inline_value_slab_slots(new_slots),
+            trailing_bytes,
+            destination,
+            retired_offset,
+            retired_len: u64::from(width),
+            updated_vertex,
+        }))
+    }
+
+    pub(super) fn apply_bucket_payload_delete(
+        &self,
+        src: VertexId,
+        plan: BucketPayloadDeletePlan,
+    ) -> LabelBucket {
+        if !plan.trailing_bytes.is_empty() {
+            self.values
+                .write_bytes(plan.destination, &plan.trailing_bytes)
+                .unwrap_or_else(|_| panic!("preflighted payload compaction write failed"));
+        }
+        self.values
+            .retire_byte_span(plan.retired_offset, plan.retired_len)
+            .unwrap_or_else(|_| panic!("reserved payload-span retirement failed"));
+        self.vertices.set(src, &plan.updated_vertex);
+        plan.bucket
     }
 
     pub(super) fn ensure_bucket_inline_value_byte_width_on_slot(
@@ -482,17 +547,20 @@ where
         src: VertexId,
         bucket_slot: u64,
         mut bucket: LabelBucket,
-        prev_stored_slots: u32,
+        _previous_slab_slots: u32,
     ) -> Result<LabelBucket, LabeledOperationError> {
         let width = bucket.inline_value_byte_width();
-        let needed_slots = self.bucket_resident_payload_slots_for(src, &bucket);
+        let needed_slots = bucket
+            .degree()
+            .checked_sub(u32::from(bucket.inline_value_log_len()))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         if width == 0 || needed_slots == 0 {
             return Ok(bucket);
         }
         let needed_bytes = u64::from(needed_slots)
             .checked_mul(u64::from(width))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let had_bytes = u64::from(prev_stored_slots)
+        let had_bytes = u64::from(bucket.inline_value_slab_slots())
             .checked_mul(u64::from(width))
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let tail = self.values.header().slab_occupied_tail;
@@ -521,6 +589,7 @@ where
             };
             bucket = bucket
                 .with_inline_value_offset(offset)
+                .with_inline_value_slab_slots(needed_slots)
                 .try_with_inline_value_log_head(-1)
                 .map_err(LabeledOperationError::from)?;
             alloc_delta = needed_bytes;
@@ -530,6 +599,7 @@ where
                 .grow_byte_span_in_place(old_offset, had_bytes, needed_bytes)
                 .map_err(LabeledOperationError::from)?
         {
+            bucket = bucket.with_inline_value_slab_slots(needed_slots);
             alloc_delta = extra;
         } else {
             let mut old_buf = vec![
@@ -566,7 +636,9 @@ where
                     .retire_byte_span(old_offset, had_bytes)
                     .map_err(LabeledOperationError::from)?;
             }
-            bucket = bucket.with_inline_value_offset(new_offset);
+            bucket = bucket
+                .with_inline_value_offset(new_offset)
+                .with_inline_value_slab_slots(needed_slots);
             alloc_delta = extra;
             debug_assert_eq!(bucket.inline_value_offset(), new_offset);
         }
@@ -683,8 +755,10 @@ where
             return Ok(!current.is_deleted_slot() && !current.is_tombstone_edge());
         }
 
-        let successor = self.bucket_successor_start_after_bucket(vertex, bucket_index, bucket)?;
-        let acc = LabelEdgeSpanAccess::new(&self.buckets, bucket_slot, successor, src);
+        let successor =
+            self.bucket_slab_window_end_exclusive_after_bucket(vertex, bucket_index, bucket)?;
+        let acc =
+            LabelEdgeSpanAccess::with_bucket(&self.buckets, bucket_slot, *bucket, successor, src);
         for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
             if edge.edge_slot_index_raw() == slot_index {
                 return Ok(!edge.is_tombstone_edge());
@@ -724,109 +798,62 @@ where
     pub(super) fn attach_edge_inline_value(
         &self,
         src: VertexId,
-        _vertex: &LabeledVertex,
-        _bucket_index: u32,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
         bucket: LabelBucket,
         slot_index: u32,
         edge: E,
-        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
+        log_chains: Option<&Vec<u32>>,
+    ) -> Result<E, LabeledOperationError> {
+        if !bucket.is_payload_allocated() {
+            return Ok(edge);
+        }
+        let ordinal = if bucket.overflow_log_head() < 0 && bucket.stored_slots == bucket.degree() {
+            slot_index
+        } else {
+            let bucket_slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
+            self.bucket_live_ordinal_at_edge_slot(
+                src,
+                vertex,
+                bucket_index,
+                bucket_slot,
+                &bucket,
+                slot_index,
+            )?
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+        };
+        let edge = edge.with_slot_index(slot_index);
+        self.attach_edge_inline_value_at_ordinal(src, &bucket, ordinal, edge, log_chains)
+    }
+
+    /// Attaches payload at a known bucket-local live ordinal. Streaming scans already yield live
+    /// edges in ordinal order and must not rescan sparse edge state for every row.
+    pub(super) fn attach_edge_inline_value_at_ordinal(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+        ordinal: u32,
+        edge: E,
+        log_chains: Option<&Vec<u32>>,
     ) -> Result<E, LabeledOperationError> {
         if !bucket.is_payload_allocated() {
             return Ok(edge);
         }
         let width = bucket.inline_value_byte_width();
-        let edge = edge.with_slot_index(slot_index);
-        let buf = self.read_bucket_payload_for_edge(src, &bucket, &edge, log_chains)?;
+        let buf = self.read_bucket_payload_for_slot(src, bucket, ordinal, log_chains)?;
         Ok(edge.with_stored_inline_value_bytes(width, &buf))
     }
 
-    pub(super) fn bucket_payload_log_chains_opt(
+    pub(super) fn bucket_payload_log_chain_opt(
         &self,
         src: VertexId,
         bucket: &LabelBucket,
-    ) -> Option<(Vec<u32>, Vec<u32>)> {
-        if bucket.is_payload_allocated()
-            && (bucket.overflow_log_head() >= 0 || bucket.inline_value_log_head() >= 0)
-        {
-            Some(self.bucket_log_chains(src, bucket))
+    ) -> Option<Vec<u32>> {
+        if bucket.is_payload_allocated() && bucket.inline_value_log_head() >= 0 {
+            Some(self.bucket_payload_log_chain(src, bucket))
         } else {
             None
         }
-    }
-
-    pub(super) fn collect_bucket_payloads_before_edge_rewrite(
-        &self,
-        src: VertexId,
-        vertex: &LabeledVertex,
-        buckets: &[LabelBucket],
-    ) -> Result<Vec<Vec<Vec<u8>>>, LabeledOperationError> {
-        let mut saved = Vec::with_capacity(buckets.len());
-        for (index, bucket) in buckets.iter().enumerate() {
-            let values = match self.read_bucket_payloads_slab_dense(bucket) {
-                Some(v) => v,
-                None => {
-                    self.read_bucket_payloads_in_edge_slot_order(src, vertex, index as u32, bucket)?
-                }
-            };
-            if bucket.inline_value_byte_width() > 0 {
-                let live = usize::try_from(bucket.degree()).unwrap_or(usize::MAX);
-                debug_assert_eq!(
-                    values.len(),
-                    live,
-                    "collect before rewrite: one value per live edge (bucket {index})"
-                );
-            }
-            saved.push(values);
-        }
-        Ok(saved)
-    }
-
-    pub(super) fn sync_vertex_payload_spans_after_edge_rewrite(
-        &self,
-        src: VertexId,
-        old_buckets: &[LabelBucket],
-        new_buckets: &[LabelBucket],
-        saved: &[Vec<Vec<u8>>],
-    ) -> Result<(), LabeledOperationError> {
-        if old_buckets.len() != new_buckets.len() || saved.len() != old_buckets.len() {
-            return Err(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ));
-        }
-        let vertex = self.vertices.get(src);
-        for old in old_buckets {
-            self.release_bucket_payload_span(src, old)?;
-        }
-        for (index, new_bucket) in new_buckets.iter().enumerate() {
-            if new_bucket.inline_value_byte_width() == 0 {
-                continue;
-            }
-            let live = usize::try_from(new_bucket.degree()).unwrap_or(usize::MAX);
-            debug_assert_eq!(
-                saved[index].len(),
-                live,
-                "sync after rewrite: saved value count must match new live degree (bucket {index})"
-            );
-            let slot = Self::labeled_vertex_bucket_slot(&vertex, index as u32)?;
-            let mut bucket = new_bucket.with_inline_value_offset(0);
-            bucket = self.ensure_bucket_payload_span(src, slot, bucket, 0)?;
-            let width = bucket.inline_value_byte_width();
-            let flat_len = saved[index]
-                .len()
-                .checked_mul(usize::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            if flat_len > 0 {
-                let mut flat = Vec::with_capacity(flat_len);
-                for bytes in &saved[index] {
-                    flat.extend_from_slice(bytes);
-                }
-                self.values
-                    .write_bytes(bucket.inline_value_offset(), &flat)
-                    .map_err(LabeledOperationError::from)?;
-            }
-            self.buckets.write_label_bucket_slot(slot, bucket)?;
-        }
-        Ok(())
     }
 
     pub(super) fn ensure_bucket_slack_insert_when_peers_have_values(
@@ -892,8 +919,15 @@ where
                 self.collect_bucket_payload_slots_asc_order(src, &vertex, bucket_index, bucket)?;
 
             let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-            let successor = self.bucket_successor_start(&vertex, bucket_index)?;
-            let acc = LabelEdgeSpanAccess::new(&self.buckets, bucket_slot, successor, src);
+            let successor =
+                self.bucket_slab_window_end_exclusive_after_bucket(&vertex, bucket_index, bucket)?;
+            let acc = LabelEdgeSpanAccess::with_bucket(
+                &self.buckets,
+                bucket_slot,
+                *bucket,
+                successor,
+                src,
+            );
             let mut edge_slots = Vec::new();
             for edge in self
                 .edges
@@ -936,6 +970,130 @@ mod tests {
     use super::super::test_support::*;
     use super::super::{BucketSearch, *};
     use crate::VertexId;
+
+    #[test]
+    fn edge_and_payload_maintenance_orders_are_independent_with_zero_width_peer() {
+        for payload_first in [false, true] {
+            let graph = inline_value_test_graph_with_capacity(1 << 16);
+            let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+            let valued = BucketLabelKey::from_raw(2);
+            let plain = BucketLabelKey::from_raw(3);
+            graph
+                .ensure_label_bucket_inline_value_byte_width(src, valued, 2)
+                .unwrap();
+            graph
+                .ensure_label_bucket_inline_value_byte_width(src, plain, 0)
+                .unwrap();
+            for target in 1..=33u32 {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        src,
+                        valued,
+                        PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    )
+                    .unwrap();
+            }
+            graph
+                .insert_edge_skip_leaf_cascade(src, plain, PayloadTestEdge::with_bytes(100, &[]))
+                .unwrap();
+
+            let read = |label| {
+                let vertex = graph.vertices().get(src);
+                let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
+                graph.buckets().read_label_bucket_slot(slot).unwrap()
+            };
+            let before = read(valued);
+            assert_eq!(before.inline_value_slab_slots(), 32);
+            assert_eq!(before.inline_value_log_len(), 1);
+            let plain_before = read(plain);
+            assert_eq!(plain_before.inline_value_slab_slots(), 0);
+            assert_eq!(plain_before.inline_value_log_len(), 0);
+
+            if payload_first {
+                let edge_state = (
+                    before.edge_start(),
+                    before.stored_slots,
+                    before.overflow_log_head(),
+                );
+                graph.rebalance_payload_log_leaf_for_labeled(src).unwrap();
+                let after_payload = read(valued);
+                assert_eq!(
+                    (
+                        after_payload.edge_start(),
+                        after_payload.stored_slots,
+                        after_payload.overflow_log_head(),
+                    ),
+                    edge_state
+                );
+                let payload_state = (
+                    after_payload.inline_value_offset(),
+                    after_payload.inline_value_slab_slots(),
+                    after_payload.inline_value_log_head(),
+                );
+                graph
+                    .rebalance_edge_log_leaf_for_labeled(src, true, true)
+                    .unwrap();
+                let after_edge = read(valued);
+                assert_eq!(
+                    (
+                        after_edge.inline_value_offset(),
+                        after_edge.inline_value_slab_slots(),
+                        after_edge.inline_value_log_head(),
+                    ),
+                    payload_state
+                );
+            } else {
+                let payload_state = (
+                    before.inline_value_offset(),
+                    before.inline_value_slab_slots(),
+                    before.inline_value_log_head(),
+                );
+                graph
+                    .rebalance_edge_log_leaf_for_labeled(src, true, true)
+                    .unwrap();
+                let after_edge = read(valued);
+                assert_eq!(
+                    (
+                        after_edge.inline_value_offset(),
+                        after_edge.inline_value_slab_slots(),
+                        after_edge.inline_value_log_head(),
+                    ),
+                    payload_state
+                );
+                let edge_state = (
+                    after_edge.edge_start(),
+                    after_edge.stored_slots,
+                    after_edge.overflow_log_head(),
+                );
+                graph.rebalance_payload_log_leaf_for_labeled(src).unwrap();
+                let after_payload = read(valued);
+                assert_eq!(
+                    (
+                        after_payload.edge_start(),
+                        after_payload.stored_slots,
+                        after_payload.overflow_log_head(),
+                    ),
+                    edge_state
+                );
+            }
+
+            let mut observed = Vec::new();
+            graph
+                .for_each_edges_for_label(src, valued, |edge| {
+                    let bytes = edge.edge_inline_value_bytes();
+                    observed.push((edge.target, u16::from_le_bytes([bytes[0], bytes[1]])));
+                })
+                .unwrap();
+            observed.sort_unstable_by_key(|(target, _)| *target);
+            assert_eq!(
+                observed,
+                (1..=33u32).map(|v| (v, v as u16)).collect::<Vec<_>>()
+            );
+            let plain_after = read(plain);
+            assert_eq!(plain_after.inline_value_slab_slots(), 0);
+            assert_eq!(plain_after.inline_value_log_head(), -1);
+        }
+    }
 
     #[test]
     fn edge_inline_values_round_trip_via_unchecked_label_iteration() {
@@ -1230,6 +1388,9 @@ mod tests {
                 )
                 .unwrap();
         }
+        graph
+            .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
+            .unwrap();
 
         let mut scratch = LabeledPayloadValueBatchScratch::default();
         let mut asc_slots = Vec::new();
@@ -1248,7 +1409,9 @@ mod tests {
                     asc.extend(
                         batch
                             .values
-                            .chunks_exact(2)
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
                 },
@@ -1271,7 +1434,9 @@ mod tests {
                     desc.extend(
                         batch
                             .values
-                            .chunks_exact(2)
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
                 },
@@ -1298,6 +1463,9 @@ mod tests {
                 )
                 .unwrap();
         }
+        graph
+            .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
+            .unwrap();
 
         let mut value_scratch = LabeledPayloadValueBatchScratch::default();
         let mut from_values = Vec::new();
@@ -1344,6 +1512,11 @@ mod tests {
                     PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
                 )
                 .unwrap();
+            if target == 32 {
+                graph
+                    .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
+                    .unwrap();
+            }
         }
 
         let vertex = graph.vertices().get(VertexId::from(0));
@@ -1397,6 +1570,9 @@ mod tests {
                 )
                 .unwrap();
         }
+        graph
+            .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
+            .unwrap();
         assert!(
             graph
                 .out_bucket_dense_inline_value_batch_eligible(VertexId::from(0), road)
@@ -1416,6 +1592,11 @@ mod tests {
                     PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
                 )
                 .unwrap();
+            if target == 32 {
+                overflow
+                    .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
+                    .unwrap();
+            }
         }
         assert!(
             !overflow
@@ -1569,7 +1750,10 @@ mod tests {
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.overflow_log_head() >= 0);
-        assert!(graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket) > 0);
+        // Under the zero-length new-bucket contract a single bucket may be entirely
+        // log-backed until a leaf rebalance folds it; the batch path must still
+        // round-trip all values regardless of slab prefix width.
+        let _slab_prefix = graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket);
 
         let mut slots = Vec::new();
         let mut values = Vec::new();
@@ -1585,7 +1769,9 @@ mod tests {
                     values.extend(
                         batch
                             .values
-                            .chunks_exact(2)
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
                 },
@@ -1832,6 +2018,9 @@ mod tests {
                 )
                 .unwrap();
         }
+        graph
+            .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
+            .unwrap();
 
         let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
         let mut asc = Vec::new();
@@ -1847,7 +2036,9 @@ mod tests {
                     asc.extend(
                         batch
                             .inline_value_bytes
-                            .chunks_exact(2)
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
                 },
@@ -1880,7 +2071,9 @@ mod tests {
                     desc.extend(
                         batch
                             .inline_value_bytes
-                            .chunks_exact(2)
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
                 },
@@ -2030,14 +2223,15 @@ mod tests {
     }
 
     #[test]
-    fn removing_non_last_payloaded_edge_by_slot_preserves_inline_value_log_head() {
+    fn removing_non_last_payloaded_edge_by_slot_folds_payload_log_independently() {
         let graph = inline_value_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
             .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
-        for (target, weight) in [(1, 42u16), (2, 99)] {
+        for target in 1..=33u32 {
+            let weight = u16::try_from(target).unwrap();
             graph
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
@@ -2048,16 +2242,8 @@ mod tests {
         }
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
-        let bucket = graph
-            .buckets()
-            .read_label_bucket_slot(bucket_slot)
-            .unwrap()
-            .try_with_inline_value_log_head(0)
-            .unwrap();
-        graph
-            .buckets()
-            .write_label_bucket_slot(bucket_slot, bucket)
-            .unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        assert!(bucket.inline_value_log_head() >= 0);
 
         graph
             .remove_edge_at_slot(VertexId::from(0), road, 0)
@@ -2067,8 +2253,9 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        assert_eq!(bucket.degree(), 1);
-        assert_eq!(bucket.inline_value_log_head(), 0);
+        assert_eq!(bucket.degree(), 32);
+        assert_eq!(bucket.inline_value_log_head(), -1);
+        assert_eq!(bucket.inline_value_slab_slots(), 32);
     }
 
     #[test]
@@ -2087,18 +2274,21 @@ mod tests {
                     PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
                 )
                 .unwrap();
+            if target == 32 {
+                graph
+                    .rebalance_edge_log_leaf_for_labeled(VertexId::from(0), true, true)
+                    .unwrap();
+            }
         }
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(bucket.overflow_log_head() >= 0);
         assert!(graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket) > 0);
-
         graph
             .remove_edge_at_slot(VertexId::from(0), road, 0)
             .unwrap()
             .expect("removed slab edge");
-
         let mut values = Vec::new();
         let mut scratch = LabeledPayloadValueBatchScratch::default();
         graph
@@ -2111,7 +2301,9 @@ mod tests {
                     values.extend(
                         batch
                             .values
-                            .chunks_exact(2)
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
                 },
@@ -2726,5 +2918,41 @@ mod tests {
             .unwrap();
         values.sort_unstable();
         assert_eq!(values, vec![(2, 20), (3, 30)]);
+    }
+
+    #[test]
+    fn remove_matching_middle_edge_removes_same_payload_ordinal() {
+        let graph = inline_value_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let src = VertexId::from(0);
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(src, road, 2)
+            .unwrap();
+        for (target, weight) in [(1, 10u16), (2, 20u16), (3, 30u16)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    road,
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let removed = graph
+            .remove_edge_matching(src, road, |edge| edge.target == 2)
+            .unwrap()
+            .expect("middle edge removed");
+        assert_eq!(removed.edge_inline_value_bytes(), 20u16.to_le_bytes());
+
+        let mut values = Vec::new();
+        graph
+            .for_each_edges_for_label(src, road, |edge| {
+                let bytes = edge.edge_inline_value_bytes();
+                values.push((edge.target, u16::from_le_bytes([bytes[0], bytes[1]])));
+            })
+            .unwrap();
+        values.sort_unstable();
+        assert_eq!(values, vec![(1, 10), (3, 30)]);
     }
 }

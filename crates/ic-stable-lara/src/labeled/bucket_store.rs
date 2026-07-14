@@ -233,7 +233,7 @@ impl<M: Memory> LabelBucketStore<M> {
         let mut raw = vec![0u8; nbytes];
         self.slab.read_slots_contiguous(start_slot, &mut raw);
         let mut out = Vec::with_capacity(count as usize);
-        for chunk in raw.chunks_exact(LabelBucket::BYTES) {
+        for chunk in raw.as_chunks::<{ LabelBucket::BYTES }>().0 {
             out.push(LabelBucket::read_from(chunk));
         }
         debug_assert_eq!(out.len(), count as usize);
@@ -367,6 +367,21 @@ impl<M: Memory> LabelBucketStore<M> {
         bucket.write_to(&mut bytes);
         self.slab
             .write_slot(slot, &bytes)
+            .map_err(LaraOperationError::WriteEdgeSlotFailed)
+    }
+
+    /// Updates only the logical degree field of an existing bucket row.
+    ///
+    /// Callers may use this only when every physical edge and payload field is unchanged.
+    #[inline]
+    pub(crate) fn write_label_bucket_degree(
+        &self,
+        slot: u64,
+        degree: u32,
+    ) -> Result<(), LaraOperationError> {
+        debug_assert!(slot < self.header().elem_capacity);
+        self.slab
+            .write_slot_range(slot, 8, &degree.to_le_bytes())
             .map_err(LaraOperationError::WriteEdgeSlotFailed)
     }
 
@@ -946,6 +961,30 @@ mod tests {
 
     fn store() -> LabelBucketStore<crate::VectorMemory> {
         LabelBucketStore::new(vector_memory(), vector_memory(), vector_memory(), 64, 4).unwrap()
+    }
+
+    #[test]
+    fn degree_only_write_preserves_edge_and_payload_physical_state() {
+        let buckets = store();
+        let original = LabelBucket::from_parts_with_payload(
+            crate::labeled::BucketLabelKey::from_raw(7),
+            11,
+            5,
+            9,
+            3,
+            2,
+            17,
+            4,
+            2,
+            1,
+        );
+        buckets.write_label_bucket_slot(0, original).unwrap();
+        buckets.write_label_bucket_degree(0, 4).unwrap();
+
+        assert_eq!(
+            buckets.read_label_bucket_slot(0).unwrap(),
+            original.with_degree_field(4)
+        );
     }
 
     #[test]

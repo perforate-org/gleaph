@@ -49,7 +49,7 @@ impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
 
         moved: EdgeSlotMove,
     ) {
-        GraphStore::move_edge_sidecars_for_compaction(orientation, vid, moved);
+        GraphStore::move_edge_sidecars(orientation, vid, moved);
     }
 }
 

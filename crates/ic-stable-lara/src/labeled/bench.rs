@@ -273,8 +273,8 @@ fn compact_vertex_edge_span_until_overflow_or_done<E: CsrEdge + CsrEdgeTombstone
         {
             VertexEdgeSpanCompactOneStep::EdgeMoved(_) => {}
             VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => resume = next,
-            VertexEdgeSpanCompactOneStep::OverflowRewrite(_)
-            | VertexEdgeSpanCompactOneStep::Finished => break,
+            VertexEdgeSpanCompactOneStep::OverflowRewrite(_) => resume = 0,
+            VertexEdgeSpanCompactOneStep::Finished => break,
         }
     }
 }
@@ -732,9 +732,9 @@ fn bench_labeled_payload_log_scan_8b_inline_overflow() -> canbench_rs::BenchResu
     })
 }
 
-/// ADR 0016: scan after log-backed tombstone deletes without chain rewiring.
+/// ADR 0016: scan after tombstone-free direct log unlinks.
 #[bench(raw)]
-fn bench_labeled_tombstone_log_delete_then_scan() -> canbench_rs::BenchResult {
+fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResult {
     let graph = payload_bench_graph(1 << 20);
     let (vid, label) = seed_overflow_payload_hub(&graph, OVERFLOW_LOG_HUB_EDGES, 2);
     for target in (1..=OVERFLOW_LOG_HUB_EDGES).step_by(2) {
@@ -756,9 +756,9 @@ fn bench_labeled_tombstone_log_delete_then_scan() -> canbench_rs::BenchResult {
     })
 }
 
-/// ADR 0016: foreground log deletes plus incremental span compaction on an overflow edge hub.
+/// ADR 0016: foreground direct log unlink plus incremental span compaction on an overflow edge hub.
 #[bench(raw)]
-fn bench_labeled_tombstone_log_rewrite_maintenance() -> canbench_rs::BenchResult {
+fn bench_labeled_direct_unlink_log_fold_maintenance() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = bench_graph(1 << 20);
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
@@ -786,7 +786,7 @@ fn bench_labeled_tombstone_log_rewrite_maintenance() -> canbench_rs::BenchResult
 
 /// ADR 0022 Stage 2 baseline (delete churn): remove half of a 1024-edge skewed hub
 /// bucket by match, then compact the vertex edge span. This is the O(degree)
-/// tombstone-plus-compaction cost that a B-tree tier's O(log d) delete-by-`seq`
+/// delete-plus-compaction cost that a B-tree tier's O(log d) delete-by-`seq`
 /// (no compaction) would replace; the hub is seeded outside the measured region.
 #[bench(raw)]
 fn bench_labeled_stage2_hub_delete_half_then_compact_1024() -> canbench_rs::BenchResult {

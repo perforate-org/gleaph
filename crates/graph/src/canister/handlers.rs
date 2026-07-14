@@ -742,7 +742,7 @@ pub async fn e2e_insert_directed_edge_with_label(
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
-pub async fn e2e_insert_directed_edge_with_payload(
+pub async fn e2e_insert_directed_edge_with_inline_value(
     args: super::types::E2eInsertDirectedEdgeWithPayloadArgs,
 ) -> Result<(), String> {
     use crate::index::edge_pending;
@@ -943,7 +943,7 @@ pub async fn e2e_delete_directed_edge_with_property(
 /// Set a sidecar edge property on an existing directed edge (PocketIC E2E only).
 ///
 /// Used to test inline-payload precedence: the caller creates an edge with a payload through
-/// [`e2e_insert_directed_edge_with_payload`], then sets the same property id to a different
+/// [`e2e_insert_directed_edge_with_inline_value`], then sets the same property id to a different
 /// sidecar value here, and finally reads `e.property` to prove payload bytes win.
 #[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_set_edge_property(

@@ -312,6 +312,22 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         safe_write(&self.memory, slot_offset::<E>(slot), bytes)
     }
 
+    /// Writes a byte range within one existing slot without re-encoding the full row.
+    #[inline]
+    pub(crate) fn write_slot_range(
+        &self,
+        slot: u64,
+        byte_offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), GrowFailed> {
+        debug_assert!(byte_offset.saturating_add(bytes.len()) <= E::BYTES);
+        safe_write(
+            &self.memory,
+            slot_offset::<E>(slot).saturating_add(byte_offset as u64),
+            bytes,
+        )
+    }
+
     fn read_header(&self) -> Result<HeaderV1, InitError> {
         let mut magic = [0u8; 3];
         self.memory.read(0, &mut magic);

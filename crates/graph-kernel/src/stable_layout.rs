@@ -243,7 +243,7 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–39), 40 regions. Baseline: ADR 0007 §2 / ADR 0008.
+/// Graph canister — LARA bundle (0–31) + facade (32–45), 46 regions. Baseline: ADR 0007 §2 / ADR 0008.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
@@ -261,7 +261,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             1,
             StableMemoryClass::Canonical,
             "lara/adjacency",
-            "Per-vertex labeled edge bucket roots",
+            "Per-vertex labeled edge buckets: edge slab/log locator plus independent payload slab/log split metadata",
             RebuildPath::None,
         ),
         region(
@@ -334,7 +334,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             10,
             StableMemoryClass::Canonical,
             "lara/payload",
-            "Dense labeled edge inline value bytes",
+            "Dense labeled edge inline-value prefix, allocated and relocated independently from the edge slab",
             RebuildPath::None,
         ),
         region(
@@ -358,7 +358,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             13,
             StableMemoryClass::Canonical,
             "lara/payload",
-            "Value log for inline payload updates",
+            "Ordered inline-value suffix log, folded independently from the edge log",
             RebuildPath::None,
         ),
         region(
@@ -383,7 +383,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             16,
             StableMemoryClass::Derived,
             "lara/adjacency",
-            "Reverse labeled edge bucket roots",
+            "Reverse labeled edge buckets: edge slab/log locator plus independent payload slab/log split metadata",
             RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(
@@ -455,7 +455,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             25,
             StableMemoryClass::Derived,
             "lara/payload",
-            "Reverse payload slab",
+            "Reverse inline-value prefix, allocated and relocated independently from the reverse edge slab",
             RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(
@@ -479,7 +479,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             28,
             StableMemoryClass::Derived,
             "lara/payload",
-            "Reverse payload value log",
+            "Reverse ordered inline-value suffix log, folded independently from the reverse edge log",
             RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(

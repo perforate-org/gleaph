@@ -296,6 +296,53 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(())
     }
 
+    /// Unlinks one entry from a singly linked overflow chain without changing traversal order.
+    ///
+    /// Removing the head only changes the returned head. Removing an interior entry rewrites the
+    /// one newer entry whose `prev` points to the target. Physical entry order is irrelevant; the
+    /// `prev` chain remains the source of truth for newest-to-oldest scan order.
+    pub(crate) fn unlink_overflow_log_entry(
+        &self,
+        leaf: u32,
+        head: i32,
+        entry_idx: u32,
+        newer_entry_idx: Option<u32>,
+    ) -> Result<i32, LaraOperationError> {
+        if head < 0 {
+            return Err(LaraOperationError::LogChainShort);
+        }
+        let log_h = self.log.header();
+        let (target_prev, _) =
+            self.read_log_edge_from_table_or_store(&log_h, leaf, entry_idx, None);
+        if newer_entry_idx.is_none() {
+            if head as u32 != entry_idx {
+                return Err(LaraOperationError::LogChainShort);
+            }
+            return Ok(target_prev);
+        }
+
+        let newer_idx = newer_entry_idx.expect("checked above");
+        let (newer_prev, newer_edge) =
+            self.read_log_edge_from_table_or_store(&log_h, leaf, newer_idx, None);
+        if newer_prev != entry_idx as i32 {
+            return Err(LaraOperationError::LogChainShort);
+        }
+        if E::BYTES <= INLINE_EDGE_BYTES {
+            let mut payload = [0u8; INLINE_EDGE_BYTES];
+            newer_edge.write_to(&mut payload[..E::BYTES]);
+            self.log
+                .write_entry_with_header(&log_h, leaf, newer_idx, target_prev, &payload[..E::BYTES])
+                .map_err(LaraOperationError::WriteLogFailed)?;
+        } else {
+            let mut payload = vec![0u8; E::BYTES];
+            newer_edge.write_to(&mut payload);
+            self.log
+                .write_entry_with_header(&log_h, leaf, newer_idx, target_prev, &payload)
+                .map_err(LaraOperationError::WriteLogFailed)?;
+        }
+        Ok(head)
+    }
+
     pub(super) fn tombstone_overflow_log_delete_target<V, A>(
         &self,
         edge_layout: &EdgeLayout,

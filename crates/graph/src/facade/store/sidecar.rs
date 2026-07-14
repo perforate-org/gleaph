@@ -10,6 +10,16 @@ use super::handle::EdgeHandle;
 use crate::facade::stable::GRAPH;
 
 impl GraphStore {
+    pub(super) fn apply_edge_slot_moves(
+        orientation: LabeledOrientation,
+        owner_vertex_id: VertexId,
+        moves: impl IntoIterator<Item = EdgeSlotMove>,
+    ) {
+        for moved in moves {
+            Self::move_edge_sidecars(orientation, owner_vertex_id, moved);
+        }
+    }
+
     pub(super) fn vertex_has_incident_edges(
         &self,
         vertex_id: VertexId,
@@ -27,7 +37,7 @@ impl GraphStore {
         self.commit_clear_edge_sidecars(handle);
     }
 
-    pub(super) fn commit_move_edge_sidecars_for_compaction(
+    pub(super) fn commit_move_edge_sidecars(
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
@@ -35,8 +45,8 @@ impl GraphStore {
         match orientation {
             LabeledOrientation::Forward => {
                 let moved_properties =
-                    GraphStore::commit_move_edge_properties_for_compaction(owner_vertex_id, moved);
-                GraphStore::commit_move_edge_local_indexes_for_compaction(
+                    GraphStore::commit_move_edge_properties(owner_vertex_id, moved);
+                GraphStore::commit_move_edge_local_indexes(
                     orientation,
                     owner_vertex_id,
                     moved,
@@ -44,7 +54,7 @@ impl GraphStore {
                 );
             }
             LabeledOrientation::Reverse => {
-                GraphStore::commit_move_edge_local_indexes_for_compaction(
+                GraphStore::commit_move_edge_local_indexes(
                     orientation,
                     owner_vertex_id,
                     moved,
@@ -54,12 +64,12 @@ impl GraphStore {
         }
     }
 
-    pub(super) fn move_edge_sidecars_for_compaction(
+    pub(super) fn move_edge_sidecars(
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
     ) {
-        Self::commit_move_edge_sidecars_for_compaction(orientation, owner_vertex_id, moved);
+        Self::commit_move_edge_sidecars(orientation, owner_vertex_id, moved);
     }
 }
 
@@ -86,5 +96,60 @@ mod tests {
 
         assert_eq!(store.edge_property(handle, property), None);
         assert!(store.edge_properties(handle).is_empty());
+    }
+
+    #[test]
+    fn ordered_delete_move_batch_shifts_sidecars_without_overwrite() {
+        let store = GraphStore::new();
+        let owner = store.insert_vertex().expect("owner");
+        let targets = [
+            store.insert_vertex().expect("target 0"),
+            store.insert_vertex().expect("target 1"),
+            store.insert_vertex().expect("target 2"),
+        ];
+        let handles = targets.map(|target| {
+            store
+                .insert_directed_edge(owner, target, None)
+                .expect("edge")
+        });
+        let property = store
+            .get_or_insert_property_id("weight")
+            .expect("property id");
+        for (index, handle) in handles.into_iter().enumerate() {
+            store
+                .set_edge_property(handle, property, Value::Int64(index as i64))
+                .expect("set property");
+        }
+
+        store.commit_clear_edge_sidecars(handles[0]);
+        GraphStore::apply_edge_slot_moves(
+            LabeledOrientation::Forward,
+            owner,
+            [
+                EdgeSlotMove {
+                    label_id: handles[0].label_id,
+                    old_slot_index: 1,
+                    new_slot_index: 0,
+                },
+                EdgeSlotMove {
+                    label_id: handles[0].label_id,
+                    old_slot_index: 2,
+                    new_slot_index: 1,
+                },
+            ],
+        );
+
+        assert_eq!(
+            store.edge_property(EdgeHandle::at_slot(owner, handles[0].label_id, 0), property),
+            Some(Value::Int64(1))
+        );
+        assert_eq!(
+            store.edge_property(EdgeHandle::at_slot(owner, handles[0].label_id, 1), property),
+            Some(Value::Int64(2))
+        );
+        assert_eq!(
+            store.edge_property(EdgeHandle::at_slot(owner, handles[0].label_id, 2), property),
+            None
+        );
     }
 }

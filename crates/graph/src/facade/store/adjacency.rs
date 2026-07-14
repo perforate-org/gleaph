@@ -1,7 +1,7 @@
 //! Adjacency storage domain: canonical edge writes plus derived alias, journal, and maintenance.
 
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeTarget, TaggedEdgeLabelId};
-use ic_stable_lara::{VertexId, traits::CsrEdge};
+use ic_stable_lara::{VertexId, labeled::LabeledOrientation, traits::CsrEdge};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -65,52 +65,77 @@ impl GraphStore {
         let is_undirected = TaggedEdgeLabelId::from_raw(canonical.label_id.raw()).is_undirected();
         let alias = self.alias_for_canonical_edge(canonical);
         self.commit_clear_edge_sidecars(handle);
-        let edge = self.with_graph_mut(|graph| {
-            graph.remove_forward_edge_at_slot(
+        let removal = self.with_graph_mut(|graph| {
+            graph.remove_forward_edge_at_slot_with_move(
                 canonical.owner_vertex_id,
                 canonical.label_id,
                 canonical.slot_index,
             )
         })?;
-        let edge = edge.ok_or(GraphStoreError::EdgeNotFound {
+        let removal = removal.ok_or(GraphStoreError::EdgeNotFound {
             owner_vertex_id: canonical.owner_vertex_id,
             label_id: canonical.label_id,
             slot_index: canonical.slot_index,
         })?;
+        Self::apply_edge_slot_moves(
+            LabeledOrientation::Forward,
+            canonical.owner_vertex_id,
+            removal.moves,
+        );
+        let edge = removal.removed;
         let Some(EdgeTarget::Local(neighbor)) = edge.edge_target() else {
             self.drain_deferred_maintenance()?;
             return Ok(());
         };
         if is_undirected {
             if let Some((alias_vertex_id, alias_slot_index, _)) = alias {
-                self.with_graph_mut(|graph| {
-                    graph.remove_forward_edge_at_slot(
+                let removal = self.with_graph_mut(|graph| {
+                    graph.remove_forward_edge_at_slot_with_move(
                         alias_vertex_id,
                         canonical.label_id,
                         alias_slot_index,
                     )
                 })?;
+                Self::apply_edge_slot_moves(
+                    LabeledOrientation::Forward,
+                    alias_vertex_id,
+                    removal.into_iter().flat_map(|removal| removal.moves),
+                );
             } else {
-                self.with_graph_mut(|graph| {
-                    graph.remove_directed_deferred(
+                let removal = self.with_graph_mut(|graph| {
+                    graph.remove_forward_edge_matching_with_move(
                         neighbor,
-                        canonical.owner_vertex_id,
-                        edge.with_neighbor_vid(canonical.owner_vertex_id),
+                        canonical.label_id,
+                        |candidate| {
+                            candidate.neighbor_vid() == canonical.owner_vertex_id
+                                && candidate.edge_inline_value_bytes()
+                                    == edge.edge_inline_value_bytes()
+                        },
                     )
                 })?;
+                Self::apply_edge_slot_moves(
+                    LabeledOrientation::Forward,
+                    neighbor,
+                    removal.into_iter().flat_map(|removal| removal.moves),
+                );
             }
         } else if let Some((alias_vertex_id, alias_slot_index, reverse_in)) = alias {
             debug_assert!(
                 reverse_in,
                 "directed aliases should point at reverse-IN rows"
             );
-            self.with_graph_mut(|graph| {
-                graph.remove_reverse_edge_at_slot(
+            let removal = self.with_graph_mut(|graph| {
+                graph.remove_reverse_edge_at_slot_with_move(
                     alias_vertex_id,
                     canonical.label_id,
                     alias_slot_index,
                 )
             })?;
+            Self::apply_edge_slot_moves(
+                LabeledOrientation::Reverse,
+                alias_vertex_id,
+                removal.into_iter().flat_map(|removal| removal.moves),
+            );
         } else {
             self.remove_reverse_edge_for_canonical_directed(
                 neighbor,

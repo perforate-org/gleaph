@@ -2,8 +2,10 @@
 
 Date: 2026-06-15  
 Status: accepted (phases 1–3 implemented)  
-Last revised: 2026-06-16  
-Anchor timestamp: 2026-06-16 04:17:26 UTC +0000
+Last revised: 2026-07-14
+Anchor timestamp: 2026-07-14 02:55:40 UTC +0000
+
+Payload-liveness portions of this ADR are amended by [ADR 0001](./0001-labeled-segment-slide.md): edge and payload physical slots/logs are independent, and payload deletion now removes the bucket-local live ordinal rather than relying on a paired edge-log entry.
 
 ## Context
 
@@ -12,13 +14,13 @@ LARA edge storage has two physical locations for a labeled edge row:
 | Location | Owner | Delete representation (implemented) |
 |----------|-------|-------------------------------------|
 | Edge slab | `EdgeStore` / labeled bucket span | In-place tombstone edge inline value |
-| Edge overflow log | `LogStore` (`LLG`) | In-place tombstone edge inline value; `prev` chain unchanged |
+| Edge overflow log | `LogStore` (`LLG`) | Tombstone-free direct unlink; the `prev` chain preserves newest-to-oldest scan order |
 
-Payload bytes mirror the edge row order:
+Payload bytes preserve bucket-local live order through an independent physical layout:
 
 | Location | Owner | Current layout |
 |----------|-------|----------------|
-| Payload slab | `EdgeInlineValueStore` (`payload_slab`) | Byte CSR, indexed by the same logical edge slot |
+| Payload slab | `EdgeInlineValueStore` (`payload_slab`) | Dense live-value sequence with its own slab-slot count |
 | Payload overflow log | `PayloadLogStore` (`LVL`) | `prev: i32`, `payload_cell: [u8; 8]` |
 | Payload blobs | `payload_blobs` | Wide overflow payload body keyed by `(leaf_segment, entry_idx)` |
 
@@ -27,17 +29,16 @@ Current implementation facts:
 - Edge overflow log entries store `prev` (4 B) and edge bytes only
   ([`edge/log.rs`](../../crates/ic-stable-lara/src/lara/edge/log.rs)). Liveness is encoded in the
   edge inline value tombstone contract; there is no per-entry `src` word on `LLG`.
-- **Implemented (2026-06-15):** log-backed delete rewrites the target entry's edge inline value to the
-  tombstone contract and keeps the entry in the chain. Foreground delete no longer appends separate
-  delete-target log entries. Scans skip tombstone edge rows in both slab and log locations.
+- **Superseded on 2026-07-14:** labeled log-backed delete no longer writes a tombstone. It advances
+  the bucket head or rewrites the one newer entry whose `prev` points to the target. Existing stable
+  tombstones remain readable and are reclaimed by maintenance for compatibility.
 - **Implemented (2026-06-16):** payload overflow log entries are 12 B (`LVL`, layout version 1):
   `prev` (4 B) and an untagged 8 B inline cell
   ([`edge_inline_value/log.rs`](../../crates/ic-stable-lara/src/lara/edge_inline_value/log.rs),
   [`edge_inline_value/cell.rs`](../../crates/ic-stable-lara/src/lara/edge_inline_value/cell.rs)).
   Inline vs blob on the log is derived from `LabelBucket::payload_byte_width`; wide bodies live in
-  `payload_blobs` at `(leaf_segment, entry_idx)`. Log-backed payload liveness mirrors the slab
-  contract: the paired edge row tombstone is the only delete signal; there is no per-entry `src`
-  word on `LVL`.
+  `payload_blobs` at `(leaf_segment, entry_idx)`. The payload log is an independently maintained
+  ordered suffix; there is no per-entry `src` word on `LVL`.
 
 DGAP stores a source-like field in its log entry (`u`) next to destination (`v`) and `prev_offset`,
 but ordinary traversal is anchored from the owning vertex row and follows `prev_offset` while
@@ -97,22 +98,23 @@ The existing storage domains can own this change. No new storage subsystem is re
 | Boundary | Owner | Source of truth after this ADR |
 |----------|-------|--------------------------------|
 | Edge liveness | Edge row payload | Slab and log entries both expose the same tombstone-edge contract |
-| Edge slot identity | Labeled bucket scan order | Deleting one edge must not change surviving edge slot indices |
-| Payload identity | Edge slot plus label bucket payload width | Payload log site mirrors the edge log site; blob body remains keyed by log site |
+| Edge slot identity | Labeled bucket scan order | Direct unlink shifts only newer suffix ordinals and reports every resulting move |
+| Payload identity | Bucket-local live ordinal plus label bucket payload width | Payload slab/log maintain an independent ordered sequence; blob body remains keyed by payload log site |
 | Payload storage class | Label bucket schema (`payload_byte_width` + profile encoding) | Inline vs blob on the payload log is derived from bucket schema, not stored per cell |
-| Log reclamation | Maintenance / rewrite path | Tombstoned log entries are reclaimed only by fold, rebalance, or compaction |
+| Log reclamation | Foreground delete plus maintenance | New log deletes unlink immediately; maintenance only folds live suffixes and removes legacy tombstones |
 | Derived state | Graph mutation path | Edge aliases, postings, and payloads update from canonical edge delete once |
 
 The critical invariant is:
 
 ```text
-Deleting an edge must not change the slot index of any surviving edge.
+Deleting a log-backed edge may shift only the newer overflow suffix, and every move is reported
+before the mutation completes.
 ```
 
 Slot identity is observed outside the physical log by edge handles, reverse aliases, local edge
-postings, inline-value-first phase-two lookups, and traversal cursors. Rewiring log chains to remove a
-middle entry would change the ordinal of later log-backed edges unless slot identity were redefined
-around physical log entry ids. This ADR does not choose that larger redesign.
+postings, inline-value-first phase-two lookups, and traversal cursors. Middle-node unlink renumbers
+the newer suffix by one. `EdgeRemoval::moves` carries that bounded move batch to Graph sidecars and
+index postings; its size is at most the leaf log capacity minus one.
 
 ## Decision
 
@@ -123,29 +125,30 @@ Adopt the following target policy for future implementation.
 Delete state belongs to the deleted edge row itself.
 
 - If the edge body is on the slab, write the tombstone edge inline value in that slab slot.
-- If the edge body is in the overflow log, rewrite that log entry's edge inline value to the tombstone
-  value and keep the log entry in the chain.
-- Do not rewire `prev` links merely to hide a deleted entry from traversal.
+- If the edge body is the overflow head, update the bucket head to `head.prev`.
+- Otherwise rewrite the one newer entry whose `prev` points to the target so it points to
+  `target.prev`.
+- Return one `EdgeSlotMove` for each live entry newer than the target; each slot shifts down by one.
 - Do not compact payload slab bytes as part of the foreground delete path.
 
-Scans skip tombstone edge rows in both slab and log locations. Maintenance may later fold or reclaim
-tombstoned rows while preserving the externally visible edge order for surviving rows.
+Overflow deletion is therefore O(chain lookup + one fixed-width link-owner write), leaves no new log
+tombstone, and preserves newest-to-oldest scan order. Move notification cost is bounded by the
+170-entry shared leaf log rather than vertex degree. Rebalance, resize, and relocation may fold the
+remaining live chain. Existing slab tombstones and legacy log tombstones are compacted by maintenance.
 
-### 2. Treat payload deletion as subordinate to edge liveness
+### 2. Keep edge liveness canonical while maintaining payload order independently
 
 Payload bytes are not the canonical liveness source.
 
-- If the edge body is tombstoned, traversal must ignore that edge even if old payload bytes remain.
-- If the payload body is in the payload log, **do not** write a separate dead marker on the payload
-  log entry. The paired edge overflow log entry at the same `(leaf_segment, entry_idx)` and logical
-  ordinal already carries the tombstone contract.
-- If the payload body is in `payload_blobs`, foreground delete may leave the blob until maintenance;
-  fold/sweep drops blob bodies for reclaimed log sites.
-- If the payload body is in the payload slab, foreground delete may leave bytes in place. Those bytes
-  are unreachable because the edge row is tombstoned; maintenance can reclaim or rewrite them later.
+- Resolve the edge physical slot to its bucket-local live ordinal before the tombstone commit.
+- If payload bytes exist, fold the payload log when necessary and remove the same live ordinal while
+  shifting the newer payload suffix, preserving edge/value scan order.
+- Payload slab/log capacity and maintenance remain independent from edge slab/log capacity and
+  maintenance. Either maintenance order must preserve observed edge/value pairs.
+- Width-zero labels allocate no payload slab or log entries.
 
-This keeps edge body liveness as the single source of truth and avoids a second payload-specific
-delete contract on both slab and log.
+This keeps edge body liveness canonical without making payload physical consistency depend on edge
+log residency.
 
 ### 3. Review the necessity of edge log `src`
 
@@ -213,10 +216,10 @@ Design constraints:
 
 - `payload_cell` holds up to 8 B of inline payload when bucket schema says inline-on-log; it is
   otherwise ignored and the blob map owns the body.
-- Liveness on the payload log is **not** stored in the log entry. Labeled reads consult the paired
-  edge overflow log entry at the same ordinal (`overflow_log_head` chain) and treat edge tombstone
-  the same way slab payload reads treat slab edge tombstone: unreachable bytes may remain until
-  maintenance.
+- Liveness on the payload log is **not** stored in the log entry. The payload sequence follows
+  bucket-local live ordinals independently from edge slab/log residency. Foreground delete resolves
+  and removes the payload ordinal before tombstoning the canonical edge; unreachable log/blob bytes
+  may remain until payload maintenance.
 - Do not put inline/blob class bits in `payload_cell`; derive class from bucket schema at read time.
 - `prev` remains the chain pointer only.
 
@@ -286,19 +289,20 @@ Benchmark gate and edge-log `src` removal are complete. Payload log review:
 | Question | Finding |
 | -------- | ------- |
 | Separate payload dead marker required? | **No.** Slab payloads already have no tombstone; traversal gates on edge tombstone only. |
-| Can log-backed payload mirror slab? | **Yes.** Edge and payload logs share `(leaf_segment, entry_idx)` and ascending ordinal; edge tombstone at that site means the payload site is dead. |
+| Can log-backed payload mirror slab? | **Yes, by live ordinal.** Edge and payload logs have independent entry indices and maintenance timing; the payload chain stores the same live-value order, not paired edge-log sites. |
 | Does `LOG_SRC_DEAD` add information? | **No** after foreground delete writes only the edge tombstone. It duplicated edge liveness and forced a second write on delete. |
-| Low-level payload log read without edge context? | **Cannot infer liveness** (same as inline/blob class). Labeled APIs must consult the paired edge chain or skip ordinals already filtered by edge replay. |
+| Low-level payload log read without bucket context? | **Cannot infer width or ordinal ownership.** Labeled APIs resolve the bucket-local live ordinal and bucket schema before reading the independent payload sequence. |
 | Live owner in `src` on write? | **Never read**, same as the removed edge log `src` word. |
 
 **Decision (2026-06-16):** remove the payload log `src` word and stop writing `LOG_SRC_DEAD`.
 
 - `LVL` stride is `4 + 8` (`prev` + `payload_cell`). Layout version stays **1**; development stores
   are recreated rather than migrated.
-- Foreground delete tombstones the edge log entry only; payload log cells and blobs may remain until
-  maintenance `sweep_payload_log_chain` / fold.
-- Labeled payload reads for log-backed slots check the paired edge overflow entry before reading
-  payload bytes.
+- Foreground delete removes the resolved live ordinal from the independent payload sequence, then
+  tombstones the edge entry; retired payload log cells and blobs may remain until payload
+  `sweep_payload_log_chain` / fold.
+- Labeled payload reads resolve edge residency to a bucket-local live ordinal before reading payload
+  slab/log bytes; edge and payload log entry indices are never compared.
 
 ## Alternatives Considered
 
@@ -344,28 +348,30 @@ Positive effects:
 
 - One liveness source: the edge row tombstone contract.
 - Foreground delete no longer needs delete-target log history.
-- Surviving edge slot indices stay stable after deletion.
+- Log delete reports a bounded newer-suffix move batch synchronously.
 - Payload bytes remain subordinate to edge liveness, reducing duplicate delete rules.
 - Payload log 12 B compression avoids mixing tag state into `prev`.
 - One schema source for inline vs blob on the payload log: bucket `payload_byte_width` (+ profile).
 
 Trade-offs:
 
-- Tombstoned log entries remain in chains until maintenance folds or rewrites them.
+- Labeled foreground delete preserves overflow-chain newest-to-oldest scan order.
 - Scans must skip tombstone entries in both slab and log locations.
-- Foreground deletes may leave unreachable payload slab bytes until maintenance.
-- Payload log 12 B compression aligns log layout with slab semantics (edge tombstone is the delete signal).
+- Foreground deletes may leave retired payload log/blob storage until independent payload maintenance.
+- Payload log 12 B compression keeps interpretation in bucket schema; payload liveness/order is the
+  independently maintained bucket-local live-value sequence.
 - Payload log reads require bucket context (or cached bucket width) to interpret log cells; low-level
   log walks without label context cannot infer inline vs blob from cell bytes alone.
 
 ## Implementation status (2026-06-16)
 
-Phase 1 (implemented 2026-06-15):
+Phase 1 (implemented 2026-06-15, superseded for labeled delete on 2026-07-14):
 
 1. Log-backed delete rewrites the target log entry as a tombstone edge inline value (`rewrite_overflow_log_entry_tombstone`).
 2. Slab-backed delete on log rows writes the slab tombstone directly (no delete-target append).
 3. Scan/replay paths skip tombstone log entries; legacy delete-target replay remains for old chains.
-4. Payload log chains stay aligned with edge log chains; payload bodies are cleared without rewiring.
+4. Superseded by ADR 0001: payload deletion now removes the resolved bucket-local live ordinal;
+   edge and payload log chains are not physically paired.
 
 Phase 2 (implemented 2026-06-16):
 
@@ -375,8 +381,8 @@ Phase 2 (implemented 2026-06-16):
 Benchmark gate (implemented 2026-06-16):
 
 - `bench_labeled_payload_log_scan_8b_inline_overflow` — 4.67 M ix (hybrid payload attach)
-- `bench_labeled_tombstone_log_delete_then_scan` — 3.89 M ix
-- `bench_labeled_tombstone_log_rewrite_maintenance` — 40.64 M ix (edge overflow hub + incremental compact)
+- `bench_labeled_direct_unlink_log_delete_then_scan` — current scan-after-delete gate
+- `bench_labeled_direct_unlink_log_fold_maintenance` — current overflow delete + fold gate
 - `bench_graph_payload_first_log_backed_selective_match` — 698 K ix (48+24 overflow hub expand)
 
 Edge log `src` removal (implemented 2026-06-16):
@@ -389,8 +395,26 @@ Payload log `src` removal (implemented 2026-06-16):
 
 1. `LVL` entry stride 12 B (`prev` + 8 B cell); layout version 1 unchanged.
 2. Remove `LOG_SRC_DEAD`, `mark_payload_log_entry_dead`, and foreground payload-log dead writes.
-3. Labeled log-backed payload reads gate on paired edge tombstone at the same ordinal.
+3. Superseded by ADR 0001: labeled log-backed payload reads use the resolved bucket-local live
+   ordinal and never compare edge and payload log entry indices.
 4. Maintenance sweep still clears payload log cells and drops blobs on fold.
+
+Independent fold amendment (implemented 2026-07-14):
+
+1. Structural edge fold during rebalance/resize/relocation preserves slab slots and copies every
+   edge-log entry, including tombstones, without changing bucket-local slot indices.
+2. Deferred overflow compaction leaves the slab prefix untouched, removes tombstones only from the
+   bounded edge-log suffix, and reports moves only for shifted log-backed survivors.
+3. Edge overflow compaction does not fold or relocate the independent payload log.
+
+Tombstone-free labeled delete amendment (implemented 2026-07-14):
+
+1. `unlink_overflow_log_entry` removes the head directly or rewrites the target's one newer link
+   owner; no new overflow tombstone is written and logical scan order is unchanged.
+2. `EdgeRemoval` reports the resulting newer-suffix `EdgeSlotMove` batch; Graph applies it to
+   properties, aliases, and property-index postings in the foreground mutation path.
+3. Payload deletion shifts the same newer live-ordinal suffix, so edge/value association and scan
+   order remain correct while edge and payload physical maintenance stay independent.
 
 Deferred:
 

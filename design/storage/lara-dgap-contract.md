@@ -1,6 +1,8 @@
 # LARA storage contract (DGAP alignment)
 
 **Status:** Partially Implemented (core contract: [lara.md](./lara.md) accepted)  
+**Last updated:** 2026-07-13
+**Anchor timestamp:** 2026-07-13 22:46:07 UTC +0000
 **Reference:** [DGAP](https://github.com/DIR-LAB/DGAP) (`reference/DGAP/dgap/src/graph.h`), [arXiv:2403.02665](https://arxiv.org/abs/2403.02665)  
 **Source of truth:** `crates/ic-stable-lara/` (`lara.rs`, `lara/edge.rs`, `labeled.rs`)
 
@@ -85,6 +87,8 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 | Retire old physical | (implicit in resize; no free list) | `FreeSpanStore` after relocate | Segment footprint only | One `release_span` per leaf relocate |
 | Multi-label bytes | N/A | N/A | DGAP vertex rows + buckets; **one leaf physical block** | Sub-ranges inside pinned leaf block |
 
+Inline values are a separate physical domain: bucket-local live order associates values with edges, while payload slab slots, payload log entries, capacity, and maintenance timing remain independent from the edge leaf block.
+
 ---
 
 ## Core LARA (implemented, DGAP-aligned)
@@ -166,7 +170,7 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 
 **Failure-atomic growth and promotion.** Core LARA `grow_segment_tree_to` and labeled `promote_bypass_to_bucket_mode` use a preflight/commit split: all fallible backing-memory growth (`counts_store`, `span_meta`, `log`, bucket slab, free-span records, free-span by-start index) completes before the first canonical metadata write. After that point no recoverable `Memory::grow` error remains. Physical preallocation is non-canonical and safe to retain after a rejected mutation.
 
-**Status:** Phase A–E implemented (pinned leaf, PMA density, in-window slide, single leaf `release_span` on relocate, rewrite-path growth via leaf relocate). Failure-atomic preflight is implemented for `grow_segment_tree_to` and `promote_bypass_to_bucket_mode`. Interim: `rebalance_vertex_edge_span` on new-bucket placement may still tail-append.
+**Status:** Phase A–E implemented (pinned leaf, PMA density, in-window slide, single leaf `release_span` on relocate, rewrite-path growth via leaf relocate). Failure-atomic preflight is implemented for `grow_segment_tree_to` and `promote_bypass_to_bucket_mode`. New buckets use zero-length edge placement and the edge log. Inline values persist their own slab-slot count and maintain an independent slab/log lifecycle.
 
 ---
 
@@ -174,7 +178,7 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 
 - [lara.md](./lara.md) — **agreed LARA model** (four contracts, DGAP vs LARA)
 - [0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — decision record
-- [0016-overflow-log-tombstones-and-src-fields.md](../adr/0016-overflow-log-tombstones-and-src-fields.md) — log tombstone policy (phase 1); bucket-derived inline/blob (phase 2); `LLG`/`LVL` `src` removed; edge tombstone gates payload log reads
+- [0016-overflow-log-tombstones-and-src-fields.md](../adr/0016-overflow-log-tombstones-and-src-fields.md) — historical edge-log tombstone and payload cell/blob layout decisions; ADR 0001 now owns independent edge/payload maintenance
 - [lara-and-facade.md](./lara-and-facade.md) — Gleaph layering
 - [labeled-edge-inline-values.md](./labeled-edge-inline-values.md) — payload slab (parallel contract)
 - `crates/ic-stable-lara/README.md` — crate-level overview

@@ -1,6 +1,7 @@
 # 0001. Labeled edge physical layer uses PMA leaf segment slide
 
 Date: 2026-06-07  
+Last revised: 2026-07-14 02:55:40 UTC +0000
 Status: accepted
 
 ## Context
@@ -48,6 +49,125 @@ Phased delivery (see [lara-dgap-contract.md § Migration](../storage/lara-dgap-c
 | E     | Remove per-vertex tail append for normal labeled rows          |
 
 Each phase keeps existing `mixed_label_hub_*` regressions green.
+
+## New-bucket insertion span contract
+
+`LabelBucket` rows are stored in ascending `BucketLabelKey` order, so the insertion index of a new label bucket is determined by its label id alone.
+
+When a new bucket is created for an ordinary directed edge insert, storage must not ask the caller to pre-allocate a large edge span. The contract is:
+
+1. **New buckets are inserted with `stored_slots = 0`.**
+   - At creation time the bucket owns no edges, so it needs no edge-slab bytes.
+   - Only the bucket row ordering is updated; no edge bytes are written.
+   - This applies to the **first bucket on a vertex** as well as to buckets inserted between or after existing buckets.
+
+2. **`edge_start` is placed at the next bucket's start, or at the vertex span end.**
+   - If a bucket with a larger `BucketLabelKey` exists, the new bucket's `edge_start` equals that successor bucket's `edge_start`.
+   - If the new bucket is the last one, `edge_start` equals the current last bucket's `edge_start + stored_slots`.
+   - When the preceding bucket also has `stored_slots = 0` (for example, it was created earlier but has not yet been folded into the slab), the new bucket's `edge_start` is the same numeric value as the predecessor's `edge_start`. Both buckets therefore share a zero-length logical position until a leaf-wide rebalance assigns them distinct slab ranges.
+   - This gives the new bucket a zero-length reservation that is logically contiguous with its neighbors and avoids overlapping spans.
+
+3. **Subsequent edge inserts use the shared leaf overflow log.**
+   - Because the new bucket has `stored_slots = 0`, `LabelEdgeSpanAccess` presents a CSR window with no slab slack.
+   - `EdgeStore::insert_edge` therefore writes the first edges into the shared per-leaf overflow log.
+   - The log chain is tracked by the bucket's `overflow_log_head`.
+   - `LabelBucket::grow_packed_slab_by_one` (and `try_grow_packed_slab_by_one`) must not increase `stored_slots` while the bucket is log-backed; only the logical `degree` grows.
+
+4. **Log pressure triggers leaf-level rebalance / relocate.**
+   - When the log is full or the leaf becomes dense, `rebalance_edge_log_leaf_for_labeled` or `rebalance_cascade_after_labeled_mutation` folds the log back into the slab.
+   - Otherwise, the weighted slide redistributes the leaf block across its active vertices and labels, giving the new bucket real `stored_slots`.
+   - If the leaf block still cannot absorb the new label, `relocate_labeled_leaf_physical_block` or element-capacity growth is used.
+   - After folding a single edge-only label, `LabeledVertex::stored_slots` may retain bounded geometric tail headroom inside that vertex's non-overlapping leaf allocation. `LabelBucket::stored_slots` remains the exact resident edge width; later edge-only inserts consume the vertex tail before returning to the shared log. This amortizes repeated full-log folds without changing the zero-length new-bucket contract.
+   - Labels with inline values do not use this edge-only tail optimization. Their edge slab/log and payload slab/log continue to choose capacity and maintenance timing independently.
+
+5. **Storage-owned preflight guarantees leaf capacity, not per-bucket pre-allocation.**
+   - `prepare_labeled_edge_capacity_for_insert` runs before any canonical edge write for both forward `src` and reverse `dst`.
+   - It ensures the target PMA leaf block is pinned and has room for a zero-length bucket placement.
+   - It may rebalance or relocate the leaf, but it does **not** reserve `DEFAULT_SEGMENT_SIZE` slots for the new bucket itself.
+
+6. **Tail append at `elem_capacity` is forbidden for normal new-bucket placement.**
+   - `ensure_labeled_bucket_edge_span_room` must not fall back to `rebalance_vertex_edge_span` tail append when the leaf is pinned.
+   - Growth happens through the PMA leaf slide / relocate / resize paths that the rest of LARA already uses.
+
+### Relationship to the DGAP reference model
+
+The reference implementation in `reference/DGAP/dgap/src/graph.h` uses a single `vertex_element { index, degree, offset }` per vertex:
+
+- `index` is the base slot in the shared edge array.
+- `degree` is the logical live edge count.
+- `offset` is the per-segment overflow log head.
+
+DGAP inserts an edge by trying `index + degree` first; if no on-segment space exists, it writes to the log and folds the log back into the segment during `rebalance_weighted`. LARA's labeled layer maps this model onto multiple `LabelBucket` rows per vertex. The difference is that label buckets are created dynamically and in sorted order, so a newly inserted bucket needs a **zero-length logical position** (`stored_slots = 0`) at the successor boundary before any edges exist. This is the labeled equivalent of DGAP's `index` for a vertex that has just been allocated but owns no edges yet.
+
+In other words:
+
+| DGAP concept                            | Labeled LARA equivalent                                 |
+| --------------------------------------- | ------------------------------------------------------- |
+| `vertex_element.index`                  | `LabelBucket.edge_start`                                |
+| `vertex_element.degree`                 | `LabelBucket.degree`                                    |
+| `vertex_element.offset`                 | `LabelBucket.overflow_log_head`                         |
+| per-vertex gap in `calculate_positions` | per-bucket gap in `calculate_label_edge_span_positions` |
+| `rebalance_weighted`                    | `rebalance_labeled_leaf_weighted_slide_in_block`        |
+
+Adopting `stored_slots = 0` for every new bucket keeps the labeled path aligned with the DGAP reference: edges initially go to the shared log, and leaf-wide weighted rebalance assigns on-slab bytes proportional to live edges (plus slack).
+
+### Why this is sufficient
+
+- A new label typically receives only a few edges before the next maintenance pass.
+- Those edges fit in the shared overflow log alongside other vertices in the same leaf.
+- When the log is folded, the weighted slide allocates proportional slab space to the new bucket in one leaf-wide rewrite.
+- Per-bucket `DEFAULT_SEGMENT_SIZE` pre-allocation is therefore unnecessary and is explicitly rejected as the steady-state growth model.
+- Requiring pre-allocation for the first bucket would make one-edge vertices pay for 32 slots until the next rebalance, which is inconsistent with the DGAP model and with the goal of reducing per-vertex slab waste on many-label hubs.
+
+### Implementation impact
+
+- `try_place_new_bucket_edge_span` must place new buckets with `stored_slots = 0` at the successor boundary, for degree-1 vertices as well as higher-degree vertices.
+- `prepare_labeled_edge_capacity_for_insert` must check for a zero-length placement opportunity in the pinned leaf, not for a 32-slot free span.
+- `ensure_labeled_bucket_edge_span_room` must not fall back to `rebalance_vertex_edge_span` tail append; instead it must report failure if a zero-length placement cannot be made (the caller must then drive leaf-level rebalance/relocate).
+- `rebalance_vertex_edge_span` may still be used for vertex-level compaction, but not as the default growth path for a new bucket.
+- Tests that assume a non-zero `stored_slots` immediately after the first insert must be updated to distinguish dense/slab-backed buckets from log-backed buckets.
+
+## Independent edge and inline-value physical stores
+
+The edge store and edge inline-value store share one logical contract—bucket-local live-edge order—but do not share physical slots, log entries, capacity, or maintenance timing.
+
+- `LabelBucket::stored_slots` counts edge slab slots only. `overflow_log_head` belongs only to the edge leaf log.
+- `LabelBucket::inline_value_slab_slots` counts inline-value slab entries only. `inline_value_log_head` and `inline_value_log_len` belong only to the payload leaf log.
+- A label with `inline_value_byte_width = 0` always has zero inline-value slab slots and no payload log, regardless of its edge degree or edge physical state.
+- Edge rebalance, resize, and relocation preserve the current bucket-local live order but do not fold, resize, release, or relocate payload storage.
+- Payload rebalance, resize, and relocation preserve the same current live order but do not fold, resize, release, or relocate edge storage.
+- Insert appends to both logical sequences only when the label has a non-zero inline-value width. Delete resolves the edge physical slot to its bucket-local live ordinal and removes the value at that ordinal. Physical maintenance can then occur in either order.
+
+This rejects physical slot equality and equal edge/payload log entry indices as an invariant. They are transient implementation coincidences and cannot represent labels with no inline value.
+
+### Structural overflow fold versus slot compaction
+
+Edge-log fold has two distinct execution contracts:
+
+- **Foreground overflow delete is tombstone-free direct unlink.** Removing the head advances the
+  head pointer. Removing a middle entry rewrites the one newer entry whose `prev` points to it.
+  Newest-to-oldest scan order is unchanged; each live entry in the newer suffix shifts down one
+  logical slot and emits one `EdgeSlotMove`. A valued bucket shifts the matching payload suffix.
+
+- **Rebalance, resize, and relocation perform a structural fold.** They append every edge-log entry,
+  including tombstones, after the existing edge slab prefix. Existing slab slots and log-backed
+  bucket-local slot indices are preserved. These paths therefore require no `EdgeSlotMove` and do
+  not re-key aliases, properties, or index postings.
+- **Deferred edge maintenance folds the overflow suffix.** New deletes leave no tombstones, so the
+  normal fold emits no moves. It still drops legacy tombstones and reports their bounded suffix
+  moves for upgrade compatibility. The shared leaf edge log contains at most 170 entries.
+- **Slab tombstones remain a separate incremental phase.** After the overflow suffix is folded,
+  `compact_vertex_edge_span_one_step` moves at most one slab edge per maintenance work item. A short
+  overflow fold must never collapse an arbitrarily large slab prefix.
+- **Edge overflow maintenance does not fold the inline-value log.** Payload log fold and payload slab
+  relocation remain independently triggered operations; edge compaction preserves the live ordinal
+  sequence on which payload lookup depends.
+
+Capacity for a structural fold is preflighted as `stored_slots + edge_log_chain_len`. Capacity for
+the maintenance fold is preflighted as `stored_slots + live_edge_log_entries`. Neither operation
+writes slab bytes before its complete destination range is known to fit.
+
+The `LabelBucket` stable record grows from 25 to 29 bytes to persist the payload slab-slot count independently. Development stable data using the earlier record width must be wiped; backward decoding is not provided.
 
 ## Consequences
 

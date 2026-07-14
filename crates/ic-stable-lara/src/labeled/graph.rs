@@ -95,6 +95,15 @@ pub struct EdgeSlotMove {
     pub new_slot_index: u32,
 }
 
+/// One removed edge plus the only surviving slot relocation that deletion may produce.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EdgeRemoval<E> {
+    /// Edge selected by the caller.
+    pub removed: E,
+    /// Surviving overflow edges whose scan-ordinal slots shifted down by one.
+    pub moves: Vec<EdgeSlotMove>,
+}
+
 /// Result of one incremental [`LabeledLaraGraph::compact_vertex_edge_span_one_step`] call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VertexEdgeSpanCompactOneStep {
@@ -102,7 +111,7 @@ pub enum VertexEdgeSpanCompactOneStep {
     EdgeMoved(EdgeSlotMove),
     /// The current label bucket is packed; continue from the next bucket index.
     AdvanceBucket(u32),
-    /// Overflow-log buckets required a full span rewrite; `moves` lists slot rewrites.
+    /// One overflow suffix was folded; `moves` lists legacy-tombstone slot rewrites. Resume at bucket 0.
     OverflowRewrite(Vec<EdgeSlotMove>),
     /// The vertex span is fully compacted.
     Finished,

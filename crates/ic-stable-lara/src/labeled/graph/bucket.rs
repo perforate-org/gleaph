@@ -566,6 +566,82 @@ where
         .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
 
+    /// Exclusive end of the bucket's on-slab CSR window.
+    ///
+    /// For non-last buckets this is the next bucket's `edge_start`. For the last bucket
+    /// it is `edge_start + stored_slots`. This differs from
+    /// [`Self::bucket_successor_start_after_bucket`] for the last bucket: the slab-window
+    /// end follows the bucket's own stored prefix, while the successor/vertex-span end
+    /// follows the vertex-wide `stored_slots` tail used by fold/new-bucket placement.
+    pub(super) fn bucket_slab_window_end_exclusive_after_bucket(
+        &self,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+        bucket: &LabelBucket,
+    ) -> Result<u64, LabeledOperationError> {
+        if bucket_index + 1 < vertex.degree() {
+            let next_ix = bucket_index
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let next_slot = Self::labeled_vertex_bucket_slot(vertex, next_ix)?;
+            let next = self
+                .buckets
+                .read_label_bucket_slot(next_slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            return Ok(next.edge_start().max(bucket.edge_start()));
+        }
+
+        crate::labeled::slot_index::checked_add_slot_index(
+            bucket.edge_start(),
+            u64::from(bucket.stored_slots),
+        )
+        .ok_or(LaraOperationError::CollectAllocationOverflow.into())
+    }
+
+    pub(super) fn bucket_successor_start_after_bucket_for_new_bucket(
+        &self,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+    ) -> Result<u64, LabeledOperationError> {
+        if bucket_index + 1 < vertex.degree() {
+            // New bucket is being inserted before an existing successor. The new bucket
+            // owns zero slots, so its edge_start is placed exactly at the successor's
+            // current edge_start. This keeps the two spans contiguous and non-overlapping.
+            let next_ix = bucket_index
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let next_slot = Self::labeled_vertex_bucket_slot(vertex, next_ix)?;
+            let next = self
+                .buckets
+                .read_label_bucket_slot(next_slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            return Ok(next.edge_start());
+        }
+
+        if bucket_index == 0 {
+            // First bucket on the vertex. Its zero-length reservation starts at the
+            // beginning of the vertex edge span; stored_slots remains zero.
+            return Ok(0);
+        }
+
+        // For the last bucket, the successor boundary is the end of the preceding
+        // bucket run, not the vertex-wide stored_slots tail. This lets a new bucket
+        // be inserted with stored_slots=0 without consuming any reserved span.
+        let prev_ix = bucket_index
+            .checked_sub(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let prev_slot = Self::labeled_vertex_bucket_slot(vertex, prev_ix)?;
+        let prev = self
+            .buckets
+            .read_label_bucket_slot(prev_slot)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        crate::labeled::slot_index::checked_add_slot_index(
+            prev.edge_start(),
+            u64::from(prev.stored_slots),
+        )
+        .ok_or(LaraOperationError::CollectAllocationOverflow.into())
+    }
+
     pub(super) fn label_buckets_allow_contiguous_slab_copy(
         &self,
         vertex: &LabeledVertex,
@@ -644,7 +720,8 @@ where
             return Ok(bucket);
         }
         let vertex = self.vertices.get(src);
-        match self.fold_label_bucket_to_slab(src, &vertex, bucket_index, bucket_slot, bucket) {
+        match self.fold_label_bucket_edges_to_slab(src, &vertex, bucket_index, bucket_slot, bucket)
+        {
             Ok(folded) => {
                 self.buckets.write_label_bucket_slot(bucket_slot, folded)?;
                 Ok(folded)
@@ -660,19 +737,10 @@ where
         }
     }
 
-    pub(super) fn bucket_log_chains(
-        &self,
-        src: VertexId,
-        bucket: &LabelBucket,
-    ) -> (Vec<u32>, Vec<u32>) {
+    pub(super) fn bucket_payload_log_chain(&self, src: VertexId, bucket: &LabelBucket) -> Vec<u32> {
         let leaf = self.payload_log_leaf(src);
-        let edge_chain = self
-            .edges
-            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-        let payload_chain = self
-            .values
-            .payload_log_chain_asc_indices(leaf, bucket.inline_value_log_head());
-        (edge_chain, payload_chain)
+        self.values
+            .payload_log_chain_asc_indices(leaf, bucket.inline_value_log_head())
     }
 }
 
@@ -997,10 +1065,8 @@ mod tests {
         assert!(graph.labeled_leaf_physical_range(vid).is_some());
         let pma = graph.labeled_leaf_pma_density(vid);
         let geometry = graph.labeled_leaf_geometry_density(vid);
-        assert!(
-            geometry > pma,
-            "geometry density inflates before PMA leaf fills"
-        );
+        assert_eq!(geometry, 0.0, "a new bucket owns no slab geometry");
+        assert!(pma > geometry, "live log edges contribute to PMA density");
         assert_eq!(
             graph.labeled_leaf_segment_is_dense(vid),
             pma >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
@@ -1052,9 +1118,10 @@ mod tests {
             pma_after > pma_before,
             "PMA actual/total should rise with live edges"
         );
-        assert!(
-            graph.labeled_leaf_geometry_density(vid) > pma_after,
-            "maintenance must not use geometry density while leaf block is mostly empty"
+        assert_eq!(
+            graph.labeled_leaf_geometry_density(vid),
+            0.0,
+            "log-only buckets own no slab geometry"
         );
     }
 }

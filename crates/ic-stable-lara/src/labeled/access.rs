@@ -3,6 +3,7 @@
 use super::bucket_store::LabelBucketStore;
 use crate::{VertexId, labeled::record::LabelBucket, lara::operation_error::VertexAccess};
 use ic_stable_structures::Memory;
+use std::cell::Cell;
 
 /// Presents one global bucket slab slot as a tiny vertex column for
 /// [`crate::lara::edge::EdgeStore`].
@@ -19,21 +20,24 @@ use ic_stable_structures::Memory;
 pub(crate) struct LabelEdgeSpanAccess<'a, M: Memory> {
     buckets: &'a LabelBucketStore<M>,
     slot: u64,
+    bucket: Cell<LabelBucket>,
     successor_start: u64,
     log_vertex: VertexId,
 }
 
 impl<'a, M: Memory> LabelEdgeSpanAccess<'a, M> {
-    /// Binds EdgeStore scan helpers to the LabelEdgeSpan described by the bucket at `slot`.
-    pub(crate) fn new(
+    /// Binds a resolved bucket to the CSR adapter without duplicating its stable-memory read.
+    pub(crate) fn with_bucket(
         buckets: &'a LabelBucketStore<M>,
         slot: u64,
+        bucket: LabelBucket,
         successor_start: u64,
         log_vertex: VertexId,
     ) -> Self {
         Self {
             buckets,
             slot,
+            bucket: Cell::new(bucket),
             successor_start,
             log_vertex,
         }
@@ -50,14 +54,20 @@ impl<M: Memory> VertexAccess<LabelBucket> for LabelEdgeSpanAccess<'_, M> {
     }
 
     fn get(&self, id: VertexId) -> LabelBucket {
-        let bucket = self
-            .buckets
-            .read_label_bucket_slot(self.slot)
-            .unwrap_or_default();
+        let bucket = self.bucket.get();
         match u32::from(id) {
             0 => bucket,
             1 => {
-                let succ = self.successor_start.max(bucket.edge_start());
+                // For a log-backed bucket with no on-slab prefix, present a zero-width
+                // slab window so `EdgeStore::insert_edge` routes new edges into the
+                // shared overflow log instead of writing into the placeholder slab
+                // region. The full successor boundary is still used by scan paths
+                // once the bucket is folded to slab.
+                let succ = if bucket.overflow_log_head() >= 0 && bucket.stored_slots == 0 {
+                    bucket.edge_start()
+                } else {
+                    self.successor_start.max(bucket.edge_start())
+                };
                 bucket.with_edge_range(succ, 0).with_overflow_log_head(-1)
             }
             _ => panic!("LabelEdgeSpanAccess only exposes row 0 and successor row 1"),
@@ -69,6 +79,7 @@ impl<M: Memory> VertexAccess<LabelBucket> for LabelEdgeSpanAccess<'_, M> {
         if u32::from(id) != 0 {
             return;
         }
+        self.bucket.set(*item);
         self.buckets
             .write_label_bucket_slot(self.slot, *item)
             .expect("LabelBucket write failed");

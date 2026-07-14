@@ -2,7 +2,7 @@
 
 Date: 2026-06-19
 Status: accepted (implemented)
-Last revised: 2026-06-20
+Last revised: 2026-07-14
 
 ## Context
 
@@ -187,6 +187,19 @@ maintenance fault no longer fails an otherwise-valid user mutation. The timer's
 `remaining_queue_len > 0` signal then drives the retry. Regression-guarded by
 `failed_compaction_step_is_requeued_not_silently_completed` via a `#[cfg(test)]`
 fault latch on the compaction step.
+
+### Edge overflow fold is bounded independently from slab compaction (2026-07-14)
+
+Foreground labeled overflow delete now unlinks immediately and reports the bounded newer-suffix
+slot moves, so it leaves no new log tombstone for the timer. `CompactVertexEdgeSpan` still folds at most
+one bucket's overflow suffix and returns `OverflowRewrite`; its move batch is normally empty and is
+non-empty only when cleaning legacy tombstones. The leaf edge log has at most 170 entries, so this
+compatibility batch remains bounded. Ordinary slab tombstones continue through the existing
+one-`EdgeMoved`-per-pop path.
+
+Structural log folds performed by insert-time rebalance, resize, or relocation copy tombstone log
+entries as well and preserve slot indices, so they do not emit sidecar or posting re-keys. Edge-log
+maintenance does not fold the independent inline-value log.
 
 ## Migration
 

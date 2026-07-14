@@ -5,7 +5,7 @@ use crate::{
     labeled::{
         access::LabelEdgeSpanAccess,
         bucket_label_key::{BucketDirectedness, BucketLabelKey},
-        record::LabeledVertex,
+        record::{LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
     },
     lara::{edge::OutEdgeSlabIter, operation_error::LaraOperationError},
@@ -16,13 +16,54 @@ use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{BucketSearch, LabeledLaraGraph, OutEdgeOrder};
+use super::{BucketSearch, EdgeRemoval, EdgeSlotMove, LabeledLaraGraph, OutEdgeOrder};
+
+enum BucketEdgeDeleteLocation {
+    Slab {
+        physical_slot: u64,
+    },
+    OverflowLog {
+        leaf: u32,
+        entry_idx: u32,
+        newer_entry_idx: Option<u32>,
+        moves: Vec<EdgeSlotMove>,
+    },
+}
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
     M: Memory,
 {
+    fn overflow_chain_slot_moves_after_delete(
+        &self,
+        leaf: u32,
+        chain: &[u32],
+        removed_ordinal: usize,
+        slab_prefix_slots: u32,
+        label_id: BucketLabelKey,
+    ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError> {
+        let mut moves = Vec::with_capacity(chain.len().saturating_sub(removed_ordinal + 1));
+        for (ordinal, entry_idx) in chain.iter().enumerate().skip(removed_ordinal + 1) {
+            let (_, edge) = self.edges.read_overflow_log_entry(leaf, *entry_idx);
+            if edge.is_deleted_slot() {
+                continue;
+            }
+            let old_slot_index = slab_prefix_slots
+                .checked_add(
+                    u32::try_from(ordinal)
+                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
+                )
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            moves.push(EdgeSlotMove {
+                label_id,
+                old_slot_index,
+                new_slot_index: old_slot_index - 1,
+            });
+        }
+        Ok(moves)
+    }
+
     fn decrement_edge_counts_after_remove(
         &self,
         src: VertexId,
@@ -59,7 +100,7 @@ where
         label_id: BucketLabelKey,
         vertex: LabeledVertex,
         slot_index: u32,
-    ) -> Result<Option<E>, LabeledOperationError>
+    ) -> Result<Option<EdgeRemoval<E>>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
@@ -81,20 +122,38 @@ where
             let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
                 return Ok(None);
             };
+            let newer_entry_idx = chain.get(log_ordinal as usize + 1).copied();
             let (_, removed) = self.edges.read_overflow_log_entry(leaf, entry_idx);
             if removed.is_tombstone_edge() {
                 return Ok(None);
             }
-            self.edges
-                .rewrite_overflow_log_entry_tombstone(leaf, entry_idx)?;
-            self.vertices
-                .set(src, &vertex.after_slab_tombstone_delete());
+            let moves = self.overflow_chain_slot_moves_after_delete(
+                leaf,
+                &chain,
+                log_ordinal as usize,
+                slab_prefix_slots,
+                label_id,
+            )?;
+            let new_head = self
+                .edges
+                .unlink_overflow_log_entry(
+                    leaf,
+                    vertex.bypass_overflow_log_head(),
+                    entry_idx,
+                    newer_entry_idx,
+                )
+                .unwrap_or_else(|_| panic!("preflighted edge-log unlink failed"));
+            self.vertices.set(
+                src,
+                &vertex.with_log_head(new_head).after_slab_tombstone_delete(),
+            );
             self.decrement_edge_counts_after_remove(src)?;
-            return Ok(Some(
-                removed
+            return Ok(Some(EdgeRemoval {
+                removed: removed
                     .with_slot_index(slot_index)
                     .with_label_id(label_id.raw()),
-            ));
+                moves,
+            }));
         }
 
         let rm_slot = checked_add_slot_index(vertex.base_slot_start(), u64::from(slot_index))
@@ -109,11 +168,12 @@ where
         self.vertices
             .set(src, &vertex.after_slab_tombstone_delete());
         self.decrement_edge_counts_after_remove(src)?;
-        Ok(Some(
-            removed
+        Ok(Some(EdgeRemoval {
+            removed: removed
                 .with_slot_index(slot_index)
                 .with_label_id(label_id.raw()),
-        ))
+            moves: Vec::new(),
+        }))
     }
 
     fn remove_default_bypass_edge_matching<F>(
@@ -122,7 +182,7 @@ where
         label_id: BucketLabelKey,
         vertex: LabeledVertex,
         mut matches: F,
-    ) -> Result<Option<E>, LabeledOperationError>
+    ) -> Result<Option<EdgeRemoval<E>>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
@@ -188,6 +248,21 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        Ok(self
+            .remove_edge_at_slot_with_move(src, label_id, slot_index)?
+            .map(|removal| removal.removed))
+    }
+
+    /// Removes one edge and reports the bounded survivor slot shifts produced by overflow unlink.
+    pub fn remove_edge_at_slot_with_move(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+    ) -> Result<Option<EdgeRemoval<E>>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
@@ -196,54 +271,188 @@ where
         let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
             return Ok(None);
         };
-        if slot_index >= self.bucket_reserved_edge_slots(src, &bucket) {
+        self.remove_bucket_edge_at_slot(src, &vertex, slot, bucket, slot_index)
+    }
+
+    fn remove_bucket_edge_at_slot(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        slot: u64,
+        bucket: LabelBucket,
+        slot_index: u32,
+    ) -> Result<Option<EdgeRemoval<E>>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let Some((location, removed)) =
+            self.locate_bucket_edge_for_delete(src, &bucket, slot_index)?
+        else {
+            return Ok(None);
+        };
+        let moves =
+            self.remove_bucket_edge_at_location(src, vertex, slot, bucket, slot_index, location)?;
+        Ok(Some(EdgeRemoval {
+            removed: removed.with_slot_index(slot_index),
+            moves,
+        }))
+    }
+
+    fn locate_bucket_edge_for_delete(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+        slot_index: u32,
+    ) -> Result<Option<(BucketEdgeDeleteLocation, E)>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if slot_index >= self.bucket_reserved_edge_slots(src, bucket) {
             return Ok(None);
         }
-        let slab_prefix_slots = self.bucket_slab_prefix_slots(src, &bucket);
-        if slot_index >= slab_prefix_slots {
-            let leaf = self.payload_log_leaf(src);
-            let log_ordinal = slot_index
-                .checked_sub(slab_prefix_slots)
+        let slab_prefix_slots = self.bucket_slab_prefix_slots(src, bucket);
+        if slot_index < slab_prefix_slots {
+            let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let chain = self
-                .edges
-                .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-            let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
-                return Ok(None);
-            };
-            let (_, removed) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-            if removed.is_tombstone_edge() {
-                return Ok(None);
-            }
-            self.edges
-                .rewrite_overflow_log_entry_tombstone(leaf, entry_idx)?;
-            let updated = bucket.after_slab_tombstone_delete();
-            self.buckets.write_label_bucket_slot(slot, updated)?;
-            self.decrement_edge_counts_after_remove(src)?;
-            self.invalidate_bucket_lookup_for_label(src, label_id);
-            return Ok(Some(removed.with_slot_index(slot_index)));
+            let edge = self.edges.read_slot(physical_slot);
+            return Ok((!edge.is_tombstone_edge())
+                .then_some((BucketEdgeDeleteLocation::Slab { physical_slot }, edge)));
         }
-        let rm_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+
+        let leaf = self.payload_log_leaf(src);
+        let log_ordinal = slot_index
+            .checked_sub(slab_prefix_slots)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let removed = self.edges.read_slot(rm_slot);
-        if removed.is_tombstone_edge() {
+        let chain = self
+            .edges
+            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
+        let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
             return Ok(None);
+        };
+        let newer_entry_idx = chain.get(log_ordinal as usize + 1).copied();
+        let moves = self.overflow_chain_slot_moves_after_delete(
+            leaf,
+            &chain,
+            log_ordinal as usize,
+            slab_prefix_slots,
+            bucket.bucket_label_key(),
+        )?;
+        let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+        Ok((!edge.is_tombstone_edge()).then_some((
+            BucketEdgeDeleteLocation::OverflowLog {
+                leaf,
+                entry_idx,
+                newer_entry_idx,
+                moves,
+            },
+            edge,
+        )))
+    }
+
+    fn remove_bucket_edge_at_location(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        slot: u64,
+        mut bucket: LabelBucket,
+        slot_index: u32,
+        location: BucketEdgeDeleteLocation,
+    ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if bucket.inline_value_byte_width() == 0 {
+            return self.commit_bucket_edge_delete(src, slot, bucket, slot_index, location);
         }
-        self.edges
-            .write_slot(rm_slot, E::tombstone_edge())
-            .map_err(LabeledOperationError::from)?;
-        let updated = bucket.after_slab_tombstone_delete();
+
+        let bucket_index = Self::labeled_bucket_descriptor_index(vertex, slot)?;
+        let Some(payload_ordinal) = self.bucket_live_ordinal_at_edge_slot(
+            src,
+            vertex,
+            bucket_index,
+            slot,
+            &bucket,
+            slot_index,
+        )?
+        else {
+            return Err(LaraOperationError::LogChainShort.into());
+        };
+        if bucket.inline_value_log_head() >= 0 {
+            self.rebalance_payload_log_leaf_for_labeled(src)?;
+            bucket = self
+                .buckets
+                .read_label_bucket_slot(slot)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        }
+        let payload_delete = self.plan_bucket_payload_delete(src, bucket, payload_ordinal)?;
+        if let Some(plan) = payload_delete {
+            bucket = self.apply_bucket_payload_delete(src, plan);
+        }
+        self.commit_bucket_edge_delete(src, slot, bucket, slot_index, location)
+    }
+
+    #[inline]
+    fn commit_bucket_edge_delete(
+        &self,
+        src: VertexId,
+        slot: u64,
+        bucket: LabelBucket,
+        _removed_slot_index: u32,
+        location: BucketEdgeDeleteLocation,
+    ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let (removed_from_log, new_log_head, moves) = match location {
+            BucketEdgeDeleteLocation::Slab { physical_slot } => {
+                self.edges
+                    .write_slot(physical_slot, E::tombstone_edge())
+                    .unwrap_or_else(|_| panic!("preflighted edge tombstone write failed"));
+                (false, bucket.overflow_log_head(), Vec::new())
+            }
+            BucketEdgeDeleteLocation::OverflowLog {
+                leaf,
+                entry_idx,
+                newer_entry_idx,
+                moves,
+            } => {
+                let new_head = self
+                    .edges
+                    .unlink_overflow_log_entry(
+                        leaf,
+                        bucket.overflow_log_head(),
+                        entry_idx,
+                        newer_entry_idx,
+                    )
+                    .unwrap_or_else(|_| panic!("preflighted edge-log unlink failed"));
+                (true, new_head, moves)
+            }
+        };
+        let updated = bucket
+            .with_overflow_log_head(new_log_head)
+            .after_slab_tombstone_delete();
         let updated = if updated.degree() == 0 && updated.overflow_log_head() < 0 {
-            self.release_bucket_payload_span(src, &bucket)?;
             updated
                 .with_inline_value_log_head(-1)
+                .with_inline_value_slab_slots(0)
                 .with_edge_range(updated.edge_start(), 0)
         } else {
             updated
         };
-        self.buckets.write_label_bucket_slot(slot, updated)?;
+        if bucket.inline_value_byte_width() == 0
+            && !removed_from_log
+            && !(updated.degree() == 0 && updated.overflow_log_head() < 0)
+        {
+            self.buckets
+                .write_label_bucket_degree(slot, updated.degree())?;
+        } else {
+            self.buckets.write_label_bucket_slot(slot, updated)?;
+        }
         self.decrement_edge_counts_after_remove(src)?;
-        Ok(Some(removed))
+        if removed_from_log {
+            self.invalidate_bucket_lookup_for_label(src, bucket.bucket_label_key());
+        }
+        Ok(moves)
     }
 
     pub(super) fn for_each_out_edges_by_directedness_impl<Visit>(
@@ -322,7 +531,7 @@ where
                                 continue;
                             }
                             let bucket_index = lo + bidx as u32;
-                            let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
+                            let log_chains = self.bucket_payload_log_chain_opt(src, bucket);
                             let slot = slot_rev.unwrap_or(bucket.degree().saturating_sub(1));
                             let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
                             visit(
@@ -352,7 +561,7 @@ where
                                 continue;
                             }
                             let bucket_index = lo + local as u32;
-                            let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
+                            let log_chains = self.bucket_payload_log_chain_opt(src, bucket);
                             for slot in 0..bucket.degree() {
                                 let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
                                 visit(
@@ -383,11 +592,20 @@ where
                     if bucket.degree() == 0 {
                         continue;
                     }
-                    let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
+                    let log_chains = self.bucket_payload_log_chain_opt(src, bucket);
                     let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-                    let successor =
-                        self.bucket_successor_start_after_bucket(vertex, bucket_index, bucket)?;
-                    let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
+                    let successor = self.bucket_slab_window_end_exclusive_after_bucket(
+                        vertex,
+                        bucket_index,
+                        bucket,
+                    )?;
+                    let acc = LabelEdgeSpanAccess::with_bucket(
+                        &self.buckets,
+                        slot,
+                        *bucket,
+                        successor,
+                        src,
+                    );
                     if bucket.overflow_log_head() < 0 {
                         let it = OutEdgeSlabIter::try_new(
                             &self.edges,
@@ -429,11 +647,20 @@ where
                     if bucket.degree() == 0 {
                         continue;
                     }
-                    let log_chains = self.bucket_payload_log_chains_opt(src, bucket);
+                    let log_chains = self.bucket_payload_log_chain_opt(src, bucket);
                     let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-                    let successor =
-                        self.bucket_successor_start_after_bucket(vertex, bucket_index, bucket)?;
-                    let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
+                    let successor = self.bucket_slab_window_end_exclusive_after_bucket(
+                        vertex,
+                        bucket_index,
+                        bucket,
+                    )?;
+                    let acc = LabelEdgeSpanAccess::with_bucket(
+                        &self.buckets,
+                        slot,
+                        *bucket,
+                        successor,
+                        src,
+                    );
                     for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
                         let slot_index = edge.edge_slot_index_raw();
                         visit(self.attach_edge_inline_value(
@@ -551,15 +778,15 @@ where
         buckets.sort_by_key(|(_, _, bucket)| bucket.stored_slots);
         for (slot, bucket_index, bucket) in buckets {
             let successor =
-                self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?;
+                self.bucket_slab_window_end_exclusive_after_bucket(&vertex, bucket_index, &bucket)?;
             if needle
                 .edge_label_id_raw()
                 .is_some_and(|needle_label| needle_label != bucket.bucket_label_key().raw())
             {
                 continue;
             }
-            let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
-            let acc = LabelEdgeSpanAccess::new(&self.buckets, slot, successor, src);
+            let log_chains = self.bucket_payload_log_chain_opt(src, &bucket);
+            let acc = LabelEdgeSpanAccess::with_bucket(&self.buckets, slot, bucket, successor, src);
             for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
                 let slot_index = edge.edge_slot_index_raw();
                 let edge = self.attach_edge_inline_value(
@@ -745,15 +972,47 @@ where
         E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
-        self.remove_edge_matching_skip_leaf_cascade(src, label_id, matches)
+        Ok(self
+            .remove_edge_matching_with_move(src, label_id, matches)?
+            .map(|removal| removal.removed))
+    }
+
+    /// Removes the first matching edge and reports the bounded survivor slot shifts produced by
+    /// overflow unlink.
+    pub fn remove_edge_matching_with_move<F>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        matches: F,
+    ) -> Result<Option<EdgeRemoval<E>>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        F: FnMut(&E) -> bool,
+    {
+        self.remove_edge_matching_skip_leaf_cascade_with_move(src, label_id, matches)
     }
 
     pub(crate) fn remove_edge_matching_skip_leaf_cascade<F>(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
-        mut matches: F,
+        matches: F,
     ) -> Result<Option<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        F: FnMut(&E) -> bool,
+    {
+        Ok(self
+            .remove_edge_matching_skip_leaf_cascade_with_move(src, label_id, matches)?
+            .map(|removal| removal.removed))
+    }
+
+    pub(crate) fn remove_edge_matching_skip_leaf_cascade_with_move<F>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        mut matches: F,
+    ) -> Result<Option<EdgeRemoval<E>>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
@@ -771,7 +1030,7 @@ where
                 return Ok(None);
             }
             if bucket.overflow_log_head() >= 0 {
-                let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
+                let log_chains = self.bucket_payload_log_chain_opt(src, &bucket);
                 let slab_prefix_slots = self.bucket_slab_prefix_slots(src, &bucket);
                 for slot_index in 0..slab_prefix_slots {
                     let edge_slot =
@@ -790,26 +1049,34 @@ where
                         edge.with_label_id(bucket.bucket_label_key().raw()),
                         log_chains.as_ref(),
                     )?;
-                    if matches(&edge_with_value)
-                        && self
-                            .remove_edge_at_slot(src, label_id, slot_index)?
-                            .is_some()
-                    {
-                        return Ok(Some(edge_with_value));
+                    if matches(&edge_with_value) {
+                        let moves = self.remove_bucket_edge_at_location(
+                            src,
+                            &vertex,
+                            slot,
+                            bucket,
+                            slot_index,
+                            BucketEdgeDeleteLocation::Slab {
+                                physical_slot: edge_slot,
+                            },
+                        )?;
+                        return Ok(Some(EdgeRemoval {
+                            removed: edge_with_value,
+                            moves,
+                        }));
                     }
                 }
                 let leaf = self.payload_log_leaf(src);
                 let chain = self
                     .edges
                     .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-                for (ordinal, entry_idx) in chain.into_iter().enumerate() {
+                for (ordinal, entry_idx) in chain.iter().copied().enumerate() {
                     let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
                     if edge.is_tombstone_edge() {
                         continue;
                     }
                     let slot_index = bucket
                         .stored_slots
-                        .saturating_sub(self.bucket_edge_log_slots(src, &bucket))
                         .checked_add(
                             u32::try_from(ordinal)
                                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
@@ -824,12 +1091,32 @@ where
                         edge.with_label_id(bucket.bucket_label_key().raw()),
                         log_chains.as_ref(),
                     )?;
-                    if matches(&edge_with_value)
-                        && self
-                            .remove_edge_at_slot(src, label_id, slot_index)?
-                            .is_some()
-                    {
-                        return Ok(Some(edge_with_value));
+                    if matches(&edge_with_value) {
+                        let moves = self.overflow_chain_slot_moves_after_delete(
+                            leaf,
+                            &chain,
+                            ordinal,
+                            bucket.stored_slots,
+                            bucket.bucket_label_key(),
+                        )?;
+                        let newer_entry_idx = chain.get(ordinal + 1).copied();
+                        let committed_moves = self.remove_bucket_edge_at_location(
+                            src,
+                            &vertex,
+                            slot,
+                            bucket,
+                            slot_index,
+                            BucketEdgeDeleteLocation::OverflowLog {
+                                leaf,
+                                entry_idx,
+                                newer_entry_idx,
+                                moves,
+                            },
+                        )?;
+                        return Ok(Some(EdgeRemoval {
+                            removed: edge_with_value,
+                            moves: committed_moves,
+                        }));
                     }
                 }
                 return Ok(None);
@@ -837,7 +1124,7 @@ where
             let stored = bucket.stored_slots;
             let mut found = None;
             if bucket.is_payload_allocated() {
-                let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
+                let log_chains = self.bucket_payload_log_chain_opt(src, &bucket);
                 for offset in 0..stored {
                     let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(offset))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -855,7 +1142,13 @@ where
                         log_chains.as_ref(),
                     )?;
                     if matches(&edge_with_value) {
-                        found = Some((offset, edge_with_value));
+                        found = Some((
+                            offset,
+                            edge_with_value,
+                            BucketEdgeDeleteLocation::Slab {
+                                physical_slot: edge_slot,
+                            },
+                        ));
                         break;
                     }
                 }
@@ -868,31 +1161,29 @@ where
                         continue;
                     }
                     if matches(&edge) {
-                        found = Some((offset, edge));
+                        found = Some((
+                            offset,
+                            edge,
+                            BucketEdgeDeleteLocation::Slab {
+                                physical_slot: edge_slot,
+                            },
+                        ));
                         break;
                     }
                 }
             }
-            let Some((local_index, removed)) = found else {
+            let Some((local_index, removed, location)) = found else {
                 return Ok(None);
             };
-            let rm_slot = checked_add_slot_index(bucket.edge_start(), u64::from(local_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            self.edges
-                .write_slot(rm_slot, E::tombstone_edge())
-                .map_err(LabeledOperationError::from)?;
-            let updated = bucket.after_slab_tombstone_delete();
-            let updated = if updated.degree() == 0 && updated.overflow_log_head() < 0 {
-                self.release_bucket_payload_span(src, &bucket)?;
-                updated
-                    .with_inline_value_log_head(-1)
-                    .with_edge_range(updated.edge_start(), 0)
-            } else {
-                updated
-            };
-            self.buckets.write_label_bucket_slot(slot, updated)?;
-            self.decrement_edge_counts_after_remove(src)?;
-            return Ok(Some(removed));
+            let moves = self.remove_bucket_edge_at_location(
+                src,
+                &vertex,
+                slot,
+                bucket,
+                local_index,
+                location,
+            )?;
+            return Ok(Some(EdgeRemoval { removed, moves }));
         }
         Ok(None)
     }
@@ -952,6 +1243,9 @@ mod tests {
         graph
             .insert_edge(VertexId::from(0), road, TestEdge { target: 12 })
             .unwrap();
+        graph
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
         assert!(
             graph
                 .remove_edge_matching(VertexId::from(0), road, |edge| edge.target == 11)
@@ -993,13 +1287,13 @@ mod tests {
             ]
         );
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-        assert_eq!(bucket.stored_slots, 4);
-        assert_eq!(bucket.stored_slots.saturating_sub(bucket.degree), 1);
+        assert_eq!(bucket.stored_slots, 3);
+        assert!(bucket.overflow_log_head() >= 0);
         assert_eq!(bucket.degree(), 3);
     }
 
     #[test]
-    fn removing_log_edge_tombstone_preserves_later_slot() {
+    fn removing_log_edge_unlinks_without_tombstone_and_preserves_scan_order() {
         let graph = inline_value_test_graph_with_capacity(1 << 20);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -1029,13 +1323,30 @@ mod tests {
         };
         let later_slot_before = slot_of(34);
         let removed_slot = slot_of(33);
+        let head_slot_before = slot_of(35);
 
-        let removed = graph
-            .remove_edge_matching(VertexId::from(0), road, |edge| edge.target == 33)
+        let removal = graph
+            .remove_edge_matching_with_move(VertexId::from(0), road, |edge| edge.target == 33)
             .unwrap()
             .expect("log edge removed");
-        assert_eq!(removed.target, 33);
-        assert_eq!(slot_of(34), later_slot_before);
+        assert_eq!(removal.removed.target, 33);
+        assert_eq!(
+            removal.moves,
+            vec![
+                EdgeSlotMove {
+                    label_id: road,
+                    old_slot_index: later_slot_before,
+                    new_slot_index: removed_slot,
+                },
+                EdgeSlotMove {
+                    label_id: road,
+                    old_slot_index: head_slot_before,
+                    new_slot_index: head_slot_before - 1,
+                },
+            ]
+        );
+        assert_eq!(slot_of(34), later_slot_before - 1);
+        assert_eq!(slot_of(35), head_slot_before - 1);
         assert!(
             graph
                 .iter_edges_for_label(VertexId::from(0), road)
@@ -1048,16 +1359,69 @@ mod tests {
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         let slab_prefix = graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket);
-        let log_ordinal = removed_slot
-            .checked_sub(slab_prefix)
-            .expect("removed edge was log-backed");
         let leaf = graph.payload_log_leaf(VertexId::from(0));
         let chain = graph
             .edges()
             .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-        let entry_idx = chain[log_ordinal as usize];
-        let (_, edge) = graph.edges().read_overflow_log_entry(leaf, entry_idx);
-        assert!(edge.is_deleted_slot());
+        assert_eq!(chain.len() as u32, bucket.degree() - slab_prefix);
+        assert!(chain.into_iter().all(|entry_idx| {
+            let (_, edge) = graph.edges().read_overflow_log_entry(leaf, entry_idx);
+            !edge.is_deleted_slot()
+        }));
+        let moved = graph
+            .iter_edges_for_label(VertexId::from(0), road)
+            .unwrap()
+            .into_iter()
+            .find(|edge| edge.target == 35)
+            .expect("newest edge survives at the newest slot");
+        assert_eq!(moved.value, 35u16.to_le_bytes());
+    }
+
+    #[test]
+    fn direct_unlink_preserves_legacy_tombstone_head_compatibility() {
+        let graph = inline_value_test_graph();
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        for target in [10, 11, 12] {
+            graph
+                .insert_edge(src, road, PayloadTestEdge::with_bytes(target, &[]))
+                .unwrap();
+        }
+        let vertex = graph.vertices().get(src);
+        let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        let leaf = graph.payload_log_leaf(src);
+        graph
+            .edges()
+            .rewrite_overflow_log_entry_tombstone(leaf, bucket.overflow_log_head() as u32)
+            .unwrap();
+        graph
+            .buckets()
+            .write_label_bucket_degree(bucket_slot, 2)
+            .unwrap();
+
+        let removal = graph
+            .remove_edge_matching_with_move(src, road, |edge| edge.target == 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(removal.removed.target, 10);
+        assert_eq!(
+            removal.moves,
+            vec![EdgeSlotMove {
+                label_id: road,
+                old_slot_index: 1,
+                new_slot_index: 0,
+            }]
+        );
+        assert_eq!(
+            graph
+                .iter_edges_for_label(src, road)
+                .unwrap()
+                .into_iter()
+                .map(|edge| (edge.slot_index, edge.target))
+                .collect::<Vec<_>>(),
+            vec![(0, 11)]
+        );
     }
 
     #[test]

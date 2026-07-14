@@ -41,12 +41,12 @@ pub enum MaintenanceWorkItem {
         /// Vertex to compact in both stores.
         vid: VertexId,
     },
-    /// Compact only the vertex value byte span (allocation/log cleanup).
+    /// Reserved stable tag for independently scheduled value-span maintenance.
     CompactVertexValueSpan {
         /// Vertex owning the value span.
         vid: VertexId,
     },
-    /// Compact edge and payload spans together (preferred for value-bearing labels).
+    /// Legacy stable tag. It now advances edge compaction only; value maintenance is independent.
     CompactVertexEdgeAndValueSpan {
         /// Vertex owning both spans.
         vid: VertexId,
@@ -254,6 +254,19 @@ mod tests {
                 .remove_edge_matching(VertexId::from(0), label, |edge| edge.0 == target)
                 .unwrap();
         }
+        assert_eq!(
+            graph
+                .inner()
+                .iter_edges_for_label(VertexId::from(0), label)
+                .unwrap(),
+            vec![
+                TestEdge(29),
+                TestEdge(28),
+                TestEdge(27),
+                TestEdge(26),
+                TestEdge(25),
+            ]
+        );
 
         graph
             .mark_compact_vertex_edge_span(VertexId::from(0), 0)
@@ -372,6 +385,10 @@ mod tests {
                 .insert_edge(VertexId::from(0), label, TestEdge(target))
                 .unwrap();
         }
+        graph
+            .inner()
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
         for target in 0..72u32 {
             graph
                 .remove_edge_matching(VertexId::from(0), label, |edge| edge.0 == target)
@@ -804,8 +821,14 @@ where
                                     resume_bucket_index: next,
                                 })
                             }
-                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_))
-                            | Ok(VertexEdgeSpanCompactOneStep::Finished) => {
+                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index: 0,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::Finished) => {
                                 report.rebalanced_segments =
                                     report.rebalanced_segments.saturating_add(1);
                                 None
@@ -855,8 +878,14 @@ where
                                     resume_bucket_index: next,
                                 })
                             }
-                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_))
-                            | Ok(VertexEdgeSpanCompactOneStep::Finished) => {
+                            Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_)) => {
+                                Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
+                                    vid,
+                                    anchor_bucket_index,
+                                    resume_bucket_index: 0,
+                                })
+                            }
+                            Ok(VertexEdgeSpanCompactOneStep::Finished) => {
                                 report.rebalanced_segments =
                                     report.rebalanced_segments.saturating_add(1);
                                 None

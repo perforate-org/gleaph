@@ -90,7 +90,7 @@ pub struct E2eInsertDirectedEdgeWithPropertyArgs {
     pub value: i64,
 }
 
-/// Arguments for [`super::handlers::e2e_insert_directed_edge_with_payload`] (PocketIC E2E only).
+/// Arguments for [`super::handlers::e2e_insert_directed_edge_with_inline_value`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct E2eInsertDirectedEdgeWithPayloadArgs {

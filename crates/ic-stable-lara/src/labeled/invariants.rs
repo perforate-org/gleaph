@@ -15,13 +15,14 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-/// Dense slab payload reads: no payload log and stored width matches live degree.
+/// Dense slab payload reads: no payload log and the payload-owned slab width
+/// matches the live degree. Edge slab residency is intentionally irrelevant.
 #[inline]
 pub(crate) fn bucket_dense_slab_payload_readable(bucket: &LabelBucket) -> bool {
     bucket.is_payload_allocated()
         && bucket.inline_value_byte_width() > 0
         && bucket.inline_value_log_len() == 0
-        && bucket.stored_slots == bucket.degree()
+        && bucket.inline_value_slab_slots() == bucket.degree()
 }
 
 /// Dense payload batch traversal: no edge/payload logs and full slab residency.
@@ -31,7 +32,7 @@ pub(crate) fn bucket_dense_inline_value_batch_eligible(bucket: &LabelBucket) -> 
         && bucket.inline_value_byte_width() > 0
         && bucket.inline_value_log_head() < 0
         && bucket.overflow_log_head() < 0
-        && bucket.stored_slots == bucket.degree()
+        && bucket.inline_value_slab_slots() == bucket.degree()
 }
 
 /// Contiguous ascending runs in a sorted slot list: `(first_slot, run_len)`.
@@ -82,12 +83,7 @@ pub(crate) fn bucket_resident_payload_slots(bucket: &LabelBucket) -> u32 {
     if !bucket.is_payload_allocated() || bucket.inline_value_byte_width() == 0 {
         return 0;
     }
-    let inline_value_log_len = u32::from(bucket.inline_value_log_len());
-    if inline_value_log_len > 0 {
-        bucket.stored_slots.saturating_sub(inline_value_log_len)
-    } else {
-        bucket.stored_slots.max(bucket.degree)
-    }
+    bucket.inline_value_slab_slots()
 }
 
 #[inline]
@@ -328,7 +324,8 @@ pub(crate) fn assert_labeled_edge_store_pma_counts<E, M>(
         if !leaf_has_bypass {
             let span_rec = edges.span_meta_store().get(u64::from(leaf));
             let expected_total = if span_rec.physical_start != SPAN_PHYSICAL_UNASSIGNED {
-                i64::try_from(labeled_leaf_physical_block_len(seg)).unwrap_or(i64::MAX)
+                per_leaf_total[leaf as usize]
+                    .max(i64::try_from(labeled_leaf_physical_block_len(seg)).unwrap_or(i64::MAX))
             } else {
                 per_leaf_total[leaf as usize]
             };

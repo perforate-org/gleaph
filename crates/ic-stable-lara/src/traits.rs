@@ -68,6 +68,17 @@ pub trait CsrVertex: Storable + Copy {
     /// Returns a copy with a new overflow log head.
     fn with_log_head(self, idx: i32) -> Self;
 
+    /// When true, the CSR slab-window end for this row is governed solely by
+    /// the next neighbor's `base_slot_start()`; placement metadata (span_meta)
+    /// is not consulted. Used by synthetic multi-row accessors such as
+    /// [`crate::labeled::access::LabelEdgeSpanAccess`] so clean query scans
+    /// stay independent of PMA maintenance state.
+    #[inline]
+    fn trusts_neighbor_boundary(self) -> bool {
+        let _ = self;
+        false
+    }
+
     /// Minimum exclusive end for the next on-slab append at `base + stored_degree()`.
     ///
     /// Default-label bypass rows return `base + stored_slots + 1` so [`crate::lara::edge::EdgeStore::insert_edge`]
