@@ -1,6 +1,8 @@
 #![cfg(feature = "format")]
 
-use gleaph_gql::{ClauseBreakPolicy, FormatError, FormatOptions, KeywordCase, format_query};
+use gleaph_gql::{
+    ClauseBreakPolicy, FormatError, FormatOptions, ItemBreakPolicy, KeywordCase, format_query,
+};
 
 #[test]
 fn formats_standard_query_and_is_stable() {
@@ -40,6 +42,51 @@ fn formatting_options_change_presentation_policy() {
     };
     let formatted = format_query("MATCH (n) RETURN n", &options).unwrap();
     assert_eq!(formatted, "MATCH (n) RETURN n");
+}
+
+#[test]
+fn compact_formatting_wraps_projection_items_at_line_width() {
+    assert_eq!(FormatOptions::default().line_width, 100);
+    let options = FormatOptions {
+        clause_breaks: ClauseBreakPolicy::Compact,
+        result_item_breaks: ItemBreakPolicy::Compact,
+        line_width: 30,
+        ..FormatOptions::default()
+    };
+    let formatted = format_query(
+        "MATCH (n) RETURN n.first_name AS first_name, n.last_name AS last_name",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        formatted,
+        "MATCH (n) RETURN\n  n.first_name AS first_name,\n  n.last_name AS last_name"
+    );
+    assert!(
+        formatted
+            .lines()
+            .all(|line| line.len() <= options.line_width)
+    );
+}
+
+#[test]
+fn match_where_wraps_as_a_block_when_match_exceeds_line_width() {
+    let options = FormatOptions::default();
+    let formatted = format_query(
+        "MATCH (u:User {demo_id: 1})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE",
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        formatted,
+        "MATCH (u:User {demo_id: 1})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User)\n  WHERE p.is_public = TRUE"
+    );
+    assert!(
+        formatted
+            .lines()
+            .all(|line| line.len() <= options.line_width)
+    );
+    assert_eq!(format_query(&formatted, &options).unwrap(), formatted);
 }
 
 #[test]

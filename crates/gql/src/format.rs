@@ -32,8 +32,9 @@ pub enum ItemBreakPolicy {
 pub struct FormatOptions {
     /// Repeated for each nesting level. Must be non-empty.
     pub indentation: String,
-    /// Preferred width for future wrapping decisions; the formatter does not
-    /// split an individual expression to satisfy this hint.
+    /// Maximum preferred width for emitted lines. The formatter wraps at
+    /// clause and projection-item boundaries when possible, but does not split
+    /// an individual expression or graph pattern to satisfy this limit.
     pub line_width: usize,
     /// Casing used for formatter-emitted keywords.
     pub keyword_case: KeywordCase,
@@ -194,14 +195,54 @@ impl<'a> Formatter<'a> {
         if lines.is_empty() {
             return self.unsupported("empty linear query");
         }
-        Ok(match self.options.clause_breaks {
+        Ok(self.render_lines(&lines))
+    }
+    fn render_lines(&self, lines: &[String]) -> String {
+        match self.options.clause_breaks {
             ClauseBreakPolicy::EveryClause => lines.join("\n"),
-            ClauseBreakPolicy::Compact => lines
-                .iter()
-                .map(|line| line.trim())
-                .collect::<Vec<_>>()
-                .join(" "),
-        })
+            ClauseBreakPolicy::Compact => {
+                let mut out = String::new();
+                let mut current_width = 0;
+                for line in lines {
+                    let raw_block = line.trim_end();
+                    let compact_block = raw_block.trim_start();
+                    if compact_block.is_empty() {
+                        continue;
+                    }
+                    if compact_block.contains('\n') {
+                        if !out.is_empty() {
+                            out.push('\n');
+                        }
+                        out.push_str(compact_block);
+                        current_width = compact_block.lines().last().map_or(0, str::len);
+                        continue;
+                    }
+                    let separator_width = usize::from(current_width > 0);
+                    if current_width > 0
+                        && current_width + separator_width + compact_block.len()
+                            > self.options.line_width
+                    {
+                        out.push('\n');
+                        current_width = 0;
+                    }
+                    let block = if current_width == 0
+                        && out.ends_with('\n')
+                        && raw_block.len() != compact_block.len()
+                    {
+                        raw_block
+                    } else {
+                        compact_block
+                    };
+                    if current_width > 0 {
+                        out.push(' ');
+                        current_width += 1;
+                    }
+                    out.push_str(block);
+                    current_width += block.len();
+                }
+                out
+            }
+        }
     }
     fn part(&mut self, p: &SimpleQueryStatement) -> Result<String, FormatError> {
         match p {
@@ -214,6 +255,19 @@ impl<'a> Formatter<'a> {
                 } else {
                     self.kw("MATCH")
                 };
+                if m.graph_name.is_none()
+                    && let Some(where_clause) = &m.pattern.where_clause
+                {
+                    let paths = self.pattern_paths(&m.pattern)?;
+                    let condition = format!("{} {}", self.kw("WHERE"), self.expr(where_clause)?);
+                    let inline_len = prefix.len() + 1 + paths.len() + 1 + condition.len();
+                    if inline_len > self.options.line_width {
+                        return Ok(format!(
+                            "{} {}\n{}{}",
+                            prefix, paths, self.options.indentation, condition
+                        ));
+                    }
+                }
                 let mut s = format!("{} {}", prefix, self.pattern(&m.pattern)?);
                 if let Some(g) = &m.graph_name {
                     s.push_str(&format!(" {} {}", self.kw("ON"), self.name(g)));
@@ -376,23 +430,37 @@ impl<'a> Formatter<'a> {
         if items.is_empty() {
             lines.push(head);
         } else if self.options.result_item_breaks == ItemBreakPolicy::Compact {
-            lines.push(format!("{} {}", head, self.items_text(items)?));
+            let items_text = self.items_text(items)?;
+            if head.len() + 1 + items_text.len() <= self.options.line_width {
+                lines.push(format!("{} {}", head, items_text));
+            } else {
+                lines.push(head);
+                self.append_items(&mut lines, items)?;
+            }
         } else {
             lines.push(head);
-            for (i, item) in items.iter().enumerate() {
-                let comma = if i + 1 < items.len() { "," } else { "" };
-                let item = self.item(item)?;
-                lines.push(if self.options.comma_after_break {
-                    format!("{}{}{}", self.options.indentation, item, comma)
-                } else if i == 0 {
-                    format!("{}{}", self.options.indentation, item)
-                } else {
-                    format!("{}, {}", self.options.indentation, item)
-                });
-            }
+            self.append_items(&mut lines, items)?;
         }
         self.append_result_clauses(&mut lines, clauses)?;
         Ok(lines)
+    }
+    fn append_items(
+        &mut self,
+        lines: &mut Vec<String>,
+        items: &[ReturnItem],
+    ) -> Result<(), FormatError> {
+        for (i, item) in items.iter().enumerate() {
+            let comma = if i + 1 < items.len() { "," } else { "" };
+            let item = self.item(item)?;
+            lines.push(if self.options.comma_after_break {
+                format!("{}{}{}", self.options.indentation, item, comma)
+            } else if i == 0 {
+                format!("{}{}", self.options.indentation, item)
+            } else {
+                format!(", {}{}", self.options.indentation, item)
+            });
+        }
+        Ok(())
     }
     fn append_result_clauses(
         &mut self,
@@ -470,19 +538,21 @@ impl<'a> Formatter<'a> {
         Ok(format!("{} {}", self.kw("ORDER BY"), v.join(", ")))
     }
     fn pattern(&mut self, p: &GraphPattern) -> Result<String, FormatError> {
-        if p.match_mode.is_some() || p.keep.is_some() {
-            return self.unsupported("graph pattern modifier");
-        }
-        let mut s = p
-            .paths
-            .iter()
-            .map(|x| self.path(x))
-            .collect::<Result<Vec<_>, _>>()?
-            .join(", ");
+        let mut s = self.pattern_paths(p)?;
         if let Some(w) = &p.where_clause {
             s.push_str(&format!(" {} {}", self.kw("WHERE"), self.expr(w)?));
         }
         Ok(s)
+    }
+    fn pattern_paths(&mut self, p: &GraphPattern) -> Result<String, FormatError> {
+        if p.match_mode.is_some() || p.keep.is_some() {
+            return self.unsupported("graph pattern modifier");
+        }
+        Ok(p.paths
+            .iter()
+            .map(|x| self.path(x))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", "))
     }
     fn path(&mut self, p: &PathPattern) -> Result<String, FormatError> {
         if p.variable.is_some() || p.prefix.is_some() || !p.extensions.is_empty() {

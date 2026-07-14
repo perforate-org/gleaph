@@ -143,7 +143,9 @@ as independently reviewable fields:
 
 - an indentation unit supplied as an arbitrary non-empty string, such as `" "`,
   `"  "`, `"    "`, or `"\t"`; the formatter repeats this unit for each nesting level;
-- a line-width hint;
+- a maximum preferred line width; when possible, the formatter wraps at clause or
+  projection-item boundaries and does not split an individual expression or graph
+  pattern;
 - keyword casing: uppercase, lowercase, or preserve AST spelling where available;
 - clause line-break policy;
 - comma-after-break policy; and
