@@ -284,7 +284,7 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       description: "Keep only public posts in the search pool.",
     },
     {
-      queryText: "SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10)",
+      queryText: "SEARCH p IN (\n  VECTOR INDEX post_vec\n  FOR $query\n  LIMIT 10\n)",
       label: "Vector search",
       description:
         "Search the post_vec vector index using the bound query vector parameter and return the 10 nearest neighbors.",
@@ -346,7 +346,7 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       description: "Restrict the starting user to Alice (demo_id 1) and keep only public posts.",
     },
     {
-      queryText: "SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10)",
+      queryText: "SEARCH p IN (\n  VECTOR INDEX post_vec\n  FOR $query\n  LIMIT 10\n)",
       label: "Vector search",
       description:
         "Within the graph-constrained posts, search the post_vec vector index for the 10 nearest neighbors to the query vector.",

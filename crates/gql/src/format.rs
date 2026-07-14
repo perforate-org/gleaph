@@ -830,11 +830,10 @@ impl<'a> Formatter<'a> {
             ));
         }
         s.push_str(&format!(
-            "{}{} {}\n{}) {} {}",
+            "{}{} {}\n) {} {}",
             self.options.indentation,
             self.kw("LIMIT"),
             self.expr(&spec.limit)?,
-            self.options.indentation,
             self.kw(metric),
             self.kw("AS")
         ));

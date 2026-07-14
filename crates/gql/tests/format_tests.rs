@@ -125,7 +125,7 @@ fn formats_social_demo_queries_and_preserves_nested_search_limit() {
     let search = format_query(queries[3], &options).unwrap();
     assert!(search.contains("VECTOR INDEX post_vec\n"));
     assert!(search.contains("LIMIT 10\n") || search.contains("LIMIT 10"));
-    assert!(search.contains(") DISTANCE AS distance"));
+    assert!(search.contains("\n) DISTANCE AS distance"));
 }
 
 #[cfg(not(feature = "gleaph"))]
