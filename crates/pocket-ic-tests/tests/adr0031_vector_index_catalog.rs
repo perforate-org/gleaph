@@ -24,8 +24,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId, VectorActivationBlockReason};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorMetric, VectorSearchResult,
-    VectorSubject,
+    MAX_VECTOR_SEARCH_TOP_K, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorMetric,
+    VectorSearchResult, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, e2e_insert_vertex, gql_query_as_admin,
@@ -671,6 +671,60 @@ fn router_vector_search(
         )
         .expect("router vector_search call");
     Decode!(&bytes, Result<VectorSearchResult, RouterError>).expect("decode router search result")
+}
+
+#[test]
+fn vector_and_gql_search_reject_top_k_above_shared_bound() {
+    let env = install_single_shard_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register(
+        &env,
+        &RegisterVectorIndexArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            embedding_name: EMBEDDING_NAME.to_string(),
+            index_id: INDEX_ID,
+            dims: DIMS,
+            metric: Some(VectorMetric::L2Squared),
+            target: Some(vector),
+            if_not_exists: false,
+        },
+    )
+    .expect("register vector index");
+    fully_activate_single_shard_index(&env, vector);
+
+    let rejected_router = router_vector_search(&env, 1.0, MAX_VECTOR_SEARCH_TOP_K + 1)
+        .expect_err("Router vector_search must reject an oversized top_k");
+    assert!(
+        matches!(rejected_router, RouterError::InvalidArgument(ref message) if message.contains("top_k")),
+        "unexpected Router error: {rejected_router:?}"
+    );
+
+    let query = format!(
+        "MATCH (d) SEARCH d IN (VECTOR INDEX {EMBEDDING_NAME} FOR $query LIMIT {}) DISTANCE AS distance RETURN d, distance",
+        MAX_VECTOR_SEARCH_TOP_K + 1
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(1.0)),
+    )])
+    .expect("encode query params");
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "gql_query",
+            Encode!(&query, &params).expect("encode gql query"),
+        )
+        .expect("gql_query call");
+    let rejected_gql: Result<GqlQueryResult, RouterError> =
+        Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql result");
+    let rejected_gql = rejected_gql.expect_err("GQL SEARCH must reject an oversized LIMIT");
+    assert!(
+        rejected_gql.to_string().contains("SEARCH LIMIT"),
+        "unexpected GQL error: {rejected_gql:?}"
+    );
 }
 
 fn vertex_element_id(env: &FederationEnv) -> gleaph_gql_ic::IcWireValue {
