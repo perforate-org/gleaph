@@ -394,243 +394,243 @@
     },
     {
       "key": "social-seed-edge-mei-posted-3",
-      "gql": "MATCH (a:User {user_id: 'mei', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'mei-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 63, demo_graph: 'social', body: '仕組みの裏側を見せるときも、要点から始めることを忘れないようにしたいです。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'mei', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'mei-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 63, demo_graph: 'social', body: '旅行の写真を整理中。景色12枚、食べ物47枚。まあ、そうなるよね。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-mei-posted-2",
-      "gql": "MATCH (a:User {user_id: 'mei', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'mei-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 62, demo_graph: 'social', body: '読み手が次に知りたいことを予測して、説明の順番を組み立てています。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'mei', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'mei-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 62, demo_graph: 'social', body: '読みたい本を買ったはずなのに、料理の本だけが増えていく。なぜ。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-mei-posted-1",
-      "gql": "MATCH (a:User {user_id: 'mei', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'mei-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 61, demo_graph: 'social', body: '難しい概念は、具体的な経路や例に置き換えると共有しやすくなります。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'mei', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'mei-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 61, demo_graph: 'social', body: '今日はプリン。以上です。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-takumi-posted-3",
-      "gql": "MATCH (a:User {user_id: 'takumi', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'takumi-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 84, demo_graph: 'social', body: '複数のサービスをまたぐ処理ほど、途中の状態を説明できる設計が役立ちます。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'takumi', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'takumi-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 84, demo_graph: 'social', body: '休日に店を3軒回ったら、最後はカフェで動けなくなりました。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-takumi-posted-2",
-      "gql": "MATCH (a:User {user_id: 'takumi', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'takumi-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 83, demo_graph: 'social', body: '運用で困る前に、観測したい状態とその持ち主を決めておきます。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'takumi', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'takumi-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 83, demo_graph: 'social', body: 'ライブのチケット取った。帰りの電車はまだ決めてない。たぶん大丈夫。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-takumi-posted-1",
-      "gql": "MATCH (a:User {user_id: 'takumi', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'takumi-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 82, demo_graph: 'social', body: '検索の速さだけでなく、結果がどのデータに支えられているかも重要です。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'takumi', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'takumi-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 82, demo_graph: 'social', body: '今日のラーメン、スープが最後まで熱かった。大事。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-sora-posted-3",
-      "gql": "MATCH (a:User {user_id: 'sora', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'sora-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 81, demo_graph: 'social', body: '目立つ機能より、毎日安心して使える小さな改善を大事にしています。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'sora', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'sora-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 81, demo_graph: 'social', body: '毎日通る道に新しい花屋さんができてた。こういうのが一番うれしい。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-sora-posted-2",
-      "gql": "MATCH (a:User {user_id: 'sora', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'sora-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 80, demo_graph: 'social', body: '関係が増えたときに迷わないよう、最初から名前と責任を整えておきたいです。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'sora', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'sora-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 80, demo_graph: 'social', body: '連絡先に店の名前まで入れておく派です。あとで絶対わからなくなるから。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-sora-posted-1",
-      "gql": "MATCH (a:User {user_id: 'sora', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'sora-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 79, demo_graph: 'social', body: '使う人の状況を想像して初めて、便利さと安全性のバランスが見えてきます。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'sora', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'sora-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 79, demo_graph: 'social', body: 'おみやげは小さな焼き菓子にしがち。持ち運びやすいし、すぐ食べられるので。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-yui-posted-3",
-      "gql": "MATCH (a:User {user_id: 'yui', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'yui-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 87, demo_graph: 'social', body: '仕組みの意図をコードとデータの両方から読めることが理想です。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'yui', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'yui-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 87, demo_graph: 'social', body: '旅の予定は半分だけ決めて、あとは現地で考えるくらいが好きです。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-yui-posted-2",
-      "gql": "MATCH (a:User {user_id: 'yui', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'yui-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 86, demo_graph: 'social', body: '良い検索は、答えだけでなく見つけた理由も利用者に返してくれます。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'yui', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'yui-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 86, demo_graph: 'social', body: '読み終わったあと、しばらく何もしたくなくなる本が好きです。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-yui-posted-1",
-      "gql": "MATCH (a:User {user_id: 'yui', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'yui-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 85, demo_graph: 'social', body: 'データのつながりをそのまま確認できると、調査の最初の一歩が軽くなります。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'yui', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'yui-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 85, demo_graph: 'social', body: '祖母のレシピと同じ名前のお菓子を見つけた。今度つくる。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-ren-posted-3",
-      "gql": "MATCH (a:User {user_id: 'ren', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ren-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 78, demo_graph: 'social', body: 'エラーを隠さず、どの境界で起きたかを伝えることを心がけています。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'ren', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ren-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 78, demo_graph: 'social', body: '失敗パンです。見た目はすごいけど、味は普通でした。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-ren-posted-2",
-      "gql": "MATCH (a:User {user_id: 'ren', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ren-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 77, demo_graph: 'social', body: 'データの所有者がはっきりしている設計は、変更の影響範囲も追いやすいです。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'ren', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ren-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 77, demo_graph: 'social', body: '旅行の荷物、減らしたい。でも折りたたみ傘は必要。毎回これ。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-ren-posted-1",
-      "gql": "MATCH (a:User {user_id: 'ren', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ren-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 76, demo_graph: 'social', body: '安全な操作を標準にすると、チームの判断にかかる負担を減らせます。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'ren', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ren-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 76, demo_graph: 'social', body: '朝の散歩。知らない花、今日も増えてた。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-akari-posted-3",
-      "gql": "MATCH (a:User {user_id: 'akari', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'akari-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 29, demo_graph: 'social', body: '説明できる推薦は、結果だけを返す推薦よりも信頼して使えます。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'akari', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'akari-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 29, demo_graph: 'social', body: '雨。昔のアルバム。以上、今日はこれでいい。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-akari-posted-2",
-      "gql": "MATCH (a:User {user_id: 'akari', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'akari-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 28, demo_graph: 'social', body: '小さなチームでは、境界を明確にすることが開発速度にもつながります。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'akari', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'akari-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 28, demo_graph: 'social', body: '読みかけの本を読み終わるまで新しい本は買わない、という決意をしました（買いました）。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-akari-posted-1",
-      "gql": "MATCH (a:User {user_id: 'akari', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'akari-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 27, demo_graph: 'social', body: '複雑な仕組みほど、利用者が理由をたどれる形で見せることが大切です。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'akari', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'akari-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 27, demo_graph: 'social', body: '窓際の席、空いてた。勝ち。', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-quinn-posted-3",
-      "gql": "MATCH (a:User {user_id: 'quinn', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'quinn-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 75, demo_graph: 'social', body: 'I would rather read one precise error than debug three silent fallbacks.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'quinn', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'quinn-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 75, demo_graph: 'social', body: 'Give me one honest restaurant review. “You have to try this” tells me nothing.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-quinn-posted-2",
-      "gql": "MATCH (a:User {user_id: 'quinn', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'quinn-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 74, demo_graph: 'social', body: 'The most durable abstraction is usually the one that owns a real invariant.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'quinn', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'quinn-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 74, demo_graph: 'social', body: 'One good kitchen tool beats a drawer full of gadgets. I will not say which tool because we all have different needs.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-quinn-posted-1",
-      "gql": "MATCH (a:User {user_id: 'quinn', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'quinn-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 73, demo_graph: 'social', body: 'Open source stays healthy when maintenance work is treated as product work.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'quinn', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'quinn-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 73, demo_graph: 'social', body: 'Took the weekend off. The code is still there. Amazing.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-paul-posted-3",
-      "gql": "MATCH (a:User {user_id: 'paul', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'paul-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 72, demo_graph: 'social', body: 'Every extra join is also an extra place where the application has to reconstruct meaning.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'paul', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'paul-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 72, demo_graph: 'social', body: 'Road trip rule: stop when you see a bakery. The schedule will survive.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-paul-posted-2",
-      "gql": "MATCH (a:User {user_id: 'paul', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'paul-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 71, demo_graph: 'social', body: 'A useful loading state tells you what is happening and what you can do next.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'paul', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'paul-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 71, demo_graph: 'social', body: 'Weather forecast: shoes, umbrella, emotional preparation.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-paul-posted-1",
-      "gql": "MATCH (a:User {user_id: 'paul', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'paul-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 70, demo_graph: 'social', body: 'Calm interfaces do not hide complexity; they reveal the one piece needed for the next decision.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'paul', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'paul-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 70, demo_graph: 'social', body: 'Coffee first. The routine can wait.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-olivia-posted-3",
-      "gql": "MATCH (a:User {user_id: 'olivia', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'olivia-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 69, demo_graph: 'social', body: 'Over-fetching can hide a modeling problem; sometimes the relationship belongs in the query.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'olivia', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'olivia-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 69, demo_graph: 'social', body: 'Over-packing is a problem until the temperature drops. Then it is called foresight.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-olivia-posted-2",
-      "gql": "MATCH (a:User {user_id: 'olivia', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'olivia-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 68, demo_graph: 'social', body: 'A ranking system should make it possible to inspect the evidence behind a result.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'olivia', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'olivia-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 68, demo_graph: 'social', body: 'Lunch leaderboard today: outdoor seating wins. No notes.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-olivia-posted-1",
-      "gql": "MATCH (a:User {user_id: 'olivia', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'olivia-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 67, demo_graph: 'social', body: 'Search quality improves when relevance and the reason for relevance are designed together.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'olivia', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'olivia-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 67, demo_graph: 'social', body: 'Searching for a song by “the one with the blue album cover” is a lifestyle, apparently.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-noah-posted-3",
-      "gql": "MATCH (a:User {user_id: 'noah', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'noah-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 66, demo_graph: 'social', body: 'I keep coming back to the same rule: explain the constraint at the place it is enforced.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'noah', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'noah-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 66, demo_graph: 'social', body: 'Weather app says “clear skies.” My bag contains three rain jackets anyway.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-noah-posted-2",
-      "gql": "MATCH (a:User {user_id: 'noah', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'noah-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 65, demo_graph: 'social', body: 'Teams move faster when the system makes the safe operation the easy operation.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'noah', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'noah-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 65, demo_graph: 'social', body: 'Afternoon meeting survival kit: snacks. I have data.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-noah-posted-1",
-      "gql": "MATCH (a:User {user_id: 'noah', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'noah-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 64, demo_graph: 'social', body: 'The best developer documentation answers the next question before it becomes a support ticket.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'noah', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'noah-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 64, demo_graph: 'social', body: 'Leave one afternoon blank on every trip. Trust me on this.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-maya-posted-3",
-      "gql": "MATCH (a:User {user_id: 'maya', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'maya-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 60, demo_graph: 'social', body: 'Good defaults turn a long policy document into a decision people can make confidently.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'maya', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'maya-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 60, demo_graph: 'social', body: 'Picnic checklist: napkins, sunscreen, bottle opener. We forgot the bottle opener.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-maya-posted-2",
-      "gql": "MATCH (a:User {user_id: 'maya', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'maya-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 59, demo_graph: 'social', body: 'A recommendation is more useful when the person can see why it appeared.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'maya', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'maya-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 59, demo_graph: 'social', body: 'My friends know two things about me: I will order dessert, and I will ask for a bite of theirs.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-maya-posted-1",
-      "gql": "MATCH (a:User {user_id: 'maya', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'maya-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 58, demo_graph: 'social', body: 'Accessibility is often the shortest path to a product that feels considerate to everyone.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'maya', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'maya-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 58, demo_graph: 'social', body: 'Cafe tip: the quietest seat is usually farthest from the speakers. Also the best one.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-liam-posted-3",
-      "gql": "MATCH (a:User {user_id: 'liam', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'liam-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 57, demo_graph: 'social', body: 'Small interfaces are easier to evolve when their ownership is visible in the data model.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'liam', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'liam-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 57, demo_graph: 'social', body: 'Every apartment has one chair whose only job is holding clothes. You cannot convince me otherwise.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-liam-posted-2",
-      "gql": "MATCH (a:User {user_id: 'liam', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'liam-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 56, demo_graph: 'social', body: 'The fastest incident review I have seen started with one clear timeline and three honest questions.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'liam', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'liam-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 56, demo_graph: 'social', body: 'Tried to play guitar while assembling a shelf. The shelf won.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-liam-posted-1",
-      "gql": "MATCH (a:User {user_id: 'liam', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'liam-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 55, demo_graph: 'social', body: 'A stable API is a promise about boundaries, not just a collection of endpoints.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'liam', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'liam-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 55, demo_graph: 'social', body: 'Breakfast opinion: toast is a meal, not a side dish.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-alice-posted-3",
-      "gql": "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 32, demo_graph: 'social', body: 'This thread is exactly why I like small communities: somebody always has the missing context.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 32, demo_graph: 'social', body: 'Small communities are just people sending each other lunch recommendations and I support this.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-george-posted-2",
-      "gql": "MATCH (a:User {user_id: 'george', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'george-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 46, demo_graph: 'social', body: 'If a setup guide needs \"just trust me\" halfway through, that is probably the part to rewrite.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'george', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'george-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 46, demo_graph: 'social', body: '\"Just eyeball it,\" said the recipe. The cake is now structurally interesting.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-bob-posted-3",
-      "gql": "MATCH (a:User {user_id: 'bob', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 35, demo_graph: 'social', body: 'Pairing session at 16:00 UTC if anyone wants to sanity-check a data model before it becomes permanent.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'bob', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-3', demo_kind: 'posted'}]->(b:Post {demo_id: 35, demo_graph: 'social', body: 'My niece beat me at cards again. I am beginning to suspect this is not luck.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-hana-posted-2",
-      "gql": "MATCH (a:User {user_id: 'hana', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'hana-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 48, demo_graph: 'social', body: 'Also: write down the rollback before the launch checklist. Future-you deserves the kindness.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'hana', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'hana-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 48, demo_graph: 'social', body: 'Note to self: write down the restaurant name before Saturday. Future me is not going to remember.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-dave-posted-2",
-      "gql": "MATCH (a:User {user_id: 'dave', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 39, demo_graph: 'social', body: 'Spent an hour tuning a model and the real bug was a stale cache key. Classic Tuesday.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'dave', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 39, demo_graph: 'social', body: 'Keys were in the fridge. I have no further comments at this time.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-kira-posted-2",
-      "gql": "MATCH (a:User {user_id: 'kira', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'kira-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 54, demo_graph: 'social', body: 'Logging off to run before the rain starts. Please deploy gently while I am gone.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'kira', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'kira-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 54, demo_graph: 'social', body: 'Logging off to run before the rain. Mystery novel recs welcome.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-fiona-posted-2",
-      "gql": "MATCH (a:User {user_id: 'fiona', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'fiona-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 44, demo_graph: 'social', body: 'Small accessibility win: the focus ring is now visible in dark mode too. It should have been from day one.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'fiona', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'fiona-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 44, demo_graph: 'social', body: 'Moved the reading lamp six inches and suddenly I can actually see the page. Huge day.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-eve-posted-2",
-      "gql": "MATCH (a:User {user_id: 'eve', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 41, demo_graph: 'social', body: 'If you are joining remotely, reply with your time zone and we will keep the notes friendly to late readers.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'eve', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 41, demo_graph: 'social', body: 'Picnic research: what is your undefeated summer snack? Mine is salt-and-vinegar chips.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-jules-posted-2",
-      "gql": "MATCH (a:User {user_id: 'jules', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'jules-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 52, demo_graph: 'social', body: 'This is a lovely framing. Saving it for the next time someone asks why context belongs next to a metric.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'jules', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'jules-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 52, demo_graph: 'social', body: 'Saving this for movie night. Also saving room for snacks.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-hana-posted-1",
-      "gql": "MATCH (a:User {user_id: 'hana', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'hana-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 47, demo_graph: 'social', body: 'The best identity systems make the safe path feel like the obvious path. Still thinking about that all week.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'hana', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'hana-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 47, demo_graph: 'social', body: 'That sourdough was absurdly good. I have been thinking about it for three days.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-ian-posted-2",
-      "gql": "MATCH (a:User {user_id: 'ian', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ian-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 50, demo_graph: 'social', body: 'Tiny indie app update: exports are now boringly reliable, which is my favorite kind of release note.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'ian', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ian-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 50, demo_graph: 'social', body: 'Tiny app update: grocery exports no longer buy six jars of mustard. Personal milestone.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-alice-posted-2",
-      "gql": "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 31, demo_graph: 'social', body: 'Morning note to self: ship the helpful version first, then make it clever.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 31, demo_graph: 'social', body: 'Morning note to self: tea. More tea. Somehow I ran out again.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-carol-posted-2",
-      "gql": "MATCH (a:User {user_id: 'carol', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 37, demo_graph: 'social', body: 'Bookmarking this. The distinction between a connection and a recommendation is easy to lose in a dashboard.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'carol', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 37, demo_graph: 'social', body: 'Day trip or vacation? The answer is in how much luggage you bring.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-jules-posted-1",
-      "gql": "MATCH (a:User {user_id: 'jules', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'jules-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 51, demo_graph: 'social', body: 'Asking \"who is missing from this chart?\" has improved every project I have worked on.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'jules', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'jules-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 51, demo_graph: 'social', body: 'Who has not had coffee yet? This is important research.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-george-posted-1",
-      "gql": "MATCH (a:User {user_id: 'george', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'george-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 45, demo_graph: 'social', body: 'A five-line example in the docs beat my twenty-minute screen recording. Lesson learned.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'george', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'george-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 45, demo_graph: 'social', body: 'Went for a five-minute walk before the first meeting. Still had the third coffee.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-alice-posted-1",
-      "gql": "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 30, demo_graph: 'social', body: 'The tiny onboarding detail was the thing that finally made the flow click for me. Nice work, Bob.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 30, demo_graph: 'social', body: 'ok the cinnamon roll really IS that good', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-fiona-posted-1",
-      "gql": "MATCH (a:User {user_id: 'fiona', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'fiona-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 43, demo_graph: 'social', body: 'Replaced a loading spinner with useful skeleton copy and support tickets dropped almost immediately.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'fiona', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'fiona-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 43, demo_graph: 'social', body: 'New desk lamp. Same desk. Weirdly feels like I got promoted.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-bob-posted-2",
-      "gql": "MATCH (a:User {user_id: 'bob', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 34, demo_graph: 'social', body: 'The surprising part: the old query was not slow, it was just explaining the wrong relationship.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'bob', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 34, demo_graph: 'social', body: 'The soup was supposed to last three days. It lasted one and a half. No regrets.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-ian-posted-1",
-      "gql": "MATCH (a:User {user_id: 'ian', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ian-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 49, demo_graph: 'social', body: 'Tried planning my week on paper again. The app did not crash once, which feels promising.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'ian', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'ian-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 49, demo_graph: 'social', body: 'Planned the week on paper. Forgot the paper at home. Strong start.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-kira-posted-1",
-      "gql": "MATCH (a:User {user_id: 'kira', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'kira-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 53, demo_graph: 'social', body: 'A reminder from threat modeling: clarity is a security feature, not a nice-to-have.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'kira', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'kira-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 53, demo_graph: 'social', body: 'Running reminder: check the weather. The sky is lying.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-carol-posted-1",
-      "gql": "MATCH (a:User {user_id: 'carol', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 36, demo_graph: 'social', body: 'A good privacy setting is one you can explain to a friend without opening a second tab.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'carol', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 36, demo_graph: 'social', body: 'Museum, long walk, nap. I have solved the weekend.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-bob-posted-1",
-      "gql": "MATCH (a:User {user_id: 'bob', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 33, demo_graph: 'social', body: 'I wrote up the little graph-modeling trick that saved us a migration. The diagram is in the replies.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'bob', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 33, demo_graph: 'social', body: 'Dumplings: 10/10. Kitchen afterwards: absolutely not.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-eve-posted-1",
-      "gql": "MATCH (a:User {user_id: 'eve', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 40, demo_graph: 'social', body: 'The July meetup has a quiet room this time. Thank you to everyone who asked for one.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'eve', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 40, demo_graph: 'social', body: 'The tomatoes are finally red 🍅 Also, the July meetup has a quiet room this time.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-dave-posted-1",
-      "gql": "MATCH (a:User {user_id: 'dave', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 38, demo_graph: 'social', body: 'Semantic search is at its best when it helps you notice the useful thing you did not know to ask for.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
+      "gql": "MATCH (a:User {user_id: 'dave', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 38, demo_graph: 'social', body: 'New coffee place by the station: tiny tables, great toast, no queue before 9. I will be back.', created_at: CURRENT_TIMESTAMP, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-eve-posted-private",

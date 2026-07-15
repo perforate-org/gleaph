@@ -1,6 +1,6 @@
 id: bob
 name: Bob
-bio: Building developer tools and documenting the weird parts.
+bio: Software engineer. I cook on weekends. I take lunch recommendations very seriously.
 follows:
   - alice
   - hana

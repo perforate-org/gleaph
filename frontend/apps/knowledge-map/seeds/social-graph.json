@@ -210,7 +210,7 @@
     },
     {
       "id": "p_cc09bc6ee6f684676841",
-      "label": "仕組みの裏側を見せるときも、要点から始めることを忘れないようにしたいです。",
+      "label": "旅行の写真を整理中。景色12枚、食べ物47枚。まあ、そうなるよね。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -239,7 +239,7 @@
     },
     {
       "id": "p_dcf3eeb9e14274a75f5c",
-      "label": "読み手が次に知りたいことを予測して、説明の順番を組み立てています。",
+      "label": "読みたい本を買ったはずなのに、料理の本だけが増えていく。なぜ。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -268,7 +268,7 @@
     },
     {
       "id": "p_da3b3de07ee5b40bc715",
-      "label": "難しい概念は、具体的な経路や例に置き換えると共有しやすくなります。",
+      "label": "今日はプリン。以上です。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -297,7 +297,7 @@
     },
     {
       "id": "p_b87466cad9c655d52a4c",
-      "label": "複数のサービスをまたぐ処理ほど、途中の状態を説明できる設計が役立ちます。",
+      "label": "休日に店を3軒回ったら、最後はカフェで動けなくなりました。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -326,7 +326,7 @@
     },
     {
       "id": "p_9ea87afa52ba7c6ad383",
-      "label": "運用で困る前に、観測したい状態とその持ち主を決めておきます。",
+      "label": "ライブのチケット取った。帰りの電車はまだ決めてない。たぶん大丈夫。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -355,7 +355,7 @@
     },
     {
       "id": "p_c6c06830ff305d7c0a8a",
-      "label": "検索の速さだけでなく、結果がどのデータに支えられているかも重要です。",
+      "label": "今日のラーメン、スープが最後まで熱かった。大事。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -384,7 +384,7 @@
     },
     {
       "id": "p_7599f3407b9e5091421e",
-      "label": "目立つ機能より、毎日安心して使える小さな改善を大事にしています。",
+      "label": "毎日通る道に新しい花屋さんができてた。こういうのが一番うれしい。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -413,7 +413,7 @@
     },
     {
       "id": "p_c76030f116318fb05ed5",
-      "label": "関係が増えたときに迷わないよう、最初から名前と責任を整えておきたいです。",
+      "label": "連絡先に店の名前まで入れておく派です。あとで絶対わからなくなるから。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -442,7 +442,7 @@
     },
     {
       "id": "p_e8ba4cc216154ad58349",
-      "label": "使う人の状況を想像して初めて、便利さと安全性のバランスが見えてきます。",
+      "label": "おみやげは小さな焼き菓子にしがち。持ち運びやすいし、すぐ食べられるので。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -471,7 +471,7 @@
     },
     {
       "id": "p_40ad3983a882fb168ce3",
-      "label": "仕組みの意図をコードとデータの両方から読めることが理想です。",
+      "label": "旅の予定は半分だけ決めて、あとは現地で考えるくらいが好きです。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -500,7 +500,7 @@
     },
     {
       "id": "p_00eab7f53379bae2fb69",
-      "label": "良い検索は、答えだけでなく見つけた理由も利用者に返してくれます。",
+      "label": "読み終わったあと、しばらく何もしたくなくなる本が好きです。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -529,7 +529,7 @@
     },
     {
       "id": "p_bf394db0857ecab32e36",
-      "label": "データのつながりをそのまま確認できると、調査の最初の一歩が軽くなります。",
+      "label": "祖母のレシピと同じ名前のお菓子を見つけた。今度つくる。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -558,7 +558,7 @@
     },
     {
       "id": "p_791b46056224a17ddd78",
-      "label": "エラーを隠さず、どの境界で起きたかを伝えることを心がけています。",
+      "label": "失敗パンです。見た目はすごいけど、味は普通でした。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -587,7 +587,7 @@
     },
     {
       "id": "p_8e24c3fe16ac17752c1a",
-      "label": "データの所有者がはっきりしている設計は、変更の影響範囲も追いやすいです。",
+      "label": "旅行の荷物、減らしたい。でも折りたたみ傘は必要。毎回これ。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -616,7 +616,7 @@
     },
     {
       "id": "p_d1ff1b1ea8f3b8f89e0b",
-      "label": "安全な操作を標準にすると、チームの判断にかかる負担を減らせます。",
+      "label": "朝の散歩。知らない花、今日も増えてた。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -645,7 +645,7 @@
     },
     {
       "id": "p_4b628b40b6ecfb5d5e1e",
-      "label": "説明できる推薦は、結果だけを返す推薦よりも信頼して使えます。",
+      "label": "雨。昔のアルバム。以上、今日はこれでいい。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -674,7 +674,7 @@
     },
     {
       "id": "p_243f710255ab0998fefe",
-      "label": "小さなチームでは、境界を明確にすることが開発速度にもつながります。",
+      "label": "読みかけの本を読み終わるまで新しい本は買わない、という決意をしました（買いました）。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -703,7 +703,7 @@
     },
     {
       "id": "p_1bb97dffa53b27e6e4bb",
-      "label": "複雑な仕組みほど、利用者が理由をたどれる形で見せることが大切です。",
+      "label": "窓際の席、空いてた。勝ち。",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -732,7 +732,7 @@
     },
     {
       "id": "p_a2aeafab565cdcb2dde9",
-      "label": "I would rather read one precise error than debug three silent fallbacks.",
+      "label": "Give me one honest restaurant review. “You have to try this” tells me nothing.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -761,7 +761,7 @@
     },
     {
       "id": "p_1ff573241eb33005da4e",
-      "label": "The most durable abstraction is usually the one that owns a real invariant.",
+      "label": "One good kitchen tool beats a drawer full of gadgets. I will not say which tool because we all have different needs.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -790,7 +790,7 @@
     },
     {
       "id": "p_a5aab1790e42aeee6b22",
-      "label": "Open source stays healthy when maintenance work is treated as product work.",
+      "label": "Took the weekend off. The code is still there. Amazing.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -819,7 +819,7 @@
     },
     {
       "id": "p_c1d8bf9c75822af00a84",
-      "label": "Every extra join is also an extra place where the application has to reconstruct meaning.",
+      "label": "Road trip rule: stop when you see a bakery. The schedule will survive.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -848,7 +848,7 @@
     },
     {
       "id": "p_cc0c826c1ee1b262bc2e",
-      "label": "A useful loading state tells you what is happening and what you can do next.",
+      "label": "Weather forecast: shoes, umbrella, emotional preparation.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -877,7 +877,7 @@
     },
     {
       "id": "p_c0d74c4a2c55f237d873",
-      "label": "Calm interfaces do not hide complexity; they reveal the one piece needed for the next decision.",
+      "label": "Coffee first. The routine can wait.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -906,7 +906,7 @@
     },
     {
       "id": "p_363b7a90247b9245f92f",
-      "label": "Over-fetching can hide a modeling problem; sometimes the relationship belongs in the query.",
+      "label": "Over-packing is a problem until the temperature drops. Then it is called foresight.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -935,7 +935,7 @@
     },
     {
       "id": "p_eeaca86e7df26bcd3c61",
-      "label": "A ranking system should make it possible to inspect the evidence behind a result.",
+      "label": "Lunch leaderboard today: outdoor seating wins. No notes.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -964,7 +964,7 @@
     },
     {
       "id": "p_6a9a83681fb4302f6e2d",
-      "label": "Search quality improves when relevance and the reason for relevance are designed together.",
+      "label": "Searching for a song by “the one with the blue album cover” is a lifestyle, apparently.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -993,7 +993,7 @@
     },
     {
       "id": "p_99c9a2d3f6094579714b",
-      "label": "I keep coming back to the same rule: explain the constraint at the place it is enforced.",
+      "label": "Weather app says “clear skies.” My bag contains three rain jackets anyway.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1022,7 +1022,7 @@
     },
     {
       "id": "p_4b71e53185cfab412cdd",
-      "label": "Teams move faster when the system makes the safe operation the easy operation.",
+      "label": "Afternoon meeting survival kit: snacks. I have data.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1051,7 +1051,7 @@
     },
     {
       "id": "p_7c9888a95ab28f62d9b2",
-      "label": "The best developer documentation answers the next question before it becomes a support ticket.",
+      "label": "Leave one afternoon blank on every trip. Trust me on this.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1080,7 +1080,7 @@
     },
     {
       "id": "p_99552050b8a68edfdbd1",
-      "label": "Good defaults turn a long policy document into a decision people can make confidently.",
+      "label": "Picnic checklist: napkins, sunscreen, bottle opener. We forgot the bottle opener.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1109,7 +1109,7 @@
     },
     {
       "id": "p_2dc44160a803aba6030a",
-      "label": "A recommendation is more useful when the person can see why it appeared.",
+      "label": "My friends know two things about me: I will order dessert, and I will ask for a bite of theirs.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1138,7 +1138,7 @@
     },
     {
       "id": "p_6094531df183c6c75cb5",
-      "label": "Accessibility is often the shortest path to a product that feels considerate to everyone.",
+      "label": "Cafe tip: the quietest seat is usually farthest from the speakers. Also the best one.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1167,7 +1167,7 @@
     },
     {
       "id": "p_c79cc9c873a4867ee556",
-      "label": "Small interfaces are easier to evolve when their ownership is visible in the data model.",
+      "label": "Every apartment has one chair whose only job is holding clothes. You cannot convince me otherwise.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1196,7 +1196,7 @@
     },
     {
       "id": "p_6851fde9e479af75abea",
-      "label": "The fastest incident review I have seen started with one clear timeline and three honest questions.",
+      "label": "Tried to play guitar while assembling a shelf. The shelf won.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1225,7 +1225,7 @@
     },
     {
       "id": "p_7eb407f698ef7c4e52b2",
-      "label": "A stable API is a promise about boundaries, not just a collection of endpoints.",
+      "label": "Breakfast opinion: toast is a meal, not a side dish.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1254,7 +1254,7 @@
     },
     {
       "id": "p_384b3fd3ef400d8f0997",
-      "label": "This thread is exactly why I like small communities: somebody always has the missing context.",
+      "label": "Small communities are just people sending each other lunch recommendations and I support this.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1283,7 +1283,7 @@
     },
     {
       "id": "p_813e48aa7cba92c18c80",
-      "label": "If a setup guide needs \"just trust me\" halfway through, that is probably the part to rewrite.",
+      "label": "\"Just eyeball it,\" said the recipe. The cake is now structurally interesting.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1312,7 +1312,7 @@
     },
     {
       "id": "p_7ee887afb8bd964fec00",
-      "label": "Pairing session at 16:00 UTC if anyone wants to sanity-check a data model before it becomes permanent.",
+      "label": "My niece beat me at cards again. I am beginning to suspect this is not luck.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1341,7 +1341,7 @@
     },
     {
       "id": "p_e64442f3158619339629",
-      "label": "Also: write down the rollback before the launch checklist. Future-you deserves the kindness.",
+      "label": "Note to self: write down the restaurant name before Saturday. Future me is not going to remember.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1370,7 +1370,7 @@
     },
     {
       "id": "p_7264349104bc7d26aef1",
-      "label": "Spent an hour tuning a model and the real bug was a stale cache key. Classic Tuesday.",
+      "label": "Keys were in the fridge. I have no further comments at this time.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1399,7 +1399,7 @@
     },
     {
       "id": "p_e8d507b0783f3cc277fd",
-      "label": "Logging off to run before the rain starts. Please deploy gently while I am gone.",
+      "label": "Logging off to run before the rain. Mystery novel recs welcome.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1428,7 +1428,7 @@
     },
     {
       "id": "p_b36194e3f8d0b0c4b209",
-      "label": "Small accessibility win: the focus ring is now visible in dark mode too. It should have been from day one.",
+      "label": "Moved the reading lamp six inches and suddenly I can actually see the page. Huge day.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1457,7 +1457,7 @@
     },
     {
       "id": "p_8d35f0923adfcd762381",
-      "label": "If you are joining remotely, reply with your time zone and we will keep the notes friendly to late readers.",
+      "label": "Picnic research: what is your undefeated summer snack? Mine is salt-and-vinegar chips.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1486,7 +1486,7 @@
     },
     {
       "id": "p_ecb01d5d5c87aae5e75c",
-      "label": "This is a lovely framing. Saving it for the next time someone asks why context belongs next to a metric.",
+      "label": "Saving this for movie night. Also saving room for snacks.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1515,7 +1515,7 @@
     },
     {
       "id": "p_d837758c2032acdb19a0",
-      "label": "The best identity systems make the safe path feel like the obvious path. Still thinking about that all week.",
+      "label": "That sourdough was absurdly good. I have been thinking about it for three days.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1544,7 +1544,7 @@
     },
     {
       "id": "p_4ee40311214ecc674271",
-      "label": "Tiny indie app update: exports are now boringly reliable, which is my favorite kind of release note.",
+      "label": "Tiny app update: grocery exports no longer buy six jars of mustard. Personal milestone.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1573,7 +1573,7 @@
     },
     {
       "id": "p_d373f0f6c736c9b01eb3",
-      "label": "Morning note to self: ship the helpful version first, then make it clever.",
+      "label": "Morning note to self: tea. More tea. Somehow I ran out again.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1602,7 +1602,7 @@
     },
     {
       "id": "p_908ff6eeb14cf509302a",
-      "label": "Bookmarking this. The distinction between a connection and a recommendation is easy to lose in a dashboard.",
+      "label": "Day trip or vacation? The answer is in how much luggage you bring.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1631,7 +1631,7 @@
     },
     {
       "id": "p_3e48614ec19943b3953e",
-      "label": "Asking \"who is missing from this chart?\" has improved every project I have worked on.",
+      "label": "Who has not had coffee yet? This is important research.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1660,7 +1660,7 @@
     },
     {
       "id": "p_835dec60e898af443b3f",
-      "label": "A five-line example in the docs beat my twenty-minute screen recording. Lesson learned.",
+      "label": "Went for a five-minute walk before the first meeting. Still had the third coffee.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1689,7 +1689,7 @@
     },
     {
       "id": "p_527ca1ee79b9dbe7cbe5",
-      "label": "The tiny onboarding detail was the thing that finally made the flow click for me. Nice work, Bob.",
+      "label": "ok the cinnamon roll really IS that good",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1718,7 +1718,7 @@
     },
     {
       "id": "p_33c5c9e02a6ec9d0277c",
-      "label": "Replaced a loading spinner with useful skeleton copy and support tickets dropped almost immediately.",
+      "label": "New desk lamp. Same desk. Weirdly feels like I got promoted.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1747,7 +1747,7 @@
     },
     {
       "id": "p_e7de9e807a5d38801adb",
-      "label": "The surprising part: the old query was not slow, it was just explaining the wrong relationship.",
+      "label": "The soup was supposed to last three days. It lasted one and a half. No regrets.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1776,7 +1776,7 @@
     },
     {
       "id": "p_5af2ceebecccc91529dc",
-      "label": "Tried planning my week on paper again. The app did not crash once, which feels promising.",
+      "label": "Planned the week on paper. Forgot the paper at home. Strong start.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1805,7 +1805,7 @@
     },
     {
       "id": "p_0a16972aa298f4fb5c75",
-      "label": "A reminder from threat modeling: clarity is a security feature, not a nice-to-have.",
+      "label": "Running reminder: check the weather. The sky is lying.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1834,7 +1834,7 @@
     },
     {
       "id": "p_20fa73e4909aa56c8d1a",
-      "label": "A good privacy setting is one you can explain to a friend without opening a second tab.",
+      "label": "Museum, long walk, nap. I have solved the weekend.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1863,7 +1863,7 @@
     },
     {
       "id": "p_23e7b97d27b0432b56b7",
-      "label": "I wrote up the little graph-modeling trick that saved us a migration. The diagram is in the replies.",
+      "label": "Dumplings: 10/10. Kitchen afterwards: absolutely not.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1892,7 +1892,7 @@
     },
     {
       "id": "p_9ba8c08932c3519c5c79",
-      "label": "The July meetup has a quiet room this time. Thank you to everyone who asked for one.",
+      "label": "The tomatoes are finally red 🍅 Also, the July meetup has a quiet room this time.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
@@ -1921,7 +1921,7 @@
     },
     {
       "id": "p_38f48fa92d37e88da97f",
-      "label": "Semantic search is at its best when it helps you notice the useful thing you did not know to ask for.",
+      "label": "New coffee place by the station: tiny tables, great toast, no queue before 9. I will be back.",
       "kind": "post",
       "gqlLabel": "Post",
       "layer": 1,
