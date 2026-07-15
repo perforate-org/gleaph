@@ -8,5 +8,5 @@ rdbSummary: |-
 graphSummary: |-
   The graph pattern follows four relationships directly: Alice follows Bob, Bob follows George, George authored the post, and the post has the selected topic. Gleaph returns the matching edge identities alongside the post, so the multi-hop reason is part of the result rather than a chain reconstructed afterward.
 preparedQuery: |-
-  MATCH (u:User)-[follows1:FOLLOWS]->(bridge:User)-[follows2:FOLLOWS]->(author:User)-[posted:POSTED]->(p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE u.demo_id = 1 AND t.demo_id = 13 RETURN p.demo_id AS post_id, author.name AS author_name, t.demo_id AS topic_id, p.body AS body, p.created_at AS created_at, ELEMENT_ID(follows1) AS follows_edge_id, ELEMENT_ID(follows2) AS second_follows_edge_id, ELEMENT_ID(posted) AS posted_edge_id, ELEMENT_ID(has_topic) AS topic_edge_id
+  MATCH (u:User)-[follows1:FOLLOWS]->(bridge:User)-[follows2:FOLLOWS]->(author:User)-[posted:POSTED]->(p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE u.user_id = 'alice' AND t.name = 'Graph databases' RETURN p.demo_id AS post_id, author.name AS author_name, t.demo_id AS topic_id, p.body AS body, p.created_at AS created_at, ELEMENT_ID(follows1) AS follows_edge_id, ELEMENT_ID(follows2) AS second_follows_edge_id, ELEMENT_ID(posted) AS posted_edge_id, ELEMENT_ID(has_topic) AS topic_edge_id
 semanticVector: null

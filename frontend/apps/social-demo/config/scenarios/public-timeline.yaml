@@ -8,5 +8,5 @@ rdbSummary: |-
 graphSummary: |-
   Gleaph materializes `IN_PUBLIC_FEED` edges from each public Post to a Feed vertex, then reads one fixed-label edge stream. This is not presented as faster than the RDB baseline; it shows that the same Post/User/edge model can extend from a public timeline to relationship-aware feeds without introducing a separate feed schema.
 preparedQuery: |-
-  MATCH (feed:Feed {demo_id: 40})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20
+  MATCH (feed:Feed {name: 'Public feed'})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20
 semanticVector: null

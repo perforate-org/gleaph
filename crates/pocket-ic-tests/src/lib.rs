@@ -2651,7 +2651,7 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
     // Default descending fixed-label scan returns the latest inserted edge first.
     // Feed edges are materialized oldest-first, so the default scan yields newest posts first.
     let query = "\
-    MATCH (p:Post)-[e:IN_PUBLIC_FEED]->(f:Feed {demo_id: 40}) \
+    MATCH (p:Post)-[e:IN_PUBLIC_FEED]->(f:Feed {name: 'Public feed'}) \
     RETURN p.demo_id AS post_id, e.demo_edge_id AS edge_id";
     let result =
         gql_query_with_params_on_router(&env.pic, env.admin, env.router, query, Vec::new());
@@ -2662,15 +2662,12 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
         .collect();
     assert_eq!(
         public_ids,
-        vec![
-            "17", "31", "20", "33", "24", "39", "29", "26", "37", "32", "35", "16", "22", "36",
-            "30", "15", "28", "19", "34", "38", "21", "18", "25", "23",
-        ],
+        social_feed_post_ids("-in-public-feed"),
         "IN_PUBLIC_FEED default descending scan should return newest posts first"
     );
 
     let query = "\
-    MATCH (p:Post)-[e:IN_HOME_FEED]->(u:User {demo_id: 1}) \
+    MATCH (p:Post)-[e:IN_HOME_FEED]->(u:User {user_id: 'alice'}) \
     RETURN p.demo_id AS post_id, e.demo_edge_id AS edge_id";
     let result =
         gql_query_with_params_on_router(&env.pic, env.admin, env.router, query, Vec::new());
@@ -2681,12 +2678,39 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
         .collect();
     assert_eq!(
         home_ids,
-        vec![
-            "17", "31", "20", "33", "29", "37", "32", "16", "22", "36", "30", "15", "28", "19",
-            "21", "18",
-        ],
+        social_feed_post_ids("-in-home-alice"),
         "IN_HOME_FEED default descending scan should return newest posts first"
     );
+}
+
+pub fn social_feed_post_ids(key_suffix: &str) -> Vec<String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(SOCIAL_SEEDS_JSON).expect("parse social seeds for feed assertion");
+    let mut post_ids = parsed["seeds"]
+        .as_array()
+        .expect("social seed array")
+        .iter()
+        .filter(|seed| {
+            seed["key"]
+                .as_str()
+                .is_some_and(|key| key.ends_with(key_suffix))
+        })
+        .map(|seed| {
+            let gql = seed["gql"].as_str().expect("social seed gql");
+            gql.split("demo_id:")
+                .nth(1)
+                .and_then(|value| value.split(',').next())
+                .map(str::trim)
+                .map(str::to_owned)
+                .expect("feed edge source demo_id")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !post_ids.is_empty(),
+        "social feed seed selection must not be empty"
+    );
+    post_ids.reverse();
+    post_ids
 }
 
 fn decode_rows_for_feed_assertions(

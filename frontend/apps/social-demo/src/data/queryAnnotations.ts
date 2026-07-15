@@ -22,10 +22,10 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
         "Starts a graph pattern: tell Gleaph to find vertices and edges that match the following shape.",
     },
     {
-      queryText: "(feed:Feed {demo_id: 40})",
+      queryText: "(feed:Feed {name: 'Public feed'})",
       label: "Anchor vertex",
       description:
-        "Begin at the public Feed vertex (demo_id 40). This is the fixed starting point of the traversal.",
+        "Begin at the public Feed vertex. This is the fixed starting point of the traversal.",
     },
     {
       queryText: "<-[e:IN_PUBLIC_FEED]-",
@@ -111,9 +111,9 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
         "Starts a graph pattern: tell Gleaph to find vertices and edges that match the following shape.",
     },
     {
-      queryText: "(u:User {demo_id: 1})",
+      queryText: "(u:User {user_id: 'alice'})",
       label: "Alice's user vertex",
-      description: "Begin at Alice's User vertex (demo_id 1), the viewer of this feed.",
+      description: "Begin at Alice's User vertex using her stable user_id, the viewer of this feed.",
     },
     {
       queryText: "<-[e:IN_HOME_FEED]-",
@@ -204,7 +204,7 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
         "Follow a four-edge path: viewer to a followed user, to that user's followed author, to the post, and finally to its topic.",
     },
     {
-      queryText: "WHERE u.demo_id = 1 AND t.demo_id = 13",
+      queryText: "WHERE u.user_id = 'alice' AND t.name = 'Graph databases'",
       label: "Path filters",
       description: "Personalize the path for Alice and restrict it to the 'Graph databases' topic (demo_id 13).",
     },
@@ -335,7 +335,7 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
         "Traverse from a User through FOLLOWS to authors and then through POSTED to their posts. This constrains vector search to Alice's follow graph.",
     },
     {
-      queryText: "WHERE u.demo_id = 1 AND p.is_public = TRUE",
+      queryText: "WHERE u.user_id = 'alice' AND p.is_public = TRUE",
       label: "Viewer and visibility filter",
       description: "Restrict the starting user to Alice (demo_id 1) and keep only public posts.",
     },

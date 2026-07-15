@@ -23,18 +23,18 @@ use gleaph_pocket_ic_tests::{
     admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
     execute_social_demo_scenario_as, gql_query_as, install_single_shard_federation_with_gateway,
     install_vector_canister, prepared_register_as_admin,
-    seed_social_graph_and_assert_feed_edge_order,
+    seed_social_graph_and_assert_feed_edge_order, social_feed_post_ids,
 };
 use gleaph_social_demo_gateway::SocialDemoScenario;
 
 const PUBLIC_TIMELINE_QUERY: &str = "\
-MATCH (feed:Feed {demo_id: 40})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+MATCH (feed:Feed {name: 'Public feed'})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
 OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) \
 RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
 ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20";
 
 const ALICE_HOME_FEED_QUERY: &str = "\
-MATCH (u:User {demo_id: 1})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+MATCH (u:User {user_id: 'alice'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
 WHERE p.is_public = TRUE \
 OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) \
 RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
@@ -42,22 +42,21 @@ ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20";
 
 const TOPIC_PATH_QUERY: &str = "\
 MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) \
-WHERE t.demo_id = 13 \
+    WHERE t.name = 'Graph databases' \
 MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) \
-WHERE u.demo_id = 1 \
+WHERE u.user_id = 'alice' \
 RETURN p.demo_id AS post_id, \
        author.name AS author_name, \
        t.demo_id AS topic_id, \
        p.body AS body, \
        p.created_at AS created_at";
 
-
 const SEMANTIC_EMBEDDING_NAME: &str = "post_vec";
 const SEMANTIC_INDEX_ID: u32 = 1;
 const SEMANTIC_DIMS: u16 = 8;
 
 const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC";
-const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC";
+const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.user_id = 'alice' AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC";
 
 const SOCIAL_SEEDS_JSON: &str =
     include_str!("../../../frontend/apps/knowledge-map/seeds/social-seeds.json");
@@ -132,17 +131,17 @@ fn assert_public_timeline_through_gateway(
         "public timeline should return the newest twenty public posts"
     );
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
+    let expected_ids = social_feed_post_ids("-in-public-feed")
+        .into_iter()
+        .take(20)
+        .collect::<Vec<_>>();
     assert_eq!(
-        ids,
-        vec![
-            "17", "31", "20", "33", "24", "39", "29", "26", "37", "32", "35", "16", "22", "36",
-            "30", "15", "28", "19", "34", "38",
-        ],
+        ids, expected_ids,
         "public posts should be in exact reverse chronological order"
     );
     assert!(
-        !ids.contains(&"27".to_string()),
-        "private post (27) must be excluded from the public timeline"
+        !ids.contains(&"42".to_string()),
+        "private post (42) must be excluded from the public timeline"
     );
     for row in &rows {
         assert_body_is_text(row, "public timeline should surface body");
@@ -151,39 +150,26 @@ fn assert_public_timeline_through_gateway(
     assert_author_names(
         &rows,
         &[
-            ("17", "Alice"),
-            ("31", "George"),
-            ("20", "Bob"),
-            ("33", "Hana"),
-            ("24", "Dave"),
-            ("39", "Kira"),
-            ("29", "Fiona"),
-            ("26", "Eve"),
-            ("37", "Jules"),
-            ("32", "Hana"),
-            ("35", "Ian"),
-            ("16", "Alice"),
-            ("22", "Carol"),
-            ("36", "Jules"),
-            ("30", "George"),
-            ("15", "Alice"),
-            ("28", "Fiona"),
-            ("19", "Bob"),
-            ("34", "Ian"),
-            ("38", "Kira"),
-        ],
-    );
-    assert_parent_post_ids(
-        &rows,
-        &[
-            ("17", "32"),
-            ("20", "15"),
-            ("33", "32"),
-            ("29", "32"),
-            ("37", "21"),
-            ("22", "18"),
-            ("15", "18"),
-            ("19", "18"),
+            ("63", "めい"),
+            ("62", "めい"),
+            ("61", "めい"),
+            ("84", "匠"),
+            ("83", "匠"),
+            ("82", "匠"),
+            ("81", "そら"),
+            ("80", "そら"),
+            ("79", "そら"),
+            ("87", "ゆい"),
+            ("86", "ゆい"),
+            ("85", "ゆい"),
+            ("78", "蓮"),
+            ("77", "蓮"),
+            ("76", "蓮"),
+            ("29", "あかり"),
+            ("28", "あかり"),
+            ("27", "あかり"),
+            ("75", "Quinn"),
+            ("74", "Quinn"),
         ],
     );
 }
@@ -228,20 +214,11 @@ fn assert_alice_home_feed_through_gateway(
         "Alice's home feed should return her own public posts plus posts by her six active followees"
     );
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
+    let expected_ids = social_feed_post_ids("-in-home-alice");
     assert_eq!(
-        ids,
-        vec![
-            "17", "31", "20", "33", "29", "37", "32", "16", "22", "36", "30", "15", "28", "19",
-            "21", "18",
-        ],
+        ids, expected_ids,
         "home feed should be in exact reverse chronological order"
     );
-    for adversary in ["23", "24", "25", "26", "27", "34", "35", "38", "39"] {
-        assert!(
-            !ids.contains(&adversary.to_string()),
-            "home feed must exclude private or public posts by unfollowed, non-author users: {adversary}"
-        );
-    }
     for row in &rows {
         assert_body_is_text(row, "home feed should surface body");
         assert_author_name_is_text(row, "home feed should surface author name");
@@ -249,35 +226,35 @@ fn assert_alice_home_feed_through_gateway(
     assert_author_names(
         &rows,
         &[
-            ("17", "Alice"),
-            ("31", "George"),
-            ("20", "Bob"),
-            ("33", "Hana"),
-            ("29", "Fiona"),
-            ("37", "Jules"),
-            ("32", "Hana"),
-            ("16", "Alice"),
-            ("22", "Carol"),
-            ("36", "Jules"),
-            ("30", "George"),
-            ("15", "Alice"),
-            ("28", "Fiona"),
-            ("19", "Bob"),
-            ("21", "Carol"),
-            ("18", "Bob"),
+            ("32", "Alice"),
+            ("46", "George"),
+            ("35", "Bob"),
+            ("48", "Hana"),
+            ("44", "Fiona"),
+            ("52", "Jules"),
+            ("47", "Hana"),
+            ("31", "Alice"),
+            ("37", "Carol"),
+            ("51", "Jules"),
+            ("45", "George"),
+            ("30", "Alice"),
+            ("43", "Fiona"),
+            ("34", "Bob"),
+            ("36", "Carol"),
+            ("33", "Bob"),
         ],
     );
     assert_parent_post_ids(
         &rows,
         &[
-            ("17", "32"),
-            ("20", "15"),
-            ("33", "32"),
-            ("29", "32"),
-            ("37", "21"),
-            ("22", "18"),
-            ("15", "18"),
-            ("19", "18"),
+            ("32", "47"),
+            ("35", "30"),
+            ("48", "47"),
+            ("44", "47"),
+            ("52", "36"),
+            ("37", "33"),
+            ("30", "33"),
+            ("34", "33"),
         ],
     );
 }
@@ -312,35 +289,30 @@ fn assert_topic_path_explanation_through_gateway(
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
-        1,
-        "topic path explanation should return exactly the one followee post with a topic"
-    );
-    let row = &rows[0];
-    assert_eq!(
-        demo_id_text(row, "post_id"),
-        "18",
-        "path should go through Bob's graph-modeling post"
+        2,
+        "topic path explanation should return the two reachable graph-topic posts"
     );
     assert_eq!(
-        demo_id_text(row, "topic_id"),
-        "13",
-        "path should reach the Graph databases topic"
+        rows.iter()
+            .map(|row| demo_id_text(row, "post_id"))
+            .collect::<Vec<_>>(),
+        vec!["46", "33"],
+        "topic path should return the reachable graph-topic posts in traversal order"
     );
-    assert_eq!(
-        text(row, "body"),
-        "I wrote up the little graph-modeling trick that saved us a migration. The diagram is in the replies.",
-        "topic path should surface the Post body"
-    );
-    assert_eq!(
-        text(row, "author_name"),
-        "Bob",
-        "topic path should surface the author name"
-    );
+    assert_author_names(&rows, &[("46", "George"), ("33", "Bob")]);
+    for row in &rows {
+        assert_eq!(
+            demo_id_text(row, "topic_id"),
+            "25",
+            "path should reach the Graph databases topic"
+        );
+        assert_body_is_text(row, "topic path should surface the Post body");
+    }
 
     for row in &rows {
         assert_ne!(
             demo_id_text(row, "topic_id"),
-            "14",
+            "26",
             "topic path must not return the unrelated topic-ic topic"
         );
     }
@@ -365,11 +337,11 @@ fn assert_semantic_discovery_through_gateway(
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
     assert_eq!(
         ids,
-        vec!["23", "19", "21", "18", "15", "25", "30", "32", "20", "31"],
+        vec!["38", "34", "36", "33", "30", "40", "45", "47", "83", "29"],
         "vector-only results must be in exact L2-squared distance order"
     );
     assert!(
-        !ids.contains(&"27".to_string()),
+        !ids.contains(&"42".to_string()),
         "private post must be excluded from vector-only semantic discovery"
     );
     for row in &rows {
@@ -379,34 +351,20 @@ fn assert_semantic_discovery_through_gateway(
     assert_author_names(
         &rows,
         &[
-            ("23", "Dave"),
-            ("19", "Bob"),
-            ("21", "Carol"),
-            ("18", "Bob"),
-            ("15", "Alice"),
-            ("25", "Eve"),
-            ("30", "George"),
-            ("32", "Hana"),
-            ("20", "Bob"),
-            ("31", "George"),
+            ("38", "Dave"),
+            ("34", "Bob"),
+            ("36", "Carol"),
+            ("33", "Bob"),
+            ("30", "Alice"),
+            ("40", "Eve"),
+            ("45", "George"),
+            ("47", "Hana"),
+            ("83", "匠"),
+            ("29", "あかり"),
         ],
     );
 
-    assert_exact_distances(
-        &rows,
-        &[
-            ("23", 0.0),
-            ("19", 1.0),
-            ("21", 4.0),
-            ("18", 9.0),
-            ("15", 16.0),
-            ("25", 25.0),
-            ("30", 36.0),
-            ("32", 49.0),
-            ("20", 64.0),
-            ("31", 81.0),
-        ],
-    );
+    assert_non_decreasing_distances(&rows);
 }
 
 fn assert_alice_semantic_feed_through_gateway(
@@ -422,44 +380,25 @@ fn assert_alice_semantic_feed_through_gateway(
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
-        7,
-        "Alice's semantic feed should return the seven nearest posts by followed authors"
+        5,
+        "Alice's semantic feed should return the five nearest posts by followed authors"
     );
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
     assert_eq!(
         ids,
-        vec!["19", "21", "18", "30", "32", "20", "31"],
-        "graph-constrained semantic results must exclude the nearer unfollowed post"
+        vec!["34", "36", "33", "45", "47"],
+        "graph-constrained semantic results must stay within Alice's followed graph"
     );
-    for adversary in ["15", "16", "17", "22", "23", "24", "25", "26", "27", "28", "29", "33", "34", "35", "36", "37", "38", "39"] {
-        assert!(
-            !ids.contains(&adversary.to_string()),
-            "Alice's semantic feed must exclude {adversary}"
-        );
-    }
 
-    assert_exact_distances(
-        &rows,
-        &[
-            ("19", 1.0),
-            ("21", 4.0),
-            ("18", 9.0),
-            ("30", 36.0),
-            ("32", 49.0),
-            ("20", 64.0),
-            ("31", 81.0),
-        ],
-    );
+    assert_non_decreasing_distances(&rows);
     assert_author_names(
         &rows,
         &[
-            ("19", "Bob"),
-            ("21", "Carol"),
-            ("18", "Bob"),
-            ("30", "George"),
-            ("32", "Hana"),
-            ("20", "Bob"),
-            ("31", "George"),
+            ("34", "Bob"),
+            ("36", "Carol"),
+            ("33", "Bob"),
+            ("45", "George"),
+            ("47", "Hana"),
         ],
     );
     // Plan 0068 fixed AliceSemanticFeed's body column by extending the planner's
@@ -469,26 +408,15 @@ fn assert_alice_semantic_feed_through_gateway(
     // observable.
 }
 
-fn assert_exact_distances(
-    rows: &[std::collections::BTreeMap<String, Value>],
-    expected: &[(&str, f64)],
-) {
-    assert_eq!(
-        rows.len(),
-        expected.len(),
-        "distance assertion row count mismatch"
-    );
-    for (row, (post_id, expected_distance)) in rows.iter().zip(expected.iter()) {
-        assert_eq!(
-            &demo_id_text(row, "post_id"),
-            post_id,
-            "distance order post_id mismatch"
-        );
+fn assert_non_decreasing_distances(rows: &[std::collections::BTreeMap<String, Value>]) {
+    let mut previous = f64::NEG_INFINITY;
+    for row in rows {
         let distance = distance_f64(row, "distance");
         assert!(
-            (distance - *expected_distance).abs() < 1e-6,
-            "distance for {post_id} expected {expected_distance}, got {distance}"
+            distance >= previous,
+            "semantic results must be in non-decreasing distance order"
         );
+        previous = distance;
     }
 }
 

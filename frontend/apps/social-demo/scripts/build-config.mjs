@@ -480,6 +480,9 @@ const nodeProperties = (node) => {
     `demo_graph: '${DEMO_GRAPH}'`,
     nodePropertyLiteral(node),
   ];
+  if (node.gqlLabel === "User") {
+    props.push(`user_id: '${escapeGqlString(node.id)}'`);
+  }
   if (node.properties) {
     for (const [key, value] of Object.entries(node.properties)) {
       if (value && typeof value === "object" && "raw" in value) {
@@ -500,8 +503,13 @@ const nodeProperties = (node) => {
   return props.join(", ");
 };
 
-const nodeMatch = (node, variable) =>
-  `(${variable}:${node.gqlLabel} {demo_id: ${demoId(node.id)}, demo_graph: '${DEMO_GRAPH}'})`;
+const nodeMatch = (node, variable) => {
+  const identity =
+    node.gqlLabel === "User"
+      ? `user_id: '${escapeGqlString(node.id)}'`
+      : `demo_id: ${demoId(node.id)}`;
+  return `(${variable}:${node.gqlLabel} {${identity}, demo_graph: '${DEMO_GRAPH}'})`;
+};
 
 const nodeCreate = (node, variable) =>
   `(${variable}:${node.gqlLabel} {${nodeProperties(node)}})`;
