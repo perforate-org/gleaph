@@ -26,8 +26,9 @@ use gleaph_pocket_ic_tests::{
     create_vertex_property_index, drain_maintenance_via_timer, drop_vertex_property_index,
     e2e_delete_directed_edge_with_property, e2e_enqueue_forward_compaction,
     e2e_insert_directed_edge_with_property, e2e_insert_vertex, e2e_maintenance_queue_len,
-    e2e_reverse_resolved_edge_property, gql_execute_idempotent_as_admin, gql_query_as_admin,
-    install_single_shard_federation, wasm_bytes,
+    e2e_reverse_resolved_edge_property, gql_execute_idempotent_as_admin,
+    gql_execute_idempotent_result_as_admin, gql_query_as_admin, install_single_shard_federation,
+    wasm_bytes,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -393,5 +394,55 @@ fn timer_compaction_after_upgrade_rekeys_edge_postings_consistently() {
         ),
         Some(30),
         "weight 30 must resolve through the reverse alias path after the slot moved 2 -> 1"
+    );
+}
+
+/// A failed graph-index batch is persisted to the Graph repair journal. The journal must survive
+/// a Graph upgrade and replay after the index becomes available again; retrying the canonical
+/// mutation must not be required to restore the derived posting.
+#[test]
+fn repair_journal_replays_index_batch_after_graph_upgrade() {
+    let env = install_single_shard_federation();
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "adr0023_repair_upgrade_create_index",
+    );
+
+    env.pic
+        .stop_canister(env.index, None)
+        .expect("stop graph-index to force a deferred posting flush");
+    let outcome = gql_execute_idempotent_result_as_admin(
+        &env,
+        "INSERT (:Person {age: 99})",
+        "adr0023_repair_upgrade_insert",
+    );
+    assert_eq!(
+        outcome.row_count, 0,
+        "the canonical insert commits while its index flush is deferred"
+    );
+
+    env.pic
+        .start_canister(env.index, None)
+        .expect("restart graph-index for repair replay");
+    let empty = Encode!(&()).expect("encode empty upgrade arg");
+    env.pic
+        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .expect("upgrade graph shard with durable repair journal");
+    // `drain_maintenance_via_timer` intentionally watches only the stable compaction queue. This
+    // case has a repair journal but no compaction item, so advance the re-armed repair timer here.
+    for _ in 0..12 {
+        env.pic.advance_time(std::time::Duration::from_secs(2));
+        for _ in 0..12 {
+            env.pic.tick();
+        }
+    }
+
+    let result = gql_query_as_admin(&env, "MATCH (n:Person {age: 99}) RETURN n");
+    assert_eq!(
+        result.row_count, 1,
+        "repair journal replay after Graph upgrade must restore the index posting"
     );
 }
