@@ -25,6 +25,7 @@ use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::vector_lookup::VectorIndexLookup;
 use crate::plan::PlanQueryError;
+use candid::Encode;
 use gleaph_graph_kernel::entry::EmbeddingNameId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::IndexPostingMutation;
@@ -102,6 +103,63 @@ fn remove_from_queue(store: &GraphStore, queue: DurableQueue, seq: u64) {
     }
 }
 
+fn property_batch_prefix(
+    shard_id: ShardId,
+    entries: &[(u64, RepairPostingOp)],
+) -> Result<Vec<IndexPostingMutation>, PlanQueryError> {
+    let mut low = 1usize;
+    let mut high = entries.len();
+    let mut best = 0usize;
+    while low <= high {
+        let middle = low + (high - low) / 2;
+        let candidate: Vec<_> = entries[..middle]
+            .iter()
+            .map(|(_, op)| to_index_mutation(op))
+            .collect();
+        let encoded = Encode!(&(shard_id, &candidate))
+            .map_err(|_| PlanQueryError::UnsupportedOp("failed to encode index posting batch"))?;
+        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            best = middle;
+            low = middle + 1;
+        } else {
+            high = middle.saturating_sub(1);
+        }
+    }
+    if best == 0 {
+        return Err(PlanQueryError::UnsupportedOp(
+            "single index posting exceeds the safe inter-canister request payload limit",
+        ));
+    }
+    Ok(entries[..best]
+        .iter()
+        .map(|(_, op)| to_index_mutation(op))
+        .collect())
+}
+
+fn vector_batch_prefix(entries: &[VectorEmbeddingSyncOp]) -> Result<usize, PlanQueryError> {
+    let mut low = 1usize;
+    let mut high = entries.len();
+    let mut best = 0usize;
+    while low <= high {
+        let middle = low + (high - low) / 2;
+        let candidate = entries[..middle].to_vec();
+        let encoded = Encode!(&(&candidate,))
+            .map_err(|_| PlanQueryError::UnsupportedOp("failed to encode vector sync batch"))?;
+        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            best = middle;
+            low = middle + 1;
+        } else {
+            high = middle.saturating_sub(1);
+        }
+    }
+    if best == 0 {
+        return Err(PlanQueryError::UnsupportedOp(
+            "single vector operation exceeds the safe inter-canister request payload limit",
+        ));
+    }
+    Ok(best)
+}
+
 async fn drain_queue(
     queue: DurableQueue,
     ix: &dyn PropertyIndexLookup,
@@ -143,8 +201,11 @@ async fn drain_queue(
                 }
                 let mut group_offset = 0usize;
                 while group_offset < group.len() {
+                    let reconciled_prefix = vector_batch_prefix(&reconciled[group_offset..])?;
                     let progress = vx
-                        .vector_sync_batch(reconciled[group_offset..].to_vec())
+                        .vector_sync_batch(
+                            reconciled[group_offset..group_offset + reconciled_prefix].to_vec(),
+                        )
                         .await?;
                     let applied = usize::try_from(progress.applied).map_err(|_| {
                         PlanQueryError::UnsupportedOp("invalid vector repair progress")
@@ -181,18 +242,12 @@ async fn drain_queue(
         if ix.supports_posting_batch() {
             let mut group_offset = 0usize;
             while group_offset < group.len() {
-                let progress = ix
-                    .posting_batch_at(
-                        shard_id,
-                        group[group_offset..]
-                            .iter()
-                            .map(|(_, op)| to_index_mutation(op))
-                            .collect(),
-                    )
-                    .await?;
+                let operations = property_batch_prefix(shard_id, &group[group_offset..])?;
+                let operation_count = operations.len();
+                let progress = ix.posting_batch_at(shard_id, operations).await?;
                 let applied = usize::try_from(progress.applied)
                     .map_err(|_| PlanQueryError::UnsupportedOp("invalid index repair progress"))?;
-                if applied == 0 || applied > group.len() - group_offset {
+                if applied == 0 || applied > operation_count {
                     return Err(PlanQueryError::UnsupportedOp(
                         "invalid index repair progress",
                     ));

@@ -58,7 +58,10 @@ Router consumes as many remaining items as the instruction and encoded-payload
 budgets allow. Router chunks each target Graph canister's operations by encoded
 request size, not by a fixed item count. Each Graph batch also has bounded
 encoded request and response sizes and rejects an over-sized request before the
-first item in that transport batch is executed.
+first item in that transport batch is executed. The shared conservative request
+ceiling is 2 MiB, matching ICP's ingress and cross-subnet request limit; this
+keeps the transport valid if canisters move between subnets even though same-
+subnet requests permit a larger payload.
 
 ## Implementation status
 

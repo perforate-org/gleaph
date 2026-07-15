@@ -184,11 +184,9 @@ async fn await_batch_item(
     Ok(())
 }
 
-const MAX_GRAPH_BATCH_WIRE_BYTES: usize = 8 * 1024 * 1024;
-
-fn graph_batch_chunk_len(operations: &[(usize, usize, BatchOperation)]) -> usize {
+fn graph_batch_chunk_len(operations: &[(usize, usize, BatchOperation)]) -> Result<usize, String> {
     if operations.is_empty() {
-        return 0;
+        return Ok(0);
     }
     let mut low = 1;
     let mut high = operations.len();
@@ -206,14 +204,21 @@ fn graph_batch_chunk_len(operations: &[(usize, usize, BatchOperation)]) -> usize
             high = count.saturating_sub(1);
             continue;
         };
-        if encoded.len() <= MAX_GRAPH_BATCH_WIRE_BYTES {
+        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             best = count;
             low = count + 1;
         } else {
             high = count.saturating_sub(1);
         }
     }
-    best.max(1)
+    if best == 0 {
+        Err(format!(
+            "single Graph batch operation exceeds the safe inter-canister request payload limit of {} bytes",
+            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        ))
+    } else {
+        Ok(best)
+    }
 }
 
 async fn execute_registered_batch(
@@ -246,10 +251,17 @@ async fn execute_registered_batch(
                 }
                 break;
             }
-            let chunk_len = graph_batch_chunk_len(&operations[start..]);
-            if chunk_len == 0 {
-                break;
-            }
+            let chunk_len = match graph_batch_chunk_len(&operations[start..]) {
+                Ok(0) => break,
+                Ok(chunk_len) => chunk_len,
+                Err(err) => {
+                    for (item_index, ordinal, (dispatch, _)) in &operations[start..] {
+                        output[*item_index]
+                            .push((*ordinal, (dispatch.clone(), Some(Err(err.clone())))));
+                    }
+                    break;
+                }
+            };
             let operation_slice = &operations[start..start + chunk_len];
             let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
                 operations: operation_slice

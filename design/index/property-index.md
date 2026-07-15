@@ -298,8 +298,10 @@ journal boundary rather than at enqueue time.
 Plan 0088 now provides a separate durable derived-index outbox storage region and connects the
 Router→Graph wire-DML finalization handoff to it. Maintenance passes the durable suffix to the
 index batch endpoint, which owns the instruction budget and returns the largest acknowledged
-prefix; the shared dispatcher removes only that prefix. DML-only ad-hoc/native blocks use the same outbox; a block
-that reads after DML retains a legacy flush boundary for read-after-write visibility.
+prefix; the shared dispatcher removes only that prefix. The encoded `(shard_id, operations)`
+argument is also capped at the conservative 2 MiB cross-subnet request limit, so the same Graph
+code remains safe if the index canister moves subnets. DML-only ad-hoc/native blocks use the same
+outbox; a block that reads after DML retains a legacy flush boundary for read-after-write visibility.
 
 **`DROP INDEX` posting purge (ADR 0023 D6):** dropping an index removes the dropped property's
 postings from graph-index, not just the router catalog entry (closing P7, where dropped indexes
