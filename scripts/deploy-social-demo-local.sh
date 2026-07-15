@@ -232,6 +232,8 @@ build_social_config() {
   node "$ROOT/frontend/apps/social-demo/scripts/build-config.mjs"
 }
 
+# Cap concurrent mutations per gql_execute_idempotent_batch to keep the Router's
+# liquid cycles balance above the per-call reservation (local replica reserves ~42B).
 seed_social_graph() {
   log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
   env \
@@ -243,7 +245,7 @@ seed_social_graph() {
     CARGO_HOME="$CARGO_HOME" \
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     ICP_IDENTITY_NAME="$deployer_id" \
-    SEED_MAX_ITEMS=50 \
+    SEED_MAX_ITEMS="${GLEAPH_DEMO_SEED_MAX_ITEMS:-10}" \
     node "$ROOT/frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs" \
       "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
 }
