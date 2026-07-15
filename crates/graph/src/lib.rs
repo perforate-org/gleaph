@@ -100,6 +100,13 @@ fn get_mutation_journal_entry(
     canister::handlers::get_mutation_journal_entry(mutation_id)
 }
 
+#[query(guard = "guard_router_canister")]
+fn get_mutation_journal_entries(
+    args: gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesArgs,
+) -> gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesResult {
+    canister::handlers::get_mutation_journal_entries(args)
+}
+
 /// Router → graph: smallest tracked mutation id with unapplied index postings, or
 /// `None` when index work has drained (ADR 0029 Phase 2 read-your-writes barrier).
 #[query(guard = "guard_router_canister")]

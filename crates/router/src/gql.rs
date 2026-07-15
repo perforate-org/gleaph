@@ -18,12 +18,13 @@ use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire, MutationId,
-    MutationJournalState, MutationToken, MutationTokenShard, ReadMode, ResolvedSearchWire,
-    ShardEventSeq, UniqueClaimDispatch,
+    ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
+    GraphMutationJournalEntryWire, MutationId, MutationJournalState, MutationToken,
+    MutationTokenShard, ReadMode, ResolvedSearchWire, ShardEventSeq, UniqueClaimDispatch,
 };
 use ic_cdk::api::msg_caller;
 use nohash_hasher::IntSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::execution_path::check_adhoc_execution_path;
 #[cfg(target_family = "wasm")]
@@ -47,8 +48,9 @@ use crate::federation::{
 };
 use crate::graph_client::{
     ack_label_stats_deltas_through, ack_unique_effects, execute_plan_batch_on_graph,
-    execute_plan_on_graph, get_mutation_journal_entry, index_pending_min_mutation_id,
-    list_pending_label_stats_deltas, read_unique_effect_proof, read_unique_release_effects,
+    execute_plan_on_graph, get_mutation_journal_entries, get_mutation_journal_entry,
+    index_pending_min_mutation_id, list_pending_label_stats_deltas, read_unique_effect_proof,
+    read_unique_release_effects,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -63,6 +65,141 @@ type BatchOperation = (
 );
 type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
 const BATCH_DEFERRED_ERROR: &str = "batch operation deferred by instruction budget";
+
+/// Preflight context shared across one `gql_execute_idempotent_batch` wave.
+///
+/// Holds coalesced inter-canister lookup results so that N mutations referencing the same
+/// seed anchor or shard do not issue N identical Router→Graph/Index calls during planning.
+/// The cache is scoped to a single wave and is intentionally not cross-wave durable.
+#[derive(Clone, Default)]
+pub(crate) struct PreflightContext {
+    /// `(anchor, shard_id)` -> resolved seed hits.
+    anchor_hits: Rc<RefCell<std::collections::HashMap<(IndexAnchor, ShardId), SeedHits>>>,
+    /// `(graph_canister, mutation_id)` -> cached journal entry.
+    journal_entries:
+        Rc<RefCell<HashMap<(Principal, MutationId), Option<GraphMutationJournalEntryWire>>>>,
+    /// `graph_canister` -> cached `index_pending_min_mutation_id` result.
+    pending_min_mutation_id: Rc<RefCell<HashMap<Principal, Option<MutationId>>>>,
+}
+
+impl PreflightContext {
+    pub(crate) fn new() -> Self {
+        Self {
+            anchor_hits: Rc::new(RefCell::new(HashMap::new())),
+            journal_entries: Rc::new(RefCell::new(HashMap::new())),
+            pending_min_mutation_id: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
+
+    async fn resolve_anchor_hits<I: IndexLookup + ?Sized>(
+        &self,
+        index: &I,
+        anchor: &IndexAnchor,
+        shard_id: ShardId,
+    ) -> Result<SeedHits, String> {
+        let key = (anchor.clone(), shard_id);
+        {
+            let cache = self.anchor_hits.borrow();
+            if let Some(hits) = cache.get(&key) {
+                return Ok(hits.clone());
+            }
+        }
+        let hits = lookup_anchor_hits(index, anchor, &[shard_id]).await?;
+        self.anchor_hits.borrow_mut().insert(key, hits.clone());
+        Ok(hits)
+    }
+
+    /// Read mutation journal entries for the given (graph_canister, mutation_id) pairs,
+    /// issuing at most one Graph canister call per target canister. Results are cached and
+    /// returned in the same order as the input pairs.
+    async fn resolve_journal_entries(
+        &self,
+        targets: &[(Principal, MutationId)],
+    ) -> Result<Vec<Option<GraphMutationJournalEntryWire>>, RouterError> {
+        // Group uncached ids by graph canister.
+        let mut by_canister: HashMap<Principal, Vec<MutationId>> = HashMap::new();
+        let mut cached: HashMap<(Principal, MutationId), Option<GraphMutationJournalEntryWire>> =
+            HashMap::new();
+        {
+            let cache = self.journal_entries.borrow();
+            for (canister, mutation_id) in targets {
+                let key = (*canister, *mutation_id);
+                if let Some(entry) = cache.get(&key) {
+                    cached.insert(key, entry.clone());
+                } else {
+                    by_canister.entry(*canister).or_default().push(*mutation_id);
+                }
+            }
+        }
+
+        let mut fetched: HashMap<(Principal, MutationId), Option<GraphMutationJournalEntryWire>> =
+            HashMap::new();
+        for (canister, mutation_ids) in by_canister {
+            let result = get_mutation_journal_entries(
+                canister,
+                GetMutationJournalEntriesArgs {
+                    mutation_ids: mutation_ids.clone(),
+                },
+            )
+            .await
+            .map_err(|e| {
+                RouterError::InvalidArgument(format!("graph get_mutation_journal_entries: {e}"))
+            })?;
+            // Defensive: the Graph canister must return results in input order and the same count.
+            if result.entries.len() != mutation_ids.len() {
+                return Err(RouterError::InvalidArgument(format!(
+                    "graph get_mutation_journal_entries returned {} entries for {} ids",
+                    result.entries.len(),
+                    mutation_ids.len()
+                )));
+            }
+            for (id, entry) in mutation_ids.into_iter().zip(result.entries) {
+                fetched.insert((canister, id), entry.clone());
+                self.journal_entries
+                    .borrow_mut()
+                    .insert((canister, id), entry);
+            }
+        }
+
+        targets
+            .iter()
+            .map(|(canister, mutation_id)| {
+                let key = (*canister, *mutation_id);
+                cached
+                    .get(&key)
+                    .or_else(|| fetched.get(&key))
+                    .cloned()
+                    .ok_or_else(|| {
+                        RouterError::InvalidArgument(
+                            "missing journal entry for requested mutation".into(),
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    /// Read `index_pending_min_mutation_id` once per Graph canister and cache the result.
+    async fn resolve_pending_min_mutation_id(
+        &self,
+        graph_canister: Principal,
+    ) -> Result<Option<MutationId>, RouterError> {
+        {
+            let cache = self.pending_min_mutation_id.borrow();
+            if let Some(value) = cache.get(&graph_canister) {
+                return Ok(*value);
+            }
+        }
+        let value = index_pending_min_mutation_id(graph_canister)
+            .await
+            .map_err(|e| {
+                RouterError::Internal(format!("graph index_pending_min_mutation_id: {e}"))
+            })?;
+        self.pending_min_mutation_id
+            .borrow_mut()
+            .insert(graph_canister, value);
+        Ok(value)
+    }
+}
 
 #[derive(Clone, Copy)]
 enum BatchExecutionPolicy {
@@ -491,11 +628,16 @@ async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     index: &I,
     anchors: &[IndexAnchor],
     shard_ids: &[ShardId],
+    preflight: Option<&PreflightContext>,
 ) -> Result<SeedHits, String> {
     if anchors.is_empty() {
         return Ok(SeedHits::Vertices(Vec::new()));
     }
-    let first = lookup_anchor_hits(index, &anchors[0], shard_ids).await?;
+    let first = if let Some(ctx) = preflight {
+        resolve_anchor_hits_for_shards(ctx, index, &anchors[0], shard_ids).await?
+    } else {
+        lookup_anchor_hits(index, &anchors[0], shard_ids).await?
+    };
     if first.is_empty() {
         return Ok(first);
     }
@@ -505,8 +647,12 @@ async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     match first {
         SeedHits::Vertices(mut accumulated) => {
             for anchor in &anchors[1..] {
-                let SeedHits::Vertices(hits) = lookup_anchor_hits(index, anchor, shard_ids).await?
-                else {
+                let hits = if let Some(ctx) = preflight {
+                    resolve_anchor_hits_for_shards(ctx, index, anchor, shard_ids).await?
+                } else {
+                    lookup_anchor_hits(index, anchor, shard_ids).await?
+                };
+                let SeedHits::Vertices(hits) = hits else {
                     return Err("mixed vertex and edge anchors in seed prefix".into());
                 };
                 accumulated = intersect_posting_hits(vec![accumulated, hits]);
@@ -517,6 +663,41 @@ async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
             Ok(SeedHits::Vertices(accumulated))
         }
         SeedHits::Edges(_) => Err("edge anchor cannot combine with additional anchors".into()),
+    }
+}
+
+async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
+    ctx: &PreflightContext,
+    index: &I,
+    anchor: &IndexAnchor,
+    shard_ids: &[ShardId],
+) -> Result<SeedHits, String> {
+    // Label and LabelIntersection anchors already fan out to all shards in a single call,
+    // so they are coalesced per (anchor, shard) only when shard_ids has one element.
+    // For all other anchor kinds the index call itself covers all shards, so we cache by anchor.
+    match anchor {
+        IndexAnchor::Label { .. } | IndexAnchor::LabelIntersection { .. } => {
+            let mut merged: Option<Vec<PostingHit>> = None;
+            let mut saw_edges = false;
+            for &shard_id in shard_ids {
+                let hits = ctx.resolve_anchor_hits(index, anchor, shard_id).await?;
+                match hits {
+                    SeedHits::Vertices(h) => {
+                        if let Some(ref mut acc) = merged {
+                            acc.extend(h);
+                        } else {
+                            merged = Some(h);
+                        }
+                    }
+                    SeedHits::Edges(_) => saw_edges = true,
+                }
+            }
+            if saw_edges {
+                return Err("label anchor cannot produce edge hits".into());
+            }
+            Ok(SeedHits::Vertices(merged.unwrap_or_default()))
+        }
+        _ => lookup_anchor_hits(index, anchor, shard_ids).await,
     }
 }
 
@@ -675,6 +856,7 @@ pub async fn gql_query(query: String, params: Vec<u8>) -> Result<GqlQueryResult,
         None,
         ReadMode::Eventual,
         None,
+        None,
     )
     .await
 }
@@ -700,6 +882,7 @@ pub async fn gql_query_with_consistency(
         None,
         read_mode,
         None,
+        None,
     )
     .await
 }
@@ -713,6 +896,7 @@ pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterEr
         false,
         None,
         ReadMode::Eventual,
+        None,
         None,
     )
     .await?
@@ -733,7 +917,7 @@ pub(crate) async fn gql_execute_idempotent_with_batch(
     client_mutation_key: String,
     batch: Option<(BatchDispatchCoordinator, usize)>,
 ) -> Result<GqlQueryResult, RouterError> {
-    gql_execute_idempotent_with_batch_outcome(query, params, client_mutation_key, batch)
+    gql_execute_idempotent_with_batch_outcome(query, params, client_mutation_key, batch, None)
         .await?
         .ok_or_else(|| RouterError::InvalidArgument(BATCH_DEFERRED_ERROR.to_string()))
 }
@@ -743,6 +927,7 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
     params: Vec<u8>,
     client_mutation_key: String,
     batch: Option<(BatchDispatchCoordinator, usize)>,
+    preflight: Option<&PreflightContext>,
 ) -> Result<Option<GqlQueryResult>, RouterError> {
     let result = run_gql(
         &query,
@@ -753,6 +938,7 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
         Some(&client_mutation_key),
         ReadMode::Eventual,
         batch.clone(),
+        preflight,
     )
     .await;
     if let Err(error) = &result
@@ -783,6 +969,7 @@ pub async fn force_gql_execute(query: String, params: Vec<u8>) -> Result<u64, Ro
         None,
         ReadMode::Eventual,
         None,
+        None,
     )
     .await?
     .row_count)
@@ -803,6 +990,32 @@ pub(crate) async fn enforce_read_consistency(
 ) -> Result<(), RouterError> {
     enforce_read_consistency_with_lookup(store, graph_id, read_mode, index_pending_min_mutation_id)
         .await
+}
+
+/// ADR 0093 variant of [`enforce_read_consistency`] that coalesces
+/// `index_pending_min_mutation_id` lookups per Graph canister within a batch wave.
+pub(crate) async fn enforce_read_consistency_with_preflight(
+    store: &RouterStore,
+    graph_id: GraphId,
+    read_mode: &ReadMode,
+    preflight: Option<&PreflightContext>,
+) -> Result<(), RouterError> {
+    match preflight {
+        Some(ctx) => {
+            enforce_read_consistency_with_lookup(
+                store,
+                graph_id,
+                read_mode,
+                |graph_canister| async move {
+                    ctx.resolve_pending_min_mutation_id(graph_canister)
+                        .await
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .await
+        }
+        None => enforce_read_consistency(store, graph_id, read_mode).await,
+    }
 }
 
 async fn enforce_read_consistency_with_lookup<F, Fut>(
@@ -873,6 +1086,7 @@ async fn run_gql(
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
     batch: Option<(BatchDispatchCoordinator, usize)>,
+    preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     let result = run_gql_unchecked(
         query,
@@ -883,6 +1097,7 @@ async fn run_gql(
         client_mutation_key,
         read_mode,
         batch,
+        preflight,
     )
     .await?;
     ensure_gql_query_result_payload(&result, entrypoint)?;
@@ -915,6 +1130,7 @@ async fn run_gql_unchecked(
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
     batch: Option<(BatchDispatchCoordinator, usize)>,
+    preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     if let Some(ddl) = crate::index_ddl::try_parse(query) {
         let caller = msg_caller();
@@ -1037,7 +1253,8 @@ async fn run_gql_unchecked(
     // ADR 0029 §5 (Phase 3): enforce the read consistency contract before serving any
     // read shape (label-count fast path, index seed, or graph-shard scan all flow through
     // here). The barrier is a no-op for `Eventual` and for the write path.
-    enforce_read_consistency(&store, resolved.graph_id, &read_mode).await?;
+    enforce_read_consistency_with_preflight(&store, resolved.graph_id, &read_mode, preflight)
+        .await?;
 
     let tx = program
         .transaction_activity
@@ -1178,6 +1395,7 @@ async fn run_gql_unchecked(
                 client_mutation_key,
                 &stats,
                 batch.clone(),
+                preflight,
             )
             .await
         }
@@ -1195,6 +1413,7 @@ async fn run_gql_unchecked(
                 client_mutation_key,
                 &stats,
                 batch.clone(),
+                preflight,
             )
             .await
         }
@@ -1423,6 +1642,7 @@ async fn dispatch_plan_blob_with_batch(
     client_mutation_key: Option<&str>,
     stats: &RouterGraphStats,
     batch: Option<(BatchDispatchCoordinator, usize)>,
+    preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     dispatch_plan_blob_with_search_and_batch(
         graph_id,
@@ -1436,6 +1656,7 @@ async fn dispatch_plan_blob_with_batch(
         None,
         msg_caller(),
         batch,
+        preflight,
     )
     .await
 }
@@ -1467,6 +1688,7 @@ pub async fn dispatch_plan_blob_with_search(
         resolved_search,
         caller,
         None,
+        None,
     )
     .await
 }
@@ -1484,6 +1706,7 @@ async fn dispatch_plan_blob_with_search_and_batch(
     resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
     caller: Principal,
     batch: Option<(BatchDispatchCoordinator, usize)>,
+    preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
     let shards = store.list_live_shards_for_graph_id(graph_id)?;
@@ -1507,6 +1730,7 @@ async fn dispatch_plan_blob_with_search_and_batch(
         stats,
         resolved_search,
         batch,
+        preflight,
     )
     .await
 }
@@ -1582,6 +1806,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         stats,
         resolved_search,
         None,
+        None,
     )
     .await
 }
@@ -1602,6 +1827,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     stats: &RouterGraphStats,
     resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
     batch: Option<(BatchDispatchCoordinator, usize)>,
+    preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     // ADR 0029 §6 (Phase 5 contract 1): a completely-new INSERT-only write has no index anchor and
@@ -1654,7 +1880,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                 client_mutation_key,
             ));
         }
-        reconcile_router_mutation_projection(store, caller, graph_id, key).await?;
+        reconcile_router_mutation_projection(store, caller, graph_id, key, preflight).await?;
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
             await_batch_item(&batch).await?;
             return Ok(attach_mutation_phase(
@@ -1794,9 +2020,14 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         let routings = match seed_anchors {
             Some(set) => {
                 let shard_ids: Vec<_> = shards.iter().map(|entry| entry.shard_id).collect();
-                let hits = match resolve_seed_hits_from_anchors(index, &set.anchors, &shard_ids)
-                    .await
-                    .map_err(RouterError::InvalidArgument)
+                let hits = match resolve_seed_hits_from_anchors(
+                    index,
+                    &set.anchors,
+                    &shard_ids,
+                    preflight,
+                )
+                .await
+                .map_err(RouterError::InvalidArgument)
                 {
                     Ok(hits) => hits,
                     Err(err) => {
@@ -2188,6 +2419,27 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     // ADR 0029 Phase 2: accumulate per-shard read-your-writes watermarks for the mutation
     // token as each shard completes (built live so it survives record compaction).
     let mut token_shards: Vec<MutationTokenShard> = Vec::new();
+
+    // ADR 0093: coalesce per-wave mutation-journal reads. Dispatch already returned, so any
+    // entries that exist are durable; missing entries are cached as `None` and handled by the
+    // per-shard recovery/projection logic below.
+    if let (Some(ctx), Some(mutation_id)) = (preflight, mutation_id) {
+        let mut seen = HashSet::new();
+        let targets: Vec<(Principal, MutationId)> = dispatch_results
+            .iter()
+            .filter_map(|(dispatch, _)| {
+                if seen.insert(dispatch.graph_canister) {
+                    Some((dispatch.graph_canister, mutation_id))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !targets.is_empty() {
+            ctx.resolve_journal_entries(&targets).await?;
+        }
+    }
+
     for (dispatch, result) in dispatch_results {
         let result =
             result.ok_or_else(|| RouterError::InvalidArgument(BATCH_DEFERRED_ERROR.to_string()))?;
@@ -2201,6 +2453,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                         dispatch.graph_canister,
                         dispatch.shard_id,
                         mutation_id,
+                        preflight,
                     )
                     .await?
                     && matches!(entry.state, MutationJournalState::Completed)
@@ -2264,6 +2517,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                 dispatch.graph_canister,
                 dispatch.shard_id,
                 mutation_id,
+                preflight,
             )
             .await?;
             token_shards.push(MutationTokenShard {
@@ -2625,6 +2879,7 @@ async fn reconcile_router_mutation_projection(
     caller: Principal,
     graph_id: GraphId,
     client_key: &str,
+    preflight: Option<&PreflightContext>,
 ) -> Result<(), RouterError> {
     let Some(record) = store.router_mutation_record(caller, graph_id, client_key) else {
         return Ok(());
@@ -2640,6 +2895,7 @@ async fn reconcile_router_mutation_projection(
             shard.graph_canister,
             shard.shard_id,
             record.mutation_id,
+            preflight,
         )
         .await?
         else {
@@ -2664,17 +2920,39 @@ async fn reconcile_router_mutation_projection(
     Ok(())
 }
 
+async fn fetch_journal_entry(
+    preflight: Option<&PreflightContext>,
+    graph_canister: Principal,
+    mutation_id: MutationId,
+    shard_id: ShardId,
+) -> Result<Option<GraphMutationJournalEntryWire>, RouterError> {
+    match preflight {
+        Some(ctx) => {
+            let entries = ctx
+                .resolve_journal_entries(&[(graph_canister, mutation_id)])
+                .await?;
+            entries.into_iter().next().ok_or_else(|| {
+                RouterError::InvalidArgument(format!(
+                    "graph shard {shard_id} did not persist mutation journal entry for mutation {mutation_id}"
+                ))
+            })
+        }
+        None => get_mutation_journal_entry(graph_canister, mutation_id)
+            .await
+            .map_err(RouterError::InvalidArgument),
+    }
+}
+
 async fn advance_mutation_label_stats_projection(
     store: &RouterStore,
     graph_id: GraphId,
     graph_canister: Principal,
     shard_id: ShardId,
     mutation_id: MutationId,
+    preflight: Option<&PreflightContext>,
 ) -> Result<GraphMutationJournalEntryWire, RouterError> {
-    let Some(entry) = get_mutation_journal_entry(graph_canister, mutation_id)
-        .await
-        .map_err(RouterError::InvalidArgument)?
-    else {
+    let entry = fetch_journal_entry(preflight, graph_canister, mutation_id, shard_id).await?;
+    let Some(entry) = entry else {
         return Err(RouterError::InvalidArgument(format!(
             "graph shard {shard_id} did not persist mutation journal entry for mutation {mutation_id}"
         )));
@@ -2701,10 +2979,9 @@ async fn recover_mutation_outcome(
     graph_canister: Principal,
     shard_id: ShardId,
     mutation_id: MutationId,
+    preflight: Option<&PreflightContext>,
 ) -> Result<Option<GraphMutationJournalEntryWire>, RouterError> {
-    let Some(entry) = get_mutation_journal_entry(graph_canister, mutation_id)
-        .await
-        .map_err(RouterError::InvalidArgument)?
+    let Some(entry) = fetch_journal_entry(preflight, graph_canister, mutation_id, shard_id).await?
     else {
         return Ok(None);
     };
@@ -2759,6 +3036,7 @@ pub(crate) async fn recover_mutation_record(
             shard.graph_canister,
             shard.shard_id,
             mutation_id,
+            None,
         )
         .await?
         {
@@ -3946,6 +4224,7 @@ mod tests {
             &fake,
             &set.anchors,
             &[ShardId::new(0), ShardId::new(1)],
+            None,
         ))
         .expect("intersect label and property hits");
         assert_eq!(

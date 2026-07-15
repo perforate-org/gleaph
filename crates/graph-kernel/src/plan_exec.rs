@@ -308,6 +308,18 @@ pub struct GraphMutationJournalEntryWire {
     pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
 }
 
+/// Router → graph: read a batch of mutation journal entries in one call (ADR 0093).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GetMutationJournalEntriesArgs {
+    pub mutation_ids: Vec<MutationId>,
+}
+
+/// Graph → router: ordered optional journal entries for [`GetMutationJournalEntriesArgs`].
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GetMutationJournalEntriesResult {
+    pub entries: Vec<Option<GraphMutationJournalEntryWire>>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ResolvedLabelTable {
     pub vertex: Vec<ResolvedVertexLabel>,

@@ -49,3 +49,10 @@ limit and item-local journal boundary.
 Future work may add measured per-wave cost hints, but must not replace the
 instruction counter with a cross-canister sum or create a second idempotency
 mechanism.
+
+## Related
+
+ADR 0093 adds a planning-phase concurrency semaphore and per-wave lookup
+coalescing. The ADR 0042 cursor/budget paging remains responsible for limiting
+the total ingress batch size; the semaphore and caches limit parallel planning
+and duplicate inter-canister calls inside one wave.

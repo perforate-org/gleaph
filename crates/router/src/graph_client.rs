@@ -6,7 +6,8 @@ use gleaph_graph_kernel::federation::{
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchResult, ExecutePlanResult,
-    GraphMutationJournalEntryWire, LabelStatsDeltaEventWire, MutationId, ShardEventSeq,
+    GetMutationJournalEntriesArgs, GetMutationJournalEntriesResult, GraphMutationJournalEntryWire,
+    LabelStatsDeltaEventWire, MutationId, ShardEventSeq,
 };
 
 #[cfg(target_family = "wasm")]
@@ -156,6 +157,13 @@ pub async fn get_mutation_journal_entry(
     mutation_id: MutationId,
 ) -> Result<Option<GraphMutationJournalEntryWire>, String> {
     call_graph(graph, "get_mutation_journal_entry", mutation_id).await
+}
+
+pub async fn get_mutation_journal_entries(
+    graph: Principal,
+    args: GetMutationJournalEntriesArgs,
+) -> Result<GetMutationJournalEntriesResult, String> {
+    call_graph(graph, "get_mutation_journal_entries", args).await
 }
 
 pub async fn backfill_label_postings(

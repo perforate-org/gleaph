@@ -28,7 +28,7 @@ use crate::planner_stats::RouterGraphStats;
 use crate::state::RouterError;
 
 /// Index lookup anchor extracted from a physical plan.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum IndexAnchor {
     /// Single equality `IndexScan` (`lookup_equal`).
     Equal(SeedProbe),
@@ -124,7 +124,7 @@ impl SeedAnchorSet {
 }
 
 /// Equality `IndexScan` anchor (one property lookup via `lookup_equal`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SeedProbe {
     /// GQL variable to seed (e.g. `"u"` in `MATCH (u {uid: $x})`).
     pub variable: String,
@@ -137,7 +137,7 @@ pub struct SeedProbe {
 }
 
 /// Equality `EdgeIndexScan` anchor (`lookup_edge_equal`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EdgeSeedProbe {
     pub variable: String,
     pub property: String,

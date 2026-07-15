@@ -323,6 +323,18 @@ pub fn get_mutation_journal_entry(
     GraphStore::new().get_mutation_journal_entry(mutation_id)
 }
 
+pub fn get_mutation_journal_entries(
+    args: gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesArgs,
+) -> gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesResult {
+    let store = GraphStore::new();
+    let entries = args
+        .mutation_ids
+        .into_iter()
+        .map(|mutation_id| store.get_mutation_journal_entry(mutation_id))
+        .collect();
+    gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesResult { entries }
+}
+
 /// Router → graph (replicated read): the `Acquire` commit proof for each claim. `acquire` is
 /// `Some(UniqueAcquireEvidence { effect_id, owner_element_id })` iff a matching pinned `Acquire`
 /// effect exists (the `effect_id` lets the Router ack that exact effect after Confirm); `None` is

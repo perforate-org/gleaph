@@ -106,7 +106,15 @@ pub struct PostingHit {
 
 /// Vertex or edge property equality arm for [`IndexIntersectionRequest`] (ADR 0009 §3).
 #[derive(
-    Clone, Debug, Default, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    candid::CandidType,
+    serde::Deserialize,
+    serde::Serialize,
 )]
 pub enum IndexSubject {
     #[default]
@@ -119,7 +127,9 @@ pub enum IndexSubject {
 /// One equality arm for [`IndexIntersectionRequest`].
 ///
 /// `value` must be the sortable index key from `gleaph_gql::value_to_index_key_bytes`.
-#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, candid::CandidType, serde::Deserialize, serde::Serialize,
+)]
 pub struct IndexEqualSpec {
     pub subject: IndexSubject,
     pub property_id: u32,
