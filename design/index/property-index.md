@@ -296,8 +296,8 @@ The pending queues themselves remain heap-only; an upgrade before a maintenance 
 into the journal cannot recover that not-yet-journaled work, so upgrade safety begins at the durable
 journal boundary rather than at enqueue time.
 Plan 0088 now provides a separate durable derived-index outbox storage region and connects the
-Router→Graph wire-DML finalization handoff to it. Maintenance promotes bounded outbox prefixes into
-the existing repair dispatcher. Ad-hoc/native transaction delivery still uses the legacy
+Router→Graph wire-DML finalization handoff to it. Maintenance drains bounded outbox prefixes through
+the existing shared repair dispatcher. Ad-hoc/native transaction delivery still uses the legacy
 heap-only path until the remaining handoff work is complete.
 
 **`DROP INDEX` posting purge (ADR 0023 D6):** dropping an index removes the dropped property's

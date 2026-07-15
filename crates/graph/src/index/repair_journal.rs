@@ -64,12 +64,58 @@ pub(crate) async fn drain_once(
     ix: &dyn PropertyIndexLookup,
     vector: Option<&dyn VectorIndexLookup>,
 ) -> Result<(), PlanQueryError> {
+    drain_queue(DurableQueue::RepairJournal, ix, vector).await
+}
+
+/// Drains the durable Plan 0088 outbox directly, without first copying it into the repair journal.
+/// The same idempotent dispatcher is shared so property/vector batching and canonical-wins vector
+/// reconciliation have one implementation.
+pub(crate) async fn drain_outbox_once(
+    ix: &dyn PropertyIndexLookup,
+    vector: Option<&dyn VectorIndexLookup>,
+) -> Result<(), PlanQueryError> {
+    drain_queue(DurableQueue::DerivedIndexOutbox, ix, vector).await
+}
+
+#[derive(Clone, Copy)]
+enum DurableQueue {
+    RepairJournal,
+    DerivedIndexOutbox,
+}
+
+fn peek_queue(
+    store: &GraphStore,
+    queue: DurableQueue,
+    limit: usize,
+) -> Vec<(u64, RepairPostingOp)> {
+    match queue {
+        DurableQueue::RepairJournal => store.repair_journal_peek(limit),
+        DurableQueue::DerivedIndexOutbox => store
+            .derived_index_outbox_peek(limit)
+            .into_iter()
+            .map(|(seq, entry)| (seq, entry.op))
+            .collect(),
+    }
+}
+
+fn remove_from_queue(store: &GraphStore, queue: DurableQueue, seq: u64) {
+    match queue {
+        DurableQueue::RepairJournal => store.repair_journal_remove(seq),
+        DurableQueue::DerivedIndexOutbox => store.derived_index_outbox_remove(seq),
+    }
+}
+
+async fn drain_queue(
+    queue: DurableQueue,
+    ix: &dyn PropertyIndexLookup,
+    vector: Option<&dyn VectorIndexLookup>,
+) -> Result<(), PlanQueryError> {
     let store = GraphStore::new();
     if !store.federation_configured() {
         return Ok(());
     }
     let shard_id = ix.local_shard_id();
-    let entries = store.repair_journal_peek(REPAIR_DRAIN_BATCH);
+    let entries = peek_queue(&store, queue, REPAIR_DRAIN_BATCH);
     let mut offset = 0usize;
     while offset < entries.len() {
         if matches!(entries[offset].1, RepairPostingOp::VectorEmbedding { .. }) {
@@ -107,7 +153,7 @@ pub(crate) async fn drain_once(
                         ));
                     }
                     for (seq, _) in &group[group_offset..group_offset + applied] {
-                        store.repair_journal_remove(*seq);
+                        remove_from_queue(&store, queue, *seq);
                     }
                     group_offset += applied;
                     if progress.next_index.is_none() {
@@ -117,7 +163,7 @@ pub(crate) async fn drain_once(
             } else {
                 for (seq, op) in group {
                     apply(ix, Some(vx), shard_id, op).await?;
-                    store.repair_journal_remove(*seq);
+                    remove_from_queue(&store, queue, *seq);
                 }
             }
             continue;
@@ -150,7 +196,7 @@ pub(crate) async fn drain_once(
                     ));
                 }
                 for (seq, _) in &group[group_offset..group_offset + applied] {
-                    store.repair_journal_remove(*seq);
+                    remove_from_queue(&store, queue, *seq);
                 }
                 group_offset += applied;
                 if progress.next_index.is_none() {
@@ -160,7 +206,7 @@ pub(crate) async fn drain_once(
         } else {
             for (seq, op) in group {
                 apply(ix, vector, shard_id, op).await?;
-                store.repair_journal_remove(*seq);
+                remove_from_queue(&store, queue, *seq);
             }
         }
     }
@@ -510,9 +556,15 @@ mod tests {
         for (seq, _) in graph.repair_journal_peek(usize::MAX) {
             graph.repair_journal_remove(seq);
         }
+        for (seq, _) in graph.derived_index_outbox_peek(usize::MAX) {
+            graph.derived_index_outbox_remove(seq);
+        }
         let out = body(&graph);
         for (seq, _) in graph.repair_journal_peek(usize::MAX) {
             graph.repair_journal_remove(seq);
+        }
+        for (seq, _) in graph.derived_index_outbox_peek(usize::MAX) {
+            graph.derived_index_outbox_remove(seq);
         }
         graph.set_federation_routing(None).expect("clear routing");
         out
@@ -540,6 +592,19 @@ mod tests {
 
             pollster::block_on(drain_once(&index, None)).expect("drain succeeds");
             assert_eq!(index.batch_calls.load(Ordering::SeqCst), 1);
+            assert!(graph.repair_journal_is_empty());
+        });
+    }
+
+    #[test]
+    fn drain_outbox_reuses_batch_dispatch_without_copying_to_repair_journal() {
+        with_routing(|graph| {
+            graph.derived_index_outbox_append(17, [vertex_insert(1), vertex_insert(2)]);
+            let index = CountingIndex::batch();
+
+            pollster::block_on(drain_outbox_once(&index, None)).expect("outbox drain succeeds");
+            assert_eq!(index.batch_calls.load(Ordering::SeqCst), 1);
+            assert!(graph.derived_index_outbox_is_empty());
             assert!(graph.repair_journal_is_empty());
         });
     }

@@ -695,7 +695,7 @@ dispatch grouping changes.
 The vector pending queue is likewise heap-only until a flush or maintenance pass journalizes it;
 an upgrade before that boundary is not a replayable vector-index failure.
 Plan 0088 has added the durable outbox storage primitive and connects Router→Graph wire-DML vector
-handoff to it; maintenance promotes bounded entries into the existing vector-aware repair
+handoff to it; maintenance drains bounded entries through the existing vector-aware repair
 dispatcher. Ad-hoc/native transaction delivery remains heap-only until the remaining handoff work
 is complete.
 

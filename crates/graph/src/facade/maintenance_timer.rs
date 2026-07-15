@@ -16,7 +16,7 @@
 //! delay) rather than run blind, which would re-key the store without re-keying
 //! the index and silently diverge the two.
 
-#[cfg(any(test, target_family = "wasm"))]
+#[cfg(target_family = "wasm")]
 use super::GraphStore;
 #[cfg(any(test, target_family = "wasm"))]
 use super::ic_budget::{MAINTENANCE_TIMER_FLOOR_DELAY, MAINTENANCE_TIMER_RELAXED_DELAY};
@@ -185,11 +185,7 @@ async fn flush_and_repair(store: &GraphStore) {
     let vx = vector_client
         .as_ref()
         .map(|c| c as &dyn crate::index::vector_lookup::VectorIndexLookup);
-    promote_outbox_to_repair_journal(store);
-    if store.repair_journal_is_empty() {
-        let _ = crate::index::pending::flush_all_pending(Some(ix), None).await;
-        let _ = crate::index::vector_pending::flush_pending(vx, None).await;
-    } else {
+    if !store.repair_journal_is_empty() {
         // Durable repair entries are older than the volatile queues. Append pending work to the
         // journal before draining so it cannot overtake an older entry; contiguous compatible
         // entries are then delivered by the existing batch drain in one inter-canister call.
@@ -198,41 +194,22 @@ async fn flush_and_repair(store: &GraphStore) {
         if !pending.is_empty() {
             store.repair_journal_append(0, pending);
         }
-    }
-    let _ = crate::index::repair_journal::drain_once(ix, vx).await;
-}
-
-/// Bridges the Plan 0088 outbox into the existing idempotent repair dispatcher. The bridge is
-/// bounded so promotion itself cannot turn a large outbox into an unbounded stable-memory write;
-/// entries are appended after any older repair entries and removed from the outbox only after the
-/// append has completed synchronously.
-#[cfg(any(test, target_family = "wasm"))]
-const OUTBOX_PROMOTION_BATCH: usize = 128;
-
-#[cfg(any(test, target_family = "wasm"))]
-fn promote_outbox_to_repair_journal(store: &GraphStore) {
-    let entries = store.derived_index_outbox_peek(OUTBOX_PROMOTION_BATCH);
-    if entries.is_empty() {
+        let _ = crate::index::repair_journal::drain_once(ix, vx).await;
         return;
     }
-    let mut offset = 0;
-    while offset < entries.len() {
-        let mutation_id = entries[offset].1.mutation_id;
-        let mut end = offset + 1;
-        while end < entries.len() && entries[end].1.mutation_id == mutation_id {
-            end += 1;
+
+    if !store.derived_index_outbox_is_empty() {
+        let _ = crate::index::repair_journal::drain_outbox_once(ix, vx).await;
+        if !store.derived_index_outbox_is_empty() {
+            return;
         }
-        store.repair_journal_append(
-            mutation_id,
-            entries[offset..end]
-                .iter()
-                .map(|(_, entry)| entry.op.clone()),
-        );
-        offset = end;
     }
-    for (seq, _) in entries {
-        store.derived_index_outbox_remove(seq);
+
+    if store.repair_journal_is_empty() {
+        let _ = crate::index::pending::flush_all_pending(Some(ix), None).await;
+        let _ = crate::index::vector_pending::flush_pending(vx, None).await;
     }
+    let _ = crate::index::repair_journal::drain_once(ix, vx).await;
 }
 
 #[cfg(test)]
@@ -254,58 +231,5 @@ mod tests {
     fn small_tail_uses_relaxed_delay() {
         assert_eq!(next_delay(5, false), Some(MAINTENANCE_TIMER_RELAXED_DELAY));
         assert!(MAINTENANCE_TIMER_RELAXED_DELAY > MAINTENANCE_TIMER_FLOOR_DELAY);
-    }
-
-    #[test]
-    fn promotes_outbox_prefix_without_losing_mutation_identity() {
-        let store = GraphStore::new();
-        for (seq, _) in store.derived_index_outbox_peek(usize::MAX) {
-            store.derived_index_outbox_remove(seq);
-        }
-        for (seq, _) in store.repair_journal_peek(usize::MAX) {
-            store.repair_journal_remove(seq);
-        }
-        store.derived_index_outbox_append(
-            41,
-            [crate::facade::RepairPostingOp::Label {
-                remove: false,
-                label_id: 1,
-                vertex_id: 2,
-            }],
-        );
-        store.derived_index_outbox_append(
-            42,
-            [crate::facade::RepairPostingOp::Label {
-                remove: false,
-                label_id: 1,
-                vertex_id: 3,
-            }],
-        );
-
-        promote_outbox_to_repair_journal(&store);
-
-        assert!(store.derived_index_outbox_is_empty());
-        assert_eq!(store.index_pending_min_mutation_id(), Some(41));
-        let entries = store.repair_journal_peek(10);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(
-            entries[0].1,
-            crate::facade::RepairPostingOp::Label {
-                remove: false,
-                label_id: 1,
-                vertex_id: 2,
-            }
-        );
-        assert_eq!(
-            entries[1].1,
-            crate::facade::RepairPostingOp::Label {
-                remove: false,
-                label_id: 1,
-                vertex_id: 3,
-            }
-        );
-        for (seq, _) in entries {
-            store.repair_journal_remove(seq);
-        }
     }
 }
