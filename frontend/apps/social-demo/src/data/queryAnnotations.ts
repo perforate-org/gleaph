@@ -209,16 +209,6 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       description: "Personalize the path for Alice and restrict it to the 'Graph databases' topic (demo_id 13).",
     },
     {
-      queryText: "ELEMENT_ID(follows1) AS follows_edge_id",
-      label: "First follow edge",
-      description: "Return the first FOLLOWS edge as evidence for the beginning of the path.",
-    },
-    {
-      queryText: "ELEMENT_ID(follows2) AS second_follows_edge_id",
-      label: "Second follow edge",
-      description: "Return the second FOLLOWS edge as evidence for the intermediate hop.",
-    },
-    {
       queryText: "RETURN",
       label: "Projection",
       description: "Declare which values to send back as result columns.",
@@ -247,6 +237,16 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       queryText: "p.created_at AS created_at",
       label: "Timestamp column",
       description: "Return the post creation timestamp.",
+    },
+    {
+      queryText: "ELEMENT_ID(follows1) AS follows_edge_id",
+      label: "First follow edge",
+      description: "Return the first FOLLOWS edge as evidence for the beginning of the path.",
+    },
+    {
+      queryText: "ELEMENT_ID(follows2) AS second_follows_edge_id",
+      label: "Second follow edge",
+      description: "Return the second FOLLOWS edge as evidence for the intermediate hop.",
     },
     {
       queryText: "ELEMENT_ID(posted) AS posted_edge_id",
