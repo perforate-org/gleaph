@@ -32,9 +32,10 @@ pub use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexEqualSpec,
     IndexIntersectionRequest, IndexIntersectionResult, IndexLabelIntersectionRequest,
     IndexPostingBatchProgress, IndexPostingMutation, IndexSubject, LabelLookupPageRequest,
-    LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
-    PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+    LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -189,6 +190,11 @@ fn lookup_edge_equal(
 #[query(guard = "guard_router_canister")]
 fn lookup_equal_page(req: LookupEqualPageRequest) -> PostingHitPage {
     canister::lookup_equal_page(req)
+}
+
+#[query(guard = "guard_router_canister")]
+fn lookup_equal_page_for_label(req: LookupEqualPageForLabelRequest) -> PostingHitPage {
+    canister::lookup_equal_page_for_label(req)
 }
 
 #[query(guard = "guard_router_canister")]

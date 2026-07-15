@@ -10,9 +10,10 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{IndexPurgeKind, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
-    LabelLookupPageRequest, LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
-    PostingHit, PostingRangeRequest, PropertyPostingCursor,
+    LabelLookupPageRequest, LabelPostingCursor, LookupEdgeEqualPageRequest,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingRangeRequest,
+    PropertyPostingCursor,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -1414,6 +1415,56 @@ fn filter_hits_by_label_keeps_members_only() {
             },
         ]
     );
+}
+
+#[test]
+fn lookup_equal_page_for_label_sieves_inside_index_call() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+
+    let value = index_key(Value::Int64(7));
+    for vertex_id in [10, 20, 30] {
+        store
+            .posting_insert(
+                shard_principal,
+                ShardId::new(0),
+                5,
+                value.clone(),
+                vertex_id,
+            )
+            .expect("posting");
+    }
+    for vertex_id in [10, 30] {
+        store
+            .label_posting_insert(shard_principal, ShardId::new(0), 2, vertex_id)
+            .expect("label");
+    }
+
+    let page = store
+        .lookup_equal_page_for_label(&LookupEqualPageForLabelRequest {
+            property_id: 5,
+            value,
+            vertex_label_id: 2,
+            after: None,
+            limit: 10,
+        })
+        .expect("filtered page");
+    assert_eq!(
+        page.hits,
+        vec![
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 10,
+            },
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 30,
+            },
+        ]
+    );
+    assert!(page.done);
 }
 
 #[test]

@@ -4,9 +4,9 @@ use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHitPage, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, LabelLookupPageRequest, LabelLookupPageResult,
-    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    LookupRangeIntersectionPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
-    ValuePostingCount,
+    LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, ValuePostingCount,
 };
 
 #[derive(Clone, Debug)]
@@ -39,6 +39,30 @@ impl RouterIndexClient {
         {
             let _ = req;
             Err("lookup_equal_page unavailable in native builds".into())
+        }
+    }
+
+    pub async fn lookup_equal_page_for_label(
+        &self,
+        req: LookupEqualPageForLabelRequest,
+    ) -> Result<PostingHitPage, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let page: PostingHitPage =
+                Call::bounded_wait(self.index_canister, "lookup_equal_page_for_label")
+                    .with_args(&(req,))
+                    .await
+                    .map_err(|e| format!("lookup_equal_page_for_label: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("lookup_equal_page_for_label decode: {e}"))?;
+            Ok(page)
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_equal_page_for_label unavailable in native builds".into())
         }
     }
 

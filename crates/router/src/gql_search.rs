@@ -1790,17 +1790,17 @@ async fn collect_bounded_candidates_union_inner<L: DisjunctionLookup>(
         for source in &sources {
             let mut after: Option<PropertyPostingCursor> = None;
             loop {
-                let page = match source {
-                    CandidateUnionSource::Equal { property_id, value } => {
-                        client
-                            .lookup_equal_page(
-                                *property_id,
-                                value.clone(),
-                                after,
-                                VECTOR_FILTER_PAGE_LIMIT,
-                            )
-                            .await
-                    }
+                let (page, already_filtered) = match source {
+                    CandidateUnionSource::Equal { property_id, value } => client
+                        .lookup_equal_page_for_label(
+                            *property_id,
+                            value.clone(),
+                            label_id.raw() as u32,
+                            after,
+                            VECTOR_FILTER_PAGE_LIMIT,
+                        )
+                        .await
+                        .map(|page| (page, true)),
                     CandidateUnionSource::Range {
                         property_id,
                         low,
@@ -1813,20 +1813,25 @@ async fn collect_bounded_candidates_union_inner<L: DisjunctionLookup>(
                         client
                             .lookup_range_page(*property_id, range, after, VECTOR_FILTER_PAGE_LIMIT)
                             .await
+                            .map(|page| (page, false))
                     }
                 }
                 .map_err(|e| {
                     RouterError::InvalidArgument(format!("property-index lookup failed: {e}"))
                 })?;
 
-                let label_hits = client
-                    .filter_hits_by_label(label_id.raw() as u32, page.hits)
-                    .await
-                    .map_err(|e| {
-                        RouterError::InvalidArgument(format!(
-                            "property-index label filter failed: {e}"
-                        ))
-                    })?;
+                let label_hits = if already_filtered {
+                    page.hits
+                } else {
+                    client
+                        .filter_hits_by_label(label_id.raw() as u32, page.hits)
+                        .await
+                        .map_err(|e| {
+                            RouterError::InvalidArgument(format!(
+                                "property-index label filter failed: {e}"
+                            ))
+                        })?
+                };
 
                 for hit in label_hits {
                     if !seen.insert((hit.shard_id, hit.vertex_id)) {
@@ -2114,6 +2119,23 @@ trait DisjunctionLookup: Clone {
         limit: u32,
     ) -> Result<PostingHitPage, String>;
 
+    async fn lookup_equal_page_for_label(
+        &self,
+        property_id: u32,
+        value: Vec<u8>,
+        vertex_label_id: u32,
+        after: Option<PropertyPostingCursor>,
+        limit: u32,
+    ) -> Result<PostingHitPage, String> {
+        let mut page = self
+            .lookup_equal_page(property_id, value, after, limit)
+            .await?;
+        page.hits = self
+            .filter_hits_by_label(vertex_label_id, page.hits)
+            .await?;
+        Ok(page)
+    }
+
     async fn lookup_range_page(
         &self,
         property_id: u32,
@@ -2143,6 +2165,26 @@ impl DisjunctionLookup for RouterIndexClient {
             after,
             limit,
         })
+        .await
+    }
+
+    async fn lookup_equal_page_for_label(
+        &self,
+        property_id: u32,
+        value: Vec<u8>,
+        vertex_label_id: u32,
+        after: Option<PropertyPostingCursor>,
+        limit: u32,
+    ) -> Result<PostingHitPage, String> {
+        self.lookup_equal_page_for_label(
+            gleaph_graph_kernel::index::LookupEqualPageForLabelRequest {
+                property_id,
+                value,
+                vertex_label_id,
+                after,
+                limit,
+            },
+        )
         .await
     }
 

@@ -262,6 +262,19 @@ pub struct LookupEqualPageRequest {
     pub limit: u32,
 }
 
+/// Paginated equality export with label membership applied inside the index canister.
+///
+/// Keeping the label sieve at the producer avoids sending a page to the Router and then
+/// performing a second inter-canister query for the same page.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupEqualPageForLabelRequest {
+    pub property_id: u32,
+    pub value: Vec<u8>,
+    pub vertex_label_id: u32,
+    pub after: Option<PropertyPostingCursor>,
+    pub limit: u32,
+}
+
 /// Paginated all-vertex equality intersection (the planner's `IndexIntersection` shape).
 ///
 /// The index walks the first arm (`specs[0]`) in pages and sieves each page against the remaining

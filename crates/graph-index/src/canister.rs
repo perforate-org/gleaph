@@ -11,9 +11,9 @@ use gleaph_graph_kernel::federation::{
 };
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, IndexPostingBatchProgress,
-    IndexPostingMutation, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
-    PostingHit, PostingHitPage, PostingRangeRequest, ValuePostingCount,
+    IndexPostingMutation, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
+    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
+    LookupRangePageRequest, PostingHit, PostingHitPage, PostingRangeRequest, ValuePostingCount,
 };
 use ic_cdk::api::msg_caller;
 
@@ -288,6 +288,15 @@ pub(crate) fn lookup_edge_equal(
 pub(crate) fn lookup_equal_page(req: LookupEqualPageRequest) -> PostingHitPage {
     IndexStore::new()
         .lookup_equal_page(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
+pub(crate) fn lookup_equal_page_for_label(req: LookupEqualPageForLabelRequest) -> PostingHitPage {
+    IndexStore::new()
+        .lookup_equal_page_for_label(&req)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()
