@@ -19,6 +19,13 @@ the same index-owned label sieve and encoded interval cursor semantics. These
 compound reads avoid a Router-to-index round trip for equality and range filter
 pages.
 
+The compound intersection reads `lookup_intersection_page_for_label` and
+`lookup_range_intersection_page_for_label` apply the same label sieve after the
+index-local equality/range intersection and preserve the walk-arm cursor. The
+Router uses these endpoints for label-filtered `SEARCH` intersection paths, so
+each page requires one Router-to-index query instead of a separate label-filter
+call.
+
 **ADR 0034 Slice 14 — Implemented:** `lookup_range_intersection_page` supports one to eight equality arms combined with a single finite numeric range on a distinct vertex property. The index walks the finite encoded range one page at a time, sieves each page server-side against every equality arm, and preserves the range cursor even when a survivor page is empty. Zero equality arms and more than eight arms are rejected; non-vertex specs are rejected.
 
 **ADR 0034 Slice 15 — Implemented (Router-side):** same-property equality disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight `lookup_equal_page` streams against the same `(property_id, label_id, graph_id)` active vertex property index. The Property Index endpoint contract does not change; `lookup_equal_page` remains the primitive for a single `(property_id, value)` bucket. The Router collects per-arm per-source pages, applies label-scoped filtering, globally deduplicates `(shard_id, vertex_id)` subjects, and enforces the existing 4096 candidate bound before Vector Index ranking.

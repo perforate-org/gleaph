@@ -13,7 +13,8 @@ use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexSubject, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
+    LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
     LookupRangePageForLabelRequest, LookupRangePageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
     PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
@@ -231,6 +232,21 @@ impl IndexStore {
             next: walk_page.next,
             done: walk_page.done,
         })
+    }
+
+    /// Paginated all-vertex equality intersection with label membership sieved in the index
+    /// canister, preserving the walk-arm cursor over scanned postings.
+    pub fn lookup_intersection_page_for_label(
+        &self,
+        req: &LookupIntersectionPageForLabelRequest,
+    ) -> Result<PostingHitPage, IndexError> {
+        let mut page = self.lookup_intersection_page(&LookupIntersectionPageRequest {
+            specs: req.specs.clone(),
+            after: req.after.clone(),
+            limit: req.limit,
+        })?;
+        page.hits = self.filter_hits_by_label(req.vertex_label_id, &page.hits);
+        Ok(page)
     }
 
     /// Walk the property bucket and return `(encoded_value, global_count)` groups with `count >= min_count`.
@@ -596,6 +612,25 @@ impl IndexStore {
             next: walk_page.next,
             done: walk_page.done,
         })
+    }
+
+    /// Paginated range-plus-equality intersection with label membership sieved in the index
+    /// canister, preserving the range-walk cursor over scanned postings.
+    pub fn lookup_range_intersection_page_for_label(
+        &self,
+        req: &LookupRangeIntersectionPageForLabelRequest,
+    ) -> Result<PostingHitPage, IndexError> {
+        let mut page =
+            self.lookup_range_intersection_page(&LookupRangeIntersectionPageRequest {
+                range_property_id: req.range_property_id,
+                low: req.low.clone(),
+                high: req.high.clone(),
+                equal_specs: req.equal_specs.clone(),
+                after: req.after.clone(),
+                limit: req.limit,
+            })?;
+        page.hits = self.filter_hits_by_label(req.vertex_label_id, &page.hits);
+        Ok(page)
     }
 }
 

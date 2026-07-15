@@ -12,7 +12,8 @@ use gleaph_graph_kernel::federation::{
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, IndexPostingBatchProgress,
     IndexPostingMutation, LabelIntersectionPageRequest, LookupEdgeEqualPageRequest,
-    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
     LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
     PostingHit, PostingHitPage, PostingRangeRequest, ValuePostingCount,
 };
@@ -391,11 +392,33 @@ pub(crate) fn lookup_intersection_page(req: LookupIntersectionPageRequest) -> Po
         })
 }
 
+pub(crate) fn lookup_intersection_page_for_label(
+    req: LookupIntersectionPageForLabelRequest,
+) -> PostingHitPage {
+    IndexStore::new()
+        .lookup_intersection_page_for_label(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
 pub(crate) fn lookup_range_intersection_page(
     req: LookupRangeIntersectionPageRequest,
 ) -> PostingHitPage {
     IndexStore::new()
         .lookup_range_intersection_page(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
+pub(crate) fn lookup_range_intersection_page_for_label(
+    req: LookupRangeIntersectionPageForLabelRequest,
+) -> PostingHitPage {
+    IndexStore::new()
+        .lookup_range_intersection_page_for_label(&req)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()

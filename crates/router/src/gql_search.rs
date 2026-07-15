@@ -32,8 +32,8 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    IndexEqualSpec, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    LookupRangeIntersectionPageRequest, MAX_INDEX_VALUE_KEY_BYTES,
+    IndexEqualSpec, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
+    LookupRangeIntersectionPageForLabelRequest, MAX_INDEX_VALUE_KEY_BYTES,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, ResolvedSearchVertexHitWire,
@@ -1511,17 +1511,18 @@ async fn collect_bounded_candidates_range_intersection(
     high: Vec<u8>,
     equal_specs: Vec<IndexEqualSpec>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
-    collect_bounded_candidates(graph_id, store, label_id, |client, after| {
+    collect_bounded_candidates_for_label(graph_id, store, label_id, |client, after| {
         let equal_specs = equal_specs.clone();
-        let req = LookupRangeIntersectionPageRequest {
+        let req = LookupRangeIntersectionPageForLabelRequest {
             range_property_id: range_property_id.raw(),
             low: low.clone(),
             high: high.clone(),
             equal_specs,
+            vertex_label_id: label_id.raw() as u32,
             after,
             limit: VECTOR_FILTER_PAGE_LIMIT,
         };
-        async move { client.lookup_range_intersection_page(req).await }
+        async move { client.lookup_range_intersection_page_for_label(req).await }
     })
     .await
 }
@@ -2076,12 +2077,13 @@ async fn collect_bounded_candidates_intersection(
     label_id: VertexLabelId,
     specs: Vec<IndexEqualSpec>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
-    collect_bounded_candidates(graph_id, store, label_id, |client, after| {
+    collect_bounded_candidates_for_label(graph_id, store, label_id, |client, after| {
         let value = specs.clone();
         async move {
             client
-                .lookup_intersection_page(LookupIntersectionPageRequest {
+                .lookup_intersection_page_for_label(LookupIntersectionPageForLabelRequest {
                     specs: value.clone(),
+                    vertex_label_id: label_id.raw() as u32,
                     after,
                     limit: VECTOR_FILTER_PAGE_LIMIT,
                 })
@@ -2299,29 +2301,6 @@ async fn collect_bounded_candidates_equal_disjunction<L: DisjunctionLookup>(
         })
         .collect();
     collect_bounded_candidates_union_inner(clients, label_id, union_sources).await
-}
-
-/// Generic bounded candidate collector used by both single-arm equality and two-arm intersection.
-/// Calls `fetch_page` for each index-canister target, label-filters the survivors, deduplicates
-/// globally, and fails on the 4097th distinct label-qualified subject.
-async fn collect_bounded_candidates<F, Fut>(
-    graph_id: GraphId,
-    store: &RouterStore,
-    label_id: VertexLabelId,
-    fetch_page: F,
-) -> Result<Vec<VectorSubject>, RouterError>
-where
-    F: FnMut(RouterIndexClient, Option<gleaph_graph_kernel::index::PropertyPostingCursor>) -> Fut,
-    Fut: std::future::Future<Output = Result<PostingHitPage, String>>,
-{
-    collect_bounded_candidates_inner(
-        graph_id,
-        store,
-        label_id,
-        fetch_page,
-        |client, label_id, hits| async move { client.filter_hits_by_label(label_id, hits).await },
-    )
-    .await
 }
 
 async fn collect_bounded_candidates_for_label<F, Fut>(

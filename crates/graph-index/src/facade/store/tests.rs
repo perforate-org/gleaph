@@ -12,7 +12,8 @@ use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
     LabelIntersectionPageRequest, LabelLookupPageRequest, LabelPostingCursor,
     LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
+    LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
     LookupRangePageForLabelRequest, LookupRangePageRequest, PostingHit, PostingRangeRequest,
     PropertyPostingCursor,
 };
@@ -1469,6 +1470,54 @@ fn lookup_equal_page_for_label_sieves_inside_index_call() {
 }
 
 #[test]
+fn lookup_intersection_page_for_label_sieves_inside_index_call() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    for vertex_id in [10, 20, 30] {
+        store
+            .posting_insert(shard, ShardId::new(0), 5, b"alice".to_vec(), vertex_id)
+            .expect("walk posting");
+    }
+    for vertex_id in [10, 30] {
+        store
+            .posting_insert(shard, ShardId::new(0), 6, b"active".to_vec(), vertex_id)
+            .expect("sieve posting");
+        store
+            .label_posting_insert(shard, ShardId::new(0), 2, vertex_id)
+            .expect("label posting");
+    }
+
+    let page = store
+        .lookup_intersection_page_for_label(&LookupIntersectionPageForLabelRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(5, b"alice".to_vec()),
+                IndexEqualSpec::vertex(6, b"active".to_vec()),
+            ],
+            vertex_label_id: 2,
+            after: None,
+            limit: 10,
+        })
+        .expect("filtered intersection page");
+    assert_eq!(
+        page.hits,
+        vec![
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 10,
+            },
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 30,
+            },
+        ]
+    );
+    assert!(page.done);
+}
+
+#[test]
 fn lookup_label_intersection_page_sieves_inside_index_call() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
@@ -2480,6 +2529,57 @@ fn lookup_range_intersection_page_filters_range_walk_by_equality_arm() {
     vids.sort_unstable();
     assert_eq!(vids, vec![3]);
     assert!(page.done, "single-page range should be terminal");
+}
+
+#[test]
+fn lookup_range_intersection_page_for_label_sieves_inside_index_call() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    for vertex_id in [1u32, 2, 3, 4] {
+        store
+            .posting_insert(
+                shard,
+                ShardId::new(0),
+                10,
+                index_key(Value::Int64(i64::from(vertex_id))),
+                vertex_id,
+            )
+            .expect("range posting");
+    }
+    for vertex_id in [3u32, 4] {
+        store
+            .posting_insert(shard, ShardId::new(0), 11, b"doc".to_vec(), vertex_id)
+            .expect("equality posting");
+    }
+    store
+        .label_posting_insert(shard, ShardId::new(0), 2, 3)
+        .expect("label posting");
+
+    let (low, high) =
+        gleaph_gql::numeric_range_bounds(&Value::Int64(2), gleaph_gql::ast::CmpOp::Ge)
+            .expect("range bounds");
+    let page = store
+        .lookup_range_intersection_page_for_label(&LookupRangeIntersectionPageForLabelRequest {
+            range_property_id: 10,
+            low,
+            high,
+            equal_specs: vec![IndexEqualSpec::vertex(11, b"doc".to_vec())],
+            vertex_label_id: 2,
+            after: None,
+            limit: 10,
+        })
+        .expect("filtered range intersection page");
+    assert_eq!(
+        page.hits,
+        vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 3,
+        }]
+    );
+    assert!(page.done);
 }
 
 #[test]

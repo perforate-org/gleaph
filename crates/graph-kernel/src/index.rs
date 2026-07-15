@@ -307,6 +307,16 @@ pub struct LookupIntersectionPageRequest {
     pub limit: u32,
 }
 
+/// Paginated all-vertex equality intersection with vertex-label membership applied inside the
+/// index canister.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupIntersectionPageForLabelRequest {
+    pub specs: Vec<IndexEqualSpec>,
+    pub vertex_label_id: u32,
+    pub after: Option<PropertyPostingCursor>,
+    pub limit: u32,
+}
+
 /// Paginated range export over encoded values for one vertex property.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LookupRangePageRequest {
@@ -349,6 +359,19 @@ pub struct LookupRangeIntersectionPageRequest {
     pub low: Vec<u8>,
     pub high: Vec<u8>,
     pub equal_specs: Vec<IndexEqualSpec>,
+    pub after: Option<PropertyPostingCursor>,
+    pub limit: u32,
+}
+
+/// Paginated range-plus-equality intersection with vertex-label membership applied inside the
+/// index canister.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupRangeIntersectionPageForLabelRequest {
+    pub range_property_id: u32,
+    pub low: Vec<u8>,
+    pub high: Vec<u8>,
+    pub equal_specs: Vec<IndexEqualSpec>,
+    pub vertex_label_id: u32,
     pub after: Option<PropertyPostingCursor>,
     pub limit: u32,
 }

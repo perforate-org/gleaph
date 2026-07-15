@@ -1,7 +1,7 @@
 # Index lookup intersection
 
-Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 16:03:13 UTC +0000
+Last updated: 2026-07-15
+Anchor timestamp: 2026-07-15 08:58:08 UTC +0000
 
 ## Status
 
@@ -101,6 +101,11 @@ into **one inter-canister message per page** instead of one `lookup_equal_page` 
   impls (`RouterIndexClient`, `RouterIndexLookup`) when `all_vertex_specs(&specs)` holds.
 - Standalone graph: `IcPropertyIndexClient::collect_vertex_intersection_hits` in
   `graph/src/index/ic.rs` loops the same `lookup_intersection_page` query.
+
+The label-aware `lookup_intersection_page_for_label` variant applies vertex-label membership in the
+same index canister call and preserves the walk-arm cursor. The range compound path has the
+corresponding `lookup_range_intersection_page_for_label` variant. Router `SEARCH` intersection
+paths use these variants so label filtering does not add a second inter-canister query per page.
 
 `lookup_intersection_page` returns an empty terminal page for fewer than two specs, and an explicit
 [`IndexError::TooManyEqualityIntersectionArms`] for more than

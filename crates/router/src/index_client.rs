@@ -5,7 +5,8 @@ use gleaph_graph_kernel::index::{
     EdgePostingHitPage, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, LabelIntersectionPageRequest, LabelLookupPageRequest,
     LabelLookupPageResult, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
-    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
+    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
     LookupRangePageForLabelRequest, PostingHit, PostingHitPage, PostingRangeRequest,
     ValuePostingCount,
 };
@@ -166,6 +167,28 @@ impl RouterIndexClient {
         }
     }
 
+    pub async fn lookup_intersection_page_for_label(
+        &self,
+        req: LookupIntersectionPageForLabelRequest,
+    ) -> Result<PostingHitPage, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            Call::bounded_wait(self.index_canister, "lookup_intersection_page_for_label")
+                .with_args(&(req,))
+                .await
+                .map_err(|e| format!("lookup_intersection_page_for_label: {e}"))?
+                .candid()
+                .map_err(|e| format!("lookup_intersection_page_for_label decode: {e}"))
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_intersection_page_for_label unavailable in native builds".into())
+        }
+    }
+
     pub async fn lookup_range_page(
         &self,
         property_id: u32,
@@ -243,6 +266,31 @@ impl RouterIndexClient {
         {
             let _ = req;
             Err("lookup_range_intersection_page unavailable in native builds".into())
+        }
+    }
+
+    pub async fn lookup_range_intersection_page_for_label(
+        &self,
+        req: LookupRangeIntersectionPageForLabelRequest,
+    ) -> Result<PostingHitPage, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            Call::bounded_wait(
+                self.index_canister,
+                "lookup_range_intersection_page_for_label",
+            )
+            .with_args(&(req,))
+            .await
+            .map_err(|e| format!("lookup_range_intersection_page_for_label: {e}"))?
+            .candid()
+            .map_err(|e| format!("lookup_range_intersection_page_for_label decode: {e}"))
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_range_intersection_page_for_label unavailable in native builds".into())
         }
     }
 

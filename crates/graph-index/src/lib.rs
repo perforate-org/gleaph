@@ -33,7 +33,8 @@ pub use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, IndexLabelIntersectionRequest,
     IndexPostingBatchProgress, IndexPostingMutation, IndexSubject, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest,
-    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
     LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
     PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
@@ -267,8 +268,22 @@ fn lookup_intersection_page(req: LookupIntersectionPageRequest) -> PostingHitPag
 }
 
 #[query(guard = "guard_router_canister")]
+fn lookup_intersection_page_for_label(
+    req: LookupIntersectionPageForLabelRequest,
+) -> PostingHitPage {
+    canister::lookup_intersection_page_for_label(req)
+}
+
+#[query(guard = "guard_router_canister")]
 fn lookup_range_intersection_page(req: LookupRangeIntersectionPageRequest) -> PostingHitPage {
     canister::lookup_range_intersection_page(req)
+}
+
+#[query(guard = "guard_router_canister")]
+fn lookup_range_intersection_page_for_label(
+    req: LookupRangeIntersectionPageForLabelRequest,
+) -> PostingHitPage {
+    canister::lookup_range_intersection_page_for_label(req)
 }
 
 #[query(guard = "guard_router_canister")]
