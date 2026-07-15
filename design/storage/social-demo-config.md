@@ -44,13 +44,16 @@ config/
 
 ## demo_id representation
 
-User, community, topic, and feed configuration keys remain human-readable. Post YAML has no
+User, community, topic, and feed configuration keys remain human-readable. User configuration keys
+are emitted as the stable `User.user_id` identity and are used for all user-to-user seed matches;
+numeric `demo_id` is only a fixture-local display/reference value and must not identify a user in a
+scenario query. Post YAML has no
 identity field: `build-config.mjs` derives a stable opaque graph key as `p_<20 hex chars>` from a
 SHA-256 namespace plus `users/<author>/posts/<stem>.yaml`. It then assigns every entity a
 deterministic global numeric `demo_id` (stored as an Int64 in the graph and decoded as `bigint` on
 the Candid wire). Allocation is users, communities, topics, posts, then feeds; each group is sorted
-by its configuration path. The current fixture therefore allocates users `1..11`, its community
-as `12`, topics `13..14`, Posts `15..39`, and `public-feed` as `40`.
+by its configuration path. The current fixture therefore allocates users `1..23`, its community
+as `24`, topics `25..26`, Posts `27..87`, and `public-feed` as `88`.
 
 The emitted seed GQL strings use plain integer literals `demo_id: <N>` (no `: u64`
 cast — the graph mutation property-expression evaluator does not support
@@ -64,7 +67,7 @@ values when needed.
 
 | Field         | Type                  | Use                                                    |
 | ------------- | --------------------- | ------------------------------------------------------ |
-| `id`          | string                | User `demo_id`; must match the directory name.         |
+| `id`          | string                | Stable `User.user_id`; must match the directory name.  |
 | `name`        | string                | `User.name` property and display label.                |
 | `bio`         | string (optional)     | Display-only; not seeded into the graph in this slice. |
 | `follows`     | list of user ids      | Generates `FOLLOWS` edges.                             |
@@ -179,10 +182,17 @@ labeled-edge store records insertion order. The default descending fixed-label s
 The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
 to preserve the visible read contract and fail closed if the derivation rule ever changes.
 
-Because the seed runner applies every artifact entry as an independent idempotent mutation, it
-does not issue `GLEAPH.FINALIZE_*` before ordinary edges. Storage owns write-safety preparation;
-finalize procedures remain optional batch-ingest reclaim controls rather than social state or a
-per-mutation protocol.
+The seed runner submits bounded pages through Router `gql_execute_idempotent_batch` (16 mutations
+per page by default). Each page item remains an independent idempotent mutation with its own stable
+client mutation key; the Router executes items in order and may have partially committed a page when
+an item fails. Replaying the page is safe and resumes through the existing idempotent journal. The
+`SEED_PAGE_SIZE` environment variable or fifth CLI argument can lower the page size; values above
+16 are rejected by both the runner and Router. The legacy single-mutation method remains available
+when an explicit method name is passed to the runner.
+
+The runner does not issue `GLEAPH.FINALIZE_*` before ordinary edges. Storage owns write-safety
+preparation; finalize procedures remain optional batch-ingest reclaim controls rather than social
+state or a per-mutation protocol.
 
 ## Reply threads
 

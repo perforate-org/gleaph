@@ -294,6 +294,40 @@ async fn gql_execute_idempotent(
     gql::gql_execute_idempotent(query, params, client_mutation_key).await
 }
 
+/// Execute a bounded page of independent idempotent DML mutations.
+///
+/// Each item retains its own mutation boundary and client mutation key. If an item fails, earlier
+/// items may already be committed; replaying the page is safe because those keys are idempotent.
+#[update]
+async fn gql_execute_idempotent_batch(
+    args: types::GqlExecuteIdempotentBatchArgs,
+) -> Result<Vec<gleaph_graph_kernel::plan_exec::GqlQueryResult>, RouterError> {
+    const MAX_BATCH_ITEMS: usize = 16;
+    if args.mutations.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "gql_execute_idempotent_batch requires at least one mutation".into(),
+        ));
+    }
+    if args.mutations.len() > MAX_BATCH_ITEMS {
+        return Err(RouterError::InvalidArgument(format!(
+            "gql_execute_idempotent_batch accepts at most {MAX_BATCH_ITEMS} mutations"
+        )));
+    }
+
+    let mut results = Vec::with_capacity(args.mutations.len());
+    for mutation in args.mutations {
+        results.push(
+            gql::gql_execute_idempotent(
+                mutation.gql_query,
+                mutation.params,
+                mutation.mutation_key,
+            )
+            .await?,
+        );
+    }
+    Ok(results)
+}
+
 /// ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
 #[query]
 fn mutation_status(

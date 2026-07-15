@@ -9,7 +9,12 @@ const seedsPath = process.argv[2]
   ? resolve(process.argv[2])
   : join(root, "seeds/knowledge-map-seeds.json");
 const canisterName = process.argv[3] ?? "gleaph-router";
-const methodName = process.argv[4] ?? "gql_execute_idempotent";
+const methodName = process.argv[4] ?? "gql_execute_idempotent_batch";
+const pageSize = Number(process.env.SEED_PAGE_SIZE ?? process.argv[5] ?? "16");
+
+if (!Number.isInteger(pageSize) || pageSize <= 0 || pageSize > 16) {
+  throw new Error("SEED_PAGE_SIZE/page size must be an integer between 1 and 16");
+}
 
 const seeds = JSON.parse(readFileSync(seedsPath, "utf8")).seeds;
 
@@ -24,8 +29,7 @@ const icpEnv = () => ({
 
 const escapeCandidText = (s) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
-for (const seed of seeds) {
-  const candid = `(\"${escapeCandidText(seed.gql)}\", vec {}, \"${escapeCandidText(seed.key)}\")`;
+const callRouter = (method, candid) => {
   const result = spawnSync(
     "icp",
     [
@@ -37,7 +41,7 @@ for (const seed of seeds) {
         ? ["--identity", process.env.ICP_IDENTITY_NAME]
         : []),
       canisterName,
-      methodName,
+      method,
       candid,
     ],
     {
@@ -49,13 +53,35 @@ for (const seed of seeds) {
   if (result.status !== 0) {
     process.stderr.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
-    throw new Error(`Failed to seed ${seed.key}`);
+    throw new Error(`Router call ${method} failed`);
   }
 
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   if (output.includes("variant {") && output.includes("Err")) {
-    throw new Error(`Router rejected seed ${seed.key}: ${output}`);
+    throw new Error(`Router rejected ${method}: ${output}`);
   }
 
-  process.stderr.write(`[seeds] Seeded ${seed.key}\n`);
+  return output;
+};
+
+if (methodName !== "gql_execute_idempotent_batch") {
+  for (const seed of seeds) {
+    const candid = `(\"${escapeCandidText(seed.gql)}\", vec {}, \"${escapeCandidText(seed.key)}\")`;
+    callRouter(methodName, candid);
+    process.stderr.write(`[seeds] Seeded ${seed.key}\n`);
+  }
+} else {
+  for (let offset = 0; offset < seeds.length; offset += pageSize) {
+    const page = seeds.slice(offset, offset + pageSize);
+    const items = page
+      .map(
+        (seed) =>
+          `record { gql_query = \"${escapeCandidText(seed.gql)}\"; params = vec {}; mutation_key = \"${escapeCandidText(seed.key)}\" }`,
+      )
+      .join("; ");
+    callRouter(methodName, `(record { mutations = vec { ${items} } })`);
+    process.stderr.write(
+      `[seeds] Seeded page ${offset / pageSize + 1} (${page.length} seeds): ${page[0].key} .. ${page.at(-1).key}\n`,
+    );
+  }
 }

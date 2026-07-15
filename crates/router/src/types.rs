@@ -89,6 +89,20 @@ pub struct GrantRoleArgs {
     pub manager_caps: u64,
 }
 
+/// One mutation in a paged bulk idempotent execution request.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct GqlExecuteIdempotentBatchItem {
+    pub gql_query: String,
+    pub params: Vec<u8>,
+    pub mutation_key: String,
+}
+
+/// A bounded page of independent idempotent mutations.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct GqlExecuteIdempotentBatchArgs {
+    pub mutations: Vec<GqlExecuteIdempotentBatchItem>,
+}
+
 /// Arguments for one expired client-mutation-key sweep step. The sweep is
 /// operator-driven (like backfill / label-stats projection): call repeatedly,
 /// feeding `next_cursor` back as `start_after`, until `done` is true.
@@ -891,5 +905,20 @@ mod outbound_tests {
         let decoded: ProvisionGraphResponse = Decode!(&bytes, ProvisionGraphResponse)
             .expect("decode ProvisionGraphResponse Completed");
         assert_eq!(decoded, completed_response);
+    }
+
+    #[test]
+    fn test_gql_execute_idempotent_batch_args_roundtrip() {
+        let args = GqlExecuteIdempotentBatchArgs {
+            mutations: vec![GqlExecuteIdempotentBatchItem {
+                gql_query: "INSERT (:User)".to_owned(),
+                params: vec![1, 2, 3],
+                mutation_key: "seed-page-0-item-0".to_owned(),
+            }],
+        };
+        let bytes = Encode!(&args).expect("encode batch args");
+        let decoded: GqlExecuteIdempotentBatchArgs =
+            Decode!(&bytes, GqlExecuteIdempotentBatchArgs).expect("decode batch args");
+        assert_eq!(decoded, args);
     }
 }
