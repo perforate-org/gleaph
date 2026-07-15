@@ -425,6 +425,7 @@ mod tests {
         inserts: AtomicUsize,
         batch_calls: AtomicUsize,
         supports_batch: bool,
+        batch_limit: Option<usize>,
     }
 
     impl CountingIndex {
@@ -434,6 +435,7 @@ mod tests {
                 inserts: AtomicUsize::new(0),
                 batch_calls: AtomicUsize::new(0),
                 supports_batch: false,
+                batch_limit: None,
             }
         }
 
@@ -443,6 +445,17 @@ mod tests {
                 inserts: AtomicUsize::new(0),
                 batch_calls: AtomicUsize::new(0),
                 supports_batch: true,
+                batch_limit: None,
+            }
+        }
+
+        fn partial_batch(limit: usize) -> Self {
+            Self {
+                fail_insert_at: 0,
+                inserts: AtomicUsize::new(0),
+                batch_calls: AtomicUsize::new(0),
+                supports_batch: true,
+                batch_limit: Some(limit),
             }
         }
     }
@@ -459,10 +472,13 @@ mod tests {
             operations: Vec<gleaph_graph_kernel::index::IndexPostingMutation>,
         ) -> Result<gleaph_graph_kernel::index::IndexPostingBatchProgress, PlanQueryError> {
             self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            let applied = self
+                .batch_limit
+                .map_or(operations.len(), |limit| limit.min(operations.len()));
             Ok(gleaph_graph_kernel::index::IndexPostingBatchProgress {
-                applied: operations.len() as u32,
-                next_index: None,
-                instruction_budget_exhausted: false,
+                applied: applied as u32,
+                next_index: (applied < operations.len()).then_some(applied as u32),
+                instruction_budget_exhausted: applied < operations.len(),
             })
         }
 
@@ -624,6 +640,18 @@ mod tests {
     }
 
     #[test]
+    fn drain_retries_unacknowledged_suffix_after_partial_batch_progress() {
+        with_routing(|graph| {
+            graph.derived_index_outbox_append(17, (0..5).map(vertex_insert));
+            let index = CountingIndex::partial_batch(2);
+
+            pollster::block_on(drain_outbox_once(&index, None)).expect("drain succeeds");
+            assert_eq!(index.batch_calls.load(Ordering::SeqCst), 3);
+            assert!(graph.derived_index_outbox_is_empty());
+        });
+    }
+
+    #[test]
     fn min_tracked_mutation_id_pins_lowest_unapplied_and_ignores_untracked() {
         with_routing(|graph| {
             // No tracked entries yet: fully caught up.
@@ -695,6 +723,46 @@ mod tests {
         }
     }
 
+    struct PartialVectorIndex {
+        batch_calls: AtomicUsize,
+        batch_limit: usize,
+    }
+
+    #[async_trait(?Send)]
+    impl VectorIndexLookup for PartialVectorIndex {
+        fn supports_sync_batch(&self) -> bool {
+            true
+        }
+
+        async fn vector_sync_batch(
+            &self,
+            operations: Vec<gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp>,
+        ) -> Result<gleaph_graph_kernel::vector_index::VectorSyncBatchProgress, PlanQueryError>
+        {
+            self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            let applied = self.batch_limit.min(operations.len());
+            Ok(gleaph_graph_kernel::vector_index::VectorSyncBatchProgress {
+                applied: applied as u32,
+                next_index: (applied < operations.len()).then_some(applied as u32),
+                instruction_budget_exhausted: applied < operations.len(),
+            })
+        }
+
+        async fn vector_upsert(
+            &self,
+            _op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
+        ) -> Result<(), PlanQueryError> {
+            unreachable!("partial vector test uses vector_sync_batch")
+        }
+
+        async fn vector_remove(
+            &self,
+            _op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
+        ) -> Result<(), PlanQueryError> {
+            unreachable!("partial vector test uses vector_sync_batch")
+        }
+    }
+
     fn vector_upsert_op(vertex_id: u32) -> RepairPostingOp {
         use gleaph_graph_kernel::vector_index::{
             VectorEmbeddingSyncOp, VectorEncoding, VectorSubject,
@@ -739,6 +807,36 @@ mod tests {
                 remove: false,
             },
         }
+    }
+
+    #[test]
+    fn drain_retries_unacknowledged_vector_suffix_after_partial_progress() {
+        use gleaph_graph_kernel::vector_index::VectorEncoding;
+
+        with_routing(|graph| {
+            for vertex_id in 0..5 {
+                graph
+                    .set_vertex_embedding(
+                        VertexId::from(vertex_id),
+                        EmbeddingNameId::from_raw(1),
+                        VectorEncoding::F32,
+                        1,
+                        vec![0, 0, 0, 0],
+                    )
+                    .expect("set embedding");
+                graph.derived_index_outbox_append(17, [vector_upsert_op(vertex_id)]);
+            }
+            let index = CountingIndex::batch();
+            let vector = PartialVectorIndex {
+                batch_calls: AtomicUsize::new(0),
+                batch_limit: 2,
+            };
+
+            pollster::block_on(drain_outbox_once(&index, Some(&vector)))
+                .expect("vector drain succeeds");
+            assert_eq!(vector.batch_calls.load(Ordering::SeqCst), 3);
+            assert!(graph.derived_index_outbox_is_empty());
+        });
     }
 
     #[test]
