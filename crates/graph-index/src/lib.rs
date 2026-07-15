@@ -31,8 +31,8 @@ pub use facade::IndexStore;
 pub use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexEqualSpec,
     IndexIntersectionRequest, IndexIntersectionResult, IndexLabelIntersectionRequest,
-    IndexPostingBatchProgress, IndexPostingMutation, IndexSubject, LabelLookupPageRequest,
-    LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest,
+    IndexPostingBatchProgress, IndexPostingMutation, IndexSubject, LabelIntersectionPageRequest,
+    LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest,
     LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
     LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
     PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
@@ -225,6 +225,11 @@ fn lookup_label_for_shard(vertex_label_id: u32, shard_id: ShardId) -> Vec<Postin
 #[query(guard = "guard_router_canister")]
 fn lookup_label_page(req: LabelLookupPageRequest) -> LabelLookupPageResult {
     canister::lookup_label_page(req)
+}
+
+#[query(guard = "guard_router_canister")]
+fn lookup_label_intersection_page(req: LabelIntersectionPageRequest) -> LabelLookupPageResult {
+    canister::lookup_label_intersection_page(req)
 }
 
 #[query(guard = "guard_router_canister")]

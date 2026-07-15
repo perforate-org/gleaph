@@ -9,9 +9,10 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
-    IndexLabelIntersectionRequest, IndexSubject, LabelLookupPageRequest, LabelLookupPageResult,
-    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    MAX_EQUALITY_INTERSECTION_ARMS, PostingHit, ValuePostingCount,
+    IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
+    LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
+    LookupEqualPageRequest, LookupIntersectionPageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
+    PostingHit, ValuePostingCount,
 };
 
 use crate::facade::store::RouterStore;
@@ -246,6 +247,29 @@ pub(crate) trait IndexLookup {
         req: LabelLookupPageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>>;
 
+    fn lookup_label_intersection_page(
+        &self,
+        req: LabelIntersectionPageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
+        Box::pin(async move {
+            let mut page = self
+                .lookup_label_page(LabelLookupPageRequest {
+                    vertex_label_id: req.walk_label_id,
+                    shard_id: req.shard_id,
+                    after: req.after,
+                    limit: req.limit,
+                })
+                .await?;
+            for label_id in req.sieve_label_ids {
+                page.hits = self.filter_hits_by_label(label_id, page.hits).await?;
+                if page.hits.is_empty() {
+                    break;
+                }
+            }
+            Ok(page)
+        })
+    }
+
     #[expect(
         dead_code,
         reason = "IndexLookup trait surface for label intersection fast paths"
@@ -319,6 +343,13 @@ impl IndexLookup for RouterIndexClient {
         req: LabelLookupPageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
         Box::pin(self.lookup_label_page(req))
+    }
+
+    fn lookup_label_intersection_page(
+        &self,
+        req: LabelIntersectionPageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
+        Box::pin(self.lookup_label_intersection_page(req))
     }
 
     fn lookup_label_intersection(
@@ -457,6 +488,21 @@ impl IndexLookup for RouterIndexLookup {
         Box::pin(async move {
             RouterIndexClient::new(principal)
                 .lookup_label_page(req)
+                .await
+        })
+    }
+
+    fn lookup_label_intersection_page(
+        &self,
+        req: LabelIntersectionPageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
+        let principal = match self.client_for_shard(req.shard_id) {
+            Ok(client) => client.index_canister,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        Box::pin(async move {
+            RouterIndexClient::new(principal)
+                .lookup_label_intersection_page(req)
                 .await
         })
     }

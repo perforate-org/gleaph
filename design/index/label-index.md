@@ -45,6 +45,7 @@ Separate `BTreeSet` from property postings.
 | `lookup_label(label_id)` | Full label bucket (graph-index direct API; router uses paginated export) |
 | `lookup_label_for_shard(label_id, shard_id)` | One shard's postings |
 | `lookup_label_page(req)` | Paginated shard-local export (`after` + `limit`) |
+| `lookup_label_intersection_page(req)` | Paginated shard-local walk with all sieve labels applied in graph-index |
 
 Router seed routing uses **`lookup_label_page` per registered shard** (10k hits/page) instead of
 one bulk `lookup_label`.
@@ -92,10 +93,12 @@ MATCH (n:Person) WHERE n.region = 'US' GROUP BY n.country  → C1 then count
 ### D — Multi-label vertex list — Implemented
 
 `lookup_label_intersection` on graph-index for small intersections; router seed routing
-pages the walk label per shard (`lookup_label_page`) and sieves other labels with
-`filter_hits_by_label` (`collect_label_intersection_hits_for_shards`). Used when the plan
-needs explicit ids for `:L1:L2:…` (`IndexAnchor::LabelIntersection` from `NodeScan` +
-`IsLabeled` filters).
+pages the walk label per shard through `lookup_label_intersection_page`, where graph-index
+applies all sieve labels in the same call. The cursor still advances over the walk-label
+postings, including rows removed by the sieve. The older `lookup_label_page` plus
+`filter_hits_by_label` composition remains the default behavior for injected/native test
+clients. Used when the plan needs explicit ids for `:L1:L2:…`
+(`IndexAnchor::LabelIntersection` from `NodeScan` + `IsLabeled` filters).
 
 ## Write path — Implemented
 

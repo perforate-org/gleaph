@@ -183,6 +183,17 @@ pub struct LabelLookupPageRequest {
     pub limit: u32,
 }
 
+/// Paginated label intersection export scoped to one shard, with all label sieves applied inside
+/// the index canister.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LabelIntersectionPageRequest {
+    pub walk_label_id: u32,
+    pub sieve_label_ids: Vec<u32>,
+    pub shard_id: ShardId,
+    pub after: Option<LabelPostingCursor>,
+    pub limit: u32,
+}
+
 /// One page of label postings for a shard-local export.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LabelLookupPageResult {

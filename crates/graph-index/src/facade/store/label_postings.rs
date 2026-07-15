@@ -8,7 +8,8 @@ use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, PostingHit,
+    LabelIntersectionPageRequest, LabelLookupPageRequest, LabelLookupPageResult,
+    LabelPostingCursor, PostingHit,
 };
 use nohash_hasher::IntSet;
 
@@ -162,6 +163,26 @@ impl IndexStore {
             vertex_id: hit.vertex_id,
         });
         LabelLookupPageResult { hits, next, done }
+    }
+
+    /// Paginated label intersection with all sieve memberships checked in this canister.
+    pub fn lookup_label_intersection_page(
+        &self,
+        req: &LabelIntersectionPageRequest,
+    ) -> LabelLookupPageResult {
+        let mut page = self.lookup_label_page(&LabelLookupPageRequest {
+            vertex_label_id: req.walk_label_id,
+            shard_id: req.shard_id,
+            after: req.after,
+            limit: req.limit,
+        });
+        for &label_id in &req.sieve_label_ids {
+            page.hits = self.filter_hits_by_label(label_id, &page.hits);
+            if page.hits.is_empty() {
+                break;
+            }
+        }
+        page
     }
 
     /// Intersect label membership across at least two `vertex_label_id` buckets.

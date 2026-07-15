@@ -10,10 +10,11 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{IndexPurgeKind, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
-    LabelLookupPageRequest, LabelPostingCursor, LookupEdgeEqualPageRequest,
-    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
-    PostingHit, PostingRangeRequest, PropertyPostingCursor,
+    LabelIntersectionPageRequest, LabelLookupPageRequest, LabelPostingCursor,
+    LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
+    LookupRangePageForLabelRequest, LookupRangePageRequest, PostingHit, PostingRangeRequest,
+    PropertyPostingCursor,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -1451,6 +1452,47 @@ fn lookup_equal_page_for_label_sieves_inside_index_call() {
             limit: 10,
         })
         .expect("filtered page");
+    assert_eq!(
+        page.hits,
+        vec![
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 10,
+            },
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 30,
+            },
+        ]
+    );
+    assert!(page.done);
+}
+
+#[test]
+fn lookup_label_intersection_page_sieves_inside_index_call() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+
+    for vertex_id in [10, 20, 30] {
+        store
+            .label_posting_insert(shard_principal, ShardId::new(0), 1, vertex_id)
+            .expect("walk label");
+    }
+    for vertex_id in [10, 30] {
+        store
+            .label_posting_insert(shard_principal, ShardId::new(0), 2, vertex_id)
+            .expect("sieve label");
+    }
+
+    let page = store.lookup_label_intersection_page(&LabelIntersectionPageRequest {
+        walk_label_id: 1,
+        sieve_label_ids: vec![2],
+        shard_id: ShardId::new(0),
+        after: None,
+        limit: 10,
+    });
     assert_eq!(
         page.hits,
         vec![

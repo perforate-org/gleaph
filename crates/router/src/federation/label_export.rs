@@ -1,7 +1,9 @@
 //! Shard-scoped, paginated label membership export for seed routing (ADR 0004 path A).
 
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{LabelLookupPageRequest, PostingHit};
+use gleaph_graph_kernel::index::{
+    LabelIntersectionPageRequest, LabelLookupPageRequest, PostingHit,
+};
 
 use crate::index_lookup::IndexLookup;
 
@@ -59,21 +61,15 @@ pub async fn collect_label_intersection_hits_for_shards<I: IndexLookup + ?Sized>
         let mut after = None;
         loop {
             let page = index
-                .lookup_label_page(LabelLookupPageRequest {
-                    vertex_label_id: walk_label,
+                .lookup_label_intersection_page(LabelIntersectionPageRequest {
+                    walk_label_id: walk_label,
+                    sieve_label_ids: sieve_labels.to_vec(),
                     shard_id,
                     after,
                     limit: LABEL_SEED_EXPORT_PAGE_LIMIT,
                 })
                 .await?;
-            let mut hits = page.hits;
-            for &label_id in sieve_labels {
-                if hits.is_empty() {
-                    break;
-                }
-                hits = index.filter_hits_by_label(label_id, hits).await?;
-            }
-            all.extend(hits);
+            all.extend(page.hits);
             if page.done {
                 break;
             }

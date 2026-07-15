@@ -11,10 +11,10 @@ use gleaph_graph_kernel::federation::{
 };
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, IndexPostingBatchProgress,
-    IndexPostingMutation, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
-    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, ValuePostingCount,
+    IndexPostingMutation, LabelIntersectionPageRequest, LookupEdgeEqualPageRequest,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
+    PostingHit, PostingHitPage, PostingRangeRequest, ValuePostingCount,
 };
 use ic_cdk::api::msg_caller;
 
@@ -262,6 +262,12 @@ pub(crate) fn lookup_label_page(
     req: gleaph_graph_kernel::index::LabelLookupPageRequest,
 ) -> gleaph_graph_kernel::index::LabelLookupPageResult {
     IndexStore::new().lookup_label_page(&req)
+}
+
+pub(crate) fn lookup_label_intersection_page(
+    req: LabelIntersectionPageRequest,
+) -> gleaph_graph_kernel::index::LabelLookupPageResult {
+    IndexStore::new().lookup_label_intersection_page(&req)
 }
 
 pub(crate) fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
