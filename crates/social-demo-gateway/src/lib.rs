@@ -1,6 +1,6 @@
 //! Application-owned public read gateway for the social demo.
 //!
-//! Exposes exactly five fixed read-only scenarios. Each scenario maps internally to a
+//! Exposes exactly six fixed read-only scenarios. Each scenario maps internally to a
 //! registered Router prepared query and is delegated to the configured Router canister as a
 //! bounded-wait composite query. The Gateway principal is graph-visible so the Router can resolve
 //! the prepared plan; no arbitrary GQL, query name, graph name, or client parameters are accepted.
@@ -30,6 +30,7 @@ use std::cell::RefCell;
 pub enum SocialDemoScenario {
     PublicTimeline,
     AliceHomeFeed,
+    YuiHomeFeed,
     TopicPath,
     SemanticDiscovery,
     AliceSemanticFeed,
@@ -169,6 +170,7 @@ fn scenario_to_request(scenario: SocialDemoScenario) -> (&'static str, Vec<u8>) 
     match scenario {
         SocialDemoScenario::PublicTimeline => ("public_timeline", Vec::new()),
         SocialDemoScenario::AliceHomeFeed => ("alice_home_feed", Vec::new()),
+        SocialDemoScenario::YuiHomeFeed => ("yui_home_feed", Vec::new()),
         SocialDemoScenario::TopicPath => ("topic_path_explanation", Vec::new()),
         SocialDemoScenario::SemanticDiscovery => (
             "semantic_discovery",
@@ -215,6 +217,10 @@ mod tests {
         assert_eq!(
             scenario_to_request(SocialDemoScenario::AliceHomeFeed).0,
             "alice_home_feed"
+        );
+        assert_eq!(
+            scenario_to_request(SocialDemoScenario::YuiHomeFeed).0,
+            "yui_home_feed"
         );
         assert_eq!(
             scenario_to_request(SocialDemoScenario::TopicPath).0,

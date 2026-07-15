@@ -611,6 +611,7 @@ for (const node of graph.nodes) {
 const SCENARIO_ORDER = [
   "PublicTimeline",
   "AliceHomeFeed",
+  "YuiHomeFeed",
   "TopicPath",
   "SemanticDiscovery",
   "AliceSemanticFeed",
@@ -773,9 +774,10 @@ if (nonNullVectors.length !== 2) {
     `Expected exactly 2 non-null semanticVector arrays of length ${EMBEDDING_DIMS}, found ${nonNullVectors.length}`,
   );
 }
-if (nullVectors.length !== 3) {
+const expectedNullVectorCount = scenarios.length - 2;
+if (nullVectors.length !== expectedNullVectorCount) {
   throw new Error(
-    `Expected exactly 3 null semanticVector entries, found ${nullVectors.length}`,
+    `Expected exactly ${expectedNullVectorCount} null semanticVector entries, found ${nullVectors.length}`,
   );
 }
 

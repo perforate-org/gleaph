@@ -226,6 +226,61 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
     },
   ],
 
+  YuiHomeFeed: [
+    {
+      queryText: "MATCH",
+      label: "Pattern match",
+      description:
+        "Starts a graph pattern for Yui's pre-materialized home-feed relationships.",
+    },
+    {
+      queryText: "(u:User {user_id: 'yui'})",
+      label: "Yui's user vertex",
+      description: "Begin at Yui's User vertex using her stable user_id, the viewer of this feed.",
+    },
+    {
+      queryText: "<-[e:IN_HOME_FEED]-",
+      label: "Home feed edge",
+      description:
+        "Follow the materialized home-feed edges backwards from posts to Yui. The seed creates these edges for Yui and everyone she follows.",
+    },
+    {
+      queryText: "(p:Post)",
+      label: "Post vertex",
+      description: "Match the posts that appear in Yui's home feed.",
+    },
+    {
+      queryText: "<-[:POSTED]-(author:User)",
+      label: "Author pattern",
+      description: "Follow each post to its author.",
+    },
+    {
+      queryText: "WHERE p.is_public = TRUE",
+      label: "Visibility filter",
+      description: "Keep only public posts; private posts are excluded from the feed.",
+    },
+    {
+      queryText: "OPTIONAL MATCH",
+      label: "Optional reply pattern",
+      description: "Keep the post even when it has no parent reply to display.",
+    },
+    {
+      queryText: "RETURN",
+      label: "Projection",
+      description: "Declare the post, author, and optional parent columns returned to the frontend.",
+    },
+    {
+      queryText: "ORDER BY GLEAPH.SEQUENCE(e) DESC",
+      label: "Newest-first ordering",
+      description: "Use the materialized feed-edge sequence to return newer posts first.",
+    },
+    {
+      queryText: "LIMIT 20",
+      label: "Result cap",
+      description: "Return at most 20 posts.",
+    },
+  ],
+
   TopicPath: [
     {
       queryText: "MATCH (u:User)-[follows1:FOLLOWS]->(bridge:User)-[follows2:FOLLOWS]->(author:User)-[posted:POSTED]->(p:Post)-[has_topic:HAS_TOPIC]->(t:Topic)",

@@ -18,6 +18,7 @@ const enDictionary = {
   "scenario.navigation": "Scenario navigation",
   "scenario.publicTimeline": "Public timeline",
   "scenario.aliceHomeFeed": "Alice home feed",
+  "scenario.yuiHomeFeed": "Yui home feed",
   "scenario.topicPath": "Topic path",
   "scenario.semanticDiscovery": "Semantic discovery",
   "scenario.aliceSemanticFeed": "Alice semantic feed",
@@ -31,6 +32,11 @@ const enDictionary = {
     "At small scale, an RDB can build Alice's feed on read: first get the followee IDs from follows, then fetch their public posts from tweets (a join or subquery). Twitter-like systems often avoid repeating that work for every read by using fan-out on write: copy each new post into followers' home-feed inboxes. At larger scale, a hybrid is common—push ordinary accounts and pull or merge posts from celebrity accounts.",
   "scenario.aliceHomeFeed.graphSummary":
     "Gleaph's social-demo uses fan-out on write: when the seed is built, each public Post creates an `IN_HOME_FEED` edge to its author and every follower User. Alice then reads those pre-materialized edges with one bounded expansion, including her own posts. This shifts work from feed reads to post ingestion; a production system can combine it with pull/merge for accounts with very large audiences.",
+  "scenario.yuiHomeFeed.feedTitle": "Yui's home feed",
+  "scenario.yuiHomeFeed.rdbSummary":
+    "This is the same home-feed problem as Alice's, but the follow graph is intentionally centered on Japanese users. An RDB can join Yui's followees to their public posts on read, or use fan-out on write to maintain her feed inbox. The result makes the cluster visible without changing the feed model.",
+  "scenario.yuiHomeFeed.graphSummary":
+    "Gleaph reads Yui's pre-materialized `IN_HOME_FEED` edges with one bounded expansion. Most results come from the Japanese cluster Yui follows, while occasional cross-cluster posts appear when the seed includes a bridge connection. The query and storage shape are identical to Alice's feed; only the viewer and seeded social neighborhood differ.",
   "scenario.topicPath.feedTitle": "Topic explanation path",
   "scenario.topicPath.rdbSummary":
     "An RDB can answer this, but this four-hop path is an awkward hot read. In a 1-million-user friends-of-friends benchmark, depth 2 took MySQL 0.016 s versus Neo4j 0.010 s; depth 3 took 30.267 s versus 0.168 s; depth 4 took 1,543.505 s versus 1.359 s; and depth 5 did not finish in one hour for MySQL while Neo4j took 2.132 s. This is an implementation-dependent reference, not a universal benchmark, but it makes the scaling problem concrete: normalized RDB queries must repeatedly build and carry intermediate candidate sets as joins fan out. Production systems often avoid doing this on every request with denormalized paths, materialized recommendations, or precomputed feeds, trading read latency for write and freshness costs.",
@@ -108,6 +114,7 @@ const jaDictionary: Record<TranslationKey, string> = {
   "scenario.navigation": "シナリオナビゲーション",
   "scenario.publicTimeline": "公開タイムライン",
   "scenario.aliceHomeFeed": "アリスのホームフィード",
+  "scenario.yuiHomeFeed": "ゆいのホームフィード",
   "scenario.topicPath": "トピックへの経路",
   "scenario.semanticDiscovery": "意味検索",
   "scenario.aliceSemanticFeed": "アリスの意味フィード",
@@ -121,6 +128,11 @@ const jaDictionary: Record<TranslationKey, string> = {
     "小規模なら、RDB は読むたびにホームフィードを組み立てられます。まず follows からフォロー先 ID を取得し、その ID の公開投稿を tweets から取得する、結合またはサブクエリです。一方、Twitter のような実サービスでは毎回この処理を繰り返さず、投稿時にフォロワーのホームフィード受信箱へ配る fan-out on write もよく使います。大規模では、通常のアカウントは push、著名アカウントは pull／merge するハイブリッドが一般的です。",
   "scenario.aliceHomeFeed.graphSummary":
     "Gleaph の social-demo は fan-out on write を使います。シード構築時に、各公開 Post から作者とその作者をフォローするすべての User へ `IN_HOME_FEED` エッジを作成します。アリスは事前に配られたエッジをユーザー頂点から1回の範囲付き展開で読み、自分の投稿も取得できます。読み取りから投稿取り込みへ処理を移す設計なので、実サービスでは大規模アカウントだけ pull／merge と組み合わせる余地があります。",
+  "scenario.yuiHomeFeed.feedTitle": "ゆいのホームフィード",
+  "scenario.yuiHomeFeed.rdbSummary":
+    "アリスと同じホームフィードの問題ですが、フォロー関係は日本人ユーザーを中心に意図的に構成しています。RDB なら、ゆいのフォロー先と公開投稿を読むたびに結合するか、fan-out on write で受信箱を維持します。フィードのモデルを変えずにクラスタが見える例です。",
+  "scenario.yuiHomeFeed.graphSummary":
+    "Gleaph はゆいに事前作成された `IN_HOME_FEED` エッジを1回の範囲付き展開で読みます。結果の多くはゆいがフォローする日本語ユーザーのクラスタから来て、シードの橋渡し関係によって少数の英語圏ユーザーの投稿も混ざります。クエリと保存形式はアリスのフィードと同じで、違うのは閲覧者とソーシャル近傍です。",
   "scenario.topicPath.feedTitle": "トピック説明の経路",
   "scenario.topicPath.rdbSummary":
     "RDB でも答えは出せますが、この4-hop経路は読み取りのたびに実行するには不利です。100万人規模の friends-of-friends ベンチマークでは、深さ2は MySQL 0.016秒／Neo4j 0.010秒でしたが、深さ3は 30.267秒／0.168秒、深さ4は 1,543.505秒／1.359秒まで広がり、深さ5では MySQL が1時間以内に完了せず、Neo4jは2.132秒でした。実装や環境に依存する参考値ですが、深くなるほど差が急拡大する様子を具体的に示します。正規化されたRDBでは、follows や多対多の中間テーブルを何度も結合して途中の候補集合を作るためです。実運用では、非正規化した経路、推薦結果のマテリアライズ、事前生成フィードなどで毎回の探索を避けますが、書き込み負荷と鮮度のコストを支払います。",
@@ -239,6 +251,7 @@ export function useI18n(): I18nContextValue {
 const scenarioKey = {
   PublicTimeline: "publicTimeline",
   AliceHomeFeed: "aliceHomeFeed",
+  YuiHomeFeed: "yuiHomeFeed",
   TopicPath: "topicPath",
   SemanticDiscovery: "semanticDiscovery",
   AliceSemanticFeed: "aliceSemanticFeed",

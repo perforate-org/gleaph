@@ -214,7 +214,7 @@ parent is absent from the current feed remains visible as a root rather than bei
 
 ## Prepared query columns
 
-The 5 scenario `preparedQuery` strings share a common set of RETURN columns:
+The 6 scenario `preparedQuery` strings share a common set of RETURN columns:
 
 | Column                                               | Type                                       | Source              | Use                                                     |
 | ---------------------------------------------------- | ------------------------------------------ | ------------------- | ------------------------------------------------------- |
@@ -230,7 +230,7 @@ All columns except `distance` are stored graph properties or edge properties; th
 GQL layer simply projects them. The `body` column was added to the seed GQL in
 Plan 0062 and surfaced in the prepared queries in Plan 0064. Plan 0068 extended
 the GQL planner's `property_uses()` to include row-local operator expressions, so
-the Router-resolved property table now carries `body` for all five scenarios
+the Router-resolved property table now carries `body` for all six scenarios
 (including the SEARCH subplan used by AliceSemanticFeed); the planner remains the
 single source of truth for the semantic inventory of property names.
 

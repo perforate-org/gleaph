@@ -37,7 +37,7 @@ The frontend formatter cannot reliably distinguish GQL grammar from text. Keepin
 the formatting rule in the frontend also prevents the CLI, backend log views,
 administration UI, and future LSP clients from sharing one source of truth.
 
-The solution must provide structurally correct output for the social demo's five
+The solution must provide structurally correct output for the social demo's six
 fixed read queries while leaving room for broader GQL coverage and configurable
 formatting. It must not add Gleaph storage, Router, Internet Computer, or canister
 semantics to the portable GQL parser crate.
@@ -111,7 +111,7 @@ pub mod format;
 pub use format::{format_program, format_query, FormatOptions};
 ```
 
-The initial formatter supports the AST forms required by the social demo's five
+The initial formatter supports the AST forms required by the social demo's six
 fixed read queries and similar read queries, including graph patterns, `WHERE`,
 `SEARCH` with vector-index specifications, distance/score aliases, `RETURN`, and
 `ORDER BY`. Unsupported AST variants must fail explicitly through a formatter error;
@@ -283,13 +283,13 @@ The implementation should proceed in bounded slices:
    documentation.
 4. Add the social-demo WASM adapter and generated TypeScript boundary; replace the
    regular-expression formatter in `QueryPanel.tsx`.
-5. Build the Rust crate and frontend, then verify the five fixed social-demo queries
+5. Build the Rust crate and frontend, then verify the six fixed social-demo queries
    render in the intended style in a browser.
 6. Update README feature documentation and any affected GQL design documentation.
 
 The phase is successful when:
 
-- all five fixed social-demo queries are formatted structurally, including output of
+- all six fixed social-demo queries are formatted structurally, including output of
   the following shape:
 
   ```text

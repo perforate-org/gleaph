@@ -342,8 +342,8 @@ for (const f of fs.readdirSync('$scenarios_dir').filter(x => x.endsWith('.yaml')
 }
 
 verify_social_demo_scenarios() {
-  log "Verifying all five Gateway scenarios"
-  for scenario in PublicTimeline AliceHomeFeed TopicPath SemanticDiscovery AliceSemanticFeed; do
+  log "Verifying all six Gateway scenarios"
+  for scenario in PublicTimeline AliceHomeFeed YuiHomeFeed TopicPath SemanticDiscovery AliceSemanticFeed; do
     icp_call_expect_ok "Verify $scenario scenario" "" -e local gleaph-social-demo-gateway execute_social_demo_scenario \
       "(variant { $scenario })" --query
   done

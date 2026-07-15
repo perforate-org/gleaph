@@ -110,7 +110,7 @@ export const DEMO_ID_MAP: Record<string, bigint> = {
 };
 
 
-export const SOCIAL_DEMO_SCENARIO_IDS = ["PublicTimeline", "AliceHomeFeed", "TopicPath", "SemanticDiscovery", "AliceSemanticFeed"] as const;
+export const SOCIAL_DEMO_SCENARIO_IDS = ["PublicTimeline", "AliceHomeFeed", "YuiHomeFeed", "TopicPath", "SemanticDiscovery", "AliceSemanticFeed"] as const;
 
 export type ScenarioId = (typeof SOCIAL_DEMO_SCENARIO_IDS)[number];
 
@@ -151,6 +151,18 @@ export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
     preparedQuery: "MATCH (u:User {user_id: 'alice'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, parent_author.name AS parent_author_name, parent.body AS parent_body, parent.created_at AS parent_created_at, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20",
     semanticVector: null,
     scenario: SocialDemoScenario.AliceHomeFeed,
+  },
+  YuiHomeFeed: {
+    id: "YuiHomeFeed",
+    preparedQueryId: "yui_home_feed",
+    label: "Yui home feed",
+    shortLabel: "Yui's home",
+    feedTitle: "Yui's home feed",
+    rdbSummary: "This is the same home-feed problem as Alice's, but the follow graph is intentionally centered on Japanese users. An RDB can join Yui's followees to their public posts on read, or use fan-out on write to maintain her feed inbox. The result makes the cluster visible without changing the feed model.",
+    graphSummary: "Gleaph reads Yui's pre-materialized `IN_HOME_FEED` edges with one bounded expansion. Most results come from the Japanese cluster Yui follows, while occasional cross-cluster posts appear when the seed includes a bridge connection. The query and storage shape are identical to Alice's feed; only the viewer and seeded social neighborhood differ.",
+    preparedQuery: "MATCH (u:User {user_id: 'yui'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, parent_author.name AS parent_author_name, parent.body AS parent_body, parent.created_at AS parent_created_at, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20",
+    semanticVector: null,
+    scenario: SocialDemoScenario.YuiHomeFeed,
   },
   TopicPath: {
     id: "TopicPath",

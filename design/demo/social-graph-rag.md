@@ -5,7 +5,7 @@ Anchor timestamp: 2026-07-13 08:15:23 UTC +0000
 
 ## Status
 
-**Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the five fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. As of 2026-07-13 the timeline and home feed use materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges so the read path is a single fixed-label expansion with no runtime sort key, and canonical `REPLY_TO` edges drive a Twitter-like reply tree in the frontend. The social-demo frontend now renders all five scenarios, including vector distance values and a comparison of vector-only versus graph-constrained results. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, authenticated ownership, runtime feed maintenance, and celebrity/hybrid feed strategies remain explicitly planned and out of scope for this slice.
+**Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice and Yui home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the six fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. As of 2026-07-13 the timeline and home feeds use materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges so the read path is a single fixed-label expansion with no runtime sort key, and canonical `REPLY_TO` edges drive a Twitter-like reply tree in the frontend. The social-demo frontend now renders all six scenarios, including vector distance values, a comparison of vector-only versus graph-constrained results, and a Japanese-clustered Yui home feed. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, authenticated ownership, runtime feed maintenance, and celebrity/hybrid feed strategies remain explicitly planned and out of scope for this slice.
 
 The deterministic fixture contains 11 users and 25 Posts (24 public), with Alice following six
 active authors. The posts use opaque generator-owned graph keys; authored reply references remain
@@ -149,7 +149,7 @@ authenticated viewer.
 
 Consequences:
 
-- the frontend may execute only the three fixed read-only scenarios through the application-owned
+- the frontend may execute only the six fixed read-only scenarios through the application-owned
   `gleaph-social-demo-gateway` canister, which delegates to administrator-registered Router
   prepared queries as the Gateway principal;
 - the Gateway exposes no arbitrary GQL, prepared-query name, graph selection, or client-controlled
@@ -323,6 +323,12 @@ The selection is presentation state, not authentication. The home feed uses mate
 the read path is a single fixed-label expansion from Alice's user vertex rather than a runtime
 `FOLLOWS -> POSTED` two-hop traversal.
 
+The demo also selects Yui as a Japanese-clustered scenario subject. Yui's home feed uses the same
+materialized-edge read path, but the seeded follows and posts make a mostly Japanese-language
+neighborhood visible, with occasional cross-cluster posts where the canonical seed includes a
+bridge relationship. This is presentation data, not a language or identity classification enforced
+by the Gateway.
+
 ### Scenario C: topic and discussion propagation
 
 Trace a post through replies, mentions, topics, communities, and cited documents. Allow the viewer
@@ -360,7 +366,7 @@ flowchart LR
 ```
 
 For the first read-only graph comparison, the browser calls only the application-owned Gateway for
-the three fixed scenarios. Router sees the Gateway principal on the delegated composite query; the
+the six fixed scenarios. Router sees the Gateway principal on the delegated composite query; the
 original browser caller remains anonymous and has no graph visibility. GraphRAG, embedding, and
 LLM components remain absent until Phase 3.
 

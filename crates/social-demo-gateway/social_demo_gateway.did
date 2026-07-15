@@ -144,6 +144,7 @@ type SocialDemoGatewayError = variant {
 // raw vectors, or parameters.
 type SocialDemoScenario = variant {
   SemanticDiscovery;
+  YuiHomeFeed;
   TopicPath;
   PublicTimeline;
   AliceSemanticFeed;
@@ -171,4 +172,3 @@ service : (GatewayInitArgs) -> {
       Result,
     ) composite_query;
 }
-
