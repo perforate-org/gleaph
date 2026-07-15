@@ -292,6 +292,9 @@ When a maintenance tick finds an existing repair journal, newer volatile vertex,
 pending operations are appended to its durable tail before draining. This preserves journal-before-
 pending ordering and lets contiguous compatible operations share the existing bounded batch call;
 pending work is never removed from volatile state without first becoming durable.
+The pending queues themselves remain heap-only; an upgrade before a maintenance pass takes them
+into the journal cannot recover that not-yet-journaled work, so upgrade safety begins at the durable
+journal boundary rather than at enqueue time.
 
 **`DROP INDEX` posting purge (ADR 0023 D6):** dropping an index removes the dropped property's
 postings from graph-index, not just the router catalog entry (closing P7, where dropped indexes

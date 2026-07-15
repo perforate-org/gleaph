@@ -692,6 +692,8 @@ During maintenance, if the durable repair journal already has older entries, new
 operations are appended to the journal tail before replay. Replay still reconciles every vector
 operation against canonical Graph state and retains the incarnation/version fence; only the
 dispatch grouping changes.
+The vector pending queue is likewise heap-only until a flush or maintenance pass journalizes it;
+an upgrade before that boundary is not a replayable vector-index failure.
 
 Derived vector-index lag follows the same high-level rule as other derived indexes: canonical graph
 state wins when derived state disagrees.
