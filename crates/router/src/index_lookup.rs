@@ -11,8 +11,8 @@ use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
-    LookupEqualPageRequest, LookupIntersectionPageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
-    PostingHit, ValuePostingCount,
+    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
+    MAX_EQUALITY_INTERSECTION_ARMS, PostingHit, PropertyIntersectionPage, ValuePostingCount,
 };
 
 use crate::facade::store::RouterStore;
@@ -410,20 +410,41 @@ impl IndexLookup for RouterIndexLookup {
         };
         Box::pin(async move {
             let client = RouterIndexClient::new(principal);
-            if all_vertex_specs(&req.specs) {
-                let hits = collect_vertex_intersection_hits_paged(&client, &req.specs).await?;
-                return Ok(IndexIntersectionResult::Vertices(merge_posting_hits(
-                    self.retain_live_vertex_hits(hits),
-                )));
+            let mut vertices = Vec::new();
+            let mut edges = Vec::new();
+            let mut after = None;
+            let mut shape = None;
+            loop {
+                let page: PropertyIntersectionPage = client
+                    .lookup_property_intersection_page(LookupPropertyIntersectionPageRequest {
+                        specs: req.specs.clone(),
+                        after,
+                        limit: 10_000,
+                    })
+                    .await?;
+                match page.hits {
+                    IndexIntersectionResult::Vertices(hits) => {
+                        shape.get_or_insert(false);
+                        vertices.extend(hits);
+                    }
+                    IndexIntersectionResult::Edges(hits) => {
+                        shape.get_or_insert(true);
+                        edges.extend(hits);
+                    }
+                }
+                if page.done {
+                    break;
+                }
+                after = page.next;
             }
-            let result = client.lookup_intersection(req).await?;
-            Ok(match result {
-                IndexIntersectionResult::Vertices(hits) => IndexIntersectionResult::Vertices(
-                    merge_posting_hits(self.retain_live_vertex_hits(hits)),
-                ),
-                IndexIntersectionResult::Edges(hits) => IndexIntersectionResult::Edges(
-                    merge_edge_posting_hits(self.retain_live_edge_hits(hits)),
-                ),
+            Ok(if shape.unwrap_or(false) {
+                IndexIntersectionResult::Edges(merge_edge_posting_hits(
+                    self.retain_live_edge_hits(edges),
+                ))
+            } else {
+                IndexIntersectionResult::Vertices(merge_posting_hits(
+                    self.retain_live_vertex_hits(vertices),
+                ))
             })
         })
     }

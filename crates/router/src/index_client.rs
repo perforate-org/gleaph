@@ -6,9 +6,9 @@ use gleaph_graph_kernel::index::{
     IndexLabelIntersectionRequest, LabelIntersectionPageRequest, LabelLookupPageRequest,
     LabelLookupPageResult, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
     LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
-    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, PostingHit, PostingHitPage, PostingRangeRequest,
-    ValuePostingCount,
+    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyIntersectionPage, ValuePostingCount,
 };
 
 #[derive(Clone, Debug)]
@@ -19,6 +19,28 @@ pub struct RouterIndexClient {
 impl RouterIndexClient {
     pub fn new(index_canister: Principal) -> Self {
         Self { index_canister }
+    }
+
+    pub async fn lookup_property_intersection_page(
+        &self,
+        req: LookupPropertyIntersectionPageRequest,
+    ) -> Result<PropertyIntersectionPage, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            Call::bounded_wait(self.index_canister, "lookup_property_intersection_page")
+                .with_args(&(req,))
+                .await
+                .map_err(|e| format!("lookup_property_intersection_page: {e}"))?
+                .candid()
+                .map_err(|e| format!("lookup_property_intersection_page decode: {e}"))
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_property_intersection_page unavailable in native builds".into())
+        }
     }
 
     pub async fn lookup_equal_page(

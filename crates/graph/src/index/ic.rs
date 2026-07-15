@@ -6,10 +6,9 @@ use async_trait::async_trait;
 use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexEqualSpec, IndexIntersectionRequest,
-    IndexIntersectionResult, IndexPostingBatchProgress, IndexPostingMutation, IndexSubject,
-    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    LookupRangePageRequest, MAX_EQUALITY_INTERSECTION_ARMS, PostingHit, PostingHitPage,
-    PostingRangeRequest,
+    IndexIntersectionResult, IndexPostingBatchProgress, IndexPostingMutation,
+    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupPropertyIntersectionPageRequest,
+    LookupRangePageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
@@ -38,44 +37,51 @@ fn ic_candid_decode_err(op: &'static str) -> PlanQueryError {
     }
 }
 
-/// `true` when every arm targets a vertex property (the planner's vertex-only `IndexIntersection`).
-fn all_vertex_specs(specs: &[IndexEqualSpec]) -> bool {
-    (2..=MAX_EQUALITY_INTERSECTION_ARMS).contains(&specs.len())
-        && specs
-            .iter()
-            .all(|s| matches!(s.subject, IndexSubject::VertexProperty))
-}
-
 impl IcPropertyIndexClient {
-    /// Streaming all-vertex intersection via the server-side `lookup_intersection_page`: the index
-    /// walks the first arm one page at a time and sieves each page against the remaining arms
-    /// in-heap, so no arm's full bucket is materialized and the walk + sieve fold into a single
-    /// inter-canister call per page (vs one call per arm per page).
-    async fn collect_vertex_intersection_hits(
+    async fn collect_property_intersection(
         &self,
         specs: &[IndexEqualSpec],
-    ) -> Result<Vec<PostingHit>, PlanQueryError> {
-        let mut hits = Vec::new();
+    ) -> Result<IndexIntersectionResult, PlanQueryError> {
+        let mut vertices = Vec::new();
+        let mut edges = Vec::new();
         let mut after = None;
+        let mut shape = None;
         loop {
-            let page: PostingHitPage =
-                Call::bounded_wait(self.index_principal, "lookup_intersection_page")
-                    .with_args(&(LookupIntersectionPageRequest {
+            let page: gleaph_graph_kernel::index::PropertyIntersectionPage =
+                Call::bounded_wait(self.index_principal, "lookup_property_intersection_page")
+                    .with_args(&(LookupPropertyIntersectionPageRequest {
                         specs: specs.to_vec(),
                         after,
                         limit: INDEX_PAGE_LIMIT,
                     },))
                     .await
-                    .map_err(|e| ic_wait_err("lookup_intersection_page", e))?
+                    .map_err(|e| ic_wait_err("lookup_property_intersection_page", e))?
                     .candid()
-                    .map_err(|_| ic_candid_decode_err("lookup_intersection_page"))?;
-            hits.extend(page.hits);
+                    .map_err(|_| ic_candid_decode_err("lookup_property_intersection_page"))?;
+            match page.hits {
+                IndexIntersectionResult::Vertices(hits) => {
+                    if shape.is_none() {
+                        shape = Some(false);
+                    }
+                    vertices.extend(hits);
+                }
+                IndexIntersectionResult::Edges(hits) => {
+                    if shape.is_none() {
+                        shape = Some(true);
+                    }
+                    edges.extend(hits);
+                }
+            }
             if page.done {
                 break;
             }
             after = page.next;
         }
-        Ok(hits)
+        Ok(if shape.unwrap_or(false) {
+            IndexIntersectionResult::Edges(edges)
+        } else {
+            IndexIntersectionResult::Vertices(vertices)
+        })
     }
 }
 
@@ -166,22 +172,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         &self,
         req: &IndexIntersectionRequest,
     ) -> Result<IndexIntersectionResult, PlanQueryError> {
-        // All-vertex intersection (the planner's `IndexIntersection` shape) uses the server-side
-        // paged `lookup_intersection_page`, which walks the first arm in pages and sieves the
-        // remaining arms in-heap, so the index never materializes a full posting bucket per arm.
-        // Edge / mixed arms still use the server-side `lookup_intersection`.
-        if all_vertex_specs(&req.specs) {
-            let hits = self.collect_vertex_intersection_hits(&req.specs).await?;
-            return Ok(IndexIntersectionResult::Vertices(hits));
-        }
-        let result: IndexIntersectionResult =
-            Call::bounded_wait(self.index_principal, "lookup_intersection")
-                .with_args(&(req.clone(),))
-                .await
-                .map_err(|e| ic_wait_err("lookup_intersection", e))?
-                .candid()
-                .map_err(|_| ic_candid_decode_err("lookup_intersection"))?;
-        Ok(result)
+        self.collect_property_intersection(&req.specs).await
     }
 
     async fn lookup_edge_equal(

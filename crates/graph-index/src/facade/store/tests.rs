@@ -10,12 +10,12 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{IndexPurgeKind, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
-    LabelIntersectionPageRequest, LabelLookupPageRequest, LabelPostingCursor,
-    LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
-    LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
-    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, PostingHit, PostingRangeRequest,
-    PropertyPostingCursor,
+    IntersectionPostingCursor, LabelIntersectionPageRequest, LabelLookupPageRequest,
+    LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
+    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
+    PostingHit, PostingRangeRequest, PropertyPostingCursor,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -1323,6 +1323,121 @@ fn lookup_intersection_all_edge_arms_returns_edge_hits() {
             label_id: 9,
             slot_index: 1,
         }])
+    );
+}
+
+#[test]
+fn lookup_property_intersection_page_paginates_all_edge_arms() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let owner = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), owner);
+
+    for owner_vertex_id in [50, 60, 70] {
+        store
+            .edge_posting_insert(
+                owner,
+                ShardId::new(0),
+                30,
+                b"1".to_vec(),
+                9,
+                owner_vertex_id,
+                1,
+            )
+            .expect("walk arm");
+        store
+            .edge_posting_insert(
+                owner,
+                ShardId::new(0),
+                31,
+                b"2".to_vec(),
+                9,
+                owner_vertex_id,
+                1,
+            )
+            .expect("sieve arm");
+    }
+
+    let specs = vec![
+        IndexEqualSpec::edge(30, b"1".to_vec(), Some(9)),
+        IndexEqualSpec::edge(31, b"2".to_vec(), Some(9)),
+    ];
+    let mut after = None;
+    let mut streamed = Vec::new();
+    loop {
+        let page = store
+            .lookup_property_intersection_page(&LookupPropertyIntersectionPageRequest {
+                specs: specs.clone(),
+                after,
+                limit: 1,
+            })
+            .expect("edge intersection page");
+        let IndexIntersectionResult::Edges(hits) = page.hits else {
+            panic!("expected edge hits");
+        };
+        streamed.extend(hits);
+        if page.done {
+            break;
+        }
+        after = page.next;
+        assert!(matches!(after, Some(IntersectionPostingCursor::Edge(_))));
+    }
+
+    assert_eq!(streamed.len(), 3);
+    assert_eq!(
+        streamed
+            .iter()
+            .map(|hit| hit.owner_vertex_id)
+            .collect::<Vec<_>>(),
+        vec![50, 60, 70]
+    );
+}
+
+#[test]
+fn lookup_property_intersection_page_paginates_mixed_arms() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let owner = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), owner);
+
+    for vertex_id in [50, 60, 70] {
+        store
+            .posting_insert(owner, ShardId::new(0), 10, b"30".to_vec(), vertex_id)
+            .expect("vertex arm");
+    }
+    for vertex_id in [50, 70] {
+        store
+            .edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, vertex_id, 0)
+            .expect("edge arm");
+    }
+
+    let mut after = None;
+    let mut streamed = Vec::new();
+    loop {
+        let page = store
+            .lookup_property_intersection_page(&LookupPropertyIntersectionPageRequest {
+                specs: vec![
+                    IndexEqualSpec::vertex(10, b"30".to_vec()),
+                    IndexEqualSpec::edge(20, b"5".to_vec(), Some(7)),
+                ],
+                after,
+                limit: 1,
+            })
+            .expect("mixed intersection page");
+        let IndexIntersectionResult::Vertices(hits) = page.hits else {
+            panic!("expected vertex hits");
+        };
+        streamed.extend(hits);
+        if page.done {
+            break;
+        }
+        after = page.next;
+        assert!(matches!(after, Some(IntersectionPostingCursor::Vertex(_))));
+    }
+
+    assert_eq!(
+        streamed.iter().map(|hit| hit.vertex_id).collect::<Vec<_>>(),
+        vec![50, 70]
     );
 }
 

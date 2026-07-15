@@ -25,6 +25,7 @@ pub enum IndexError {
     /// An equality-intersection request contained a non-vertex subject (edge or mixed). Only vertex
     /// property equality sieves are supported by the streamed intersection paths.
     InvalidIntersectionSubject,
+    InvalidIntersectionCursor,
 }
 
 impl std::fmt::Display for IndexError {
@@ -76,6 +77,9 @@ impl std::fmt::Display for IndexError {
             ),
             Self::InvalidIntersectionSubject => {
                 write!(f, "equality intersection subject must be a vertex property")
+            }
+            Self::InvalidIntersectionCursor => {
+                write!(f, "intersection cursor does not match the walk arm")
             }
         }
     }

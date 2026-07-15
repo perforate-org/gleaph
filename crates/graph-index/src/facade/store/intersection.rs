@@ -8,18 +8,133 @@ use crate::state::IndexError;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
-    IndexSubject, PostingHit,
+    IndexSubject, IntersectionPostingCursor, LookupPropertyIntersectionPageRequest, PostingHit,
+    PropertyIntersectionPage,
 };
 use nohash_hasher::IntSet;
 use rapidhash::RapidHashSet;
 
 impl IndexStore {
+    pub fn lookup_property_intersection_page(
+        &self,
+        req: &LookupPropertyIntersectionPageRequest,
+    ) -> Result<PropertyIntersectionPage, IndexError> {
+        ensure_intersection_specs(&req.specs)?;
+        if req
+            .specs
+            .iter()
+            .all(|spec| matches!(spec.subject, IndexSubject::EdgeProperty { .. }))
+        {
+            return self.lookup_edge_intersection_page(req);
+        }
+        self.lookup_vertex_or_mixed_intersection_page(req)
+    }
+
     pub fn lookup_intersection(
         &self,
         req: &IndexIntersectionRequest,
     ) -> Result<IndexIntersectionResult, IndexError> {
         ensure_intersection_specs(&req.specs)?;
         Ok(lookup_property_intersection(req))
+    }
+
+    fn lookup_edge_intersection_page(
+        &self,
+        req: &LookupPropertyIntersectionPageRequest,
+    ) -> Result<PropertyIntersectionPage, IndexError> {
+        let mut specs = req.specs.clone();
+        specs.sort_by(|a, b| {
+            a.property_id
+                .cmp(&b.property_id)
+                .then_with(|| a.value.cmp(&b.value))
+        });
+        let walk = &specs[0];
+        let after = match &req.after {
+            None => None,
+            Some(IntersectionPostingCursor::Edge(cursor)) => Some(cursor.clone()),
+            Some(IntersectionPostingCursor::Vertex(_)) => {
+                return Err(IndexError::InvalidIntersectionCursor);
+            }
+        };
+        let page =
+            self.lookup_edge_equal_page(&gleaph_graph_kernel::index::LookupEdgeEqualPageRequest {
+                property_id: walk.property_id,
+                value: walk.value.clone(),
+                label_id: match walk.subject {
+                    IndexSubject::EdgeProperty { label_id } => label_id,
+                    IndexSubject::VertexProperty => unreachable!(),
+                },
+                after,
+                limit: req.limit,
+            })?;
+        let sieves: Vec<_> = specs[1..].iter().map(collect_edge_arm).collect();
+        let hits = page
+            .hits
+            .into_iter()
+            .filter(|hit| {
+                let identity = pack_edge_identity(
+                    hit.shard_id,
+                    hit.owner_vertex_id,
+                    hit.label_id,
+                    hit.slot_index,
+                );
+                sieves.iter().all(|set| set.contains(&identity))
+            })
+            .collect();
+        Ok(PropertyIntersectionPage {
+            hits: IndexIntersectionResult::Edges(hits),
+            next: page.next.map(IntersectionPostingCursor::Edge),
+            done: page.done,
+        })
+    }
+
+    fn lookup_vertex_or_mixed_intersection_page(
+        &self,
+        req: &LookupPropertyIntersectionPageRequest,
+    ) -> Result<PropertyIntersectionPage, IndexError> {
+        let mut specs = req.specs.clone();
+        specs.sort_by(|a, b| {
+            a.property_id
+                .cmp(&b.property_id)
+                .then_with(|| a.value.cmp(&b.value))
+        });
+        let walk_index = specs
+            .iter()
+            .position(|spec| matches!(spec.subject, IndexSubject::VertexProperty))
+            .unwrap_or(0);
+        let walk = &specs[walk_index];
+        let after = match &req.after {
+            None => None,
+            Some(IntersectionPostingCursor::Vertex(cursor)) => Some(cursor.clone()),
+            Some(IntersectionPostingCursor::Edge(_)) => {
+                return Err(IndexError::InvalidIntersectionCursor);
+            }
+        };
+        let page = self.lookup_equal_page(&gleaph_graph_kernel::index::LookupEqualPageRequest {
+            property_id: walk.property_id,
+            value: walk.value.clone(),
+            after,
+            limit: req.limit,
+        })?;
+        let sieves: Vec<_> = specs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != walk_index)
+            .map(|(_, spec)| collect_vertex_projection_arm(spec))
+            .collect();
+        let hits = page
+            .hits
+            .into_iter()
+            .filter(|hit| {
+                let identity = pack_posting_vertex(hit.shard_id, hit.vertex_id);
+                sieves.iter().all(|set| set.contains(&identity))
+            })
+            .collect();
+        Ok(PropertyIntersectionPage {
+            hits: IndexIntersectionResult::Vertices(hits),
+            next: page.next.map(IntersectionPostingCursor::Vertex),
+            done: page.done,
+        })
     }
 }
 

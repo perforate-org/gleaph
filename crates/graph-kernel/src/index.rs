@@ -255,6 +255,30 @@ pub struct PostingHitPage {
     pub done: bool,
 }
 
+/// Cursor used by the paginated intersection export. The cursor variant identifies the
+/// canonical walk arm selected by the Property Index for the requested intersection shape.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub enum IntersectionPostingCursor {
+    Vertex(PropertyPostingCursor),
+    Edge(EdgePostingCursor),
+}
+
+/// Paginated property intersection export for vertex, edge, and mixed equality shapes.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupPropertyIntersectionPageRequest {
+    pub specs: Vec<IndexEqualSpec>,
+    pub after: Option<IntersectionPostingCursor>,
+    pub limit: u32,
+}
+
+/// One bounded page of a property intersection result.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct PropertyIntersectionPage {
+    pub hits: IndexIntersectionResult,
+    pub next: Option<IntersectionPostingCursor>,
+    pub done: bool,
+}
+
 /// One page of edge property postings (equality export).
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct EdgePostingHitPage {

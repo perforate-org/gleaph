@@ -13,9 +13,10 @@ use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, IndexPostingBatchProgress,
     IndexPostingMutation, LabelIntersectionPageRequest, LookupEdgeEqualPageRequest,
     LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
-    LookupIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
-    PostingHit, PostingHitPage, PostingRangeRequest, ValuePostingCount,
+    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
+    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
+    LookupRangePageForLabelRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyIntersectionPage, ValuePostingCount,
 };
 use ic_cdk::api::msg_caller;
 
@@ -386,6 +387,17 @@ pub(crate) fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) 
 pub(crate) fn lookup_intersection_page(req: LookupIntersectionPageRequest) -> PostingHitPage {
     IndexStore::new()
         .lookup_intersection_page(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
+pub(crate) fn lookup_property_intersection_page(
+    req: LookupPropertyIntersectionPageRequest,
+) -> PropertyIntersectionPage {
+    IndexStore::new()
+        .lookup_property_intersection_page(&req)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()
