@@ -37,15 +37,6 @@ export function ExplanationPanel(props: { definition: ScenarioDefinition }) {
           </p>
         </div>
       )}
-
-      <div class="border-t border-slate-200 pt-4">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          {t("explanation.scenarioSubject")}
-        </h3>
-        <p class="mt-1 text-sm text-slate-700">
-          {t("explanation.scenarioSubjectBody")}
-        </p>
-      </div>
     </div>
   );
 }

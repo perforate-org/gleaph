@@ -73,9 +73,6 @@ const enDictionary = {
   "explanation.whyResultsDiffer": "Why the results differ",
   "explanation.whyResultsDifferBody":
     "The fixed query vector makes Dave's retrieval note the globally nearest public Post. In the vector-only scenario it appears first. In Alice's graph-constrained feed it is absent because Alice does not follow Dave, even though it is nearer than every followed-author result.",
-  "explanation.scenarioSubject": "Scenario subject",
-  "explanation.scenarioSubjectBody":
-    "Alice is a selected demo subject, not the logged-in viewer. There is no identity, login, or row-level security in this read-only slice.",
   "query.title": "GQL query",
   "query.hoverHint": "Hover highlighted parts to see what they do.",
   "query.expand": "Expand query",
@@ -157,9 +154,6 @@ const jaDictionary: Record<TranslationKey, string> = {
   "explanation.whyResultsDiffer": "結果が異なる理由",
   "explanation.whyResultsDifferBody":
     "固定クエリベクトルでは、デイブの取得メモが公開 Post の中で最も近くなります。ベクトルのみのシナリオでは先頭に表示されますが、アリスのグラフ制約付きフィードではデイブをフォローしていないため、距離が近くても除外されます。",
-  "explanation.scenarioSubject": "シナリオの対象",
-  "explanation.scenarioSubjectBody":
-    "アリスは選択されたデモ対象であり、ログイン中の閲覧者ではありません。この読み取り専用スライスには認証、ログイン、行レベルセキュリティはありません。",
   "query.title": "GQL クエリ",
   "query.hoverHint": "ハイライトされた部分にカーソルを合わせると説明が表示されます。",
   "query.expand": "クエリを拡大",
