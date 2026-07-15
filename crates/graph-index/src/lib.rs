@@ -44,7 +44,7 @@ pub use label_key::LabelPostingKey;
 pub use state::IndexError;
 
 use crate::guards::{guard_router_canister, guard_shard_canister};
-use candid::{CandidType, Encode, Principal};
+use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{
     IndexPostingPurgeCursor, IndexPostingPurgeStepResult, IndexPurgeKind, ShardDetachCursor,
@@ -56,19 +56,6 @@ fn guard_shard_canister_or_trap(shard_id: ShardId) {
     if let Err(e) = guard_shard_canister(shard_id) {
         ic_cdk::trap(&e);
     }
-}
-
-fn bounded_response<T: CandidType>(method: &str, value: T) -> T {
-    let bytes = Encode!(&value).unwrap_or_else(|error| {
-        ic_cdk::trap(format!("{method} response encode failed: {error}"));
-    });
-    if bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        ic_cdk::trap(format!(
-            "{method} response exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        ));
-    }
-    value
 }
 
 #[init]
@@ -198,7 +185,7 @@ fn posting_batch(
 
 #[query(guard = "guard_router_canister")]
 fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
-    bounded_response("lookup_equal", canister::lookup_equal(property_id, value))
+    canister::lookup_equal(property_id, value)
 }
 
 #[query(guard = "guard_router_canister")]
@@ -207,10 +194,7 @@ fn lookup_edge_equal(
     value: Vec<u8>,
     label_id: Option<u16>,
 ) -> Vec<EdgePostingHit> {
-    bounded_response(
-        "lookup_edge_equal",
-        canister::lookup_edge_equal(property_id, value, label_id),
-    )
+    canister::lookup_edge_equal(property_id, value, label_id)
 }
 
 #[query(guard = "guard_router_canister")]
@@ -240,15 +224,12 @@ fn lookup_edge_equal_page(req: LookupEdgeEqualPageRequest) -> EdgePostingHitPage
 
 #[query(guard = "guard_router_canister")]
 fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {
-    bounded_response("lookup_label", canister::lookup_label(vertex_label_id))
+    canister::lookup_label(vertex_label_id)
 }
 
 #[query(guard = "guard_router_canister")]
 fn lookup_label_for_shard(vertex_label_id: u32, shard_id: ShardId) -> Vec<PostingHit> {
-    bounded_response(
-        "lookup_label_for_shard",
-        canister::lookup_label_for_shard(vertex_label_id, shard_id),
-    )
+    canister::lookup_label_for_shard(vertex_label_id, shard_id)
 }
 
 #[query(guard = "guard_router_canister")]
@@ -263,20 +244,17 @@ fn lookup_label_intersection_page(req: LabelIntersectionPageRequest) -> LabelLoo
 
 #[query(guard = "guard_router_canister")]
 fn lookup_intersection(req: IndexIntersectionRequest) -> IndexIntersectionResult {
-    bounded_response("lookup_intersection", canister::lookup_intersection(req))
+    canister::lookup_intersection(req)
 }
 
 #[query(guard = "guard_router_canister")]
 fn lookup_label_intersection(req: IndexLabelIntersectionRequest) -> Vec<PostingHit> {
-    bounded_response(
-        "lookup_label_intersection",
-        canister::lookup_label_intersection(req),
-    )
+    canister::lookup_label_intersection(req)
 }
 
 #[query(guard = "guard_router_canister")]
 fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
-    bounded_response("lookup_range", canister::lookup_range(property_id, req))
+    canister::lookup_range(property_id, req)
 }
 
 #[query(guard = "guard_router_canister")]
@@ -290,10 +268,7 @@ fn count_postings_by_value(
 
 #[query(guard = "guard_router_canister")]
 fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) -> Vec<PostingHit> {
-    bounded_response(
-        "filter_hits_by_label",
-        canister::filter_hits_by_label(vertex_label_id, hits),
-    )
+    canister::filter_hits_by_label(vertex_label_id, hits)
 }
 
 #[query(guard = "guard_router_canister")]

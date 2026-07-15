@@ -307,30 +307,7 @@ async fn gql_execute_idempotent(
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    let request_bytes = Encode!(&(&query, &params, &client_mutation_key)).map_err(|error| {
-        RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent request encode failed: {error}"
-        ))
-    })?;
-    if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent request exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        )));
-    }
-    let result = gql::gql_execute_idempotent(query, params, client_mutation_key).await?;
-    let response_bytes = Encode!(&result).map_err(|error| {
-        RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent response encode failed: {error}"
-        ))
-    })?;
-    if response_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent response exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        )));
-    }
-    Ok(result)
+    gql::gql_execute_idempotent(query, params, client_mutation_key).await
 }
 
 /// Execute cursor-based idempotent mutations until the Router instruction budget is reached.

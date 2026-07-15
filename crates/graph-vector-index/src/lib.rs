@@ -27,7 +27,7 @@ pub use init::VectorIndexInitArgs;
 pub use state::VectorIndexError;
 
 use crate::guards::guard_router_canister;
-use candid::{CandidType, Encode, Principal};
+use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
@@ -38,19 +38,6 @@ use gleaph_graph_kernel::vector_index::{
     VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchProgress,
 };
 use ic_cdk_macros::{init, query, update};
-
-fn bounded_response<T: CandidType>(method: &str, value: T) -> T {
-    let bytes = Encode!(&value).unwrap_or_else(|error| {
-        ic_cdk::trap(format!("{method} response encode failed: {error}"));
-    });
-    if bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        ic_cdk::trap(format!(
-            "{method} response exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        ));
-    }
-    value
-}
 
 #[init]
 fn init(args: VectorIndexInitArgs) {
@@ -76,20 +63,12 @@ fn admin_detach_shard_canister(
 
 #[update]
 fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
-    let request_bytes = Encode!(&(&op,)).expect("vector_upsert request encoding");
-    if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        ic_cdk::trap("vector_upsert request exceeds the safe payload limit");
-    }
-    bounded_response("vector_upsert", canister::vector_upsert(op))
+    canister::vector_upsert(op)
 }
 
 #[update]
 fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
-    let request_bytes = Encode!(&(&op,)).expect("vector_remove request encoding");
-    if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-        ic_cdk::trap("vector_remove request exceeds the safe payload limit");
-    }
-    bounded_response("vector_remove", canister::vector_remove(op))
+    canister::vector_remove(op)
 }
 
 #[update]
@@ -99,7 +78,7 @@ fn vector_sync_batch(operations: Vec<VectorEmbeddingSyncOp>) -> VectorSyncBatchP
         ic_cdk::trap("vector_sync_batch request exceeds the safe payload limit");
     }
     match canister::vector_sync_batch(operations) {
-        Ok(progress) => bounded_response("vector_sync_batch", progress),
+        Ok(progress) => progress,
         Err(error) => ic_cdk::trap(error.to_string()),
     }
 }
@@ -109,7 +88,7 @@ fn vector_sync_batch(operations: Vec<VectorEmbeddingSyncOp>) -> VectorSyncBatchP
 /// activation/readiness gate; the Router is the activation-gated public surface.
 #[query(guard = "guard_router_canister")]
 fn vector_search(req: VectorSearchRequest) -> Result<VectorSearchResult, VectorIndexError> {
-    bounded_response("vector_search", canister::vector_search(req))
+    canister::vector_search(req)
 }
 
 /// Begins a production shadow-version rebuild for an `nlist > 1` index (ADR 0031 Slice 7). O(1);
