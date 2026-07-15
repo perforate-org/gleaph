@@ -526,6 +526,7 @@ async fn run_transaction_block(
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
     let mut label_stats_delta = LabelStatsDelta::default();
     let mut hot_forward_vertices = Vec::new();
+    let mut pending_dml = false;
     for stmt in block.iter_statements() {
         if matches!(stmt, Statement::Session(_)) {
             continue;
@@ -544,9 +545,13 @@ async fn run_transaction_block(
                 &mut last_read_row_count,
                 &mut last_read_plan_rows,
             );
-            pending::flush_all_pending(index, None).await?;
-            flush_vector_pending(None).await?;
+            pending_dml = true;
         } else {
+            if pending_dml {
+                pending::flush_all_pending(index, None).await?;
+                flush_vector_pending(None).await?;
+                pending_dml = false;
+            }
             match materialize {
                 TransactionReadMaterialize::Full => {
                     last_query_rows =
@@ -578,6 +583,7 @@ async fn run_transaction_block(
             }
         }
     }
+    persist_pending_to_outbox(store, 0);
     Ok(TransactionBlockRun {
         last_query_rows,
         last_read_row_count,
@@ -1197,7 +1203,7 @@ pub async fn run_wire_plans_last_read_row_count(
     )
     .await;
     if let Some(mutation_id) = mutation_id {
-        persist_wire_pending_to_outbox(&store, mutation_id);
+        persist_pending_to_outbox(&store, mutation_id);
     }
     let run = run_result?;
     if let Some(mutation_id) = mutation_id {
@@ -1228,7 +1234,7 @@ pub async fn run_wire_plans_last_read_row_count(
     })
 }
 
-fn persist_wire_pending_to_outbox(store: &GraphStore, mutation_id: MutationId) {
+fn persist_pending_to_outbox(store: &GraphStore, mutation_id: u64) {
     let mut outbox_ops = pending::take_pending_as_outbox();
     outbox_ops.extend(crate::index::vector_pending::take_pending_as_outbox());
     if outbox_ops.is_empty() {
@@ -1647,6 +1653,29 @@ mod tests {
         .expect("match");
         assert_eq!(q.rows.len(), 1);
         assert_eq!(q.rows[0].get("n.age"), Some(&Value::Int64(1)));
+    }
+
+    #[test]
+    fn adhoc_dml_persists_derived_index_work_in_outbox() {
+        let store = GraphStore::new();
+        with_federation_routing(store);
+        drain_repair_journal(store);
+        drain_derived_index_outbox(store);
+
+        pollster::block_on(run_adhoc_gql(
+            store,
+            "INSERT (:AdhocOutbox)",
+            &BTreeMap::new(),
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
+        ))
+        .expect("ad-hoc DML");
+
+        assert!(!store.derived_index_outbox_is_empty());
+        assert!(store.repair_journal_is_empty());
+        drain_derived_index_outbox(store);
+        store.set_federation_routing(None).expect("clear routing");
     }
 
     // Regression (ADR 0029 Phase 1 follow-up, defect #2 fixed): an inline

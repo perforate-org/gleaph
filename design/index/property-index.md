@@ -297,8 +297,8 @@ into the journal cannot recover that not-yet-journaled work, so upgrade safety b
 journal boundary rather than at enqueue time.
 Plan 0088 now provides a separate durable derived-index outbox storage region and connects the
 Router→Graph wire-DML finalization handoff to it. Maintenance drains bounded outbox prefixes through
-the existing shared repair dispatcher. Ad-hoc/native transaction delivery still uses the legacy
-heap-only path until the remaining handoff work is complete.
+the existing shared repair dispatcher. DML-only ad-hoc/native blocks use the same outbox; a block
+that reads after DML retains a legacy flush boundary for read-after-write visibility.
 
 **`DROP INDEX` posting purge (ADR 0023 D6):** dropping an index removes the dropped property's
 postings from graph-index, not just the router catalog entry (closing P7, where dropped indexes
