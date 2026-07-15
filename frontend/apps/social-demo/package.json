@@ -6,6 +6,7 @@
   "scripts": {
     "generate-gateway-bindings": "icp-bindgen --did-file ../../../crates/social-demo-gateway/social_demo_gateway.did --out-dir ./src/generated --force",
     "build:gql-formatter": "node scripts/build-gql-formatter.mjs",
+    "generate:avatars": "node scripts/generate-avatar-assets.mjs",
     "check": "$PWD/../../../scripts/check-social-demo-gateway-candid.sh && icp-bindgen --did-file ../../../crates/social-demo-gateway/social_demo_gateway.did --out-dir ./src/generated --force && pnpm run build:gql-formatter && tsc --noEmit",
     "build": "$PWD/../../../scripts/check-social-demo-gateway-candid.sh && icp-bindgen --did-file ../../../crates/social-demo-gateway/social_demo_gateway.did --out-dir ./src/generated --force && pnpm run build:gql-formatter && vite build",
     "build:config": "node scripts/build-config.mjs",

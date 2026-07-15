@@ -1,17 +1,27 @@
 import { displayPostId } from "~/data/scenarios";
+import { avatarForAuthor } from "~/data/userAvatars";
 import { useI18n } from "~/i18n";
 import type { FeedItemProps } from "~/types";
 
 export function FeedItem(props: FeedItemProps) {
   const { row, definition, formatDate, showParentPreview = false } = props;
   const { t } = useI18n();
+  const avatarPath = avatarForAuthor(row.authorName);
 
   return (
     <article class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div class="flex items-start gap-3">
-        <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-100 font-semibold text-indigo-700">
-          {row.authorName.charAt(0)}
-        </div>
+        {avatarPath ? (
+          <img
+            src={avatarPath}
+            alt={`${row.authorName} avatar`}
+            class="h-10 w-10 shrink-0 rounded-full bg-indigo-100 object-cover"
+          />
+        ) : (
+          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-100 font-semibold text-indigo-700">
+            {row.authorName.charAt(0)}
+          </div>
+        )}
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
             <span class="font-medium text-slate-900">{row.authorName}</span>
