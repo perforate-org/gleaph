@@ -305,6 +305,16 @@ pub struct LookupRangePageRequest {
     pub limit: u32,
 }
 
+/// Paginated range export with label membership applied inside the index canister.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupRangePageForLabelRequest {
+    pub property_id: u32,
+    pub range: PostingRangeRequest,
+    pub vertex_label_id: u32,
+    pub after: Option<PropertyPostingCursor>,
+    pub limit: u32,
+}
+
 /// Paginated range-plus-equality intersection over one vertex property range walk.
 ///
 /// The index walks the finite encoded half-open interval `[low, high)` for `range_property_id`

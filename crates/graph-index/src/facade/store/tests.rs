@@ -12,8 +12,8 @@ use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
     LabelLookupPageRequest, LabelPostingCursor, LookupEdgeEqualPageRequest,
     LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingRangeRequest,
-    PropertyPostingCursor,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
+    PostingHit, PostingRangeRequest, PropertyPostingCursor,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -1446,6 +1446,56 @@ fn lookup_equal_page_for_label_sieves_inside_index_call() {
         .lookup_equal_page_for_label(&LookupEqualPageForLabelRequest {
             property_id: 5,
             value,
+            vertex_label_id: 2,
+            after: None,
+            limit: 10,
+        })
+        .expect("filtered page");
+    assert_eq!(
+        page.hits,
+        vec![
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 10,
+            },
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 30,
+            },
+        ]
+    );
+    assert!(page.done);
+}
+
+#[test]
+fn lookup_range_page_for_label_sieves_inside_index_call() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+
+    for (vertex_id, value) in [
+        (10, index_key(Value::Int64(5))),
+        (20, index_key(Value::Int64(7))),
+        (30, index_key(Value::Int64(9))),
+    ] {
+        store
+            .posting_insert(shard_principal, ShardId::new(0), 5, value, vertex_id)
+            .expect("posting");
+    }
+    for vertex_id in [10, 30] {
+        store
+            .label_posting_insert(shard_principal, ShardId::new(0), 2, vertex_id)
+            .expect("label");
+    }
+
+    let page = store
+        .lookup_range_page_for_label(&LookupRangePageForLabelRequest {
+            property_id: 5,
+            range: PostingRangeRequest::Between {
+                low: index_key(Value::Int64(5)),
+                high: index_key(Value::Int64(10)),
+            },
             vertex_label_id: 2,
             after: None,
             limit: 10,

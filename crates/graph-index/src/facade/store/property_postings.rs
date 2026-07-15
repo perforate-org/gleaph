@@ -13,9 +13,9 @@ use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexSubject, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
-    MAX_EQUALITY_INTERSECTION_ARMS, PostingHit, PostingHitPage, PostingRangeRequest,
-    PropertyPostingCursor, ValuePostingCount,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
+    LookupRangePageForLabelRequest, LookupRangePageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
+    PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
 use nohash_hasher::IntSet;
 use std::ops::Bound;
@@ -152,6 +152,21 @@ impl IndexStore {
         let mut page = self.lookup_equal_page(&LookupEqualPageRequest {
             property_id: req.property_id,
             value: req.value.clone(),
+            after: req.after.clone(),
+            limit: req.limit,
+        })?;
+        page.hits = self.filter_hits_by_label(req.vertex_label_id, &page.hits);
+        Ok(page)
+    }
+
+    /// Paginated range export with label membership sieved inside the index canister.
+    pub fn lookup_range_page_for_label(
+        &self,
+        req: &LookupRangePageForLabelRequest,
+    ) -> Result<PostingHitPage, IndexError> {
+        let mut page = self.lookup_range_page(&LookupRangePageRequest {
+            property_id: req.property_id,
+            range: req.range.clone(),
             after: req.after.clone(),
             limit: req.limit,
         })?;

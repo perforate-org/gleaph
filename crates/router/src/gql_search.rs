@@ -1811,9 +1811,15 @@ async fn collect_bounded_candidates_union_inner<L: DisjunctionLookup>(
                             high: high.clone(),
                         };
                         client
-                            .lookup_range_page(*property_id, range, after, VECTOR_FILTER_PAGE_LIMIT)
+                            .lookup_range_page_for_label(
+                                *property_id,
+                                range,
+                                label_id.raw() as u32,
+                                after,
+                                VECTOR_FILTER_PAGE_LIMIT,
+                            )
                             .await
-                            .map(|page| (page, false))
+                            .map(|page| (page, true))
                     }
                 }
                 .map_err(|e| {
@@ -2144,6 +2150,23 @@ trait DisjunctionLookup: Clone {
         limit: u32,
     ) -> Result<PostingHitPage, String>;
 
+    async fn lookup_range_page_for_label(
+        &self,
+        property_id: u32,
+        range: gleaph_graph_kernel::index::PostingRangeRequest,
+        vertex_label_id: u32,
+        after: Option<PropertyPostingCursor>,
+        limit: u32,
+    ) -> Result<PostingHitPage, String> {
+        let mut page = self
+            .lookup_range_page(property_id, range, after, limit)
+            .await?;
+        page.hits = self
+            .filter_hits_by_label(vertex_label_id, page.hits)
+            .await?;
+        Ok(page)
+    }
+
     async fn filter_hits_by_label(
         &self,
         vertex_label_id: u32,
@@ -2197,6 +2220,26 @@ impl DisjunctionLookup for RouterIndexClient {
     ) -> Result<PostingHitPage, String> {
         self.lookup_range_page(property_id, range, after, limit)
             .await
+    }
+
+    async fn lookup_range_page_for_label(
+        &self,
+        property_id: u32,
+        range: gleaph_graph_kernel::index::PostingRangeRequest,
+        vertex_label_id: u32,
+        after: Option<PropertyPostingCursor>,
+        limit: u32,
+    ) -> Result<PostingHitPage, String> {
+        self.lookup_range_page_for_label(
+            gleaph_graph_kernel::index::LookupRangePageForLabelRequest {
+                property_id,
+                range,
+                vertex_label_id,
+                after,
+                limit,
+            },
+        )
+        .await
     }
 
     async fn filter_hits_by_label(
