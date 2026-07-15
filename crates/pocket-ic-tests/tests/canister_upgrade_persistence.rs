@@ -16,9 +16,12 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{IndexPostingBatchProgress, IndexPostingMutation, PostingHit};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, gql_execute_idempotent_as_admin, gql_query_as_admin,
-    install_single_shard_federation, knowledge_map_live_query, seed_knowledge_map_graph,
-    wasm_bytes,
+    FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_execute_idempotent_as_admin,
+    gql_query_as_admin, install_single_shard_federation, knowledge_map_live_query,
+    seed_knowledge_map_graph, wasm_bytes,
+};
+use gleaph_router::types::{
+    AdminVertexPropertyBackfillStepArgs, VertexPropertyBackfillShardStatus,
 };
 use std::collections::BTreeSet;
 
@@ -188,4 +191,63 @@ fn graph_index_batch_posting_survives_index_upgrade() {
         vec![11, 12],
         "batch-applied postings must survive graph-index upgrade"
     );
+}
+
+#[test]
+fn router_backfill_cursor_survives_router_upgrade() {
+    let env = install_single_shard_federation();
+    create_vertex_property_index(
+        &env,
+        "upgrade_backfill_age",
+        "Person",
+        "age",
+        "upgrade_backfill_create_index",
+    );
+    gql_execute_idempotent_as_admin(&env, "INSERT (:Person {age: 1})", "upgrade_backfill_v1");
+    gql_execute_idempotent_as_admin(&env, "INSERT (:Person {age: 2})", "upgrade_backfill_v2");
+
+    let args = AdminVertexPropertyBackfillStepArgs {
+        logical_graph_name: GRAPH_NAME.into(),
+        shard_id: ShardId::new(0),
+        max_vertices: 1,
+    };
+    let first_bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_vertex_property_backfill_step",
+            Encode!(&args).expect("encode backfill step"),
+        )
+        .expect("first backfill step");
+    let first: Result<gleaph_router::types::AdminVertexPropertyBackfillStepResult, _> =
+        Decode!(&first_bytes, Result<_, gleaph_graph_kernel::federation::RouterError>)
+            .expect("decode first backfill step");
+    let first = first.expect("first backfill step succeeds");
+    assert_eq!(first.vertices_processed, 1);
+
+    let empty = Encode!(&()).expect("encode empty upgrade arg");
+    env.pic
+        .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty, None)
+        .expect("upgrade router with stable backfill cursor");
+
+    let status_bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "admin_list_vertex_property_backfill_status",
+            Encode!(&GRAPH_NAME.to_string()).expect("encode status query"),
+        )
+        .expect("backfill status after upgrade");
+    let status: Result<Vec<VertexPropertyBackfillShardStatus>, _> = Decode!(
+        &status_bytes,
+        Result<
+            Vec<VertexPropertyBackfillShardStatus>,
+            gleaph_graph_kernel::federation::RouterError,
+        >
+    )
+    .expect("decode status");
+    let status = status.expect("status succeeds");
+    assert_eq!(status[0].next_vertex_id, first.next_vertex_id);
 }
