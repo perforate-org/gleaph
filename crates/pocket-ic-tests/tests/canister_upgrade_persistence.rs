@@ -9,9 +9,11 @@
 //! canisters to the same wasm, and requires the post-upgrade query to be
 //! byte-for-byte identical — then proves the graph is still writable.
 
-use candid::Encode;
+use candid::{Decode, Encode};
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::index::{IndexPostingBatchProgress, IndexPostingMutation, PostingHit};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, gql_execute_idempotent_as_admin, gql_query_as_admin,
@@ -133,5 +135,57 @@ NEXT INSERT (a)-[:WROTE {demo_edge_id: 'alice-post-upgrade', demo_kind: 'verify'
         after_write.len(),
         baseline.len() + 1,
         "exactly one new edge should be added after upgrades"
+    );
+}
+
+#[test]
+fn graph_index_batch_posting_survives_index_upgrade() {
+    let env = install_single_shard_federation();
+    let value = vec![0x42, 0x01];
+    let args = Encode!(
+        &ShardId::new(0),
+        &vec![
+            IndexPostingMutation::VertexProperty {
+                remove: false,
+                property_id: 77,
+                value: value.clone(),
+                vertex_id: 11,
+            },
+            IndexPostingMutation::VertexProperty {
+                remove: false,
+                property_id: 77,
+                value: value.clone(),
+                vertex_id: 12,
+            },
+        ]
+    )
+    .expect("encode posting batch");
+    let bytes = env
+        .pic
+        .update_call(env.index, env.graph_source, "posting_batch", args)
+        .expect("posting batch call");
+    let progress = Decode!(&bytes, IndexPostingBatchProgress).expect("decode posting progress");
+    assert_eq!(progress.applied, 2);
+    assert!(progress.next_index.is_none());
+
+    let empty = Encode!(&()).expect("encode empty upgrade arg");
+    env.pic
+        .upgrade_canister(env.index, wasm_bytes("INDEX_WASM"), empty, None)
+        .expect("upgrade graph-index canister");
+
+    let lookup = env
+        .pic
+        .query_call(
+            env.index,
+            env.router,
+            "lookup_equal",
+            Encode!(&77u32, &value).expect("encode lookup"),
+        )
+        .expect("lookup after index upgrade");
+    let hits = Decode!(&lookup, Vec<PostingHit>).expect("decode lookup hits");
+    assert_eq!(
+        hits.iter().map(|hit| hit.vertex_id).collect::<Vec<_>>(),
+        vec![11, 12],
+        "batch-applied postings must survive graph-index upgrade"
     );
 }
