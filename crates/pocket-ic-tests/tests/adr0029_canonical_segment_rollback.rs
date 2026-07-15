@@ -23,8 +23,8 @@ use candid::{Decode, Encode};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, admin_intern_vertex_label, gql_execute_idempotent_as_admin, gql_query_as_admin,
-    install_single_shard_federation,
+    FederationEnv, admin_intern_edge_label, admin_intern_vertex_label, drain_maintenance_via_timer,
+    gql_execute_idempotent_as_admin, gql_query_as_admin, install_single_shard_federation,
 };
 
 /// Issue a router `gql_execute_idempotent` that must NOT commit because the graph
@@ -74,7 +74,11 @@ fn canonical_segment_trap_rolls_back_whole_message() {
     // Pre-intern the orphan label whose only writer is the rolled-back segment.
     // Catalog interning lives in the router independently of the graph shard's
     // canonical state, so the verification query stays resolvable after rollback.
+    admin_intern_vertex_label(&env, "AttachedHub");
+    admin_intern_vertex_label(&env, "TrapSink");
+    admin_intern_edge_label(&env, "TrapRel");
     admin_intern_vertex_label(&env, "RollbackOrphan");
+    admin_intern_vertex_label(&env, "CtrlOrphan");
 
     // Setup: an attached hub (a vertex with an out-edge), so a plain `DELETE` of
     // it traps inside the segment.
@@ -83,6 +87,7 @@ fn canonical_segment_trap_rolls_back_whole_message() {
         "INSERT (:AttachedHub)-[:TrapRel]->(:TrapSink)",
         "adr0029_setup_attached",
     );
+    drain_maintenance_via_timer(&env, env.graph_source);
     assert_eq!(count(&env, "MATCH (n:AttachedHub) RETURN n"), 1);
     assert_eq!(count(&env, "MATCH (n:TrapSink) RETURN n"), 1);
 
@@ -90,6 +95,7 @@ fn canonical_segment_trap_rolls_back_whole_message() {
     // observable by label scan. This proves the write mechanism is real, so the
     // trap case's empty-after result is attributable to rollback.
     let _ = gql_execute_idempotent_as_admin(&env, "INSERT (:CtrlOrphan)", "adr0029_ctrl_commit");
+    drain_maintenance_via_timer(&env, env.graph_source);
     assert_eq!(
         count(&env, "MATCH (n:CtrlOrphan) RETURN n"),
         1,

@@ -15,10 +15,10 @@
 use candid::Encode;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, arm_graph_unique_ack_fault_all_shards, gql_execute_idempotent_as_admin,
-    gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_result_as_admin,
-    gql_query_as_admin, graph_unique_outbox_len_all_shards, install_federation,
-    install_single_shard_federation, run_router_recovery_after_reservation_ttl,
+    FederationEnv, arm_graph_unique_ack_fault_all_shards, drain_maintenance_via_timer,
+    gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
+    gql_execute_idempotent_result_as_admin, gql_query_as_admin, graph_unique_outbox_len_all_shards,
+    install_federation, install_single_shard_federation, run_router_recovery_after_reservation_ttl,
     run_router_recovery_timer, start_graph_shard, stop_graph_shard, wasm_bytes,
 };
 
@@ -107,6 +107,7 @@ fn drop_constraint_releases_committed_values() {
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s9-rel-reuse2",
     );
+    drain_maintenance_via_timer(&env, env.graph_source);
     assert_eq!(
         live_count(&env, LABEL),
         3,
@@ -187,7 +188,7 @@ fn dropping_constraint_admits_new_inserts_but_blocks_recreate() {
         "s9-pt-passthrough",
     );
     assert_eq!(
-        live_count(&env, LABEL),
+        gql_query_as_admin(&env, "MATCH (n) RETURN n").row_count,
         2,
         "INSERT proceeds unconstrained while Dropping: both a@example.com vertices exist"
     );
@@ -366,6 +367,7 @@ fn drop_does_not_disable_unrelated_constraints() {
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s9-un-dropped-dup",
     );
+    drain_maintenance_via_timer(&env, env.graph_source);
     assert_eq!(
         live_count(&env, LABEL),
         2,

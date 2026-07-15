@@ -21,7 +21,7 @@
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
     GRAPH_NAME, admin_sweep_mutation_keys, advance_past_journal_eviction,
-    arm_graph_unique_ack_fault_all_shards, arm_router_fault,
+    arm_graph_unique_ack_fault_all_shards, arm_router_fault, drain_maintenance_via_timer,
     evict_graph_mutation_journal_all_shards, gql_execute_idempotent_as_admin,
     gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_as_admin_expect_trap,
     gql_execute_idempotent_pair_concurrent_as_admin, gql_query_as_admin,
@@ -47,7 +47,8 @@ fn insert_account(email: &str) -> String {
 }
 
 fn live_count(env: &gleaph_pocket_ic_tests::FederationEnv) -> u64 {
-    gql_query_as_admin(env, &format!("MATCH (n:{LABEL}) RETURN n")).row_count
+    drain_maintenance_via_timer(env, env.graph_source);
+    gql_query_as_admin(env, "MATCH (n) RETURN n").row_count
 }
 
 /// A Router trap *after* the no-`await` Try (before the first dispatch `await`) rolls the reservation

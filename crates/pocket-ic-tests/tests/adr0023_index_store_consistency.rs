@@ -75,6 +75,7 @@ fn post_upgrade_indexed_write_stays_consistent_with_store() {
         "INSERT (:Person {age: 5})",
         "adr0023_pre_upgrade_insert",
     );
+    drain_maintenance_via_timer(&env, env.graph_source);
     let before = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
     assert_eq!(
         before.row_count, 1,
@@ -95,6 +96,7 @@ fn post_upgrade_indexed_write_stays_consistent_with_store() {
         "INSERT (:Person {age: 5})",
         "adr0023_post_upgrade_insert",
     );
+    drain_maintenance_via_timer(&env, env.graph_source);
 
     // The index-served query must now observe BOTH vertices. Today it returns
     // only 1: the post-upgrade write emitted no posting (registry empty), so the
@@ -129,6 +131,7 @@ fn post_upgrade_indexed_edge_write_stays_consistent_with_store() {
         "INSERT (:Person)-[:KNOWS {weight: 7}]->(:Project)",
         "adr0023_pre_upgrade_edge_insert",
     );
+    drain_maintenance_via_timer(&env, env.graph_source);
     let before = gql_query_as_admin(&env, EDGE_QUERY);
     assert_eq!(
         before.row_count, 1,
@@ -145,6 +148,7 @@ fn post_upgrade_indexed_edge_write_stays_consistent_with_store() {
         "INSERT (:Person)-[:KNOWS {weight: 7}]->(:Project)",
         "adr0023_post_upgrade_edge_insert",
     );
+    drain_maintenance_via_timer(&env, env.graph_source);
 
     let after = gql_query_as_admin(&env, EDGE_QUERY);
     assert_eq!(
@@ -168,6 +172,7 @@ fn drop_index_purges_postings_from_graph_index() {
         "p7_create_index",
     );
     let _ = gql_execute_idempotent_as_admin(&env, "INSERT (:Person {age: 5})", "p7_insert");
+    drain_maintenance_via_timer(&env, env.graph_source);
 
     let age_value = value_to_index_key_bytes(&Value::Int64(5))
         .expect("encode age value")

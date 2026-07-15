@@ -1981,7 +1981,13 @@ pub fn test_declare_unique_constraint(
         )
         .unwrap_or_else(|e| panic!("test_declare_unique_constraint on router: {e:?}"));
     match Decode!(&bytes, Result<(), RouterError>) {
-        Ok(Ok(())) => {}
+        Ok(Ok(())) => {
+            // The declaration seam intentionally checks that the label is absent. Once the
+            // constraint exists, publish the normal GQL label/property catalog entries so later
+            // DML carries the declared ids.
+            admin_intern_vertex_label(env, label);
+            admin_intern_property(env, property);
+        }
         Ok(Err(err)) => panic!("test_declare_unique_constraint rejected: {err:?}"),
         Err(err) => panic!("decode test_declare_unique_constraint: {err:?}"),
     }
