@@ -52,17 +52,20 @@ reservation/confirmation, and recovery. Graph remains the owner of Graph-local
 canonical writes and Graph-local mutation idempotency. The batch endpoint is a
 transport and execution aggregation boundary, not a second journal owner.
 
-The batch has bounded item count, encoded request size, and encoded response
-size. It must reject an over-sized request before the first item is executed.
+The public fixed-page endpoint accepts up to 256 mutations. Router chunks each
+target Graph canister's operations into transport batches of at most 16 items;
+16 is not a public page-size limit. Each Graph batch has bounded encoded request
+and response sizes and rejects an over-sized request before the first item in
+that transport batch is executed.
 
 ## Implementation status
 
 Implemented. The public `gql_execute_idempotent_batch` endpoint now advances all
 items concurrently through Router planning and mutation-journal preparation.
 Prepared Graph operations rendezvous at the dispatch boundary and are grouped
-by target Graph canister, so a fixed page issues at most one bounded batch call
-per target canister (with smaller chunks when a target has more than 16
-operations). Early-completed items register an empty operation set, while
+by target Graph canister, so a fixed page issues bounded batch calls per target
+canister (with 16-item chunks when a target has more operations). Early-completed
+items register an empty operation set, while
 pre-dispatch errors abort the coordinator so remaining items do not wait
 indefinitely.
 

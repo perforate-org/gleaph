@@ -111,7 +111,7 @@ pub struct GqlExecuteIdempotentDynamicBatchArgs {
     pub start_index: u32,
     /// `0` selects the Router default safety budget below the IC update-call limit.
     pub instruction_budget: u64,
-    /// Maximum number of mutations this ingress call may consume. `0` selects the API default.
+    /// Maximum number of mutations this ingress call may consume. `0` means all remaining input.
     pub max_items: u32,
 }
 

@@ -10,10 +10,10 @@ const seedsPath = process.argv[2]
   : join(root, "seeds/knowledge-map-seeds.json");
 const canisterName = process.argv[3] ?? "gleaph-router";
 const methodName = process.argv[4] ?? "gql_execute_idempotent_batch";
-const pageSize = Number(process.env.SEED_PAGE_SIZE ?? process.argv[5] ?? "16");
+const pageSize = Number(process.env.SEED_PAGE_SIZE ?? process.argv[5] ?? "256");
 
-if (!Number.isInteger(pageSize) || pageSize <= 0 || pageSize > 16) {
-  throw new Error("SEED_PAGE_SIZE/page size must be an integer between 1 and 16");
+if (!Number.isInteger(pageSize) || pageSize <= 0 || pageSize > 256) {
+  throw new Error("SEED_PAGE_SIZE/page size must be an integer between 1 and 256");
 }
 
 const seeds = JSON.parse(readFileSync(seedsPath, "utf8")).seeds;

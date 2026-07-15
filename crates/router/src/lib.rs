@@ -72,8 +72,8 @@ const MAX_DYNAMIC_INSTRUCTION_BUDGET: u64 =
     MAX_UPDATE_CALL_INSTRUCTIONS - DYNAMIC_INSTRUCTION_HEADROOM;
 const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
 const MAX_DYNAMIC_ITEMS: u32 = 256;
-const DEFAULT_DYNAMIC_ITEMS: u32 = 64;
 const MAX_BATCH_WAVE_ITEMS: usize = 16;
+const MAX_PUBLIC_BATCH_ITEMS: usize = 256;
 
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
@@ -321,7 +321,7 @@ async fn gql_execute_idempotent(
 async fn gql_execute_idempotent_batch(
     args: types::GqlExecuteIdempotentBatchArgs,
 ) -> Result<Vec<gleaph_graph_kernel::plan_exec::GqlQueryResult>, RouterError> {
-    const MAX_BATCH_ITEMS: usize = 16;
+    const MAX_BATCH_ITEMS: usize = MAX_PUBLIC_BATCH_ITEMS;
     if args.mutations.is_empty() {
         return Err(RouterError::InvalidArgument(
             "gql_execute_idempotent_batch requires at least one mutation".into(),
@@ -377,7 +377,7 @@ async fn gql_execute_idempotent_dynamic_batch(
         )));
     }
     let max_items = match args.max_items {
-        0 => DEFAULT_DYNAMIC_ITEMS,
+        0 => MAX_DYNAMIC_ITEMS,
         value if value <= MAX_DYNAMIC_ITEMS => value,
         value => {
             return Err(RouterError::InvalidArgument(format!(
