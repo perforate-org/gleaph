@@ -37,7 +37,7 @@ use crate::federation::{
     collect_label_intersection_hits_for_shards, empty_execute_plan_result,
     federated_dispatch_plan_blob, federated_merge_mode_from_plans,
     gql_query_result_from_label_live_count, gql_query_result_from_posting_counts,
-    merge_execute_plan_result, packed_vertices_exceed_fast_path_budget,
+    group_dispatches_by_graph, merge_execute_plan_result, packed_vertices_exceed_fast_path_budget,
     posting_hits_exceed_fast_path_budget, routings_to_dispatches, sharding_policy_for,
     split_label_and_property_anchors, try_aggregate_index_fast_path,
     try_label_count_telemetry_fast_path, vertex_label_live_count,
@@ -1652,17 +1652,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     // Aggregate only dispatches targeting the same Graph canister. The batch endpoint returns one
     // outcome per operation, so the existing per-shard journal/recovery logic below remains the
     // source of truth for mutation lifecycle transitions.
-    let mut dispatch_groups: Vec<Vec<ShardDispatch>> = Vec::new();
-    for dispatch in dispatches {
-        if let Some(group) = dispatch_groups
-            .iter_mut()
-            .find(|group| group[0].graph_canister == dispatch.graph_canister)
-        {
-            group.push(dispatch);
-        } else {
-            dispatch_groups.push(vec![dispatch]);
-        }
-    }
+    let dispatch_groups = group_dispatches_by_graph(dispatches);
     let build_execute_args =
         |dispatch: &ShardDispatch| gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
             target_shard_id: dispatch.shard_id,

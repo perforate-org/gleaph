@@ -133,3 +133,62 @@ pub fn routings_to_dispatches(routings: Vec<SeedRouting>) -> Vec<ShardDispatch> 
         })
         .collect()
 }
+
+/// Group dispatches by Graph canister while preserving first-seen group and item order.
+///
+/// A group is the unit sent through `execute_plan_update_batch`; groups must not cross canister
+/// boundaries because Graph-local execution and authorization are owned by the target canister.
+pub fn group_dispatches_by_graph(dispatches: Vec<ShardDispatch>) -> Vec<Vec<ShardDispatch>> {
+    let mut groups: Vec<Vec<ShardDispatch>> = Vec::new();
+    for dispatch in dispatches {
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group[0].graph_canister == dispatch.graph_canister)
+        {
+            group.push(dispatch);
+        } else {
+            groups.push(vec![dispatch]);
+        }
+    }
+    groups
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dispatch(shard_id: u32, graph_canister: Principal) -> ShardDispatch {
+        ShardDispatch {
+            shard_id: ShardId::new(shard_id),
+            graph_canister,
+            seed_bindings_blob: None,
+            resolved_search_blob: None,
+        }
+    }
+
+    #[test]
+    fn group_dispatches_preserves_order_and_never_crosses_graph_boundary() {
+        let first = Principal::from_slice(&[1]);
+        let second = Principal::from_slice(&[2]);
+        let groups = group_dispatches_by_graph(vec![
+            dispatch(7, first),
+            dispatch(3, second),
+            dispatch(9, first),
+        ]);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0]
+                .iter()
+                .map(|item| item.shard_id)
+                .collect::<Vec<_>>(),
+            vec![ShardId::new(7), ShardId::new(9)]
+        );
+        assert_eq!(groups[1][0].shard_id, ShardId::new(3));
+        assert!(groups.iter().all(|group| {
+            group
+                .iter()
+                .all(|item| item.graph_canister == group[0].graph_canister)
+        }));
+    }
+}
