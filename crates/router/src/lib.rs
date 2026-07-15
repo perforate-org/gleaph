@@ -317,12 +317,8 @@ async fn gql_execute_idempotent_batch(
     let mut results = Vec::with_capacity(args.mutations.len());
     for mutation in args.mutations {
         results.push(
-            gql::gql_execute_idempotent(
-                mutation.gql_query,
-                mutation.params,
-                mutation.mutation_key,
-            )
-            .await?,
+            gql::gql_execute_idempotent(mutation.gql_query, mutation.params, mutation.mutation_key)
+                .await?,
         );
     }
     Ok(results)

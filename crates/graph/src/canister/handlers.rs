@@ -10,12 +10,13 @@ use crate::index::lookup::PropertyIndexLookup;
 #[cfg(not(target_family = "wasm"))]
 use crate::index::router::verify_shard_attachment;
 use crate::plan_wire_guard::ensure_federated_seeds_for_index_anchors;
-use candid::Decode;
+use candid::{Decode, Encode};
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, ResolvedSearchWire, SeedBindingsWire,
+    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchResult, ExecutePlanResult,
+    GqlExecutionMode, ResolvedSearchWire, SeedBindingsWire,
 };
 
 use super::types::GraphInitArgs;
@@ -127,6 +128,54 @@ pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResu
 pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Update, "execute_plan_update")?;
     execute_plan_impl(args).await
+}
+
+pub async fn execute_plan_update_batch(
+    args: ExecutePlanBatchArgs,
+) -> Result<ExecutePlanBatchResult, String> {
+    execute_plan_batch(args, "execute_plan_update_batch").await
+}
+
+async fn execute_plan_batch(
+    args: ExecutePlanBatchArgs,
+    entrypoint: &str,
+) -> Result<ExecutePlanBatchResult, String> {
+    if args.operations.is_empty() {
+        return Err(format!("{entrypoint} requires at least one operation"));
+    }
+    const MAX_OPERATIONS: usize = 16;
+    if args.operations.len() > MAX_OPERATIONS {
+        return Err(format!(
+            "{entrypoint} accepts at most {MAX_OPERATIONS} operations"
+        ));
+    }
+    const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+    let request_bytes =
+        Encode!(&args).map_err(|err| format!("{entrypoint} request encode failed: {err}"))?;
+    if request_bytes.len() > MAX_REQUEST_BYTES {
+        return Err(format!(
+            "{entrypoint} request exceeds {MAX_REQUEST_BYTES} encoded bytes"
+        ));
+    }
+    let mut results = Vec::with_capacity(args.operations.len());
+    for operation in args.operations {
+        results.push(
+            match ensure_execution_mode(operation.mode, GqlExecutionMode::Update, entrypoint) {
+                Ok(()) => execute_plan_impl(operation).await,
+                Err(err) => Err(err),
+            },
+        );
+    }
+    let result = ExecutePlanBatchResult { results };
+    const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+    let response_bytes =
+        Encode!(&result).map_err(|err| format!("{entrypoint} response encode failed: {err}"))?;
+    if response_bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(format!(
+            "{entrypoint} response exceeds {MAX_RESPONSE_BYTES} encoded bytes"
+        ));
+    }
+    Ok(result)
 }
 
 async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {

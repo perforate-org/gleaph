@@ -43,9 +43,9 @@ use crate::federation::{
     try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
 use crate::graph_client::{
-    ack_label_stats_deltas_through, ack_unique_effects, execute_plan_on_graph,
-    get_mutation_journal_entry, index_pending_min_mutation_id, list_pending_label_stats_deltas,
-    read_unique_effect_proof, read_unique_release_effects,
+    ack_label_stats_deltas_through, ack_unique_effects, execute_plan_batch_on_graph,
+    execute_plan_on_graph, get_mutation_journal_entry, index_pending_min_mutation_id,
+    list_pending_label_stats_deltas, read_unique_effect_proof, read_unique_release_effects,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -1649,34 +1649,94 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     #[cfg(feature = "pocket-ic-e2e")]
     crate::test_fault::maybe_trap_after_try();
 
+    // Aggregate only dispatches targeting the same Graph canister. The batch endpoint returns one
+    // outcome per operation, so the existing per-shard journal/recovery logic below remains the
+    // source of truth for mutation lifecycle transitions.
+    let mut dispatch_groups: Vec<Vec<ShardDispatch>> = Vec::new();
+    for dispatch in dispatches {
+        if let Some(group) = dispatch_groups
+            .iter_mut()
+            .find(|group| group[0].graph_canister == dispatch.graph_canister)
+        {
+            group.push(dispatch);
+        } else {
+            dispatch_groups.push(vec![dispatch]);
+        }
+    }
+    let build_execute_args =
+        |dispatch: &ShardDispatch| gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
+            target_shard_id: dispatch.shard_id,
+            element_id_encoding_key,
+            mutation_id,
+            plan_blob: dispatch_plan_blob.clone(),
+            params_blob: params.to_vec(),
+            mode,
+            seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
+            resolved_labels: Some(resolved_labels.clone()),
+            resolved_properties: Some(resolved_properties.clone()),
+            indexed_properties: Some(indexed_properties.clone()),
+            unique_claims: dispatch_unique_claims.clone(),
+            constrained_properties: dispatch_constrained_properties.clone(),
+            local_unique_claims: dispatch_local_unique_claims.clone(),
+            local_constrained_properties: dispatch_local_constrained_properties.clone(),
+            indexed_embeddings: Some(indexed_embeddings.clone()),
+            resolved_search_blob: dispatch.resolved_search_blob.clone(),
+        };
+    let mut dispatch_results: Vec<Option<(ShardDispatch, Result<ExecutePlanResult, String>)>> = (0
+        ..dispatch_groups.iter().map(Vec::len).sum())
+        .map(|_| None)
+        .collect();
+    let mut dispatch_offset = 0;
+    for group in dispatch_groups {
+        let group_len = group.len();
+        let group_graph = group[0].graph_canister;
+        if mode == GqlExecutionMode::Query || group_len == 1 {
+            let dispatch = group.into_iter().next().expect("single dispatch group");
+            let result = execute_plan_on_graph(group_graph, build_execute_args(&dispatch)).await;
+            dispatch_results[dispatch_offset] = Some((dispatch, result));
+        } else {
+            let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
+                operations: group.iter().map(build_execute_args).collect(),
+            };
+            match execute_plan_batch_on_graph(group_graph, args).await {
+                Ok(batch) if batch.results.len() == group_len => {
+                    for (slot, (dispatch, result)) in
+                        group.into_iter().zip(batch.results.into_iter()).enumerate()
+                    {
+                        dispatch_results[dispatch_offset + slot] = Some((dispatch, result));
+                    }
+                }
+                Ok(batch) => {
+                    let err = format!(
+                        "graph batch returned {} results for {} operations",
+                        batch.results.len(),
+                        group_len
+                    );
+                    for (slot, dispatch) in group.into_iter().enumerate() {
+                        dispatch_results[dispatch_offset + slot] =
+                            Some((dispatch, Err(err.clone())));
+                    }
+                }
+                Err(err) => {
+                    for (slot, dispatch) in group.into_iter().enumerate() {
+                        dispatch_results[dispatch_offset + slot] =
+                            Some((dispatch, Err(err.clone())));
+                    }
+                }
+            }
+        }
+        dispatch_offset += group_len;
+    }
+
     let mut merged = empty_execute_plan_result();
     // ADR 0029 Phase 2: accumulate per-shard read-your-writes watermarks for the mutation
     // token as each shard completes (built live so it survives record compaction).
     let mut token_shards: Vec<MutationTokenShard> = Vec::new();
-    for dispatch in dispatches {
-        let result = match execute_plan_on_graph(
-            dispatch.graph_canister,
-            gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
-                target_shard_id: dispatch.shard_id,
-                element_id_encoding_key,
-                mutation_id,
-                plan_blob: dispatch_plan_blob.clone(),
-                params_blob: params.to_vec(),
-                mode,
-                seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
-                resolved_labels: Some(resolved_labels.clone()),
-                resolved_properties: Some(resolved_properties.clone()),
-                indexed_properties: Some(indexed_properties.clone()),
-                unique_claims: dispatch_unique_claims.clone(),
-                constrained_properties: dispatch_constrained_properties.clone(),
-                local_unique_claims: dispatch_local_unique_claims.clone(),
-                local_constrained_properties: dispatch_local_constrained_properties.clone(),
-                indexed_embeddings: Some(indexed_embeddings.clone()),
-                resolved_search_blob: dispatch.resolved_search_blob.clone(),
-            },
-        )
-        .await
-        {
+    for (dispatch, result) in dispatch_results
+        .into_iter()
+        .map(|entry| entry.expect("dispatch result populated"))
+    {
+        let result = match result {
             Ok(result) => result,
             Err(err) => {
                 if let Some(mutation_id) = mutation_id

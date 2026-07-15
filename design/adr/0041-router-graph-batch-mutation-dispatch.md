@@ -1,6 +1,6 @@
 # ADR 0041: Router-to-Graph batch mutation dispatch
 
-Status: Planned
+Status: Partially Implemented
 
 ## Context
 
@@ -54,6 +54,19 @@ transport and execution aggregation boundary, not a second journal owner.
 
 The batch has bounded item count, encoded request size, and encoded response
 size. It must reject an over-sized request before the first item is executed.
+
+## Implementation status
+
+The Graph boundary now exposes `execute_plan_update_batch`, with bounded item
+count and ordered per-item `Result` values. Graph executes each item
+sequentially while retaining the existing item-local journal and atomicity
+boundary. Router can aggregate update dispatches targeting the same Graph
+canister and preserves the existing per-item recovery path.
+
+The public `gql_execute_idempotent_batch` raw-GQL endpoint still performs
+per-item planning and dispatch. Wiring its page-wide prepared envelopes into
+the Graph batch boundary is a follow-up step, so this ADR does not yet claim
+one Graph call for every fixed-page seed.
 
 ## Alternatives
 

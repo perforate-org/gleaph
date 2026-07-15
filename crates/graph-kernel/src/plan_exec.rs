@@ -84,6 +84,22 @@ pub struct ExecutePlanArgs {
     pub resolved_search_blob: Option<Vec<u8>>,
 }
 
+/// A bounded group of independent plan executions sent in one Router → Graph call.
+///
+/// Each item retains its own mutation identity and execution payload. The Graph executes items
+/// independently; this type is a transport aggregation only and does not make the group atomic.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ExecutePlanBatchArgs {
+    pub operations: Vec<ExecutePlanArgs>,
+}
+
+/// Per-item outcomes for [`ExecutePlanBatchArgs`]. Keeping the result at item granularity lets the
+/// Router continue its existing saga/recovery handling after a later item fails.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ExecutePlanBatchResult {
+    pub results: Vec<Result<ExecutePlanResult, String>>,
+}
+
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
 ///
 /// `claim_ordinal` is the claim's deterministic position within the mutation; combined with the
@@ -546,6 +562,24 @@ mod tests {
         };
         let bytes = Encode!(&result).expect("encode");
         let decoded: ExecutePlanResult = Decode!(&bytes, ExecutePlanResult).expect("decode");
+        assert_eq!(result, decoded);
+    }
+
+    #[test]
+    fn execute_plan_batch_result_roundtrip_preserves_ordered_partial_outcomes() {
+        let result = ExecutePlanBatchResult {
+            results: vec![
+                Ok(ExecutePlanResult {
+                    row_count: 3,
+                    rows_blob: None,
+                    hot_forward_vertices: vec![9],
+                }),
+                Err("item failed".to_string()),
+            ],
+        };
+        let bytes = Encode!(&result).expect("encode");
+        let decoded: ExecutePlanBatchResult =
+            Decode!(&bytes, ExecutePlanBatchResult).expect("decode");
         assert_eq!(result, decoded);
     }
 

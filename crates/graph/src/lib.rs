@@ -78,6 +78,13 @@ async fn execute_plan_update(
     canister::handlers::execute_plan_update(args).await
 }
 
+#[update(guard = "guard_router_canister")]
+async fn execute_plan_update_batch(
+    args: gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs,
+) -> Result<gleaph_graph_kernel::plan_exec::ExecutePlanBatchResult, String> {
+    canister::handlers::execute_plan_update_batch(args).await
+}
+
 #[query(guard = "guard_router_canister")]
 fn list_pending_label_stats_deltas(
     from_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq,

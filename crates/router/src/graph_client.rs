@@ -5,8 +5,8 @@ use gleaph_graph_kernel::federation::{
     BulkIngestFinalizeArgs, BulkIngestFinalizeResult, PostingBackfillArgs, PostingBackfillResult,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanResult, GraphMutationJournalEntryWire, LabelStatsDeltaEventWire,
-    MutationId, ShardEventSeq,
+    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchResult, ExecutePlanResult,
+    GraphMutationJournalEntryWire, LabelStatsDeltaEventWire, MutationId, ShardEventSeq,
 };
 
 #[cfg(target_family = "wasm")]
@@ -100,6 +100,17 @@ pub async fn execute_plan_on_graph(
         gleaph_graph_kernel::plan_exec::GqlExecutionMode::Query => "execute_plan_query",
         gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update => "execute_plan_update",
     };
+    call_graph_result(graph, method, args).await
+}
+
+pub async fn execute_plan_batch_on_graph(
+    graph: Principal,
+    args: ExecutePlanBatchArgs,
+) -> Result<ExecutePlanBatchResult, String> {
+    if args.operations.is_empty() {
+        return Err("graph batch requires at least one operation".to_string());
+    }
+    let method = "execute_plan_update_batch";
     call_graph_result(graph, method, args).await
 }
 
