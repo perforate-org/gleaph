@@ -48,6 +48,8 @@ const enDictionary = {
     "Gleaph expresses eligibility and ranking in one query: `Alice → FOLLOWS → author → POSTED → Post` plus vector `SEARCH`. Dave's nearer post is excluded because he is not a followee, while eligible posts are ranked by semantic distance. The point is composable relationship filtering, not that graphs replace vector indexes.",
   "feed.loading": "Loading scenario through Gateway…",
   "feed.empty": "No posts returned for this scenario.",
+  "feed.replyingTo": "Replying to {{author}}",
+  "feed.unknownAuthor": "the original author",
   "feed.errorTitle": "Scenario failed",
   "feed.gatewayNotConfigured":
     "Social demo Gateway canister id is not configured. The asset canister should inject PUBLIC_CANISTER_ID:gleaph-social-demo-gateway, or set VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID for local development.",
@@ -136,6 +138,8 @@ const jaDictionary: Record<TranslationKey, string> = {
     "Gleaph は `Alice → FOLLOWS → author → POSTED → Post` という対象条件とベクトル `SEARCH` を1つのクエリで表します。デイブはフォロー先ではないため距離が近くても除外され、対象となる投稿だけが意味距離順に返ります。グラフがベクトルインデックスを置き換えるのではなく、関係性の条件と検索を組み合わせる例です。",
   "feed.loading": "Gateway からシナリオを読み込んでいます…",
   "feed.empty": "このシナリオでは投稿が返されませんでした。",
+  "feed.replyingTo": "{{author}}への返信",
+  "feed.unknownAuthor": "元の投稿者",
   "feed.errorTitle": "シナリオに失敗しました",
   "feed.gatewayNotConfigured":
     "ソーシャルデモの Gateway canister ID が設定されていません。アセット canister から PUBLIC_CANISTER_ID:gleaph-social-demo-gateway を注入するか、ローカル開発では VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID を設定してください。",

@@ -1,0 +1,8 @@
+id: emi
+name: えみ
+bio: パン屋さん巡りと、見つけた映画のメモ。
+follows:
+  - akari
+  - mei
+  - yui
+memberships: []

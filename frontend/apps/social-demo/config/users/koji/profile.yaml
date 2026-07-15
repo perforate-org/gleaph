@@ -1,0 +1,8 @@
+id: koji
+name: こうじ
+bio: 音楽を聴きながら料理しています。辛いものが好き。
+follows:
+  - takumi
+  - ren
+  - yui
+memberships: []

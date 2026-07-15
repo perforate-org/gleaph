@@ -55,7 +55,7 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
         "Try to match another pattern, but keep the row even if the optional pattern does not exist.",
     },
     {
-      queryText: "(p)-[:REPLY_TO]->(parent:Post)",
+      queryText: "(p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User)",
       label: "Reply relationship",
       description:
         "Optionally find the parent post when the current post is a reply. If there is no reply, the parent fields will be null.",
@@ -74,6 +74,21 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       queryText: "parent.demo_id AS parent_post_id",
       label: "Parent id column",
       description: "Expose the parent post's id, or null when the post is not a reply.",
+    },
+    {
+      queryText: "parent_author.name AS parent_author_name",
+      label: "Parent author column",
+      description: "Return the author of the parent post when the current post is a reply.",
+    },
+    {
+      queryText: "parent.body AS parent_body",
+      label: "Parent body column",
+      description: "Return the parent post body for replies whose parent is outside the visible result set.",
+    },
+    {
+      queryText: "parent.created_at AS parent_created_at",
+      label: "Parent timestamp column",
+      description: "Return the parent post timestamp when available.",
     },
     {
       queryText: "author.name AS author_name",
@@ -148,7 +163,7 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
         "Try to match another pattern, but keep the row even if the optional pattern does not exist.",
     },
     {
-      queryText: "(p)-[:REPLY_TO]->(parent:Post)",
+      queryText: "(p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User)",
       label: "Reply relationship",
       description:
         "Optionally find the parent post when the current post is a reply. If there is no reply, the parent fields will be null.",
@@ -167,6 +182,21 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       queryText: "parent.demo_id AS parent_post_id",
       label: "Parent id column",
       description: "Expose the parent post's id, or null when the post is not a reply.",
+    },
+    {
+      queryText: "parent_author.name AS parent_author_name",
+      label: "Parent author column",
+      description: "Return the author of the parent post when the current post is a reply.",
+    },
+    {
+      queryText: "parent.body AS parent_body",
+      label: "Parent body column",
+      description: "Return the parent post body for replies whose parent is outside the visible result set.",
+    },
+    {
+      queryText: "parent.created_at AS parent_created_at",
+      label: "Parent timestamp column",
+      description: "Return the parent post timestamp when available.",
     },
     {
       queryText: "author.name AS author_name",

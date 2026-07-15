@@ -122,6 +122,14 @@ export const expectText = (map: Map<string, WireValue>, column: string): string 
   throw new Error(`Missing or non-text column: ${column}`);
 };
 
+export const optionalText = (map: Map<string, WireValue>, column: string): string | undefined => {
+  const value = map.get(column);
+  if (!value || "Null" in value) return undefined;
+  if ("Text" in value) return value.Text;
+  if ("Bytes" in value) return bytesToHex(value.Bytes);
+  throw new Error(`Non-text optional column: ${column}`);
+};
+
 const bytesToHex = (bytes: number[] | Uint8Array): string => {
   const arr = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
   return Array.from(arr)
@@ -171,6 +179,18 @@ export const optionalInt64 = (map: Map<string, WireValue>, column: string): bigi
     return value.Int64;
   }
   throw new Error(`Non-int64 optional column: ${column}`);
+};
+
+export const optionalDateTimeSeconds = (
+  map: Map<string, WireValue>,
+  column: string,
+): bigint | undefined => {
+  const value = map.get(column);
+  if (!value || "Null" in value) return undefined;
+  if ("DateTime" in value) return value.DateTime.seconds;
+  if ("Time" in value) return value.Time;
+  if ("Int64" in value) return value.Int64;
+  throw new Error(`Unsupported optional date column: ${column}`);
 };
 
 export const expectNat64 = (map: Map<string, WireValue>, column: string): bigint => {

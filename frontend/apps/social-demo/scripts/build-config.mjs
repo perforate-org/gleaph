@@ -201,12 +201,48 @@ for (const feedFile of sortedYamlFiles(feedsDir)) {
   feeds.push(doc);
 }
 
-// Sort posts by created_at descending (ties broken by file path) to keep the
-// same ordering as the original hand-maintained social-graph.json.
+// Start with a chronological order, then deterministically shuffle small recent
+// post windows. The seed graph is also the source of sequence numbers for
+// materialized feeds, so bounded shuffling keeps the feed mostly recent while
+// allowing natural-looking adjacent posts from the same author.
 posts.sort((a, b) => {
   if (b.createdAt !== a.createdAt) return b.createdAt - a.createdAt;
   return `${a.userId}/${a.fileStem}`.localeCompare(`${b.userId}/${b.fileStem}`);
 });
+
+const seedOrderWindowSize = 48;
+const mixedPosts = [];
+for (let start = 0; start < posts.length; start += seedOrderWindowSize) {
+  const window = posts.slice(start, start + seedOrderWindowSize);
+  window.sort((a, b) => {
+    const hashA = sha256Hex(`social-demo:seed-order:${a.id}`);
+    const hashB = sha256Hex(`social-demo:seed-order:${b.id}`);
+    return hashA.localeCompare(hashB);
+  });
+  mixedPosts.push(...window);
+}
+
+// Keep the deterministic shuffle from producing an implausible run of three
+// or more posts by the same author, while deliberately leaving pairs possible.
+for (let index = 2; index < mixedPosts.length; index += 1) {
+  const author = mixedPosts[index].userId;
+  if (
+    mixedPosts[index - 1].userId !== author ||
+    mixedPosts[index - 2].userId !== author
+  ) {
+    continue;
+  }
+  const replacement = mixedPosts.findIndex(
+    (post, candidate) => candidate > index && post.userId !== author,
+  );
+  if (replacement >= 0) {
+    [mixedPosts[index], mixedPosts[replacement]] = [
+      mixedPosts[replacement],
+      mixedPosts[index],
+    ];
+  }
+}
+posts.splice(0, posts.length, ...mixedPosts);
 
 // ---------------------------------------------------------------------------
 // Deterministic global numeric id allocator
@@ -396,15 +432,7 @@ for (const user of users) {
   }
 }
 
-const feedEdgeOrder = (a, b) => {
-  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-  return `${a.userId}/${a.fileStem}`.localeCompare(`${b.userId}/${b.fileStem}`);
-};
-
-const publicFeedPosts = posts
-  .filter((post) => post.isPublic)
-  .slice()
-  .sort(feedEdgeOrder);
+const publicFeedPosts = posts.slice().reverse().filter((post) => post.isPublic);
 for (const post of publicFeedPosts) {
   validateEndpoint(post.id, "post", `post-${post.id}-in-public-feed`);
   validateEndpoint(publicFeed.id, "feed", `post-${post.id}-in-public-feed`);
@@ -431,8 +459,13 @@ for (const post of posts) {
     });
   }
 }
+const feedOrderByPostId = new Map(
+  posts.map((post, index) => [post.id, index]),
+);
 homeFeedEntries.sort((a, b) => {
-  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+  const orderA = feedOrderByPostId.get(a.postId);
+  const orderB = feedOrderByPostId.get(b.postId);
+  if (orderA !== orderB) return orderB - orderA;
   return `${a.userId}/${a.fileStem}`.localeCompare(`${b.userId}/${b.fileStem}`);
 });
 

@@ -12,6 +12,8 @@ import {
   expectInt64,
   expectText,
   optionalInt64,
+  optionalDateTimeSeconds,
+  optionalText,
   rowToColumnMap,
 } from "~/api/rowDecoder";
 import {
@@ -68,6 +70,9 @@ const decodeFeedResult = (definition: ScenarioDefinition, rowsBlob: Uint8Array):
         kind: "post",
         postId,
         parentPostId: optionalInt64(map, "parent_post_id"),
+        parentAuthorName: optionalText(map, "parent_author_name"),
+        parentBody: optionalText(map, "parent_body"),
+        parentCreatedAt: optionalDateTimeSeconds(map, "parent_created_at"),
         authorName: expectText(map, "author_name"),
       body: expectText(map, "body"),
       createdAt: expectDateTimeSeconds(map, "created_at"),

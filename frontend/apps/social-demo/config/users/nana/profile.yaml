@@ -1,0 +1,8 @@
+id: nana
+name: なな
+bio: 仕事のことは少なめ。カフェと猫の話が多いです。
+follows:
+  - mei
+  - akari
+  - sora
+memberships: []

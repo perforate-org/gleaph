@@ -5,6 +5,9 @@ export type FeedRow =
       kind: "post";
       postId: bigint;
       parentPostId?: bigint;
+      parentAuthorName?: string;
+      parentBody?: string;
+      parentCreatedAt?: bigint;
       authorName: string;
       body: string;
       createdAt: bigint;
@@ -38,4 +41,5 @@ export type FeedItemProps = {
   row: FeedRow;
   definition: ScenarioDefinition;
   formatDate: (seconds: bigint) => string;
+  showParentPreview?: boolean;
 };

@@ -37,10 +37,18 @@ export function ReplyTree(props: {
   definition: ScenarioDefinition;
   formatDate: (seconds: bigint) => string;
 }) {
+  const visiblePostIds = new Set(props.rows.map((row) => row.postId));
   return (
     <div class="space-y-4">
       <For each={buildReplyForest(props.rows)}>
-        {(node) => <ReplyBranch node={node} definition={props.definition} formatDate={props.formatDate} />}
+        {(node) => (
+          <ReplyBranch
+            node={node}
+            definition={props.definition}
+            formatDate={props.formatDate}
+            showParentPreview={node.row.parentPostId !== undefined && !visiblePostIds.has(node.row.parentPostId)}
+          />
+        )}
       </For>
     </div>
   );
@@ -50,10 +58,16 @@ function ReplyBranch(props: {
   node: ReplyNode;
   definition: ScenarioDefinition;
   formatDate: (seconds: bigint) => string;
+  showParentPreview?: boolean;
 }) {
   return (
     <div>
-      <FeedItem row={props.node.row} definition={props.definition} formatDate={props.formatDate} />
+      <FeedItem
+        row={props.node.row}
+        definition={props.definition}
+        formatDate={props.formatDate}
+        showParentPreview={props.showParentPreview}
+      />
       <Show when={props.node.replies.length > 0}>
         <div class="ml-5 border-l-2 border-indigo-100 pl-3 pt-3 sm:ml-8">
           <For each={props.node.replies}>

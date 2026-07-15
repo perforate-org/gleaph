@@ -3,7 +3,7 @@ import { useI18n } from "~/i18n";
 import type { FeedItemProps } from "~/types";
 
 export function FeedItem(props: FeedItemProps) {
-  const { row, definition, formatDate } = props;
+  const { row, definition, formatDate, showParentPreview = false } = props;
   const { t } = useI18n();
 
   return (
@@ -22,6 +22,14 @@ export function FeedItem(props: FeedItemProps) {
               <span class="text-sm text-slate-500"> {t("feed.l2Distance")}</span>
             )}
           </div>
+          {row.kind === "post" && showParentPreview && row.parentBody !== undefined && (
+            <div class="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+              <div class="text-xs font-medium text-slate-500">
+                {t("feed.replyingTo", { author: row.parentAuthorName ?? t("feed.unknownAuthor") })}
+              </div>
+              <p class="mt-1 text-slate-700">{row.parentBody}</p>
+            </div>
+          )}
           <p class="mt-1 text-base text-slate-900">{row.body}</p>
 
           {row.kind === "semanticPost" && (
