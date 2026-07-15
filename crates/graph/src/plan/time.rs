@@ -7,7 +7,9 @@
 //! unavailable in the canister environment.
 
 use gleaph_gql::Value;
-use jiff::{Zoned, civil};
+#[cfg(not(target_family = "wasm"))]
+use jiff::Zoned;
+use jiff::civil;
 #[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
