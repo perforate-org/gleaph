@@ -16,7 +16,7 @@ use gleaph_graph_kernel::vector_index::{
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, e2e_insert_vertex, gql_query_with_params_as_admin,
-    install_single_shard_federation, install_vector_canister,
+    install_single_shard_federation, install_vector_canister, wasm_bytes,
 };
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingArgs, RegisterVectorIndexArgs,
@@ -260,6 +260,18 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
         ),
         "projection should be applied on activated index"
     );
+
+    // The ingestion path uses the Graph → vector-index sync boundary. The vector canister owns
+    // the durable derived state, so an upgrade after the batch has been acknowledged must not
+    // erase the searchable embedding.
+    env.pic
+        .upgrade_canister(
+            vector,
+            wasm_bytes("VECTOR_INDEX_WASM"),
+            Encode!(&()).expect("encode vector upgrade args"),
+            None,
+        )
+        .expect("upgrade vector-index canister");
 
     let search = router_vector_search(&env, 6.0, 10);
     assert!(
