@@ -695,8 +695,8 @@ dispatch grouping changes.
 The vector pending queue is likewise heap-only until a flush or maintenance pass journalizes it;
 an upgrade before that boundary is not a replayable vector-index failure.
 Plan 0088 has added the durable outbox storage primitive and connects Router→Graph wire-DML vector
-handoff to it; maintenance drains bounded entries through the existing vector-aware repair
-dispatcher. DML-only ad-hoc/native blocks now use the outbox; DML followed by an in-block read
+handoff to it; maintenance passes the durable vector suffix to the vector batch endpoint, which
+owns its instruction budget and returns partial progress. DML-only ad-hoc/native blocks now use the outbox; DML followed by an in-block read
 retains the legacy flush boundary for read-after-write visibility.
 
 Derived vector-index lag follows the same high-level rule as other derived indexes: canonical graph

@@ -31,10 +31,6 @@ use gleaph_graph_kernel::index::IndexPostingMutation;
 use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
 use ic_stable_lara::VertexId;
 
-/// Max journal entries re-applied per tick; bounds per-message cross-canister
-/// work. Remaining entries drain on subsequent ticks.
-const REPAIR_DRAIN_BATCH: usize = 128;
-
 /// `embedding_version` stamped on a reconcile-driven remove when the canonical
 /// store no longer owns the subject. The journaled op's own version cannot be
 /// trusted: it may be *older* than a newer live slot of the **same incarnation**
@@ -55,9 +51,10 @@ enum ApplyOutcome {
     Skipped,
 }
 
-/// Re-applies up to [`REPAIR_DRAIN_BATCH`] oldest journal entries, removing each
-/// applied entry. Stops (returning the error) at the first failed re-application
-/// so the offending and following entries stay durable for the next tick.
+/// Re-applies the oldest durable prefix, removing each applied entry. The downstream
+/// index/vector canister owns the per-call instruction budget and returns partial
+/// progress when that budget is reached; the durable queue retains the unacknowledged
+/// suffix for the next maintenance pass.
 /// Skipped entries (e.g. a vector op with no vector client) are left durable but
 /// do not stop the drain.
 pub(crate) async fn drain_once(
@@ -115,7 +112,12 @@ async fn drain_queue(
         return Ok(());
     }
     let shard_id = ix.local_shard_id();
-    let entries = peek_queue(&store, queue, REPAIR_DRAIN_BATCH);
+    // Do not impose a second item-count budget here. The target canister has the authoritative
+    // instruction counter and returns the largest safe applied prefix for the current call.
+    // Passing the complete durable suffix lets one call consume that full target-side budget;
+    // the queue itself remains bounded by stable-memory capacity and is never acknowledged past
+    // the returned progress.
+    let entries = peek_queue(&store, queue, usize::MAX);
     let mut offset = 0usize;
     while offset < entries.len() {
         if matches!(entries[offset].1, RepairPostingOp::VectorEmbedding { .. }) {
@@ -606,6 +608,18 @@ mod tests {
             assert_eq!(index.batch_calls.load(Ordering::SeqCst), 1);
             assert!(graph.derived_index_outbox_is_empty());
             assert!(graph.repair_journal_is_empty());
+        });
+    }
+
+    #[test]
+    fn drain_batch_has_no_fixed_item_count_cap() {
+        with_routing(|graph| {
+            graph.derived_index_outbox_append(17, (0..129).map(vertex_insert));
+            let index = CountingIndex::batch();
+
+            pollster::block_on(drain_outbox_once(&index, None)).expect("drain succeeds");
+            assert_eq!(index.batch_calls.load(Ordering::SeqCst), 1);
+            assert!(graph.derived_index_outbox_is_empty());
         });
     }
 
