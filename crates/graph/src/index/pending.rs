@@ -532,6 +532,55 @@ mod tests {
     }
 
     #[test]
+    fn take_pending_as_repair_preserves_vertex_queue_order() {
+        let graph = GraphStore::new();
+        graph
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: ShardId::new(0),
+                vector_index_canister: None,
+            }))
+            .expect("set routing");
+        drain_test_journal(&graph);
+        clear_pending();
+        PENDING.with(|p| {
+            p.borrow_mut().extend([
+                PendingPostingOp::Insert {
+                    property_id: 1,
+                    payload_bytes: vec![10],
+                    vertex_id: 1,
+                },
+                PendingPostingOp::Remove {
+                    property_id: 1,
+                    payload_bytes: vec![11],
+                    vertex_id: 2,
+                },
+            ]);
+        });
+
+        assert_eq!(
+            take_pending_as_repair(),
+            vec![
+                RepairPostingOp::VertexProperty {
+                    remove: false,
+                    property_id: 1,
+                    payload_bytes: vec![10],
+                    vertex_id: 1,
+                },
+                RepairPostingOp::VertexProperty {
+                    remove: true,
+                    property_id: 1,
+                    payload_bytes: vec![11],
+                    vertex_id: 2,
+                },
+            ]
+        );
+        assert!(PENDING.with(|p| p.borrow().is_empty()));
+        graph.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
     fn flush_journals_full_batch_after_partial_insert_failure() {
         let index = FlakyIndex::new(2);
         let graph = GraphStore::new();

@@ -375,6 +375,8 @@ mod tests {
     struct CountingIndex {
         fail_insert_at: usize,
         inserts: AtomicUsize,
+        batch_calls: AtomicUsize,
+        supports_batch: bool,
     }
 
     impl CountingIndex {
@@ -382,12 +384,40 @@ mod tests {
             Self {
                 fail_insert_at,
                 inserts: AtomicUsize::new(0),
+                batch_calls: AtomicUsize::new(0),
+                supports_batch: false,
+            }
+        }
+
+        fn batch() -> Self {
+            Self {
+                fail_insert_at: 0,
+                inserts: AtomicUsize::new(0),
+                batch_calls: AtomicUsize::new(0),
+                supports_batch: true,
             }
         }
     }
 
     #[async_trait(?Send)]
     impl PropertyIndexLookup for CountingIndex {
+        fn supports_posting_batch(&self) -> bool {
+            self.supports_batch
+        }
+
+        async fn posting_batch_at(
+            &self,
+            _shard_id: ShardId,
+            operations: Vec<gleaph_graph_kernel::index::IndexPostingMutation>,
+        ) -> Result<gleaph_graph_kernel::index::IndexPostingBatchProgress, PlanQueryError> {
+            self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(gleaph_graph_kernel::index::IndexPostingBatchProgress {
+                applied: operations.len() as u32,
+                next_index: None,
+                instruction_budget_exhausted: false,
+            })
+        }
+
         async fn lookup_equal(
             &self,
             _property_id: u32,
@@ -495,6 +525,21 @@ mod tests {
             let index = CountingIndex::new(0);
             pollster::block_on(drain_once(&index, None)).expect("drain succeeds");
             assert_eq!(index.inserts.load(Ordering::SeqCst), 3);
+            assert!(graph.repair_journal_is_empty());
+        });
+    }
+
+    #[test]
+    fn drain_coalesces_a_compatible_repair_tail_into_one_batch_call() {
+        with_routing(|graph| {
+            graph.repair_journal_append(0, [vertex_insert(1), vertex_insert(2)]);
+            // This models the maintenance driver's newer pending work appended after the older
+            // durable journal tail. The drain must preserve that order while using one batch call.
+            graph.repair_journal_append(0, [vertex_insert(3), vertex_insert(4)]);
+            let index = CountingIndex::batch();
+
+            pollster::block_on(drain_once(&index, None)).expect("drain succeeds");
+            assert_eq!(index.batch_calls.load(Ordering::SeqCst), 1);
             assert!(graph.repair_journal_is_empty());
         });
     }

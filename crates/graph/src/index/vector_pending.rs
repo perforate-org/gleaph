@@ -225,6 +225,20 @@ mod tests {
     }
 
     #[test]
+    fn take_pending_as_repair_preserves_vector_fence() {
+        with_routing(|_| {
+            let op = upsert_op(7, 3);
+            PENDING.with(|p| p.borrow_mut().push(op.clone()));
+
+            assert_eq!(
+                take_pending_as_repair(),
+                vec![RepairPostingOp::VectorEmbedding { op }]
+            );
+            assert!(PENDING.with(|p| p.borrow().is_empty()));
+        });
+    }
+
+    #[test]
     fn flush_delivers_all_ops_in_order() {
         with_routing(|graph| {
             let vx = FlakyVectorIndex::new(0);
