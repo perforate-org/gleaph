@@ -66,6 +66,25 @@ use ic_cdk_macros::{init, post_upgrade, query, update};
 use crate::provisioning::sender::send_accept_envelope;
 use crate::types::RouterOutboundError;
 
+const MAX_UPDATE_CALL_INSTRUCTIONS: u64 = 40_000_000_000;
+const DYNAMIC_INSTRUCTION_HEADROOM: u64 = 5_000_000_000;
+const MAX_DYNAMIC_INSTRUCTION_BUDGET: u64 =
+    MAX_UPDATE_CALL_INSTRUCTIONS - DYNAMIC_INSTRUCTION_HEADROOM;
+const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
+const MAX_DYNAMIC_ITEMS: u32 = 256;
+const DEFAULT_DYNAMIC_ITEMS: u32 = 64;
+const MAX_BATCH_WAVE_ITEMS: usize = 16;
+
+#[cfg(target_family = "wasm")]
+fn current_instruction_counter() -> u64 {
+    ic_cdk::api::call_context_instruction_counter()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn current_instruction_counter() -> u64 {
+    0
+}
+
 #[init]
 fn init(args: RouterInitArgs) {
     canister::init(args);
@@ -329,6 +348,86 @@ async fn gql_execute_idempotent_batch(
         });
     let results = futures::future::join_all(futures).await;
     results.into_iter().collect()
+}
+
+/// Execute cursor-based idempotent mutations until the Router instruction budget is reached.
+///
+/// Each wave reuses the fixed batch coordinator and is independently partial-successful. A
+/// returned `next_index` is the only continuation signal; retrying the same cursor is safe because
+/// every item retains its original client mutation key.
+#[update]
+async fn gql_execute_idempotent_dynamic_batch(
+    args: types::GqlExecuteIdempotentDynamicBatchArgs,
+) -> Result<types::GqlExecuteIdempotentDynamicBatchResult, RouterError> {
+    let total = args.mutations.len() as u32;
+    if total == 0 {
+        return Err(RouterError::InvalidArgument(
+            "gql_execute_idempotent_dynamic_batch requires mutations".into(),
+        ));
+    }
+    if total > MAX_DYNAMIC_ITEMS {
+        return Err(RouterError::InvalidArgument(format!(
+            "gql_execute_idempotent_dynamic_batch accepts at most {MAX_DYNAMIC_ITEMS} mutations"
+        )));
+    }
+    if args.start_index >= total {
+        return Err(RouterError::InvalidArgument(format!(
+            "start_index {} is outside mutation list of length {total}",
+            args.start_index
+        )));
+    }
+    let max_items = match args.max_items {
+        0 => DEFAULT_DYNAMIC_ITEMS,
+        value if value <= MAX_DYNAMIC_ITEMS => value,
+        value => {
+            return Err(RouterError::InvalidArgument(format!(
+                "max_items {value} exceeds {MAX_DYNAMIC_ITEMS}"
+            )));
+        }
+    };
+    let budget = match args.instruction_budget {
+        0 => DEFAULT_DYNAMIC_INSTRUCTION_BUDGET,
+        value if value <= MAX_DYNAMIC_INSTRUCTION_BUDGET => value,
+        value => {
+            return Err(RouterError::InvalidArgument(format!(
+                "instruction_budget {value} exceeds safe maximum {MAX_DYNAMIC_INSTRUCTION_BUDGET}"
+            )));
+        }
+    };
+
+    let mut cursor = args.start_index as usize;
+    let end = (cursor + max_items as usize).min(args.mutations.len());
+    let mut results = Vec::new();
+    while cursor < end && current_instruction_counter() < budget {
+        let wave_end = (cursor + MAX_BATCH_WAVE_ITEMS).min(end);
+        let coordinator = gql::BatchDispatchCoordinator::new(wave_end - cursor);
+        let wave_futures = args.mutations[cursor..wave_end]
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(item_index, mutation)| {
+                gql::gql_execute_idempotent_with_batch(
+                    mutation.gql_query,
+                    mutation.params,
+                    mutation.mutation_key,
+                    Some((coordinator.clone(), item_index)),
+                )
+            });
+        let wave_results = futures::future::join_all(wave_futures).await;
+        results.extend(wave_results.into_iter().collect::<Result<Vec<_>, _>>()?);
+        cursor = wave_end;
+    }
+    if cursor == args.start_index as usize {
+        return Err(RouterError::InvalidArgument(
+            "instruction budget is already exhausted; increase instruction_budget or retry".into(),
+        ));
+    }
+    let instruction_counter = current_instruction_counter();
+    Ok(types::GqlExecuteIdempotentDynamicBatchResult {
+        results,
+        next_index: (cursor < args.mutations.len()).then_some(cursor as u32),
+        instruction_counter,
+    })
 }
 
 /// ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.

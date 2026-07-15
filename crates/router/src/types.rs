@@ -103,6 +103,25 @@ pub struct GqlExecuteIdempotentBatchArgs {
     pub mutations: Vec<GqlExecuteIdempotentBatchItem>,
 }
 
+/// Cursor-based idempotent mutation execution. The Router advances at most one bounded Graph batch
+/// wave per instruction-budget check and returns a cursor when the budget is reached.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct GqlExecuteIdempotentDynamicBatchArgs {
+    pub mutations: Vec<GqlExecuteIdempotentBatchItem>,
+    pub start_index: u32,
+    /// `0` selects the Router default safety budget below the IC update-call limit.
+    pub instruction_budget: u64,
+    /// Maximum number of mutations this ingress call may consume. `0` selects the API default.
+    pub max_items: u32,
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct GqlExecuteIdempotentDynamicBatchResult {
+    pub results: Vec<gleaph_graph_kernel::plan_exec::GqlQueryResult>,
+    pub next_index: Option<u32>,
+    pub instruction_counter: u64,
+}
+
 /// Arguments for one expired client-mutation-key sweep step. The sweep is
 /// operator-driven (like backfill / label-stats projection): call repeatedly,
 /// feeding `next_cursor` back as `start_after`, until `done` is true.
@@ -919,6 +938,25 @@ mod outbound_tests {
         let bytes = Encode!(&args).expect("encode batch args");
         let decoded: GqlExecuteIdempotentBatchArgs =
             Decode!(&bytes, GqlExecuteIdempotentBatchArgs).expect("decode batch args");
+        assert_eq!(decoded, args);
+    }
+
+    #[test]
+    fn test_gql_execute_idempotent_dynamic_batch_args_roundtrip() {
+        let args = GqlExecuteIdempotentDynamicBatchArgs {
+            mutations: vec![GqlExecuteIdempotentBatchItem {
+                gql_query: "INSERT (:User)".to_owned(),
+                params: vec![],
+                mutation_key: "dynamic-item-0".to_owned(),
+            }],
+            start_index: 3,
+            instruction_budget: 35_000_000_000,
+            max_items: 64,
+        };
+        let bytes = Encode!(&args).expect("encode dynamic batch args");
+        let decoded: GqlExecuteIdempotentDynamicBatchArgs =
+            Decode!(&bytes, GqlExecuteIdempotentDynamicBatchArgs)
+                .expect("decode dynamic batch args");
         assert_eq!(decoded, args);
     }
 }
