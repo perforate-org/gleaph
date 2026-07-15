@@ -155,12 +155,12 @@ async fn execute_plan_batch(
     if args.operations.is_empty() {
         return Err(format!("{entrypoint} requires at least one operation"));
     }
-    const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
     let request_bytes =
         Encode!(&args).map_err(|err| format!("{entrypoint} request encode failed: {err}"))?;
-    if request_bytes.len() > MAX_REQUEST_BYTES {
+    if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(format!(
-            "{entrypoint} request exceeds {MAX_REQUEST_BYTES} encoded bytes"
+            "{entrypoint} request exceeds the safe payload limit of {} bytes",
+            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
     let mut results = Vec::with_capacity(args.operations.len());
@@ -183,12 +183,12 @@ async fn execute_plan_batch(
         results,
         next_index,
     };
-    const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
     let response_bytes =
         Encode!(&result).map_err(|err| format!("{entrypoint} response encode failed: {err}"))?;
-    if response_bytes.len() > MAX_RESPONSE_BYTES {
+    if response_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(format!(
-            "{entrypoint} response exceeds {MAX_RESPONSE_BYTES} encoded bytes"
+            "{entrypoint} response exceeds the safe payload limit of {} bytes",
+            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
     Ok(result)

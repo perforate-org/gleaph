@@ -63,6 +63,11 @@ ceiling is 2 MiB, matching ICP's ingress and cross-subnet request limit; this
 keeps the transport valid if canisters move between subnets even though same-
 subnet requests permit a larger payload.
 
+The public `gql_execute_idempotent_batch` ingress and its response use the same
+2 MiB conservative payload check. This prevents a caller from bypassing the
+transport chunking rule at the Router boundary; Graph also validates direct
+`execute_plan_update_batch` calls independently.
+
 ## Implementation status
 
 Implemented as the transport layer of the cursor-based

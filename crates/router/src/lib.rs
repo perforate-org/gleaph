@@ -60,7 +60,7 @@ pub use facade::store::RouterStore;
 pub use init::{RouterInitArgs, RouterUpgradeArgs};
 pub use state::RouterError;
 
-use candid::Principal;
+use candid::{Encode, Principal};
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
 use crate::provisioning::sender::send_accept_envelope;
@@ -319,6 +319,17 @@ async fn gql_execute_idempotent(
 async fn gql_execute_idempotent_batch(
     args: types::GqlExecuteIdempotentBatchArgs,
 ) -> Result<types::GqlExecuteIdempotentBatchResult, RouterError> {
+    let request_bytes = Encode!(&args).map_err(|error| {
+        RouterError::InvalidArgument(format!(
+            "gql_execute_idempotent_batch request encode failed: {error}"
+        ))
+    })?;
+    if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "gql_execute_idempotent_batch request exceeds the safe payload limit of {} bytes",
+            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        )));
+    }
     let total = args.mutations.len() as u32;
     if total == 0 {
         return Err(RouterError::InvalidArgument(
@@ -405,11 +416,23 @@ async fn gql_execute_idempotent_batch(
         ));
     }
     let instruction_counter = current_instruction_counter();
-    Ok(types::GqlExecuteIdempotentBatchResult {
+    let result = types::GqlExecuteIdempotentBatchResult {
         results,
         next_index: (cursor < args.mutations.len()).then_some(cursor as u32),
         instruction_counter,
-    })
+    };
+    let response_bytes = Encode!(&result).map_err(|error| {
+        RouterError::InvalidArgument(format!(
+            "gql_execute_idempotent_batch response encode failed: {error}"
+        ))
+    })?;
+    if response_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "gql_execute_idempotent_batch response exceeds the safe payload limit of {} bytes",
+            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        )));
+    }
+    Ok(result)
 }
 
 /// ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
