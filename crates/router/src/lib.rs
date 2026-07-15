@@ -314,14 +314,21 @@ async fn gql_execute_idempotent_batch(
         )));
     }
 
-    let mut results = Vec::with_capacity(args.mutations.len());
-    for mutation in args.mutations {
-        results.push(
-            gql::gql_execute_idempotent(mutation.gql_query, mutation.params, mutation.mutation_key)
-                .await?,
-        );
-    }
-    Ok(results)
+    let coordinator = gql::BatchDispatchCoordinator::new(args.mutations.len());
+    let futures = args
+        .mutations
+        .into_iter()
+        .enumerate()
+        .map(|(item_index, mutation)| {
+            gql::gql_execute_idempotent_with_batch(
+                mutation.gql_query,
+                mutation.params,
+                mutation.mutation_key,
+                Some((coordinator.clone(), item_index)),
+            )
+        });
+    let results = futures::future::join_all(futures).await;
+    results.into_iter().collect()
 }
 
 /// ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
