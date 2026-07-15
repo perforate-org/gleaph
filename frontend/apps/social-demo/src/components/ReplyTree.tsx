@@ -69,7 +69,7 @@ function ReplyBranch(props: {
         showParentPreview={props.showParentPreview}
       />
       <Show when={props.node.replies.length > 0}>
-        <div class="ml-5 border-l-2 border-indigo-100 pl-3 pt-3 sm:ml-8">
+        <div class="ml-3 border-l-2 border-indigo-100 pl-2 pt-3 sm:ml-5">
           <For each={props.node.replies}>
             {(reply) => (
               <div class="mb-3 last:mb-0">
