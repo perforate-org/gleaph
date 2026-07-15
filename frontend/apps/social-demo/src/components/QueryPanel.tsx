@@ -7,6 +7,7 @@ import {
   isFormatterError,
   type FormatterError,
 } from "~/formatter/gqlFormatter";
+import { localizeAnnotation, useI18n } from "~/i18n";
 
 type TokenType =
   | "keyword"
@@ -231,6 +232,7 @@ export function QueryPanel(props: { definition: ScenarioDefinition }) {
   const [anchor, setAnchor] = createSignal<DOMRect | null>(null);
   const [expanded, setExpanded] = createSignal(false);
   const [formatState, setFormatState] = createSignal<QueryFormatState>({ status: "loading" });
+  const { locale, t } = useI18n();
 
   createEffect(() => {
     const query = props.definition.preparedQuery;
@@ -260,8 +262,18 @@ export function QueryPanel(props: { definition: ScenarioDefinition }) {
   const segments = () => renderSegments(rawSegments());
   const formatStateMessage = () => {
     const state = formatState();
-    if (state.status === "loading") return "Formatting query…";
-    if (state.status === "error") return `${state.error.kind}: ${state.error.message}`;
+    if (state.status === "loading") return t("query.formatting");
+    if (state.status === "error") {
+      const errorKey =
+        state.error.kind === "parse"
+          ? "query.error.parse"
+          : state.error.kind === "unsupported"
+            ? "query.error.unsupported"
+            : state.error.kind === "invalid-options"
+              ? "query.error.invalidOptions"
+              : "query.error.adapter";
+      return t(errorKey, { message: state.error.message });
+    }
     return "";
   };
 
@@ -340,17 +352,19 @@ export function QueryPanel(props: { definition: ScenarioDefinition }) {
   return (
     <div>
       <div class="flex items-center justify-between">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">GQL query</h3>
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          {t("query.title")}
+        </h3>
       </div>
-      <p class="mt-1 text-xs text-slate-500">Hover highlighted parts to see what they do.</p>
+      <p class="mt-1 text-xs text-slate-500">{t("query.hoverHint")}</p>
 
       <div class="relative mt-2">
         <button
           type="button"
           class="absolute right-2 top-2 z-10 rounded-md p-1.5 text-slate-400 transition-all duration-150 ease-out hover:bg-slate-200 hover:text-slate-700 active:scale-95"
           onClick={() => setExpanded(true)}
-          title="Expand query"
-          aria-label="Expand query"
+          title={t("query.expand")}
+          aria-label={t("query.expand")}
         >
           <ExpandIcon />
         </button>
@@ -365,7 +379,11 @@ export function QueryPanel(props: { definition: ScenarioDefinition }) {
                 <>
                   <QueryTokens
                     text={segment.text}
-                    annotation={segment.annotation}
+                    annotation={
+                      segment.annotation
+                        ? localizeAnnotation(segment.annotation, locale())
+                        : undefined
+                    }
                     isActive={
                       segment.annotation !== undefined &&
                       active()?.queryText === segment.annotation.queryText
@@ -412,18 +430,18 @@ export function QueryPanel(props: { definition: ScenarioDefinition }) {
             <div class="flex items-start justify-between gap-4">
               <div>
                 <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                  GQL query
+                  {t("query.title")}
                 </h3>
                 <p class="mt-1 text-xs text-slate-500">
-                  Hover highlighted parts to see what they do.
+                  {t("query.hoverHint")}
                 </p>
               </div>
               <button
                 type="button"
                 class="shrink-0 rounded-md p-2 text-slate-400 transition-all duration-150 ease-out hover:bg-slate-100 hover:text-slate-700 active:scale-95"
                 onClick={() => setExpanded(false)}
-                title="Close"
-                aria-label="Close"
+                title={t("query.close")}
+                aria-label={t("query.close")}
               >
                 <CloseIcon />
               </button>
@@ -439,7 +457,11 @@ export function QueryPanel(props: { definition: ScenarioDefinition }) {
                     <>
                       <QueryTokens
                         text={segment.text}
-                        annotation={segment.annotation}
+                        annotation={
+                          segment.annotation
+                            ? localizeAnnotation(segment.annotation, locale())
+                            : undefined
+                        }
                         isActive={
                           segment.annotation !== undefined &&
                           active()?.queryText === segment.annotation.queryText

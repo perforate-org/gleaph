@@ -15,18 +15,18 @@ import {
   rowToColumnMap,
 } from "~/api/rowDecoder";
 import {
-  SCENARIO_DEFINITIONS,
-  SOCIAL_DEMO_SCENARIO_IDS,
   type ScenarioDefinition,
   type ScenarioId,
   scenarioDefinitionById,
 } from "~/data/scenarios";
+import { scenarioLabelKey, scenarioTranslationKey, useI18n, type Translate } from "~/i18n";
 import type { FeedResult, FeedRow } from "~/types";
 
 import { DemoNotice } from "~/components/DemoNotice";
 import { ErrorCard } from "~/components/ErrorCard";
 import { ExplanationPanel } from "~/components/ExplanationPanel";
 import { FeedItem } from "~/components/FeedItem";
+import { LanguageSwitcher } from "~/components/LanguageSwitcher";
 import { ReplyTree } from "~/components/ReplyTree";
 import { ScenarioNav } from "~/components/ScenarioNav";
 
@@ -79,17 +79,18 @@ const decodeFeedResult = (definition: ScenarioDefinition, rowsBlob: Uint8Array):
 const loadScenario = async (
   client: GatewayClient,
   definition: ScenarioDefinition,
+  t: Translate,
 ): Promise<FeedResult> => {
   const result = await client.runScenario(definition.scenario);
 
   const rowsBlob = result.rows_blob;
   if (rowsBlob === undefined) {
-    throw new Error("Gateway returned no rows. The scenario may not be seeded yet.");
+    throw new Error(t("feed.noRows"));
   }
 
   if (result.row_count !== BigInt(decodeWireRows(rowsBlob).rows.length)) {
     throw new Error(
-      "Gateway row_count does not match decoded rows. The response may be malformed.",
+      t("feed.malformedRows"),
     );
   }
 
@@ -101,7 +102,7 @@ const SECONDS_PER_MINUTE = 60;
 const SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE;
 const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
 
-const formatRelativeDate = (seconds: bigint, nowMs = Date.now()): string => {
+const formatRelativeDate = (seconds: bigint, t: Translate, nowMs = Date.now()): string => {
   const postMs = Number(seconds) * MS_PER_SECOND;
   const diffSeconds = Math.floor((nowMs - postMs) / MS_PER_SECOND);
 
@@ -112,16 +113,16 @@ const formatRelativeDate = (seconds: bigint, nowMs = Date.now()): string => {
   }
 
   if (diffSeconds < SECONDS_PER_MINUTE) {
-    return "just now";
+    return t("date.justNow");
   }
   if (diffSeconds < SECONDS_PER_HOUR) {
-    return `${Math.floor(diffSeconds / SECONDS_PER_MINUTE)}m ago`;
+    return t("date.minutesAgo", { count: Math.floor(diffSeconds / SECONDS_PER_MINUTE) });
   }
   if (diffSeconds < SECONDS_PER_DAY) {
-    return `${Math.floor(diffSeconds / SECONDS_PER_HOUR)}h ago`;
+    return t("date.hoursAgo", { count: Math.floor(diffSeconds / SECONDS_PER_HOUR) });
   }
   if (diffSeconds < 2 * SECONDS_PER_DAY) {
-    return "yesterday";
+    return t("date.yesterday");
   }
 
   const postDate = new Date(postMs);
@@ -135,9 +136,8 @@ const formatRelativeDate = (seconds: bigint, nowMs = Date.now()): string => {
   return `${month}/${day}/${postDate.getFullYear()}`;
 };
 
-const formatDate = (seconds: bigint): string => formatRelativeDate(seconds);
-
 export function SocialDemo() {
+  const { t } = useI18n();
   const [activeScenarioId, setActiveScenarioId] = createSignal<ScenarioId>("PublicTimeline");
 
   const options = getGatewayClientOptions();
@@ -146,14 +146,13 @@ export function SocialDemo() {
   const [result, { refetch }] = createResource(activeScenarioId, async (id) => {
     const definition = scenarioDefinitionById(id);
     if (!client) {
-      throw new Error(
-        "Social demo Gateway canister id is not configured. The asset canister should inject PUBLIC_CANISTER_ID:gleaph-social-demo-gateway, or set VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID for local development.",
-      );
+      throw new Error(t("feed.gatewayNotConfigured"));
     }
-    return loadScenario(client, definition);
+    return loadScenario(client, definition, t);
   });
 
   const activeDefinition = () => scenarioDefinitionById(activeScenarioId());
+  const formatDate = (seconds: bigint): string => formatRelativeDate(seconds, t);
 
   return (
     <div class="min-h-screen">
@@ -161,9 +160,12 @@ export function SocialDemo() {
         <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
           <div class="flex items-center gap-2">
             <span class="text-xl font-bold text-indigo-700">Gleaph</span>
-            <span class="hidden text-sm text-slate-500 sm:inline">Social Demo</span>
+            <span class="hidden text-sm text-slate-500 sm:inline">{t("brand.socialDemo")}</span>
           </div>
-          <DemoNotice />
+          <div class="flex items-center gap-2">
+            <DemoNotice />
+            <LanguageSwitcher />
+          </div>
         </div>
       </header>
 
@@ -180,21 +182,31 @@ export function SocialDemo() {
           </div>
 
           <div class="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h1 class="text-lg font-semibold text-slate-900">{activeDefinition().feedTitle}</h1>
+            <h1 class="text-lg font-semibold text-slate-900">
+              {t(scenarioTranslationKey(activeDefinition().id, "feedTitle"))}
+            </h1>
             <p class="text-sm text-slate-500">
-              {activeDefinition().label} · Anonymous read-only demo
+              {t(scenarioLabelKey(activeDefinition().id))} · {t("feed.anonymousSubtitle")}
             </p>
           </div>
 
-          <Switch fallback={<FeedList result={result()} definition={activeDefinition()} />}>
+          <Switch
+            fallback={
+              <FeedList
+                result={result()}
+                definition={activeDefinition()}
+                formatDate={formatDate}
+              />
+            }
+          >
             <Match when={result.loading}>
               <div class="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500 shadow-sm">
-                Loading scenario through Gateway…
+                {t("feed.loading")}
               </div>
             </Match>
             <Match when={result.error}>
               <ErrorCard
-                title="Scenario failed"
+                title={t("feed.errorTitle")}
                 message={String(result.error)}
                 onRetry={() => refetch()}
               />
@@ -212,14 +224,20 @@ export function SocialDemo() {
   );
 }
 
-function FeedList(props: { result: FeedResult | undefined; definition: ScenarioDefinition }) {
+function FeedList(props: {
+  result: FeedResult | undefined;
+  definition: ScenarioDefinition;
+  formatDate: (seconds: bigint) => string;
+}) {
+  const { t } = useI18n();
+
   return (
     <div class="space-y-4">
       <Show
         when={props.result && props.result.rows.length > 0}
         fallback={
           <div class="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500 shadow-sm">
-            No posts returned for this scenario.
+            {t("feed.empty")}
           </div>
         }
       >
@@ -227,14 +245,16 @@ function FeedList(props: { result: FeedResult | undefined; definition: ScenarioD
           when={props.result!.rows.every((row) => row.kind === "post")}
           fallback={
             <For each={props.result!.rows}>
-              {(row) => <FeedItem row={row} definition={props.definition} formatDate={formatDate} />}
+              {(row) => (
+                <FeedItem row={row} definition={props.definition} formatDate={props.formatDate} />
+              )}
             </For>
           }
         >
           <ReplyTree
             rows={props.result!.rows.filter((row) => row.kind === "post")}
             definition={props.definition}
-            formatDate={formatDate}
+            formatDate={props.formatDate}
           />
         </Show>
       </Show>

@@ -1,21 +1,22 @@
 import { For } from "solid-js";
 
 import {
-  SCENARIO_DEFINITIONS,
   SOCIAL_DEMO_SCENARIO_IDS,
   type ScenarioId,
 } from "~/data/scenarios";
+import { scenarioLabelKey, useI18n } from "~/i18n";
 
 export function ScenarioNav(props: {
   active: ScenarioId;
   onSelect: (id: ScenarioId) => void;
 }) {
+  const { t } = useI18n();
+
   return (
-    <nav aria-label="Scenario navigation">
+    <nav aria-label={t("scenario.navigation")}>
       <ul class="space-y-1">
         <For each={SOCIAL_DEMO_SCENARIO_IDS}>
           {(id) => {
-            const definition = SCENARIO_DEFINITIONS[id];
             const isActive = () => props.active === id;
             return (
               <li>
@@ -29,7 +30,7 @@ export function ScenarioNav(props: {
                   }}
                   aria-current={isActive() ? "page" : undefined}
                 >
-                  <span class="font-medium">{definition.label}</span>
+                  <span class="font-medium">{t(scenarioLabelKey(id))}</span>
                 </button>
               </li>
             );

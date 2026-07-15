@@ -1,44 +1,49 @@
 import type { ScenarioDefinition } from "~/data/scenarios";
+import { scenarioTranslationKey, useI18n } from "~/i18n";
 
 import { QueryPanel } from "~/components/QueryPanel";
 
 export function ExplanationPanel(props: { definition: ScenarioDefinition }) {
+  const { t } = useI18n();
+
   return (
     <div class="space-y-5">
       <QueryPanel definition={props.definition} />
 
       <div>
         <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">
-          {props.definition.explanationTitle}
+          {t(scenarioTranslationKey(props.definition.id, "explanationTitle"))}
         </h2>
-        <p class="mt-2 text-sm leading-relaxed text-slate-700">{props.definition.rdbSummary}</p>
+        <p class="mt-2 text-sm leading-relaxed text-slate-700">
+          {t(scenarioTranslationKey(props.definition.id, "rdbSummary"))}
+        </p>
       </div>
 
       <div class="rounded-lg bg-indigo-50 p-3">
-        <h3 class="text-sm font-semibold text-indigo-900">Graph value add</h3>
-        <p class="mt-1 text-sm leading-relaxed text-indigo-800">{props.definition.graphSummary}</p>
+        <h3 class="text-sm font-semibold text-indigo-900">{t("explanation.graphValueAdd")}</h3>
+        <p class="mt-1 text-sm leading-relaxed text-indigo-800">
+          {t(scenarioTranslationKey(props.definition.id, "graphSummary"))}
+        </p>
       </div>
 
       {(props.definition.id === "SemanticDiscovery" ||
         props.definition.id === "AliceSemanticFeed") && (
         <div class="rounded-lg bg-amber-50 p-3">
-          <h3 class="text-sm font-semibold text-amber-900">Why the results differ</h3>
+          <h3 class="text-sm font-semibold text-amber-900">
+            {t("explanation.whyResultsDiffer")}
+          </h3>
           <p class="mt-1 text-sm leading-relaxed text-amber-800">
-            The fixed query vector makes Dave&apos;s retrieval note the globally nearest public
-            Post. In the vector-only scenario it appears first. In Alice&apos;s graph-constrained
-            feed it is absent because Alice does not follow Dave, even though it is nearer than
-            every followed-author result.
+            {t("explanation.whyResultsDifferBody")}
           </p>
         </div>
       )}
 
       <div class="border-t border-slate-200 pt-4">
         <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Scenario subject
+          {t("explanation.scenarioSubject")}
         </h3>
         <p class="mt-1 text-sm text-slate-700">
-          Alice is a selected demo subject, not the logged-in viewer. There is no identity, login,
-          or row-level security in this read-only slice.
+          {t("explanation.scenarioSubjectBody")}
         </p>
       </div>
     </div>
