@@ -15,8 +15,8 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchResult, ExecutePlanResult,
-    GqlExecutionMode, ResolvedSearchWire, SeedBindingsWire,
+    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
+    ExecutePlanResult, GqlExecutionMode, ResolvedSearchWire, SeedBindingsWire,
 };
 
 use super::types::GraphInitArgs;
@@ -120,6 +120,18 @@ fn ensure_execution_mode(
     Ok(())
 }
 
+const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = 35_000_000_000;
+
+#[cfg(target_family = "wasm")]
+fn current_instruction_counter() -> u64 {
+    ic_cdk::api::call_context_instruction_counter()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn current_instruction_counter() -> u64 {
+    0
+}
+
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
     execute_plan_impl(args).await
@@ -143,7 +155,7 @@ async fn execute_plan_batch(
     if args.operations.is_empty() {
         return Err(format!("{entrypoint} requires at least one operation"));
     }
-    const MAX_OPERATIONS: usize = 16;
+    const MAX_OPERATIONS: usize = 256;
     if args.operations.len() > MAX_OPERATIONS {
         return Err(format!(
             "{entrypoint} accepts at most {MAX_OPERATIONS} operations"
@@ -158,7 +170,14 @@ async fn execute_plan_batch(
         ));
     }
     let mut results = Vec::with_capacity(args.operations.len());
-    for operation in args.operations {
+    let mut next_index = None;
+    for (index, operation) in args.operations.into_iter().enumerate() {
+        if args.mode == ExecutePlanBatchMode::Dynamic
+            && current_instruction_counter() >= DEFAULT_DYNAMIC_INSTRUCTION_BUDGET
+        {
+            next_index = Some(index as u32);
+            break;
+        }
         results.push(
             match ensure_execution_mode(operation.mode, GqlExecutionMode::Update, entrypoint) {
                 Ok(()) => execute_plan_impl(operation).await,
@@ -166,7 +185,10 @@ async fn execute_plan_batch(
             },
         );
     }
-    let result = ExecutePlanBatchResult { results };
+    let result = ExecutePlanBatchResult {
+        results,
+        next_index,
+    };
     const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
     let response_bytes =
         Encode!(&result).map_err(|err| format!("{entrypoint} response encode failed: {err}"))?;

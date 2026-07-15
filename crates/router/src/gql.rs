@@ -61,7 +61,14 @@ type BatchOperation = (
     ShardDispatch,
     gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
 );
-type BatchDispatchResult = (ShardDispatch, Result<ExecutePlanResult, String>);
+type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
+const BATCH_DEFERRED_ERROR: &str = "batch operation deferred by instruction budget";
+
+#[derive(Clone, Copy)]
+enum BatchExecutionPolicy {
+    Fixed,
+    Dynamic { router_budget: u64 },
+}
 
 struct BatchRegistration {
     groups: Vec<Vec<BatchOperation>>,
@@ -72,6 +79,7 @@ struct BatchCoordinatorState {
     expected_items: usize,
     registrations: Vec<Option<BatchRegistration>>,
     aborted: Option<String>,
+    policy: BatchExecutionPolicy,
 }
 
 /// Coordinates the fixed raw-GQL page at the Router→Graph boundary. Planning remains per
@@ -82,10 +90,22 @@ pub(crate) struct BatchDispatchCoordinator(Rc<RefCell<BatchCoordinatorState>>);
 
 impl BatchDispatchCoordinator {
     pub(crate) fn new(expected_items: usize) -> Self {
+        Self::with_policy(expected_items, BatchExecutionPolicy::Fixed)
+    }
+
+    pub(crate) fn new_dynamic(expected_items: usize, router_budget: u64) -> Self {
+        Self::with_policy(
+            expected_items,
+            BatchExecutionPolicy::Dynamic { router_budget },
+        )
+    }
+
+    fn with_policy(expected_items: usize, policy: BatchExecutionPolicy) -> Self {
         Self(Rc::new(RefCell::new(BatchCoordinatorState {
             expected_items,
             registrations: (0..expected_items).map(|_| None).collect(),
             aborted: None,
+            policy,
         })))
     }
 
@@ -124,7 +144,8 @@ impl BatchDispatchCoordinator {
                 groups.push(registration.groups);
                 senders.push(registration.sender);
             }
-            let results = execute_registered_batch(groups).await;
+            let policy = self.0.borrow().policy;
+            let results = execute_registered_batch(groups, policy).await;
             // The last registering future owns the result fan-out. Send failures are harmless when
             // a peer future has already been cancelled by the ingress caller.
             for (sender, result) in senders.into_iter().zip(results) {
@@ -170,6 +191,7 @@ async fn await_batch_item(
 
 async fn execute_registered_batch(
     registrations: Vec<Vec<Vec<BatchOperation>>>,
+    policy: BatchExecutionPolicy,
 ) -> Vec<Result<Vec<BatchDispatchResult>, String>> {
     let mut operations_by_graph: Vec<(Principal, Vec<(usize, usize, BatchOperation)>)> = Vec::new();
     for (item_index, groups) in registrations.iter().enumerate() {
@@ -188,37 +210,74 @@ async fn execute_registered_batch(
     let mut output: Vec<Vec<(usize, BatchDispatchResult)>> =
         (0..registrations.len()).map(|_| Vec::new()).collect();
     for (graph, operations) in operations_by_graph {
-        for chunk in operations.chunks(16) {
+        let mut start = 0;
+        while start < operations.len() {
+            if let BatchExecutionPolicy::Dynamic { router_budget } = policy
+                && crate::current_instruction_counter() >= router_budget
+            {
+                for (item_index, ordinal, (dispatch, _)) in &operations[start..] {
+                    output[*item_index].push((*ordinal, (dispatch.clone(), None)));
+                }
+                break;
+            }
+            let operation_slice = &operations[start..];
             let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
-                operations: chunk
+                operations: operation_slice
                     .iter()
                     .map(|(_, _, operation)| operation.1.clone())
                     .collect(),
+                mode: match policy {
+                    BatchExecutionPolicy::Fixed => {
+                        gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Fixed
+                    }
+                    BatchExecutionPolicy::Dynamic { .. } => {
+                        gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic
+                    }
+                },
             };
-            let results = if chunk.len() == 1 {
-                vec![execute_plan_on_graph(graph, args.operations[0].clone()).await]
-            } else {
-                match execute_plan_batch_on_graph(graph, args).await {
-                    Ok(batch) if batch.results.len() == chunk.len() => batch.results,
-                    Ok(batch) => vec![
-                        Err(format!(
-                            "graph batch returned {} results for {} operations",
-                            batch.results.len(),
-                            chunk.len()
-                        ));
-                        chunk.len()
-                    ],
-                    Err(err) => vec![Err(err); chunk.len()],
+            let batch = match execute_plan_batch_on_graph(graph, args).await {
+                Ok(batch) => batch,
+                Err(err) => {
+                    for (item_index, ordinal, (dispatch, _)) in operation_slice {
+                        output[*item_index]
+                            .push((*ordinal, (dispatch.clone(), Some(Err(err.clone())))));
+                    }
+                    break;
                 }
             };
-            for ((item_index, ordinal, (dispatch, _)), result) in chunk
-                .iter()
-                .cloned()
-                .zip(results)
-                .map(|(entry, result)| (entry, result))
-            {
-                output[item_index].push((ordinal, (dispatch, result)));
+            if batch.results.len() > operation_slice.len() {
+                let err = format!(
+                    "graph batch returned {} results for {} operations",
+                    batch.results.len(),
+                    operation_slice.len()
+                );
+                for (item_index, ordinal, (dispatch, _)) in operation_slice {
+                    output[*item_index]
+                        .push((*ordinal, (dispatch.clone(), Some(Err(err.clone())))));
+                }
+                break;
             }
+            let result_count = batch.results.len();
+            for (entry, result) in operation_slice.iter().zip(batch.results) {
+                let (item_index, ordinal, (dispatch, _)) = entry;
+                output[*item_index].push((*ordinal, (dispatch.clone(), Some(result))));
+            }
+            let processed = match batch.next_index {
+                Some(next) if usize::try_from(next).ok().is_some_and(|n| n > 0) => {
+                    usize::try_from(next).expect("checked next index")
+                }
+                Some(_) => {
+                    for (item_index, ordinal, (dispatch, _)) in &operation_slice[result_count..] {
+                        output[*item_index].push((*ordinal, (dispatch.clone(), None)));
+                    }
+                    break;
+                }
+                None => result_count,
+            };
+            if processed == 0 || processed > operation_slice.len() {
+                break;
+            }
+            start += processed;
         }
     }
     output
@@ -638,6 +697,17 @@ pub(crate) async fn gql_execute_idempotent_with_batch(
     client_mutation_key: String,
     batch: Option<(BatchDispatchCoordinator, usize)>,
 ) -> Result<GqlQueryResult, RouterError> {
+    gql_execute_idempotent_with_batch_outcome(query, params, client_mutation_key, batch)
+        .await?
+        .ok_or_else(|| RouterError::InvalidArgument(BATCH_DEFERRED_ERROR.to_string()))
+}
+
+pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
+    query: String,
+    params: Vec<u8>,
+    client_mutation_key: String,
+    batch: Option<(BatchDispatchCoordinator, usize)>,
+) -> Result<Option<GqlQueryResult>, RouterError> {
     let result = run_gql(
         &query,
         &params,
@@ -659,7 +729,11 @@ pub(crate) async fn gql_execute_idempotent_with_batch(
     // recovery driver so it converges without the client retrying. Self-guarding no-op when
     // the saga already finalized.
     crate::recovery::arm_if_needed();
-    result
+    match result {
+        Err(RouterError::InvalidArgument(error)) if error == BATCH_DEFERRED_ERROR => Ok(None),
+        Ok(result) => Ok(Some(result)),
+        Err(error) => Err(error),
+    }
 }
 
 /// Run a read-only program on the **update** path (higher cost; escape hatch only).
@@ -1996,15 +2070,16 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                 let dispatch = group.into_iter().next().expect("single dispatch group");
                 results.push((
                     dispatch.clone(),
-                    execute_plan_on_graph(group_graph, build_execute_args(&dispatch)).await,
+                    Some(execute_plan_on_graph(group_graph, build_execute_args(&dispatch)).await),
                 ));
             } else {
                 let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
                     operations: group.iter().map(build_execute_args).collect(),
+                    mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Fixed,
                 };
                 match execute_plan_batch_on_graph(group_graph, args).await {
                     Ok(batch) if batch.results.len() == group_len => {
-                        results.extend(group.into_iter().zip(batch.results));
+                        results.extend(group.into_iter().zip(batch.results.into_iter().map(Some)));
                     }
                     Ok(batch) => {
                         let err = format!(
@@ -2015,14 +2090,14 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                         results.extend(
                             group
                                 .into_iter()
-                                .map(|dispatch| (dispatch, Err(err.clone()))),
+                                .map(|dispatch| (dispatch, Some(Err(err.clone())))),
                         );
                     }
                     Err(err) => {
                         results.extend(
                             group
                                 .into_iter()
-                                .map(|dispatch| (dispatch, Err(err.clone()))),
+                                .map(|dispatch| (dispatch, Some(Err(err.clone())))),
                         );
                     }
                 }
@@ -2036,6 +2111,8 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     // token as each shard completes (built live so it survives record compaction).
     let mut token_shards: Vec<MutationTokenShard> = Vec::new();
     for (dispatch, result) in dispatch_results {
+        let result =
+            result.ok_or_else(|| RouterError::InvalidArgument(BATCH_DEFERRED_ERROR.to_string()))?;
         let result = match result {
             Ok(result) => result,
             Err(err) => {

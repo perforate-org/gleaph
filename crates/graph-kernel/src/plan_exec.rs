@@ -91,6 +91,13 @@ pub struct ExecutePlanArgs {
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanBatchArgs {
     pub operations: Vec<ExecutePlanArgs>,
+    pub mode: ExecutePlanBatchMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ExecutePlanBatchMode {
+    Fixed,
+    Dynamic,
 }
 
 /// Per-item outcomes for [`ExecutePlanBatchArgs`]. Keeping the result at item granularity lets the
@@ -98,6 +105,8 @@ pub struct ExecutePlanBatchArgs {
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanBatchResult {
     pub results: Vec<Result<ExecutePlanResult, String>>,
+    /// Index of the first operation not attempted, when Dynamic mode hit the Graph budget.
+    pub next_index: Option<u32>,
 }
 
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
@@ -576,6 +585,7 @@ mod tests {
                 }),
                 Err("item failed".to_string()),
             ],
+            next_index: Some(1),
         };
         let bytes = Encode!(&result).expect("encode");
         let decoded: ExecutePlanBatchResult =

@@ -72,7 +72,6 @@ const MAX_DYNAMIC_INSTRUCTION_BUDGET: u64 =
     MAX_UPDATE_CALL_INSTRUCTIONS - DYNAMIC_INSTRUCTION_HEADROOM;
 const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
 const MAX_DYNAMIC_ITEMS: u32 = 256;
-const MAX_BATCH_WAVE_ITEMS: usize = 16;
 const MAX_PUBLIC_BATCH_ITEMS: usize = 256;
 
 #[cfg(target_family = "wasm")]
@@ -399,23 +398,49 @@ async fn gql_execute_idempotent_dynamic_batch(
     let end = (cursor + max_items as usize).min(args.mutations.len());
     let mut results = Vec::new();
     while cursor < end && current_instruction_counter() < budget {
-        let wave_end = (cursor + MAX_BATCH_WAVE_ITEMS).min(end);
-        let coordinator = gql::BatchDispatchCoordinator::new(wave_end - cursor);
-        let wave_futures = args.mutations[cursor..wave_end]
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(item_index, mutation)| {
-                gql::gql_execute_idempotent_with_batch(
+        let coordinator = gql::BatchDispatchCoordinator::new_dynamic(end - cursor, budget);
+        let wave_futures = args.mutations[cursor..end].iter().cloned().enumerate().map(
+            |(item_index, mutation)| {
+                gql::gql_execute_idempotent_with_batch_outcome(
                     mutation.gql_query,
                     mutation.params,
                     mutation.mutation_key,
                     Some((coordinator.clone(), item_index)),
                 )
-            });
+            },
+        );
         let wave_results = futures::future::join_all(wave_futures).await;
-        results.extend(wave_results.into_iter().collect::<Result<Vec<_>, _>>()?);
-        cursor = wave_end;
+        let next_deferred = wave_results
+            .iter()
+            .position(|result| matches!(result, Ok(None)));
+        let next_cursor = next_deferred.map(|offset| cursor + offset);
+        let result_limit = next_deferred.unwrap_or(wave_results.len());
+        results.extend(
+            wave_results
+                .into_iter()
+                .take(result_limit)
+                .map(|result| {
+                    result.and_then(|value| {
+                        value.ok_or_else(|| {
+                            RouterError::InvalidArgument(
+                                "unexpected deferred mutation in completed prefix".into(),
+                            )
+                        })
+                    })
+                })
+                .collect::<Result<Vec<_>, RouterError>>()?,
+        );
+        if let Some(next_cursor) = next_cursor {
+            if next_cursor == cursor {
+                return Err(RouterError::InvalidArgument(
+                    "instruction budget was exhausted before the next mutation could start; retry"
+                        .into(),
+                ));
+            }
+            cursor = next_cursor;
+        } else {
+            cursor = end;
+        }
     }
     if cursor == args.start_index as usize {
         return Err(RouterError::InvalidArgument(

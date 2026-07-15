@@ -99,14 +99,15 @@ Graph batch using the Router call-context instruction counter. This is selected.
 4. A trap or transport rejection before a batch result is returned is retried
    with the same item mutation ids; no fresh ids may be minted by the caller.
 5. Router recovery continues to inspect each mutation journal entry separately.
-6. Multi-shard pages issue at most one batch call per Graph canister per page.
+6. Multi-shard pages issue bounded 256-operation chunks per Graph canister; a
+   target with more than one chunk receives one call per chunk.
 
 ## Consequences
 
 Positive:
 
-- Fixed-page seed execution pays Graph inter-canister overhead once per target
-  Graph canister rather than once per mutation.
+- Fixed-page seed execution pays Graph inter-canister overhead once per 256-item
+  target chunk rather than once per mutation.
 - Existing client-side page size and idempotent retry model remain usable.
 - Dynamic instruction paging can reuse this boundary later.
 

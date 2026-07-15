@@ -20,6 +20,12 @@ caller-supplied budget cannot exceed that safe maximum. `next_index` is returned
 when more mutations remain; retrying from the same cursor is safe because each
 mutation keeps its existing client mutation key and Graph mutation id.
 
+Within a dynamic Graph call, Graph executes until its own 35B safety budget and
+returns the first unattempted operation. If the Router call context is still
+below its budget, Router sends the remaining operations to that Graph again.
+This repeats until the Graph operations complete or the Router budget requires a
+continuation cursor.
+
 This API does not attempt to interrupt a mutation or a Graph batch wave. The
 atomicity unit remains one mutation, and the wave remains a transport grouping
 only. The instruction counter is the current Router canister call context; it
