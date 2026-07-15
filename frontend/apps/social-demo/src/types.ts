@@ -15,6 +15,7 @@ export type FeedRow =
       authorName: string;
       body: string;
       followsEdgeId: string;
+      secondFollowsEdgeId: string;
       postedEdgeId: string;
       topicEdgeId: string;
       topicId: bigint;

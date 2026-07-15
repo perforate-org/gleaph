@@ -1,0 +1,8 @@
+id: olivia
+name: Olivia
+bio: Data platform engineer exploring search, ranking, and explainable systems.
+follows:
+  - dave
+  - george
+  - noah
+memberships: []

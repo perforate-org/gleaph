@@ -1,0 +1,5 @@
+body: Over-fetching can hide a modeling problem; sometimes the relationship belongs in the query.
+created_at: 202607140733
+is_public: true
+topics:
+  - topic-graph

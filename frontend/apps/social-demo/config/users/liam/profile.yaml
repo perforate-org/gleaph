@@ -1,0 +1,8 @@
+id: liam
+name: Liam
+bio: Systems engineer writing about reliable infrastructure and thoughtful APIs.
+follows:
+  - bob
+  - george
+  - maya
+memberships: []

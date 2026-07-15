@@ -1,0 +1,8 @@
+id: takumi
+name: 匠
+bio: 検索基盤と可観測性を担当しています。
+follows:
+  - ren
+  - sora
+  - mei
+memberships: []

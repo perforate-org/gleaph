@@ -1,0 +1,9 @@
+id: mei
+name: めい
+bio: 文章を読みやすくし、複雑な仕組みを丁寧に伝えたい人です。
+follows:
+  - yui
+  - akari
+  - takumi
+memberships:
+  - community-ic

@@ -198,25 +198,25 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
 
   TopicPath: [
     {
-      queryText: "MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic)",
-      label: "Topic match",
-      description: "Find posts that have a HAS_TOPIC edge pointing to a Topic vertex.",
-    },
-    {
-      queryText: "WHERE t.demo_id = 13",
-      label: "Topic filter",
-      description: "Restrict the result to the 'Graph databases' topic (demo_id 13).",
-    },
-    {
-      queryText: "MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p)",
-      label: "Follower-author path",
+      queryText: "MATCH (u:User)-[follows1:FOLLOWS]->(bridge:User)-[follows2:FOLLOWS]->(author:User)-[posted:POSTED]->(p:Post)-[has_topic:HAS_TOPIC]->(t:Topic)",
+      label: "Four-hop topic path",
       description:
-        "Find a User who follows the author, and the author who posted the matched post. The pattern binds the follows and posted edges as evidence.",
+        "Follow a four-edge path: viewer to a followed user, to that user's followed author, to the post, and finally to its topic.",
     },
     {
-      queryText: "WHERE u.demo_id = 1",
-      label: "Viewer filter",
-      description: "Restrict the follower to Alice (demo_id 1), so the path is personalized.",
+      queryText: "WHERE u.demo_id = 1 AND t.demo_id = 13",
+      label: "Path filters",
+      description: "Personalize the path for Alice and restrict it to the 'Graph databases' topic (demo_id 13).",
+    },
+    {
+      queryText: "ELEMENT_ID(follows1) AS follows_edge_id",
+      label: "First follow edge",
+      description: "Return the first FOLLOWS edge as evidence for the beginning of the path.",
+    },
+    {
+      queryText: "ELEMENT_ID(follows2) AS second_follows_edge_id",
+      label: "Second follow edge",
+      description: "Return the second FOLLOWS edge as evidence for the intermediate hop.",
     },
     {
       queryText: "RETURN",
@@ -247,12 +247,6 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       queryText: "p.created_at AS created_at",
       label: "Timestamp column",
       description: "Return the post creation timestamp.",
-    },
-    {
-      queryText: "ELEMENT_ID(follows) AS follows_edge_id",
-      label: "Follows edge id",
-      description:
-        "Return the unique identifier of the FOLLOWS edge as explainable evidence for the recommendation.",
     },
     {
       queryText: "ELEMENT_ID(posted) AS posted_edge_id",

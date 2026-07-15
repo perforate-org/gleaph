@@ -1,0 +1,9 @@
+id: akari
+name: あかり
+bio: 分散システムと、チームで育てるプロダクトについて書いています。
+follows:
+  - hana
+  - yui
+  - ren
+memberships:
+  - community-ic

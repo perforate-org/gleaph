@@ -47,6 +47,7 @@ const decodeFeedResult = (definition: ScenarioDefinition, rowsBlob: Uint8Array):
         body: expectText(map, "body"),
         createdAt: expectDateTimeSeconds(map, "created_at"),
         followsEdgeId: expectText(map, "follows_edge_id"),
+        secondFollowsEdgeId: expectText(map, "second_follows_edge_id"),
         postedEdgeId: expectText(map, "posted_edge_id"),
         topicEdgeId: expectText(map, "topic_edge_id"),
         topicId: expectInt64(map, "topic_id"),

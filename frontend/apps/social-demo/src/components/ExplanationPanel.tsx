@@ -2,6 +2,7 @@ import type { ScenarioDefinition } from "~/data/scenarios";
 import { scenarioTranslationKey, useI18n } from "~/i18n";
 
 import { QueryPanel } from "~/components/QueryPanel";
+import { TopicPathPerformanceChart } from "~/components/TopicPathPerformanceChart";
 
 export function ExplanationPanel(props: { definition: ScenarioDefinition }) {
   const { t } = useI18n();
@@ -17,6 +18,7 @@ export function ExplanationPanel(props: { definition: ScenarioDefinition }) {
         <p class="mt-2 text-sm leading-relaxed text-slate-700">
           {t(scenarioTranslationKey(props.definition.id, "rdbSummary"))}
         </p>
+        {props.definition.id === "TopicPath" && <TopicPathPerformanceChart />}
       </div>
 
       <div class="rounded-lg bg-indigo-50 p-3">

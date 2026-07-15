@@ -1,0 +1,9 @@
+id: maya
+name: Maya
+bio: Product researcher interested in communities, accessibility, and good defaults.
+follows:
+  - alice
+  - carol
+  - liam
+memberships:
+  - community-ic

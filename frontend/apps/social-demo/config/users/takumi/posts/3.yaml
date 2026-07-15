@@ -1,0 +1,5 @@
+body: 複数のサービスをまたぐ処理ほど、途中の状態を説明できる設計が役立ちます。
+created_at: 202607140843
+is_public: true
+topics:
+  - topic-graph

@@ -1,0 +1,8 @@
+id: quinn
+name: Quinn
+bio: Open-source maintainer and occasional writer about sustainable software.
+follows:
+  - alice
+  - liam
+  - paul
+memberships: []

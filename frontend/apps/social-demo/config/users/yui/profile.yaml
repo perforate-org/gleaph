@@ -1,0 +1,9 @@
+id: yui
+name: ゆい
+bio: データと人のあいだをつなぐ仕組みに興味があります。
+follows:
+  - hana
+  - mei
+  - ren
+memberships:
+  - community-ic

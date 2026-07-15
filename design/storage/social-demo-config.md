@@ -1,9 +1,9 @@
 # social-demo-config
 
-Date: 2026-07-13
+Date: 2026-07-15
 Status: Implemented
-Anchor timestamp: 2026-07-13 08:52:06 UTC +0000
-Last updated: 2026-07-13 UTC
+Anchor timestamp: 2026-07-15 01:12:11 UTC +0000
+Last updated: 2026-07-15 UTC
 
 ## Purpose
 
@@ -22,10 +22,12 @@ that the rest of the pipeline already consumes:
 All four artifacts are committed to the repository (option A), so the React app
 and deploy script can run without first regenerating them.
 
-The current fixture has 11 users, 25 Posts (24 public and one private), 8 reply
-edges, and Alice follows six active authors. It is deliberately small enough for
-deterministic E2E assertions while giving the timeline and reply tree varied,
-social-media-like content.
+The current fixture has 23 users, 61 Posts (60 public and one private), 8 reply
+edges, and Alice follows six active authors. It is large enough to make multi-hop
+traversal visible while keeping deterministic E2E assertions practical. The users
+are split into mostly English and mostly Japanese follow clusters, with posts in
+both languages. A small number of cross-cluster follows remain to model realistic
+boundary connections without erasing the cluster shape.
 
 ## Directory layout
 
@@ -211,7 +213,7 @@ The 5 scenario `preparedQuery` strings share a common set of RETURN columns:
 | `created_at`                                         | nat64                                      | `p.created_at`      | Chronological ordering for non-semantic scenarios.      |
 | `parent_post_id`                                     | numeric or `NULL`                          | `parent.demo_id`    | Optional canonical reply parent for timeline tree display. |
 | `distance`                                           | float32                                    | vector SEARCH       | L2-squared distance for semantic scenarios only.        |
-| `follows_edge_id`, `posted_edge_id`, `topic_edge_id` | text                                       | edge `demo_edge_id` | Relationship-trail explanation in `TopicPath`.          |
+| `follows_edge_id`, `second_follows_edge_id`, `posted_edge_id`, `topic_edge_id` | text | edge `demo_edge_id` | Four-hop relationship trail explanation in `TopicPath`. |
 | `topic_id`                                           | numeric (Int64 in graph, `bigint` on wire) | `t.demo_id`         | Stable topic id in `TopicPath`.                         |
 
 All columns except `distance` are stored graph properties or edge properties; the
@@ -221,6 +223,37 @@ the GQL planner's `property_uses()` to include row-local operator expressions, s
 the Router-resolved property table now carries `body` for all five scenarios
 (including the SEARCH subplan used by AliceSemanticFeed); the planner remains the
 single source of truth for the semantic inventory of property names.
+
+## TopicPath workload rationale
+
+`TopicPath` intentionally uses a four-edge path so the demo exposes the workload
+shape where graph storage is useful. An RDB can answer the same question, but a
+normalized implementation must repeatedly join follow/link tables and carry
+intermediate candidate rows before reaching the author, post, and topic. Indexes
+can reduce key lookup cost without removing intermediate-result construction or
+fan-out. At production scale, read-time execution may therefore require
+denormalized paths, materialized recommendations, or precomputed feeds, trading
+read latency for write amplification and freshness complexity.
+
+This wording is intentionally workload-specific rather than a claim that graph
+databases always outperform RDBs. The external comparison used by the scenario
+reported SQL Server as competitive for simple or low-join queries and Neo4j as
+faster for more complex multi-join recommendation queries at larger data sizes.
+The study is an independent experiment, not a universal benchmark for every
+engine or schema.
+
+For an additional concrete reference, a 1-million-user friends-of-friends
+benchmark reports MySQL versus Neo4j execution times of `0.016 s / 0.010 s` at
+depth 2, `30.267 s / 0.168 s` at depth 3, `1,543.505 s / 1.359 s` at depth 4,
+and `not finished in 1 hour / 2.132 s` at depth 5. These figures are workload-
+and implementation-specific; they are included to make the depth-related
+scaling problem tangible, not as a claim about every RDB or graph engine.
+
+References:
+
+- [Neo4j, Graph database vs. relational database](https://neo4j.com/blog/graph-database/graph-database-vs-relational-database/)
+- [Stanescu, A Comparison between a Relational and a Graph Database in the Context of a Recommendation System](https://annals-csis.org/proceedings/2021/pliks/33.pdf), DOI 10.15439/2021F33
+- [Akamai, Differences between graph and relational databases](https://www.akamai.com/cloud/guides/differences-between-graph-and-relational-databases) (provided background reference; the scenario does not treat its vendor guidance as benchmark evidence)
 
 ## Semantic vector at runtime
 

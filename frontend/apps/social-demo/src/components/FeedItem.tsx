@@ -46,6 +46,10 @@ export function FeedItem(props: FeedItemProps) {
                   <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">{row.followsEdgeId}</code>
                 </li>
                 <li>
+                  {t("feed.secondFollowerEdge")} {" "}
+                  <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">{row.secondFollowsEdgeId}</code>
+                </li>
+                <li>
                   {t("feed.authorPostEdge")} {" "}
                   <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">{row.postedEdgeId}</code>{" "}
                   {t("feed.edgeOn")} <span class="font-medium">{row.body}</span>

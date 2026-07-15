@@ -33,9 +33,9 @@ const enDictionary = {
     "Gleaph's social-demo uses fan-out on write: when the seed is built, each public Post creates an `IN_HOME_FEED` edge to its author and every follower User. Alice then reads those pre-materialized edges with one bounded expansion, including her own posts. This shifts work from feed reads to post ingestion; a production system can combine it with pull/merge for accounts with very large audiences.",
   "scenario.topicPath.feedTitle": "Topic explanation path",
   "scenario.topicPath.rdbSummary":
-    "An RDB can answer this with joins across follows, posts, and topics. The extra work is explaining the result: the application must select and preserve the matching follow, authorship, and topic rows as recommendation evidence instead of returning only the post.",
+    "An RDB can answer this, but this four-hop path is an awkward hot read. In a 1-million-user friends-of-friends benchmark, depth 2 took MySQL 0.016 s versus Neo4j 0.010 s; depth 3 took 30.267 s versus 0.168 s; depth 4 took 1,543.505 s versus 1.359 s; and depth 5 did not finish in one hour for MySQL while Neo4j took 2.132 s. This is an implementation-dependent reference, not a universal benchmark, but it makes the scaling problem concrete: normalized RDB queries must repeatedly build and carry intermediate candidate sets as joins fan out. Production systems often avoid doing this on every request with denormalized paths, materialized recommendations, or precomputed feeds, trading read latency for write and freshness costs.",
   "scenario.topicPath.graphSummary":
-    "The graph pattern describes the reason directly: Alice follows Bob, Bob authored the post, and the post has the selected topic. Gleaph returns the matching edge identities alongside the post, so the relationship path is part of the result rather than an explanation reconstructed afterward.",
+    "The graph pattern follows four relationships directly: Alice follows Bob, Bob follows George, George authored the post, and the post has the selected topic. Gleaph returns the matching edge identities alongside the post, so the multi-hop reason is part of the result rather than a chain reconstructed afterward.",
   "scenario.semanticDiscovery.feedTitle": "Vector-only semantic discovery",
   "scenario.semanticDiscovery.rdbSummary":
     "An RDB with a vector extension can also run this query: search the Post embedding index, filter public posts, and return the nearest neighbors. The key capability here is vector indexing, not a relational join; a separate vector service is another common implementation.",
@@ -59,6 +59,7 @@ const enDictionary = {
   "feed.l2DistanceValue": "L2-squared distance: {{value}}",
   "feed.relationshipTrail": "Relationship trail",
   "feed.followerEdge": "Follower edge",
+  "feed.secondFollowerEdge": "Second follower edge",
   "feed.authorPostEdge": "Author-post edge",
   "feed.postTopicEdge": "Post-topic edge",
   "feed.edgeOn": "on",
@@ -66,6 +67,16 @@ const enDictionary = {
   "feed.seedLabelsNote": "Labels reflect the fixed social-graph seed. Update them if the seed subject changes.",
   "explanation.graphValueAdd": "Graph value add",
   "explanation.rdbBaseline": "RDB baseline",
+  "explanation.topicPathChartTitle": "Execution time by traversal depth",
+  "explanation.topicPathChartDescription":
+    "Log-scale comparison of MySQL and Neo4j execution times as relationship depth increases.",
+  "explanation.topicPathChartCaption":
+    "The logarithmic axis keeps both series visible: the gap widens sharply from depth 3. MySQL depth 5 was not finished within one hour.",
+  "explanation.topicPathChartMysql": "MySQL",
+  "explanation.topicPathChartNeo4j": "Neo4j",
+  "explanation.topicPathChartMysqlIncomplete": "1h+",
+  "explanation.topicPathChartDepth": "Relationship depth",
+  "explanation.topicPathChartLogScale": "Seconds (log scale)",
   "explanation.whyResultsDiffer": "Why the results differ",
   "explanation.whyResultsDifferBody":
     "The fixed query vector makes Dave's retrieval note the globally nearest public Post. In the vector-only scenario it appears first. In Alice's graph-constrained feed it is absent because Alice does not follow Dave, even though it is nearer than every followed-author result.",
@@ -110,9 +121,9 @@ const jaDictionary: Record<TranslationKey, string> = {
     "Gleaph の social-demo は fan-out on write を使います。シード構築時に、各公開 Post から作者とその作者をフォローするすべての User へ `IN_HOME_FEED` エッジを作成します。アリスは事前に配られたエッジをユーザー頂点から1回の範囲付き展開で読み、自分の投稿も取得できます。読み取りから投稿取り込みへ処理を移す設計なので、実サービスでは大規模アカウントだけ pull／merge と組み合わせる余地があります。",
   "scenario.topicPath.feedTitle": "トピック説明の経路",
   "scenario.topicPath.rdbSummary":
-    "RDB でも follows、posts、topics を結合して答えられます。難しいのは理由の説明です。投稿だけでなく、一致したフォロー・作者・トピックの行を推薦の根拠として選択し、アプリケーション側で保持する必要があります。",
+    "RDB でも答えは出せますが、この4-hop経路は読み取りのたびに実行するには不利です。100万人規模の friends-of-friends ベンチマークでは、深さ2は MySQL 0.016秒／Neo4j 0.010秒でしたが、深さ3は 30.267秒／0.168秒、深さ4は 1,543.505秒／1.359秒まで広がり、深さ5では MySQL が1時間以内に完了せず、Neo4jは2.132秒でした。実装や環境に依存する参考値ですが、深くなるほど差が急拡大する様子を具体的に示します。正規化されたRDBでは、follows や多対多の中間テーブルを何度も結合して途中の候補集合を作るためです。実運用では、非正規化した経路、推薦結果のマテリアライズ、事前生成フィードなどで毎回の探索を避けますが、書き込み負荷と鮮度のコストを支払います。",
   "scenario.topicPath.graphSummary":
-    "グラフパターンは理由をそのまま表します。アリスがボブをフォローし、ボブが投稿者で、その投稿に選択したトピックが付いている経路です。Gleaph は投稿と一緒に一致したエッジ識別子も返すため、関係の経路自体が結果になり、後から説明を再構成する必要がありません。",
+    "グラフパターンは4つの関係をそのままたどります。アリスがボブをフォローし、ボブがジョージをフォローし、ジョージが投稿し、その投稿に選択したトピックが付いている経路です。Gleaph は投稿と一緒に一致したエッジ識別子も返すため、多段の理由自体が結果になります。",
   "scenario.semanticDiscovery.feedTitle": "ベクトルのみの意味検索",
   "scenario.semanticDiscovery.rdbSummary":
     "ベクトル拡張を持つ RDB でも実行できます。Post の embedding インデックスを検索し、公開投稿に絞って近い順に返します。ここでの主役はリレーショナル結合ではなくベクトルインデックスで、別のベクトルサービスを使う実装も一般的です。",
@@ -136,6 +147,7 @@ const jaDictionary: Record<TranslationKey, string> = {
   "feed.l2DistanceValue": "L2二乗距離: {{value}}",
   "feed.relationshipTrail": "関係性の経路",
   "feed.followerEdge": "フォローエッジ",
+  "feed.secondFollowerEdge": "2つ目のフォローエッジ",
   "feed.authorPostEdge": "作者・投稿エッジ",
   "feed.postTopicEdge": "投稿・トピックエッジ",
   "feed.edgeOn": "投稿",
@@ -143,6 +155,16 @@ const jaDictionary: Record<TranslationKey, string> = {
   "feed.seedLabelsNote": "ラベルは固定されたソーシャルグラフのシードを表します。シード対象を変更した場合は更新してください。",
   "explanation.graphValueAdd": "グラフによる価値",
   "explanation.rdbBaseline": "RDBでの基準実装",
+  "explanation.topicPathChartTitle": "経路の深さごとの実行時間",
+  "explanation.topicPathChartDescription":
+    "関係の深さが増えたときの MySQL と Neo4j の実行時間を対数軸で比較したグラフです。",
+  "explanation.topicPathChartCaption":
+    "両方の系列を見せるために対数軸を使っています。深さ3から差が急拡大し、MySQLの深さ5は1時間以内に完了しませんでした。",
+  "explanation.topicPathChartMysql": "MySQL",
+  "explanation.topicPathChartNeo4j": "Neo4j",
+  "explanation.topicPathChartMysqlIncomplete": "1時間超",
+  "explanation.topicPathChartDepth": "関係の深さ",
+  "explanation.topicPathChartLogScale": "秒（対数軸）",
   "explanation.whyResultsDiffer": "結果が異なる理由",
   "explanation.whyResultsDifferBody":
     "固定クエリベクトルでは、デイブの取得メモが公開 Post の中で最も近くなります。ベクトルのみのシナリオでは先頭に表示されますが、アリスのグラフ制約付きフィードではデイブをフォローしていないため、距離が近くても除外されます。",

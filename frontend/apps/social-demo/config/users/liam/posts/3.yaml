@@ -1,0 +1,5 @@
+body: Small interfaces are easier to evolve when their ownership is visible in the data model.
+created_at: 202607140703
+is_public: true
+topics:
+  - topic-graph
