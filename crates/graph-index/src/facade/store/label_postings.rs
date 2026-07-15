@@ -1,6 +1,6 @@
 //! Vertex label membership postings: shard-canister writes and posting-local reads.
 
-use super::{DEFAULT_LABEL_LOOKUP_PAGE_LIMIT, IndexStore, pack_posting_vertex};
+use super::{DEFAULT_LOOKUP_PAGE_LIMIT, IndexStore, pack_posting_vertex};
 use crate::facade::stable::INDEX_VERTEX_LABEL_POSTINGS;
 use crate::label_key::LabelPostingKey;
 use crate::label_range::label_shard_posting_bucket;
@@ -109,8 +109,8 @@ impl IndexStore {
     /// Paginated label export for one shard-local prefix.
     pub fn lookup_label_page(&self, req: &LabelLookupPageRequest) -> LabelLookupPageResult {
         let limit = usize::try_from(req.limit)
-            .unwrap_or(DEFAULT_LABEL_LOOKUP_PAGE_LIMIT)
-            .clamp(1, DEFAULT_LABEL_LOOKUP_PAGE_LIMIT);
+            .unwrap_or(DEFAULT_LOOKUP_PAGE_LIMIT)
+            .clamp(1, DEFAULT_LOOKUP_PAGE_LIMIT);
         let Some((mut low, high)) = label_shard_posting_bucket(req.vertex_label_id, req.shard_id)
         else {
             return LabelLookupPageResult {

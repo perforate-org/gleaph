@@ -8,14 +8,14 @@ use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexEqualSpec, IndexIntersectionRequest,
     IndexIntersectionResult, IndexPostingBatchProgress, IndexPostingMutation,
     LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupRangePageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
+    LookupRangePageRequest, MAX_POSTING_PAGE_HITS, PostingHit, PostingHitPage, PostingRangeRequest,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
 
 /// Page size for paginated property / edge equality exports. Bounds per-message materialization on
 /// the index canister so query reads never build a full bucket in heap.
-const INDEX_PAGE_LIMIT: u32 = 10_000;
+const INDEX_PAGE_LIMIT: u32 = MAX_POSTING_PAGE_HITS;
 
 #[derive(Clone, Debug)]
 pub struct IcPropertyIndexClient {

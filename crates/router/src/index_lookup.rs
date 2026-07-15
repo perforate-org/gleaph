@@ -12,8 +12,8 @@ use gleaph_graph_kernel::index::{
     IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
     LookupEqualPageRequest, LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, PostingHit,
-    ValuePostingCount, ValuePostingCountPage,
+    LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS,
+    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit, ValuePostingCount, ValuePostingCountPage,
 };
 
 use crate::facade::store::RouterStore;
@@ -21,8 +21,7 @@ use crate::index_client::RouterIndexClient;
 
 /// Page size for paginated property / edge equality exports during seed routing. Bounds the
 /// per-message materialization on the index canister (no full-bucket heap materialization).
-const INDEX_LOOKUP_PAGE_LIMIT: u32 = 10_000;
-const COUNT_LOOKUP_PAGE_LIMIT: u32 = 256;
+const INDEX_LOOKUP_PAGE_LIMIT: u32 = MAX_POSTING_PAGE_HITS;
 
 async fn collect_value_count_pages(
     client: &RouterIndexClient,
@@ -39,7 +38,7 @@ async fn collect_value_count_pages(
                 min_count,
                 vertex_filter_packed: vertex_filter_packed.clone(),
                 after,
-                limit: COUNT_LOOKUP_PAGE_LIMIT,
+                limit: MAX_VALUE_POSTING_COUNT_PAGE_GROUPS,
             })
             .await?;
         counts.extend(page.counts);
@@ -67,7 +66,7 @@ async fn collect_value_count_pages_for_label(
                     min_count,
                     vertex_filter_packed: None,
                     after,
-                    limit: COUNT_LOOKUP_PAGE_LIMIT,
+                    limit: MAX_VALUE_POSTING_COUNT_PAGE_GROUPS,
                 },
                 vertex_label_id,
             )

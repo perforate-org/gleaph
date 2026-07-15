@@ -49,17 +49,15 @@ pub(super) fn ensure_intersection_specs(specs: &[IndexEqualSpec]) -> Result<(), 
     Ok(())
 }
 
-/// Default page size for [`IndexStore::lookup_label_page`].
-pub const DEFAULT_LABEL_LOOKUP_PAGE_LIMIT: usize = 10_000;
+/// Default page size for [`IndexStore::lookup_label_page`] and property posting exports.
+pub const DEFAULT_LOOKUP_PAGE_LIMIT: usize =
+    gleaph_graph_kernel::index::MAX_POSTING_PAGE_HITS as usize;
 
-/// Default page size for paginated property / edge posting exports.
-pub const DEFAULT_POSTING_LOOKUP_PAGE_LIMIT: usize = 10_000;
-
-/// Clamp a client-supplied page limit into `1..=DEFAULT_POSTING_LOOKUP_PAGE_LIMIT`.
+/// Clamp a client-supplied page limit into `1..=DEFAULT_LOOKUP_PAGE_LIMIT`.
 pub(super) fn clamp_posting_page_limit(limit: u32) -> usize {
     usize::try_from(limit)
-        .unwrap_or(DEFAULT_POSTING_LOOKUP_PAGE_LIMIT)
-        .clamp(1, DEFAULT_POSTING_LOOKUP_PAGE_LIMIT)
+        .unwrap_or(DEFAULT_LOOKUP_PAGE_LIMIT)
+        .clamp(1, DEFAULT_LOOKUP_PAGE_LIMIT)
 }
 
 /// Stateless facade over index stable structures initialized in [`super::stable`].

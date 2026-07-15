@@ -16,6 +16,13 @@ pub const MAX_INDEX_VALUE_KEY_BYTES: usize = 4096;
 /// resolve to more arms are rejected with a provider-specific error before any index canister call.
 pub const MAX_EQUALITY_INTERSECTION_ARMS: usize = 8;
 
+/// Maximum number of posting hits materialized by one paginated index read.
+///
+/// This is an execution/heap bound, not the ICP message-size limit. The receiver still
+/// validates the encoded request and response against the shared transport ceiling. Keeping the
+/// page bound here makes Graph, Router, and Property Index use the same producer-side budget.
+pub const MAX_POSTING_PAGE_HITS: u32 = 10_000;
+
 /// One shard-owned property-index mutation. The index canister applies these in
 /// order and may return a continuation before the request is exhausted.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
