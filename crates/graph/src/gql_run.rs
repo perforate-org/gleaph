@@ -521,6 +521,22 @@ async fn run_transaction_block(
     execution: GqlExecutionContext,
     materialize: TransactionReadMaterialize,
 ) -> Result<TransactionBlockRun, GqlRunError> {
+    let result =
+        run_transaction_block_inner(store, block, parameters, index, execution, materialize).await;
+    if result.is_err() {
+        persist_pending_to_outbox(store, 0);
+    }
+    result
+}
+
+async fn run_transaction_block_inner(
+    store: &GraphStore,
+    block: &StatementBlock,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
+    materialize: TransactionReadMaterialize,
+) -> Result<TransactionBlockRun, GqlRunError> {
     let mut last_query_rows = PlanQueryResult::default();
     let mut last_read_row_count: usize = 0;
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
