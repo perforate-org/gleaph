@@ -2048,16 +2048,19 @@ async fn collect_bounded_candidates_equal(
     property_id: PropertyId,
     encoded_value: Vec<u8>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
-    collect_bounded_candidates(graph_id, store, label_id, |client, after| {
+    collect_bounded_candidates_for_label(graph_id, store, label_id, |client, after| {
         let value = encoded_value.clone();
         async move {
             client
-                .lookup_equal_page(gleaph_graph_kernel::index::LookupEqualPageRequest {
-                    property_id: property_id.raw(),
-                    value: value.clone(),
-                    after,
-                    limit: VECTOR_FILTER_PAGE_LIMIT,
-                })
+                .lookup_equal_page_for_label(
+                    gleaph_graph_kernel::index::LookupEqualPageForLabelRequest {
+                        property_id: property_id.raw(),
+                        value,
+                        vertex_label_id: label_id.raw() as u32,
+                        after,
+                        limit: VECTOR_FILTER_PAGE_LIMIT,
+                    },
+                )
                 .await
         }
     })
@@ -2099,14 +2102,22 @@ async fn collect_bounded_candidates_range(
     low: Vec<u8>,
     high: Vec<u8>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
-    collect_bounded_candidates(graph_id, store, label_id, |client, after| {
+    collect_bounded_candidates_for_label(graph_id, store, label_id, |client, after| {
         let range = gleaph_graph_kernel::index::PostingRangeRequest::Between {
             low: low.clone(),
             high: high.clone(),
         };
         async move {
             client
-                .lookup_range_page(property_id.raw(), range, after, VECTOR_FILTER_PAGE_LIMIT)
+                .lookup_range_page_for_label(
+                    gleaph_graph_kernel::index::LookupRangePageForLabelRequest {
+                        property_id: property_id.raw(),
+                        range,
+                        vertex_label_id: label_id.raw() as u32,
+                        after,
+                        limit: VECTOR_FILTER_PAGE_LIMIT,
+                    },
+                )
                 .await
         }
     })
@@ -2309,6 +2320,26 @@ where
         label_id,
         fetch_page,
         |client, label_id, hits| async move { client.filter_hits_by_label(label_id, hits).await },
+    )
+    .await
+}
+
+async fn collect_bounded_candidates_for_label<F, Fut>(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    fetch_page: F,
+) -> Result<Vec<VectorSubject>, RouterError>
+where
+    F: FnMut(RouterIndexClient, Option<gleaph_graph_kernel::index::PropertyPostingCursor>) -> Fut,
+    Fut: std::future::Future<Output = Result<PostingHitPage, String>>,
+{
+    collect_bounded_candidates_inner(
+        graph_id,
+        store,
+        label_id,
+        fetch_page,
+        |_client, _label_id, hits| async move { Ok(hits) },
     )
     .await
 }
