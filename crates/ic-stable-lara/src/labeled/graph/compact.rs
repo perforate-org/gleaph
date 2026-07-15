@@ -836,14 +836,13 @@ where
 
     fn calculate_labeled_leaf_vertex_positions(
         leaf_start: u64,
-        slices: &[(u32, u32)],
+        resident_slots: &[u32],
         gaps: u64,
     ) -> Result<Vec<u64>, LabeledOperationError> {
-        let size = slices.len() as u64;
-        let mut total_weight = size;
-        for (live_edges, _) in slices {
+        let mut total_weight = 0u64;
+        for resident in resident_slots {
             total_weight = total_weight
-                .checked_add(u64::from(*live_edges))
+                .checked_add(u64::from(*resident))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
 
@@ -863,25 +862,22 @@ where
         let mut cursor_fp = u128::from(leaf_start)
             .checked_mul(P)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let mut out = Vec::with_capacity(slices.len());
-        for (live_edges, label_buckets) in slices {
+        let mut out = Vec::with_capacity(resident_slots.len());
+        for resident in resident_slots {
             let start = u64::try_from(cursor_fp / P)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             out.push(start);
-            let live = u128::from(*live_edges);
-            let labels = u128::from(*label_buckets);
+            let resident = u128::from(*resident);
             let start_fp = u128::from(start)
                 .checked_mul(P)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             cursor_fp = start_fp
                 .checked_add(
-                    live.checked_mul(P)
+                    resident
+                        .checked_mul(P)
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?,
                 )
-                .and_then(|cursor| {
-                    let weight = live.checked_add(labels)?;
-                    cursor.checked_add(step_fp.checked_mul(weight)?)
-                })
+                .and_then(|cursor| cursor.checked_add(step_fp.checked_mul(resident)?))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
         Ok(out)
@@ -1088,10 +1084,7 @@ where
         }
 
         let gaps = leaf_len.saturating_sub(total_resident);
-        let position_inputs: Vec<(u32, u32)> = slices
-            .iter()
-            .map(|(_, live, labels)| (*live, *labels))
-            .collect();
+        let position_inputs: Vec<u32> = slices.iter().map(|(_, resident, _)| *resident).collect();
         let vertex_starts =
             Self::calculate_labeled_leaf_vertex_positions(leaf_start, &position_inputs, gaps)?;
 
@@ -2311,6 +2304,26 @@ mod tests {
         reset_labeled_leaf_release_test_metrics,
     };
     use crate::VertexId;
+
+    #[test]
+    fn leaf_vertex_positions_use_resident_edge_slots_only() {
+        // Label-bucket descriptors live in a separate store.  Leaf edge placement
+        // must use the physical resident edge slots, including tombstone/log space,
+        // rather than descriptor count as a second capacity measure.
+        let resident_slots = [0, 1];
+        let starts =
+            LabeledLaraGraph::<TestEdge, crate::VectorMemory>::calculate_labeled_leaf_vertex_positions(
+                0,
+                &resident_slots,
+                3,
+            )
+                .expect("vertex positions should fit the leaf");
+
+        assert_eq!(starts, vec![0, 0]);
+        let leaf_end = 4u64;
+        assert_eq!(starts[1].saturating_sub(starts[0]), 0);
+        assert!(leaf_end.saturating_sub(starts[1]) >= u64::from(resident_slots[1]));
+    }
 
     /// ADR 0022 Stage 1 regression: a labeled bucket whose edge bytes live past the
     /// edge-slab leaf-0 physical block and which has spilled into the per-leaf overflow
