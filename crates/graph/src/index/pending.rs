@@ -121,6 +121,12 @@ pub(crate) fn take_pending_as_repair() -> Vec<RepairPostingOp> {
     ops
 }
 
+/// Takes all volatile property-index work in dispatch order for the durable derived-index outbox.
+/// The outbox caller supplies the mutation identity at the successful wire-DML boundary.
+pub(crate) fn take_pending_as_outbox() -> Vec<RepairPostingOp> {
+    take_pending_as_repair()
+}
+
 pub(crate) fn to_index_mutation(op: &PendingPostingOp) -> IndexPostingMutation {
     match op {
         PendingPostingOp::Insert {

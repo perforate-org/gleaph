@@ -295,9 +295,10 @@ pending work is never removed from volatile state without first becoming durable
 The pending queues themselves remain heap-only; an upgrade before a maintenance pass takes them
 into the journal cannot recover that not-yet-journaled work, so upgrade safety begins at the durable
 journal boundary rather than at enqueue time.
-Plan 0088 now provides a separate durable derived-index outbox storage region, but the DML
-finalization handoff and maintenance drain are not yet connected; until that slice is complete, the
-heap-only limitation above remains the active delivery behavior.
+Plan 0088 now provides a separate durable derived-index outbox storage region and connects the
+Router→Graph wire-DML finalization handoff to it. Maintenance promotes bounded outbox prefixes into
+the existing repair dispatcher. Ad-hoc/native transaction delivery still uses the legacy
+heap-only path until the remaining handoff work is complete.
 
 **`DROP INDEX` posting purge (ADR 0023 D6):** dropping an index removes the dropped property's
 postings from graph-index, not just the router catalog entry (closing P7, where dropped indexes

@@ -49,6 +49,12 @@ pub(crate) fn take_pending_as_repair() -> Vec<RepairPostingOp> {
     })
 }
 
+/// Takes volatile vector work for the durable derived-index outbox. Vector replay still applies
+/// the canonical incarnation/version fence when the maintenance dispatcher delivers the entry.
+pub(crate) fn take_pending_as_outbox() -> Vec<RepairPostingOp> {
+    take_pending_as_repair()
+}
+
 #[cfg(test)]
 pub(crate) fn pending_snapshot() -> Vec<VectorEmbeddingSyncOp> {
     PENDING.with(|p| p.borrow().clone())
