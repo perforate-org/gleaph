@@ -59,7 +59,7 @@ gleaph-gql = { workspace = true }
 gleaph-gql-planner = { path = "../gql-planner", features = ["plan-wire"] }
 gleaph-gql-ic.workspace = true
 gleaph-graph-kernel.workspace = true
-gleaph-router = { path = "../router" }
+gleaph-router = { path = "../router", features = ["pocket-ic-e2e"] }
 gleaph-social-demo-gateway = { path = "../social-demo-gateway" }
 gleaph-provision = { path = "../provision" }
 pocket-ic = "15.0.0"

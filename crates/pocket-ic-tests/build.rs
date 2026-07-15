@@ -187,7 +187,12 @@ fn build_wasm(manifest_dir: &Path) {
         .exec()
         .expect("cargo metadata");
     let root = meta.workspace_root;
-    let target_dir = root.join("target");
+    // Keep PocketIC wasm builds in their own target directory so a manual
+    // `cargo build -p gleaph-router --target wasm32-unknown-unknown` (without
+    // the pocket-ic-e2e feature) cannot pollute the artifacts the E2E suite
+    // loads. The outer cargo invocation also uses the workspace target/ dir;
+    // isolation prevents feature-resolution and incremental-cache conflicts.
+    let target_dir = root.join("target").join("pocket-ic-wasm");
     let wasm_target = "wasm32-unknown-unknown";
 
     let build_args = vec![
@@ -276,5 +281,9 @@ fn build_wasm(manifest_dir: &Path) {
 fn set_wasm_env(var: &str, path: PathBuf) {
     assert!(path.is_file(), "missing wasm artifact: {}", path.display());
     println!("cargo:rustc-env={var}={}", path.display());
-    println!("cargo:rerun-if-changed={}", path.display());
+    // Intentionally do NOT print cargo:rerun-if-changed for the wasm output.
+    // Otherwise a wasm built without the pocket-ic-e2e feature (e.g. a manual
+    // cargo build) is treated as up-to-date and the test suite loads a stale
+    // artifact that lacks test-only update methods such as
+    // test_declare_unique_constraint.
 }
