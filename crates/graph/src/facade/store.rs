@@ -19,6 +19,7 @@
 mod adjacency;
 mod catalogs;
 mod delete;
+mod derived_index_outbox;
 mod edge_alias;
 mod edge_inline_value;
 mod edge_insert;

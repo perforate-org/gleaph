@@ -694,6 +694,9 @@ operation against canonical Graph state and retains the incarnation/version fenc
 dispatch grouping changes.
 The vector pending queue is likewise heap-only until a flush or maintenance pass journalizes it;
 an upgrade before that boundary is not a replayable vector-index failure.
+Plan 0088 has added the durable outbox storage primitive, but vector DML handoff and maintenance
+draining are not yet connected; this document therefore continues to describe the current
+heap-only delivery boundary until that implementation slice completes.
 
 Derived vector-index lag follows the same high-level rule as other derived indexes: canonical graph
 state wins when derived state disagrees.

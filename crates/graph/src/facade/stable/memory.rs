@@ -87,6 +87,9 @@ const VERTEX_EMBEDDINGS: MemoryId = MemoryId::new(44);
 // --- Delete-spanning embedding incarnation high-water marks (ADR 0031 Slice 4) (1 memory) ---
 const VERTEX_EMBEDDING_INCARNATIONS: MemoryId = MemoryId::new(45);
 
+// --- Durable derived-index outbox (0088) (1 memory) ---
+const DERIVED_INDEX_OUTBOX: MemoryId = MemoryId::new(46);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial slab capacity for both labeled orientations (grows as needed).
@@ -112,6 +115,8 @@ pub(crate) type StableRepairJournal = super::repair_journal::RepairJournal<Memor
 pub(crate) type StableUniqueEffectOutbox = super::unique_effect_outbox::UniqueEffectOutbox<Memory>;
 /// Graph-shard-local unique values for `ShardLocalGlobal` constraints (ADR 0030 slice 10).
 pub(crate) type StableGraphLocalUniqueTable = super::local_unique::GraphLocalUniqueTable<Memory>;
+/// Durable derived-index operations awaiting their first delivery attempt (0088).
+pub(crate) type StableDerivedIndexOutbox = super::derived_index_outbox::DerivedIndexOutbox<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -241,5 +246,11 @@ pub(crate) fn init_unique_effect_outbox() -> StableUniqueEffectOutbox {
 pub(crate) fn init_graph_local_unique_table() -> StableGraphLocalUniqueTable {
     super::local_unique::GraphLocalUniqueTable::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(GRAPH_LOCAL_UNIQUE_VALUES)),
+    )
+}
+
+pub(crate) fn init_derived_index_outbox() -> StableDerivedIndexOutbox {
+    super::derived_index_outbox::DerivedIndexOutbox::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(DERIVED_INDEX_OUTBOX)),
     )
 }

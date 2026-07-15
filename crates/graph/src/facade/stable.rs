@@ -9,6 +9,7 @@ use std::cell::RefCell;
 pub(crate) mod layout;
 pub(crate) mod memory;
 
+pub(crate) mod derived_index_outbox;
 pub(crate) mod edge_alias;
 pub(crate) mod edge_properties;
 pub(crate) mod label_stats_delta;
@@ -72,6 +73,9 @@ thread_local! {
 
     pub(crate) static GRAPH_LOCAL_UNIQUE_VALUES: RefCell<memory::StableGraphLocalUniqueTable> =
         RefCell::new(memory::init_graph_local_unique_table());
+
+    pub(crate) static DERIVED_INDEX_OUTBOX: RefCell<memory::StableDerivedIndexOutbox> =
+        RefCell::new(memory::init_derived_index_outbox());
 }
 
 /// Forces the stable graph to initialize now. Called from `post_upgrade` so a

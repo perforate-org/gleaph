@@ -243,7 +243,7 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–45), 46 regions. Baseline: ADR 0007 §2 / ADR 0008.
+/// Graph canister — LARA bundle (0–31) + facade (32–46), 47 regions. Baseline: ADR 0007 §2 / ADR 0008.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
@@ -634,6 +634,15 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              embedding identity. Retained across remove so a reinsert allocates a strictly greater \
              incarnation; the vector canister orders derived sync by (incarnation, version) so a \
              stale remove can never tombstone a newer live vector",
+            RebuildPath::None,
+        ),
+        // Durable derived-index outbox (0088)
+        region(
+            "DERIVED_INDEX_OUTBOX",
+            46,
+            StableMemoryClass::Maintenance,
+            "federated index delivery",
+            "Durable FIFO of derived property, label, and vector-index operations awaiting delivery",
             RebuildPath::None,
         ),
     ],
@@ -1529,8 +1538,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 46);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(45));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 47);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(46));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
@@ -1552,6 +1561,10 @@ mod tests {
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[45].symbol,
             "VERTEX_EMBEDDING_INCARNATIONS"
+        );
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[46].symbol,
+            "DERIVED_INDEX_OUTBOX"
         );
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,
