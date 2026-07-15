@@ -243,6 +243,7 @@ seed_social_graph() {
     CARGO_HOME="$CARGO_HOME" \
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     ICP_IDENTITY_NAME="$deployer_id" \
+    SEED_MAX_ITEMS=50 \
     node "$ROOT/frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs" \
       "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
 }
