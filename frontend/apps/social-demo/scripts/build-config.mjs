@@ -415,8 +415,9 @@ for (const post of posts) {
 }
 
 // Materialized feed edges are derived from canonical POSTED, FOLLOWS, and is_public.
-// They are emitted oldest-first so the default descending fixed-label scan returns
-// newest posts first without an ORDER BY.
+// Their insertion order is deterministic and mixed per recipient so a feed does not
+// present one author's posts as a contiguous block. The fixed-label scan reverses this
+// sequence for the displayed order without a runtime sort key.
 const publicFeed = feeds.find((feed) => feed.id === "public-feed");
 if (!publicFeed) {
   throw new Error("Missing public-feed definition");
@@ -459,15 +460,34 @@ for (const post of posts) {
     });
   }
 }
-const feedOrderByPostId = new Map(
-  posts.map((post, index) => [post.id, index]),
-);
-homeFeedEntries.sort((a, b) => {
-  const orderA = feedOrderByPostId.get(a.postId);
-  const orderB = feedOrderByPostId.get(b.postId);
-  if (orderA !== orderB) return orderB - orderA;
-  return `${a.userId}/${a.fileStem}`.localeCompare(`${b.userId}/${b.fileStem}`);
-});
+const mixedHomeFeedEntries = [];
+for (const recipientId of new Set(homeFeedEntries.map((entry) => entry.recipientId))) {
+  const recipientEntries = homeFeedEntries
+    .filter((entry) => entry.recipientId === recipientId)
+    .sort((a, b) => {
+      const hashA = sha256Hex(`social-demo:home-feed-order:${recipientId}:${a.postId}`);
+      const hashB = sha256Hex(`social-demo:home-feed-order:${recipientId}:${b.postId}`);
+      return hashA.localeCompare(hashB);
+    });
+
+  // A feed has its own author mix because a viewer sees only a subset of the
+  // global post stream. Keep the order deterministic while avoiding adjacent
+  // posts from the same author whenever another author is available.
+  for (let index = 1; index < recipientEntries.length; index += 1) {
+    if (recipientEntries[index - 1].userId !== recipientEntries[index].userId) continue;
+    const replacement = recipientEntries.findIndex(
+      (entry, candidate) => candidate > index && entry.userId !== recipientEntries[index].userId,
+    );
+    if (replacement >= 0) {
+      [recipientEntries[index], recipientEntries[replacement]] = [
+        recipientEntries[replacement],
+        recipientEntries[index],
+      ];
+    }
+  }
+  mixedHomeFeedEntries.push(...recipientEntries);
+}
+homeFeedEntries.splice(0, homeFeedEntries.length, ...mixedHomeFeedEntries);
 
 for (const entry of homeFeedEntries) {
   const edgeId = `${entry.postId}-in-home-${entry.recipientId}`;

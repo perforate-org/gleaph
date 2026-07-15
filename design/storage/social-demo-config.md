@@ -128,8 +128,9 @@ truth for the emitted artifacts:
 3. Walk `config/feeds/*.yaml` for layer-0 Feed nodes.
 4. Derive all canonical edges from `follows`, `memberships`, `topics`, and `reply_to` fields.
 5. Derive materialized feed edges `IN_PUBLIC_FEED` and `IN_HOME_FEED` from
-   canonical `POSTED`, `FOLLOWS`, and `is_public` facts, emitting them oldest-first
-   so the Graph's default descending fixed-label scan returns newest posts first.
+   canonical `POSTED`, `FOLLOWS`, and `is_public` facts, emitting a deterministic
+   author-mixed order per recipient so the Graph's fixed-label scan does not group
+   one author's posts together.
 6. Emit ordinary edge `INSERT` mutations. Graph-owned deferred storage prepares a
    dense leaf before the next write, so source fan-out is not a seed-writer concern.
 7. Emit `social-graph.json` and `social-seeds.json` in the exact shape consumed
@@ -140,8 +141,10 @@ truth for the emitted artifacts:
 ## Deterministic post id allocator and ordering
 
 Post graph keys and numeric `demo_id` values are allocated by `<user>/<stem>` lexical order;
-feed-edge insertion is independently ordered by `created_at`. Both deterministic passes make
-re-running the build reproduce the same `social-graph.json` byte-for-byte. The deterministic walk applies to:
+feed-edge insertion is independently ordered by a deterministic hash of the recipient and post,
+with adjacent same-author entries swapped when another author is available. Both deterministic
+passes make re-running the build reproduce the same `social-graph.json` byte-for-byte. The
+deterministic walk applies to:
 
 - User directories (alphabetical).
 - Community and topic files (alphabetical by id).
@@ -172,11 +175,10 @@ by hand:
   every User that follows that author. Recipient ids are de-duplicated, so a self-follow cannot
   create a duplicate home-feed edge.
 
-Both labels are materialized oldest-first (sorted by `created_at`, ties broken by
-`<user>/<fileStem>`). The seed executor inserts edges in manifest order, so Gleaph's
-labeled-edge store records insertion order. The default descending fixed-label scan
-(`OutEdgeOrder::Descending`) then returns newest posts first without an explicit
-`ORDER BY`. `ORDER BY created_at DESC` is therefore no longer required in the
+Both labels are materialized in deterministic author-mixed order. The seed executor inserts edges
+in manifest order, so Gleaph's labeled-edge store records insertion order. The default descending
+fixed-label scan (`OutEdgeOrder::Descending`) then returns the reverse of that sequence without an
+explicit `ORDER BY`. `ORDER BY created_at DESC` is therefore no longer required in the
 `PublicTimeline` and `AliceHomeFeed` prepared queries.
 
 The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
