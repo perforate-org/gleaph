@@ -49,9 +49,6 @@ pub(super) fn ensure_intersection_specs(specs: &[IndexEqualSpec]) -> Result<(), 
     Ok(())
 }
 
-/// Default cap on groups returned by [`IndexStore::count_postings_by_value`].
-pub const DEFAULT_COUNT_POSTINGS_MAX_GROUPS: usize = 10_000;
-
 /// Default page size for [`IndexStore::lookup_label_page`].
 pub const DEFAULT_LABEL_LOOKUP_PAGE_LIMIT: usize = 10_000;
 

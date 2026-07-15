@@ -2,14 +2,13 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::index::{
-    EdgePostingHitPage, IndexIntersectionRequest, IndexIntersectionResult,
-    IndexLabelIntersectionRequest, LabelIntersectionPageRequest, LabelLookupPageRequest,
-    LabelLookupPageResult, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
-    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
-    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest,
-    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
-    PropertyIntersectionPage, ValuePostingCountPage,
+    EdgePostingHitPage, IndexLabelIntersectionRequest, LabelIntersectionPageRequest,
+    LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
+    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
+    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
+    LookupRangePageForLabelRequest, LookupValuePostingCountPageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyIntersectionPage, ValuePostingCountPage,
 };
 
 #[derive(Clone, Debug)]
@@ -433,30 +432,6 @@ impl RouterIndexClient {
         {
             let _ = req;
             Err("lookup_label_intersection unavailable in native builds".into())
-        }
-    }
-
-    pub async fn lookup_intersection(
-        &self,
-        req: IndexIntersectionRequest,
-    ) -> Result<IndexIntersectionResult, String> {
-        #[cfg(target_family = "wasm")]
-        {
-            use ic_cdk::call::Call;
-
-            let result: IndexIntersectionResult =
-                Call::bounded_wait(self.index_canister, "lookup_intersection")
-                    .with_args(&(req,))
-                    .await
-                    .map_err(|e| format!("lookup_intersection: {e}"))?
-                    .candid()
-                    .map_err(|e| format!("lookup_intersection decode: {e}"))?;
-            Ok(result)
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let _ = req;
-            Err("lookup_intersection unavailable in native builds".into())
         }
     }
 }

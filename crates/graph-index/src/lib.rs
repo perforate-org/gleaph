@@ -30,15 +30,15 @@ pub use edge_key::EdgePostingKey;
 pub use facade::IndexStore;
 pub use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexEqualSpec,
-    IndexIntersectionRequest, IndexIntersectionResult, IndexLabelIntersectionRequest,
-    IndexPostingBatchProgress, IndexPostingMutation, IndexSubject, LabelIntersectionPageRequest,
-    LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest,
-    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
-    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
-    PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
-    PropertyPostingCursor, ValuePostingCount, ValuePostingCountCursor, ValuePostingCountPage,
+    IndexLabelIntersectionRequest, IndexPostingBatchProgress, IndexPostingMutation, IndexSubject,
+    LabelIntersectionPageRequest, LabelLookupPageRequest, LabelLookupPageResult,
+    LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
+    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
+    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
+    PropertyIntersectionPage, PropertyPostingCursor, ValuePostingCountCursor,
+    ValuePostingCountPage,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -245,11 +245,6 @@ fn lookup_label_intersection_page(req: LabelIntersectionPageRequest) -> LabelLoo
 }
 
 #[query(guard = "guard_router_canister")]
-fn lookup_intersection(req: IndexIntersectionRequest) -> IndexIntersectionResult {
-    canister::lookup_intersection(req)
-}
-
-#[query(guard = "guard_router_canister")]
 fn lookup_label_intersection(req: IndexLabelIntersectionRequest) -> Vec<PostingHit> {
     canister::lookup_label_intersection(req)
 }
@@ -257,15 +252,6 @@ fn lookup_label_intersection(req: IndexLabelIntersectionRequest) -> Vec<PostingH
 #[query(guard = "guard_router_canister")]
 fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
     canister::lookup_range(property_id, req)
-}
-
-#[query(guard = "guard_router_canister")]
-fn count_postings_by_value(
-    property_id: u32,
-    min_count: u64,
-    vertex_filter_packed: Option<Vec<u64>>,
-) -> Vec<ValuePostingCount> {
-    canister::count_postings_by_value(property_id, min_count, vertex_filter_packed)
 }
 
 #[query(guard = "guard_router_canister")]
@@ -315,15 +301,6 @@ fn lookup_range_intersection_page_for_label(
     req: LookupRangeIntersectionPageForLabelRequest,
 ) -> PostingHitPage {
     canister::lookup_range_intersection_page_for_label(req)
-}
-
-#[query(guard = "guard_router_canister")]
-fn count_postings_by_value_for_label(
-    property_id: u32,
-    vertex_label_id: u32,
-    min_count: u64,
-) -> Vec<ValuePostingCount> {
-    canister::count_postings_by_value_for_label(property_id, vertex_label_id, min_count)
 }
 
 ic_cdk::export_candid!();

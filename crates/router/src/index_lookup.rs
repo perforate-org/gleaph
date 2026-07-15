@@ -13,7 +13,7 @@ use gleaph_graph_kernel::index::{
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
     LookupEqualPageRequest, LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
     LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, PostingHit,
-    PropertyIntersectionPage, ValuePostingCount, ValuePostingCountPage,
+    ValuePostingCount, ValuePostingCountPage,
 };
 
 use crate::facade::store::RouterStore;
@@ -79,6 +79,44 @@ async fn collect_value_count_pages_for_label(
         after = page.next;
     }
     Ok(counts)
+}
+
+async fn collect_property_intersection_pages(
+    client: &RouterIndexClient,
+    specs: Vec<IndexEqualSpec>,
+) -> Result<IndexIntersectionResult, String> {
+    let mut vertices = Vec::new();
+    let mut edges = Vec::new();
+    let mut after = None;
+    let mut shape = None;
+    loop {
+        let page = client
+            .lookup_property_intersection_page(LookupPropertyIntersectionPageRequest {
+                specs: specs.clone(),
+                after,
+                limit: INDEX_LOOKUP_PAGE_LIMIT,
+            })
+            .await?;
+        match page.hits {
+            IndexIntersectionResult::Vertices(hits) => {
+                shape.get_or_insert(false);
+                vertices.extend(hits);
+            }
+            IndexIntersectionResult::Edges(hits) => {
+                shape.get_or_insert(true);
+                edges.extend(hits);
+            }
+        }
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    Ok(if shape.unwrap_or(false) {
+        IndexIntersectionResult::Edges(edges)
+    } else {
+        IndexIntersectionResult::Vertices(vertices)
+    })
 }
 
 /// Collect all equality hits for `(property_id, value)` on one index canister by paging, so the
@@ -370,7 +408,7 @@ impl IndexLookup for RouterIndexClient {
                 let hits = collect_vertex_intersection_hits_paged(self, &req.specs).await?;
                 return Ok(IndexIntersectionResult::Vertices(merge_posting_hits(hits)));
             }
-            self.lookup_intersection(req).await
+            collect_property_intersection_pages(self, req.specs).await
         })
     }
 
@@ -479,41 +517,14 @@ impl IndexLookup for RouterIndexLookup {
         };
         Box::pin(async move {
             let client = RouterIndexClient::new(principal);
-            let mut vertices = Vec::new();
-            let mut edges = Vec::new();
-            let mut after = None;
-            let mut shape = None;
-            loop {
-                let page: PropertyIntersectionPage = client
-                    .lookup_property_intersection_page(LookupPropertyIntersectionPageRequest {
-                        specs: req.specs.clone(),
-                        after,
-                        limit: 10_000,
-                    })
-                    .await?;
-                match page.hits {
-                    IndexIntersectionResult::Vertices(hits) => {
-                        shape.get_or_insert(false);
-                        vertices.extend(hits);
-                    }
-                    IndexIntersectionResult::Edges(hits) => {
-                        shape.get_or_insert(true);
-                        edges.extend(hits);
-                    }
-                }
-                if page.done {
-                    break;
-                }
-                after = page.next;
-            }
-            Ok(if shape.unwrap_or(false) {
-                IndexIntersectionResult::Edges(merge_edge_posting_hits(
-                    self.retain_live_edge_hits(edges),
-                ))
-            } else {
-                IndexIntersectionResult::Vertices(merge_posting_hits(
-                    self.retain_live_vertex_hits(vertices),
-                ))
+            let result = collect_property_intersection_pages(&client, req.specs).await?;
+            Ok(match result {
+                IndexIntersectionResult::Vertices(hits) => IndexIntersectionResult::Vertices(
+                    merge_posting_hits(self.retain_live_vertex_hits(hits)),
+                ),
+                IndexIntersectionResult::Edges(hits) => IndexIntersectionResult::Edges(
+                    merge_edge_posting_hits(self.retain_live_edge_hits(hits)),
+                ),
             })
         })
     }

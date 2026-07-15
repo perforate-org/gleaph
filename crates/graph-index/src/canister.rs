@@ -1,6 +1,6 @@
 //! Canister request handlers for `gleaph-graph-index`.
 
-use crate::facade::{DEFAULT_COUNT_POSTINGS_MAX_GROUPS, IndexStore};
+use crate::facade::IndexStore;
 use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
@@ -10,14 +10,13 @@ use gleaph_graph_kernel::federation::{
     ShardDetachStepResult, ShardId,
 };
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, IndexPostingBatchProgress,
-    IndexPostingMutation, LabelIntersectionPageRequest, LookupEdgeEqualPageRequest,
-    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
-    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
-    PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage, ValuePostingCount,
-    ValuePostingCountPage,
+    EdgePostingHit, EdgePostingHitPage, IndexPostingBatchProgress, IndexPostingMutation,
+    LabelIntersectionPageRequest, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
+    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
+    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
+    PropertyIntersectionPage, ValuePostingCountPage,
 };
 use ic_cdk::api::msg_caller;
 
@@ -340,17 +339,6 @@ pub(crate) fn lookup_edge_equal_page(req: LookupEdgeEqualPageRequest) -> EdgePos
         })
 }
 
-pub(crate) fn lookup_intersection(
-    req: gleaph_graph_kernel::index::IndexIntersectionRequest,
-) -> IndexIntersectionResult {
-    IndexStore::new()
-        .lookup_intersection(&req)
-        .unwrap_or_else(|e| {
-            trap_err(e);
-            unreachable!()
-        })
-}
-
 pub(crate) fn lookup_label_intersection(
     req: gleaph_graph_kernel::index::IndexLabelIntersectionRequest,
 ) -> Vec<PostingHit> {
@@ -364,21 +352,6 @@ pub(crate) fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<Po
             trap_err(e);
             unreachable!()
         })
-}
-
-pub(crate) fn count_postings_by_value(
-    property_id: u32,
-    min_count: u64,
-    vertex_filter_packed: Option<Vec<u64>>,
-) -> Vec<ValuePostingCount> {
-    let filter: Option<nohash_hasher::IntSet<u64>> =
-        vertex_filter_packed.map(|packed| packed.into_iter().collect());
-    IndexStore::new().count_postings_by_value(
-        property_id,
-        min_count,
-        DEFAULT_COUNT_POSTINGS_MAX_GROUPS,
-        filter.as_ref(),
-    )
 }
 
 pub(crate) fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) -> Vec<PostingHit> {
@@ -436,19 +409,6 @@ pub(crate) fn lookup_range_intersection_page_for_label(
             trap_err(e);
             unreachable!()
         })
-}
-
-pub(crate) fn count_postings_by_value_for_label(
-    property_id: u32,
-    vertex_label_id: u32,
-    min_count: u64,
-) -> Vec<ValuePostingCount> {
-    IndexStore::new().count_postings_by_value_for_label(
-        property_id,
-        vertex_label_id,
-        min_count,
-        DEFAULT_COUNT_POSTINGS_MAX_GROUPS,
-    )
 }
 
 pub(crate) fn count_postings_by_value_page(
