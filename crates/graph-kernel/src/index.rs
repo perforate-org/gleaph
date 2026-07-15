@@ -225,6 +225,32 @@ pub struct ValuePostingCount {
     pub count: u64,
 }
 
+/// Resume cursor for grouped count scans. The next page starts strictly after this value.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct ValuePostingCountCursor {
+    pub encoded_value: Vec<u8>,
+}
+
+/// Maximum groups returned by one grouped-count page. At the maximum encoded value width this
+/// keeps the value payload below the conservative 2 MiB inter-canister budget with headroom.
+pub const MAX_VALUE_POSTING_COUNT_PAGE_GROUPS: u32 = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupValuePostingCountPageRequest {
+    pub property_id: u32,
+    pub min_count: u64,
+    pub vertex_filter_packed: Option<Vec<u64>>,
+    pub after: Option<ValuePostingCountCursor>,
+    pub limit: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct ValuePostingCountPage {
+    pub counts: Vec<ValuePostingCount>,
+    pub next: Option<ValuePostingCountCursor>,
+    pub done: bool,
+}
+
 /// Resume cursor for paginated vertex property exports (last posting from the prior page).
 ///
 /// Carries `value` because range scans span multiple encoded values; equality scans repeat the

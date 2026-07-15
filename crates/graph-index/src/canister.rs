@@ -15,8 +15,9 @@ use gleaph_graph_kernel::index::{
     LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
     LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
     LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, PropertyIntersectionPage, ValuePostingCount,
+    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
+    PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage, ValuePostingCount,
+    ValuePostingCountPage,
 };
 use ic_cdk::api::msg_caller;
 
@@ -448,4 +449,17 @@ pub(crate) fn count_postings_by_value_for_label(
         min_count,
         DEFAULT_COUNT_POSTINGS_MAX_GROUPS,
     )
+}
+
+pub(crate) fn count_postings_by_value_page(
+    req: LookupValuePostingCountPageRequest,
+) -> ValuePostingCountPage {
+    IndexStore::new().count_postings_by_value_page(&req)
+}
+
+pub(crate) fn count_postings_by_value_for_label_page(
+    req: LookupValuePostingCountPageRequest,
+    vertex_label_id: u32,
+) -> ValuePostingCountPage {
+    IndexStore::new().count_postings_by_value_for_label_page(&req, vertex_label_id)
 }

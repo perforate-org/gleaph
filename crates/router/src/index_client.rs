@@ -7,8 +7,9 @@ use gleaph_graph_kernel::index::{
     LabelLookupPageResult, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
     LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
     LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, PropertyIntersectionPage, ValuePostingCount,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest,
+    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
+    PropertyIntersectionPage, ValuePostingCountPage,
 };
 
 #[derive(Clone, Debug)]
@@ -114,29 +115,49 @@ impl RouterIndexClient {
         }
     }
 
-    pub async fn count_postings_by_value(
+    pub async fn count_postings_by_value_page(
         &self,
-        property_id: u32,
-        min_count: u64,
-        vertex_filter_packed: Option<Vec<u64>>,
-    ) -> Result<Vec<ValuePostingCount>, String> {
+        req: LookupValuePostingCountPageRequest,
+    ) -> Result<ValuePostingCountPage, String> {
         #[cfg(target_family = "wasm")]
         {
             use ic_cdk::call::Call;
-
-            let counts: Vec<ValuePostingCount> =
-                Call::bounded_wait(self.index_canister, "count_postings_by_value")
-                    .with_args(&(property_id, min_count, vertex_filter_packed))
-                    .await
-                    .map_err(|e| format!("count_postings_by_value: {e}"))?
-                    .candid()
-                    .map_err(|e| format!("count_postings_by_value decode: {e}"))?;
-            Ok(counts)
+            Call::bounded_wait(self.index_canister, "count_postings_by_value_page")
+                .with_args(&(req,))
+                .await
+                .map_err(|e| format!("count_postings_by_value_page: {e}"))?
+                .candid()
+                .map_err(|e| format!("count_postings_by_value_page decode: {e}"))
         }
         #[cfg(not(target_family = "wasm"))]
         {
-            let _ = (property_id, min_count, vertex_filter_packed);
-            Err("count_postings_by_value unavailable in native builds".into())
+            let _ = req;
+            Err("count_postings_by_value_page unavailable in native builds".into())
+        }
+    }
+
+    pub async fn count_postings_by_value_for_label_page(
+        &self,
+        req: LookupValuePostingCountPageRequest,
+        vertex_label_id: u32,
+    ) -> Result<ValuePostingCountPage, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+            Call::bounded_wait(
+                self.index_canister,
+                "count_postings_by_value_for_label_page",
+            )
+            .with_args(&(req, vertex_label_id))
+            .await
+            .map_err(|e| format!("count_postings_by_value_for_label_page: {e}"))?
+            .candid()
+            .map_err(|e| format!("count_postings_by_value_for_label_page decode: {e}"))
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = (req, vertex_label_id);
+            Err("count_postings_by_value_for_label_page unavailable in native builds".into())
         }
     }
 
@@ -313,32 +334,6 @@ impl RouterIndexClient {
         {
             let _ = req;
             Err("lookup_range_intersection_page_for_label unavailable in native builds".into())
-        }
-    }
-
-    pub async fn count_postings_by_value_for_label(
-        &self,
-        property_id: u32,
-        vertex_label_id: u32,
-        min_count: u64,
-    ) -> Result<Vec<ValuePostingCount>, String> {
-        #[cfg(target_family = "wasm")]
-        {
-            use ic_cdk::call::Call;
-
-            let counts: Vec<ValuePostingCount> =
-                Call::bounded_wait(self.index_canister, "count_postings_by_value_for_label")
-                    .with_args(&(property_id, vertex_label_id, min_count))
-                    .await
-                    .map_err(|e| format!("count_postings_by_value_for_label: {e}"))?
-                    .candid()
-                    .map_err(|e| format!("count_postings_by_value_for_label decode: {e}"))?;
-            Ok(counts)
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let _ = (property_id, vertex_label_id, min_count);
-            Err("count_postings_by_value_for_label unavailable in native builds".into())
         }
     }
 

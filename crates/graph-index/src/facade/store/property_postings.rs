@@ -15,8 +15,10 @@ use gleaph_graph_kernel::index::{
     IndexSubject, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
     LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
     LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
-    PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
+    MAX_EQUALITY_INTERSECTION_ARMS, MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit,
+    PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+    ValuePostingCountCursor, ValuePostingCountPage,
 };
 use nohash_hasher::IntSet;
 use std::ops::Bound;
@@ -36,6 +38,77 @@ pub(crate) fn equal_sieve_dense_threshold_met(hits: &[PostingHit]) -> bool {
         .saturating_sub(first.vertex_id)
         .saturating_add(1) as usize;
     first.shard_id == last.shard_id && span <= hits.len().saturating_mul(4)
+}
+
+fn grouped_count_page<I>(
+    values: I,
+    min_count: u64,
+    after: Option<&ValuePostingCountCursor>,
+    limit: u32,
+) -> ValuePostingCountPage
+where
+    I: Iterator<Item = Vec<u8>>,
+{
+    let limit = limit.clamp(1, MAX_VALUE_POSTING_COUNT_PAGE_GROUPS) as usize;
+    let mut groups = Vec::with_capacity(limit.saturating_add(1));
+    let mut current_value = None;
+    let mut current_count = 0u64;
+    for value in values {
+        if after.is_some_and(|cursor| value <= cursor.encoded_value) {
+            continue;
+        }
+        match current_value.as_ref() {
+            None => {
+                current_value = Some(value);
+                current_count = 1;
+            }
+            Some(current) if current == &value => {
+                current_count = current_count.saturating_add(1);
+            }
+            Some(_) => {
+                if current_count >= min_count {
+                    groups.push(ValuePostingCount {
+                        encoded_value: current_value.take().expect("current value"),
+                        count: current_count,
+                    });
+                } else {
+                    current_value.take();
+                }
+                current_value = Some(value);
+                current_count = 1;
+                if groups.len() > limit {
+                    break;
+                }
+            }
+        }
+    }
+    if groups.len() <= limit
+        && let Some(value) = current_value
+        && current_count >= min_count
+    {
+        groups.push(ValuePostingCount {
+            encoded_value: value,
+            count: current_count,
+        });
+    }
+
+    if groups.len() > limit {
+        let next = ValuePostingCountCursor {
+            encoded_value: groups[limit - 1].encoded_value.clone(),
+        };
+        groups.truncate(limit);
+        ValuePostingCountPage {
+            counts: groups,
+            next: Some(next),
+            done: false,
+        }
+    } else {
+        ValuePostingCountPage {
+            counts: groups,
+            next: None,
+            done: true,
+        }
+    }
 }
 
 impl IndexStore {
@@ -375,6 +448,73 @@ impl IndexStore {
             flush(value, current_count, &mut out);
         }
         out
+    }
+
+    pub fn count_postings_by_value_page(
+        &self,
+        req: &LookupValuePostingCountPageRequest,
+    ) -> ValuePostingCountPage {
+        let Some((low, high)) = property_posting_bucket(req.property_id) else {
+            return ValuePostingCountPage {
+                counts: Vec::new(),
+                next: None,
+                done: true,
+            };
+        };
+        let filter = req
+            .vertex_filter_packed
+            .as_ref()
+            .map(|packed| packed.iter().copied().collect::<IntSet<u64>>());
+        INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
+            grouped_count_page(
+                postings.range(low..high).filter_map(|key| {
+                    if filter.as_ref().is_some_and(|filter| {
+                        !filter.contains(&pack_posting_vertex(key.shard_id, key.vertex_id))
+                    }) {
+                        None
+                    } else {
+                        Some(key.value.clone())
+                    }
+                }),
+                req.min_count,
+                req.after.as_ref(),
+                req.limit,
+            )
+        })
+    }
+
+    pub fn count_postings_by_value_for_label_page(
+        &self,
+        req: &LookupValuePostingCountPageRequest,
+        vertex_label_id: u32,
+    ) -> ValuePostingCountPage {
+        let Some((low, high)) = property_posting_bucket(req.property_id) else {
+            return ValuePostingCountPage {
+                counts: Vec::new(),
+                next: None,
+                done: true,
+            };
+        };
+        INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
+            INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|labels| {
+                grouped_count_page(
+                    postings.range(low..high).filter_map(|key| {
+                        if !labels.contains(&LabelPostingKey {
+                            vertex_label_id,
+                            shard_id: key.shard_id,
+                            vertex_id: key.vertex_id,
+                        }) {
+                            None
+                        } else {
+                            Some(key.value.clone())
+                        }
+                    }),
+                    req.min_count,
+                    req.after.as_ref(),
+                    req.limit,
+                )
+            })
+        })
     }
 
     /// Point-lookup equality sieve bounded by the number of input hits.

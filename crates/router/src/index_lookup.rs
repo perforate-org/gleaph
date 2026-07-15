@@ -12,7 +12,8 @@ use gleaph_graph_kernel::index::{
     IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
     LookupEqualPageRequest, LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
-    MAX_EQUALITY_INTERSECTION_ARMS, PostingHit, PropertyIntersectionPage, ValuePostingCount,
+    LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, PostingHit,
+    PropertyIntersectionPage, ValuePostingCount, ValuePostingCountPage,
 };
 
 use crate::facade::store::RouterStore;
@@ -21,6 +22,64 @@ use crate::index_client::RouterIndexClient;
 /// Page size for paginated property / edge equality exports during seed routing. Bounds the
 /// per-message materialization on the index canister (no full-bucket heap materialization).
 const INDEX_LOOKUP_PAGE_LIMIT: u32 = 10_000;
+const COUNT_LOOKUP_PAGE_LIMIT: u32 = 256;
+
+async fn collect_value_count_pages(
+    client: &RouterIndexClient,
+    property_id: u32,
+    min_count: u64,
+    vertex_filter_packed: Option<Vec<u64>>,
+) -> Result<Vec<ValuePostingCount>, String> {
+    let mut counts = Vec::new();
+    let mut after = None;
+    loop {
+        let page: ValuePostingCountPage = client
+            .count_postings_by_value_page(LookupValuePostingCountPageRequest {
+                property_id,
+                min_count,
+                vertex_filter_packed: vertex_filter_packed.clone(),
+                after,
+                limit: COUNT_LOOKUP_PAGE_LIMIT,
+            })
+            .await?;
+        counts.extend(page.counts);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    Ok(counts)
+}
+
+async fn collect_value_count_pages_for_label(
+    client: &RouterIndexClient,
+    property_id: u32,
+    vertex_label_id: u32,
+    min_count: u64,
+) -> Result<Vec<ValuePostingCount>, String> {
+    let mut counts = Vec::new();
+    let mut after = None;
+    loop {
+        let page: ValuePostingCountPage = client
+            .count_postings_by_value_for_label_page(
+                LookupValuePostingCountPageRequest {
+                    property_id,
+                    min_count,
+                    vertex_filter_packed: None,
+                    after,
+                    limit: COUNT_LOOKUP_PAGE_LIMIT,
+                },
+                vertex_label_id,
+            )
+            .await?;
+        counts.extend(page.counts);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    Ok(counts)
+}
 
 /// Collect all equality hits for `(property_id, value)` on one index canister by paging, so the
 /// index never builds a full-bucket `Vec` in a single query message.
@@ -335,7 +394,12 @@ impl IndexLookup for RouterIndexClient {
         min_count: u64,
         vertex_filter_packed: Option<Vec<u64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
-        Box::pin(self.count_postings_by_value(property_id, min_count, vertex_filter_packed))
+        Box::pin(collect_value_count_pages(
+            self,
+            property_id,
+            min_count,
+            vertex_filter_packed,
+        ))
     }
 
     fn lookup_label_page(
@@ -373,7 +437,12 @@ impl IndexLookup for RouterIndexClient {
         vertex_label_id: u32,
         min_count: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
-        Box::pin(self.count_postings_by_value_for_label(property_id, vertex_label_id, min_count))
+        Box::pin(collect_value_count_pages_for_label(
+            self,
+            property_id,
+            vertex_label_id,
+            min_count,
+        ))
     }
 }
 
@@ -484,13 +553,13 @@ impl IndexLookup for RouterIndexLookup {
             let mut groups = Vec::with_capacity(targets.len());
             for principal in targets {
                 groups.push(
-                    RouterIndexClient::new(principal)
-                        .count_postings_by_value(
-                            property_id,
-                            min_count,
-                            vertex_filter_packed.clone(),
-                        )
-                        .await?,
+                    collect_value_count_pages(
+                        &RouterIndexClient::new(principal),
+                        property_id,
+                        min_count,
+                        vertex_filter_packed.clone(),
+                    )
+                    .await?,
                 );
             }
             Ok(merge_value_posting_counts(groups))
@@ -582,9 +651,13 @@ impl IndexLookup for RouterIndexLookup {
             let mut groups = Vec::with_capacity(targets.len());
             for principal in targets {
                 groups.push(
-                    RouterIndexClient::new(principal)
-                        .count_postings_by_value_for_label(property_id, vertex_label_id, min_count)
-                        .await?,
+                    collect_value_count_pages_for_label(
+                        &RouterIndexClient::new(principal),
+                        property_id,
+                        vertex_label_id,
+                        min_count,
+                    )
+                    .await?,
                 );
             }
             Ok(merge_value_posting_counts(groups))

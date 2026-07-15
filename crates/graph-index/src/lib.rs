@@ -36,8 +36,9 @@ pub use gleaph_graph_kernel::index::{
     LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
     LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
     LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, PropertyIntersectionPage, PropertyPostingCursor, ValuePostingCount,
+    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
+    PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
+    PropertyPostingCursor, ValuePostingCount, ValuePostingCountCursor, ValuePostingCountPage,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -265,6 +266,19 @@ fn count_postings_by_value(
     vertex_filter_packed: Option<Vec<u64>>,
 ) -> Vec<ValuePostingCount> {
     canister::count_postings_by_value(property_id, min_count, vertex_filter_packed)
+}
+
+#[query(guard = "guard_router_canister")]
+fn count_postings_by_value_page(req: LookupValuePostingCountPageRequest) -> ValuePostingCountPage {
+    canister::count_postings_by_value_page(req)
+}
+
+#[query(guard = "guard_router_canister")]
+fn count_postings_by_value_for_label_page(
+    req: LookupValuePostingCountPageRequest,
+    vertex_label_id: u32,
+) -> ValuePostingCountPage {
+    canister::count_postings_by_value_for_label_page(req, vertex_label_id)
 }
 
 #[query(guard = "guard_router_canister")]

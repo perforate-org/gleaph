@@ -15,7 +15,8 @@ use gleaph_graph_kernel::index::{
     LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
     LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
     LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
-    PostingHit, PostingRangeRequest, PropertyPostingCursor,
+    LookupValuePostingCountPageRequest, PostingHit, PostingRangeRequest, PropertyPostingCursor,
+    ValuePostingCountCursor,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -117,6 +118,87 @@ fn count_postings_by_value_respects_vertex_filter() {
     assert_eq!(counts.len(), 1);
     assert_eq!(counts[0].encoded_value, us);
     assert_eq!(counts[0].count, 1);
+}
+
+#[test]
+fn count_postings_by_value_page_resumes_after_value_cursor() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    for (value, vertex_id) in [(b"a", 1), (b"a", 2), (b"b", 3), (b"c", 4)] {
+        store
+            .posting_insert(shard, ShardId::new(0), 42, value.to_vec(), vertex_id)
+            .expect("posting");
+    }
+
+    let first = store.count_postings_by_value_page(&LookupValuePostingCountPageRequest {
+        property_id: 42,
+        min_count: 1,
+        vertex_filter_packed: None,
+        after: None,
+        limit: 2,
+    });
+    assert_eq!(
+        first
+            .counts
+            .iter()
+            .map(|count| count.encoded_value.clone())
+            .collect::<Vec<_>>(),
+        vec![b"a".to_vec(), b"b".to_vec()]
+    );
+    assert!(!first.done);
+
+    let second = store.count_postings_by_value_page(&LookupValuePostingCountPageRequest {
+        property_id: 42,
+        min_count: 1,
+        vertex_filter_packed: None,
+        after: first.next,
+        limit: 2,
+    });
+    assert_eq!(second.counts[0].encoded_value, b"c");
+    assert!(second.done);
+}
+
+#[test]
+fn count_postings_by_value_page_applies_label_filter_and_clamps_limit() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+    store
+        .label_posting_insert(shard, ShardId::new(0), 7, 1)
+        .expect("label 1");
+    store
+        .label_posting_insert(shard, ShardId::new(0), 7, 3)
+        .expect("label 3");
+    for (value, vertex_id) in [(b"a", 1), (b"b", 2), (b"c", 3)] {
+        store
+            .posting_insert(shard, ShardId::new(0), 42, value.to_vec(), vertex_id)
+            .expect("posting");
+    }
+
+    let page = store.count_postings_by_value_for_label_page(
+        &LookupValuePostingCountPageRequest {
+            property_id: 42,
+            min_count: 1,
+            vertex_filter_packed: None,
+            after: Some(ValuePostingCountCursor {
+                encoded_value: b"a".to_vec(),
+            }),
+            limit: u32::MAX,
+        },
+        7,
+    );
+    assert_eq!(
+        page.counts
+            .iter()
+            .map(|count| count.encoded_value.clone())
+            .collect::<Vec<_>>(),
+        vec![b"c".to_vec()]
+    );
+    assert!(page.done);
 }
 
 #[test]
