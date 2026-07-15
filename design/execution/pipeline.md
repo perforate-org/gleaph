@@ -12,6 +12,16 @@ Describe how `gleaph-graph` runs a physical plan: row representation, operator d
 - Mutation executor internals (`crates/graph/src/plan/mutation/`).
 - GQL client result serialization (router/SDK).
 
+## Result message boundary
+
+Graph materializes the last read rows into `IcWirePlanQueryResult` only for the composite query
+mode. The Graph canister validates the Candid-encoded `ExecutePlanResult` against the shared
+conservative 2 MiB cross-subnet-safe payload ceiling before returning it. Router validates each
+shard result again while merging and validates the final `GqlQueryResult` before returning it to
+the caller. These checks reject oversized results explicitly; they never truncate rows. Vector
+`SEARCH` remains bounded by `MAX_VECTOR_SEARCH_TOP_K`, but that bound applies only to search hits,
+not to later graph expansion or join cardinality.
+
 ## Entry points
 
 | API | Path |

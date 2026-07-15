@@ -223,6 +223,30 @@ async fn prepared_execute(
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
+    let result = prepared_execute_unchecked(
+        name,
+        params,
+        mode,
+        entrypoint,
+        force,
+        client_mutation_key,
+        read_mode,
+    )
+    .await?;
+    crate::gql::ensure_gql_query_result_payload(&result, entrypoint)?;
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepared_execute_unchecked(
+    name: String,
+    params: Vec<u8>,
+    mode: GqlExecutionMode,
+    entrypoint: &str,
+    force: bool,
+    client_mutation_key: Option<&str>,
+    read_mode: ReadMode,
+) -> Result<GqlQueryResult, RouterError> {
     authorize_prepared_execute(&msg_caller())?;
     let caller = msg_caller();
     let store = RouterStore::new();

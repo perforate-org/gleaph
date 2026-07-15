@@ -874,6 +874,48 @@ async fn run_gql(
     read_mode: ReadMode,
     batch: Option<(BatchDispatchCoordinator, usize)>,
 ) -> Result<GqlQueryResult, RouterError> {
+    let result = run_gql_unchecked(
+        query,
+        params,
+        mode,
+        entrypoint,
+        force,
+        client_mutation_key,
+        read_mode,
+        batch,
+    )
+    .await?;
+    ensure_gql_query_result_payload(&result, entrypoint)?;
+    Ok(result)
+}
+
+pub(crate) fn ensure_gql_query_result_payload(
+    result: &GqlQueryResult,
+    entrypoint: &str,
+) -> Result<(), RouterError> {
+    let encoded = Encode!(result).map_err(|error| {
+        RouterError::InvalidArgument(format!("{entrypoint} response encode failed: {error}"))
+    })?;
+    if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "{entrypoint} response exceeds the safe payload limit of {} bytes",
+            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        )));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_gql_unchecked(
+    query: &str,
+    params: &[u8],
+    mode: GqlExecutionMode,
+    entrypoint: &str,
+    force: bool,
+    client_mutation_key: Option<&str>,
+    read_mode: ReadMode,
+    batch: Option<(BatchDispatchCoordinator, usize)>,
+) -> Result<GqlQueryResult, RouterError> {
     if let Some(ddl) = crate::index_ddl::try_parse(query) {
         let caller = msg_caller();
         authorize_index_ddl(&caller)?;
@@ -2778,6 +2820,25 @@ mod tests {
         ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelStatsDelta,
         LabelStatsDeltaEventWire, MutationToken, MutationTokenShard, ReadMode, SeedBindingsWire,
     };
+
+    #[test]
+    fn gql_result_payload_guard_rejects_oversized_rows_blob() {
+        let result = GqlQueryResult {
+            row_count: 0,
+            rows_blob: Some(vec![
+                0;
+                gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            ]),
+            phase: None,
+            token: None,
+        };
+        let err = super::ensure_gql_query_result_payload(&result, "test")
+            .expect_err("oversized GQL result");
+        assert!(
+            err.to_string()
+                .contains("test response exceeds the safe payload limit")
+        );
+    }
 
     use crate::facade::stable::graph_catalog::lookup_graph_id;
     use crate::facade::store::RouterStore;

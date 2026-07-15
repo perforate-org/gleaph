@@ -4,8 +4,21 @@
 //! (`rows_blob`) and summing row counts. Queries with mergeable `PlanOp::Aggregate` use
 //! group-key merge instead (see `aggregate_merge.rs`).
 
+use candid::Encode;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
+
+fn ensure_execute_plan_result_payload(result: &ExecutePlanResult) -> Result<(), String> {
+    let encoded =
+        Encode!(result).map_err(|error| format!("graph result encode failed: {error}"))?;
+    if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        return Err(format!(
+            "graph result exceeds the safe payload limit of {} bytes",
+            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        ));
+    }
+    Ok(())
+}
 
 use super::aggregate_merge::{FederatedMergeMode, merge_optional_aggregate_blobs};
 
@@ -35,6 +48,7 @@ pub fn merge_execute_plan_result(
     shard: ExecutePlanResult,
     mode: FederatedMergeMode,
 ) -> Result<(), String> {
+    ensure_execute_plan_result_payload(&shard)?;
     acc.rows_blob = match &mode {
         FederatedMergeMode::UnionRows => {
             acc.row_count = merge_add_row_count(acc.row_count, shard.row_count);
@@ -58,6 +72,7 @@ pub fn merge_execute_plan_result(
             merged
         }
     };
+    ensure_execute_plan_result_payload(acc)?;
     Ok(())
 }
 
@@ -102,6 +117,22 @@ mod tests {
         }
         .encode_blob()
         .expect("encode")
+    }
+
+    #[test]
+    fn merge_rejects_result_envelope_over_transport_limit() {
+        let oversized = ExecutePlanResult {
+            row_count: 0,
+            rows_blob: Some(vec![
+                0;
+                gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            ]),
+            hot_forward_vertices: Vec::new(),
+        };
+        let mut acc = empty_execute_plan_result();
+        let err = merge_execute_plan_result(&mut acc, oversized, FederatedMergeMode::UnionRows)
+            .expect_err("oversized graph result");
+        assert!(err.contains("graph result exceeds the safe payload limit"));
     }
 
     #[test]

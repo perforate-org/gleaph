@@ -122,6 +122,21 @@ fn ensure_execution_mode(
 
 const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = 35_000_000_000;
 
+fn ensure_execute_plan_result_payload(
+    result: &ExecutePlanResult,
+    entrypoint: &str,
+) -> Result<(), String> {
+    let encoded =
+        Encode!(result).map_err(|error| format!("{entrypoint} response encode failed: {error}"))?;
+    if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        return Err(format!(
+            "{entrypoint} response exceeds the safe payload limit of {} bytes",
+            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
     ic_cdk::api::call_context_instruction_counter()
@@ -134,12 +149,16 @@ fn current_instruction_counter() -> u64 {
 
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
-    execute_plan_impl(args).await
+    let result = execute_plan_impl(args).await?;
+    ensure_execute_plan_result_payload(&result, "execute_plan_query")?;
+    Ok(result)
 }
 
 pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Update, "execute_plan_update")?;
-    execute_plan_impl(args).await
+    let result = execute_plan_impl(args).await?;
+    ensure_execute_plan_result_payload(&result, "execute_plan_update")?;
+    Ok(result)
 }
 
 pub async fn execute_plan_update_batch(
@@ -1291,6 +1310,28 @@ mod tests {
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
     const TEST_ELEMENT_ID_ENCODING_KEY: [u8; 16] = ElementIdEncodingKey::host_test_fixture().0;
+
+    #[test]
+    fn execute_plan_result_payload_guard_accepts_boundary_and_rejects_next_byte() {
+        let limit = gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
+        let result = |payload_len| ExecutePlanResult {
+            row_count: 0,
+            rows_blob: Some(vec![0; payload_len]),
+            hot_forward_vertices: Vec::new(),
+        };
+        let mut low = 0usize;
+        let mut high = limit;
+        while low < high {
+            let mid = low + (high - low).div_ceil(2);
+            if ensure_execute_plan_result_payload(&result(mid), "test").is_ok() {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        assert!(ensure_execute_plan_result_payload(&result(low), "test").is_ok());
+        assert!(ensure_execute_plan_result_payload(&result(low + 1), "test").is_err());
+    }
 
     fn attach_test_federation(shard_id: ShardId) {
         let mut metadata = GraphMetadata::default();

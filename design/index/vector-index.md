@@ -64,6 +64,11 @@ change): correctness and freshness come from the subject map, which is already t
 which subjects are live and at which slot. The kernel adds `VectorSearchRequest` / `VectorSearchHit`
 / `VectorSearchResult` and `MAX_VECTOR_SEARCH_TOP_K` (1024).
 
+The `top_k` bound limits only the Vector Index response and the Router's SEARCH seed relation. A
+subsequent GQL expansion or join may produce more rows than the search hit count, so the Graph and
+Router execution boundaries separately reject Candid-encoded GQL results above the shared
+cross-subnet-safe payload ceiling; they do not silently truncate results.
+
 Slice 6 is implemented: the first real `ivf_flat` **partition-page read path**. It adds a derived
 `VECTOR_ID_TO_SUBJECT` (MemoryId 11) reverse locator and a `partition_page_scan` that scores the
 query against the index's centroids, selects the `nprobe` nearest partitions, and scans only those
