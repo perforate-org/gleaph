@@ -176,6 +176,17 @@ pub struct VectorEmbeddingSyncOp {
     pub remove: bool,
 }
 
+/// A bounded progress result from one vector-index synchronization call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorSyncBatchProgress {
+    /// Number of operations accepted from the beginning of the request.
+    pub applied: u32,
+    /// First operation not accepted by this call, if any.
+    pub next_index: Option<u32>,
+    /// True when the vector canister stopped at its own instruction budget.
+    pub instruction_budget_exhausted: bool,
+}
+
 /// One indexed embedding definition supplied ephemerally by the Router (Slice 3).
 ///
 /// Slice 2 defines the type only; the graph never persists an indexed-embedding registry. A
@@ -1322,5 +1333,19 @@ mod tests {
             vertex_id: 9,
         };
         assert_eq!(subject.shard_id(), ShardId::new(4));
+    }
+
+    #[test]
+    fn vector_sync_batch_progress_candid_roundtrip() {
+        let progress = VectorSyncBatchProgress {
+            applied: 3,
+            next_index: Some(3),
+            instruction_budget_exhausted: true,
+        };
+        let bytes = Encode!(&progress).expect("encode progress");
+        assert_eq!(
+            Decode!(&bytes, VectorSyncBatchProgress).expect("decode progress"),
+            progress
+        );
     }
 }

@@ -39,6 +39,7 @@ use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use crate::property::PropertyIndexOp;
+use gleaph_graph_kernel::index::IndexPostingMutation;
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 
@@ -73,7 +74,11 @@ fn push(op: PendingPostingOp) {
     PENDING.with(|p| p.borrow_mut().push(op));
 }
 
-fn to_repair_op(op: &PendingPostingOp) -> RepairPostingOp {
+pub(crate) fn take_pending() -> Vec<PendingPostingOp> {
+    PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+
+pub(crate) fn to_repair_op(op: &PendingPostingOp) -> RepairPostingOp {
     match op {
         PendingPostingOp::Insert {
             property_id,
@@ -93,6 +98,31 @@ fn to_repair_op(op: &PendingPostingOp) -> RepairPostingOp {
             remove: true,
             property_id: *property_id,
             payload_bytes: payload_bytes.clone(),
+            vertex_id: *vertex_id,
+        },
+    }
+}
+
+pub(crate) fn to_index_mutation(op: &PendingPostingOp) -> IndexPostingMutation {
+    match op {
+        PendingPostingOp::Insert {
+            property_id,
+            payload_bytes,
+            vertex_id,
+        } => IndexPostingMutation::VertexProperty {
+            remove: false,
+            property_id: *property_id,
+            value: payload_bytes.clone(),
+            vertex_id: *vertex_id,
+        },
+        PendingPostingOp::Remove {
+            property_id,
+            payload_bytes,
+            vertex_id,
+        } => IndexPostingMutation::VertexProperty {
+            remove: true,
+            property_id: *property_id,
+            value: payload_bytes.clone(),
             vertex_id: *vertex_id,
         },
     }
@@ -168,6 +198,50 @@ pub(crate) async fn flush_pending(
         return Ok(());
     }
 
+    if ix.supports_posting_batch() {
+        let mut offset = 0usize;
+        while offset < ops.len() {
+            let operations = ops[offset..].iter().map(to_index_mutation).collect();
+            let progress = match ix.posting_batch_at(ix.local_shard_id(), operations).await {
+                Ok(progress) => progress,
+                Err(error) => {
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
+                    return Err(PlanQueryError::IndexFlushDeferred {
+                        op: "vertex_batch",
+                        detail: error.to_string(),
+                    });
+                }
+            };
+            let advanced = usize::try_from(progress.applied).unwrap_or(0);
+            if advanced == 0 || advanced > ops.len().saturating_sub(offset) {
+                GraphStore::new()
+                    .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                crate::facade::maintenance_timer::arm_if_needed();
+                return Err(PlanQueryError::IndexFlushDeferred {
+                    op: "vertex_batch_budget",
+                    detail: "index batch made no progress".into(),
+                });
+            }
+            offset = offset.saturating_add(advanced);
+            if progress.next_index.is_none() {
+                return if offset == ops.len() {
+                    Ok(())
+                } else {
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
+                    Err(PlanQueryError::IndexFlushDeferred {
+                        op: "vertex_batch_progress",
+                        detail: "index batch returned an invalid terminal progress".into(),
+                    })
+                };
+            }
+        }
+        return Ok(());
+    }
+
     let mut applied: Vec<PendingPostingOp> = Vec::with_capacity(ops.len());
     for op in &ops {
         let result = match op {
@@ -222,6 +296,105 @@ pub(crate) async fn flush_pending(
             }
         }
         applied.push(op.clone());
+    }
+    Ok(())
+}
+
+/// Flushes all property-index pending queues through one target batch when the
+/// concrete client supports the bounded batch protocol. Legacy/native test
+/// clients retain the original per-queue semantics through the existing flush
+/// functions.
+pub(crate) async fn flush_all_pending(
+    index: Option<&dyn PropertyIndexLookup>,
+    mutation_id: Option<u64>,
+) -> Result<(), PlanQueryError> {
+    let Some(ix) = index else {
+        flush_pending(None, mutation_id).await?;
+        return Ok(());
+    };
+    if !ix.supports_posting_batch() {
+        flush_pending(Some(ix), mutation_id).await?;
+        crate::index::edge_pending::flush_pending(Some(ix), mutation_id).await?;
+        crate::index::label_pending::flush_pending(Some(ix), mutation_id).await?;
+        return Ok(());
+    }
+
+    let mut ops: Vec<(IndexPostingMutation, RepairPostingOp)> = take_pending()
+        .into_iter()
+        .map(|op| (to_index_mutation(&op), to_repair_op(&op)))
+        .collect();
+    ops.extend(
+        crate::index::edge_pending::take_pending()
+            .into_iter()
+            .map(|op| {
+                (
+                    crate::index::edge_pending::to_index_mutation(&op),
+                    crate::index::edge_pending::to_repair_op(&op),
+                )
+            }),
+    );
+    ops.extend(
+        crate::index::label_pending::take_pending()
+            .into_iter()
+            .map(|op| {
+                (
+                    crate::index::label_pending::to_index_mutation(&op),
+                    crate::index::label_pending::to_repair_op(&op),
+                )
+            }),
+    );
+    if ops.is_empty() {
+        return Ok(());
+    }
+
+    let mut offset = 0usize;
+    while offset < ops.len() {
+        let mutations = ops[offset..]
+            .iter()
+            .map(|(mutation, _)| mutation.clone())
+            .collect();
+        let progress = match ix.posting_batch_at(ix.local_shard_id(), mutations).await {
+            Ok(progress) => progress,
+            Err(error) => {
+                GraphStore::new().repair_journal_append(
+                    mutation_id.unwrap_or(0),
+                    ops[offset..].iter().map(|(_, repair)| repair.clone()),
+                );
+                crate::facade::maintenance_timer::arm_if_needed();
+                return Err(PlanQueryError::IndexFlushDeferred {
+                    op: "property_batch",
+                    detail: error.to_string(),
+                });
+            }
+        };
+        let applied = usize::try_from(progress.applied).unwrap_or(0);
+        if applied == 0 || applied > ops.len().saturating_sub(offset) {
+            GraphStore::new().repair_journal_append(
+                mutation_id.unwrap_or(0),
+                ops[offset..].iter().map(|(_, repair)| repair.clone()),
+            );
+            crate::facade::maintenance_timer::arm_if_needed();
+            return Err(PlanQueryError::IndexFlushDeferred {
+                op: "property_batch_progress",
+                detail: "index batch made invalid progress".into(),
+            });
+        }
+        offset += applied;
+        if progress.next_index.is_none() {
+            return if offset == ops.len() {
+                Ok(())
+            } else {
+                GraphStore::new().repair_journal_append(
+                    mutation_id.unwrap_or(0),
+                    ops[offset..].iter().map(|(_, repair)| repair.clone()),
+                );
+                crate::facade::maintenance_timer::arm_if_needed();
+                Err(PlanQueryError::IndexFlushDeferred {
+                    op: "property_batch_progress",
+                    detail: "index batch returned an invalid terminal progress".into(),
+                })
+            };
+        }
     }
     Ok(())
 }

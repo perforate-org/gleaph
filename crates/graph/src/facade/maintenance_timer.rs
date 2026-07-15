@@ -180,9 +180,7 @@ async fn flush_and_repair(store: &GraphStore) {
     let vx = vector_client
         .as_ref()
         .map(|c| c as &dyn crate::index::vector_lookup::VectorIndexLookup);
-    let _ = crate::index::pending::flush_pending(Some(ix), None).await;
-    let _ = crate::index::edge_pending::flush_pending(Some(ix), None).await;
-    let _ = crate::index::label_pending::flush_pending(Some(ix), None).await;
+    let _ = crate::index::pending::flush_all_pending(Some(ix), None).await;
     let _ = crate::index::vector_pending::flush_pending(vx, None).await;
     let _ = crate::index::repair_journal::drain_once(ix, vx).await;
 }

@@ -30,11 +30,11 @@ pub use edge_key::EdgePostingKey;
 pub use facade::IndexStore;
 pub use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexEqualSpec,
-    IndexIntersectionRequest, IndexIntersectionResult, IndexLabelIntersectionRequest, IndexSubject,
-    LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest,
-    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageRequest, PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor,
-    ValuePostingCount,
+    IndexIntersectionRequest, IndexIntersectionResult, IndexLabelIntersectionRequest,
+    IndexPostingBatchProgress, IndexPostingMutation, IndexSubject, LabelLookupPageRequest,
+    LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
+    PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -158,6 +158,18 @@ fn label_posting_insert(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32)
 fn label_posting_remove(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
     guard_shard_canister_or_trap(shard_id);
     canister::label_posting_remove(shard_id, vertex_label_id, vertex_id);
+}
+
+#[update]
+fn posting_batch(
+    shard_id: ShardId,
+    operations: Vec<IndexPostingMutation>,
+) -> IndexPostingBatchProgress {
+    guard_shard_canister_or_trap(shard_id);
+    match canister::posting_batch(shard_id, operations) {
+        Ok(progress) => progress,
+        Err(error) => ic_cdk::trap(&error),
+    }
 }
 
 #[query(guard = "guard_router_canister")]

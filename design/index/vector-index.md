@@ -17,7 +17,8 @@ Slice 2 is implemented: the derived sync path plus a degenerate `ivf_flat` `grap
 canister foundation (mutation-only). This covers `graph-kernel` sync/mutation wire types
 (`VectorEmbeddingSyncOp`, `VectorSubject::Vertex`, `IndexedEmbeddingCatalog`), the
 `VECTOR_INDEX_STABLE_LAYOUT` registry (11 regions, MemoryId 0–10), the `graph-vector-index` canister
-storage (`vector_upsert` / `vector_remove`, durable allocators, subject tombstone clock, attach /
+storage (`vector_upsert` / `vector_remove`, plus the bounded `vector_sync_batch` transport wrapper,
+durable allocators, subject tombstone clock, attach /
 detach), and the graph-side delta plumbing (catalog-gated dispatch, `vector_pending`,
 `RepairPostingOp::VectorEmbedding`, repair drain, and bounded `vertex_embedding_backfill`).
 
@@ -401,7 +402,8 @@ the incarnation fence and a two-condition gate (global flag AND per-graph shard 
 - **Router invariants.** **One vector index per embedding name per graph** (registration rejects a
   second def for the same `embedding_name_id` with `Conflict`, checked before interning the name) and
   **one vector-index target per graph** (every def and every attached shard must share one target
-  principal). Both exist because graph dispatch/backfill/repair are single-op, single-route.
+  principal). Both exist because graph dispatch/backfill/repair are single-route; transport batching
+  may combine multiple ordered operations for that one target without moving vector ownership.
 - **Activation flag.** `ROUTER_VECTOR_DISPATCH_ACTIVATION` (MemoryId 43) is a Router-owned stable
   boolean, default off, toggled by `admin_set_vector_dispatch_activation` and read by
   `vector_dispatch_activation_enabled` (RBAC `authorize_index_ddl` / admin). It replaces the old

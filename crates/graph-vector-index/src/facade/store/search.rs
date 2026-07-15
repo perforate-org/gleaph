@@ -91,10 +91,8 @@ pub(super) fn cosine_distance_f32(query: &[f32], vector: &[f32]) -> f32 {
 
 /// Decodes contiguous little-endian `f32` components (`VectorEncoding::F32`).
 pub(super) fn decode_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
+    let (chunks, _) = bytes.as_chunks::<4>();
+    chunks.iter().map(|c| f32::from_le_bytes(*c)).collect()
 }
 
 /// Encodes `f32` components as contiguous little-endian bytes (inverse of [`decode_f32`]). Used by

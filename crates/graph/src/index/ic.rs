@@ -6,9 +6,10 @@ use async_trait::async_trait;
 use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexEqualSpec, IndexIntersectionRequest,
-    IndexIntersectionResult, IndexSubject, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangePageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
-    PostingHit, PostingHitPage, PostingRangeRequest,
+    IndexIntersectionResult, IndexPostingBatchProgress, IndexPostingMutation, IndexSubject,
+    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupRangePageRequest, MAX_EQUALITY_INTERSECTION_ARMS, PostingHit, PostingHitPage,
+    PostingRangeRequest,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
@@ -80,6 +81,25 @@ impl IcPropertyIndexClient {
 
 #[async_trait(?Send)]
 impl PropertyIndexLookup for IcPropertyIndexClient {
+    fn supports_posting_batch(&self) -> bool {
+        true
+    }
+
+    async fn posting_batch_at(
+        &self,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+        operations: Vec<IndexPostingMutation>,
+    ) -> Result<IndexPostingBatchProgress, PlanQueryError> {
+        let progress: IndexPostingBatchProgress =
+            Call::bounded_wait(self.index_principal, "posting_batch")
+                .with_args(&(shard_id, operations))
+                .await
+                .map_err(|e| ic_wait_err("posting_batch", e))?
+                .candid()
+                .map_err(|_| ic_candid_decode_err("posting_batch"))?;
+        Ok(progress)
+    }
+
     fn local_shard_id(&self) -> gleaph_graph_kernel::federation::ShardId {
         self.shard_id
     }

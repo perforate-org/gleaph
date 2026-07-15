@@ -3,7 +3,7 @@
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
-use crate::index::{label_pending, pending};
+use crate::index::pending;
 use crate::plan::{
     PlanBinding, PlanMutationBindings, PlanQueryResult, PlanQueryRow, SeededMutationRow,
     execute_mutation_tail_async, execute_plan_query, execute_plan_query_bindings,
@@ -544,9 +544,7 @@ async fn run_transaction_block(
                 &mut last_read_row_count,
                 &mut last_read_plan_rows,
             );
-            pending::flush_pending(index, None).await?;
-            crate::index::edge_pending::flush_pending(index, None).await?;
-            label_pending::flush_pending(index, None).await?;
+            pending::flush_all_pending(index, None).await?;
             flush_vector_pending(None).await?;
         } else {
             match materialize {
@@ -1080,9 +1078,7 @@ async fn run_wire_plans_inner(
             // journaled for repair before we consider completing the mutation (ADR 0024).
             let mut index_deferred = false;
             for flush_result in [
-                pending::flush_pending(index, mutation_id).await,
-                crate::index::edge_pending::flush_pending(index, mutation_id).await,
-                label_pending::flush_pending(index, mutation_id).await,
+                pending::flush_all_pending(index, mutation_id).await,
                 flush_vector_pending(mutation_id).await,
             ] {
                 match flush_result {

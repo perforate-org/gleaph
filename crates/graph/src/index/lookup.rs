@@ -4,12 +4,91 @@ use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult, PostingHit,
-    PostingRangeRequest,
+    EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult, IndexPostingBatchProgress,
+    IndexPostingMutation, PostingHit, PostingRangeRequest,
 };
 
 #[async_trait(?Send)]
 pub trait PropertyIndexLookup {
+    fn supports_posting_batch(&self) -> bool {
+        false
+    }
+
+    async fn posting_batch_at(
+        &self,
+        shard_id: ShardId,
+        operations: Vec<IndexPostingMutation>,
+    ) -> Result<IndexPostingBatchProgress, PlanQueryError> {
+        let mut applied = 0u32;
+        for operation in operations {
+            match operation {
+                IndexPostingMutation::VertexProperty {
+                    remove,
+                    property_id,
+                    value,
+                    vertex_id,
+                } => {
+                    if remove {
+                        self.posting_remove_at(shard_id, property_id, value, vertex_id)
+                            .await?
+                    } else {
+                        self.posting_insert_at(shard_id, property_id, value, vertex_id)
+                            .await?
+                    }
+                }
+                IndexPostingMutation::EdgeProperty {
+                    remove,
+                    property_id,
+                    value,
+                    label_id,
+                    owner_vertex_id,
+                    slot_index,
+                } => {
+                    if remove {
+                        self.edge_posting_remove_at(
+                            shard_id,
+                            property_id,
+                            value,
+                            label_id,
+                            owner_vertex_id,
+                            slot_index,
+                        )
+                        .await?
+                    } else {
+                        self.edge_posting_insert_at(
+                            shard_id,
+                            property_id,
+                            value,
+                            label_id,
+                            owner_vertex_id,
+                            slot_index,
+                        )
+                        .await?
+                    }
+                }
+                IndexPostingMutation::Label {
+                    remove,
+                    label_id,
+                    vertex_id,
+                } => {
+                    if remove {
+                        self.label_posting_remove_at(shard_id, label_id, vertex_id)
+                            .await?
+                    } else {
+                        self.label_posting_insert_at(shard_id, label_id, vertex_id)
+                            .await?
+                    }
+                }
+            }
+            applied = applied.saturating_add(1);
+        }
+        Ok(IndexPostingBatchProgress {
+            applied,
+            next_index: None,
+            instruction_budget_exhausted: false,
+        })
+    }
+
     async fn lookup_equal(
         &self,
         property_id: u32,

@@ -11,9 +11,24 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabStats, VectorSlabStatsStep,
+    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchProgress,
 };
 use ic_cdk::api::msg_caller;
+
+const VECTOR_BATCH_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
+const VECTOR_BATCH_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
+
+#[inline]
+fn instruction_counter() -> u64 {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::api::instruction_counter()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        0
+    }
+}
 
 pub(crate) fn init(args: VectorIndexInitArgs) {
     if let Err(e) = VectorIndexStore::new().init_from_args(&args) {
@@ -46,6 +61,39 @@ pub(crate) fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndex
 
 pub(crate) fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
     VectorIndexStore::new().vector_remove(msg_caller(), &op)
+}
+
+pub(crate) fn vector_sync_batch(
+    operations: Vec<VectorEmbeddingSyncOp>,
+) -> Result<VectorSyncBatchProgress, VectorIndexError> {
+    let caller = msg_caller();
+    let store = VectorIndexStore::new();
+    let baseline = instruction_counter();
+    let mut applied = 0u32;
+    for operation in operations {
+        let exhausted = instruction_counter()
+            .saturating_sub(baseline)
+            .saturating_add(VECTOR_BATCH_RESERVE_INSTRUCTIONS)
+            >= VECTOR_BATCH_MAX_INSTRUCTIONS;
+        if exhausted {
+            return Ok(VectorSyncBatchProgress {
+                applied,
+                next_index: Some(applied),
+                instruction_budget_exhausted: true,
+            });
+        }
+        if operation.remove {
+            store.vector_remove(caller, &operation)?;
+        } else {
+            store.vector_upsert(caller, &operation)?;
+        }
+        applied = applied.saturating_add(1);
+    }
+    Ok(VectorSyncBatchProgress {
+        applied,
+        next_index: None,
+        instruction_budget_exhausted: false,
+    })
 }
 
 pub(crate) fn vector_search(

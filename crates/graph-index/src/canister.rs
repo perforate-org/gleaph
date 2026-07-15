@@ -10,11 +10,27 @@ use gleaph_graph_kernel::federation::{
     ShardDetachStepResult, ShardId,
 };
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, LookupEdgeEqualPageRequest,
-    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageRequest, PostingHit, PostingHitPage, PostingRangeRequest, ValuePostingCount,
+    EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, IndexPostingBatchProgress,
+    IndexPostingMutation, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
+    PostingHit, PostingHitPage, PostingRangeRequest, ValuePostingCount,
 };
 use ic_cdk::api::msg_caller;
+
+const INDEX_BATCH_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
+const INDEX_BATCH_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
+
+#[inline]
+fn instruction_counter() -> u64 {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::api::instruction_counter()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        0
+    }
+}
 
 fn trap_err(e: IndexError) {
     ic_cdk::trap(e.to_string());
@@ -143,6 +159,91 @@ pub(crate) fn label_posting_remove(shard_id: ShardId, vertex_label_id: u32, vert
     {
         trap_err(e);
     }
+}
+
+pub(crate) fn posting_batch(
+    shard_id: ShardId,
+    operations: Vec<IndexPostingMutation>,
+) -> Result<IndexPostingBatchProgress, String> {
+    let caller = msg_caller();
+    let store = IndexStore::new();
+    let baseline = instruction_counter();
+    let mut applied = 0u32;
+    for operation in operations {
+        let exhausted = instruction_counter()
+            .saturating_sub(baseline)
+            .saturating_add(INDEX_BATCH_RESERVE_INSTRUCTIONS)
+            >= INDEX_BATCH_MAX_INSTRUCTIONS;
+        if exhausted {
+            return Ok(IndexPostingBatchProgress {
+                applied,
+                next_index: Some(applied),
+                instruction_budget_exhausted: true,
+            });
+        }
+        let result = match operation {
+            IndexPostingMutation::VertexProperty {
+                remove,
+                property_id,
+                value,
+                vertex_id,
+            } => {
+                if remove {
+                    store.posting_remove(caller, shard_id, property_id, value, vertex_id)
+                } else {
+                    store.posting_insert(caller, shard_id, property_id, value, vertex_id)
+                }
+            }
+            IndexPostingMutation::EdgeProperty {
+                remove,
+                property_id,
+                value,
+                label_id,
+                owner_vertex_id,
+                slot_index,
+            } => {
+                if remove {
+                    store.edge_posting_remove(
+                        caller,
+                        shard_id,
+                        property_id,
+                        value,
+                        label_id,
+                        owner_vertex_id,
+                        slot_index,
+                    )
+                } else {
+                    store.edge_posting_insert(
+                        caller,
+                        shard_id,
+                        property_id,
+                        value,
+                        label_id,
+                        owner_vertex_id,
+                        slot_index,
+                    )
+                }
+            }
+            IndexPostingMutation::Label {
+                remove,
+                label_id,
+                vertex_id,
+            } => {
+                if remove {
+                    store.label_posting_remove(caller, shard_id, label_id, vertex_id)
+                } else {
+                    store.label_posting_insert(caller, shard_id, label_id, vertex_id)
+                }
+            }
+        };
+        result.map_err(|e| e.to_string())?;
+        applied = applied.saturating_add(1);
+    }
+    Ok(IndexPostingBatchProgress {
+        applied,
+        next_index: None,
+        instruction_budget_exhausted: false,
+    })
 }
 
 pub(crate) fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {

@@ -49,7 +49,8 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 > - **Router invariants.** Registration enforces **one vector index per embedding name per graph**
 >   (`Conflict` on a second def for the same `embedding_name_id`, checked before interning the name)
 >   and **one vector-index target per graph** (every def and every attached shard must share one
->   target principal). Both exist because graph dispatch/backfill/repair are single-op, single-route.
+>   target principal). Both exist because graph dispatch/backfill/repair use one single-route target;
+>   the Graph-to-vector mutation boundary may batch multiple ordered operations within that route.
 > - **Target wiring.** A router-guarded graph endpoint `admin_set_vector_index_canister` writes the
 >   target into the shard's **local** `FederationRouting` (idempotent, upgrade-durable), and a Router
 >   endpoint `admin_attach_vector_index_shard` drives the attach handshake: it writes graph-local
@@ -161,7 +162,9 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 > mutations that arrive mid-build, so the concurrency model is **dual-write to both the active and
 > shadow `index_version` while the build is `Building`/`ReadyToPublish`**, plus collapse-on-touch
 > during `Cleaning` (any state-changing mutation collapses the touched subject; a pure idempotent
-> no-op is left for `cleanup_step`); `vector_upsert` / `vector_remove` remain the only mutation
+> no-op is left for `cleanup_step`); `vector_upsert` / `vector_remove` remain the per-operation
+> mutation primitives, while the Graph-to-vector batch endpoint is a bounded transport wrapper
+> around them.
 > boundary. Quiesce and
 > delta-replay are rejected: quiesce blocks normal graph writes during training, and delta-replay
 > reintroduces a watermark/clock reconciliation surface after Slice 4 already established

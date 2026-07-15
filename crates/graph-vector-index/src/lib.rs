@@ -35,7 +35,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabStats, VectorSlabStatsStep,
+    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchProgress,
 };
 use ic_cdk_macros::{init, query, update};
 
@@ -69,6 +69,14 @@ fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
 #[update]
 fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
     canister::vector_remove(op)
+}
+
+#[update]
+fn vector_sync_batch(operations: Vec<VectorEmbeddingSyncOp>) -> VectorSyncBatchProgress {
+    match canister::vector_sync_batch(operations) {
+        Ok(progress) => progress,
+        Err(error) => ic_cdk::trap(error.to_string()),
+    }
 }
 
 /// Read-only exact `ivf_flat` top-k search (ADR 0031 Slice 5). Router-guarded like the

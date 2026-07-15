@@ -4,6 +4,7 @@ use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use gleaph_graph_kernel::entry::VertexLabelId;
+use gleaph_graph_kernel::index::IndexPostingMutation;
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 
@@ -28,7 +29,11 @@ fn push(op: PendingLabelOp) {
     PENDING.with(|p| p.borrow_mut().push(op));
 }
 
-fn to_repair_op(op: &PendingLabelOp) -> RepairPostingOp {
+pub(crate) fn take_pending() -> Vec<PendingLabelOp> {
+    PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+
+pub(crate) fn to_repair_op(op: &PendingLabelOp) -> RepairPostingOp {
     match op {
         PendingLabelOp::Insert {
             label_id,
@@ -42,6 +47,27 @@ fn to_repair_op(op: &PendingLabelOp) -> RepairPostingOp {
             label_id,
             vertex_id,
         } => RepairPostingOp::Label {
+            remove: true,
+            label_id: *label_id,
+            vertex_id: *vertex_id,
+        },
+    }
+}
+
+pub(crate) fn to_index_mutation(op: &PendingLabelOp) -> IndexPostingMutation {
+    match op {
+        PendingLabelOp::Insert {
+            label_id,
+            vertex_id,
+        } => IndexPostingMutation::Label {
+            remove: false,
+            label_id: *label_id,
+            vertex_id: *vertex_id,
+        },
+        PendingLabelOp::Remove {
+            label_id,
+            vertex_id,
+        } => IndexPostingMutation::Label {
             remove: true,
             label_id: *label_id,
             vertex_id: *vertex_id,
@@ -113,6 +139,55 @@ pub(crate) async fn flush_pending(
     };
     let ops: Vec<PendingLabelOp> = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
     if ops.is_empty() {
+        return Ok(());
+    }
+
+    if ix.supports_posting_batch() {
+        let mut offset = 0usize;
+        while offset < ops.len() {
+            let progress = match ix
+                .posting_batch_at(
+                    ix.local_shard_id(),
+                    ops[offset..].iter().map(to_index_mutation).collect(),
+                )
+                .await
+            {
+                Ok(progress) => progress,
+                Err(error) => {
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
+                    return Err(PlanQueryError::IndexFlushDeferred {
+                        op: "label_batch",
+                        detail: error.to_string(),
+                    });
+                }
+            };
+            let advanced = usize::try_from(progress.applied).unwrap_or(0);
+            if advanced == 0 || advanced > ops.len().saturating_sub(offset) {
+                GraphStore::new()
+                    .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                crate::facade::maintenance_timer::arm_if_needed();
+                return Err(PlanQueryError::IndexFlushDeferred {
+                    op: "label_batch_progress",
+                    detail: "index batch made invalid progress".into(),
+                });
+            }
+            offset = offset.saturating_add(advanced);
+            if progress.next_index.is_none() {
+                return if offset == ops.len() {
+                    Ok(())
+                } else {
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
+                    Err(PlanQueryError::IndexFlushDeferred {
+                        op: "label_batch_progress",
+                        detail: "index batch returned an invalid terminal progress".into(),
+                    })
+                };
+            }
+        }
         return Ok(());
     }
 

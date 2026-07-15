@@ -16,6 +16,52 @@ pub const MAX_INDEX_VALUE_KEY_BYTES: usize = 4096;
 /// resolve to more arms are rejected with a provider-specific error before any index canister call.
 pub const MAX_EQUALITY_INTERSECTION_ARMS: usize = 8;
 
+/// One shard-owned property-index mutation. The index canister applies these in
+/// order and may return a continuation before the request is exhausted.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub enum IndexPostingMutation {
+    VertexProperty {
+        remove: bool,
+        property_id: u32,
+        value: Vec<u8>,
+        vertex_id: u32,
+    },
+    EdgeProperty {
+        remove: bool,
+        property_id: u32,
+        value: Vec<u8>,
+        label_id: u16,
+        owner_vertex_id: u32,
+        slot_index: u32,
+    },
+    Label {
+        remove: bool,
+        label_id: u32,
+        vertex_id: u32,
+    },
+}
+
+/// A bounded progress result from one property-index update call.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    candid::CandidType,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+pub struct IndexPostingBatchProgress {
+    /// Number of operations accepted from the beginning of the request.
+    pub applied: u32,
+    /// First operation not accepted by this call, if any.
+    pub next_index: Option<u32>,
+    /// True when the index canister stopped at its own instruction budget.
+    pub instruction_budget_exhausted: bool,
+}
+
 /// Returned when encoded index value key bytes exceed [`MAX_INDEX_VALUE_KEY_BYTES`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexValueKeyTooLarge {
@@ -563,5 +609,46 @@ mod tests {
         let decoded: IndexIntersectionResult =
             Decode!(&bytes, IndexIntersectionResult).expect("decode edges");
         assert_eq!(decoded, edges);
+    }
+
+    #[test]
+    fn posting_batch_wire_roundtrip_preserves_order_and_progress() {
+        let operations = vec![
+            IndexPostingMutation::VertexProperty {
+                remove: false,
+                property_id: 1,
+                value: vec![1, 2],
+                vertex_id: 3,
+            },
+            IndexPostingMutation::EdgeProperty {
+                remove: true,
+                property_id: 2,
+                value: vec![4],
+                label_id: 5,
+                owner_vertex_id: 6,
+                slot_index: 7,
+            },
+            IndexPostingMutation::Label {
+                remove: false,
+                label_id: 8,
+                vertex_id: 9,
+            },
+        ];
+        let bytes = Encode!(&operations).expect("encode posting batch");
+        assert_eq!(
+            Decode!(&bytes, Vec<IndexPostingMutation>).expect("decode posting batch"),
+            operations
+        );
+
+        let progress = IndexPostingBatchProgress {
+            applied: 2,
+            next_index: Some(2),
+            instruction_budget_exhausted: true,
+        };
+        let bytes = Encode!(&progress).expect("encode progress");
+        assert_eq!(
+            Decode!(&bytes, IndexPostingBatchProgress).expect("decode progress"),
+            progress
+        );
     }
 }

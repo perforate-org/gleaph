@@ -27,6 +27,7 @@ use crate::index::vector_lookup::VectorIndexLookup;
 use crate::plan::PlanQueryError;
 use gleaph_graph_kernel::entry::EmbeddingNameId;
 use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::index::IndexPostingMutation;
 use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
 use ic_stable_lara::VertexId;
 
@@ -68,13 +69,143 @@ pub(crate) async fn drain_once(
         return Ok(());
     }
     let shard_id = ix.local_shard_id();
-    for (seq, op) in store.repair_journal_peek(REPAIR_DRAIN_BATCH) {
-        match apply(ix, vector, shard_id, &op).await? {
-            ApplyOutcome::Applied => store.repair_journal_remove(seq),
-            ApplyOutcome::Skipped => {}
+    let entries = store.repair_journal_peek(REPAIR_DRAIN_BATCH);
+    let mut offset = 0usize;
+    while offset < entries.len() {
+        if matches!(entries[offset].1, RepairPostingOp::VectorEmbedding { .. }) {
+            let start = offset;
+            while offset < entries.len()
+                && matches!(entries[offset].1, RepairPostingOp::VectorEmbedding { .. })
+            {
+                offset += 1;
+            }
+            let group = &entries[start..offset];
+            let Some(vx) = vector else {
+                continue;
+            };
+            if vx.supports_sync_batch() {
+                let mut reconciled = Vec::with_capacity(group.len());
+                for (_, op) in group {
+                    match op {
+                        RepairPostingOp::VectorEmbedding { op } => {
+                            reconciled.push(reconcile_vector_op(op).await?);
+                        }
+                        _ => unreachable!("vector group contains property entry"),
+                    }
+                }
+                let mut group_offset = 0usize;
+                while group_offset < group.len() {
+                    let progress = vx
+                        .vector_sync_batch(reconciled[group_offset..].to_vec())
+                        .await?;
+                    let applied = usize::try_from(progress.applied).map_err(|_| {
+                        PlanQueryError::UnsupportedOp("invalid vector repair progress")
+                    })?;
+                    if applied == 0 || applied > group.len() - group_offset {
+                        return Err(PlanQueryError::UnsupportedOp(
+                            "invalid vector repair progress",
+                        ));
+                    }
+                    for (seq, _) in &group[group_offset..group_offset + applied] {
+                        store.repair_journal_remove(*seq);
+                    }
+                    group_offset += applied;
+                    if progress.next_index.is_none() {
+                        break;
+                    }
+                }
+            } else {
+                for (seq, op) in group {
+                    apply(ix, Some(vx), shard_id, op).await?;
+                    store.repair_journal_remove(*seq);
+                }
+            }
+            continue;
+        }
+
+        let start = offset;
+        while offset < entries.len()
+            && !matches!(entries[offset].1, RepairPostingOp::VectorEmbedding { .. })
+        {
+            offset += 1;
+        }
+        let group = &entries[start..offset];
+        if ix.supports_posting_batch() {
+            let mut group_offset = 0usize;
+            while group_offset < group.len() {
+                let progress = ix
+                    .posting_batch_at(
+                        shard_id,
+                        group[group_offset..]
+                            .iter()
+                            .map(|(_, op)| to_index_mutation(op))
+                            .collect(),
+                    )
+                    .await?;
+                let applied = usize::try_from(progress.applied)
+                    .map_err(|_| PlanQueryError::UnsupportedOp("invalid index repair progress"))?;
+                if applied == 0 || applied > group.len() - group_offset {
+                    return Err(PlanQueryError::UnsupportedOp(
+                        "invalid index repair progress",
+                    ));
+                }
+                for (seq, _) in &group[group_offset..group_offset + applied] {
+                    store.repair_journal_remove(*seq);
+                }
+                group_offset += applied;
+                if progress.next_index.is_none() {
+                    break;
+                }
+            }
+        } else {
+            for (seq, op) in group {
+                apply(ix, vector, shard_id, op).await?;
+                store.repair_journal_remove(*seq);
+            }
         }
     }
     Ok(())
+}
+
+fn to_index_mutation(op: &RepairPostingOp) -> IndexPostingMutation {
+    match op {
+        RepairPostingOp::VertexProperty {
+            remove,
+            property_id,
+            payload_bytes,
+            vertex_id,
+        } => IndexPostingMutation::VertexProperty {
+            remove: *remove,
+            property_id: *property_id,
+            value: payload_bytes.clone(),
+            vertex_id: *vertex_id,
+        },
+        RepairPostingOp::EdgeProperty {
+            remove,
+            property_id,
+            payload_bytes,
+            label_id,
+            owner_vertex_id,
+            slot_index,
+        } => IndexPostingMutation::EdgeProperty {
+            remove: *remove,
+            property_id: *property_id,
+            value: payload_bytes.clone(),
+            label_id: *label_id,
+            owner_vertex_id: *owner_vertex_id,
+            slot_index: *slot_index,
+        },
+        RepairPostingOp::Label {
+            remove,
+            label_id,
+            vertex_id,
+        } => IndexPostingMutation::Label {
+            remove: *remove,
+            label_id: *label_id,
+            vertex_id: *vertex_id,
+        },
+        RepairPostingOp::VectorEmbedding { .. } => unreachable!("vector entries are not batched"),
+    }
 }
 
 async fn apply(
@@ -148,7 +279,14 @@ async fn apply(
                 // property repairs queued after it. It re-applies once a vector client exists.
                 return Ok(ApplyOutcome::Skipped);
             };
-            reconcile_vector_op(vx, op).await?;
+            let reconciled = reconcile_vector_op(op).await?;
+            if vx.supports_sync_batch() {
+                vx.vector_sync_batch(vec![reconciled]).await?;
+            } else if reconciled.remove {
+                vx.vector_remove(reconciled).await?;
+            } else {
+                vx.vector_upsert(reconciled).await?;
+            }
             Ok(ApplyOutcome::Applied)
         }
     }
@@ -172,9 +310,8 @@ async fn apply(
 ///   tombstone a newer reinsert that raced ahead of the drain. This closes the
 ///   reverse-orphan race that made the Slice 2 blind remove unsafe to activate.
 async fn reconcile_vector_op(
-    vx: &dyn VectorIndexLookup,
     op: &VectorEmbeddingSyncOp,
-) -> Result<(), PlanQueryError> {
+) -> Result<VectorEmbeddingSyncOp, PlanQueryError> {
     let VectorSubject::Vertex { vertex_id, .. } = op.subject;
     let vid = VertexId::from(vertex_id);
     let name = EmbeddingNameId::from_raw(op.embedding_name_id);
@@ -186,7 +323,7 @@ async fn reconcile_vector_op(
             let embedding_incarnation = store
                 .vertex_embedding_incarnation(vid, name)
                 .unwrap_or(op.embedding_incarnation);
-            vx.vector_upsert(VectorEmbeddingSyncOp {
+            Ok(VectorEmbeddingSyncOp {
                 index_id: op.index_id,
                 embedding_name_id: op.embedding_name_id,
                 subject: op.subject,
@@ -198,7 +335,6 @@ async fn reconcile_vector_op(
                 bytes: record.bytes,
                 remove: false,
             })
-            .await
         }
         None => {
             // The incarnation high-water mark survives the canonical remove, so it is the deleted
@@ -207,7 +343,7 @@ async fn reconcile_vector_op(
             let embedding_incarnation = store
                 .vertex_embedding_incarnation(vid, name)
                 .unwrap_or(op.embedding_incarnation);
-            vx.vector_remove(VectorEmbeddingSyncOp {
+            Ok(VectorEmbeddingSyncOp {
                 index_id: op.index_id,
                 embedding_name_id: op.embedding_name_id,
                 subject: op.subject,
@@ -219,7 +355,6 @@ async fn reconcile_vector_op(
                 bytes: Vec::new(),
                 remove: true,
             })
-            .await
         }
     }
 }

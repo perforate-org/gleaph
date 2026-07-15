@@ -8,7 +8,9 @@ use crate::index::vector_lookup::VectorIndexLookup;
 use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use candid::Principal;
-use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorIndexError};
+use gleaph_graph_kernel::vector_index::{
+    VectorEmbeddingSyncOp, VectorIndexError, VectorSyncBatchProgress,
+};
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
 
@@ -40,6 +42,24 @@ fn map_canister_err(op: &'static str, err: VectorIndexError) -> PlanQueryError {
 
 #[async_trait(?Send)]
 impl VectorIndexLookup for IcVectorIndexClient {
+    fn supports_sync_batch(&self) -> bool {
+        true
+    }
+
+    async fn vector_sync_batch(
+        &self,
+        operations: Vec<VectorEmbeddingSyncOp>,
+    ) -> Result<VectorSyncBatchProgress, PlanQueryError> {
+        let progress: VectorSyncBatchProgress =
+            Call::bounded_wait(self.vector_principal, "vector_sync_batch")
+                .with_args(&(operations,))
+                .await
+                .map_err(|e| ic_wait_err("vector_sync_batch", e))?
+                .candid()
+                .map_err(|_| ic_candid_decode_err("vector_sync_batch"))?;
+        Ok(progress)
+    }
+
     async fn vector_upsert(&self, op: VectorEmbeddingSyncOp) -> Result<(), PlanQueryError> {
         let result: Result<(), VectorIndexError> =
             Call::bounded_wait(self.vector_principal, "vector_upsert")

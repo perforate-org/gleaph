@@ -78,6 +78,43 @@ pub(crate) async fn flush_pending(
         ));
     };
 
+    if vx.supports_sync_batch() {
+        let mut offset = 0usize;
+        while offset < ops.len() {
+            let progress = match vx.vector_sync_batch(ops[offset..].to_vec()).await {
+                Ok(progress) => progress,
+                Err(primary) => {
+                    return Err(journal_and_defer(
+                        &ops[offset..],
+                        mutation_id,
+                        primary.to_string(),
+                    ));
+                }
+            };
+            let advanced = usize::try_from(progress.applied).unwrap_or(0);
+            if advanced == 0 || advanced > ops.len().saturating_sub(offset) {
+                return Err(journal_and_defer(
+                    &ops[offset..],
+                    mutation_id,
+                    "vector batch made invalid progress".into(),
+                ));
+            }
+            offset = offset.saturating_add(advanced);
+            if progress.next_index.is_none() {
+                return if offset == ops.len() {
+                    Ok(())
+                } else {
+                    Err(journal_and_defer(
+                        &ops[offset..],
+                        mutation_id,
+                        "vector batch returned an invalid terminal progress".into(),
+                    ))
+                };
+            }
+        }
+        return Ok(());
+    }
+
     for op in &ops {
         let result = if op.remove {
             vx.vector_remove(op.clone()).await

@@ -4,6 +4,7 @@ use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use crate::property::PropertyIndexOp;
+use gleaph_graph_kernel::index::IndexPostingMutation;
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 
@@ -40,7 +41,11 @@ fn push(op: PendingEdgePostingOp) {
     PENDING.with(|p| p.borrow_mut().push(op));
 }
 
-fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
+pub(crate) fn take_pending() -> Vec<PendingEdgePostingOp> {
+    PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+
+pub(crate) fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
     let (remove, property_id, payload_bytes, label_id, owner_vertex_id, slot_index) = match op {
         PendingEdgePostingOp::Insert {
             property_id,
@@ -78,6 +83,39 @@ fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
         label_id,
         owner_vertex_id,
         slot_index,
+    }
+}
+
+pub(crate) fn to_index_mutation(op: &PendingEdgePostingOp) -> IndexPostingMutation {
+    match op {
+        PendingEdgePostingOp::Insert {
+            property_id,
+            payload_bytes,
+            label_id,
+            owner_vertex_id,
+            slot_index,
+        } => IndexPostingMutation::EdgeProperty {
+            remove: false,
+            property_id: *property_id,
+            value: payload_bytes.clone(),
+            label_id: *label_id,
+            owner_vertex_id: *owner_vertex_id,
+            slot_index: *slot_index,
+        },
+        PendingEdgePostingOp::Remove {
+            property_id,
+            payload_bytes,
+            label_id,
+            owner_vertex_id,
+            slot_index,
+        } => IndexPostingMutation::EdgeProperty {
+            remove: true,
+            property_id: *property_id,
+            value: payload_bytes.clone(),
+            label_id: *label_id,
+            owner_vertex_id: *owner_vertex_id,
+            slot_index: *slot_index,
+        },
     }
 }
 
@@ -198,6 +236,55 @@ pub(crate) async fn flush_pending(
         return Ok(());
     }
     let shard_id = ix.local_shard_id();
+    if ix.supports_posting_batch() {
+        let mut offset = 0usize;
+        while offset < ops.len() {
+            let progress = match ix
+                .posting_batch_at(
+                    shard_id,
+                    ops[offset..].iter().map(to_index_mutation).collect(),
+                )
+                .await
+            {
+                Ok(progress) => progress,
+                Err(error) => {
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
+                    return Err(PlanQueryError::IndexFlushDeferred {
+                        op: "edge_batch",
+                        detail: error.to_string(),
+                    });
+                }
+            };
+            let advanced = usize::try_from(progress.applied).unwrap_or(0);
+            if advanced == 0 || advanced > ops.len().saturating_sub(offset) {
+                GraphStore::new()
+                    .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                crate::facade::maintenance_timer::arm_if_needed();
+                return Err(PlanQueryError::IndexFlushDeferred {
+                    op: "edge_batch_progress",
+                    detail: "index batch made invalid progress".into(),
+                });
+            }
+            offset = offset.saturating_add(advanced);
+            if progress.next_index.is_none() {
+                return if offset == ops.len() {
+                    Ok(())
+                } else {
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
+                    Err(PlanQueryError::IndexFlushDeferred {
+                        op: "edge_batch_progress",
+                        detail: "index batch returned an invalid terminal progress".into(),
+                    })
+                };
+            }
+        }
+        return Ok(());
+    }
+
     let mut applied: Vec<PendingEdgePostingOp> = Vec::with_capacity(ops.len());
     for op in &ops {
         let result = match op {
