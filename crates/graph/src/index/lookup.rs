@@ -215,6 +215,41 @@ pub trait PropertyIndexLookup {
 /// Used when no index canister is wired; mutations ignore postings and scans fail at runtime.
 pub struct NoPropertyIndex;
 
+/// Deliver a finite backfill posting batch, continuing only when the index canister reports a
+/// valid non-terminal prefix. The index canister owns the instruction budget; Graph only validates
+/// progress and retains the unacknowledged suffix by returning an error to the Router on failure.
+pub(crate) async fn dispatch_posting_batch(
+    index: &dyn PropertyIndexLookup,
+    shard_id: ShardId,
+    operations: Vec<IndexPostingMutation>,
+) -> Result<(), PlanQueryError> {
+    let mut offset = 0usize;
+    while offset < operations.len() {
+        let progress = index
+            .posting_batch_at(shard_id, operations[offset..].to_vec())
+            .await?;
+        let applied = usize::try_from(progress.applied).map_err(|_| {
+            PlanQueryError::UnsupportedOp("invalid property backfill batch progress")
+        })?;
+        let remaining = operations.len().saturating_sub(offset);
+        if applied == 0 || applied > remaining {
+            return Err(PlanQueryError::UnsupportedOp(
+                "invalid property backfill batch progress",
+            ));
+        }
+        offset += applied;
+        if progress.next_index.is_none() {
+            if offset == operations.len() {
+                return Ok(());
+            }
+            return Err(PlanQueryError::UnsupportedOp(
+                "property backfill batch returned invalid terminal progress",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[async_trait(?Send)]
 impl PropertyIndexLookup for NoPropertyIndex {
     fn local_shard_id(&self) -> ShardId {

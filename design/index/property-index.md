@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 07:07:02 UTC +0000
+Last updated: 2026-07-15
+Anchor timestamp: 2026-07-15 08:58:08 UTC +0000
 
 ## Status
 
@@ -14,9 +14,10 @@ operations remain the index's owning mutation primitives.
 
 Equality candidate paging also exposes `lookup_equal_page_for_label`, which
 applies vertex-label membership inside the Property Index before returning the
-page. This avoids a Router-to-index round trip for the common equality-filter
-path; range filtering remains a separate follow-up because its cursor and
-encoded interval semantics require a corresponding range-specific contract.
+page. Range candidate paging likewise exposes `lookup_range_page_for_label` with
+the same index-owned label sieve and encoded interval cursor semantics. These
+compound reads avoid a Router-to-index round trip for equality and range filter
+pages.
 
 **ADR 0034 Slice 14 — Implemented:** `lookup_range_intersection_page` supports one to eight equality arms combined with a single finite numeric range on a distinct vertex property. The index walks the finite encoded range one page at a time, sieves each page server-side against every equality arm, and preserves the range cursor even when a survivor page is empty. Zero equality arms and more than eight arms are rejected; non-vertex specs are rejected.
 
@@ -264,8 +265,9 @@ This follows the existing derived-state contract: postings may lag canonical ver
 On DML / property updates, graph enqueues posting changes when federation routing and an index client are configured. Without client, mutations may drop index updates (`index/pending.rs`) — deployments with property indexes must wire the index canister.
 
 **Backfill:** `backfill_vertex_property_postings` on graph shards replays indexable vertex properties from
-`VERTEX_PROPERTIES` into graph-index via `posting_insert` (router-guarded update, same cursor batching
-model as `backfill_label_postings`). Unindexable values are skipped (see `property_indexability` in
+`VERTEX_PROPERTIES` into graph-index via the budget-driven `posting_batch` transport when the concrete
+client supports it, with per-posting fallback for native/legacy clients (router-guarded update, same
+cursor batching model as `backfill_label_postings`). Unindexable values are skipped (see `property_indexability` in
 `crates/graph/src/property/`). Router orchestrates per-shard cursors via
 `admin_vertex_property_backfill_step` / `admin_list_vertex_property_backfill_status` (Admin-only).
 

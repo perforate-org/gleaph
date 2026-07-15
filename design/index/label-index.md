@@ -1,8 +1,8 @@
 # Label index
 
-Last updated: 2026-06-17  
-Anchor timestamp: 2026-06-17 02:55:17 UTC +0000  
-Implementation verified as of: 2026-06-17 (postings, read paths A–D, label stats projection path B, backfill orchestration)
+Last updated: 2026-07-15
+Anchor timestamp: 2026-07-15 08:58:08 UTC +0000
+Implementation verified as of: 2026-07-15 (postings, read paths A–D, label stats projection path B, backfill orchestration and batch delivery)
 
 ## Status
 
@@ -107,7 +107,9 @@ clients. Used when the plan needs explicit ids for `:L1:L2:…`
 **Rebuild inventory:** [stable-memory-inventory.md](../storage/stable-memory-inventory.md) (`INDEX_VERTEX_LABEL_POSTINGS`, `ROUTER_LABEL_BACKFILL_STATE`).
 
 **Backfill:** `backfill_label_postings` on graph shards replays `VertexLabelStore` into
-graph-index for pre-existing data. Router orchestrates per-shard cursors via
+graph-index for pre-existing data, using the budget-driven `posting_batch` transport when the
+concrete client supports it and retaining the per-posting fallback for native/legacy clients.
+Router orchestrates per-shard cursors via
 `admin_label_backfill_step` / `admin_list_label_backfill_status` (Admin-only).
 
 **Label stats projection:** Graph shards persist unacked `LabelStatsDelta` events in

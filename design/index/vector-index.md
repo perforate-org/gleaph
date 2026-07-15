@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-07-04
-Anchor timestamp: 2026-07-04 01:39:31 UTC +0000
+Last updated: 2026-07-15
+Anchor timestamp: 2026-07-15 08:58:08 UTC +0000
 
 ## Status
 
@@ -17,7 +17,7 @@ Slice 2 is implemented: the derived sync path plus a degenerate `ivf_flat` `grap
 canister foundation (mutation-only). This covers `graph-kernel` sync/mutation wire types
 (`VectorEmbeddingSyncOp`, `VectorSubject::Vertex`, `IndexedEmbeddingCatalog`), the
 `VECTOR_INDEX_STABLE_LAYOUT` registry (11 regions, MemoryId 0–10), the `graph-vector-index` canister
-storage (`vector_upsert` / `vector_remove`, plus the bounded `vector_sync_batch` transport wrapper,
+  storage (`vector_upsert` / `vector_remove`, plus the bounded `vector_sync_batch` transport wrapper,
 durable allocators, subject tombstone clock, attach /
 detach), and the graph-side delta plumbing (catalog-gated dispatch, `vector_pending`,
 `RepairPostingOp::VectorEmbedding`, repair drain, and bounded `vertex_embedding_backfill`).
@@ -435,8 +435,10 @@ the incarnation fence and a two-condition gate (global flag AND per-graph shard 
   activation flag set/get, and the vector-shard attach endpoint.
 - **Bounded backfill.** `admin_vector_index_backfill_step` is a real bounded driver (router
   orchestration → `graph_client::backfill_vertex_embeddings` → graph endpoint → existing worker)
-  taking an explicit `(shard_id, start_vertex_id, max_vertices)` resume cursor; it fails closed
-  (`VectorDispatchActivationBlocked`) while dispatch is not ready.
+  taking an explicit `(shard_id, start_vertex_id, max_vertices)` resume cursor. The worker batches
+  embedding operations through `vector_sync_batch` when supported and retains the per-operation
+  fallback for native/legacy clients; each operation preserves its incarnation/version fence. It
+  fails closed (`VectorDispatchActivationBlocked`) while dispatch is not ready.
 
 
 ## Filtered exact ranking (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 and 19)

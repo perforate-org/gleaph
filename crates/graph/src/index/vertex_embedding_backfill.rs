@@ -7,7 +7,7 @@
 //! mock client and a test-installed catalog.
 
 use crate::facade::GraphStore;
-use crate::index::vector_lookup::VectorIndexLookup;
+use crate::index::vector_lookup::{VectorIndexLookup, dispatch_vector_sync_batch};
 use gleaph_graph_kernel::federation::{EmbeddingBackfillArgs, EmbeddingBackfillResult};
 use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
 use ic_stable_lara::VertexId;
@@ -26,6 +26,7 @@ pub async fn backfill_vertex_embeddings(
     let mut cursor = args.start_vertex_id.min(vertex_cap);
     let mut vertices_processed = 0u32;
     let mut embeddings_synced = 0u32;
+    let mut batch = Vec::new();
 
     while vertices_processed < max_vertices && cursor < vertex_cap {
         let vertex_id = VertexId::from(cursor);
@@ -53,26 +54,37 @@ pub async fn backfill_vertex_embeddings(
             let embedding_incarnation = store
                 .vertex_embedding_incarnation(vertex_id, embedding_name_id)
                 .unwrap_or(1);
-            vector
-                .vector_upsert(VectorEmbeddingSyncOp {
-                    index_id: spec.index_id,
-                    embedding_name_id: embedding_name_id.raw(),
-                    subject: VectorSubject::Vertex {
-                        shard_id,
-                        vertex_id: local_raw,
-                    },
-                    embedding_incarnation,
-                    embedding_version: record.version,
-                    encoding: record.encoding,
-                    dims: record.dims,
-                    metric: spec.metric,
-                    bytes: record.bytes,
-                    remove: false,
-                })
-                .await
-                .map_err(|e| e.to_string())?;
+            let operation = VectorEmbeddingSyncOp {
+                index_id: spec.index_id,
+                embedding_name_id: embedding_name_id.raw(),
+                subject: VectorSubject::Vertex {
+                    shard_id,
+                    vertex_id: local_raw,
+                },
+                embedding_incarnation,
+                embedding_version: record.version,
+                encoding: record.encoding,
+                dims: record.dims,
+                metric: spec.metric,
+                bytes: record.bytes,
+                remove: false,
+            };
+            if vector.supports_sync_batch() {
+                batch.push(operation);
+            } else {
+                vector
+                    .vector_upsert(operation)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             embeddings_synced = embeddings_synced.saturating_add(1);
         }
+    }
+
+    if !batch.is_empty() {
+        dispatch_vector_sync_batch(vector, batch)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     Ok(EmbeddingBackfillResult {
@@ -92,24 +104,71 @@ mod tests {
     use candid::Principal;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::vector_index::{
-        IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
+        IndexedEmbeddingSpec, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexKind, VectorMetric,
+        VectorSyncBatchProgress,
     };
     use std::sync::Mutex;
 
     struct RecordingVectorIndex {
         upserts: Mutex<Vec<VectorEmbeddingSyncOp>>,
+        batches: Mutex<Vec<Vec<VectorEmbeddingSyncOp>>>,
+        batch_mode: bool,
+        batch_limit: Option<usize>,
     }
 
     impl RecordingVectorIndex {
         fn new() -> Self {
             Self {
                 upserts: Mutex::new(Vec::new()),
+                batches: Mutex::new(Vec::new()),
+                batch_mode: false,
+                batch_limit: None,
+            }
+        }
+
+        fn batch() -> Self {
+            Self {
+                upserts: Mutex::new(Vec::new()),
+                batches: Mutex::new(Vec::new()),
+                batch_mode: true,
+                batch_limit: None,
+            }
+        }
+
+        fn batch_with_limit(limit: usize) -> Self {
+            Self {
+                upserts: Mutex::new(Vec::new()),
+                batches: Mutex::new(Vec::new()),
+                batch_mode: true,
+                batch_limit: Some(limit),
             }
         }
     }
 
     #[async_trait(?Send)]
     impl VectorIndexLookup for RecordingVectorIndex {
+        fn supports_sync_batch(&self) -> bool {
+            self.batch_mode
+        }
+
+        async fn vector_sync_batch(
+            &self,
+            operations: Vec<VectorEmbeddingSyncOp>,
+        ) -> Result<VectorSyncBatchProgress, crate::plan::PlanQueryError> {
+            let applied = self
+                .batch_limit
+                .map_or(operations.len(), |limit| limit.min(operations.len()));
+            self.batches
+                .lock()
+                .unwrap()
+                .push(operations[..applied].to_vec());
+            Ok(VectorSyncBatchProgress {
+                applied: applied as u32,
+                next_index: (applied < operations.len()).then_some(applied as u32),
+                instruction_budget_exhausted: false,
+            })
+        }
+
         async fn vector_upsert(
             &self,
             op: VectorEmbeddingSyncOp,
@@ -273,6 +332,70 @@ mod tests {
         assert!(second.done);
         assert_eq!(vector.upserts.lock().unwrap().len(), 2);
 
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn backfill_batches_multiple_embeddings() {
+        let store = federated_store();
+        let vector = RecordingVectorIndex::batch();
+        let v0 = store.insert_vertex().expect("v0");
+        let v1 = store.insert_vertex().expect("v1");
+        let name = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
+        store
+            .set_vertex_embedding(v0, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+            .expect("v0 embedding");
+        store
+            .set_vertex_embedding(v1, name, VectorEncoding::F32, 2, vec_bytes(&[3.0, 4.0]))
+            .expect("v1 embedding");
+        let _catalog = vector_catalog_context::enter_indexed(&[spec(1)]);
+
+        let result = pollster::block_on(backfill_vertex_embeddings(
+            &store,
+            &vector,
+            EmbeddingBackfillArgs {
+                start_vertex_id: 0,
+                max_vertices: 10,
+            },
+        ))
+        .expect("backfill");
+
+        assert_eq!(result.embeddings_synced, 2);
+        let batches = vector.batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 2);
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn backfill_continues_after_partial_vector_batch_progress() {
+        let store = federated_store();
+        let vector = RecordingVectorIndex::batch_with_limit(1);
+        let v0 = store.insert_vertex().expect("v0");
+        let v1 = store.insert_vertex().expect("v1");
+        let name = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
+        store
+            .set_vertex_embedding(v0, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+            .expect("v0 embedding");
+        store
+            .set_vertex_embedding(v1, name, VectorEncoding::F32, 2, vec_bytes(&[3.0, 4.0]))
+            .expect("v1 embedding");
+        let _catalog = vector_catalog_context::enter_indexed(&[spec(1)]);
+
+        pollster::block_on(backfill_vertex_embeddings(
+            &store,
+            &vector,
+            EmbeddingBackfillArgs {
+                start_vertex_id: 0,
+                max_vertices: 10,
+            },
+        ))
+        .expect("backfill");
+
+        let batches = vector.batches.lock().unwrap();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].len(), 1);
+        assert_eq!(batches[1].len(), 1);
         store.set_federation_routing(None).expect("clear routing");
     }
 }
