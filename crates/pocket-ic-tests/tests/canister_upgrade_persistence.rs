@@ -292,3 +292,31 @@ fn derived_index_outbox_survives_graph_upgrade_and_drains_after_restart() {
         "post-upgrade maintenance must drain the durable derived-index outbox"
     );
 }
+
+#[test]
+fn large_derived_index_outbox_batch_drains_after_graph_upgrade() {
+    let env = install_single_shard_federation();
+    let patterns = (0..512)
+        .map(|id| format!("(:OutboxLarge {{seq: {id}}})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!("INSERT {patterns}");
+    gql_execute_idempotent_as_admin(&env, &query, "outbox_large_batch");
+
+    assert!(
+        e2e_derived_index_outbox_len(&env, env.graph_source) > 128,
+        "large DML must enqueue more than the removed legacy drain cap"
+    );
+
+    let empty = Encode!(&()).expect("encode empty upgrade arg");
+    env.pic
+        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .expect("upgrade graph with large pending outbox");
+
+    drain_maintenance_via_timer(&env, env.graph_source);
+    assert_eq!(
+        e2e_derived_index_outbox_len(&env, env.graph_source),
+        0,
+        "large outbox must converge after graph upgrade"
+    );
+}
