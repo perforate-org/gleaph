@@ -37,6 +37,18 @@ fn to_repair_op(op: &VectorEmbeddingSyncOp) -> RepairPostingOp {
     RepairPostingOp::VectorEmbedding { op: op.clone() }
 }
 
+/// Takes volatile vector work as durable operations for a maintenance tick that already has
+/// older repair entries. The repair drain will reconcile these operations against canonical Graph
+/// state before delivery.
+pub(crate) fn take_pending_as_repair() -> Vec<RepairPostingOp> {
+    PENDING.with(|p| {
+        std::mem::take(&mut *p.borrow_mut())
+            .iter()
+            .map(to_repair_op)
+            .collect()
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn pending_snapshot() -> Vec<VectorEmbeddingSyncOp> {
     PENDING.with(|p| p.borrow().clone())

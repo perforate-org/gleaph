@@ -103,6 +103,24 @@ pub(crate) fn to_repair_op(op: &PendingPostingOp) -> RepairPostingOp {
     }
 }
 
+/// Takes all volatile property-index queues in their existing dispatch order and converts them
+/// to durable repair operations. The maintenance driver uses this only when an older repair
+/// journal already exists, so the older journal entries remain ahead of these newer operations.
+pub(crate) fn take_pending_as_repair() -> Vec<RepairPostingOp> {
+    let mut ops: Vec<RepairPostingOp> = take_pending().iter().map(to_repair_op).collect();
+    ops.extend(
+        crate::index::edge_pending::take_pending()
+            .iter()
+            .map(crate::index::edge_pending::to_repair_op),
+    );
+    ops.extend(
+        crate::index::label_pending::take_pending()
+            .iter()
+            .map(crate::index::label_pending::to_repair_op),
+    );
+    ops
+}
+
 pub(crate) fn to_index_mutation(op: &PendingPostingOp) -> IndexPostingMutation {
     match op {
         PendingPostingOp::Insert {

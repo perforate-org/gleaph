@@ -288,6 +288,11 @@ drain path. If compensation itself fails, the canister no longer traps (P4) — 
 journaled all the same, since idempotent re-application converges the index to the store regardless
 of the partial compensation state.
 
+When a maintenance tick finds an existing repair journal, newer volatile vertex, edge, and label
+pending operations are appended to its durable tail before draining. This preserves journal-before-
+pending ordering and lets contiguous compatible operations share the existing bounded batch call;
+pending work is never removed from volatile state without first becoming durable.
+
 **`DROP INDEX` posting purge (ADR 0023 D6):** dropping an index removes the dropped property's
 postings from graph-index, not just the router catalog entry (closing P7, where dropped indexes
 orphaned their postings). The index exposes a router-guarded, bounded, resumable

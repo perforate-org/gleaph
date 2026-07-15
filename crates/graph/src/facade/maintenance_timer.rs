@@ -180,8 +180,19 @@ async fn flush_and_repair(store: &GraphStore) {
     let vx = vector_client
         .as_ref()
         .map(|c| c as &dyn crate::index::vector_lookup::VectorIndexLookup);
-    let _ = crate::index::pending::flush_all_pending(Some(ix), None).await;
-    let _ = crate::index::vector_pending::flush_pending(vx, None).await;
+    if store.repair_journal_is_empty() {
+        let _ = crate::index::pending::flush_all_pending(Some(ix), None).await;
+        let _ = crate::index::vector_pending::flush_pending(vx, None).await;
+    } else {
+        // Durable repair entries are older than the volatile queues. Append pending work to the
+        // journal before draining so it cannot overtake an older entry; contiguous compatible
+        // entries are then delivered by the existing batch drain in one inter-canister call.
+        let mut pending = crate::index::pending::take_pending_as_repair();
+        pending.extend(crate::index::vector_pending::take_pending_as_repair());
+        if !pending.is_empty() {
+            store.repair_journal_append(0, pending);
+        }
+    }
     let _ = crate::index::repair_journal::drain_once(ix, vx).await;
 }
 

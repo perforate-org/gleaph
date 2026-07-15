@@ -688,6 +688,11 @@ The vector index follows the graph-index pattern:
 4. Failed flush persists to a durable repair path.
 5. Bounded backfill can rebuild vector-index entries from the graph-owned embedding store.
 
+During maintenance, if the durable repair journal already has older entries, newer pending vector
+operations are appended to the journal tail before replay. Replay still reconciles every vector
+operation against canonical Graph state and retains the incarnation/version fence; only the
+dispatch grouping changes.
+
 Derived vector-index lag follows the same high-level rule as other derived indexes: canonical graph
 state wins when derived state disagrees.
 
