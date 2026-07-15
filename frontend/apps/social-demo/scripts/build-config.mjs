@@ -602,7 +602,6 @@ const buildTsScenarios = () => {
         `label: ${JSON.stringify(doc.label)}`,
         `shortLabel: ${JSON.stringify(doc.shortLabel)}`,
         `feedTitle: ${JSON.stringify(doc.feedTitle)}`,
-        `explanationTitle: ${JSON.stringify(doc.explanationTitle)}`,
         `rdbSummary: ${JSON.stringify(doc.rdbSummary)}`,
         `graphSummary: ${JSON.stringify(doc.graphSummary)}`,
         `preparedQuery: ${JSON.stringify(doc.preparedQuery)}`,
@@ -639,7 +638,6 @@ export type ScenarioDefinition = {
   label: string;
   shortLabel: string;
   feedTitle: string;
-  explanationTitle: string;
   rdbSummary: string;
   graphSummary: string;
   preparedQuery: string;

@@ -12,7 +12,7 @@ export function ExplanationPanel(props: { definition: ScenarioDefinition }) {
 
       <div>
         <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">
-          {t(scenarioTranslationKey(props.definition.id, "explanationTitle"))}
+          {t("explanation.rdbBaseline")}
         </h2>
         <p class="mt-2 text-sm leading-relaxed text-slate-700">
           {t(scenarioTranslationKey(props.definition.id, "rdbSummary"))}

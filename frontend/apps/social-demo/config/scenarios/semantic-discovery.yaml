@@ -3,11 +3,10 @@ preparedQueryId: semantic_discovery
 label: Semantic discovery
 shortLabel: Semantic
 feedTitle: Vector-only semantic discovery
-explanationTitle: Vector retrieval
 rdbSummary: |-
-  Pure vector search has no join table: it scores every public Post against a fixed query vector and returns the nearest neighbors by L2-squared distance.
+  An RDB with a vector extension can also run this query: search the Post embedding index, filter public posts, and return the nearest neighbors. The key capability here is vector indexing, not a relational join; a separate vector service is another common implementation.
 graphSummary: |-
-  Gleaph stores canonical Post embeddings on the Graph shard and routes vector SEARCH through the derived index. Dave's retrieval note is deliberately nearest even though Alice does not follow Dave.
+  Gleaph keeps the canonical Post embeddings with the graph data and routes `SEARCH` through its derived vector index. This scenario intentionally has no relationship constraint, so Dave's note appears because it is the nearest public Post—not because the graph has inferred a social connection.
 preparedQuery: |-
   MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC
 semanticVector:

@@ -3,11 +3,10 @@ preparedQueryId: public_timeline
 label: Public timeline
 shortLabel: Timeline
 feedTitle: Public posts
-explanationTitle: Relational baseline
 rdbSummary: |-
-  A chronological list of public rows is exactly what an RDB does well: one index on created_at, a simple visibility predicate, and no joins.
+  This is the straightforward RDB case: index public posts by created_at, apply the visibility condition, and read the newest rows. There is no meaningful relational advantage to demonstrate here; the important baseline is a simple, well-indexed table query.
 graphSummary: |-
-  The graph materializes `IN_PUBLIC_FEED` edges from every public Post to a dedicated Feed vertex at seed time. Gleaph's labeled-edge insertion order is exposed explicitly through `GLEAPH.SEQUENCE(e)`, so a single fixed-label expansion with `LIMIT` returns newest-first without depending on undocumented default scan order. The value is not speed; it is that the same vertex model will later power relationship-aware feeds without a new schema.
+  Gleaph materializes `IN_PUBLIC_FEED` edges from each public Post to a Feed vertex, then reads one fixed-label edge stream. This is not presented as faster than the RDB baseline; it shows that the same Post/User/edge model can extend from a public timeline to relationship-aware feeds without introducing a separate feed schema.
 preparedQuery: |-
   MATCH (feed:Feed {demo_id: 40})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20
 semanticVector: null

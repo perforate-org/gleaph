@@ -3,11 +3,10 @@ preparedQueryId: alice_semantic_feed
 label: Alice semantic feed
 shortLabel: Semantic+Graph
 feedTitle: Alice's graph-constrained semantic feed
-explanationTitle: Hybrid retrieval
 rdbSummary: |-
-  Combining vector similarity with a relational filter requires joining the vector result set back to followee authorship, usually in application code.
+  A relational implementation must combine two concerns: find posts by vector distance and restrict them to Alice's followees. It can join or pre-filter in the database, but if vector search returns only a small top-k candidate set, filtering afterward can miss eligible posts; over-fetching or filter-aware vector search is needed.
 graphSummary: |-
-  Gleaph applies the same vector SEARCH inside the graph pattern `Alice → FOLLOWS → author → POSTED → Post`. Dave's nearer post is excluded because he is not a followee; posts from Alice's followed authors are returned in semantic order.
+  Gleaph expresses eligibility and ranking in one query: `Alice → FOLLOWS → author → POSTED → Post` plus vector `SEARCH`. Dave's nearer post is excluded because he is not a followee, while eligible posts are ranked by semantic distance. The point is composable relationship filtering, not that graphs replace vector indexes.
 preparedQuery: |-
   MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC
 semanticVector:

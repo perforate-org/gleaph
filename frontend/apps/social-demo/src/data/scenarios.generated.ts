@@ -57,7 +57,6 @@ export type ScenarioDefinition = {
   label: string;
   shortLabel: string;
   feedTitle: string;
-  explanationTitle: string;
   rdbSummary: string;
   graphSummary: string;
   preparedQuery: string;
@@ -72,9 +71,8 @@ export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
     label: "Public timeline",
     shortLabel: "Timeline",
     feedTitle: "Public posts",
-    explanationTitle: "Relational baseline",
-    rdbSummary: "A chronological list of public rows is exactly what an RDB does well: one index on created_at, a simple visibility predicate, and no joins.",
-    graphSummary: "The graph materializes `IN_PUBLIC_FEED` edges from every public Post to a dedicated Feed vertex at seed time. Gleaph's labeled-edge insertion order is exposed explicitly through `GLEAPH.SEQUENCE(e)`, so a single fixed-label expansion with `LIMIT` returns newest-first without depending on undocumented default scan order. The value is not speed; it is that the same vertex model will later power relationship-aware feeds without a new schema.",
+    rdbSummary: "This is the straightforward RDB case: index public posts by created_at, apply the visibility condition, and read the newest rows. There is no meaningful relational advantage to demonstrate here; the important baseline is a simple, well-indexed table query.",
+    graphSummary: "Gleaph materializes `IN_PUBLIC_FEED` edges from each public Post to a Feed vertex, then reads one fixed-label edge stream. This is not presented as faster than the RDB baseline; it shows that the same Post/User/edge model can extend from a public timeline to relationship-aware feeds without introducing a separate feed schema.",
     preparedQuery: "MATCH (feed:Feed {demo_id: 40})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20",
     semanticVector: null,
     scenario: SocialDemoScenario.PublicTimeline,
@@ -85,9 +83,8 @@ export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
     label: "Alice home feed",
     shortLabel: "Home",
     feedTitle: "Alice's home feed",
-    explanationTitle: "Graph traversal",
-    rdbSummary: "An RDB needs a follows join table and a two-hop join (follower → followee → posts). The query is still SQL-shaped, but the relationship is now a traversal, not a foreign-key lookup.",
-    graphSummary: "Gleaph materializes `IN_HOME_FEED` edges from every public Post to its author and each follower User at seed time, so Alice's feed is a single bounded expansion from her user vertex and includes her own posts. The feed is ordered explicitly with `GLEAPH.SEQUENCE(e)` on the labeled feed edge, returning newest posts first with a deterministic, declared sort key rather than an implicit scan assumption.",
+    rdbSummary: "At small scale, an RDB can build Alice's feed on read: first get the followee IDs from follows, then fetch their public posts from tweets (a join or subquery). Twitter-like systems often avoid repeating that work for every read by using fan-out on write: copy each new post into followers' home-feed inboxes. At larger scale, a hybrid is common—push ordinary accounts and pull or merge posts from celebrity accounts.",
+    graphSummary: "Gleaph's social-demo uses fan-out on write: when the seed is built, each public Post creates an `IN_HOME_FEED` edge to its author and every follower User. Alice then reads those pre-materialized edges with one bounded expansion, including her own posts. This shifts work from feed reads to post ingestion; a production system can combine it with pull/merge for accounts with very large audiences.",
     preparedQuery: "MATCH (u:User {demo_id: 1})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20",
     semanticVector: null,
     scenario: SocialDemoScenario.AliceHomeFeed,
@@ -98,9 +95,8 @@ export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
     label: "Topic path",
     shortLabel: "Topic",
     feedTitle: "Topic explanation path",
-    explanationTitle: "Explainable recommendation",
-    rdbSummary: "Proving why a post was recommended requires re-running and documenting the joins: follow, post, topic. The answer is scattered across tables.",
-    graphSummary: "Gleaph returns the same result plus the edge identities that caused it: Alice follows Bob, Bob authored the post, and that post has the Graph databases topic. The path is part of the query result.",
+    rdbSummary: "An RDB can answer this with joins across follows, posts, and topics. The extra work is explaining the result: the application must select and preserve the matching follow, authorship, and topic rows as recommendation evidence instead of returning only the post.",
+    graphSummary: "The graph pattern describes the reason directly: Alice follows Bob, Bob authored the post, and the post has the selected topic. Gleaph returns the matching edge identities alongside the post, so the relationship path is part of the result rather than an explanation reconstructed afterward.",
     preparedQuery: "MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE t.demo_id = 13 MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) WHERE u.demo_id = 1 RETURN p.demo_id AS post_id, author.name AS author_name, t.demo_id AS topic_id, p.body AS body, p.created_at AS created_at, ELEMENT_ID(follows) AS follows_edge_id, ELEMENT_ID(posted) AS posted_edge_id, ELEMENT_ID(has_topic) AS topic_edge_id",
     semanticVector: null,
     scenario: SocialDemoScenario.TopicPath,
@@ -111,9 +107,8 @@ export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
     label: "Semantic discovery",
     shortLabel: "Semantic",
     feedTitle: "Vector-only semantic discovery",
-    explanationTitle: "Vector retrieval",
-    rdbSummary: "Pure vector search has no join table: it scores every public Post against a fixed query vector and returns the nearest neighbors by L2-squared distance.",
-    graphSummary: "Gleaph stores canonical Post embeddings on the Graph shard and routes vector SEARCH through the derived index. Dave's retrieval note is deliberately nearest even though Alice does not follow Dave.",
+    rdbSummary: "An RDB with a vector extension can also run this query: search the Post embedding index, filter public posts, and return the nearest neighbors. The key capability here is vector indexing, not a relational join; a separate vector service is another common implementation.",
+    graphSummary: "Gleaph keeps the canonical Post embeddings with the graph data and routes `SEARCH` through its derived vector index. This scenario intentionally has no relationship constraint, so Dave's note appears because it is the nearest public Post—not because the graph has inferred a social connection.",
     preparedQuery: "MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC",
     semanticVector: [8,0,0,0,0,0,0,0],
     scenario: SocialDemoScenario.SemanticDiscovery,
@@ -124,9 +119,8 @@ export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
     label: "Alice semantic feed",
     shortLabel: "Semantic+Graph",
     feedTitle: "Alice's graph-constrained semantic feed",
-    explanationTitle: "Hybrid retrieval",
-    rdbSummary: "Combining vector similarity with a relational filter requires joining the vector result set back to followee authorship, usually in application code.",
-    graphSummary: "Gleaph applies the same vector SEARCH inside the graph pattern `Alice → FOLLOWS → author → POSTED → Post`. Dave's nearer post is excluded because he is not a followee; posts from Alice's followed authors are returned in semantic order.",
+    rdbSummary: "A relational implementation must combine two concerns: find posts by vector distance and restrict them to Alice's followees. It can join or pre-filter in the database, but if vector search returns only a small top-k candidate set, filtering afterward can miss eligible posts; over-fetching or filter-aware vector search is needed.",
+    graphSummary: "Gleaph expresses eligibility and ranking in one query: `Alice → FOLLOWS → author → POSTED → Post` plus vector `SEARCH`. Dave's nearer post is excluded because he is not a followee, while eligible posts are ranked by semantic distance. The point is composable relationship filtering, not that graphs replace vector indexes.",
     preparedQuery: "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC",
     semanticVector: [8,0,0,0,0,0,0,0],
     scenario: SocialDemoScenario.AliceSemanticFeed,

@@ -22,35 +22,30 @@ const enDictionary = {
   "scenario.semanticDiscovery": "Semantic discovery",
   "scenario.aliceSemanticFeed": "Alice semantic feed",
   "scenario.publicTimeline.feedTitle": "Public posts",
-  "scenario.publicTimeline.explanationTitle": "Relational baseline",
   "scenario.publicTimeline.rdbSummary":
-    "A chronological list of public rows is exactly what an RDB does well: one index on created_at, a simple visibility predicate, and no joins.",
+    "This is the straightforward RDB case: index public posts by created_at, apply the visibility condition, and read the newest rows. There is no meaningful relational advantage to demonstrate here; the important baseline is a simple, well-indexed table query.",
   "scenario.publicTimeline.graphSummary":
-    "The graph materializes `IN_PUBLIC_FEED` edges from every public Post to a dedicated Feed vertex at seed time. Gleaph's labeled-edge insertion order is exposed explicitly through `GLEAPH.SEQUENCE(e)`, so a single fixed-label expansion with `LIMIT` returns newest-first without depending on undocumented default scan order. The value is not speed; it is that the same vertex model will later power relationship-aware feeds without a new schema.",
+    "Gleaph materializes `IN_PUBLIC_FEED` edges from each public Post to a Feed vertex, then reads one fixed-label edge stream. This is not presented as faster than the RDB baseline; it shows that the same Post/User/edge model can extend from a public timeline to relationship-aware feeds without introducing a separate feed schema.",
   "scenario.aliceHomeFeed.feedTitle": "Alice's home feed",
-  "scenario.aliceHomeFeed.explanationTitle": "Graph traversal",
   "scenario.aliceHomeFeed.rdbSummary":
-    "An RDB needs a follows join table and a two-hop join (follower → followee → posts). The query is still SQL-shaped, but the relationship is now a traversal, not a foreign-key lookup.",
+    "At small scale, an RDB can build Alice's feed on read: first get the followee IDs from follows, then fetch their public posts from tweets (a join or subquery). Twitter-like systems often avoid repeating that work for every read by using fan-out on write: copy each new post into followers' home-feed inboxes. At larger scale, a hybrid is common—push ordinary accounts and pull or merge posts from celebrity accounts.",
   "scenario.aliceHomeFeed.graphSummary":
-    "Gleaph materializes `IN_HOME_FEED` edges from every public Post to its author and each follower User at seed time, so Alice's feed is a single bounded expansion from her user vertex and includes her own posts. The feed is ordered explicitly with `GLEAPH.SEQUENCE(e)` on the labeled feed edge, returning newest posts first with a deterministic, declared sort key rather than an implicit scan assumption.",
+    "Gleaph's social-demo uses fan-out on write: when the seed is built, each public Post creates an `IN_HOME_FEED` edge to its author and every follower User. Alice then reads those pre-materialized edges with one bounded expansion, including her own posts. This shifts work from feed reads to post ingestion; a production system can combine it with pull/merge for accounts with very large audiences.",
   "scenario.topicPath.feedTitle": "Topic explanation path",
-  "scenario.topicPath.explanationTitle": "Explainable recommendation",
   "scenario.topicPath.rdbSummary":
-    "Proving why a post was recommended requires re-running and documenting the joins: follow, post, topic. The answer is scattered across tables.",
+    "An RDB can answer this with joins across follows, posts, and topics. The extra work is explaining the result: the application must select and preserve the matching follow, authorship, and topic rows as recommendation evidence instead of returning only the post.",
   "scenario.topicPath.graphSummary":
-    "Gleaph returns the same result plus the edge identities that caused it: Alice follows Bob, Bob authored the post, and that post has the Graph databases topic. The path is part of the query result.",
+    "The graph pattern describes the reason directly: Alice follows Bob, Bob authored the post, and the post has the selected topic. Gleaph returns the matching edge identities alongside the post, so the relationship path is part of the result rather than an explanation reconstructed afterward.",
   "scenario.semanticDiscovery.feedTitle": "Vector-only semantic discovery",
-  "scenario.semanticDiscovery.explanationTitle": "Vector retrieval",
   "scenario.semanticDiscovery.rdbSummary":
-    "Pure vector search has no join table: it scores every public Post against a fixed query vector and returns the nearest neighbors by L2-squared distance.",
+    "An RDB with a vector extension can also run this query: search the Post embedding index, filter public posts, and return the nearest neighbors. The key capability here is vector indexing, not a relational join; a separate vector service is another common implementation.",
   "scenario.semanticDiscovery.graphSummary":
-    "Gleaph stores canonical Post embeddings on the Graph shard and routes vector SEARCH through the derived index. Dave's retrieval note is deliberately nearest even though Alice does not follow Dave.",
+    "Gleaph keeps the canonical Post embeddings with the graph data and routes `SEARCH` through its derived vector index. This scenario intentionally has no relationship constraint, so Dave's note appears because it is the nearest public Post—not because the graph has inferred a social connection.",
   "scenario.aliceSemanticFeed.feedTitle": "Alice's graph-constrained semantic feed",
-  "scenario.aliceSemanticFeed.explanationTitle": "Hybrid retrieval",
   "scenario.aliceSemanticFeed.rdbSummary":
-    "Combining vector similarity with a relational filter requires joining the vector result set back to followee authorship, usually in application code.",
+    "A relational implementation must combine two concerns: find posts by vector distance and restrict them to Alice's followees. It can join or pre-filter in the database, but if vector search returns only a small top-k candidate set, filtering afterward can miss eligible posts; over-fetching or filter-aware vector search is needed.",
   "scenario.aliceSemanticFeed.graphSummary":
-    "Gleaph applies the same vector SEARCH inside the graph pattern `Alice → FOLLOWS → author → POSTED → Post`. Dave's nearer post is excluded because he is not a followee; posts from Alice's followed authors are returned in semantic order.",
+    "Gleaph expresses eligibility and ranking in one query: `Alice → FOLLOWS → author → POSTED → Post` plus vector `SEARCH`. Dave's nearer post is excluded because he is not a followee, while eligible posts are ranked by semantic distance. The point is composable relationship filtering, not that graphs replace vector indexes.",
   "feed.loading": "Loading scenario through Gateway…",
   "feed.empty": "No posts returned for this scenario.",
   "feed.errorTitle": "Scenario failed",
@@ -70,6 +65,7 @@ const enDictionary = {
   "feed.edgeToTopic": "to topic",
   "feed.seedLabelsNote": "Labels reflect the fixed social-graph seed. Update them if the seed subject changes.",
   "explanation.graphValueAdd": "Graph value add",
+  "explanation.rdbBaseline": "RDB baseline",
   "explanation.whyResultsDiffer": "Why the results differ",
   "explanation.whyResultsDifferBody":
     "The fixed query vector makes Dave's retrieval note the globally nearest public Post. In the vector-only scenario it appears first. In Alice's graph-constrained feed it is absent because Alice does not follow Dave, even though it is nearer than every followed-author result.",
@@ -103,35 +99,30 @@ const jaDictionary: Record<TranslationKey, string> = {
   "scenario.semanticDiscovery": "意味検索",
   "scenario.aliceSemanticFeed": "アリスの意味フィード",
   "scenario.publicTimeline.feedTitle": "公開投稿",
-  "scenario.publicTimeline.explanationTitle": "リレーショナル検索の基準例",
   "scenario.publicTimeline.rdbSummary":
-    "公開行の時系列一覧は、created_at のインデックスと単純な公開条件だけで取得できる、RDB が得意とする処理です。結合は必要ありません。",
+    "これは RDB が素直に処理できるケースです。公開投稿に created_at のインデックスを張り、公開条件を適用して新しい順に取得します。ここで示す基準は、単純で適切にインデックスされたテーブル検索です。",
   "scenario.publicTimeline.graphSummary":
-    "シード時に、グラフはすべての公開 Post から専用の Feed 頂点へ `IN_PUBLIC_FEED` エッジを作成します。ラベル付きエッジの挿入順は `GLEAPH.SEQUENCE(e)` で明示的に利用できるため、暗黙の走査順に頼らず、固定ラベルの展開と `LIMIT` だけで新しい投稿から返せます。価値は速度ではなく、同じ頂点モデルを後から関係性のあるフィードにも使える点です。",
+    "Gleaph は各公開 Post から Feed 頂点へ `IN_PUBLIC_FEED` エッジを事前作成し、固定ラベルのエッジ列を読みます。これは RDB より速いと主張する例ではなく、同じ Post／User／エッジのモデルを、別のフィード用スキーマを増やさず関係性のあるフィードへ拡張できることを示します。",
   "scenario.aliceHomeFeed.feedTitle": "アリスのホームフィード",
-  "scenario.aliceHomeFeed.explanationTitle": "グラフ走査",
   "scenario.aliceHomeFeed.rdbSummary":
-    "RDB では follows の結合テーブルと、フォロワー・フォロー先・投稿をたどる2段階の結合が必要です。クエリは SQL に似ていますが、関係は外部キー検索ではなく走査になります。",
+    "小規模なら、RDB は読むたびにホームフィードを組み立てられます。まず follows からフォロー先 ID を取得し、その ID の公開投稿を tweets から取得する、結合またはサブクエリです。一方、Twitter のような実サービスでは毎回この処理を繰り返さず、投稿時にフォロワーのホームフィード受信箱へ配る fan-out on write もよく使います。大規模では、通常のアカウントは push、著名アカウントは pull／merge するハイブリッドが一般的です。",
   "scenario.aliceHomeFeed.graphSummary":
-    "シード時に、Gleaph はすべての公開 Post から作者と各フォロワー User へ `IN_HOME_FEED` エッジを作成します。そのためアリスのフィードはユーザー頂点からの範囲付き展開1回で取得でき、自分の投稿も含みます。ラベル付きフィードエッジの `GLEAPH.SEQUENCE(e)` で順序を明示し、暗黙の走査順に頼らず新しい投稿から返します。",
+    "Gleaph の social-demo は fan-out on write を使います。シード構築時に、各公開 Post から作者とその作者をフォローするすべての User へ `IN_HOME_FEED` エッジを作成します。アリスは事前に配られたエッジをユーザー頂点から1回の範囲付き展開で読み、自分の投稿も取得できます。読み取りから投稿取り込みへ処理を移す設計なので、実サービスでは大規模アカウントだけ pull／merge と組み合わせる余地があります。",
   "scenario.topicPath.feedTitle": "トピック説明の経路",
-  "scenario.topicPath.explanationTitle": "説明可能な推薦",
   "scenario.topicPath.rdbSummary":
-    "投稿が推薦された理由を示すには、フォロー・投稿・トピックの結合を再実行して記録する必要があります。答えは複数のテーブルに分散します。",
+    "RDB でも follows、posts、topics を結合して答えられます。難しいのは理由の説明です。投稿だけでなく、一致したフォロー・作者・トピックの行を推薦の根拠として選択し、アプリケーション側で保持する必要があります。",
   "scenario.topicPath.graphSummary":
-    "Gleaph は結果に加えて、その理由となったエッジの識別子も返します。アリスがボブをフォローし、ボブが投稿者で、その投稿に Graph databases トピックが付いているという経路自体がクエリ結果になります。",
+    "グラフパターンは理由をそのまま表します。アリスがボブをフォローし、ボブが投稿者で、その投稿に選択したトピックが付いている経路です。Gleaph は投稿と一緒に一致したエッジ識別子も返すため、関係の経路自体が結果になり、後から説明を再構成する必要がありません。",
   "scenario.semanticDiscovery.feedTitle": "ベクトルのみの意味検索",
-  "scenario.semanticDiscovery.explanationTitle": "ベクトル検索",
   "scenario.semanticDiscovery.rdbSummary":
-    "純粋なベクトル検索には結合テーブルがありません。固定されたクエリベクトルとすべての公開 Post の距離を計算し、L2二乗距離が近い順に返します。",
+    "ベクトル拡張を持つ RDB でも実行できます。Post の embedding インデックスを検索し、公開投稿に絞って近い順に返します。ここでの主役はリレーショナル結合ではなくベクトルインデックスで、別のベクトルサービスを使う実装も一般的です。",
   "scenario.semanticDiscovery.graphSummary":
-    "Gleaph は正規の Post embedding を Graph shard に保持し、ベクトル SEARCH を派生インデックスへルーティングします。アリスがフォローしていないデイブの投稿も、ベクトル距離だけなら最も近い結果として意図的に含まれます。",
+    "Gleaph は正規の Post embedding をグラフデータとともに保持し、`SEARCH` を派生ベクトルインデックスへルーティングします。このシナリオには関係性の条件がないため、デイブの投稿はグラフが関係を推測したからではなく、公開 Post の中で最も近い結果として表示されます。",
   "scenario.aliceSemanticFeed.feedTitle": "アリスのグラフ制約付き意味フィード",
-  "scenario.aliceSemanticFeed.explanationTitle": "ハイブリッド検索",
   "scenario.aliceSemanticFeed.rdbSummary":
-    "ベクトル類似度とリレーショナルな条件を組み合わせるには、通常アプリケーションコードでベクトル結果をフォロー先の投稿者情報へ再結合する必要があります。",
+    "RDB でも、ベクトル距離で投稿を探す処理と、アリスのフォロー先に限定する処理を組み合わせられます。ただし少数の top-k だけを先に取得して後から絞ると、対象投稿を取りこぼします。多めに取得するか、条件を考慮できるベクトル検索が必要です。",
   "scenario.aliceSemanticFeed.graphSummary":
-    "Gleaph は `Alice → FOLLOWS → author → POSTED → Post` というグラフパターンの中で同じベクトル SEARCH を実行します。デイブはアリスのフォロー先ではないため、距離が近くても除外され、フォロー先の投稿だけが意味順に返ります。",
+    "Gleaph は `Alice → FOLLOWS → author → POSTED → Post` という対象条件とベクトル `SEARCH` を1つのクエリで表します。デイブはフォロー先ではないため距離が近くても除外され、対象となる投稿だけが意味距離順に返ります。グラフがベクトルインデックスを置き換えるのではなく、関係性の条件と検索を組み合わせる例です。",
   "feed.loading": "Gateway からシナリオを読み込んでいます…",
   "feed.empty": "このシナリオでは投稿が返されませんでした。",
   "feed.errorTitle": "シナリオに失敗しました",
@@ -151,6 +142,7 @@ const jaDictionary: Record<TranslationKey, string> = {
   "feed.edgeToTopic": "トピック",
   "feed.seedLabelsNote": "ラベルは固定されたソーシャルグラフのシードを表します。シード対象を変更した場合は更新してください。",
   "explanation.graphValueAdd": "グラフによる価値",
+  "explanation.rdbBaseline": "RDBでの基準実装",
   "explanation.whyResultsDiffer": "結果が異なる理由",
   "explanation.whyResultsDifferBody":
     "固定クエリベクトルでは、デイブの取得メモが公開 Post の中で最も近くなります。ベクトルのみのシナリオでは先頭に表示されますが、アリスのグラフ制約付きフィードではデイブをフォローしていないため、距離が近くても除外されます。",
@@ -226,7 +218,7 @@ const scenarioKey = {
   AliceSemanticFeed: "aliceSemanticFeed",
 } as const;
 
-export type LocalizedScenarioField = "feedTitle" | "explanationTitle" | "rdbSummary" | "graphSummary";
+export type LocalizedScenarioField = "feedTitle" | "rdbSummary" | "graphSummary";
 
 export function scenarioTranslationKey(
   id: keyof typeof scenarioKey,

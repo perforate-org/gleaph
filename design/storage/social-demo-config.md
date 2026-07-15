@@ -106,7 +106,6 @@ An explicit post `id` is rejected. The generator owns opaque Post identity, reso
 | `label`            | string                   | Display label.                                    |
 | `shortLabel`       | string                   | Short display label.                              |
 | `feedTitle`        | string                   | Feed panel title.                                 |
-| `explanationTitle` | string                   | Explanation panel title.                          |
 | `rdbSummary`       | string                   | Relational summary text.                          |
 | `graphSummary`     | string                   | Graph summary text.                               |
 | `preparedQuery`    | string                   | GQL string for `prepared_register`.               |
