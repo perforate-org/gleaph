@@ -1,16 +1,17 @@
-# ADR 0042: Router dynamic instruction-budget mutation batching
+# ADR 0042: Router instruction-budget mutation batching API
 
 Status: Implemented
 
 ## Decision
 
-Add `gql_execute_idempotent_dynamic_batch` as a cursor-based continuation API.
-The caller supplies a bounded mutation list, `start_index`, an instruction
-budget, and a maximum item count. The public request accepts up to 256
-mutations; `max_items = 0` means all remaining input. The Router executes the
-selected mutations in waves, reusing ADR 0041's Graph-canister batch boundary.
-Graph transport chunks each target's operations at 16 items because that is
-the Graph endpoint's request bound. Between waves
+Make `gql_execute_idempotent_batch` a cursor-based continuation API. This is a
+breaking replacement for the former separate dynamic endpoint. The caller
+supplies a mutation list, `start_index`, an optional instruction budget, and an
+optional maximum item count. There is no arbitrary item-count cap: when
+`max_items` is omitted, the Router consumes all remaining input that fits its
+instruction and encoded-payload budgets. The Router executes the selected
+mutations in waves, reusing ADR 0041's Graph-canister batch boundary. Graph
+transport chunks each target's operations by encoded request size. Between waves
 it reads the current Router call-context instruction counter and stops before
 starting another wave when the requested budget is reached.
 
@@ -35,7 +36,8 @@ limit and item-local journal boundary.
 ## Consequences
 
 - Large seed workloads can continue across ingress calls without guessing a
-  fixed page size; `max_items = 0` consumes all remaining input within budget.
+  fixed page size; an omitted `max_items` consumes all remaining input within
+  budget.
 - A conservative default leaves headroom for Router response construction and
   continuation bookkeeping.
 - The caller must retain the original mutation list and feed back `next_index`.

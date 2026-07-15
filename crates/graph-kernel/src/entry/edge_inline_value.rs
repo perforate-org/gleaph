@@ -392,7 +392,7 @@ pub fn decode_edge_inline_value(
         PreparedEdgeInlineValueDecoder::VectorF32 { dims } => {
             let dims = usize::from(*dims);
             let mut values = Vec::with_capacity(dims);
-            for chunk in bytes.chunks_exact(4).take(dims) {
+            for chunk in bytes.as_chunks::<4>().0.iter().take(dims) {
                 values.push(f32::from_le_bytes(read_fixed::<4>(chunk)));
             }
             DecodedEdgeInlineValue::VectorF32(values)

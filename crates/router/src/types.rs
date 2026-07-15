@@ -97,26 +97,19 @@ pub struct GqlExecuteIdempotentBatchItem {
     pub mutation_key: String,
 }
 
-/// A bounded page of independent idempotent mutations.
+/// Cursor-based idempotent mutation execution. An absent `max_items` means all remaining input.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GqlExecuteIdempotentBatchArgs {
     pub mutations: Vec<GqlExecuteIdempotentBatchItem>,
-}
-
-/// Cursor-based idempotent mutation execution. The Router advances at most one bounded Graph batch
-/// wave per instruction-budget check and returns a cursor when the budget is reached.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct GqlExecuteIdempotentDynamicBatchArgs {
-    pub mutations: Vec<GqlExecuteIdempotentBatchItem>,
     pub start_index: u32,
-    /// `0` selects the Router default safety budget below the IC update-call limit.
-    pub instruction_budget: u64,
-    /// Maximum number of mutations this ingress call may consume. `0` means all remaining input.
-    pub max_items: u32,
+    /// `None` selects the Router default safety budget below the IC update-call limit.
+    pub instruction_budget: Option<u64>,
+    /// `None` means all remaining input; `Some` caps this call's page.
+    pub max_items: Option<u32>,
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct GqlExecuteIdempotentDynamicBatchResult {
+pub struct GqlExecuteIdempotentBatchResult {
     pub results: Vec<gleaph_graph_kernel::plan_exec::GqlQueryResult>,
     pub next_index: Option<u32>,
     pub instruction_counter: u64,
@@ -934,6 +927,9 @@ mod outbound_tests {
                 params: vec![1, 2, 3],
                 mutation_key: "seed-page-0-item-0".to_owned(),
             }],
+            start_index: 0,
+            instruction_budget: None,
+            max_items: None,
         };
         let bytes = Encode!(&args).expect("encode batch args");
         let decoded: GqlExecuteIdempotentBatchArgs =
@@ -942,21 +938,20 @@ mod outbound_tests {
     }
 
     #[test]
-    fn test_gql_execute_idempotent_dynamic_batch_args_roundtrip() {
-        let args = GqlExecuteIdempotentDynamicBatchArgs {
+    fn test_gql_execute_idempotent_batch_cursor_args_roundtrip() {
+        let args = GqlExecuteIdempotentBatchArgs {
             mutations: vec![GqlExecuteIdempotentBatchItem {
                 gql_query: "INSERT (:User)".to_owned(),
                 params: vec![],
                 mutation_key: "dynamic-item-0".to_owned(),
             }],
             start_index: 3,
-            instruction_budget: 35_000_000_000,
-            max_items: 64,
+            instruction_budget: Some(35_000_000_000),
+            max_items: Some(64),
         };
         let bytes = Encode!(&args).expect("encode dynamic batch args");
-        let decoded: GqlExecuteIdempotentDynamicBatchArgs =
-            Decode!(&bytes, GqlExecuteIdempotentDynamicBatchArgs)
-                .expect("decode dynamic batch args");
+        let decoded: GqlExecuteIdempotentBatchArgs =
+            Decode!(&bytes, GqlExecuteIdempotentBatchArgs).expect("decode dynamic batch args");
         assert_eq!(decoded, args);
     }
 }

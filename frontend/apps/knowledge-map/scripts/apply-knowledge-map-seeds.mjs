@@ -10,10 +10,11 @@ const seedsPath = process.argv[2]
   : join(root, "seeds/knowledge-map-seeds.json");
 const canisterName = process.argv[3] ?? "gleaph-router";
 const methodName = process.argv[4] ?? "gql_execute_idempotent_batch";
-const pageSize = Number(process.env.SEED_PAGE_SIZE ?? process.argv[5] ?? "256");
+const pageSizeInput = process.env.SEED_PAGE_SIZE ?? process.argv[5];
+const pageSize = pageSizeInput === undefined ? undefined : Number(pageSizeInput);
 
-if (!Number.isInteger(pageSize) || pageSize <= 0 || pageSize > 256) {
-  throw new Error("SEED_PAGE_SIZE/page size must be an integer between 1 and 256");
+if (pageSize !== undefined && (!Number.isInteger(pageSize) || pageSize <= 0)) {
+  throw new Error("SEED_PAGE_SIZE/page size must be a positive integer when specified");
 }
 
 const seeds = JSON.parse(readFileSync(seedsPath, "utf8")).seeds;
@@ -64,6 +65,11 @@ const callRouter = (method, candid) => {
   return output;
 };
 
+const nextIndexFrom = (output) => {
+  const match = output.match(/next_index\s*=\s*opt\s+(\d+)/);
+  return match ? Number(match[1]) : undefined;
+};
+
 if (methodName !== "gql_execute_idempotent_batch") {
   for (const seed of seeds) {
     const candid = `(\"${escapeCandidText(seed.gql)}\", vec {}, \"${escapeCandidText(seed.key)}\")`;
@@ -71,17 +77,32 @@ if (methodName !== "gql_execute_idempotent_batch") {
     process.stderr.write(`[seeds] Seeded ${seed.key}\n`);
   }
 } else {
-  for (let offset = 0; offset < seeds.length; offset += pageSize) {
-    const page = seeds.slice(offset, offset + pageSize);
+  const effectivePageSize = pageSize ?? seeds.length;
+  for (let offset = 0; offset < seeds.length; offset += effectivePageSize) {
+    const page = seeds.slice(offset, offset + effectivePageSize);
     const items = page
       .map(
         (seed) =>
           `record { gql_query = \"${escapeCandidText(seed.gql)}\"; params = vec {}; mutation_key = \"${escapeCandidText(seed.key)}\" }`,
       )
       .join("; ");
-    callRouter(methodName, `(record { mutations = vec { ${items} } })`);
+    let startIndex = 0;
+    while (startIndex < page.length) {
+      const output = callRouter(
+        methodName,
+        `(record { mutations = vec { ${items} }; start_index = ${startIndex}; instruction_budget = null; max_items = null })`,
+      );
+      const nextIndex = nextIndexFrom(output);
+      if (nextIndex === undefined) break;
+      if (nextIndex <= startIndex || nextIndex > page.length) {
+        throw new Error(
+          `Router returned invalid next_index ${nextIndex} for page cursor ${startIndex}`,
+        );
+      }
+      startIndex = nextIndex;
+    }
     process.stderr.write(
-      `[seeds] Seeded page ${offset / pageSize + 1} (${page.length} seeds): ${page[0].key} .. ${page.at(-1).key}\n`,
+      `[seeds] Seeded page ${offset / effectivePageSize + 1} (${page.length} seeds): ${page[0].key} .. ${page.at(-1).key}\n`,
     );
   }
 }

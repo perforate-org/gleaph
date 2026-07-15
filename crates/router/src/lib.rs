@@ -71,8 +71,6 @@ const DYNAMIC_INSTRUCTION_HEADROOM: u64 = 5_000_000_000;
 const MAX_DYNAMIC_INSTRUCTION_BUDGET: u64 =
     MAX_UPDATE_CALL_INSTRUCTIONS - DYNAMIC_INSTRUCTION_HEADROOM;
 const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
-const MAX_DYNAMIC_ITEMS: u32 = 256;
-const MAX_PUBLIC_BATCH_ITEMS: usize = 256;
 
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
@@ -312,62 +310,20 @@ async fn gql_execute_idempotent(
     gql::gql_execute_idempotent(query, params, client_mutation_key).await
 }
 
-/// Execute a bounded page of independent idempotent DML mutations.
-///
-/// Each item retains its own mutation boundary and client mutation key. If an item fails, earlier
-/// items may already be committed; replaying the page is safe because those keys are idempotent.
-#[update]
-async fn gql_execute_idempotent_batch(
-    args: types::GqlExecuteIdempotentBatchArgs,
-) -> Result<Vec<gleaph_graph_kernel::plan_exec::GqlQueryResult>, RouterError> {
-    const MAX_BATCH_ITEMS: usize = MAX_PUBLIC_BATCH_ITEMS;
-    if args.mutations.is_empty() {
-        return Err(RouterError::InvalidArgument(
-            "gql_execute_idempotent_batch requires at least one mutation".into(),
-        ));
-    }
-    if args.mutations.len() > MAX_BATCH_ITEMS {
-        return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent_batch accepts at most {MAX_BATCH_ITEMS} mutations"
-        )));
-    }
-
-    let coordinator = gql::BatchDispatchCoordinator::new(args.mutations.len());
-    let futures = args
-        .mutations
-        .into_iter()
-        .enumerate()
-        .map(|(item_index, mutation)| {
-            gql::gql_execute_idempotent_with_batch(
-                mutation.gql_query,
-                mutation.params,
-                mutation.mutation_key,
-                Some((coordinator.clone(), item_index)),
-            )
-        });
-    let results = futures::future::join_all(futures).await;
-    results.into_iter().collect()
-}
-
 /// Execute cursor-based idempotent mutations until the Router instruction budget is reached.
 ///
 /// Each wave reuses the fixed batch coordinator and is independently partial-successful. A
 /// returned `next_index` is the only continuation signal; retrying the same cursor is safe because
 /// every item retains its original client mutation key.
 #[update]
-async fn gql_execute_idempotent_dynamic_batch(
-    args: types::GqlExecuteIdempotentDynamicBatchArgs,
-) -> Result<types::GqlExecuteIdempotentDynamicBatchResult, RouterError> {
+async fn gql_execute_idempotent_batch(
+    args: types::GqlExecuteIdempotentBatchArgs,
+) -> Result<types::GqlExecuteIdempotentBatchResult, RouterError> {
     let total = args.mutations.len() as u32;
     if total == 0 {
         return Err(RouterError::InvalidArgument(
-            "gql_execute_idempotent_dynamic_batch requires mutations".into(),
+            "gql_execute_idempotent_batch requires mutations".into(),
         ));
-    }
-    if total > MAX_DYNAMIC_ITEMS {
-        return Err(RouterError::InvalidArgument(format!(
-            "gql_execute_idempotent_dynamic_batch accepts at most {MAX_DYNAMIC_ITEMS} mutations"
-        )));
     }
     if args.start_index >= total {
         return Err(RouterError::InvalidArgument(format!(
@@ -376,26 +332,27 @@ async fn gql_execute_idempotent_dynamic_batch(
         )));
     }
     let max_items = match args.max_items {
-        0 => MAX_DYNAMIC_ITEMS,
-        value if value <= MAX_DYNAMIC_ITEMS => value,
-        value => {
+        None => usize::MAX,
+        Some(value) if value > 0 => value as usize,
+        Some(value) => {
             return Err(RouterError::InvalidArgument(format!(
-                "max_items {value} exceeds {MAX_DYNAMIC_ITEMS}"
+                "max_items {value} must be greater than zero"
             )));
         }
     };
     let budget = match args.instruction_budget {
-        0 => DEFAULT_DYNAMIC_INSTRUCTION_BUDGET,
-        value if value <= MAX_DYNAMIC_INSTRUCTION_BUDGET => value,
+        None => DEFAULT_DYNAMIC_INSTRUCTION_BUDGET,
+        Some(value) if value <= MAX_DYNAMIC_INSTRUCTION_BUDGET => value,
         value => {
             return Err(RouterError::InvalidArgument(format!(
-                "instruction_budget {value} exceeds safe maximum {MAX_DYNAMIC_INSTRUCTION_BUDGET}"
+                "instruction_budget {:?} exceeds safe maximum {MAX_DYNAMIC_INSTRUCTION_BUDGET}",
+                value
             )));
         }
     };
 
     let mut cursor = args.start_index as usize;
-    let end = (cursor + max_items as usize).min(args.mutations.len());
+    let end = cursor.saturating_add(max_items).min(args.mutations.len());
     let mut results = Vec::new();
     while cursor < end && current_instruction_counter() < budget {
         let coordinator = gql::BatchDispatchCoordinator::new_dynamic(end - cursor, budget);
@@ -448,7 +405,7 @@ async fn gql_execute_idempotent_dynamic_batch(
         ));
     }
     let instruction_counter = current_instruction_counter();
-    Ok(types::GqlExecuteIdempotentDynamicBatchResult {
+    Ok(types::GqlExecuteIdempotentBatchResult {
         results,
         next_index: (cursor < args.mutations.len()).then_some(cursor as u32),
         instruction_counter,

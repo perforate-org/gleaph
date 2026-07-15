@@ -66,7 +66,6 @@ const BATCH_DEFERRED_ERROR: &str = "batch operation deferred by instruction budg
 
 #[derive(Clone, Copy)]
 enum BatchExecutionPolicy {
-    Fixed,
     Dynamic { router_budget: u64 },
 }
 
@@ -89,10 +88,6 @@ struct BatchCoordinatorState {
 pub(crate) struct BatchDispatchCoordinator(Rc<RefCell<BatchCoordinatorState>>);
 
 impl BatchDispatchCoordinator {
-    pub(crate) fn new(expected_items: usize) -> Self {
-        Self::with_policy(expected_items, BatchExecutionPolicy::Fixed)
-    }
-
     pub(crate) fn new_dynamic(expected_items: usize, router_budget: u64) -> Self {
         Self::with_policy(
             expected_items,
@@ -189,6 +184,38 @@ async fn await_batch_item(
     Ok(())
 }
 
+const MAX_GRAPH_BATCH_WIRE_BYTES: usize = 8 * 1024 * 1024;
+
+fn graph_batch_chunk_len(operations: &[(usize, usize, BatchOperation)]) -> usize {
+    if operations.is_empty() {
+        return 0;
+    }
+    let mut low = 1;
+    let mut high = operations.len();
+    let mut best = 0;
+    while low <= high {
+        let count = low + (high - low) / 2;
+        let candidate = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
+            operations: operations[..count]
+                .iter()
+                .map(|(_, _, operation)| operation.1.clone())
+                .collect(),
+            mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
+        };
+        let Ok(encoded) = Encode!(&candidate) else {
+            high = count.saturating_sub(1);
+            continue;
+        };
+        if encoded.len() <= MAX_GRAPH_BATCH_WIRE_BYTES {
+            best = count;
+            low = count + 1;
+        } else {
+            high = count.saturating_sub(1);
+        }
+    }
+    best.max(1)
+}
+
 async fn execute_registered_batch(
     registrations: Vec<Vec<Vec<BatchOperation>>>,
     policy: BatchExecutionPolicy,
@@ -212,33 +239,29 @@ async fn execute_registered_batch(
     for (graph, operations) in operations_by_graph {
         let mut start = 0;
         while start < operations.len() {
-            if let BatchExecutionPolicy::Dynamic { router_budget } = policy
-                && crate::current_instruction_counter() >= router_budget
-            {
+            let BatchExecutionPolicy::Dynamic { router_budget } = policy;
+            if crate::current_instruction_counter() >= router_budget {
                 for (item_index, ordinal, (dispatch, _)) in &operations[start..] {
                     output[*item_index].push((*ordinal, (dispatch.clone(), None)));
                 }
                 break;
             }
-            let operation_slice = &operations[start..];
+            let chunk_len = graph_batch_chunk_len(&operations[start..]);
+            if chunk_len == 0 {
+                break;
+            }
+            let operation_slice = &operations[start..start + chunk_len];
             let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
                 operations: operation_slice
                     .iter()
                     .map(|(_, _, operation)| operation.1.clone())
                     .collect(),
-                mode: match policy {
-                    BatchExecutionPolicy::Fixed => {
-                        gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Fixed
-                    }
-                    BatchExecutionPolicy::Dynamic { .. } => {
-                        gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic
-                    }
-                },
+                mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
             };
             let batch = match execute_plan_batch_on_graph(graph, args).await {
                 Ok(batch) => batch,
                 Err(err) => {
-                    for (item_index, ordinal, (dispatch, _)) in operation_slice {
+                    for (item_index, ordinal, (dispatch, _)) in &operations[start..] {
                         output[*item_index]
                             .push((*ordinal, (dispatch.clone(), Some(Err(err.clone())))));
                     }
@@ -251,7 +274,7 @@ async fn execute_registered_batch(
                     batch.results.len(),
                     operation_slice.len()
                 );
-                for (item_index, ordinal, (dispatch, _)) in operation_slice {
+                for (item_index, ordinal, (dispatch, _)) in &operations[start..] {
                     output[*item_index]
                         .push((*ordinal, (dispatch.clone(), Some(Err(err.clone())))));
                 }
@@ -267,7 +290,8 @@ async fn execute_registered_batch(
                     usize::try_from(next).expect("checked next index")
                 }
                 Some(_) => {
-                    for (item_index, ordinal, (dispatch, _)) in &operation_slice[result_count..] {
+                    for (item_index, ordinal, (dispatch, _)) in &operations[start + result_count..]
+                    {
                         output[*item_index].push((*ordinal, (dispatch.clone(), None)));
                     }
                     break;
@@ -2756,7 +2780,7 @@ mod tests {
 
     #[test]
     fn batch_coordinator_releases_all_empty_items_once_page_is_ready() {
-        let coordinator = super::BatchDispatchCoordinator::new(2);
+        let coordinator = super::BatchDispatchCoordinator::new_dynamic(2, u64::MAX);
         let first = coordinator.clone();
         let second = coordinator.clone();
         let (first_result, second_result) = futures::executor::block_on(async move {

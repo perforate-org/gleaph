@@ -594,6 +594,17 @@ mod tests {
     }
 
     #[test]
+    fn execute_plan_batch_args_roundtrip_preserves_dynamic_mode() {
+        let args = ExecutePlanBatchArgs {
+            operations: Vec::new(),
+            mode: ExecutePlanBatchMode::Dynamic,
+        };
+        let bytes = Encode!(&args).expect("encode");
+        let decoded: ExecutePlanBatchArgs = Decode!(&bytes, ExecutePlanBatchArgs).expect("decode");
+        assert_eq!(args, decoded);
+    }
+
+    #[test]
     fn mutation_token_candid_roundtrip() {
         let token = MutationToken {
             mutation_id: 42,

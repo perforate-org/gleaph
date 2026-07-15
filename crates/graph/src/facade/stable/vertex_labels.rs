@@ -40,7 +40,7 @@ impl Storable for VertexLabelSetBlob {
             "VertexLabelSetBlob expects an even number of bytes"
         );
         let mut labels = Vec::with_capacity(bytes.len() / 2);
-        for chunk in bytes.chunks_exact(2) {
+        for chunk in bytes.as_chunks::<2>().0.iter() {
             labels.push(VertexLabelId::from_le_bytes([chunk[0], chunk[1]]));
         }
         let labels = normalize_labels(labels).expect("VertexLabelSetBlob contains label id 0");

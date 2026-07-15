@@ -155,12 +155,6 @@ async fn execute_plan_batch(
     if args.operations.is_empty() {
         return Err(format!("{entrypoint} requires at least one operation"));
     }
-    const MAX_OPERATIONS: usize = 256;
-    if args.operations.len() > MAX_OPERATIONS {
-        return Err(format!(
-            "{entrypoint} accepts at most {MAX_OPERATIONS} operations"
-        ));
-    }
     const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
     let request_bytes =
         Encode!(&args).map_err(|err| format!("{entrypoint} request encode failed: {err}"))?;

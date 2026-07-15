@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Define an **explicit commit hook** for tombstone-free bulk ingest: after a batch of edge inserts, optionally enqueue `CompactVertexEdgeSpan` on known hot vertices and drain the LARA deferred maintenance queue so overflow buckets become **dense-eligible** before read-heavy queries run.
+Define an **explicit commit hook** for tombstone-free bulk ingest: after a batch of edge inserts, optionally enqueue `CompactVertexEdgeSpan` on known hot vertices and drain the LARA deferred maintenance queue so edge spans are reclaimed before read-heavy queries run. Inline-value payload storage is independent and may still use its own slab/log traversal after this hook.
 
 This closes a query-performance/reclaim gap, separate from ordinary insert safety, between:
 
@@ -20,17 +20,19 @@ This closes a query-performance/reclaim gap, separate from ordinary insert safet
 
 ## Background
 
-### Dense eligibility
+### Edge-span eligibility
 
-A labeled bucket is dense-eligible for bulk payload read when:
+A labeled bucket can use a dense edge span after edge compaction when:
 
 ```text
-payload_log_head < 0
-&& overflow_log_head < 0
+overflow_log_head < 0
 && stored_slots == degree
 ```
 
-See [inline-value-first-traversal.md](./inline-value-first-traversal.md).
+The stronger dense inline-value batch predicate additionally requires the
+independent inline-value slab to have no log and to cover all live values. The
+bulk finalize hook does not promise that payload predicate; see
+[labeled-edge-inline-values.md](./labeled-edge-inline-values.md).
 
 ### What is implemented today
 
@@ -48,7 +50,7 @@ Forcing `mark_compact_vertex_edge_span` on **every** insert breaks buckets with 
 
 ### Why a separate finalize hook
 
-Benchmark evidence (converging-hub WSP setup): explicit `mark_compact_vertex_edge_span(src)` + unlimited drain moved overflow hubs to dense bulk read (~8.21M → ~7.33M instructions before further executor optimizations). Production bulk ingest in one update message may not drain the full queue under the insert budget; queries immediately after ingest can still hit hybrid / per-slot IO on hot vertices.
+Benchmark evidence (converging-hub WSP setup): explicit `mark_compact_vertex_edge_span(src)` + unlimited drain reduces edge-span traversal overhead (~8.21M → ~7.33M instructions before further executor optimizations). Production bulk ingest in one update message may not drain the full queue under the insert budget; queries immediately after ingest can still hit hybrid / per-slot IO on hot vertices.
 
 ## Problem statement
 
@@ -60,13 +62,16 @@ Without finalize:
 
 1. Inserts enqueue some maintenance (`mark_compact_dense`, etc.).
 2. Post-insert drain runs under a **bounded** budget on canisters.
-3. Overflow buckets may remain non-dense at first query.
+3. Edge spans may remain non-dense at first query.
 
 With finalize (this design):
 
 1. Caller declares ingest complete for a known vertex set.
 2. System enqueues `CompactVertexEdgeSpan` for those vertices (per orientation).
 3. Maintenance drains with a finalize budget; client or timer retries until `remaining_queue_len == 0`.
+
+The hook does not force independent inline-value payload spans to become dense;
+payload reads remain correct through dense, hybrid, or sparse traversal.
 
 ## Caller contract (required)
 

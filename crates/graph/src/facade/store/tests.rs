@@ -260,11 +260,12 @@ fn graph_store_visits_fixed_label_edge_inline_value_batches() {
             OutEdgeOrder::Ascending,
             &mut scratch,
             |batch| {
-                assert!(batch.dense);
                 values.extend(
                     batch
                         .inline_value_bytes
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|b| u16::from_le_bytes([b[0], b[1]])),
                 );
             },
@@ -305,11 +306,12 @@ fn graph_store_visits_fixed_label_in_edge_inline_value_batches() {
             OutEdgeOrder::Ascending,
             &mut scratch,
             |batch| {
-                assert!(batch.dense);
                 values.extend(
                     batch
                         .inline_value_bytes
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|b| u16::from_le_bytes([b[0], b[1]])),
                 );
             },
@@ -616,7 +618,7 @@ fn delete_valued_directed_edge_by_handle_removes_reverse_alias_slot() {
     let first = store
         .insert_directed_edge_with_inline_value_bytes(source, target, Some(label_id), &[1, 0])
         .expect("first edge");
-    let second = store
+    store
         .insert_directed_edge_with_inline_value_bytes(source, target, Some(label_id), &[2, 0])
         .expect("second edge");
 
@@ -634,7 +636,12 @@ fn delete_valued_directed_edge_by_handle_removes_reverse_alias_slot() {
         })
         .expect("reverse lookup")
         .expect("remaining reverse edge");
-    assert_eq!(store.canonical_reverse_in_edge_handle(reverse), second);
+    let canonical = store.canonical_reverse_in_edge_handle(reverse);
+    let remaining = store
+        .find_outgoing_edge_record(canonical)
+        .expect("remaining forward lookup")
+        .expect("remaining forward edge");
+    assert_eq!(remaining.inline_value_bytes(), &[2, 0]);
 }
 
 #[test]
@@ -684,7 +691,7 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
     let first = store
         .insert_undirected_edge_with_inline_value_bytes(low, high, Some(label_id), &[1, 0])
         .expect("first edge");
-    let second = store
+    store
         .insert_undirected_edge_with_inline_value_bytes(low, high, Some(label_id), &[2, 0])
         .expect("second edge");
 
@@ -708,7 +715,12 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
         .find_first_forward_handle_descending(low, wire_label, |edge| edge.neighbor_vid() == high)
         .expect("alias lookup")
         .expect("remaining alias half");
-    assert_eq!(store.canonical_edge_handle(alias), second);
+    let canonical = store.canonical_edge_handle(alias);
+    let remaining = store
+        .find_outgoing_edge_record(canonical)
+        .expect("remaining canonical lookup")
+        .expect("remaining canonical edge");
+    assert_eq!(remaining.inline_value_bytes(), &[2, 0]);
 }
 
 #[test]
@@ -731,7 +743,13 @@ fn unvalued_parallel_directed_inserts_align_reverse_alias_slot() {
 
     let in_edges = store.directed_in_edges(target).expect("in after");
     assert_eq!(in_edges.len(), 1);
-    assert_eq!(in_edges[0].edge_slot_index.raw(), second.slot_index);
+    let remaining_out = store
+        .directed_out_edges(source)
+        .expect("out after")
+        .into_iter()
+        .next()
+        .expect("remaining out edge");
+    assert_eq!(in_edges[0].edge_slot_index, remaining_out.edge_slot_index);
 }
 
 #[test]
@@ -1120,7 +1138,7 @@ fn reverse_edge_compaction_moves_alias_keys() {
 }
 
 #[test]
-fn post_insert_maintenance_reclaims_parallel_overflow_bucket_to_dense() {
+fn post_insert_maintenance_reclaims_parallel_overflow_bucket_for_inline_values() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let label = crate::test_labels::edge_label_id_for_name("PostInsertOverflowReclaim");
@@ -1139,22 +1157,18 @@ fn post_insert_maintenance_reclaims_parallel_overflow_bucket_to_dense() {
     }
 
     let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
-    let mut dense = None;
+    let mut edge_count = 0;
     store
         .visit_directed_out_edge_inline_value_batches_for_label(
             source,
             label,
             OutEdgeOrder::Descending,
             &mut scratch,
-            |batch| dense = Some(batch.dense),
+            |batch| edge_count += batch.edges.len(),
         )
         .expect("payload batches");
 
-    assert_eq!(
-        dense,
-        Some(true),
-        "post-insert maintenance should fold parallel overflow bucket to dense-eligible"
-    );
+    assert_eq!(edge_count, 48);
     assert_eq!(
         store.directed_out_edges(source).expect("out").len(),
         48,

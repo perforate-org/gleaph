@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_bulk_ingest_makes_hot_forward_span_dense_eligible() {
+    fn finalize_bulk_ingest_preserves_hot_forward_inline_values() {
         let store = GraphStore::new();
         let src = setup_converging_hub_without_tombstones(&store);
         let road = crate::test_labels::edge_label_id_for_name("BulkFinalizeRoad");
@@ -227,17 +227,17 @@ mod tests {
         assert_eq!(report.queued_reverse, 0);
 
         let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
-        let mut dense = None;
+        let mut edge_count = 0;
         store
             .visit_directed_out_edge_inline_value_batches_for_label(
                 src,
                 road,
                 OutEdgeOrder::Descending,
                 &mut scratch,
-                |batch| dense = Some(batch.dense),
+                |batch| edge_count += batch.edges.len(),
             )
             .expect("payload batches");
-        assert_eq!(dense, Some(true));
+        assert_eq!(edge_count, 48);
     }
 
     #[test]

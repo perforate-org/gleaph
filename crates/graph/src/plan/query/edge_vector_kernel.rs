@@ -106,7 +106,9 @@ impl PreparedEdgeVectorKernel {
 #[cfg(not(all(target_family = "wasm", target_feature = "simd128")))]
 fn dot_f32_bytes(bytes: &[u8], query: &[f32]) -> f32 {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(query.iter().copied())
         .map(|(chunk, q)| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) * q)
         .sum()
@@ -132,7 +134,9 @@ fn dot_f32_bytes(bytes: &[u8], query: &[f32]) -> f32 {
         + f32x4_extract_lane::<2>(acc)
         + f32x4_extract_lane::<3>(acc);
     for (chunk, q) in bytes[chunks * 16..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(query[chunks * 4..].iter().copied())
     {
         sum += f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) * q;
@@ -143,7 +147,9 @@ fn dot_f32_bytes(bytes: &[u8], query: &[f32]) -> f32 {
 #[cfg(not(all(target_family = "wasm", target_feature = "simd128")))]
 fn l2_squared_f32_bytes(bytes: &[u8], query: &[f32]) -> f32 {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(query.iter().copied())
         .map(|(chunk, q)| {
             let d = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) - q;
@@ -160,7 +166,7 @@ fn l2_squared_f32_bytes_with_upper_bound(
     inclusive: bool,
 ) -> Option<f32> {
     let mut sum = 0.0;
-    for (chunk, q) in bytes.chunks_exact(4).zip(query.iter().copied()) {
+    for (chunk, q) in bytes.as_chunks::<4>().0.iter().zip(query.iter().copied()) {
         let d = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) - q;
         sum += d * d;
         if l2_partial_exceeds_upper_bound(sum, threshold, inclusive) {
@@ -193,7 +199,9 @@ fn l2_squared_f32_bytes(bytes: &[u8], query: &[f32]) -> f32 {
         + f32x4_extract_lane::<2>(acc)
         + f32x4_extract_lane::<3>(acc);
     for (chunk, q) in bytes[chunks * 16..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(query[chunks * 4..].iter().copied())
     {
         let d = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) - q;
@@ -232,7 +240,9 @@ fn l2_squared_f32_bytes_with_upper_bound(
         }
     }
     for (chunk, q) in bytes[chunks * 16..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(query[chunks * 4..].iter().copied())
     {
         let d = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) - q;
@@ -265,7 +275,9 @@ fn cosine_distance_f32_bytes(bytes: &[u8], query: &[f32]) -> Option<f32> {
 #[cfg(not(all(target_family = "wasm", target_feature = "simd128")))]
 fn dot_and_edge_norm2_f32_bytes(bytes: &[u8], query: &[f32]) -> (f32, f32) {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(query.iter().copied())
         .fold((0.0, 0.0), |(dot, norm2), (chunk, q)| {
             let edge = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
@@ -299,7 +311,9 @@ fn dot_and_edge_norm2_f32_bytes(bytes: &[u8], query: &[f32]) -> (f32, f32) {
         + f32x4_extract_lane::<2>(norm_acc)
         + f32x4_extract_lane::<3>(norm_acc);
     for (chunk, q) in bytes[chunks * 16..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(query[chunks * 4..].iter().copied())
     {
         let edge = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
@@ -331,7 +345,9 @@ mod bench {
 
     fn dot_scalar(bytes: &[u8], query: &[f32]) -> f32 {
         bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .zip(query.iter().copied())
             .map(|(chunk, q)| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) * q)
             .sum()
@@ -339,7 +355,9 @@ mod bench {
 
     fn l2_squared_scalar(bytes: &[u8], query: &[f32]) -> f32 {
         bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .zip(query.iter().copied())
             .map(|(chunk, q)| {
                 let d = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) - q;

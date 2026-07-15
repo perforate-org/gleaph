@@ -175,8 +175,8 @@ fn collect_equal_w1(inline_value_bytes: &[u8], needle: u8, out: &mut Vec<usize>)
 
 fn collect_equal_w2(inline_value_bytes: &[u8], needle: &[u8], out: &mut Vec<usize>) {
     let needle = u16::from_le_bytes(needle.try_into().expect("w2 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(2).enumerate() {
-        if u16::from_le_bytes(chunk.try_into().unwrap()) == needle {
+    for (idx, chunk) in inline_value_bytes.as_chunks::<2>().0.iter().enumerate() {
+        if u16::from_le_bytes(*chunk) == needle {
             out.push(idx);
         }
     }
@@ -184,8 +184,8 @@ fn collect_equal_w2(inline_value_bytes: &[u8], needle: &[u8], out: &mut Vec<usiz
 
 fn collect_equal_w4(inline_value_bytes: &[u8], needle: &[u8], out: &mut Vec<usize>) {
     let needle = u32::from_le_bytes(needle.try_into().expect("w4 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(4).enumerate() {
-        if u32::from_le_bytes(chunk.try_into().unwrap()) == needle {
+    for (idx, chunk) in inline_value_bytes.as_chunks::<4>().0.iter().enumerate() {
+        if u32::from_le_bytes(*chunk) == needle {
             out.push(idx);
         }
     }
@@ -193,8 +193,8 @@ fn collect_equal_w4(inline_value_bytes: &[u8], needle: &[u8], out: &mut Vec<usiz
 
 fn collect_equal_w8(inline_value_bytes: &[u8], needle: &[u8], out: &mut Vec<usize>) {
     let needle = u64::from_le_bytes(needle.try_into().expect("w8 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(8).enumerate() {
-        if u64::from_le_bytes(chunk.try_into().unwrap()) == needle {
+    for (idx, chunk) in inline_value_bytes.as_chunks::<8>().0.iter().enumerate() {
+        if u64::from_le_bytes(*chunk) == needle {
             out.push(idx);
         }
     }
@@ -202,8 +202,8 @@ fn collect_equal_w8(inline_value_bytes: &[u8], needle: &[u8], out: &mut Vec<usiz
 
 fn collect_equal_w16(inline_value_bytes: &[u8], needle: &[u8], out: &mut Vec<usize>) {
     let needle = u128::from_le_bytes(needle.try_into().expect("w16 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(16).enumerate() {
-        if u128::from_le_bytes(chunk.try_into().unwrap()) == needle {
+    for (idx, chunk) in inline_value_bytes.as_chunks::<16>().0.iter().enumerate() {
+        if u128::from_le_bytes(*chunk) == needle {
             out.push(idx);
         }
     }
@@ -219,8 +219,8 @@ fn collect_cmp_u8(inline_value_bytes: &[u8], op: CmpOp, needle: u8, out: &mut Ve
 
 fn collect_cmp_u16(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = u16::from_le_bytes(needle.try_into().expect("w2 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(2).enumerate() {
-        let value = u16::from_le_bytes(chunk.try_into().unwrap());
+    for (idx, chunk) in inline_value_bytes.as_chunks::<2>().0.iter().enumerate() {
+        let value = u16::from_le_bytes(*chunk);
         if cmp_u16(op, value, needle) {
             out.push(idx);
         }
@@ -229,8 +229,8 @@ fn collect_cmp_u16(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mu
 
 fn collect_cmp_u32(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = u32::from_le_bytes(needle.try_into().expect("w4 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(4).enumerate() {
-        let value = u32::from_le_bytes(chunk.try_into().unwrap());
+    for (idx, chunk) in inline_value_bytes.as_chunks::<4>().0.iter().enumerate() {
+        let value = u32::from_le_bytes(*chunk);
         if cmp_u32(op, value, needle) {
             out.push(idx);
         }
@@ -247,8 +247,8 @@ fn collect_cmp_i8(inline_value_bytes: &[u8], op: CmpOp, needle: i8, out: &mut Ve
 
 fn collect_cmp_i16(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = i16::from_le_bytes(needle.try_into().expect("i16 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(2).enumerate() {
-        let value = i16::from_le_bytes(chunk.try_into().unwrap());
+    for (idx, chunk) in inline_value_bytes.as_chunks::<2>().0.iter().enumerate() {
+        let value = i16::from_le_bytes(*chunk);
         if cmp_i64(op, i64::from(value), i64::from(needle)) {
             out.push(idx);
         }
@@ -257,8 +257,8 @@ fn collect_cmp_i16(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mu
 
 fn collect_cmp_i32(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = i32::from_le_bytes(needle.try_into().expect("i32 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(4).enumerate() {
-        let value = i32::from_le_bytes(chunk.try_into().unwrap());
+    for (idx, chunk) in inline_value_bytes.as_chunks::<4>().0.iter().enumerate() {
+        let value = i32::from_le_bytes(*chunk);
         if cmp_i64(op, i64::from(value), i64::from(needle)) {
             out.push(idx);
         }
@@ -267,8 +267,8 @@ fn collect_cmp_i32(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mu
 
 fn collect_cmp_i64(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = i64::from_le_bytes(needle.try_into().expect("i64 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(8).enumerate() {
-        let value = i64::from_le_bytes(chunk.try_into().unwrap());
+    for (idx, chunk) in inline_value_bytes.as_chunks::<8>().0.iter().enumerate() {
+        let value = i64::from_le_bytes(*chunk);
         if cmp_i64(op, value, needle) {
             out.push(idx);
         }
@@ -277,8 +277,8 @@ fn collect_cmp_i64(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mu
 
 fn collect_cmp_i128(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = i128::from_le_bytes(needle.try_into().expect("i128 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(16).enumerate() {
-        let value = i128::from_le_bytes(chunk.try_into().unwrap());
+    for (idx, chunk) in inline_value_bytes.as_chunks::<16>().0.iter().enumerate() {
+        let value = i128::from_le_bytes(*chunk);
         if cmp_i128(op, value, needle) {
             out.push(idx);
         }
@@ -287,8 +287,8 @@ fn collect_cmp_i128(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &m
 
 fn collect_cmp_u128(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = u128::from_le_bytes(needle.try_into().expect("u128 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(16).enumerate() {
-        let value = u128::from_le_bytes(chunk.try_into().unwrap());
+    for (idx, chunk) in inline_value_bytes.as_chunks::<16>().0.iter().enumerate() {
+        let value = u128::from_le_bytes(*chunk);
         if cmp_u128(op, value, needle) {
             out.push(idx);
         }
@@ -297,8 +297,8 @@ fn collect_cmp_u128(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &m
 
 fn collect_cmp_f16(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = f16::from_le_bytes(needle.try_into().expect("f16 needle")).to_f32();
-    for (idx, chunk) in inline_value_bytes.chunks_exact(2).enumerate() {
-        let value = f16::from_le_bytes(chunk.try_into().unwrap()).to_f32();
+    for (idx, chunk) in inline_value_bytes.as_chunks::<2>().0.iter().enumerate() {
+        let value = f16::from_le_bytes(*chunk).to_f32();
         if cmp_f64(op, f64::from(value), f64::from(needle)) {
             out.push(idx);
         }
@@ -346,8 +346,8 @@ fn weight_decoder(
 
 fn collect_cmp_f32(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = f32::from_le_bytes(needle.try_into().expect("f32 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(4).enumerate() {
-        let value = f32::from_le_bytes(chunk.try_into().unwrap());
+    for (idx, chunk) in inline_value_bytes.as_chunks::<4>().0.iter().enumerate() {
+        let value = f32::from_le_bytes(*chunk);
         if cmp_f64(op, f64::from(value), f64::from(needle)) {
             out.push(idx);
         }
@@ -356,8 +356,8 @@ fn collect_cmp_f32(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mu
 
 fn collect_cmp_f64(inline_value_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
     let needle = f64::from_le_bytes(needle.try_into().expect("f64 needle"));
-    for (idx, chunk) in inline_value_bytes.chunks_exact(8).enumerate() {
-        let value = f64::from_le_bytes(chunk.try_into().unwrap());
+    for (idx, chunk) in inline_value_bytes.as_chunks::<8>().0.iter().enumerate() {
+        let value = f64::from_le_bytes(*chunk);
         if cmp_f64(op, value, needle) {
             out.push(idx);
         }

@@ -3062,7 +3062,7 @@ mod tests {
     }
 
     #[test]
-    fn call_finalize_bulk_ingest_makes_hot_forward_span_dense() {
+    fn call_finalize_bulk_ingest_preserves_hot_forward_inline_values() {
         use gleaph_gql_planner::plan::YieldColumn;
         use ic_stable_lara::labeled::LabeledEdgeInlineValueBatchScratch;
 
@@ -3094,17 +3094,17 @@ mod tests {
 
         let road = crate::test_labels::edge_label_id_for_name("GqlFinalizeRoad");
         let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
-        let mut dense = None;
+        let mut edge_count = 0;
         store
             .visit_directed_out_edge_inline_value_batches_for_label(
                 src,
                 road,
                 OutEdgeOrder::Descending,
                 &mut scratch,
-                |batch| dense = Some(batch.dense),
+                |batch| edge_count += batch.edges.len(),
             )
             .expect("payload batches");
-        assert_eq!(dense, Some(true));
+        assert_eq!(edge_count, 48);
     }
 
     fn setup_finalize_call_hub_graph(store: &GraphStore) -> VertexId {

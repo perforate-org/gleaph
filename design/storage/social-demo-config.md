@@ -184,13 +184,14 @@ explicit `ORDER BY`. `ORDER BY created_at DESC` is therefore no longer required 
 The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
 to preserve the visible read contract and fail closed if the derivation rule ever changes.
 
-The seed runner submits bounded pages through Router `gql_execute_idempotent_batch` (16 mutations
-per page by default). Each page item remains an independent idempotent mutation with its own stable
-client mutation key; the Router executes items in order and may have partially committed a page when
-an item fails. Replaying the page is safe and resumes through the existing idempotent journal. The
-`SEED_PAGE_SIZE` environment variable or fifth CLI argument can lower the page size; values above
-16 are rejected by both the runner and Router. The legacy single-mutation method remains available
-when an explicit method name is passed to the runner.
+The seed runner submits through Router `gql_execute_idempotent_batch`; without an explicit page size,
+the Router consumes as many remaining mutations as fit its instruction and encoded-payload budgets.
+Each item remains an independent idempotent mutation with its own stable client mutation key; the
+Router may have partially committed a request when an item fails or the continuation budget is
+reached. Replaying from the returned cursor is safe through the existing idempotent journal. The
+`SEED_PAGE_SIZE` environment variable or fifth CLI argument can impose a smaller client-side page
+when desired. The legacy single-mutation method remains available when an explicit method name is
+passed to the runner.
 
 The runner does not issue `GLEAPH.FINALIZE_*` before ordinary edges. Storage owns write-safety
 preparation; finalize procedures remain optional batch-ingest reclaim controls rather than social
