@@ -1608,6 +1608,34 @@ pub fn e2e_maintenance_queue_len(env: &FederationEnv, graph: Principal) -> u64 {
     Decode!(&bytes, u64).expect("decode e2e_maintenance_queue_len")
 }
 
+/// Pending durable derived-index operations in `graph`'s Plan 0088 outbox.
+pub fn e2e_derived_index_outbox_len(env: &FederationEnv, graph: Principal) -> u64 {
+    let bytes = env
+        .pic
+        .query_call(
+            graph,
+            env.router,
+            "e2e_derived_index_outbox_len",
+            Encode!(&()).expect("encode e2e_derived_index_outbox_len"),
+        )
+        .unwrap_or_else(|e| panic!("e2e_derived_index_outbox_len on {graph}: {e:?}"));
+    Decode!(&bytes, u64).expect("decode e2e_derived_index_outbox_len")
+}
+
+/// Pending repair-journal operations in `graph`'s stable memory (E2E hook).
+pub fn e2e_repair_journal_len(env: &FederationEnv, graph: Principal) -> u64 {
+    let bytes = env
+        .pic
+        .query_call(
+            graph,
+            env.router,
+            "e2e_repair_journal_len",
+            Encode!(&()).expect("encode e2e_repair_journal_len"),
+        )
+        .unwrap_or_else(|e| panic!("e2e_repair_journal_len on {graph}: {e:?}"));
+    Decode!(&bytes, u64).expect("decode e2e_repair_journal_len")
+}
+
 /// Advance PocketIC time past the maintenance-timer floor delay and tick until
 /// the graph shard's deferred-maintenance queue drains (timer-fire harness).
 ///
@@ -1624,7 +1652,10 @@ pub fn drain_maintenance_via_timer(env: &FederationEnv, graph: Principal) {
     const TICKS_PER_ROUND: usize = 12;
 
     for _ in 0..MAX_ROUNDS {
-        if e2e_maintenance_queue_len(env, graph) == 0 {
+        if e2e_maintenance_queue_len(env, graph) == 0
+            && e2e_derived_index_outbox_len(env, graph) == 0
+            && e2e_repair_journal_len(env, graph) == 0
+        {
             return;
         }
         env.pic.advance_time(Duration::from_secs(2));
@@ -1636,6 +1667,16 @@ pub fn drain_maintenance_via_timer(env: &FederationEnv, graph: Principal) {
         e2e_maintenance_queue_len(env, graph),
         0,
         "maintenance timer failed to drain the deferred queue within {MAX_ROUNDS} rounds"
+    );
+    assert_eq!(
+        e2e_derived_index_outbox_len(env, graph),
+        0,
+        "maintenance timer failed to drain the derived-index outbox within {MAX_ROUNDS} rounds"
+    );
+    assert_eq!(
+        e2e_repair_journal_len(env, graph),
+        0,
+        "maintenance timer failed to drain the repair journal within {MAX_ROUNDS} rounds"
     );
 }
 
@@ -2635,6 +2676,9 @@ pub fn seed_knowledge_map_graph(env: &FederationEnv) {
         let key = seed["key"].as_str().expect("knowledge-map seed key");
         let row_count = gql_execute_idempotent_as_admin(env, gql, key);
         assert_eq!(row_count, 0, "seed {key} should not return rows");
+        // The seeds are intentionally dependent (later MATCH clauses resolve earlier writes
+        // through the Router's index). Wait for the Graph outbox before issuing the next message.
+        drain_maintenance_via_timer(env, env.graph_source);
     }
 }
 

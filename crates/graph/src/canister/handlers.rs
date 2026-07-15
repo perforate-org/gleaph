@@ -1053,6 +1053,18 @@ pub fn e2e_maintenance_queue_len() -> u64 {
     GraphStore::new().maintenance_queue_len()
 }
 
+/// Pending durable derived-index operations in the Plan 0088 outbox (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_derived_index_outbox_len() -> u64 {
+    GraphStore::new().derived_index_outbox_len()
+}
+
+/// Pending repair-journal operations in stable memory (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_repair_journal_len() -> u64 {
+    GraphStore::new().repair_journal_len()
+}
+
 /// Arm (or clear, with `0`) an ADR 0030 unique-effect ack fault (PocketIC E2E only), so the
 /// failure-injection suite can trap the Router's `Acquire` ack and exercise slice-6 re-ack recovery.
 /// See [`crate::test_fault`].

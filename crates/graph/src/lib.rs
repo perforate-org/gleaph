@@ -301,6 +301,18 @@ fn e2e_maintenance_queue_len() -> u64 {
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+#[query(guard = "guard_control_plane_admin")]
+fn e2e_derived_index_outbox_len() -> u64 {
+    canister::handlers::e2e_derived_index_outbox_len()
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[query(guard = "guard_control_plane_admin")]
+fn e2e_repair_journal_len() -> u64 {
+    canister::handlers::e2e_repair_journal_len()
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
 fn e2e_arm_unique_ack_fault(code: u8) -> Result<(), String> {
     canister::handlers::e2e_arm_unique_ack_fault(code)
