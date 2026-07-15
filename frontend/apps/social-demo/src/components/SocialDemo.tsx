@@ -21,7 +21,7 @@ import {
   type ScenarioId,
   scenarioDefinitionById,
 } from "~/data/scenarios";
-import { scenarioLabelKey, scenarioTranslationKey, useI18n, type Translate } from "~/i18n";
+import { scenarioTranslationKey, useI18n, type Translate } from "~/i18n";
 import type { FeedResult, FeedRow } from "~/types";
 
 import { DemoNotice } from "~/components/DemoNotice";
@@ -187,14 +187,13 @@ export function SocialDemo() {
             <ScenarioNav active={activeScenarioId()} onSelect={setActiveScenarioId} />
           </div>
 
-          <div class="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h1 class="text-lg font-semibold text-slate-900">
-              {t(scenarioTranslationKey(activeDefinition().id, "feedTitle"))}
-            </h1>
-            <p class="text-sm text-slate-500">
-              {t(scenarioLabelKey(activeDefinition().id))} · {t("feed.anonymousSubtitle")}
-            </p>
-          </div>
+          <Show when={activeDefinition().id !== "PublicTimeline"}>
+            <div class="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <h1 class="text-lg font-semibold text-slate-900">
+                {t(scenarioTranslationKey(activeDefinition().id, "feedTitle"))}
+              </h1>
+            </div>
+          </Show>
 
           <Switch
             fallback={
