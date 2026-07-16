@@ -242,6 +242,11 @@ build_social_config() {
 # Let gql_execute_idempotent_batch page on instruction_budget; no per-call item cap.
 seed_social_graph() {
   log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
+  # ADR 0093 batching reduces inter-canister calls for independent mutations, but the social
+  # demo seeds are heavily dependent (edge inserts reference previously-inserted vertices).
+  # Planning all of them concurrently against the graph-index produces stale anchor lookups,
+  # so dependent INSERTs create no vertices/edges. Fall back to sequential single-mutation
+  # calls for this fixture so each seed sees the index state left by the previous ones.
   env \
     HOME="$ICP_CLI_HOME" \
     COREPACK_HOME="$ICP_COREPACK_HOME" \
@@ -252,7 +257,9 @@ seed_social_graph() {
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     ICP_IDENTITY_NAME="$deployer_id" \
     node "$ROOT/frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs" \
-      "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
+      "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json" \
+      gleaph-router \
+      gql_execute_idempotent
 }
 
 setup_vector_index() {
