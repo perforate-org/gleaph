@@ -731,6 +731,27 @@ mod tests {
         });
         assert_eq!(reopened.maintenance_queue_len(), 0);
     }
+
+    #[test]
+    fn failed_payload_compaction_is_requeued_for_retry() {
+        let graph = graph();
+        crate::labeled::graph::force_next_payload_compaction_error();
+        graph.mark_compact_payload_slab().unwrap();
+
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: Some(1),
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        graph.maintenance(budget);
+        assert_eq!(graph.maintenance_queue_len(), 1);
+
+        graph.maintenance(budget);
+        assert_eq!(graph.maintenance_queue_len(), 0);
+    }
 }
 
 impl Storable for MaintenanceWorkItem {

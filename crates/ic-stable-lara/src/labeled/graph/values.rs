@@ -15,11 +15,28 @@ use crate::{
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
+#[cfg(test)]
+use std::cell::Cell;
 
 use super::error::LabeledOperationError;
 use super::{
     BucketSearch, LabeledLaraGraph, LabeledPayloadCompactionResult, LabeledPayloadStorageStats,
 };
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_PAYLOAD_COMPACTION_ERROR: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn force_next_payload_compaction_error() {
+    FORCE_PAYLOAD_COMPACTION_ERROR.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+fn take_forced_payload_compaction_error() -> bool {
+    FORCE_PAYLOAD_COMPACTION_ERROR.with(|flag| flag.replace(false))
+}
 
 pub(super) struct BucketPayloadDeletePlan {
     bucket: LabelBucket,
@@ -43,6 +60,10 @@ where
     pub fn compact_payload_slab(
         &self,
     ) -> Result<LabeledPayloadCompactionResult, LabeledOperationError> {
+        #[cfg(test)]
+        if take_forced_payload_compaction_error() {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
         struct SpanPlan {
             bucket_slot: u64,
             bucket: LabelBucket,
