@@ -653,6 +653,84 @@ mod tests {
         assert_eq!(report.processed_work_items, 1);
         assert_eq!(graph.maintenance_queue_len(), 0);
     }
+
+    #[test]
+    fn payload_compaction_queue_survives_reopen() {
+        let (
+            vertices,
+            buckets,
+            bucket_free_spans,
+            bucket_free_span_by_start,
+            edge_counts,
+            edges,
+            edge_log,
+            edge_span_meta,
+            edge_free_spans,
+            edge_free_span_by_start,
+            inline_value_slab,
+            value_free_spans,
+            value_free_span_by_start,
+            payload_log,
+            value_blobs,
+        ) = labeled_lara_memories();
+        let inner = LabeledLaraGraph::<TestEdge, _>::new(
+            vertices.clone(),
+            buckets.clone(),
+            bucket_free_spans.clone(),
+            bucket_free_span_by_start.clone(),
+            edge_counts.clone(),
+            edges.clone(),
+            edge_log.clone(),
+            edge_span_meta.clone(),
+            edge_free_spans.clone(),
+            edge_free_span_by_start.clone(),
+            inline_value_slab.clone(),
+            value_free_spans.clone(),
+            value_free_span_by_start.clone(),
+            payload_log.clone(),
+            value_blobs.clone(),
+            crate::labeled::InitialCapacities::uniform(1024),
+            BucketLabelKey::from_raw(1),
+        )
+        .unwrap();
+        let queue_memory = vector_memory();
+        let graph = DeferredLabeledLaraGraph::new(inner, queue_memory.clone()).unwrap();
+        graph.mark_compact_payload_slab().unwrap();
+        assert_eq!(graph.maintenance_queue_len(), 1);
+        drop(graph);
+
+        let reopened = DeferredLabeledLaraGraph::<TestEdge, _>::init(
+            vertices,
+            buckets,
+            bucket_free_spans,
+            bucket_free_span_by_start,
+            edge_counts,
+            edges,
+            edge_log,
+            edge_span_meta,
+            edge_free_spans,
+            edge_free_span_by_start,
+            inline_value_slab,
+            value_free_spans,
+            value_free_span_by_start,
+            payload_log,
+            value_blobs,
+            queue_memory,
+            crate::labeled::InitialCapacities::uniform(1024),
+            BucketLabelKey::from_raw(1),
+        )
+        .unwrap();
+        assert_eq!(reopened.maintenance_queue_len(), 1);
+        reopened.maintenance(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: Some(1),
+            max_segments: None,
+            max_delete_edge_steps: None,
+        });
+        assert_eq!(reopened.maintenance_queue_len(), 0);
+    }
 }
 
 impl Storable for MaintenanceWorkItem {

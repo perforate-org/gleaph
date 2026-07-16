@@ -80,6 +80,10 @@ compaction-triggering insert measured 114.89K instructions. These values are
 fixture-specific, but show that the deferred insert avoids paying the full
 compaction cost in the mutation path.
 
+The queue persistence contract is covered by a reopen test: a pending payload
+item remains queued across graph reconstruction and is consumed by the next
+maintenance step.
+
 Payload-only compaction is available through `compact_payload_slab`. It preflights
 earlier free-span prefixes, including spans released by earlier moves in the same
 plan, copies only payload slab bytes, updates bucket payload offsets, and retires the old spans. Edge slab positions, edge/payload log chains,
