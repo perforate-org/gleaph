@@ -242,8 +242,7 @@ build_social_config() {
 # Let gql_execute_idempotent_batch page on instruction_budget; no per-call item cap.
 seed_social_graph() {
   log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
-  # ADR 0094 synchronous graph-to-index posting flush lets each wave see the previous
-  # wave's writes.  apply-knowledge-map-seeds.mjs groups the manifest into dependency waves
+  # apply-knowledge-map-seeds.mjs groups the manifest into dependency waves
   # (vertices, user edges, posts, replies, topic/feed assignments) and runs each wave as a
   # separate gql_execute_idempotent_batch call, preserving parent-before-child order.
   env \
@@ -311,50 +310,21 @@ register_social_prepared_queries() {
   log "Registering social demo prepared queries"
 
   local scenarios_dir="$ROOT/frontend/apps/social-demo/config/scenarios"
-  local yaml_module
-  yaml_module="$(node -e 'console.log(require.resolve("yaml", { paths: ["'"$ROOT"'/frontend/apps/social-demo/node_modules"] }))')"
 
-  local scenario_file
-  for scenario_file in "$scenarios_dir"/*.yaml; do
-    local scenario_id prepared_query_id prepared_query
-    scenario_id="$(node -e "
-const fs = require('fs');
-const YAML = require('"$yaml_module"');
-const doc = YAML.parse(fs.readFileSync(process.argv[1], 'utf8'));
-console.log(doc.id);
-" "$scenario_file")"
-    prepared_query_id="$(node -e "
-const fs = require('fs');
-const YAML = require('"$yaml_module"');
-const doc = YAML.parse(fs.readFileSync(process.argv[1], 'utf8'));
-console.log(doc.preparedQueryId);
-" "$scenario_file")"
-    prepared_query="$(node -e "
-const fs = require('fs');
-const YAML = require('"$yaml_module"');
-const doc = YAML.parse(fs.readFileSync(process.argv[1], 'utf8'));
-console.log(doc.preparedQuery);
-" "$scenario_file")"
-    icp_call_expect_ok "Register $scenario_id scenario" "Conflict" -e local gleaph-router prepared_register \
-      "(\"$prepared_query_id\", \"$prepared_query\")"
-  done
+  env \
+      HOME="$ICP_CLI_HOME" \
+      COREPACK_HOME="$ICP_COREPACK_HOME" \
+      XDG_CACHE_HOME="$ICP_XDG_CACHE_HOME" \
+      XDG_DATA_HOME="$ICP_XDG_DATA_HOME" \
+      RUSTUP_HOME="$RUSTUP_HOME" \
+      CARGO_HOME="$CARGO_HOME" \
+      GLEAPH_DEMO_ROUTER_CANISTER=gleaph-router \
+      ICP_IDENTITY_NAME="$deployer_id" \
+      DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
+      node "$ROOT/frontend/apps/social-demo/scripts/register-social-prepared-queries.mjs" \
+        "$scenarios_dir"
+}
 
-  node -e "
-const fs = require('fs');
-const path = require('path');
-const YAML = require('"$yaml_module"');
-const lib = fs.readFileSync('$ROOT/crates/social-demo-gateway/src/lib.rs', 'utf8');
-const match = lib.match(/fn semantic_query_vector\\(\\)[^}]*?vec!\\[([^\\]]+)\\]/s);
-if (!match) { console.error('WARN: could not parse semantic_query_vector'); process.exit(0); }
-const canonical = match[1].split(',').map(s => parseFloat(s.trim())).filter(n => !Number.isNaN(n));
-for (const f of fs.readdirSync('$scenarios_dir').filter(x => x.endsWith('.yaml')).sort()) {
-  const doc = YAML.parse(fs.readFileSync(path.join('$scenarios_dir', f), 'utf8'));
-  if (!Array.isArray(doc.semanticVector)) continue;
-  const drift = doc.semanticVector.some((v, i) => Math.abs(v - (canonical[i] || 0)) > 1e-6);
-  if (drift) console.log('WARN: semanticVector in ' + doc.id + ' drifted from crates/social-demo-gateway/src/lib.rs::semantic_query_vector()');
-}
-"
-}
 
 verify_social_demo_scenarios() {
   log "Verifying all six Gateway scenarios"

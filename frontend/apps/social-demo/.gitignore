@@ -1,9 +1,13 @@
 dist/
-src/generated/
 node_modules/
 .env
 .env.local
 
-# Generated Gateway bindings are produced from crates/social-demo-gateway/social_demo_gateway.did
-# by the generate-gateway-bindings script (called from check/build after the Candid drift check).
-# They are intentionally untracked; regenerate with pnpm generate-gateway-bindings.
+# Ignore all generated bindings by default, then re-include the committed Router/Graph ones.
+src/generated/*
+!src/generated/gleaph_router/
+!src/generated/gleaph_graph/
+
+# social_demo_gateway bindings are regenerated during build; keep untracked.
+src/generated/declarations/
+src/generated/social_demo_gateway.ts

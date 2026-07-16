@@ -1,0 +1,498 @@
+// Router → graph: enqueue and/or drain deferred maintenance after bulk ingest.
+type BulkIngestFinalizeArgs = record {
+  forward_vertices : vec nat32;
+  target_shard_id : nat32;
+  reverse_vertices : vec nat32;
+  // `true`: enqueue span compaction then drain; `false`: drain-only retry.
+  enqueue : bool;
+};
+// Progress from one bulk-ingest finalize call on a graph shard.
+type BulkIngestFinalizeResult = record {
+  queued_forward : nat32;
+  processed_work_items : nat32;
+  queued_reverse : nat32;
+  remaining_queue_len : nat64;
+  instruction_budget_exhausted : bool;
+  instructions_used : nat64;
+};
+// Immutable identity of one uniqueness claim produced by a mutation.
+// 
+// `ClaimId` carries **no element id**: the identity computed at Try (before the canonical element
+// exists) is therefore byte-identical to the one stamped on the graph shard's `Acquire` receipt,
+// so Try-time and commit-time identities always match (ADR 0030 §"Canonical owner and staged
+// state"). `owner_element_id` is tracked separately on the reservation, not folded into identity.
+type ClaimId = record {
+  mutation_id : nat64;
+  // Deterministic position of the claim within its mutation. First cut: the qualifying
+  // `INSERT`'s plan position — exactly one constrained element per INSERT (ADR 0030 Scope). The
+  // general `(plan_position, input_row_ordinal)` form belongs to the deferred multi-row protocol.
+  claim_ordinal : nat32;
+};
+// One constrained `(vertex_label, property)` dispatched to the shard so a delete/remove can pin a
+// `Release` for the freed value (ADR 0030 slice 5b).
+// 
+// The ids are Router-interned and match the shard's stored vertex labels/property ids verbatim
+// (the Router is the sole interner; it ships `ResolvedLabelTable`/`ResolvedPropertyTable` and the
+// shard persists those same ids), so the shard matches a deleted vertex's labels/properties with
+// no translation. `constraint_id` is the reservation-key constraint the freed value belongs to.
+type ConstrainedPropertyDispatch = record {
+  vertex_label_id : nat16;
+  property_id : nat32;
+  constraint_id : nat16;
+};
+// Semantic interpretation of stored edge-inline-value bytes.
+type EdgeInlineValueEncoding = variant {
+  F16;
+  F32;
+  F64;
+  VectorF32 : record { dims : nat16 };
+  WeightBinary16;
+  WeightLinearU16 : record { max : float32; min : float32 };
+  RawI8;
+  RawU8;
+  WeightLogU16 : record { max : float32; min : float32 };
+  RawI128;
+  RawFixed32;
+  RawFixed64;
+  RawU128;
+  RawI16;
+  RawI32;
+  RawI64;
+  RawU16;
+  RawU32;
+  RawU64;
+  WeightRawU16;
+  // Opaque fixed-width inline value; [`EdgeInlineValueProfile::byte_width`] may be any positive width.
+  RawBytes;
+};
+// Label-level edge inline value configuration.
+type EdgeInlineValueProfile = record {
+  encoding : EdgeInlineValueEncoding;
+  byte_width : nat16;
+};
+// Resume cursor: lexicographic [`EdgePropertyKey`] wire bytes (14 bytes on graph shard).
+type EdgePostingBackfillArgs = record {
+  max_entries : nat32;
+  after_key : opt blob;
+};
+// Progress from one edge posting backfill batch.
+type EdgePostingBackfillResult = record {
+  entries_processed : nat32;
+  postings_synced : nat32;
+  done : bool;
+  next_after_key : opt blob;
+};
+// Router → graph shard edge-property backfill request carrying the
+// router-sourced indexed catalog for the operation (ADR 0023 D1/D5).
+type EdgePropertyBackfillRequest = record {
+  args : EdgePostingBackfillArgs;
+  catalog : IndexedPropertyCatalog;
+};
+// Immutable identity of one effect within a mutation. `effect_ordinal` is deterministic across
+// replays, so a re-executed segment re-emits the same `EffectId` (idempotent append).
+type EffectId = record { mutation_id : nat64; effect_ordinal : nat32 };
+// Progress from one embedding backfill batch on a graph shard.
+type EmbeddingBackfillResult = record {
+  vertices_processed : nat32;
+  done : bool;
+  embeddings_synced : nat32;
+  next_vertex_id : nat32;
+};
+// Router → graph: execute a pre-built physical plan on a target shard.
+type ExecutePlanArgs = record {
+  // Router-issued idempotency key for update/DML execution.
+  mutation_id : opt nat64;
+  // Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
+  // Consulted ephemerally by shard DML to decide which postings to maintain.
+  indexed_properties : opt IndexedPropertyCatalog;
+  plan_blob : blob;
+  // Router-resolved label names referenced by the physical plan.
+  resolved_labels : opt ResolvedLabelTable;
+  mode : GqlExecutionMode;
+  // Cross-shard uniqueness claims the shard must `Acquire` for the element it creates in this
+  // segment (ADR 0030 slice 5). The Router has already reserved each `(constraint_id,
+  // encoded_value)` via the no-`await` Try; the shard mints `ClaimId(mutation_id, claim_ordinal)`
+  // and pins one `Acquire` receipt per claim so the Router can Confirm it. `None`/empty when the
+  // operation touches no constrained property.
+  unique_claims : opt vec UniqueClaimDispatch;
+  target_shard_id : nat32;
+  params_blob : blob;
+  // Router-sourced indexed-embedding catalog for this operation (ADR 0031 Slice 3). Mirrors
+  // `indexed_properties`: an ephemeral per-operation slice the shard consults to decide which
+  // derived vector-embedding mutations to dispatch. In Slice 3 the Router builder is fail-closed
+  // (always `None`/empty) until delete-spanning incarnation fencing activates dispatch, so
+  // production shards never receive a non-empty catalog and vector sync stays inert.
+  indexed_embeddings : opt IndexedEmbeddingCatalog;
+  // Constrained `(vertex_label, property)` set the shard consults when this segment can delete or
+  // remove a constrained element, so it can pin one `Release` receipt per freed value (ADR 0030
+  // slice 5b). Like `indexed_properties` this is an ephemeral per-operation slice of the Router's
+  // constraint catalog (no persistent shard-side catalog; ADR 0023). `None`/empty when the
+  // operation cannot release a constrained value.
+  constrained_properties : opt vec ConstrainedPropertyDispatch;
+  // Constrained `(vertex_label, property)` set for `ShardLocalGlobal` constraints (ADR 0030 slice
+  // 10). A delete/remove of such an element frees its value directly in the local unique table
+  // (owner-matched), rather than pinning an outbox `Release`. `None`/empty when no constrained
+  // property uses the `ShardLocalGlobal` strategy.
+  local_constrained_properties : opt vec ConstrainedPropertyDispatch;
+  // Router-resolved non-leading vector search hits for `PlanOp::Search` (ADR 0034 Slice 5).
+  // Per-shard shard-local relation containing the bound vertex id and the user-visible scalar.
+  // `None` for plans without a supported non-leading `SEARCH`.
+  resolved_search_blob : opt blob;
+  // `ShardLocalGlobal` fast-path claims (ADR 0030 slice 10). Unlike `unique_claims`, these were
+  // **not** reserved through the Router (no Try/Acquire/Confirm). The single owning shard enforces
+  // graph-wide uniqueness entirely in its local unique table: it preflights every claim against
+  // the table and, only if all are clean, inserts them inside the same canonical write segment.
+  // `None`/empty when no constrained property uses the `ShardLocalGlobal` strategy.
+  local_unique_claims : opt vec UniqueClaimDispatch;
+  // Router-resolved property names referenced by the physical plan.
+  resolved_properties : opt ResolvedPropertyTable;
+  // Per-graph key for ELEMENT_ID/path id encoding.
+  element_id_encoding_key : blob;
+  // When set, graph skips the first anchor `IndexScan` and binds these local vertex ids.
+  seed_bindings_blob : opt blob;
+};
+// A bounded group of independent plan executions sent in one Router → Graph call.
+// 
+// Each item retains its own mutation identity and execution payload. The Graph executes items
+// independently; this type is a transport aggregation only and does not make the group atomic.
+type ExecutePlanBatchArgs = record {
+  mode : ExecutePlanBatchMode;
+  operations : vec ExecutePlanArgs;
+};
+type ExecutePlanBatchMode = variant { Dynamic; Fixed };
+// Per-item outcomes for [`ExecutePlanBatchArgs`]. Keeping the result at item granularity lets the
+// Router continue its existing saga/recovery handling after a later item fails.
+type ExecutePlanBatchResult = record {
+  // Index of the first operation not attempted, when Dynamic mode hit the Graph budget.
+  next_index : opt nat32;
+  results : vec Result_6;
+};
+type ExecutePlanResult = record {
+  // Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
+  rows_blob : opt blob;
+  row_count : nat64;
+  // Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
+  hot_forward_vertices : vec nat32;
+};
+// Router → graph: read a batch of mutation journal entries in one call.
+type GetMutationJournalEntriesArgs = record { mutation_ids : vec nat64 };
+// Graph → router: ordered optional journal entries for [`GetMutationJournalEntriesArgs`].
+type GetMutationJournalEntriesResult = record {
+  // Smallest mutation id not included because the Graph canister neared its instruction budget.
+  // When present, the Router must issue a follow-up batch read for this and larger ids.
+  next : opt nat64;
+  entries : vec opt GraphMutationJournalEntryWire;
+};
+// Selects the IC call kind for a wired program/plan (must match the canister entrypoint).
+type GqlExecutionMode = variant {
+  // Write path (`gql_execute` / `execute_plan_update`).
+  Update;
+  // Read-only execution (`gql_query` / `execute_plan_query` / composite where needed).
+  Query;
+};
+// Arguments supplied by the registry (or installer) on first `init`.
+type GraphInitArgs = record {
+  shard_id : opt nat32;
+  // Index canister for install-time federation wiring.
+  // 
+  // Canister init cannot perform inter-canister calls, so deployments pass this after the
+  // Router registry has been configured.
+  index_canister : opt principal;
+  // Router canister for federation (required together with `shard_id`).
+  router_canister : opt principal;
+  logical_graph_name : opt text;
+};
+// Graph shard mutation idempotency journal entry (ADR 0015).
+type GraphMutationJournalEntryWire = record {
+  mutation_id : nat64;
+  emitted_delta_last_seq : opt nat64;
+  row_count : nat64;
+  emitted_delta_first_seq : opt nat64;
+  state : MutationJournalState;
+  // Forward hubs observed during DML, persisted so router recovery can still finalize.
+  hot_forward_vertices : vec nat32;
+};
+// One edge index membership `(label, property, direction)` in [`IndexedPropertyCatalog`].
+type IndexedEdgeMembership = record {
+  label_id : nat16;
+  property_id : nat32;
+  direction_tag : nat8;
+};
+// Router-sourced snapshot of which embedding names are indexed (mirrors `IndexedPropertyCatalog`).
+type IndexedEmbeddingCatalog = record { embeddings : vec IndexedEmbeddingSpec };
+// One indexed embedding definition supplied ephemerally by the Router (Slice 3).
+// 
+// Slice 2 defines the type only; the graph never persists an indexed-embedding registry. A
+// dispatch with no installed catalog skips vector sync entirely (production), while tests inject
+// a catalog via the embedding catalog context.
+type IndexedEmbeddingSpec = record {
+  metric : VectorMetric;
+  encoding : VectorEncoding;
+  dims : nat16;
+  kind : VectorIndexKind;
+  embedding_name_id : nat16;
+  index_id : nat32;
+};
+// Router-sourced snapshot of which properties are indexed (ADR 0023 D1/D3).
+// 
+// The router (definitions SSOT) supplies this per operation so the graph shard
+// never persists derived index state. It is consulted ephemerally (set at the
+// start of an operation, cleared at the end) and is therefore immune to the
+// upgrade boundary that made the former shard-local registry stale.
+type IndexedPropertyCatalog = record {
+  vertex_property_ids : vec nat32;
+  edge_property_ids : vec nat32;
+  edge_indexes : vec IndexedEdgeMembership;
+};
+// Per-label live count changes emitted by graph shard DML (ADR 0015).
+type LabelStatsDelta = record {
+  edge : vec record { nat16; int64 };
+  vertex : vec record { nat16; int64 };
+};
+// Ordered label stats delta appended by graph shard DML (ADR 0015).
+type LabelStatsDeltaEventWire = record {
+  mutation_id : nat64;
+  shard_event_seq : nat64;
+  label_stats_delta : LabelStatsDelta;
+};
+// Graph-local mutation journal state (ADR 0015).
+// 
+// This is a *shard-local* idempotency outcome, not a cross-canister status. `Completed`
+// here means the shard-local canonical mutation outcome is durable and replayable; it
+// does **not** imply that derived projections (graph-index postings, Router label stats)
+// have converged. Cross-canister convergence is tracked separately by Router's
+// [`MutationLifecyclePhase`] (ADR 0029).
+type MutationJournalState = variant { Completed; Incomplete };
+// One batch of vertex-local posting replay from canonical shard state.
+type PostingBackfillArgs = record {
+  max_vertices : nat32;
+  start_vertex_id : nat32;
+};
+// Progress from one posting backfill batch on a graph shard.
+type PostingBackfillResult = record {
+  postings_synced : nat32;
+  vertices_processed : nat32;
+  done : bool;
+  next_vertex_id : nat32;
+};
+type ResolvedEdgeLabel = record {
+  id : nat16;
+  name : text;
+  // Router-owned logical schema (ADR 0008). Default `no_inline_value` when omitted on legacy wire.
+  inline_value_profile : EdgeInlineValueProfile;
+  // Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
+  // `None` for labels with no named inline slot; otherwise a scalar or struct projection.
+  // Graph receives this as a plan-scoped projection and must not persist or infer it.
+  inline_schema : opt ResolvedInlineSchema;
+};
+// Router-derived resolved schema for the named inline edge property of one concrete label.
+// 
+// Replaces the ambiguous `Option<PropertyId>` parallel wire state with one explicit enum:
+// - `None`: this label has no named inline property.
+// - `Scalar { property_id }`: one fixed-width scalar inline property.
+// - `Struct { property_id, fields }`: one fixed-size inline STRUCT, declaration-ordered.
+// 
+// Graph receives this as a plan-scoped projection and must not persist or infer it.
+type ResolvedInlineSchema = variant {
+  struct : record {
+    fields : vec ResolvedInlineStructField;
+    property_id : nat32;
+  };
+  scalar : record { property_id : nat32 };
+};
+// Physical field descriptor for one fixed-size inline edge STRUCT slot.
+// 
+// Router derives this from the canonical declaration order; Graph receives it as a plan-scoped
+// projection and must not persist or infer it. Each descriptor carries only the data Graph needs
+// to validate and decode the payload slice: field name, byte offset, and exact scalar profile.
+type ResolvedInlineStructField = record {
+  byte_offset : nat16;
+  name : text;
+  profile : EdgeInlineValueProfile;
+};
+type ResolvedLabelTable = record {
+  edge : vec ResolvedEdgeLabel;
+  vertex : vec ResolvedVertexLabel;
+};
+type ResolvedProperty = record { id : nat32; name : text };
+type ResolvedPropertyTable = record { properties : vec ResolvedProperty };
+type ResolvedVertexLabel = record { id : nat16; name : text };
+type Result = variant { Ok : VertexEmbeddingIngestionResult; Err : text };
+type Result_1 = variant { Ok : vec Result; Err : text };
+type Result_2 = variant { Ok; Err : text };
+type Result_3 = variant { Ok : EdgePostingBackfillResult; Err : text };
+type Result_4 = variant { Ok : PostingBackfillResult; Err : text };
+type Result_5 = variant { Ok : EmbeddingBackfillResult; Err : text };
+type Result_6 = variant { Ok : ExecutePlanResult; Err : text };
+type Result_7 = variant { Ok : ExecutePlanBatchResult; Err : text };
+type Result_8 = variant { Ok : BulkIngestFinalizeResult; Err : text };
+// Evidence that a claim's `Acquire` is pinned: the matching effect's `EffectId` (so the Router can
+// ack *that* effect after Confirm — `claim_ordinal` and `effect_ordinal` are distinct concepts and
+// neither derives the other) plus the canonical `owner_element_id`.
+type UniqueAcquireEvidence = record {
+  owner_element_id : blob;
+  effect_id : EffectId;
+};
+// Replicated commit-proof answer for one claim (Router reclaim proof, ADR 0030 §Timeout).
+// `acquire` is `Some` iff a matching `Acquire` effect is pinned on this shard.
+type UniqueAcquireProof = record {
+  claim_id : ClaimId;
+  acquire : opt UniqueAcquireEvidence;
+};
+// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
+// 
+// `claim_ordinal` is the claim's deterministic position within the mutation; combined with the
+// envelope's `mutation_id` it yields the immutable `ClaimId` the Router reserved. `encoded_value`
+// is the canonical key the Router already validated and reserved, carried verbatim so the shard's
+// pinned receipt and the Router's reservation reference identical bytes.
+type UniqueClaimDispatch = record {
+  encoded_value : blob;
+  constraint_id : nat16;
+  claim_ordinal : nat32;
+};
+// Direction of a unique effect. `Acquire` claims a value for an element; `Release` frees the value
+// a (possibly different) mutation previously held.
+type UniqueEffectOp = variant { Release; Acquire };
+// One pinned unique-effect receipt.
+// 
+// Matching rules (ADR 0030): an `Acquire` is matched by **`claim_id`** (so an old acked-but-unpruned
+// `Acquire` for a prior claim on the same value is never mistaken for newer commit evidence); a
+// `Release` is matched by **`owner_element_id`** (the producing mutation differs from the original
+// `Acquire`, so its `claim_id` is audit-only / `None`).
+type UniqueEffectReceipt = record {
+  op : UniqueEffectOp;
+  // Canonical element that owns the value: the exact encoded element-id bytes (a vertex id is 8
+  // bytes, an edge id 12). Stored variable-length rather than a fixed buffer so different element
+  // kinds never collide under an opaque padding convention; the Router treats it as an opaque tag
+  // (`Acquire` Confirm stamps it; `Release` matches on it).
+  owner_element_id : blob;
+  // `Some` for `Acquire` (the reserving claim); audit-only / `None` for `Release`.
+  claim_id : opt ClaimId;
+  effect_id : EffectId;
+  encoded_value : blob;
+  constraint_id : nat16;
+};
+// Encoding of a stored vertex embedding.
+// 
+// Only fixed-dimension `F32` is supported in the first slice. New variants (`F16`, `I8`) must
+// update every exhaustive `match` on this enum, which is the intended compile-time gate before
+// an `UnsupportedEncoding`-style runtime branch is introduced.
+type VectorEncoding = variant {
+  // IEEE-754 little-endian `f32` components; byte width is `dims * 4`.
+  F32;
+};
+// Physical index structure for a derived vector index.
+// 
+// Slice 2 standardizes on `IvfFlat` operated in its degenerate form (`nlist = 1`,
+// `partition_id = 0`, no centroids). There is intentionally no separate `Flat` kind: the
+// baseline exact scan landed in Slice 4+ is `IvfFlat` with one partition.
+type VectorIndexKind = variant {
+  // Inverted-file flat: centroid-pruned exact rerank. Degenerate `nlist = 1` in Slice 2.
+  IvfFlat;
+};
+// Distance/similarity metric for vector scoring.
+type VectorMetric = variant {
+  // Squared Euclidean distance (no square root); smaller is nearer.
+  L2Squared;
+  // Cosine similarity expressed internally as `1 - similarity`; smaller is nearer.
+  // User-facing score is `1 - raw`; this metric has no natural distance.
+  Cosine;
+};
+// Router → graph shard vertex-embedding backfill request carrying the router-sourced indexed
+// embedding catalog for the operation.
+type VertexEmbeddingBackfillRequest = record {
+  args : PostingBackfillArgs;
+  catalog : IndexedEmbeddingCatalog;
+};
+// Router → graph shard: one bounded canonical vertex-embedding ingestion request.
+// 
+// The Router resolves the opaque graph-scoped vertex id and the embedding definition before
+// dispatching; the graph shard only sees the local vertex id and the authoritative
+// [`IndexedEmbeddingSpec`]. The canonical byte encoding happens inside the graph-owned write
+// boundary.
+type VertexEmbeddingIngestionArgs = record {
+  local_vertex_id : nat32;
+  spec : IndexedEmbeddingSpec;
+  values : vec float32;
+};
+// Result of [`VertexEmbeddingIngestionArgs`].
+// 
+// `embedding_version` is the canonical `StoredEmbedding.version` after the write. The
+// `projection_outcome` distinguishes a fully applied derived projection from a durable deferred
+// repair so callers do not blindly retry a canonical write that has already committed.
+type VertexEmbeddingIngestionResult = record {
+  embedding_version : nat64;
+  projection_outcome : VertexEmbeddingProjectionOutcome;
+};
+// Outcome of the derived vector-index projection after a canonical embedding commit.
+type VertexEmbeddingProjectionOutcome = variant {
+  // The derived vector canister was unreachable or not yet attached; the full idempotent batch
+  // was durably journaled for repair and will converge automatically.
+  DeferredForRepair;
+  // The derived vector canister accepted the upsert in this message.
+  Applied;
+};
+// Router → graph shard vertex-property backfill request carrying the
+// router-sourced indexed catalog for the operation (ADR 0023 D1/D5).
+type VertexPropertyBackfillRequest = record {
+  args : PostingBackfillArgs;
+  catalog : IndexedPropertyCatalog;
+};
+service : (GraphInitArgs) -> {
+  ack_label_stats_deltas_through : (nat64) -> ();
+  // Router → graph: per-effect ack (unpin) of unique effects after the Router has durably applied
+  // them (ADR 0030).
+  ack_unique_effects : (vec EffectId) -> ();
+  // Router → graph (plan 0048): bounded canonical vertex-embedding ingestion.
+  admin_ingest_vertex_embedding : (VertexEmbeddingIngestionArgs) -> (Result);
+  // Router → graph (plan 0048 extension): bounded batch canonical vertex-embedding ingestion.
+  admin_ingest_vertex_embedding_batch : (vec VertexEmbeddingIngestionArgs) -> (
+      Result_1,
+    );
+  // Router → graph (ADR 0031 Slice 4): set this shard's local derived vector-index target as the
+  // first step of the Router-driven vector attach handshake.
+  admin_set_vector_index_canister : (principal) -> (Result_2);
+  backfill_edge_property_postings : (EdgePropertyBackfillRequest) -> (Result_3);
+  backfill_label_postings : (PostingBackfillArgs) -> (Result_4);
+  backfill_vertex_embeddings : (VertexEmbeddingBackfillRequest) -> (Result_5);
+  backfill_vertex_property_postings : (VertexPropertyBackfillRequest) -> (
+      Result_4,
+    );
+  // Router → graph: read-only plan wire (may call index / federated expand).
+  execute_plan_query : (ExecutePlanArgs) -> (Result_6) composite_query;
+  // Router → graph: plan wire with DML.
+  execute_plan_update : (ExecutePlanArgs) -> (Result_6);
+  execute_plan_update_batch : (ExecutePlanBatchArgs) -> (Result_7);
+  finalize_bulk_ingest : (BulkIngestFinalizeArgs) -> (Result_8);
+  get_mutation_journal_entries : (GetMutationJournalEntriesArgs) -> (
+      GetMutationJournalEntriesResult,
+    ) query;
+  get_mutation_journal_entry : (nat64) -> (
+      opt GraphMutationJournalEntryWire,
+    ) query;
+  // Router → graph: smallest tracked mutation id with unapplied index postings, or
+  // `None` when index work has drained (ADR 0029 Phase 2 read-your-writes barrier).
+  index_pending_min_mutation_id : () -> (opt nat64) query;
+  list_pending_label_stats_deltas : (nat64, nat32) -> (
+      vec LabelStatsDeltaEventWire,
+    ) query;
+  // Router → graph: bounded purge of a `ShardLocalGlobal` constraint's local unique entries for the
+  // DROP drain, returning whether the constraint's local table is now empty (ADR 0030 slice 10). An
+  // update so the purge is replicated.
+  purge_local_unique_constraint : (nat16, nat32) -> (bool);
+  // Router → graph (replicated read): per-claim `Acquire` commit proof from the pinned unique-effect
+  // outbox (ADR 0030). An `update` so the answer is replicated/certified.
+  read_unique_effect_proof : (vec ClaimId) -> (vec UniqueAcquireProof);
+  // Router → graph (replicated read): one page of all of a mutation's pinned effects (`Acquire` and
+  // `Release`), paged by `effect_ordinal` cursor, for the Router's unified slice-6 effect recovery
+  // (Driver 2). An `update` so the answer is replicated/certified.
+  read_unique_mutation_effects : (nat64, opt nat32, nat32) -> (
+      vec UniqueEffectReceipt,
+    );
+  // Router → graph (replicated read): one page of a mutation's pinned `Release` effects, reconciled
+  // by the Router per `owner_element_id` and paged by `effect_ordinal` cursor (ADR 0030 slice 5b). An
+  // `update` so the answer is replicated/certified.
+  read_unique_release_effects : (nat64, opt nat32, nat32) -> (
+      vec UniqueEffectReceipt,
+    );
+}

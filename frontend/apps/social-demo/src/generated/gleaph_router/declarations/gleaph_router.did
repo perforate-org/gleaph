@@ -1,0 +1,1355 @@
+// Admin: wire (or retrofit) a derived vector-index target onto an already-registered shard and
+// drive the attach handshake (ADR 0031 Slice 4). The Router records the target in the shard
+// registry, calls the graph shard's router-guarded `admin_set_vector_index_canister` so its
+// **local** `FederationRouting` carries the target, attaches the shard to the vector canister, and
+// only then flips the durable `vector_index_attached` readiness bit. Idempotent; serves both fresh
+// and existing (upgraded) shards. Rejects an anonymous target.
+type AdminAttachVectorIndexShardArgs = record {
+  shard_id : nat32;
+  vector_index_canister : principal;
+  logical_graph_name : text;
+};
+// One router-orchestrated batch of edge property posting backfill on a graph shard.
+type AdminEdgeBackfillStepArgs = record {
+  shard_id : nat32;
+  // Maximum edge property entries to scan on the shard in this step (must be > 0).
+  max_entries : nat32;
+  logical_graph_name : text;
+};
+// Progress from one router edge backfill step.
+type AdminEdgeBackfillStepResult = record {
+  entries_processed : nat32;
+  postings_synced : nat32;
+  done : bool;
+  shard_id : nat32;
+  next_after_key : opt blob;
+};
+// Admin: ingest one finite F32 vertex embedding through Router into the owning Graph shard
+// (plan 0048). The caller supplies only the logical graph name, the opaque encoded vertex id,
+// the registered embedding name, and the vector values; Router resolves ownership and the
+// definition and dispatches a single canonical write.
+type AdminIngestVertexEmbeddingArgs = record {
+  values : vec float32;
+  // Opaque 8-byte graph-scoped vertex id (`ELEMENT_ID(v)`).
+  encoded_vertex_id : blob;
+  embedding_name : text;
+  logical_graph_name : text;
+};
+// Admin: ingest many finite F32 vertex embeddings through Router into the owning Graph shard(s)
+// in as few inter-canister calls as possible. Items are grouped by target graph canister and sent
+// in message-size-bounded chunks so one social-demo seed needs one Router→Graph call and one
+// Graph→Vector call.
+type AdminIngestVertexEmbeddingBatchArgs = record {
+  embedding_name : text;
+  items : vec AdminIngestVertexEmbeddingBatchItem;
+  logical_graph_name : text;
+};
+// One item in a batch vertex-embedding ingestion request.
+type AdminIngestVertexEmbeddingBatchItem = record {
+  values : vec float32;
+  encoded_vertex_id : blob;
+};
+// One router-orchestrated batch of label posting backfill on a graph shard.
+type AdminLabelBackfillStepArgs = record {
+  shard_id : nat32;
+  // Maximum local vertices to scan on the shard in this step (must be > 0).
+  max_vertices : nat32;
+  logical_graph_name : text;
+};
+// Progress from one router backfill step.
+type AdminLabelBackfillStepResult = record {
+  postings_synced : nat32;
+  vertices_processed : nat32;
+  done : bool;
+  shard_id : nat32;
+  next_vertex_id : nat32;
+};
+// One router-orchestrated batch advancing label stats projection for a graph shard.
+type AdminLabelStatsProjectionStepArgs = record {
+  shard_id : nat32;
+  // Maximum pending deltas to apply from the shard log in this step (must be > 0).
+  max_deltas : nat32;
+  logical_graph_name : text;
+};
+// Progress from one router label stats projection step.
+type AdminLabelStatsProjectionStepResult = record {
+  done : bool;
+  shard_id : nat32;
+  deltas_drained : nat32;
+  deltas_applied : nat32;
+};
+type AdminRegisterShardArgs = record {
+  shard_id : nat32;
+  index_canister : principal;
+  graph_canister : principal;
+  logical_graph_name : text;
+};
+// Operator recovery: clear a stuck `in_progress` claim on one shard's backfill
+// cursor (see ADR 0009). Only use after confirming no step is in flight for the
+// shard, since clearing a legitimately in-flight claim re-enables the cursor race.
+type AdminResetBackfillClaimArgs = record {
+  shard_id : nat32;
+  kind : BackfillKind;
+  logical_graph_name : text;
+};
+// Arguments for one expired client-mutation-key sweep step. The sweep is
+// operator-driven (like backfill / label-stats projection): call repeatedly,
+// feeding `next_cursor` back as `start_after`, until `done` is true.
+type AdminSweepMutationKeysStepArgs = record {
+  // Maximum journal entries to scan in this step (must be > 0).
+  max_scan : nat32;
+  // Resume scanning strictly after this key; `None` starts from the beginning.
+  start_after : opt ClientMutationKey;
+};
+// Progress from one expired client-mutation-key sweep step.
+type AdminSweepMutationKeysStepResult = record {
+  // True when the whole journal has been scanned in this step.
+  done : bool;
+  // Entries examined in this step.
+  scanned : nat32;
+  // Feed back as `start_after` to continue; `None` when the scan reached the end.
+  next_cursor : opt ClientMutationKey;
+  // Expired entries removed in this step.
+  removed : nat32;
+};
+// Admin: drive one bounded derived vector-index backfill step on a graph shard (ADR 0031 Slice 5).
+// The caller supplies an explicit resume cursor (`start_vertex_id`) and budget (`max_vertices`) and
+// loops, feeding [`AdminVectorIndexBackfillStepResult::next_vertex_id`] until `done`. Fails closed
+// (`VectorDispatchActivationBlocked`) while dispatch is not ready (global flag off or shards not
+// vector-attached).
+type AdminVectorIndexBackfillStepArgs = record {
+  shard_id : nat32;
+  // Maximum local vertices to scan on the shard in this step (clamped to ≥ 1 by the worker).
+  max_vertices : nat32;
+  start_vertex_id : nat32;
+  index_id : nat32;
+  logical_graph_name : text;
+};
+// Progress from one derived vector-index backfill step (ADR 0031 Slice 5).
+type AdminVectorIndexBackfillStepResult = record {
+  vertices_processed : nat32;
+  done : bool;
+  shard_id : nat32;
+  embeddings_synced : nat32;
+  next_vertex_id : nat32;
+};
+// Which posting-backfill cursor a reset targets.
+type BackfillKind = variant { Label; Edge; VertexProperty };
+type ClientMutationKey = record {
+  graph_id : nat32;
+  client_key : text;
+  caller : principal;
+};
+// Router-stable cursor for edge property posting backfill on one shard.
+type EdgeBackfillShardStatus = record {
+  done : bool;
+  shard_id : nat32;
+  after_key : opt blob;
+};
+// Cursor-based idempotent mutation execution.
+// 
+// `instruction_budget` bounds the work done in a single ingress update call. When the Router
+// exhausts this budget it returns `next_index`, allowing the caller to continue with another
+// call. There is no separate `max_items` field: the budget is the only pagination signal.
+type GqlExecuteIdempotentBatchArgs = record {
+  // `None` selects the Router default safety budget below the IC update-call limit.
+  instruction_budget : opt nat64;
+  mutations : vec GqlExecuteIdempotentBatchItem;
+  start_index : nat32;
+};
+// One mutation in a paged bulk idempotent execution request.
+type GqlExecuteIdempotentBatchItem = record {
+  gql_query : text;
+  mutation_key : text;
+  params : blob;
+};
+type GqlExecuteIdempotentBatchResult = record {
+  next_index : opt nat32;
+  instruction_counter : nat64;
+  results : vec GqlQueryResult;
+};
+// Router read-path result: merged row count and optional materialized rows.
+// 
+// `phase` is populated only for idempotent mutations, where Router tracks a federated
+// saga; it is `None` for read queries and for non-idempotent escape-hatch writes that
+// carry no tracked mutation record (ADR 0029).
+type GqlQueryResult = record {
+  // Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`] after federated merge.
+  rows_blob : opt blob;
+  // Read-your-writes token for idempotent mutations (ADR 0029 §5, Phase 2). `None`
+  // for reads and untracked escape-hatch writes.
+  token : opt MutationToken;
+  row_count : nat64;
+  // Federated mutation lifecycle phase for idempotent mutations (ADR 0029).
+  phase : opt MutationLifecyclePhase;
+};
+type GrantRoleArgs = record {
+  role : text;
+  manager_caps : nat64;
+  target : principal;
+};
+type GraphRegistryEntry = record {
+  // When true, this graph is the caller's HOME graph (ADR 0011 §1.3 option B).
+  is_home : bool;
+  status : GraphStatus;
+  graph_id : nat32;
+  owner : principal;
+  canister_id : principal;
+  updated_at_ns : nat64;
+  provisioning_state : ProvisioningState;
+  version : nat64;
+  admins : vec principal;
+  graph_name : text;
+};
+type GraphStatus = variant { Deleting; Active; ReadOnly; Deprecated };
+// One edge index membership `(label, property, direction)` in [`IndexedPropertyCatalog`].
+type IndexedEdgeMembership = record {
+  label_id : nat16;
+  property_id : nat32;
+  direction_tag : nat8;
+};
+// Router-sourced snapshot of which properties are indexed (ADR 0023 D1/D3).
+// 
+// The router (definitions SSOT) supplies this per operation so the graph shard
+// never persists derived index state. It is consulted ephemerally (set at the
+// start of an operation, cleared at the end) and is therefore immune to the
+// upgrade boundary that made the former shard-local registry stale.
+type IndexedPropertyCatalog = record {
+  vertex_property_ids : vec nat32;
+  edge_property_ids : vec nat32;
+  edge_indexes : vec IndexedEdgeMembership;
+};
+// Router-stable cursor for label posting backfill on one shard.
+type LabelBackfillShardStatus = record {
+  done : bool;
+  shard_id : nat32;
+  next_vertex_id : nat32;
+};
+// Federated mutation lifecycle phase (ADR 0029).
+// 
+// Router owns the transitions; this is the wire projection a client receives for an
+// idempotent mutation. It is deliberately distinct from [`MutationJournalState`], which
+// only attests a *shard-local* replayable outcome and never describes cross-canister
+// projection convergence.
+type MutationLifecyclePhase = variant {
+  // Canonical writes are durable; one or more required derived projections still lag.
+  ProjectionPending;
+  // Validation or execution failed before any canonical write committed.
+  Failed;
+  // All required canonical shard writes are durable; no projection has advanced yet.
+  CanonicalCommitted;
+  // Router is resolving and durably recording the immutable dispatch envelope.
+  Routing;
+  // Canonical writes and every projection required by the mutation contract converged.
+  Completed;
+  // At least one required canonical shard outcome is not yet known.
+  CanonicalPending;
+};
+// Operator/SDK-facing status of a federated mutation (ADR 0029 Phase 4).
+// 
+// Pull-based observability for the autonomous recovery driver: a caller polls this to learn
+// whether a saga converged, which shard is outstanding, and what (if any) explicit action
+// is required. It deliberately carries no read-your-writes token — the token is issued with
+// the original DML result; this query reports lifecycle, not freshness watermarks.
+type MutationStatus = record {
+  // Most recent recovery diagnostic, if any.
+  last_error : opt text;
+  mutation_id : nat64;
+  // Human-readable next step: `none` when terminal/auto-converging, or the explicit retry
+  // guidance when caller action is required.
+  next_action : text;
+  phase : MutationLifecyclePhase;
+  // First shard still outstanding (incomplete canonical write, else lagging projection).
+  target_shard : opt nat32;
+};
+// Read-your-writes token for a federated mutation (ADR 0029 §5, Phase 2).
+// 
+// Issued with an idempotent DML result. It names the mutation and the per-shard
+// projection watermarks a later read must reach to observe this mutation's effects.
+// It is deliberately **not** a global snapshot timestamp: graph-index freshness is
+// keyed by the monotonic `mutation_id` (a shard's index work for `mutation_id` is
+// applied once its repair watermark passes it), and label-stats freshness by each
+// shard's delta [`ShardEventSeq`]. Phase 2 *issues* the token; Phase 3 enforces it via
+// [`ReadMode::AtLeast`].
+type MutationToken = record {
+  mutation_id : nat64;
+  shards : vec MutationTokenShard;
+};
+// Per-shard watermarks a read must reach for read-your-writes against one mutation.
+type MutationTokenShard = record {
+  // Highest label-stats delta seq this mutation emitted on the shard. The Router
+  // label-stats projection must reach this seq to satisfy a count-only
+  // read-your-writes. `None` when the mutation emitted no label-stats delta here.
+  label_stats_seq : opt nat64;
+  shard_id : nat32;
+};
+// Router ingress arguments for `provision_graph`.
+type ProvisionGraphArgs = record {
+  requested_resources : vec ProvisionableResource;
+  request_fingerprint : text;
+  release_id : text;
+  graph_name : text;
+  deployment_id : text;
+  authorized_caller : principal;
+};
+// Router ingress response for `provision_graph`: a mirror of `ProvisionAcceptResponse`.
+type ProvisionGraphResponse = variant {
+  Replay : record { intent_lock_count : nat32; job_view : ProvisionJobSummary };
+  Accepted : record {
+    intent_lock_count : nat32;
+    job_view : ProvisionJobSummary;
+  };
+  // The request already reached durable `Completed` state on a prior call.
+  // Re-sending the accept envelope is not performed; the stored accepted registry
+  // version is returned as an idempotent success.
+  Completed : record { accepted_registry_version : nat64 };
+};
+// Redacted job summary for admission responses.
+type ProvisionJobSummary = record {
+  request_id : text;
+  active_resource_index : nat32;
+  completed_effect_count : nat32;
+  state : text;
+  accepted_registry_version : opt nat64;
+  deployment_id : text;
+};
+type ProvisionableResource = record {
+  kind : ProvisionableResourceKind;
+  logical_resource_key : text;
+};
+// Shared stable+wire resource kind. One-byte ordinal in stable memory.
+type ProvisionableResourceKind = variant {
+  PropertyIndex;
+  VectorIndex;
+  GraphShard;
+};
+type ProvisioningState = variant {
+  Failed : record { request_id : text; reason : text };
+  None;
+  Pending : record { request_id : text };
+};
+// Read freshness contract a caller selects per read (ADR 0029 §5, Phase 3).
+// 
+// This lives at the Gleaph integration boundary, not in the generic GQL crates:
+// it is keyed by Gleaph-specific projection watermarks (`MutationToken`).
+// 
+// - [`ReadMode::Eventual`] is non-blocking and may observe documented projection lag
+// (count-only under-count, posting lag). It is the default and matches the
+// historical `gql_query` behavior.
+// - [`ReadMode::AtLeast`] enforces a read barrier: the read is served only once every
+// shard in the token has caught its label-stats and graph-index watermarks; otherwise
+// the router returns a retryable projection-lag error without serving stale state.
+// - [`ReadMode::Canonical`] requests owner-served truth for every shape. It is **not yet
+// implemented** (Phase 3 deferred); the router rejects it so callers do not silently
+// receive `Eventual` semantics under a stronger label.
+type ReadMode = variant {
+  // Non-blocking; may observe documented projection lag.
+  Eventual;
+  // Owner-served truth for every shape (deferred; rejected by the router for now).
+  Canonical;
+  // Block (retryable) until every shard reaches the token's watermarks.
+  AtLeast : MutationToken;
+};
+// Admin: register a derived vector index for a logical graph (ADR 0031 Slice 3). The embedding is
+// identified **by name** (the Router interns it to a stable `EmbeddingNameId`), never by a raw id.
+type RegisterVectorIndexArgs = record {
+  // Optional metric; defaults to `L2Squared` if omitted for wire stability.
+  metric : opt VectorMetric;
+  dims : nat16;
+  embedding_name : text;
+  // Optional single dispatch target; rejected if anonymous. Slice 3 stores it as inspect-only
+  // metadata and never pushes it to graph shards or enables dispatch.
+  target : opt principal;
+  index_id : nat32;
+  logical_graph_name : text;
+  if_not_exists : bool;
+};
+type Result = variant { Ok; Err : RouterError };
+type Result_1 = variant { Ok : bool; Err : RouterError };
+type Result_10 = variant {
+  Ok : vec EdgeBackfillShardStatus;
+  Err : RouterError;
+};
+type Result_11 = variant {
+  Ok : vec LabelBackfillShardStatus;
+  Err : RouterError;
+};
+type Result_12 = variant {
+  Ok : VectorMaintenanceRecommendation;
+  Err : RouterError;
+};
+type Result_13 = variant {
+  Ok : AdminSweepMutationKeysStepResult;
+  Err : RouterError;
+};
+type Result_14 = variant { Ok : VectorCentroidCacheStatus; Err : RouterError };
+type Result_15 = variant {
+  Ok : AdminVectorIndexBackfillStepResult;
+  Err : RouterError;
+};
+type Result_16 = variant { Ok : VectorMaintenanceState; Err : RouterError };
+type Result_17 = variant {
+  Ok : VectorMaintenanceStepOutcome;
+  Err : RouterError;
+};
+type Result_18 = variant {
+  Ok : VectorPartitionHealthSummary;
+  Err : RouterError;
+};
+type Result_19 = variant { Ok : VectorPartitionHealthStep; Err : RouterError };
+type Result_2 = variant { Ok : AdminEdgeBackfillStepResult; Err : RouterError };
+type Result_20 = variant { Ok : VectorRebuildStatus; Err : RouterError };
+type Result_21 = variant { Ok : VectorSlabStats; Err : RouterError };
+type Result_22 = variant { Ok : VectorSlabStatsStep; Err : RouterError };
+type Result_23 = variant { Ok : nat64; Err : RouterError };
+type Result_24 = variant { Ok : GqlQueryResult; Err : RouterError };
+type Result_25 = variant {
+  Ok : GqlExecuteIdempotentBatchResult;
+  Err : RouterError;
+};
+type Result_26 = variant { Ok : blob; Err : RouterError };
+type Result_27 = variant { Ok : IndexedPropertyCatalog; Err : RouterError };
+type Result_28 = variant { Ok : vec ShardRegistryEntry; Err : RouterError };
+type Result_29 = variant { Ok : vec VectorIndexInfo; Err : RouterError };
+type Result_3 = variant {
+  Ok : VertexEmbeddingIngestionResult;
+  Err : RouterError;
+};
+type Result_30 = variant {
+  Ok : vec VectorMaintenancePolicyView;
+  Err : RouterError;
+};
+type Result_31 = variant { Ok : nat32; Err : RouterError };
+type Result_32 = variant { Ok : MutationStatus; Err : RouterError };
+type Result_33 = variant { Ok : text; Err : RouterError };
+type Result_34 = variant { Ok : ProvisionGraphResponse; Err : RouterError };
+type Result_35 = variant { Ok : GraphRegistryEntry; Err : RouterError };
+type Result_36 = variant { Ok : ShardRegistryEntry; Err : RouterError };
+type Result_37 = variant { Ok : principal; Err : RouterError };
+type Result_38 = variant { Ok : RouterAckResponse; Err : RouterError };
+type Result_39 = variant {
+  Ok : VectorIndexActivationStatus;
+  Err : RouterError;
+};
+type Result_4 = variant { Ok : VertexEmbeddingIngestionResult; Err : text };
+type Result_40 = variant {
+  Ok : opt VectorMaintenancePolicyView;
+  Err : RouterError;
+};
+type Result_41 = variant {
+  Ok : VectorMaintenanceStatusView;
+  Err : RouterError;
+};
+type Result_42 = variant { Ok : VectorSearchResult; Err : RouterError };
+type Result_5 = variant { Ok : vec Result_4; Err : RouterError };
+type Result_6 = variant { Ok : nat16; Err : RouterError };
+type Result_7 = variant { Ok : nat32; Err : RouterError };
+type Result_8 = variant {
+  Ok : AdminLabelBackfillStepResult;
+  Err : RouterError;
+};
+type Result_9 = variant {
+  Ok : AdminLabelStatsProjectionStepResult;
+  Err : RouterError;
+};
+// Response returned by the Router canister `router_ack` callback.
+// 
+// A successful response denotes that the Router catalog is durably in `Completed` for this
+// request and version. The ack cannot be lost: subsequent `router_ack` calls with the same
+// `(request_id, deployment_id, accepted_registry_version)` return the same response, while
+// a different version returns `AckConflict { stored }`.
+// 
+// `completed` is implied `true` on the Router side: the callback only succeeds after the
+// Router has durably committed the ack version. The Provision canister receives this value
+// back and uses `accepted_registry_version` as the authoritative registry watermark.
+// 
+// Protocol invariant: registry versions start at 1; version 0 is reserved as "unset" and
+// must not appear in ack payloads. The Router rejects any ack with
+// `accepted_registry_version == 0` as `InvalidState`.
+type RouterAckResponse = record { accepted_registry_version : nat64 };
+type RouterError = variant {
+  Internal : text;
+  ShardNotRegistered;
+  // The Provision canister sent an ack with a registry version that differs from the
+  // version already committed by a previous `Completed` Router record. **Not retryable as
+  // written**: investigate the version mismatch before re-issuing.
+  AckConflict : record { stored : nat64 };
+  // A federated update bundle contained more than one top-level DML statement. Federated
+  // multi-DML bundles have no defined cross-shard partial-application contract yet
+  // (ADR 0029 Phase 5), so the bundle is rejected before any shard dispatch — no canonical
+  // or projection state changed. This is **not** retryable as written: split the bundle into
+  // single-statement mutations, or target a single-shard graph. Resubmitting the same bundle
+  // is rejected identically.
+  UnsupportedMultiDmlBundle : record {
+    dml_statements : nat32;
+    shard_count : nat32;
+  };
+  // Production vector-index dispatch (and backfill) is blocked because the delete-spanning
+  // incarnation/epoch fence required by ADR 0031 Slice 3 is not yet in place. The definition is
+  // stored and inspectable, but the Router never emits a non-empty embedding catalog or executes
+  // backfill while blocked. **Not retryable** until the fencing slice activates dispatch.
+  VectorDispatchActivationBlocked : VectorActivationBlockReason;
+  // The requested deployment is not bound in the Provision canister.
+  UnknownDeployment : text;
+  NotFound : text;
+  // Candid encoding/decoding failed for a Router -> Provision call.
+  ProvisionEncodingFailed : text;
+  // A Router -> Provision cross-canister call failed at the IC transport layer.
+  ProvisionCallFailed : text;
+  GraphUnavailable;
+  NotAuthorized;
+  // The Provision canister rejected the envelope with a structured ingress error.
+  ProvisionRejected : text;
+  // GQL program kind (read vs write) does not match the canister entrypoint (query vs update).
+  ExecutionPathMismatch : record {
+    remedy : text;
+    entrypoint : text;
+    program_kind : text;
+    call_kind : text;
+  };
+  // A uniqueness value is claimed by an in-flight or reclaiming mutation (ADR 0030).
+  // **Retryable**: retry after the holding saga resolves (it then either frees the value or this
+  // retry gets `UniquenessViolation`).
+  UniquenessReservationInFlight : text;
+  InvalidArgument : text;
+  GraphContextMismatch : record { resolved_graph : text; api_graph : text };
+  // A recognized operation whose implementation is intentionally inactive (e.g. a feature
+  // landed in slices and not yet end-to-end). Distinct from `InvalidArgument`: the request is
+  // well-formed, but the capability is not yet published. Not retryable.
+  NotImplemented : text;
+  IdExhausted : text;
+  Forbidden;
+  ShardAlreadyRegistered;
+  // A `ReadMode::AtLeast(token)` read could not be served because a shard projection
+  // has not yet reached the token's watermark (ADR 0029 §5, Phase 3). This is
+  // **retryable**: the caller should retry after the projection drains. No stale state
+  // is served.
+  ProjectionLag : record {
+    shard_id : nat32;
+    required : nat64;
+    current : nat64;
+    watermark : text;
+  };
+  // A provisioning request is in a state that does not allow the requested operation.
+  // Distinct from `InvalidArgument`: the request is well-formed but the target record is not
+  // in the expected lifecycle phase.
+  InvalidState : text;
+  // The Provision canister rejected the envelope because of a conflict.
+  ProvisionConflict : text;
+  // A uniqueness constraint would be violated (ADR 0030). **Not retryable**: the value is already
+  // committed, or the same mutation claims one value twice. Resubmitting is rejected identically.
+  UniquenessViolation : text;
+  Conflict : text;
+};
+type RouterInitArgs = record {
+  // Additional principals seeded as [`gleaph_auth::Role::Admin`] at init.
+  initial_admins : vec principal;
+  // Installer principal; receives [`gleaph_auth::Role::Admin`] in stable auth.
+  issuing_principal : principal;
+  // Optional provision-canister principal for ADR 0035 Slice 5.
+  provision_canister : opt principal;
+};
+type RouterProvisionAck = record {
+  request_id : text;
+  accepted_registry_version : nat64;
+  deployment_id : text;
+};
+// Public exact vector-search request (ADR 0031 Slice 5). The Router resolves the
+// `logical_graph_name` and `index_id` to the single activated target and forwards an exact
+// `ivf_flat` scan. The `F32` encoding and metric are supplied from the stored definition.
+type RouterVectorSearchRequest = record {
+  top_k : nat32;
+  dims : nat16;
+  // `dims * 4` bytes of little-endian `f32` query components.
+  "query" : blob;
+  index_id : nat32;
+  logical_graph_name : text;
+};
+// Admin: set (or replace) the single dispatch target of an existing vector index (ADR 0031 Slice 3).
+type SetVectorIndexTargetArgs = record {
+  target : principal;
+  index_id : nat32;
+  logical_graph_name : text;
+};
+// Admin: create or replace a vector maintenance policy (ADR 0031 Slice 10). Router-owned SSOT for
+// maintenance thresholds + per-step budgets; validated and stored only when the vector-index
+// definition exists. Default state is absent (the push scheduler is a no-op until set + enabled).
+type SetVectorMaintenancePolicyArgs = record {
+  target_nlist : opt nat32;
+  rebuild_max_subjects : nat32;
+  enabled : bool;
+  sample_limit : nat32;
+  cleanup_max_work : nat32;
+  scan_max_pages : nat32;
+  index_id : nat32;
+  logical_graph_name : text;
+  policy : VectorMaintenancePolicy;
+};
+// Shard registration record returned by the router (`resolve_shard`).
+type ShardRegistryEntry = record {
+  graph_id : nat32;
+  registered_at_ns : nat64;
+  // `true` once the vector attach handshake has set the shard's **local** `FederationRouting`
+  // target *and* attached the shard to the vector canister (ADR 0031 Slice 4). Mirrors
+  // `index_attached`; a faithful proxy for graph-local vector readiness. Decodes as `false` for
+  // pre-Slice-4 (V1) records.
+  vector_index_attached : bool;
+  shard_id : nat32;
+  index_canister : principal;
+  graph_canister : principal;
+  // Derived vector-index canister wired to this shard (ADR 0031 Slice 4). `None` until the
+  // vector attach handshake sets the graph shard's local routing. The Router owns target
+  // selection (one target per graph). Decodes as `None` for pre-Slice-4 (V1) records.
+  vector_index_canister : opt principal;
+  // `false` while router awaits index `admin_attach_shard_canister`; excluded from dispatch/index fan-out.
+  index_attached : bool;
+};
+// Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3/4).
+type VectorActivationBlockReason = variant {
+  // The global vector-dispatch activation flag is off (ADR 0031 Slice 4). An operator must flip
+  // it via the RBAC-gated admin endpoint. Reversible.
+  DispatchNotActivated;
+  // The global flag is on, but not every live shard of the graph has been vector-attached yet
+  // (ADR 0031 Slice 4): a shard is missing its local `vector_index_canister` routing or its
+  // durable `vector_index_attached` bit.
+  ShardsNotVectorAttached;
+  // No delete-spanning monotonic incarnation/epoch fence exists yet, so the canonical-wins
+  // repair reconcile can still lose to a "reverse-orphan" re-insert race. Dispatch stays off.
+  // 
+  // Retained for wire stability; superseded in Slice 4, where the fence is implemented
+  // (graph-owned `embedding_incarnation`) and dispatch is gated by the two reasons below.
+  MissingEmbeddingIncarnationFence;
+};
+// Bounded status of the heap centroid cache (ADR 0031 Slice 9).
+// 
+// Per-query hit/miss counts are intentionally **not** reported: `vector_search` is a `#[query]` and
+// IC query execution is non-committing, so a query cannot truthfully maintain cache counters. Only
+// the durable heap facts maintained by the update warmup/clear paths are reported.
+type VectorCentroidCacheStatus = record {
+  // Number of cached centroid sets (one per warmed `(index_id, version, nlist, epoch)`).
+  entries : nat64;
+  // Configured byte cap of the cache.
+  max_bytes : nat64;
+  // Total heap bytes the cached centroid sets occupy.
+  bytes : nat64;
+};
+// Wire view of a derived vector-index activation state (ADR 0031 Slice 3). Mirrors the internal
+// `VectorIndexActivationState`; `DispatchEnabled` is unreachable in Slice 3 (fail-closed gate).
+type VectorIndexActivationStateView = variant {
+  DispatchBlocked;
+  DispatchEnabled;
+  Registered;
+};
+// Activation status + fail-closed explanation for one vector-index definition (ADR 0031 Slice 3).
+type VectorIndexActivationStatus = record {
+  // `Some(reason)` while production dispatch/backfill is fail-closed; `None` otherwise.
+  blocked_reason : opt text;
+  index_id : nat32;
+  activation_state : VectorIndexActivationStateView;
+};
+// Vector-index canister mutation/sync/admin/search failure.
+// 
+// Single error type for the canister: mutation endpoints return it over the wire; admin endpoints
+// map it to a `String` at the canister boundary (mirroring `graph-index`).
+type VectorIndexError = variant {
+  // The query vector is non-finite or has zero norm where the metric requires a finite,
+  // non-zero vector.
+  InvalidQueryVector;
+  // The configured router principal is the anonymous principal.
+  AnonymousRouter;
+  // A caller-supplied `admin_vector_slab_stats_step` cursor is malformed (wrong byte length).
+  InvalidStatsCursor;
+  // Invalid rebuild parameters (`nlist` / `sample_limit` out of range, wrong encoding/metric).
+  InvalidRebuildParams;
+  // A rebuild is already in flight for the index (ADR 0031 Slice 7); abort it first.
+  RebuildAlreadyActive;
+  // Publish requested but completeness invariants are not satisfied (e.g. centroids missing).
+  RebuildIncomplete;
+  // Publish requested while the rebuild is not yet `ReadyToPublish`.
+  RebuildNotReadyToPublish;
+  // The op's `remove` flag disagrees with the invoked mutation endpoint (e.g. `vector_upsert`
+  // received `remove = true`).
+  MutationKindMismatch;
+  // Internal allocator exhausted (`u64` overflow); not reachable in practice.
+  AllocatorOverflow;
+  // The metric is not supported for the selected physical read path in this slice
+  // (e.g. `Cosine` with `nlist > 1` partition-page scan).
+  MetricNotSupportedForPartitionScan;
+  // The supplied candidate allowlist is malformed, contains a non-vertex subject, contains
+  // duplicates, or exceeds [`MAX_VECTOR_SEARCH_FILTER_CANDIDATES`] (ADR 0034 Slice 6).
+  InvalidSearchCandidates;
+  // `bytes.len()` does not equal `dims * stride` for an upsert.
+  ByteWidthMismatch;
+  // `encoding`/`dims` on an upsert disagree with the index definition.
+  DimensionMismatch;
+  // No rebuild is in flight for the index (step/status/publish/abort with nothing to do).
+  NoActiveRebuild;
+  // `subject.shard_id` does not match the caller's attached shard.
+  ShardMismatch;
+  // `top_k` on a vector search is `0` or exceeds [`MAX_VECTOR_SEARCH_TOP_K`].
+  InvalidSearchTopK;
+  // Caller is not the authorized router (admin endpoints).
+  Unauthorized;
+  // Caller-attested maintenance health is stale: its `index_id`/`index_version`/`nlist` do not
+  // match the index's current active generation (ADR 0031 Slice 9 rebuild trigger).
+  StaleMaintenanceHealth;
+  // A shard-canister principal supplied to attach is anonymous/invalid.
+  InvalidPrincipalInRegistry;
+  // `shard_id` or principal is already attached to a different counterpart.
+  ShardCanisterAlreadyAttached;
+  // Stable memory `grow` failed while reserving a slab page for a row append (ADR 0032).
+  StableGrowFailed;
+  // No index definition for `index_id`.
+  UnknownIndex;
+  // `shard_id` is outside the attached index group range. Retained for wire compatibility;
+  // vector attach no longer uses property-index group sharding.
+  ShardOutOfRangeForGroup;
+  // Caller is not an attached graph shard for the requested `shard_id`.
+  ShardNotAttached;
+  // A maintenance policy is invalid (e.g. a `recommended_*_bps` exceeds its `required_*_bps`).
+  InvalidMaintenancePolicy;
+  // An index definition whose `slots_per_page` would be `< 1`.
+  InvalidPageCapacity;
+  // The vector canister is already bound to a different graph (a vector target owns the whole
+  // graph, so attaching a shard of another graph is rejected).
+  GraphOwnershipMismatch;
+  // Invalid index group configuration (e.g. zero group size). Retained for wire compatibility;
+  // vector attach no longer uses property-index group sharding.
+  InvalidIndexGroupConfig;
+  // Caller is not the attached canister for `shard_id`.
+  WrongShardCanister;
+  // A sync op's metric disagrees with the stored lazy `VectorIndexDef.metric`.
+  MetricMismatch;
+  // A same-`embedding_version` upsert arrived with a different payload on a live subject.
+  EmbeddingVersionConflict;
+};
+// Wire view of a stored vector-index definition (ADR 0031 Slice 3). Algorithm-neutral: physical
+// search knobs (centroids, nlist, page geometry) are deliberately not exposed.
+type VectorIndexInfo = record {
+  metric : VectorMetric;
+  dims : nat16;
+  embedding_name_id : nat16;
+  target : opt principal;
+  index_id : nat32;
+  activation_state : VectorIndexActivationStateView;
+};
+// Bounded failure detail persisted in [`VectorMaintenanceState::Failed`] (ADR 0031 Slice 10).
+// 
+// `message` is truncated by the canister so the persisted maintenance-state size never depends on a
+// downstream error string (mirrors the Slice 7/8 rebuild-state byte-cap discipline).
+type VectorMaintenanceFailure = record {
+  // The canister error that aborted the maintenance step.
+  code : VectorIndexError;
+  // Human-readable detail, truncated to a bounded length.
+  message : text;
+};
+// Caller-supplied thresholds for [`recommend_partition_maintenance`]-style maintenance decisions
+// (ADR 0031 Slice 9). Not persisted in Slice 9.
+// 
+// Two thresholds per signal so the three-state [`VectorMaintenanceRecommendation`] is well defined:
+// crossing `required_*` is `RebuildRequired`, crossing only `recommended_*` is `RebuildRecommended`.
+// Both ratios are basis points (1 bp = 1/10000). The recommendation function rejects a policy where
+// `recommended_*_bps > required_*_bps`.
+type VectorMaintenancePolicy = record {
+  // Minimum `total_rows` before either signal is judged (too small to judge below this).
+  min_total_rows : nat64;
+  // Minimum `tombstoned_rows` before the tombstone signal is judged (skew is not gated by this).
+  min_tombstoned_rows : nat64;
+  // Tombstone ratio (bps) at/above which a rebuild is required.
+  required_tombstone_ratio_bps : nat32;
+  // Skew ratio (bps) at/above which a rebuild is required.
+  required_skew_ratio_bps : nat32;
+  // Skew ratio (`max_partition_live_rows / avg_live_rows`, bps) at/above which a rebuild is
+  // recommended.
+  recommended_skew_ratio_bps : nat32;
+  // Tombstone ratio (`tombstoned_rows / total_rows`, bps) at/above which a rebuild is recommended.
+  recommended_tombstone_ratio_bps : nat32;
+};
+// Operator-facing view of a stored vector maintenance policy (ADR 0031 Slice 10).
+type VectorMaintenancePolicyView = record {
+  graph_id : nat32;
+  target_nlist : opt nat32;
+  rebuild_max_subjects : nat32;
+  enabled : bool;
+  sample_limit : nat32;
+  cleanup_max_work : nat32;
+  scan_max_pages : nat32;
+  index_id : nat32;
+  policy : VectorMaintenancePolicy;
+};
+// Deterministic maintenance recommendation from merged partition health (ADR 0031 Slice 9).
+type VectorMaintenanceRecommendation = variant {
+  // At least one signal crossed its `recommended` threshold (but none its `required`).
+  RebuildRecommended;
+  // At least one signal crossed its `required` threshold.
+  RebuildRequired;
+  // No maintenance needed (or too little data to judge).
+  Healthy;
+};
+// Vector-canister-owned maintenance execution state for one index (ADR 0031 Slice 10).
+// 
+// Only the **scan** phase is tracked here; once a rebuild starts, `VECTOR_REBUILD_STATE` is the
+// source of truth for the rebuild/cleanup phases and this returns to `Idle`. Persisted in
+// `VECTOR_MAINTENANCE_STATE` and **survives upgrade** (it holds mid-orchestration scan progress); it
+// is cleared only on canister init/reset, never on upgrade (unlike the heap centroid cache).
+// 
+// `exhausted` is an explicit phase flag, **not** encoded via `cursor == None`: `cursor = None,
+// exhausted = false` means "(re)start the scan from the lower bound", while `exhausted = true` means
+// "scan complete; recommend only after generation validation". `merged` carries the scoped
+// `index_id`/`index_version` the scan accumulated against, so an active-version flip after exhaustion
+// is detectable before recommending.
+type VectorMaintenanceState = variant {
+  // A bounded page-health scan is accumulating tombstone counters for the active version.
+  Scanning : record {
+    // Additive page-health accumulated so far, scoped by its `index_id`/`index_version`.
+    merged : VectorPartitionPageHealth;
+    // Opaque resume cursor (`PageKey` bytes); `None` restarts the scan from the lower bound.
+    cursor : opt blob;
+    // `true` once the scan has covered every page of the scoped version.
+    exhausted : bool;
+  };
+  // A prior step failed; the step is a no-op until an explicit `admin_vector_maintenance_reset`.
+  Failed : VectorMaintenanceFailure;
+  // No maintenance in progress.
+  Idle;
+};
+// Cursor-redacted projection of the vector canister's [`VectorMaintenanceState`] for the Router
+// aggregate status (ADR 0031 Slice 10). The opaque resume cursor bytes are collapsed to a
+// `cursor_present` flag so the Router status surface honours the "present/absent, not decoded"
+// contract and never leaks internal stable `PageKey` bytes.
+type VectorMaintenanceStateView = variant {
+  // A bounded page-health scan is accumulating counters; the resume cursor is reported as
+  // present/absent only.
+  Scanning : record {
+    // Additive page-health accumulated so far, scoped by its `index_id`/`index_version`.
+    merged : VectorPartitionPageHealth;
+    // Whether a resume cursor is set (`true`) or the scan would (re)start from the lower bound.
+    cursor_present : bool;
+    // `true` once the scan has covered every page of the scoped version.
+    exhausted : bool;
+  };
+  // A prior step failed; recovery requires an explicit `admin_vector_maintenance_reset`.
+  Failed : VectorMaintenanceFailure;
+  // No maintenance in progress.
+  Idle;
+};
+// Aggregated maintenance status for one vector index (ADR 0031 Slice 10): Router-owned policy +
+// readiness, plus the forwarded vector-canister execution and rebuild state when reachable. Cursors
+// inside `maintenance_state` are reported present/absent, not decoded.
+type VectorMaintenanceStatusView = record {
+  // Forwarded vector-canister maintenance execution state with the resume cursor redacted to a
+  // present/absent flag; `None` if unreachable.
+  maintenance_state : opt VectorMaintenanceStateView;
+  // Resolved single vector target, if set.
+  target : opt principal;
+  // `Some(reason)` while forwarding is fail-closed; `None` once ready.
+  blocked_reason : opt text;
+  index_id : nat32;
+  // Whether a Router policy exists and is enabled.
+  policy_enabled : bool;
+  // Per-graph dispatch readiness (global flag on AND shards vector-attached).
+  dispatch_ready : bool;
+  // Forwarded vector-canister rebuild status; `None` if unreachable.
+  rebuild_status : opt VectorRebuildStatus;
+};
+// Outcome of one Router-push maintenance step (ADR 0031 Slice 10). `Disabled` is a Router-level
+// no-op (absent or disabled policy); otherwise the vector canister's bounded step result is relayed.
+type VectorMaintenanceStepOutcome = variant {
+  // The vector canister advanced one bounded maintenance unit.
+  Stepped : VectorMaintenanceStepResult;
+  // No policy exists or it is disabled; no work was forwarded.
+  Disabled;
+};
+// Outcome of one bounded `admin_vector_maintenance_step` unit (ADR 0031 Slice 10).
+type VectorMaintenanceStepResult = variant {
+  // Advanced (or restarted) the page-health scan; `exhausted` once the scan is complete.
+  Scanning : record {
+    // Whether the scan has now covered every page of the scoped version.
+    exhausted : bool;
+  };
+  // A step failed; recover with `admin_vector_maintenance_reset` (and abort the rebuild if needed).
+  Failed : VectorMaintenanceFailure;
+  // The rebuild reached `ReadyToPublish`; publish is an explicit, separately-forwarded operation.
+  AwaitingPublish : VectorRebuildStatus;
+  // A rebuild was started from the crossed recommendation.
+  RebuildStarted : VectorMaintenanceRecommendation;
+  // Drove one bounded post-publish `Cleaning` (or `Aborting`) teardown step.
+  CleanupAdvanced : VectorRebuildStatus;
+  // The exhausted scan judged the index healthy; maintenance state reset to `Idle`.
+  Healthy;
+  // Drove one bounded rebuild step (`Sampling`/`Training`/`Building`, or a `Failed` rebuild phase).
+  RebuildAdvanced : VectorRebuildStatus;
+};
+// Distance/similarity metric for vector scoring.
+type VectorMetric = variant {
+  // Squared Euclidean distance (no square root); smaller is nearer.
+  L2Squared;
+  // Cosine similarity expressed internally as `1 - similarity`; smaller is nearer.
+  // User-facing score is `1 - raw`; this metric has no natural distance.
+  Cosine;
+};
+// One bounded page-meta health scan step for `admin_vector_partition_health_step` (ADR 0031
+// Slice 9). IC-safe incremental scan scoped to one `(index_id, active index version)`, mirroring
+// [`VectorSlabStatsStep`].
+// 
+// **Merge contract.** `partial`'s counters (`page_count`/`total_rows`/`physical_live_rows`/
+// `tombstoned_rows`) are *additive* across steps; `index_id`/`index_version` are repeated (take any
+// step's value). Callers repeat until `exhausted` and sum the counters.
+// 
+// `cursor` is opaque `PageKey` bytes scoped to this `(index_id, index_version)`; pass it back
+// verbatim. It is `None` exactly when `exhausted`.
+// 
+// **No snapshot isolation.** This is a bounded best-effort scan, not a point-in-time snapshot:
+// concurrent `VECTOR_PAGE_META` writes between steps are not isolated (a page inserted before the
+// cursor is missed, a counted-then-deleted page lingers in the merge). Run during a quiescent window
+// for an exact figure; the diagnostic counters tolerate small cross-call drift otherwise.
+type VectorPartitionHealthStep = record {
+  // Opaque resume cursor (`PageKey` bytes); `None` exactly when `exhausted`.
+  cursor : opt blob;
+  // `true` once every page of the scoped `(index_id, index_version)` has been scanned.
+  exhausted : bool;
+  // This step's additive contribution (see the merge contract above).
+  partial : VectorPartitionPageHealth;
+};
+// Bounded, head-only partition-health summary for an `ivf_flat` index (ADR 0031 Slice 8).
+// 
+// O(`nlist`) over the active version's `PartitionHead` rows (no page scan, bounded by `MAX_NLIST`).
+// Reports integer-only raw counts; callers derive `avg_live_rows = live_rows / nlist` and the skew
+// ratio `max_partition_live_rows / avg_live_rows` themselves. This summary stays intentionally
+// head-only: tombstone accounting (`tombstoned_rows`/`total_rows`/tombstone ratio) requires a page
+// scan and is provided separately by the Slice 9 page-meta health type
+// ([`VectorPartitionPageHealth`], accumulated via [`VectorPartitionHealthStep`]).
+type VectorPartitionHealthSummary = record {
+  // Partitions with a materialized `PartitionHead` (an empty partition materializes no head).
+  partitions_examined : nat32;
+  // Configured partition count of the active index version.
+  nlist : nat32;
+  // Largest single-partition `live_len` (skew numerator).
+  max_partition_live_rows : nat64;
+  // Sum of `page_count` across examined partitions.
+  page_count : nat64;
+  // Sum of `live_len` across examined partitions.
+  live_rows : nat64;
+};
+// Bounded page-meta tombstone accounting for one `(index_id, active index version)` (ADR 0031
+// Slice 9).
+// 
+// Derived from the `VECTOR_PAGE_META` directory only (no row-byte read, no `VECTOR_SUBJECT_TO_ID`
+// read), it complements the head-only [`VectorPartitionHealthSummary`] (which owns the skew
+// signal) with the tombstone signal the head cannot see. Integer-only; callers derive the tombstone
+// ratio as `tombstoned_rows / total_rows`.
+// 
+// `physical_live_rows` is `VectorPageMeta.live_count` (physical non-tombstone rows); it is **not**
+// subject-freshness and can exceed the searchable count because the search freshness check skips
+// stale/meta-drift rows (mirrors [`VectorSlabScopeStats::physical_live_row_count`]).
+type VectorPartitionPageHealth = record {
+  // Tombstoned rows summed over those pages.
+  tombstoned_rows : nat64;
+  // Physical rows (live + tombstoned) summed over those pages.
+  total_rows : nat64;
+  // The active index version the scan was scoped to.
+  index_version : nat64;
+  // Page-meta entries observed for `(index_id, index_version)`.
+  page_count : nat64;
+  // Physical non-tombstone rows (`VectorPageMeta.live_count`); not subject-freshness.
+  physical_live_rows : nat64;
+  // Owning index.
+  index_id : nat32;
+};
+// Phase tag of a per-index rebuild lifecycle (ADR 0031 Slice 7). Mirrors the durable
+// `VectorRebuildStateRecord` but carries no cursors or per-subject collections — only a bounded
+// scalar snapshot for the admin status query.
+type VectorRebuildPhase = variant {
+  Cleaning;
+  Failed;
+  Building;
+  Idle;
+  ReadyToPublish;
+  Sampling;
+  Aborting;
+  // Deterministic k-means-lite centroid refinement over the bounded candidate pool (ADR 0031
+  // Slice 8), between `Sampling` and `Building`.
+  Training;
+};
+// Bounded scalar snapshot of a rebuild's progress (ADR 0031 Slice 7).
+// 
+// The response is O(1): it never carries candidate centroid bytes or any per-subject collection,
+// so a status query stays within a fixed reply budget regardless of index size.
+type VectorRebuildStatus = record {
+  // The shadow (target) index version being built, or `0` when `Idle`.
+  target_index_version : nat64;
+  // Completed k-means-lite iterations during `Training` (`0` in other phases, ADR 0031 Slice 8).
+  training_iteration : nat32;
+  // Distinct centroid candidates collected so far during `Sampling`/`Training` (`0` in other
+  // phases).
+  candidates_collected : nat32;
+  // The target `nlist` of the rebuild (`Sampling`/`Building`/`ReadyToPublish`/`Aborting`), the
+  // old `nlist` during `Cleaning`, or `0` when `Idle`/`Failed`.
+  nlist : nat32;
+  // Subjects shadowed so far during `Building` (`0` in other phases).
+  subjects_processed : nat64;
+  phase : VectorRebuildPhase;
+};
+// One scored search result. `distance` is the metric-specific internal raw value (smaller is
+// nearer), not necessarily a public distance. For `L2Squared` it is the squared Euclidean distance;
+// for `Cosine` it is `1 - cosine_similarity`. The Router converts this raw value to the
+// user-facing scalar requested by `SCORE AS` or `DISTANCE AS`. `embedding_incarnation` /
+// `embedding_version` are the live subject clock so a caller can reason about freshness
+// (ADR 0031 Slice 4).
+type VectorSearchHit = record {
+  subject : VectorSubject;
+  embedding_version : nat64;
+  distance : float32;
+  embedding_incarnation : nat64;
+};
+// Top-k search result, ordered by `(distance ascending, subject ascending)` as a deterministic
+// tie-breaker.
+type VectorSearchResult = record { hits : vec VectorSearchHit };
+// Whole-slab physical facts for [`VectorSlabStats`]. Always global: the `VECTOR_ROW_SLAB` region is
+// one allocation domain shared by all indexes and versions, so these fields are identical
+// regardless of any `index_id` filter.
+type VectorSlabGlobalStats = record {
+  // Approximate leaked/dead bytes:
+  // `occupied_tail_bytes - slab_header_len - referenced_page_bytes_global`, saturating at zero.
+  // Conservative; grows as cleanup deletes page meta without rewinding the slab tail.
+  // 
+  // **Meaningful only in a whole-slab result** (the unbounded `admin_vector_slab_stats`, or a
+  // client-merged set of [`VectorSlabStatsStep`]s). It is always `0` inside a per-step
+  // [`VectorSlabStatsStep::partial`], because a single bounded step has not yet observed every
+  // referenced page; the caller recomputes the estimate after merging all steps.
+  estimated_unreferenced_bytes : nat64;
+  // Total bytes backing the raw slab region (`Memory::size() * wasm_page_size`).
+  slab_size_bytes : nat64;
+  // Bytes the slab considers allocated (the slab header's `occupied_tail`).
+  occupied_tail_bytes : nat64;
+  // Sum of every referenced page's span across the whole slab (all indexes/versions).
+  referenced_page_bytes_global : nat64;
+};
+// Logical counters aggregated over the queried scope for [`VectorSlabStats`].
+// 
+// When `index_id` is `Some(id)` these cover only `id`; when `None` they aggregate every index.
+type VectorSlabScopeStats = record {
+  // Physical non-tombstone rows (`VectorPageMeta.live_count`) within the scope. **Not**
+  // subject-freshness: ADR 0032 lets the search freshness check skip stale/meta-drift rows, so
+  // this can exceed the number of searchable rows.
+  physical_live_row_count : nat64;
+  // Sum of referenced page spans within the scope.
+  referenced_page_bytes : nat64;
+  // Physical rows (live + tombstoned) within the scope.
+  row_count : nat64;
+  // Tombstoned rows within the scope.
+  tombstone_row_count : nat64;
+  // Page-meta entries within the scope.
+  page_count : nat64;
+  // The queried index filter (`None` = all indexes).
+  index_id : opt nat32;
+};
+// Derived, admin-only slab-space observability for the ADR 0032 vector slab page store.
+// 
+// **Maintenance observation, not search truth.** Computed purely from `VECTOR_PAGE_META` plus the
+// slab header; it never reads row bytes or `VECTOR_SUBJECT_TO_ID`, and never feeds search,
+// mutation, rebuild, or freshness decisions. Dead-space figures are approximate and intentionally
+// conservative.
+// 
+// `slab` holds whole-slab physical facts that are always global (the `VECTOR_ROW_SLAB` region is a
+// single allocation domain shared by every index/version), even when a query scopes the logical
+// counters to one `index_id`. `scope` and `versions` carry the logical counters for the queried
+// scope.
+type VectorSlabStats = record {
+  // Whole-slab physical facts (always global, never scoped by `index_id`).
+  slab : VectorSlabGlobalStats;
+  // Logical counters for the queried scope (one `index_id`, or all indexes).
+  scope : VectorSlabScopeStats;
+  // Per-`(index_id, index_version)` breakdown for the queried scope.
+  versions : vec VectorSlabVersionStats;
+};
+// One bounded page-meta scan step for the cursor/budgeted `admin_vector_slab_stats_step` query.
+// 
+// IC-safe incremental variant of [`VectorSlabStats`]: each call scans at most a budgeted number of
+// `VECTOR_PAGE_META` entries, then returns a `cursor` to resume from. Callers repeat until
+// `exhausted` is `true` and merge the partials client-side.
+// 
+// **Merge contract.** `partial` is *additive* across steps, with these exceptions:
+// - `partial.slab.slab_size_bytes` and `partial.slab.occupied_tail_bytes` are repeated physical
+// snapshots, not sums; take any step's value (the last is freshest).
+// - `partial.slab.estimated_unreferenced_bytes` is always `0` per step. The final dead-space
+// estimate is computed once after merging:
+// `occupied_tail_bytes - slab_header_len - sum(partial.slab.referenced_page_bytes_global)`,
+// saturating at zero.
+// - `partial.slab.referenced_page_bytes_global`, `partial.scope`, and `partial.versions` are summed
+// (versions by `(index_id, index_version)` key).
+// 
+// `partial.slab.referenced_page_bytes_global` accumulates the span of *every* page observed in the
+// step, even pages outside a `Some(index_id)` filter, because `VECTOR_ROW_SLAB` is one global
+// allocation domain. `partial.scope`/`partial.versions` only count pages within the scope.
+// 
+// `cursor` is opaque `PageKey` bytes; pass it back verbatim. It is `None` exactly when `exhausted`.
+// 
+// **No snapshot isolation.** This is a bounded *best-effort* scan, not a point-in-time snapshot. The
+// cursor is only a `PageKey`, so concurrent `VECTOR_PAGE_META` writes between steps are not isolated:
+// a page inserted *before* the cursor is missed, a page already counted then deleted still lingers in
+// the merged total, and the last step's `occupied_tail_bytes` may pair with referenced bytes
+// gathered from earlier states. For an exact whole-slab figure, either run the steps during a
+// quiescent (no-write) window or use the unbounded single-call `admin_vector_slab_stats`. Since these
+// are diagnostic-only counters, small cross-call drift is acceptable.
+type VectorSlabStatsStep = record {
+  // Opaque resume cursor (`PageKey` bytes); `None` exactly when `exhausted`.
+  cursor : opt blob;
+  // `true` once the whole page-meta map has been scanned.
+  exhausted : bool;
+  // This step's additive contribution (see the merge contract above).
+  partial : VectorSlabStats;
+};
+// Per-`(index_id, index_version)` slab counters for [`VectorSlabStats::versions`].
+type VectorSlabVersionStats = record {
+  // Physical non-tombstone rows for this version (see [`VectorSlabScopeStats::physical_live_row_count`]).
+  physical_live_row_count : nat64;
+  // Sum of referenced page spans for this version.
+  referenced_page_bytes : nat64;
+  // Physical rows (live + tombstoned) for this version.
+  row_count : nat64;
+  // Tombstoned rows for this version.
+  tombstone_row_count : nat64;
+  // Physical index generation.
+  index_version : nat64;
+  // Page-meta entries for this version.
+  page_count : nat64;
+  // Owning index.
+  index_id : nat32;
+};
+// What a stored vector refers to.
+// 
+// Slice 2 supports only graph vertices. `shard_id` is carried inside the subject so the
+// subject-map key is `(index_id, subject)` with no separate `shard_id` field; the canister
+// validates `shard_id` against the caller's attached shard. `VectorSubject::Edge` is deferred.
+type VectorSubject = variant {
+  // A graph vertex identified by its owning shard and shard-local id.
+  Vertex : record { vertex_id : nat32; shard_id : nat32 };
+};
+// Result of [`VertexEmbeddingIngestionArgs`].
+// 
+// `embedding_version` is the canonical `StoredEmbedding.version` after the write. The
+// `projection_outcome` distinguishes a fully applied derived projection from a durable deferred
+// repair so callers do not blindly retry a canonical write that has already committed.
+type VertexEmbeddingIngestionResult = record {
+  embedding_version : nat64;
+  projection_outcome : VertexEmbeddingProjectionOutcome;
+};
+// Outcome of the derived vector-index projection after a canonical embedding commit.
+type VertexEmbeddingProjectionOutcome = variant {
+  // The derived vector canister was unreachable or not yet attached; the full idempotent batch
+  // was durably journaled for repair and will converge automatically.
+  DeferredForRepair;
+  // The derived vector canister accepted the upsert in this message.
+  Applied;
+};
+service : (RouterInitArgs) -> {
+  // Abort an in-flight rebuild on the activated vector target.
+  admin_abort_vector_rebuild : (text, nat32) -> (Result);
+  // Wire (or retrofit) a derived vector-index target onto an already-registered shard and drive the
+  // attach handshake (ADR 0031 Slice 4; Admin only). Idempotent; one vector-index target per graph.
+  admin_attach_vector_index_shard : (AdminAttachVectorIndexShardArgs) -> (
+      Result,
+    );
+  // Read-only oracle: verify router registry denormalization invariants (`Role::Admin`).
+  admin_check_registry_invariants : () -> (Result) query;
+  // Delete the maintenance policy for one vector index (DDL admin). Returns whether one existed.
+  admin_delete_vector_maintenance_policy : (text, nat32) -> (Result_1);
+  // Disable (but keep) the maintenance policy for one vector index (DDL admin).
+  admin_disable_vector_maintenance_policy : (text, nat32) -> (Result);
+  // Advance edge property posting backfill for one graph shard (`Role::Admin`; call in a loop).
+  admin_edge_backfill_step : (AdminEdgeBackfillStepArgs) -> (Result_2);
+  admin_grant_role : (GrantRoleArgs) -> (Result);
+  // Admin: ingest one finite F32 vertex embedding through Router into the owning Graph shard
+  // (plan 0048). Resolves the opaque graph-scoped vertex id, validates the registered embedding
+  // definition, and dispatches a single canonical write. The result reports the canonical embedding
+  // version and whether the derived vector projection was applied or deferred for repair.
+  admin_ingest_vertex_embedding : (AdminIngestVertexEmbeddingArgs) -> (
+      Result_3,
+    );
+  // Admin (plan 0048 extension): ingest many finite F32 vertex embeddings in one call. Items are
+  // grouped by target graph canister and dispatched in bounded chunks so the social-demo seed pays
+  // one Router→Graph call and one Graph→Vector call.
+  admin_ingest_vertex_embedding_batch : (
+      AdminIngestVertexEmbeddingBatchArgs,
+    ) -> (Result_5);
+  admin_intern_edge_label : (text, text) -> (Result_6);
+  admin_intern_property : (text, text) -> (Result_7);
+  admin_intern_vertex_label : (text, text) -> (Result_6);
+  // Advance label posting backfill for one graph shard (`Role::Admin`; call in a loop).
+  admin_label_backfill_step : (AdminLabelBackfillStepArgs) -> (Result_8);
+  // Advance label stats projection for one graph shard (`Role::Admin`; call in a loop).
+  admin_label_stats_projection_step : (AdminLabelStatsProjectionStepArgs) -> (
+      Result_9,
+    );
+  // List router-stable edge backfill cursors for all shards of a logical graph.
+  admin_list_edge_backfill_status : (text) -> (Result_10) query;
+  // List router-stable backfill cursors for all shards of a logical graph.
+  admin_list_label_backfill_status : (text) -> (Result_11) query;
+  // List router-stable vertex property backfill cursors for all shards of a logical graph.
+  admin_list_vertex_property_backfill_status : (text) -> (Result_11) query;
+  // Publish a `ReadyToPublish` rebuild on the activated vector target.
+  admin_publish_vector_rebuild : (text, nat32) -> (Result);
+  admin_register_graph : (GraphRegistryEntry) -> (Result);
+  admin_register_shard : (AdminRegisterShardArgs) -> (Result);
+  // Register a derived vector index (ADR 0031 Slice 3; `authorize_index_ddl`). Returns whether the
+  // definition was newly created. Production dispatch stays fail-closed until incarnation fencing.
+  admin_register_vector_index : (RegisterVectorIndexArgs) -> (Result_1);
+  // Operator recovery: clear a stuck `in_progress` claim on a shard's backfill
+  // cursor (`Role::Admin`). Use only when no step is in flight for the shard.
+  admin_reset_backfill_claim : (AdminResetBackfillClaimArgs) -> (Result);
+  admin_set_indexed_edge_property : (text, text, text) -> (Result);
+  admin_set_indexed_vertex_property : (text, text, text) -> (Result);
+  // Flip the global vector-dispatch activation flag (ADR 0031 Slice 4; Admin only). `false` keeps
+  // production dispatch/backfill fail-closed across all graphs. Reversible.
+  admin_set_vector_dispatch_activation : (bool) -> (Result);
+  // Set (or replace) the single dispatch target of a vector index (ADR 0031 Slice 3;
+  // `authorize_index_ddl`). Slice 3 stores the target as inspect-only metadata.
+  admin_set_vector_index_target : (SetVectorIndexTargetArgs) -> (Result);
+  // Create or replace the Router-owned maintenance policy for one vector index (DDL admin).
+  admin_set_vector_maintenance_policy : (SetVectorMaintenancePolicyArgs) -> (
+      Result,
+    );
+  // Begin a shadow-version rebuild on the activated vector target.
+  admin_start_vector_rebuild : (text, nat32, nat32, nat32) -> (Result);
+  // Begin a rebuild only if attested partition health crosses the supplied policy, on the activated
+  // vector target.
+  admin_start_vector_rebuild_if_recommended : (
+      text,
+      nat32,
+      VectorPartitionPageHealth,
+      VectorMaintenancePolicy,
+      opt nat32,
+      nat32,
+    ) -> (Result_12);
+  // Evict expired client-mutation idempotency records (`Role::Admin`; call in a loop).
+  admin_sweep_expired_client_mutation_keys : (
+      AdminSweepMutationKeysStepArgs,
+    ) -> (Result_13);
+  admin_unregister_graph : (text) -> (Result);
+  admin_unregister_shard : (text, nat32) -> (Result);
+  admin_update_graph_status : (text, GraphStatus, nat64) -> (Result);
+  // Clear the entire heap centroid cache on the graph's vector target.
+  admin_vector_centroid_cache_clear : (text) -> (Result_14);
+  // Heap centroid cache status, forwarded to the graph's vector target.
+  admin_vector_centroid_cache_status : (text) -> (Result_14) composite_query;
+  // Warm the heap centroid cache on the activated vector target.
+  admin_vector_centroid_cache_warmup : (text, nat32) -> (Result_14);
+  // Request a derived vector-index backfill step (ADR 0031; `authorize_index_ddl`). Fails closed with
+  // `VectorDispatchActivationBlocked` until the global flag is on and the graph's shards are
+  // vector-attached; the bounded production driver itself lands in Slice 5.
+  admin_vector_index_backfill_step : (AdminVectorIndexBackfillStepArgs) -> (
+      Result_15,
+    );
+  // Reset the maintenance execution state to `Idle` (incl. `Failed`) on the activated vector target.
+  // Does not abort an in-flight rebuild (use `admin_abort_vector_rebuild`) or change Router policy.
+  admin_vector_maintenance_reset : (text, nat32) -> (Result);
+  // Vector-canister-owned maintenance execution state, forwarded to the activated vector target.
+  admin_vector_maintenance_status : (text, nat32) -> (
+      Result_16,
+    ) composite_query;
+  // Advance one bounded maintenance unit for an enabled policy; `Disabled` no-op otherwise.
+  admin_vector_maintenance_step : (text, nat32) -> (Result_17);
+  // Head-only O(`nlist`) partition-health summary, forwarded to the activated vector target.
+  admin_vector_partition_health : (text, nat32) -> (Result_18) composite_query;
+  // Bounded page-meta tombstone-health scan step, forwarded to the activated vector target.
+  admin_vector_partition_health_step : (text, nat32, opt blob, nat32) -> (
+      Result_19,
+    ) composite_query;
+  // Drive one bounded cleanup/abort teardown step on the activated vector target.
+  admin_vector_rebuild_cleanup_step : (text, nat32, nat32) -> (Result_20);
+  // O(1) rebuild status, forwarded to the activated vector target.
+  admin_vector_rebuild_status : (text, nat32) -> (Result_20) composite_query;
+  // Drive one bounded rebuild step on the activated vector target.
+  admin_vector_rebuild_step : (text, nat32, nat32) -> (Result_20);
+  // Derived slab-space observability, forwarded to the graph's vector target (`index_id` scopes the
+  // logical counters; the slab physical facts are whole-slab global).
+  admin_vector_slab_stats : (text, opt nat32) -> (Result_21) composite_query;
+  // Cursor/budgeted slab-stats scan step, forwarded to the graph's vector target.
+  admin_vector_slab_stats_step : (text, opt blob, nat32, opt nat32) -> (
+      Result_22,
+    ) composite_query;
+  // Advance vertex property posting backfill for one graph shard (`Role::Admin`; call in a loop).
+  admin_vertex_property_backfill_step : (AdminLabelBackfillStepArgs) -> (
+      Result_8,
+    );
+  // Read-only GQL on the update path only (no composite-query savings; bypasses path check).
+  force_gql_execute : (text, blob) -> (Result_23);
+  force_prepared_execute_update : (text, blob) -> (Result_23);
+  // Update-path GQL entrypoint for non-DML escape hatches; DML requires `gql_execute_idempotent`.
+  gql_execute : (text, blob) -> (Result_23);
+  // Idempotent GQL update. Reuse `client_mutation_key` only for retries of the same mutation.
+  // 
+  // Returns the richer [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) so
+  // clients can read the ADR 0029 federated mutation lifecycle `phase`, distinguishing a
+  // durable canonical commit from full cross-canister projection convergence.
+  gql_execute_idempotent : (text, blob, text) -> (Result_24);
+  // Execute cursor-based idempotent mutations until the Router instruction budget is reached.
+  // 
+  // Each wave reuses the fixed batch coordinator and is independently partial-successful. A
+  // returned `next_index` is the only continuation signal; retrying the same cursor is safe because
+  // every item retains its original client mutation key.
+  gql_execute_idempotent_batch : (GqlExecuteIdempotentBatchArgs) -> (Result_25);
+  // Read-only GQL: composite query (calls index + graph query endpoints).
+  gql_query : (text, blob) -> (Result_24) composite_query;
+  // Read-only GQL with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
+  // 
+  // `Eventual` matches [`gql_query`]; `AtLeast(token)` enforces a retryable read-your-writes
+  // barrier against the token's per-shard watermarks; `Canonical` is deferred and rejected.
+  gql_query_with_consistency : (text, blob, ReadMode) -> (
+      Result_24,
+    ) composite_query;
+  graph_element_id_encoding_key : (text) -> (Result_26) query;
+  indexed_property_catalog : (text) -> (Result_27) query;
+  list_shards_for_graph : (text) -> (Result_28) query;
+  // List the derived vector-index definitions registered for a logical graph (ADR 0031 Slice 3).
+  list_vector_indexes : (text) -> (Result_29) query;
+  // All maintenance policies in a graph.
+  list_vector_maintenance_policies : (text) -> (Result_30) query;
+  lookup_edge_label_id : (text, text) -> (Result_6) query;
+  lookup_graph_id : (text) -> (Result_31) query;
+  lookup_property_id : (text, text) -> (Result_31) query;
+  lookup_vertex_label_id : (text, text) -> (Result_6) query;
+  // ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
+  mutation_status : (text, text) -> (Result_32) query;
+  my_role : () -> (Result_33) query;
+  prepared_drop : (text) -> (Result);
+  prepared_execute_query : (text, blob) -> (Result_24) composite_query;
+  // Prepared read with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
+  prepared_execute_query_with_consistency : (text, blob, ReadMode) -> (
+      Result_24,
+    ) composite_query;
+  prepared_execute_update : (text, blob) -> (Result_23);
+  // Idempotent prepared update. Returns the richer
+  // [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
+  // federated mutation lifecycle `phase`.
+  prepared_execute_update_idempotent : (text, blob, text) -> (Result_24);
+  prepared_register : (text, text) -> (Result);
+  prepared_register_batch : (vec record { text; text }) -> (vec Result);
+  // Admin-only: send a resolved provisioning envelope to the configured Provision canister.
+  provision_graph : (ProvisionGraphArgs) -> (Result_34);
+  resolve_graph : (text) -> (Result_35) query;
+  resolve_shard : (text, nat32) -> (Result_36) query;
+  // Resolve a vector index's single dispatch target principal (ADR 0031 Slice 3, inspect-only).
+  resolve_vector_index_target : (text, nat32) -> (Result_37) query;
+  reverse_edge_label_name : (text, nat16) -> (Result_33) query;
+  reverse_property_name : (text, nat32) -> (Result_33) query;
+  reverse_vertex_label_name : (text, nat16) -> (Result_33) query;
+  // Internal callback: the configured Provision canister acknowledges a completed
+  // provisioning job and asks the Router to commit the terminal catalog state.
+  router_ack : (RouterProvisionAck) -> (Result_38);
+  // Read the global vector-dispatch activation flag (ADR 0031 Slice 4).
+  vector_dispatch_activation_enabled : () -> (bool) query;
+  // Report a vector index's activation state and, while fail-closed, the blocking reason
+  // (ADR 0031 Slice 3).
+  vector_index_activation_status : (text, nat32) -> (Result_39) query;
+  // The maintenance policy for one vector index, if any.
+  vector_maintenance_policy : (text, nat32) -> (Result_40) query;
+  // Router policy/readiness plus forwarded vector-canister maintenance + rebuild state.
+  vector_maintenance_status : (text, nat32) -> (Result_41) composite_query;
+  // Read-only exact `ivf_flat` vector search: composite query that resolves the activated target and
+  // forwards to the router-guarded vector canister (ADR 0031 Slice 5). Fails closed unless the
+  // Slice 4 activation gate is satisfied.
+  vector_search : (RouterVectorSearchRequest) -> (Result_42) composite_query;
+  whoami : () -> (principal) query;
+}
