@@ -11,14 +11,14 @@ use gleaph_pocket_ic_tests::{
     DEST_SHARD, SOURCE_SHARD, admin_intern_edge_label, admin_intern_property,
     create_directed_edge_property_index, create_edge_property_index,
     create_undirected_edge_property_index, create_vertex_property_index,
-    drain_maintenance_via_timer, drop_vertex_property_index,
-    e2e_insert_directed_edge_with_property, e2e_insert_undirected_edge_with_property,
-    e2e_insert_vertex, e2e_insert_vertex_with_property, e2e_insert_vertex_with_two_properties,
-    gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
-    gql_execute_idempotent_result_as_admin, gql_query_as_admin, gql_query_as_admin_expect_err,
-    gql_query_with_consistency_as_admin, graph_index_pending_min_mutation_id, install_federation,
-    install_single_shard_federation, knowledge_map_live_query, mutation_status_as_admin,
-    run_router_recovery_timer, seed_knowledge_map_graph, start_graph_shard, stop_graph_shard,
+    drop_vertex_property_index, e2e_insert_directed_edge_with_property,
+    e2e_insert_undirected_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
+    e2e_insert_vertex_with_two_properties, gql_execute_idempotent_as_admin,
+    gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_result_as_admin,
+    gql_query_as_admin, gql_query_as_admin_expect_err, gql_query_with_consistency_as_admin,
+    graph_index_pending_min_mutation_id, install_federation, install_single_shard_federation,
+    knowledge_map_live_query, mutation_status_as_admin, run_router_recovery_timer,
+    seed_knowledge_map_graph, start_graph_shard, stop_graph_shard,
     test_inject_projection_pending_saga,
 };
 
@@ -540,8 +540,6 @@ fn router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga() {
         Some(MutationLifecyclePhase::Completed),
         "with both shards reachable the roll-forward saga converges immediately"
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
-    drain_maintenance_via_timer(&env, env.graph_dest);
 
     // The age = 6 read anchors on the age index and fans out to both shards; it confirms the SET
     // applied on each. The threaded `INSERT (n)-[:KNOWS]->(:Project)` runs in the same shard-local
@@ -613,8 +611,6 @@ fn router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry() {
         Some(MutationLifecyclePhase::Completed),
         "the idempotent retry resumes the outstanding shard and converges the bundle"
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
-    drain_maintenance_via_timer(&env, env.graph_dest);
 
     let updated = gql_query_as_admin(&env, "MATCH (n {age: 6}) RETURN n");
     assert_eq!(
@@ -666,7 +662,6 @@ fn single_shard_mutation_token_barrier_status_lifecycle() {
         result.phase.is_some(),
         "idempotent DML reports a lifecycle phase"
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
 
     // Happy-path flush applies edge/property postings inline; no tracked mutation is left pending.
     assert_eq!(
@@ -829,8 +824,6 @@ fn router_recovers_non_terminal_federated_saga_via_idempotent_retry() {
         Some(MutationLifecyclePhase::Completed),
         "the idempotent retry converges the saga to Completed"
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
-    drain_maintenance_via_timer(&env, env.graph_dest);
 
     let completed = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status after convergence");

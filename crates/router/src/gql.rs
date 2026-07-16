@@ -1313,7 +1313,7 @@ pub(crate) async fn enforce_read_consistency(
         .await
 }
 
-/// ADR 0093 variant of [`enforce_read_consistency`] that coalesces
+/// Variant of [`enforce_read_consistency`] that coalesces
 /// `index_pending_min_mutation_id` lookups per Graph canister within a batch wave.
 pub(crate) async fn enforce_read_consistency_with_preflight(
     store: &RouterStore,
@@ -2201,7 +2201,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                 client_mutation_key,
             ));
         }
-        // ADR 0093: a brand-new mutation has no saga record on the Router, so there is no
+        // A brand-new mutation has no saga record on the Router, so there is no
         // durable projection to reconcile. Skip the Graph journal reads entirely in that case.
         // Replays and retries carry an existing record and still run reconciliation.
         if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
@@ -2780,7 +2780,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     // token as each shard completes (built live so it survives record compaction).
     let mut token_shards: Vec<MutationTokenShard> = Vec::new();
 
-    // ADR 0093: coalesce per-wave mutation-journal reads. Dispatch already returned, so any
+    // Coalesce per-wave mutation-journal reads. Dispatch already returned, so any
     // entries that exist are durable; missing entries are cached as `None` and handled by the
     // per-shard recovery/projection logic below.
     if let (Some(ctx), Some(mutation_id)) = (preflight, mutation_id) {

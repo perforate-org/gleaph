@@ -151,7 +151,7 @@ per-item idempotency or partial-success contract established here.
 
 ## Related
 
-ADR 0093 adds per-wave preflight coalescing (anchor lookup cache, batched
-journal reads, shared `index_pending_min_mutation_id`) so the planning/idempotency
-phase before the ADR 0041 dispatch does not issue one inter-canister call per
-mutation.
+The Router batch entrypoint coalesces duplicate preflight inter-canister lookups
+(anchor lookup cache, batched journal reads, shared `index_pending_min_mutation_id`)
+so the planning/idempotency phase before the ADR 0041 dispatch does not issue one
+inter-canister call per mutation.

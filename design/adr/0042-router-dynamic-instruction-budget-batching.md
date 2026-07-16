@@ -52,7 +52,7 @@ mechanism.
 
 ## Related
 
-ADR 0093 adds a planning-phase concurrency semaphore and per-wave lookup
-coalescing. The ADR 0042 cursor/budget paging remains responsible for limiting
-the total ingress batch size; the semaphore and caches limit parallel planning
-and duplicate inter-canister calls inside one wave.
+The Router batch entrypoint uses a planning-phase concurrency semaphore and
+per-wave lookup coalescing. The ADR 0042 cursor/budget paging remains responsible
+for limiting the total ingress batch size; the semaphore and caches limit parallel
+planning and duplicate inter-canister calls inside one wave.

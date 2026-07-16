@@ -75,8 +75,6 @@ Last revised: YYYY-MM-DD
 | [0038](0038-provisioning-authorization-and-cycles-funding.md) | Provisioning authorization and cycles funding | proposed |
 | [0039](0039-production-stable-memory-evolution-and-upgrade-safety.md) | Production stable-memory evolution and canister upgrade safety | proposed |
 | [0040](0040-gql-ast-formatter-and-social-demo-wasm-integration.md) | GQL AST formatter and social-demo WASM integration | Implemented |
-| [0093](0093-router-mutation-preflight-call-coalescing.md) | Router mutation preflight call coalescing | Implemented |
-| [0094](0094-synchronous-graph-index-flush.md) | Synchronous graph-to-index posting flush for wire DML | implemented |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 

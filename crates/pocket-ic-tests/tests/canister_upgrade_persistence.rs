@@ -16,10 +16,9 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{IndexPostingBatchProgress, IndexPostingMutation, PostingHit};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, create_vertex_property_index, drain_maintenance_via_timer,
-    e2e_derived_index_outbox_len, gql_execute_idempotent_as_admin, gql_query_as_admin,
-    install_single_shard_federation, knowledge_map_live_query, seed_knowledge_map_graph,
-    wasm_bytes,
+    FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_execute_idempotent_as_admin,
+    gql_query_as_admin, install_single_shard_federation, knowledge_map_live_query,
+    seed_knowledge_map_graph, wasm_bytes,
 };
 use gleaph_router::types::{
     AdminVertexPropertyBackfillStepArgs, VertexPropertyBackfillShardStatus,
@@ -65,7 +64,6 @@ fn upgrade_all(env: &FederationEnv) {
 fn canister_upgrade_preserves_seeded_graph_without_corruption() {
     let env = install_single_shard_federation();
     seed_knowledge_map_graph(&env);
-    drain_maintenance_via_timer(&env, env.graph_source);
 
     let before = gql_query_as_admin(&env, knowledge_map_live_query());
     let before_ids = edge_ids(&before);
@@ -96,7 +94,6 @@ fn canister_upgrade_preserves_seeded_graph_without_corruption() {
     // the unchanged graph, proving the router idempotency journal and shard
     // state survived intact.
     seed_knowledge_map_graph(&env);
-    drain_maintenance_via_timer(&env, env.graph_source);
     let after_reseed = gql_query_as_admin(&env, knowledge_map_live_query());
     assert_eq!(
         after_reseed.row_count, before.row_count,
@@ -132,7 +129,6 @@ fn canister_upgrade_repeated_is_stable() {
 NEXT INSERT (a)-[:WROTE {demo_edge_id: 'alice-post-upgrade', demo_kind: 'verify'}]\
 ->(b:Post {demo_id: 'post-upgrade-check', demo_graph: 'knowledge-map', title: 'Upgrade check'})";
     let _ = gql_execute_idempotent_as_admin(&env, new_edge_ddl, "post_upgrade_new_edge");
-    drain_maintenance_via_timer(&env, env.graph_source);
     let after_write = edge_ids(&gql_query_as_admin(&env, knowledge_map_live_query()));
     assert!(
         after_write.contains("alice-post-upgrade"),
@@ -254,69 +250,4 @@ fn router_backfill_cursor_survives_router_upgrade() {
     .expect("decode status");
     let status = status.expect("status succeeds");
     assert_eq!(status[0].next_vertex_id, first.next_vertex_id);
-}
-
-#[test]
-fn derived_index_outbox_survives_graph_upgrade_and_drains_after_restart() {
-    let env = install_single_shard_federation();
-    gql_execute_idempotent_as_admin(&env, "INSERT (:OutboxUpgrade)", "outbox_upgrade_insert");
-
-    assert!(
-        e2e_derived_index_outbox_len(&env, env.graph_source) > 0,
-        "wire DML must leave durable derived-index work before maintenance"
-    );
-
-    let empty = Encode!(&()).expect("encode empty upgrade arg");
-    env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
-        .expect("upgrade graph with pending derived-index outbox");
-
-    assert!(
-        e2e_derived_index_outbox_len(&env, env.graph_source) > 0,
-        "derived-index outbox must survive graph upgrade"
-    );
-
-    use std::time::Duration;
-    for _ in 0..40 {
-        if e2e_derived_index_outbox_len(&env, env.graph_source) == 0 {
-            return;
-        }
-        env.pic.advance_time(Duration::from_secs(2));
-        for _ in 0..12 {
-            env.pic.tick();
-        }
-    }
-    assert_eq!(
-        e2e_derived_index_outbox_len(&env, env.graph_source),
-        0,
-        "post-upgrade maintenance must drain the durable derived-index outbox"
-    );
-}
-
-#[test]
-fn large_derived_index_outbox_batch_drains_after_graph_upgrade() {
-    let env = install_single_shard_federation();
-    let patterns = (0..512)
-        .map(|id| format!("(:OutboxLarge {{seq: {id}}})"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let query = format!("INSERT {patterns}");
-    gql_execute_idempotent_as_admin(&env, &query, "outbox_large_batch");
-
-    assert!(
-        e2e_derived_index_outbox_len(&env, env.graph_source) > 128,
-        "large DML must enqueue more than the removed legacy drain cap"
-    );
-
-    let empty = Encode!(&()).expect("encode empty upgrade arg");
-    env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
-        .expect("upgrade graph with large pending outbox");
-
-    drain_maintenance_via_timer(&env, env.graph_source);
-    assert_eq!(
-        e2e_derived_index_outbox_len(&env, env.graph_source),
-        0,
-        "large outbox must converge after graph upgrade"
-    );
 }

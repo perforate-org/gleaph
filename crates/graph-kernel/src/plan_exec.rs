@@ -308,7 +308,7 @@ pub struct GraphMutationJournalEntryWire {
     pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
 }
 
-/// Router → graph: read a batch of mutation journal entries in one call (ADR 0093).
+/// Router → graph: read a batch of mutation journal entries in one call.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct GetMutationJournalEntriesArgs {
     pub mutation_ids: Vec<MutationId>,

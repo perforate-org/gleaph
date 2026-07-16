@@ -247,7 +247,6 @@ fn setup_non_leading_search_where_env(env: &FederationEnv, vector: Principal) {
     );
 
     // Wait for property index posting to be flushed.
-    gleaph_pocket_ic_tests::drain_maintenance_via_timer(env, env.graph_source);
 }
 #[test]
 fn non_leading_search_where_excludes_globally_nearer_wrong_category_vertex() {

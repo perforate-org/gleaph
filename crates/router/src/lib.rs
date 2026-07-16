@@ -510,6 +510,11 @@ fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
 }
 
 #[update]
+fn prepared_register_batch(queries: Vec<(String, String)>) -> Vec<Result<(), RouterError>> {
+    prepared::prepared_register_batch(queries)
+}
+
+#[update]
 fn prepared_drop(name: String) -> Result<(), RouterError> {
     prepared::prepared_drop(&name)
 }
@@ -654,6 +659,19 @@ async fn admin_ingest_vertex_embedding(
     args: types::AdminIngestVertexEmbeddingArgs,
 ) -> Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, RouterError> {
     canister::admin_ingest_vertex_embedding(args).await
+}
+
+/// Admin (plan 0048 extension): ingest many finite F32 vertex embeddings in one call. Items are
+/// grouped by target graph canister and dispatched in bounded chunks so the social-demo seed pays
+/// one Router→Graph call and one Graph→Vector call.
+#[update]
+async fn admin_ingest_vertex_embedding_batch(
+    args: types::AdminIngestVertexEmbeddingBatchArgs,
+) -> Result<
+    Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
+    RouterError,
+> {
+    canister::admin_ingest_vertex_embedding_batch(args).await
 }
 
 /// Read-only exact `ivf_flat` vector search: composite query that resolves the activated target and

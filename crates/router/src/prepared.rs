@@ -104,10 +104,28 @@ pub(crate) fn plan_prepared_query(
 pub fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let caller = msg_caller();
-    let (plan, graph_id, requires_write_path) = plan_prepared_query(&query, caller)?;
+    prepared_register_core(&name, &query, caller)
+}
+
+/// Batch variant of [`prepared_register`]. All items are authorized by the same caller and
+/// registered independently; failures are reported per item so one duplicate does not abort the
+/// whole social-demo scenario catalog.
+pub fn prepared_register_batch(queries: Vec<(String, String)>) -> Vec<Result<(), RouterError>> {
+    let caller = msg_caller();
+    if let Err(e) = authorize_prepared_catalog_change(&caller) {
+        return queries.into_iter().map(|_| Err(e.clone())).collect();
+    }
+    queries
+        .into_iter()
+        .map(|(name, query)| prepared_register_core(&name, &query, caller))
+        .collect()
+}
+
+fn prepared_register_core(name: &str, query: &str, caller: Principal) -> Result<(), RouterError> {
+    let (plan, graph_id, requires_write_path) = plan_prepared_query(query, caller)?;
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let key = prepared_key(graph_id, &name);
+    let key = prepared_key(graph_id, name);
     insert_prepared_plan(
         key,
         PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {

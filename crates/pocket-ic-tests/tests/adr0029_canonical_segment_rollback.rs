@@ -23,7 +23,7 @@ use candid::{Decode, Encode};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, admin_intern_edge_label, admin_intern_vertex_label, drain_maintenance_via_timer,
+    FederationEnv, admin_intern_edge_label, admin_intern_vertex_label,
     gql_execute_idempotent_as_admin, gql_query_as_admin, install_single_shard_federation,
 };
 
@@ -87,7 +87,6 @@ fn canonical_segment_trap_rolls_back_whole_message() {
         "INSERT (:AttachedHub)-[:TrapRel]->(:TrapSink)",
         "adr0029_setup_attached",
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
     assert_eq!(count(&env, "MATCH (n:AttachedHub) RETURN n"), 1);
     assert_eq!(count(&env, "MATCH (n:TrapSink) RETURN n"), 1);
 
@@ -95,7 +94,6 @@ fn canonical_segment_trap_rolls_back_whole_message() {
     // observable by label scan. This proves the write mechanism is real, so the
     // trap case's empty-after result is attributable to rollback.
     let _ = gql_execute_idempotent_as_admin(&env, "INSERT (:CtrlOrphan)", "adr0029_ctrl_commit");
-    drain_maintenance_via_timer(&env, env.graph_source);
     assert_eq!(
         count(&env, "MATCH (n:CtrlOrphan) RETURN n"),
         1,

@@ -376,6 +376,24 @@ pub struct AdminIngestVertexEmbeddingArgs {
     pub values: Vec<f32>,
 }
 
+/// One item in a batch vertex-embedding ingestion request.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct AdminIngestVertexEmbeddingBatchItem {
+    pub encoded_vertex_id: Vec<u8>,
+    pub values: Vec<f32>,
+}
+
+/// Admin: ingest many finite F32 vertex embeddings through Router into the owning Graph shard(s)
+/// in as few inter-canister calls as possible. Items are grouped by target graph canister and sent
+/// in message-size-bounded chunks so one social-demo seed needs one Router→Graph call and one
+/// Graph→Vector call.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct AdminIngestVertexEmbeddingBatchArgs {
+    pub logical_graph_name: String,
+    pub embedding_name: String,
+    pub items: Vec<AdminIngestVertexEmbeddingBatchItem>,
+}
+
 /// Progress from one derived vector-index backfill step (ADR 0031 Slice 5).
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdminVectorIndexBackfillStepResult {

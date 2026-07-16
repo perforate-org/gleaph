@@ -185,6 +185,17 @@ async fn admin_ingest_vertex_embedding(
     canister::handlers::admin_ingest_vertex_embedding(args).await
 }
 
+/// Router → graph (plan 0048 extension): bounded batch canonical vertex-embedding ingestion.
+#[update(guard = "guard_router_canister")]
+async fn admin_ingest_vertex_embedding_batch(
+    args: Vec<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs>,
+) -> Result<
+    Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
+    String,
+> {
+    canister::handlers::admin_ingest_vertex_embedding_batch(args).await
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
 async fn e2e_insert_vertex() -> Result<canister::types::E2eInsertVertexResult, String> {

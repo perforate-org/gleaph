@@ -25,8 +25,8 @@ use gleaph_graph_kernel::plan_exec::{
 
 use super::types::GraphInitArgs;
 use gleaph_graph_kernel::vector_index::{
-    IndexedEmbeddingCatalog, VertexEmbeddingIngestionArgs, VertexEmbeddingIngestionResult,
-    VertexEmbeddingProjectionOutcome,
+    IndexedEmbeddingCatalog, IndexedEmbeddingSpec, VertexEmbeddingIngestionArgs,
+    VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome,
 };
 
 pub async fn init(args: GraphInitArgs) {
@@ -227,7 +227,7 @@ async fn execute_plan_batch(
     // Synchronously drain the postings emitted by the successfully executed
     // operations in this batch. If the drain cannot complete now, the entries
     // remain in the durable derived-index outbox and the maintenance timer will
-    // converge the index asynchronously (ADR 0094).
+    // converge the index asynchronously.
     if results.iter().all(|r| r.is_ok())
         && let Err(e) = sync_drain_derived_index_outbox().await
     {
@@ -338,9 +338,7 @@ async fn execute_plan_impl(
     )
     .await
     .map_err(|e| e.to_string())?;
-    if drain_outbox_after
-        && let Err(e) = sync_drain_derived_index_outbox().await
-    {
+    if drain_outbox_after && let Err(e) = sync_drain_derived_index_outbox().await {
         return Err(format!(
             "execute_plan_impl: synchronous index drain failed: {e}"
         ));
@@ -483,10 +481,83 @@ pub async fn admin_ingest_vertex_embedding(
     admin_ingest_vertex_embedding_with_vector(args, None).await
 }
 
-async fn admin_ingest_vertex_embedding_with_vector(
-    args: VertexEmbeddingIngestionArgs,
+/// Router → graph (plan 0048 extension): bounded batch canonical vertex-embedding ingestion.
+///
+/// Each item is validated and written independently. A single derived vector-index flush is
+/// attempted after all canonical writes, so N embeddings cost one Router→Graph call and one
+/// Graph→Vector call instead of 2N calls. The per-item result carries the canonical embedding
+/// version and the shared batch projection outcome (`Applied` or `DeferredForRepair`).
+pub async fn admin_ingest_vertex_embedding_batch(
+    args: Vec<VertexEmbeddingIngestionArgs>,
+) -> Result<Vec<Result<VertexEmbeddingIngestionResult, String>>, String> {
+    Ok(admin_ingest_vertex_embedding_batch_with_vector(args, None).await)
+}
+
+async fn admin_ingest_vertex_embedding_batch_with_vector(
+    args: Vec<VertexEmbeddingIngestionArgs>,
     vector_override: Option<&dyn VectorIndexLookup>,
-) -> Result<VertexEmbeddingIngestionResult, String> {
+) -> Vec<Result<VertexEmbeddingIngestionResult, String>> {
+    if args.is_empty() {
+        return Vec::new();
+    }
+
+    // Build an ephemeral catalog covering every distinct embedding spec referenced by the batch.
+    // All items are ingested under the same catalog so each canonical write dispatches its vector
+    // op into the shared pending queue.
+    let mut specs: Vec<IndexedEmbeddingSpec> = Vec::new();
+    for arg in &args {
+        if !specs
+            .iter()
+            .any(|s| s.embedding_name_id == arg.spec.embedding_name_id)
+        {
+            specs.push(arg.spec);
+        }
+    }
+    let catalog = IndexedEmbeddingCatalog { embeddings: specs };
+    let _catalog_guard = crate::index::vector_catalog_context::enter(catalog);
+
+    let mut versions = Vec::with_capacity(args.len());
+    for arg in args {
+        versions.push(admin_ingest_vertex_embedding_item(arg).await);
+    }
+
+    let projection_outcome = match vector_override {
+        Some(v) => flush_single_vector_pending(Some(v)).await,
+        None => {
+            #[cfg(target_family = "wasm")]
+            {
+                let client = crate::facade::GraphStore::new()
+                    .federation_routing()
+                    .and_then(|r| r.vector_index_canister)
+                    .map(
+                        |vector_principal| crate::index::vector_ic::IcVectorIndexClient {
+                            vector_principal,
+                        },
+                    );
+                let vx = client.as_ref().map(|c| c as &dyn VectorIndexLookup);
+                flush_single_vector_pending(vx).await
+            }
+            #[cfg(not(target_family = "wasm"))]
+            {
+                flush_single_vector_pending(None).await
+            }
+        }
+    };
+
+    versions
+        .into_iter()
+        .map(|r| {
+            r.map(|version| VertexEmbeddingIngestionResult {
+                embedding_version: version,
+                projection_outcome,
+            })
+        })
+        .collect()
+}
+
+async fn admin_ingest_vertex_embedding_item(
+    args: VertexEmbeddingIngestionArgs,
+) -> Result<u64, String> {
     let store = GraphStore::new();
     let vertex_id = ic_stable_lara::VertexId::from(args.local_vertex_id);
 
@@ -519,12 +590,7 @@ async fn admin_ingest_vertex_embedding_with_vector(
     }
 
     let bytes: Vec<u8> = args.values.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let catalog = IndexedEmbeddingCatalog {
-        embeddings: vec![args.spec],
-    };
-    let _catalog_guard = crate::index::vector_catalog_context::enter(catalog);
-
-    let version = store
+    store
         .set_vertex_embedding(
             vertex_id,
             gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(args.spec.embedding_name_id),
@@ -532,7 +598,18 @@ async fn admin_ingest_vertex_embedding_with_vector(
             dims,
             bytes,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+async fn admin_ingest_vertex_embedding_with_vector(
+    args: VertexEmbeddingIngestionArgs,
+    vector_override: Option<&dyn VectorIndexLookup>,
+) -> Result<VertexEmbeddingIngestionResult, String> {
+    let catalog = IndexedEmbeddingCatalog {
+        embeddings: vec![args.spec],
+    };
+    let _catalog_guard = crate::index::vector_catalog_context::enter(catalog);
+    let version = admin_ingest_vertex_embedding_item(args).await?;
 
     let projection_outcome = match vector_override {
         Some(v) => flush_single_vector_pending(Some(v)).await,

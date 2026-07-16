@@ -768,6 +768,145 @@ pub(crate) async fn admin_ingest_vertex_embedding(
         .map_err(RouterError::Internal)
 }
 
+/// Maximum vertex-embedding ingestion items dispatched in a single Router→Graph inter-canister
+/// call. The bound keeps the encoded Candid message well under the 2 MiB ingress/inter-canister
+/// message limit and stays below the IC update-call instruction budget for the canonical write +
+/// vector-index flush work performed inside the Graph shard. (Social-demo seed: ~71 items.)
+const ADMIN_INGEST_VERTEX_EMBEDDING_BATCH_CHUNK: usize = 1_024;
+
+/// Admin (plan 0048 extension): ingest a batch of finite F32 vertex embeddings through Router into
+/// the owning Graph shard(s). Items are validated up front, grouped by target graph canister, and
+/// sent in bounded chunks so a social-demo seed needs one Router→Graph call and one Graph→Vector
+/// call instead of one call per embedding. Returns per-item results in the same order as `items`.
+pub(crate) async fn admin_ingest_vertex_embedding_batch(
+    args: crate::types::AdminIngestVertexEmbeddingBatchArgs,
+) -> Result<
+    Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
+    RouterError,
+> {
+    crate::rbac::authorize_index_ddl(&msg_caller())?;
+
+    if args.items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&args.logical_graph_name)?;
+    let key = store.graph_element_id_encoding_key(graph_id)?;
+    let live_shards = store.list_live_shards_for_graph_id(graph_id)?;
+
+    use crate::facade::stable::{embedding_name_catalog, vector_index_catalog};
+    use gleaph_graph_kernel::federation::{EncodedVertexId, decode_global_vertex_id};
+    use gleaph_graph_kernel::vector_index::{IndexedEmbeddingSpec, VertexEmbeddingIngestionArgs};
+
+    let name_id = embedding_name_catalog::lookup_embedding_name_id(graph_id, &args.embedding_name)
+        .ok_or_else(|| {
+            RouterError::NotFound(format!(
+                "embedding name {} is not registered for this graph",
+                args.embedding_name
+            ))
+        })?;
+    let def = vector_index_catalog::get_vector_index_by_embedding_name_id(graph_id, name_id)
+        .ok_or_else(|| {
+            RouterError::NotFound(format!(
+                "no vector index registered for embedding name {}",
+                args.embedding_name
+            ))
+        })?;
+
+    if def.encoding != gleaph_graph_kernel::vector_index::VectorEncoding::F32 {
+        return Err(RouterError::InvalidArgument(format!(
+            "encoding {:?} is not supported for ingestion; only F32 is accepted",
+            def.encoding
+        )));
+    }
+
+    let spec = IndexedEmbeddingSpec {
+        embedding_name_id: name_id.raw(),
+        index_id: def.index_id,
+        kind: def.kind,
+        metric: def.metric,
+        encoding: def.encoding,
+        dims: def.dims,
+    };
+
+    let item_count = args.items.len();
+
+    // Resolve each item to its target graph canister and group by canister.
+    type Grouped =
+        std::collections::BTreeMap<candid::Principal, Vec<(VertexEmbeddingIngestionArgs, usize)>>;
+    let mut by_canister: Grouped = Grouped::new();
+    for (item_index, item) in args.items.into_iter().enumerate() {
+        if item.encoded_vertex_id.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+        {
+            return Err(RouterError::InvalidArgument(format!(
+                "encoded_vertex_id must be exactly {} bytes",
+                gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+            )));
+        }
+        if item.values.len() != def.dims as usize {
+            return Err(RouterError::InvalidArgument(format!(
+                "values length {} does not match vector index dims {}",
+                item.values.len(),
+                def.dims
+            )));
+        }
+        if item.values.iter().copied().any(|v| !v.is_finite()) {
+            return Err(RouterError::InvalidArgument(
+                "values must be finite".to_string(),
+            ));
+        }
+
+        let encoded_bytes: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
+            item.encoded_vertex_id.as_slice().try_into().map_err(|_| {
+                RouterError::InvalidArgument("encoded_vertex_id conversion failed".to_string())
+            })?;
+        let global_id = decode_global_vertex_id(&key, EncodedVertexId(encoded_bytes));
+        let shard = live_shards
+            .iter()
+            .find(|s| s.shard_id == global_id.shard_id)
+            .ok_or(RouterError::ShardNotRegistered)?;
+
+        by_canister.entry(shard.graph_canister).or_default().push((
+            VertexEmbeddingIngestionArgs {
+                local_vertex_id: global_id.local_vertex_id,
+                spec,
+                values: item.values,
+            },
+            item_index,
+        ));
+    }
+
+    let mut results: Vec<
+        Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>,
+    > = Vec::with_capacity(item_count);
+    results.resize(item_count, Err("not dispatched".to_string()));
+
+    for (graph_canister, mut group) in by_canister {
+        group.sort_by_key(|(_, original_index)| *original_index);
+        for chunk in group.chunks(ADMIN_INGEST_VERTEX_EMBEDDING_BATCH_CHUNK) {
+            let chunk_args: Vec<VertexEmbeddingIngestionArgs> =
+                chunk.iter().map(|(arg, _)| arg.clone()).collect();
+            let chunk_results =
+                crate::graph_client::ingest_vertex_embedding_batch(graph_canister, chunk_args)
+                    .await
+                    .map_err(RouterError::Internal)?;
+            if chunk_results.len() != chunk.len() {
+                return Err(RouterError::Internal(format!(
+                    "graph returned {} results for {} ingestion args",
+                    chunk_results.len(),
+                    chunk.len()
+                )));
+            }
+            for ((_, original_index), result) in chunk.iter().zip(chunk_results) {
+                results[*original_index] = result;
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 fn resolve_vertex_embedding_ingestion(
     args: &crate::types::AdminIngestVertexEmbeddingArgs,
     store: &RouterStore,

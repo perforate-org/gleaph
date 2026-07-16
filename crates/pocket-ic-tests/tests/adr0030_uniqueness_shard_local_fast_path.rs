@@ -15,9 +15,9 @@
 use candid::Encode;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, drain_maintenance_via_timer, gql_execute_idempotent_as_admin,
-    gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_result_as_admin,
-    gql_query_as_admin, install_single_shard_federation, run_router_recovery_timer, wasm_bytes,
+    FederationEnv, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
+    gql_execute_idempotent_result_as_admin, gql_query_as_admin, install_single_shard_federation,
+    run_router_recovery_timer, wasm_bytes,
 };
 
 const CONSTRAINT: &str = "user_email";
@@ -70,7 +70,6 @@ fn shard_local_global_enforces_and_frees_on_delete() {
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-en-ins",
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
     assert_eq!(
         gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n")).row_count,
         1,
@@ -94,7 +93,6 @@ fn shard_local_global_enforces_and_frees_on_delete() {
         &delete(LABEL, PROPERTY, "a@example.com"),
         "s10-en-del",
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
     assert_eq!(
         gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n")).row_count,
         0,
@@ -107,7 +105,6 @@ fn shard_local_global_enforces_and_frees_on_delete() {
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-en-reins",
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
     let redup = gql_execute_idempotent_as_admin_expect_err(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),
@@ -192,7 +189,6 @@ fn shard_local_global_survives_upgrade() {
         &insert(LABEL, PROPERTY, "a@example.com"),
         "s10-up-ins",
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
 
     upgrade_federation(&env);
 
@@ -213,7 +209,6 @@ fn shard_local_global_survives_upgrade() {
         &delete(LABEL, PROPERTY, "a@example.com"),
         "s10-up-del",
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
     gql_execute_idempotent_as_admin(
         &env,
         &insert(LABEL, PROPERTY, "a@example.com"),

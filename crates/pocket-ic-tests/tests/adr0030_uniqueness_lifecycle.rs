@@ -18,10 +18,10 @@
 use candid::Principal;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    GRAPH_NAME, drain_maintenance_via_timer, gql_execute_idempotent_as_admin,
-    gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin, install_federation,
-    install_single_shard_federation, run_router_recovery_timer, start_graph_shards_all,
-    stop_graph_shards_all, test_declare_unique_constraint, test_declare_unique_constraint_as,
+    GRAPH_NAME, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
+    gql_query_as_admin, install_federation, install_single_shard_federation,
+    run_router_recovery_timer, start_graph_shards_all, stop_graph_shards_all,
+    test_declare_unique_constraint, test_declare_unique_constraint_as,
 };
 
 const CONSTRAINT: &str = "acct_email";
@@ -50,7 +50,6 @@ fn declare_unique_constraint_rejects_non_admin() {
     // The guard ran before any store mutation: no constraint exists, so duplicate values both commit.
     gql_execute_idempotent_as_admin(&env, &insert_account("z@example.com"), "noguard-1");
     gql_execute_idempotent_as_admin(&env, &insert_account("z@example.com"), "noguard-2");
-    drain_maintenance_via_timer(&env, env.graph_source);
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(
         live.row_count, 2,
@@ -67,7 +66,6 @@ fn constrained_insert_commits_and_rejects_duplicate() {
 
     // A federated INSERT is RETURN-less: it reports row_count 0; the commit is verified by a MATCH.
     gql_execute_idempotent_as_admin(&env, &insert_account("a@example.com"), "ins-1");
-    drain_maintenance_via_timer(&env, env.graph_source);
 
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(live.row_count, 1, "the committed vertex is visible");
@@ -90,7 +88,6 @@ fn constrained_insert_commits_and_rejects_duplicate() {
 
     // A distinct value under the same constraint is admitted (two vertices now live).
     gql_execute_idempotent_as_admin(&env, &insert_account("b@example.com"), "ins-2");
-    drain_maintenance_via_timer(&env, env.graph_source);
     let both = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(
         both.row_count, 2,
@@ -162,7 +159,6 @@ fn delete_releases_reservation_value_is_reusable() {
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     gql_execute_idempotent_as_admin(&env, &insert_account("f@example.com"), "rel-ins");
-    drain_maintenance_via_timer(&env, env.graph_source);
 
     // Re-using the value before release is rejected.
     let blocked = gql_execute_idempotent_as_admin_expect_err(
@@ -180,7 +176,6 @@ fn delete_releases_reservation_value_is_reusable() {
         &format!("MATCH (n:{LABEL}) WHERE n.{PROPERTY} = 'f@example.com' DETACH DELETE n"),
         "rel-del",
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
     let gone = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(gone.row_count, 0, "the constrained vertex is deleted");
 
@@ -188,7 +183,6 @@ fn delete_releases_reservation_value_is_reusable() {
     run_router_recovery_timer(&env);
 
     gql_execute_idempotent_as_admin(&env, &insert_account("f@example.com"), "rel-reuse");
-    drain_maintenance_via_timer(&env, env.graph_source);
     let reused = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(
         reused.row_count, 1,

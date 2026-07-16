@@ -16,9 +16,9 @@ use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, drain_maintenance_via_timer, gql_execute_idempotent_as_admin,
-    gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_result_as_admin,
-    gql_query_as_admin, gql_query_as_admin_expect_err, install_single_shard_federation,
+    FederationEnv, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
+    gql_execute_idempotent_result_as_admin, gql_query_as_admin, gql_query_as_admin_expect_err,
+    install_single_shard_federation,
 };
 
 const CONSTRAINT: &str = "user_email";
@@ -47,7 +47,6 @@ fn create_constraint_publishes_and_enforces() {
     );
 
     gql_execute_idempotent_as_admin(&env, &insert_user(LABEL, "a@example.com"), "s8-ins-1");
-    drain_maintenance_via_timer(&env, env.graph_source);
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(live.row_count, 1, "the constrained vertex committed");
 
@@ -224,7 +223,6 @@ fn drop_constraint_is_published_and_stops_enforcing() {
         &insert_user(LABEL, "drop@example.com"),
         "s9-drop-ins-2",
     );
-    drain_maintenance_via_timer(&env, env.graph_source);
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(
         live.row_count, 2,

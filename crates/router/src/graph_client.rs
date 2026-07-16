@@ -207,6 +207,16 @@ pub async fn ingest_vertex_embedding(
     call_graph_result(graph, "admin_ingest_vertex_embedding", args).await
 }
 
+pub async fn ingest_vertex_embedding_batch(
+    graph: Principal,
+    args: Vec<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs>,
+) -> Result<
+    Vec<Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String>>,
+    String,
+> {
+    call_graph_result(graph, "admin_ingest_vertex_embedding_batch", args).await
+}
+
 pub async fn finalize_bulk_ingest(
     graph: Principal,
     args: BulkIngestFinalizeArgs,
