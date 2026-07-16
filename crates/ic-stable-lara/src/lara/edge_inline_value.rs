@@ -6,7 +6,7 @@ mod blobs;
 mod cell;
 mod log;
 
-use crate::lara::edge::free_span::FreeSpanStore;
+use crate::lara::edge::free_span::{FreeSpan, FreeSpanStore};
 use crate::lara::edge_inline_value::blobs::EdgeInlineValueBlobMap;
 use crate::lara::edge_inline_value::cell::payload_log_uses_blob;
 use crate::lara::edge_inline_value::log::{
@@ -670,6 +670,10 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         }
     }
 
+    pub(crate) fn free_byte_spans(&self) -> Vec<FreeSpan> {
+        self.free_spans.spans()
+    }
+
     /// Sets the payload byte capacity to `end`.
     pub fn set_byte_capacity(&self, end: u64) -> Result<(), GrowFailed> {
         self.slab.set_byte_capacity(end)?;
@@ -761,14 +765,6 @@ impl<M: Memory> EdgeInlineValueStore<M> {
                 current_size: self.byte_capacity(),
                 delta: 0,
             })
-    }
-
-    pub(crate) fn byte_span_available_at(&self, offset: u64, len: u64) -> bool {
-        len > 0
-            && self
-                .free_spans
-                .free_span_starting_at(offset)
-                .is_some_and(|span| span.len >= len)
     }
 
     /// Grows a span when it ends at the occupied tail (no free-list churn).

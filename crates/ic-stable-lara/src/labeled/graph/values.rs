@@ -74,6 +74,8 @@ where
         }
         spans.sort_by_key(|(_, _, offset, _)| *offset);
 
+        let mut available = self.values.free_byte_spans();
+        available.sort_by_key(|span| span.start_slot);
         let mut cursor = 0u64;
         let mut plans = Vec::new();
         for (bucket_slot, bucket, old_offset, len) in spans {
@@ -86,8 +88,20 @@ where
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 continue;
             }
-            if !self.values.byte_span_available_at(cursor, len) {
+            let Some(free_index) = available
+                .iter()
+                .position(|span| span.start_slot == cursor && span.len >= len)
+            else {
                 return Ok(LabeledPayloadCompactionResult::default());
+            };
+            if available[free_index].len == len {
+                available.remove(free_index);
+            } else {
+                available[free_index].start_slot = available[free_index]
+                    .start_slot
+                    .checked_add(len)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                available[free_index].len -= len;
             }
             plans.push(SpanPlan {
                 bucket_slot,
@@ -96,6 +110,11 @@ where
                 len,
                 new_offset: cursor,
             });
+            available.push(crate::lara::edge::free_span::FreeSpan {
+                start_slot: old_offset,
+                len,
+            });
+            available.sort_by_key(|span| span.start_slot);
             cursor = cursor
                 .checked_add(len)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -1236,9 +1255,8 @@ mod tests {
     fn payload_compaction_moves_only_payload_spans() {
         let graph = inline_value_test_graph();
         let src = graph.push_vertex(LabeledVertex::default()).unwrap();
-        let first = BucketLabelKey::from_raw(2);
-        let second = BucketLabelKey::from_raw(3);
-        for label in [first, second] {
+        for label in 2..=5 {
+            let label = BucketLabelKey::from_raw(label);
             graph
                 .ensure_label_bucket_inline_value_byte_width(src, label, 2)
                 .unwrap();
@@ -1252,21 +1270,24 @@ mod tests {
                     .unwrap();
             }
         }
-        for target in 0..2u32 {
-            graph
-                .remove_edge_matching(src, first, |edge| edge.target == target)
-                .unwrap()
-                .expect("first payload edge removed");
+        for label in [2, 4] {
+            let label = BucketLabelKey::from_raw(label);
+            for target in 0..2u32 {
+                graph
+                    .remove_edge_matching(src, label, |edge| edge.target == target)
+                    .unwrap()
+                    .expect("payload edge removed");
+            }
         }
 
         let before = graph.payload_storage_stats().unwrap();
-        assert!(before.free_bytes >= 4);
+        assert!(before.free_bytes >= 8);
         let result = graph.compact_payload_slab().unwrap();
-        assert_eq!(result.moved_spans, 1);
-        assert_eq!(result.moved_bytes, 4);
+        assert_eq!(result.moved_spans, 2);
+        assert_eq!(result.moved_bytes, 8);
         assert_eq!(
             graph
-                .iter_edges_for_label(src, second)
+                .iter_edges_for_label(src, BucketLabelKey::from_raw(3))
                 .unwrap()
                 .into_iter()
                 .map(|edge| edge.target)
@@ -1274,7 +1295,7 @@ mod tests {
             vec![1, 0]
         );
         let after = graph.payload_storage_stats().unwrap();
-        assert_eq!(after.live_bytes, 4);
+        assert_eq!(after.live_bytes, 8);
     }
 
     #[test]

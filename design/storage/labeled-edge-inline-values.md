@@ -58,8 +58,8 @@ Headroom remains deferred until measurements show a workload where that trade-of
 is favorable.
 
 Payload-only compaction is available through `compact_payload_slab`. It preflights
-earlier free-span prefixes, copies only payload slab bytes, updates bucket payload
-offsets, and retires the old spans. Edge slab positions, edge/payload log chains,
+earlier free-span prefixes, including spans released by earlier moves in the same
+plan, copies only payload slab bytes, updates bucket payload offsets, and retires the old spans. Edge slab positions, edge/payload log chains,
 bucket-local live order, and vertex allocation totals are unchanged. The operation
 does not shrink the backing capacity or invoke edge maintenance. New payload
 span allocation checks `payload_compaction_needed(requested_bytes)` first and
