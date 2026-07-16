@@ -85,13 +85,20 @@ statistics; it does not scan vertices or recompute live/allocated payload bytes.
 The latter remains an observability operation exposed by
 `payload_storage_stats()`.
 
-Allocator-stat scaling is still linear in the number of retired spans because
-the current implementation materializes `free_spans.spans()` on every check.
-The 64-check pressure benchmark measured 6.24M, 27.90M, and 119.04M
-instructions for approximately 16, 64, and 256 retired spans respectively.
-This makes a persisted allocator summary of free bytes, largest span, and span
-count the next optimization target; the summary must be updated atomically with
-free-span allocation and release and rebuilt consistently on reopen.
+The free-span allocator now persists `free_bytes` and `largest_free_span` in
+unused metadata space after the bin-head table; `active_count` remains the
+persisted span count. Allocation, split, release, coalescing, and replacement
+update the summary with the corresponding free-span mutation. If a mutation
+removes the current largest span, the largest value is rebuilt from the
+by-start index. Reopen validates the existing free-span structures and rebuilds
+the summary once, which also repairs stores written before the summary fields
+were introduced. Consequently, the pressure predicate no longer materializes
+`free_spans.spans()` on its hot path.
+
+The updated 64-check pressure benchmark measured 36.23K instructions for each
+of approximately 16, 64, and 256 retired spans, compared with the previous
+6.24M, 27.90M, and 119.04M measurements. The one-time rebuild and largest-span
+rescans remain mutation/reopen work rather than query-time work.
 
 The queue persistence contract is covered by a reopen test: a pending payload
 item remains queued across graph reconstruction and is consumed by the next

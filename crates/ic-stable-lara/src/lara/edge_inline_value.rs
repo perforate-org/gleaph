@@ -660,13 +660,13 @@ impl<M: Memory> EdgeInlineValueStore<M> {
 
     /// Returns allocator-owned capacity and retired-span accounting.
     pub fn allocator_stats(&self) -> PayloadAllocatorStats {
-        let spans = self.free_spans.spans();
+        let spans = self.free_spans.allocator_stats();
         PayloadAllocatorStats {
             byte_capacity: self.byte_capacity(),
             slab_occupied_tail: self.header().slab_occupied_tail,
-            free_bytes: spans.iter().map(|span| span.len).sum(),
-            largest_free_span: spans.iter().map(|span| span.len).max().unwrap_or(0),
-            free_span_count: spans.len() as u64,
+            free_bytes: spans.free_bytes,
+            largest_free_span: spans.largest_free_span,
+            free_span_count: spans.free_span_count,
         }
     }
 

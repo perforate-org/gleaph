@@ -40,6 +40,8 @@ const OFFSET_RECORD_SLOTS: u64 = 8;
 const OFFSET_ACTIVE_COUNT: u64 = 16;
 const OFFSET_FREE_HEAD: u64 = 24;
 const OFFSET_BIN_HEADS: u64 = 32;
+const OFFSET_FREE_BYTES: u64 = OFFSET_BIN_HEADS + (BIN_COUNT as u64) * 8;
+const OFFSET_LARGEST_FREE_SPAN: u64 = OFFSET_FREE_BYTES + 8;
 
 const RECORDS_OFFSET: u64 = 4096;
 const RECORD_STRIDE: u64 = 48;
@@ -198,6 +200,21 @@ pub struct HeaderV1 {
     pub active_count: u64,
     /// Head of the recycled record free list, or `0` when empty.
     pub free_head: u64,
+    /// Total slots represented by active free spans.
+    pub free_bytes: u64,
+    /// Largest active free span, or zero when the allocator is empty.
+    pub largest_free_span: u64,
+}
+
+/// O(1) allocator fragmentation statistics persisted by [`FreeSpanStore`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FreeSpanAllocatorStats {
+    /// Total slots represented by active free spans.
+    pub free_bytes: u64,
+    /// Largest active free span.
+    pub largest_free_span: u64,
+    /// Number of active free spans.
+    pub free_span_count: u64,
 }
 
 /// Stable free-span allocator for retired physical edge-slab ranges.
@@ -217,6 +234,8 @@ impl<M: Memory> FreeSpanStore<M> {
                 record_slots: 0,
                 active_count: 0,
                 free_head: 0,
+                free_bytes: 0,
+                largest_free_span: 0,
             },
         )?;
         let zeros = [0u8; BIN_COUNT * 8];
@@ -265,6 +284,7 @@ impl<M: Memory> FreeSpanStore<M> {
             return Err(InitError::InvalidLayout);
         }
         this.validate().map_err(|_| InitError::InvalidLayout)?;
+        this.rebuild_allocator_stats();
         Ok(this)
     }
 
@@ -281,6 +301,18 @@ impl<M: Memory> FreeSpanStore<M> {
     /// Returns the number of active free spans.
     pub fn len(&self) -> u64 {
         crate::read_u64(&self.store, Address::from(OFFSET_ACTIVE_COUNT))
+    }
+
+    /// Returns persisted allocator statistics without scanning active spans.
+    pub fn allocator_stats(&self) -> FreeSpanAllocatorStats {
+        FreeSpanAllocatorStats {
+            free_bytes: crate::read_u64(&self.store, Address::from(OFFSET_FREE_BYTES)),
+            largest_free_span: crate::read_u64(
+                &self.store,
+                Address::from(OFFSET_LARGEST_FREE_SPAN),
+            ),
+            free_span_count: self.len(),
+        }
     }
 
     /// Returns `true` when no free spans are available.
@@ -563,6 +595,7 @@ impl<M: Memory> FreeSpanStore<M> {
                     .insert(remainder.start_slot, id)
                     .expect("paged by_start insert failed");
                 self.relink_active_record(id, remainder)?;
+                self.adjust_summary_after_replace(whole, remainder);
             }
             return Ok(Some(taken));
         }
@@ -855,7 +888,9 @@ impl<M: Memory> FreeSpanStore<M> {
 
     fn insert_span(&self, span: FreeSpan) -> Result<(), FreeSpanError> {
         let id = self.alloc_record()?;
-        self.write_active_record(id, span)
+        self.write_active_record(id, span)?;
+        self.adjust_summary_after_insert(span.len);
+        Ok(())
     }
 
     fn write_active_record(&self, id: SpanId, span: FreeSpan) -> Result<(), FreeSpanError> {
@@ -933,7 +968,9 @@ impl<M: Memory> FreeSpanStore<M> {
                 .insert(new.start_slot, id)
                 .expect("paged by_start insert failed");
         }
-        self.relink_active_record(id, new)
+        self.relink_active_record(id, new)?;
+        self.adjust_summary_after_replace(old, new);
+        Ok(())
     }
 
     fn remove_span_exact(&self, span: FreeSpan) -> Result<(), FreeSpanError> {
@@ -954,6 +991,7 @@ impl<M: Memory> FreeSpanStore<M> {
         self.unlink_from_bin(id, rec)?;
         self.free_record(id)?;
         self.inc_active(-1)?;
+        self.adjust_summary_after_remove(span.len);
         Ok(())
     }
 
@@ -1125,6 +1163,105 @@ impl<M: Memory> FreeSpanStore<M> {
         crate::write_u64(&self.store, Address::from(OFFSET_FREE_HEAD), h);
         Ok(())
     }
+
+    fn adjust_summary_after_insert(&self, len: u64) {
+        let free_bytes = crate::read_u64(&self.store, Address::from(OFFSET_FREE_BYTES));
+        crate::write_u64(
+            &self.store,
+            Address::from(OFFSET_FREE_BYTES),
+            free_bytes.saturating_add(len),
+        );
+        let largest = crate::read_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN));
+        if len > largest {
+            crate::write_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN), len);
+        }
+    }
+
+    fn adjust_summary_after_remove(&self, len: u64) {
+        let free_bytes = crate::read_u64(&self.store, Address::from(OFFSET_FREE_BYTES));
+        crate::write_u64(
+            &self.store,
+            Address::from(OFFSET_FREE_BYTES),
+            free_bytes.saturating_sub(len),
+        );
+        let largest = crate::read_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN));
+        if len == largest {
+            self.rebuild_largest_free_span();
+        }
+    }
+
+    fn adjust_summary_after_replace(&self, old: FreeSpan, new: FreeSpan) {
+        let free_bytes = crate::read_u64(&self.store, Address::from(OFFSET_FREE_BYTES));
+        crate::write_u64(
+            &self.store,
+            Address::from(OFFSET_FREE_BYTES),
+            free_bytes.saturating_sub(old.len).saturating_add(new.len),
+        );
+        let largest = crate::read_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN));
+        if new.len >= largest {
+            crate::write_u64(
+                &self.store,
+                Address::from(OFFSET_LARGEST_FREE_SPAN),
+                new.len,
+            );
+        } else if old.len == largest {
+            self.rebuild_largest_free_span();
+        }
+    }
+
+    fn rebuild_allocator_stats(&self) {
+        let mut free_bytes = 0u64;
+        let mut largest = 0u64;
+        let by_start = self.by_start.borrow();
+        let Some((mut start, mut id)) = by_start.first() else {
+            crate::write_u64(&self.store, Address::from(OFFSET_FREE_BYTES), 0);
+            crate::write_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN), 0);
+            return;
+        };
+        loop {
+            let rec = self.read_record(id);
+            if rec.flags == FLAG_ACTIVE {
+                free_bytes = free_bytes.saturating_add(rec.len);
+                largest = largest.max(rec.len);
+            }
+            let Some((next_start, next_id)) = by_start.successor(start) else {
+                break;
+            };
+            start = next_start;
+            id = next_id;
+        }
+        crate::write_u64(&self.store, Address::from(OFFSET_FREE_BYTES), free_bytes);
+        crate::write_u64(
+            &self.store,
+            Address::from(OFFSET_LARGEST_FREE_SPAN),
+            largest,
+        );
+    }
+
+    fn rebuild_largest_free_span(&self) {
+        let mut largest = 0u64;
+        let by_start = self.by_start.borrow();
+        let Some((mut start, mut id)) = by_start.first() else {
+            crate::write_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN), 0);
+            return;
+        };
+        loop {
+            let rec = self.read_record(id);
+            if rec.flags == FLAG_ACTIVE {
+                largest = largest.max(rec.len);
+            }
+            let Some((next_start, next_id)) = by_start.successor(start) else {
+                break;
+            };
+            start = next_start;
+            id = next_id;
+        }
+        crate::write_u64(
+            &self.store,
+            Address::from(OFFSET_LARGEST_FREE_SPAN),
+            largest,
+        );
+    }
 }
 
 fn record_offset(id: SpanId) -> u64 {
@@ -1139,6 +1276,12 @@ fn write_header<M: Memory>(memory: &M, h: &HeaderV1) -> Result<(), GrowFailed> {
     crate::write_u64(memory, Address::from(OFFSET_RECORD_SLOTS), h.record_slots);
     crate::write_u64(memory, Address::from(OFFSET_ACTIVE_COUNT), h.active_count);
     crate::write_u64(memory, Address::from(OFFSET_FREE_HEAD), h.free_head);
+    crate::write_u64(memory, Address::from(OFFSET_FREE_BYTES), h.free_bytes);
+    crate::write_u64(
+        memory,
+        Address::from(OFFSET_LARGEST_FREE_SPAN),
+        h.largest_free_span,
+    );
     Ok(())
 }
 
@@ -1153,6 +1296,8 @@ fn read_header<M: Memory>(memory: &M) -> HeaderV1 {
         record_slots: crate::read_u64(memory, Address::from(OFFSET_RECORD_SLOTS)),
         active_count: crate::read_u64(memory, Address::from(OFFSET_ACTIVE_COUNT)),
         free_head: crate::read_u64(memory, Address::from(OFFSET_FREE_HEAD)),
+        free_bytes: crate::read_u64(memory, Address::from(OFFSET_FREE_BYTES)),
+        largest_free_span: crate::read_u64(memory, Address::from(OFFSET_LARGEST_FREE_SPAN)),
     }
 }
 
@@ -1256,6 +1401,43 @@ mod tests {
             })
         );
         s.validate().unwrap();
+    }
+
+    #[test]
+    fn allocator_stats_track_mutations_and_reopen() {
+        let m = MemoryManager::init(DefaultMemoryImpl::default());
+        let meta = m.get(MemoryId::new(60));
+        let bs = m.get(MemoryId::new(61));
+        let s = FreeSpanStore::init(meta, bs).unwrap();
+        s.release_span(1000, 80).unwrap();
+        s.release_span(2000, 32).unwrap();
+        assert_eq!(
+            s.allocator_stats(),
+            FreeSpanAllocatorStats {
+                free_bytes: 112,
+                largest_free_span: 80,
+                free_span_count: 2,
+            }
+        );
+        s.take_prefix_at(1000, 24).unwrap();
+        assert_eq!(
+            s.allocator_stats(),
+            FreeSpanAllocatorStats {
+                free_bytes: 88,
+                largest_free_span: 56,
+                free_span_count: 2,
+            }
+        );
+        let (meta, bs) = s.into_memories();
+        let reopened = FreeSpanStore::init(meta, bs).unwrap();
+        assert_eq!(
+            reopened.allocator_stats(),
+            FreeSpanAllocatorStats {
+                free_bytes: 88,
+                largest_free_span: 56,
+                free_span_count: 2,
+            }
+        );
     }
 
     #[test]
