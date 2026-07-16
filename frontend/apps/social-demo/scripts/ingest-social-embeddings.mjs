@@ -171,21 +171,26 @@ async function ingestEmbeddingsBatch(elementIdMap, embeddings) {
     );
   }
 
+  let ingestedCount = 0;
+  let duplicateCount = 0;
   for (let i = 0; i < entries.length; i += 1) {
     const [demoIdKey] = entries[i];
     const itemResult = results[i];
     if ("Err" in itemResult) {
       const errText = itemResult.Err;
       if (isDuplicateError(errText)) {
-        console.log(`[social-demo] Skipping duplicate embedding for ${demoIdKey}`);
+        duplicateCount += 1;
         continue;
       }
       throw new Error(
         `admin_ingest_vertex_embedding_batch failed for ${demoIdKey}: ${errText}`
       );
     }
-    console.log(`[social-demo] Ingested embedding for ${demoIdKey}`);
+    ingestedCount += 1;
   }
+  console.log(
+    `[social-demo] Embedding batch complete: ${ingestedCount} ingested, ${duplicateCount} duplicates skipped`
+  );
 }
 
 async function main() {

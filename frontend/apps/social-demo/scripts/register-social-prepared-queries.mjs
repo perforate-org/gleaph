@@ -82,22 +82,26 @@ async function main() {
     );
   }
 
+  let registeredCount = 0;
+  let duplicateCount = 0;
   for (let i = 0; i < scenarios.length; i += 1) {
     const scenario = scenarios[i];
     const result = parsed[i];
     if ("Err" in result) {
       const errText = JSON.stringify(result.Err);
       if (errText.includes("Conflict")) {
-        console.log(`[social-demo] Skipping duplicate prepared query ${scenario.id}`);
+        duplicateCount += 1;
         continue;
       }
       throw new Error(
         `prepared_register_batch failed for ${scenario.id}: ${errText}`
       );
     }
-    console.log(`[social-demo] Registered prepared query ${scenario.id}`);
+    registeredCount += 1;
   }
-  console.log("[social-demo] Prepared query registration complete");
+  console.log(
+    `[social-demo] Prepared query batch complete: ${registeredCount} registered, ${duplicateCount} duplicates skipped`
+  );
   checkSemanticVectorDrift(scenarios);
 }
 
