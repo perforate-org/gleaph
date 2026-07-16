@@ -169,6 +169,27 @@ relocation cannot continuously transfer hub capacity to sparse vertices.
 The quota1 result is correctness-valid but more relocation-heavy; its lower
 initial slack does not reduce the coarse stable-page footprint in this fixture.
 
+### Current production canbench confirmation
+
+The current unfiltered `ic-stable-lara` canbench run confirms that the
+segment16/quota1 choice is visible in operation counts even though it does not
+change the coarse stable-page result. Compared with the persisted pre-policy
+baseline, the 1,024-edge hub insert measured `+21.65%` overall instructions,
+with the leaf-cascade scope accounting for the increase; the 4,096-edge case
+measured `+19.52%`. The isolated sparse-vertex grow measured `+24.42%`, while
+the saturated-leaf total remained within noise (`-0.90%`). The stable-backed
+sparse segment16 probe remained at 1,921 pages, and all focused probes reported
+zero heap-page delta beyond their existing fixture allocations.
+
+These are policy-plus-current-tree deltas, not an isolated segment-size A/B:
+the baseline predates the segment16/quota1 default and subsequent allocator
+work. They nevertheless confirm the expected trade-off: segment16/quota1
+reduces initial sparse reservation, but increases leaf relocation/cascade work
+in sparse and hub-growth workloads without reducing the rounded stable-page
+footprint at this scale. The slot-based delete benchmark was also corrected to
+remove high physical slots first; ascending removal invalidated later handles
+after overflow-log unlink shifts and caused a fixture-only panic.
+
 ### Relationship to the DGAP reference model
 
 The reference implementation in `reference/DGAP/dgap/src/graph.h` uses a single `vertex_element { index, degree, offset }` per vertex:

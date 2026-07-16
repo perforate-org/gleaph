@@ -1173,7 +1173,9 @@ fn bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024() -> canbench_
     let graph = bench_graph(1 << 20);
     let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
     bench_fn(|| {
-        for slot in (0..STAGE2_HUB_DEGREE).step_by(2) {
+        // Remove from the high end so overflow-log unlink shifts cannot
+        // invalidate the remaining physical slot handles before they are used.
+        for slot in (0..STAGE2_HUB_DEGREE).step_by(2).rev() {
             graph
                 .remove_edge_at_slot(vid, label, slot)
                 .expect("remove")
