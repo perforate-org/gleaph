@@ -545,6 +545,40 @@ mod tests {
     }
 
     #[test]
+    fn fresh_layout_uses_segment16_quota1_policy() {
+        let graph = LabeledLaraGraph::<TestEdge, _>::new(
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            crate::labeled::InitialCapacities::uniform(256),
+            BucketLabelKey::directed_from_index(1),
+        )
+        .unwrap();
+
+        assert_eq!(graph.edges().header().segment_size, 16);
+        assert_eq!(
+            crate::labeled::graph::leaf_pin::labeled_leaf_vertex_edge_quota(16),
+            1
+        );
+        assert_eq!(
+            crate::labeled::graph::leaf_pin::labeled_leaf_physical_block_len(16),
+            16
+        );
+    }
+
+    #[test]
     fn label_edge_span_positioning_rejects_impossible_live_width() {
         let err =
             LabeledLaraGraph::<TestEdge, crate::VectorMemory>::calculate_label_edge_span_positions(

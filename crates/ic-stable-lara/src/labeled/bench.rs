@@ -479,10 +479,12 @@ fn seed_stage2_leaf(
     let label = BucketLabelKey::from_raw(2);
     if saturate_mates {
         // Keep the fixture at the same relative density when testing an experimental
-        // quota. The default quota is 32, so this remains the historical 28-edge fixture.
-        let leaf_mate_degree = crate::labeled::graph::leaf_pin::labeled_leaf_vertex_edge_quota()
-            .saturating_sub(4)
-            .max(1);
+        // quota. The default quota is 1, so this remains a small sparse-leaf fixture.
+        let leaf_mate_degree = crate::labeled::graph::leaf_pin::labeled_leaf_vertex_edge_quota(
+            graph.edges().header().segment_size,
+        )
+        .saturating_sub(4)
+        .max(1);
         for v in 1..STAGE2_LEAF {
             for e in 0..leaf_mate_degree {
                 graph

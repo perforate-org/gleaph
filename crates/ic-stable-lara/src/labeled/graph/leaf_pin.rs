@@ -17,43 +17,18 @@ use ic_stable_structures::Memory;
 use super::LabeledLaraGraph;
 use super::error::LabeledOperationError;
 
-#[cfg(any(
-    all(feature = "labeled_leaf_quota_16", feature = "labeled_leaf_quota_8"),
-    all(feature = "labeled_leaf_quota_16", feature = "labeled_leaf_quota_4"),
-    all(feature = "labeled_leaf_quota_8", feature = "labeled_leaf_quota_4"),
-    all(feature = "labeled_leaf_quota_16", feature = "labeled_leaf_quota_1"),
-    all(feature = "labeled_leaf_quota_8", feature = "labeled_leaf_quota_1"),
-    all(feature = "labeled_leaf_quota_4", feature = "labeled_leaf_quota_1"),
-))]
-compile_error!("labeled leaf quota variants are mutually exclusive");
-
 /// Edge-slab slots reserved per vertex within one PMA leaf block.
-pub(crate) fn labeled_leaf_vertex_edge_quota() -> u32 {
-    #[cfg(feature = "labeled_leaf_quota_16")]
-    const QUOTA: u32 = 16;
-    #[cfg(feature = "labeled_leaf_quota_8")]
-    const QUOTA: u32 = 8;
-    #[cfg(feature = "labeled_leaf_quota_4")]
-    const QUOTA: u32 = 4;
-    #[cfg(feature = "labeled_leaf_quota_1")]
-    const QUOTA: u32 = 1;
-    #[cfg(not(any(
-        feature = "labeled_leaf_quota_16",
-        feature = "labeled_leaf_quota_8",
-        feature = "labeled_leaf_quota_4",
-        feature = "labeled_leaf_quota_1",
-    )))]
-    const QUOTA: u32 = super::DEFAULT_SEGMENT_SIZE;
-    QUOTA
-}
-
-/// Initial edge-span reservation for the segment16/quota1 candidate policy.
-pub(crate) fn labeled_leaf_initial_bucket_quota(segment_size: u32) -> u32 {
-    if segment_size == 16 && labeled_leaf_vertex_edge_quota() == 1 {
+pub(crate) const fn labeled_leaf_vertex_edge_quota(segment_size: u32) -> u32 {
+    if segment_size == 16 || segment_size == 0 {
         1
     } else {
-        0
+        segment_size
     }
+}
+
+/// Initial edge-span reservation for the production segment16/quota1 policy.
+pub(crate) fn labeled_leaf_initial_bucket_quota(segment_size: u32) -> u32 {
+    if segment_size == 16 { 1 } else { 0 }
 }
 
 /// Total edge-slab slots reserved for one PMA leaf when pinned.
@@ -61,13 +36,13 @@ pub(crate) fn labeled_leaf_physical_block_len(segment_size: u32) -> u64 {
     u64::from(
         segment_size
             .max(1)
-            .saturating_mul(labeled_leaf_vertex_edge_quota()),
+            .saturating_mul(labeled_leaf_vertex_edge_quota(segment_size)),
     )
 }
 
 fn labeled_vertex_edge_offset_in_leaf(vid: VertexId, segment_size: u32) -> u64 {
     u64::from(u32::from(vid) % segment_size.max(1))
-        .saturating_mul(u64::from(labeled_leaf_vertex_edge_quota()))
+        .saturating_mul(u64::from(labeled_leaf_vertex_edge_quota(segment_size)))
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -110,7 +85,15 @@ where
                 continue;
             }
             let vertex = self.vertices.get(other);
-            if vertex.is_default_edge_labeled() || vertex.stored_slots == 0 {
+            if vertex.stored_slots == 0 {
+                continue;
+            }
+            if vertex.is_default_edge_labeled() {
+                let base = vertex.base_slot_start();
+                let Some(end) = checked_add_slot_index(base, u64::from(vertex.stored_slots)) else {
+                    continue;
+                };
+                spans.push((base, end));
                 continue;
             }
             let Ok(buckets) = self.read_vertex_label_buckets(&vertex) else {
@@ -139,9 +122,6 @@ where
         let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
         for vid_u in start_vid..end_vid {
             let vertex = self.vertices.get(VertexId::from(vid_u));
-            if vertex.is_default_edge_labeled() {
-                continue;
-            }
             if u64::from(vertex.stored_slots) > quota {
                 return true;
             }
@@ -164,7 +144,7 @@ where
         let header = self.edges.header();
         let seg = header.segment_size.max(1);
         let leaf_end = checked_add_slot_index(leaf_start, leaf_len)?;
-        let quota = u64::from(labeled_leaf_vertex_edge_quota());
+        let quota = u64::from(labeled_leaf_vertex_edge_quota(seg));
         let preferred =
             checked_add_slot_index(leaf_start, labeled_vertex_edge_offset_in_leaf(vid, seg));
 
@@ -275,7 +255,9 @@ where
             vid,
             leaf_start,
             leaf_len,
-            u64::from(labeled_leaf_vertex_edge_quota()),
+            u64::from(labeled_leaf_vertex_edge_quota(
+                self.edges.header().segment_size,
+            )),
         ) {
             return Ok(base);
         }
@@ -499,7 +481,15 @@ where
         for vid_u in start_vid..end_vid {
             let other = VertexId::from(vid_u);
             let vertex = self.vertices.get(other);
-            if vertex.is_default_edge_labeled() || vertex.stored_slots == 0 {
+            if vertex.stored_slots == 0 {
+                continue;
+            }
+            if vertex.is_default_edge_labeled() {
+                let base = vertex.base_slot_start();
+                let Some(end) = checked_add_slot_index(base, u64::from(vertex.stored_slots)) else {
+                    continue;
+                };
+                spans.push((other, base, end));
                 continue;
             }
             let Ok(buckets) = self.read_vertex_label_buckets(&vertex) else {

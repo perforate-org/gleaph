@@ -1,6 +1,5 @@
 # Optional comma-separated features after `canbench`, e.g. `bucket_row_grow_double` or
-# `labeled_leaf_quota_16`, `labeled_leaf_quota_8`, `labeled_leaf_quota_4`, or
-# `labeled_leaf_quota_1`.
+# Labeled LARA uses the production segment16/quota1 policy.
 # Used by `scripts/bench_bucket_row_grow_compare.sh`.
 # Dedicated CARGO_TARGET_DIR (../../target/canbench) so the canbench wasm never clobbers the
 # pocket-ic-e2e artifacts under ../../target (see crates/router/canbench.yml).

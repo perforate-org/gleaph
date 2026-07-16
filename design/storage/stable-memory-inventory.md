@@ -113,8 +113,8 @@ Capacity-slope benchmarks are in `crates/graph/src/bench/capacity.rs` and are ga
 and delete/reinsert churn. Churn capacity must be evaluated separately from live logical rows
 because LARA retains physical free spans for reuse. LARA's labeled PMA benchmark also exposes
 The historical quota16/8/4/1 and explicit segment-size comparisons remain recorded in ADR 0001;
-the planned default-policy slice will remove these Cargo features and production policy variants.
-Fresh labeled graphs are planned to use `segment_size = 16` and vertex quota `1`. The tail-headroom
+the quota Cargo features and production policy variants have been removed. Fresh labeled graphs use
+`segment_size = 16` and vertex quota `1`. The tail-headroom
 contract derives its boundary from the persisted segment size. The segment16 suite covers
 tail-headroom scaling, deferred-maintenance deduplication, and hub/churn across a PMA leaf boundary.
 Existing development stable data must be recreated when this policy changes; no compatibility

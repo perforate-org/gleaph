@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn bypass_grow_does_not_repoint_bucket_mode_successor_bucket_base() {
-        let graph = LabeledLaraGraph::new(
+        let graph = LabeledLaraGraph::new_with_segment_size(
             mem(),
             mem(),
             mem(),
@@ -392,6 +392,7 @@ mod tests {
             mem(),
             crate::labeled::InitialCapacities::uniform(1 << 16),
             BucketLabelKey::from_raw(1),
+            32,
         )
         .unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();

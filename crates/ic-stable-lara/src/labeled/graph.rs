@@ -23,7 +23,7 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::{cell::Cell, marker::PhantomData};
 
-const DEFAULT_SEGMENT_SIZE: u32 = 32;
+const DEFAULT_SEGMENT_SIZE: u32 = 16;
 const BULK_BUCKET_SEARCH_MIN_DEGREE: u32 = 16;
 const BUCKET_LOOKUP_CACHE_ENTRIES: usize = 64;
 

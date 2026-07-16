@@ -289,7 +289,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "labeled_leaf_quota_1")]
     #[test]
     fn segment16_quota1_first_bucket_stays_on_slab() {
         let graph = graph_with_segment_size(16);
@@ -360,7 +359,6 @@ mod tests {
             .unwrap();
         drain_vertex_edge_span_compact_queue(&graph);
 
-        #[cfg(feature = "labeled_leaf_quota_1")]
         {
             let sparse = graph.inner().vertices().get(VertexId::from(16));
             assert!(
@@ -384,7 +382,6 @@ mod tests {
         }
         drain_vertex_edge_span_compact_queue(&graph);
 
-        #[cfg(feature = "labeled_leaf_quota_1")]
         {
             let sparse = graph.inner().vertices().get(VertexId::from(16));
             assert!(

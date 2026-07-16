@@ -95,11 +95,9 @@ When a new bucket is created for an ordinary directed edge insert, storage must 
 
 ### Segment size versus per-vertex quota
 
-The selected next production default for fresh labeled graphs is
+The production default for fresh labeled graphs is
 `segment_size = 16` vertices per PMA leaf and a per-vertex edge quota of 1 slot.
-Until the dedicated default-policy slice is implemented, the checked-in
-constructor and quota features remain at the previous policy. These are related but
-distinct quantities:
+These are related but distinct quantities:
 
 ```text
 initial pinned leaf block = segment_size × vertex_edge_quota
@@ -112,11 +110,12 @@ promotion use the persisted `segment_size` from the edge header. It is not a
 dedicated allocation for every vertex or label bucket: later growth remains
 owned by the PMA leaf slide, relocate, and resize paths.
 
-The planned change removes the quota Cargo features and production-facing
-segment32 policy. The low-level persisted segment arithmetic remains generic so the
-storage algorithms can validate arbitrary persisted headers and focused tests
-can exercise boundary sizes, but fresh labeled graph construction will select
-only the 16/1 policy after that slice lands.
+The quota Cargo features and production-facing segment32 policy have been removed.
+The low-level persisted segment arithmetic remains generic so storage algorithms can
+validate arbitrary persisted headers and focused tests can exercise boundary sizes,
+but fresh labeled graph construction selects only the 16/1 policy. Explicit
+`new_with_segment_size` callers retain segment-size-derived quota arithmetic for
+low-level geometry tests; this is not a production configuration surface.
 
 ### Historical experiments (not active policy)
 

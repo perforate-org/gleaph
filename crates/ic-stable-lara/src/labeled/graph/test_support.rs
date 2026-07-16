@@ -110,7 +110,10 @@ pub fn mem() -> crate::VectorMemory {
 pub fn test_graph_with_default(
     default_label: BucketLabelKey,
 ) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
-    let graph = LabeledLaraGraph::new(
+    // Most graph-unit fixtures exercise generic geometry and retain an explicit
+    // segment32 layout. Production construction uses the segment16 default; the
+    // segment-size-specific contract tests below exercise that policy directly.
+    let graph = LabeledLaraGraph::new_with_segment_size(
         mem(),
         mem(),
         mem(),
@@ -128,6 +131,7 @@ pub fn test_graph_with_default(
         mem(),
         crate::labeled::InitialCapacities::uniform(256),
         default_label,
+        32,
     )
     .unwrap();
     graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -139,7 +143,7 @@ pub fn test_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
 }
 
 pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::VectorMemory> {
-    LabeledLaraGraph::new(
+    LabeledLaraGraph::new_with_segment_size(
         mem(),
         mem(),
         mem(),
@@ -157,6 +161,7 @@ pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::Vect
         mem(),
         crate::labeled::InitialCapacities::uniform(256),
         BucketLabelKey::directed_from_index(1),
+        32,
     )
     .unwrap()
 }
@@ -256,7 +261,7 @@ pub fn inline_value_test_graph() -> LabeledLaraGraph<PayloadTestEdge, crate::Vec
 pub fn inline_value_test_graph_with_capacity(
     elem_capacity: u64,
 ) -> LabeledLaraGraph<PayloadTestEdge, crate::VectorMemory> {
-    LabeledLaraGraph::new(
+    LabeledLaraGraph::new_with_segment_size(
         mem(),
         mem(),
         mem(),
@@ -274,6 +279,7 @@ pub fn inline_value_test_graph_with_capacity(
         mem(),
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         BucketLabelKey::directed_from_index(1),
+        32,
     )
     .unwrap()
 }

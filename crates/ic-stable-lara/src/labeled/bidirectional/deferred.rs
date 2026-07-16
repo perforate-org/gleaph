@@ -3016,7 +3016,7 @@ mod tests {
         let graph = sized_graph(1 << 16);
         let src = graph.push_vertex().expect("src");
 
-        // Fill the same PMA leaf (segment_size == DEFAULT_SEGMENT_SIZE == 32) with
+        // Fill the same PMA leaf (segment_size == DEFAULT_SEGMENT_SIZE == 16) with
         // mates that pin the leaf block.  Each mate reserves its fixed per-vertex
         // quota, leaving src only its own quota for new buckets until the leaf
         // becomes dense and must be rebalanced / relocated.
