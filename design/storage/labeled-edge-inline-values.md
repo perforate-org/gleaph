@@ -84,6 +84,10 @@ The queue persistence contract is covered by a reopen test: a pending payload
 item remains queued across graph reconstruction and is consumed by the next
 maintenance step.
 
+An end-to-end deferred-wrapper test also verifies that real payload values and
+edge order survive the queued compaction, while fragmented holes become one
+reusable span; the backing tail remains intentionally unshrunk.
+
 The maintenance contract also requeues a payload item when compaction returns an
 error; a failure-injection test verifies that the item remains pending and is
 consumed successfully on the following retry.

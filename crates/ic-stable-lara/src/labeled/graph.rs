@@ -58,7 +58,7 @@ mod iter;
 pub(crate) mod leaf_pin;
 mod remove;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod traverse;
 mod values;
 

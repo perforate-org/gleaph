@@ -63,7 +63,10 @@ pub enum MaintenanceWorkItem {
 mod tests {
     use super::*;
     use crate::{
-        labeled::{BucketLabelKey, graph::LabeledLaraGraph},
+        labeled::{
+            BucketLabelKey,
+            graph::{LabeledLaraGraph, test_support::PayloadTestEdge},
+        },
         test_support::{labeled_lara_memories, vector_memory},
     };
 
@@ -127,6 +130,48 @@ mod tests {
 
     fn graph() -> DeferredLabeledLaraGraph<TestEdge, crate::VectorMemory> {
         graph_with_segment_size(32)
+    }
+
+    fn payload_graph() -> DeferredLabeledLaraGraph<PayloadTestEdge, crate::VectorMemory> {
+        let (
+            vertices,
+            buckets,
+            bucket_free_spans,
+            bucket_free_span_by_start,
+            edge_counts,
+            edges,
+            edge_log,
+            edge_span_meta,
+            edge_free_spans,
+            edge_free_span_by_start,
+            inline_value_slab,
+            value_free_spans,
+            value_free_span_by_start,
+            payload_log,
+            value_blobs,
+        ) = labeled_lara_memories();
+        let inner = LabeledLaraGraph::new_with_segment_size(
+            vertices,
+            buckets,
+            bucket_free_spans,
+            bucket_free_span_by_start,
+            edge_counts,
+            edges,
+            edge_log,
+            edge_span_meta,
+            edge_free_spans,
+            edge_free_span_by_start,
+            inline_value_slab,
+            value_free_spans,
+            value_free_span_by_start,
+            payload_log,
+            value_blobs,
+            crate::labeled::InitialCapacities::uniform(1024),
+            BucketLabelKey::from_raw(1),
+            32,
+        )
+        .unwrap();
+        DeferredLabeledLaraGraph::new(inner, vector_memory()).unwrap()
     }
 
     fn drain_vertex_edge_span_compact_queue(
@@ -751,6 +796,91 @@ mod tests {
 
         graph.maintenance(budget);
         assert_eq!(graph.maintenance_queue_len(), 0);
+    }
+
+    #[test]
+    fn deferred_payload_compaction_preserves_values_and_reclaims_holes() {
+        let graph = payload_graph();
+        let src = graph
+            .inner()
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        for (label, target, width) in [(2, 0, 2), (3, 1, 2), (4, 2, 4)] {
+            let label = BucketLabelKey::from_raw(label);
+            let bytes = vec![target as u8; usize::from(width)];
+            graph
+                .inner()
+                .ensure_label_bucket_inline_value_byte_width(src, label, width)
+                .unwrap();
+            graph
+                .insert_edge(src, label, PayloadTestEdge::with_bytes(target, &bytes))
+                .unwrap();
+        }
+        for (label, target) in [(2, 0), (4, 2)] {
+            let label = BucketLabelKey::from_raw(label);
+            graph
+                .remove_edge_matching(src, label, |edge| edge.target == target)
+                .unwrap()
+                .expect("payload edge removed");
+        }
+        while graph.maintenance_queue_len() > 0 {
+            graph.maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: Some(1),
+                max_segments: None,
+                max_delete_edge_steps: None,
+            });
+        }
+
+        let target_label = BucketLabelKey::from_raw(5);
+        let before_target = graph.inner().payload_storage_stats().unwrap();
+        assert_eq!(
+            before_target.free_bytes, 6,
+            "before target: {before_target:?}"
+        );
+        assert!(graph.inner().payload_compaction_needed(6).unwrap());
+        graph
+            .inner()
+            .ensure_label_bucket_inline_value_byte_width(src, target_label, 6)
+            .unwrap();
+        graph
+            .insert_edge(src, target_label, PayloadTestEdge::with_bytes(3, &[3u8; 6]))
+            .unwrap();
+        assert!(graph.maintenance_queue_len() > 0);
+        assert_eq!(graph.inner().payload_storage_stats().unwrap().free_bytes, 6);
+
+        while graph.maintenance_queue_len() > 0 {
+            graph.maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: Some(1),
+                max_segments: None,
+                max_delete_edge_steps: None,
+            });
+        }
+        let after = graph.inner().payload_storage_stats().unwrap();
+        assert_eq!(after.free_bytes, 6, "unexpected payload stats: {after:?}");
+        assert_eq!(after.largest_free_span, after.free_bytes);
+        assert!(!graph.inner().payload_compaction_needed(6).unwrap());
+        assert_eq!(
+            graph
+                .inner()
+                .iter_edges_for_label(src, BucketLabelKey::from_raw(3))
+                .unwrap()[0]
+                .target,
+            1
+        );
+        assert_eq!(
+            graph
+                .inner()
+                .iter_edges_for_label(src, target_label)
+                .unwrap()[0]
+                .target,
+            3
+        );
     }
 }
 

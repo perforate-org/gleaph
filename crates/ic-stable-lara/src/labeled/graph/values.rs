@@ -136,6 +136,18 @@ where
                 len,
             });
             available.sort_by_key(|span| span.start_slot);
+            let mut coalesced: Vec<crate::lara::edge::free_span::FreeSpan> =
+                Vec::with_capacity(available.len());
+            for span in available.drain(..) {
+                if let Some(previous) = coalesced.last_mut()
+                    && previous.start_slot.saturating_add(previous.len) == span.start_slot
+                {
+                    previous.len = previous.len.saturating_add(span.len);
+                } else {
+                    coalesced.push(span);
+                }
+            }
+            available = coalesced;
             cursor = cursor
                 .checked_add(len)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
