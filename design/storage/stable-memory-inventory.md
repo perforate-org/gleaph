@@ -79,6 +79,12 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 
 `init_graph()` wires **32** consecutive `MemoryId` regions (0–31) into one `DeferredBidirectionalLabeledLaraGraph`. Thread-local: `GRAPH`.
 
+Fresh Graph stores use independent initial capacities for the labeled orientations:
+`bucket_slots = 1,024`, `edge_slots = 4,096`, and `payload_bytes = 65,536` per orientation.
+These are allocation hints only; LARA grows and relocates the slabs as data arrives. Reopen uses
+the capacities persisted in each region's own header, so changing these defaults does not resize
+existing stable memory.
+
 ### Forward orientation (canonical adjacency + payloads)
 
 | MemoryId | Symbol | Role | Class | Rebuild |

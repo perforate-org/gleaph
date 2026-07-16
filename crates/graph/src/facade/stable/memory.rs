@@ -10,7 +10,7 @@ use super::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
-    lara::maintenance::DeferredConfig,
+    labeled::InitialCapacities, lara::maintenance::DeferredConfig,
 };
 use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
@@ -92,8 +92,12 @@ const DERIVED_INDEX_OUTBOX: MemoryId = MemoryId::new(46);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
-/// Initial slab capacity for both labeled orientations (grows as needed).
-const GRAPH_ELEM_CAPACITY: u64 = 1 << 20;
+/// Initial label-bucket descriptor capacity for each labeled orientation (grows as needed).
+const GRAPH_INITIAL_BUCKET_CAPACITY: u64 = 1 << 10;
+/// Initial edge-slot capacity for each labeled orientation (grows as needed).
+const GRAPH_INITIAL_EDGE_CAPACITY: u64 = 1 << 12;
+/// Initial inline-payload byte capacity for each labeled orientation (grows as needed).
+const GRAPH_INITIAL_PAYLOAD_BYTES: u64 = 1 << 16;
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
@@ -157,7 +161,11 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_PAYLOAD_BLOBS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
         MEMORY_MANAGER.with(|m| m.borrow().get(DIRTY_WORK_ITEMS)),
-        GRAPH_ELEM_CAPACITY,
+        InitialCapacities {
+            bucket_slots: GRAPH_INITIAL_BUCKET_CAPACITY,
+            edge_slots: GRAPH_INITIAL_EDGE_CAPACITY,
+            payload_bytes: GRAPH_INITIAL_PAYLOAD_BYTES,
+        },
         GRAPH_DEFAULT_EDGE_LABEL,
         DeferredConfig::default(),
     )

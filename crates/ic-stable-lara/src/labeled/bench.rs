@@ -170,7 +170,7 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         value_free_span_by_start,
         payload_log,
         value_blob,
-        elem_capacity,
+        crate::labeled::InitialCapacities::uniform(elem_capacity),
         BucketLabelKey::from_raw(1),
     )
     .expect("graph")
@@ -212,7 +212,7 @@ fn payload_bench_graph(
         value_free_span_by_start,
         payload_log,
         value_blob,
-        elem_capacity,
+        crate::labeled::InitialCapacities::uniform(elem_capacity),
         BucketLabelKey::from_raw(1),
     )
     .expect("graph")
@@ -1261,7 +1261,7 @@ fn bidirectional_bench_graph()
         rvblobs,
         vector_memory(),
         vector_memory(),
-        1 << 20,
+        crate::labeled::InitialCapacities::uniform(1 << 20),
         BucketLabelKey::UNLABELED_DIRECTED,
     )
     .expect("bidirectional bench graph")
@@ -1440,7 +1440,7 @@ fn bench_labeled_bypass_promotion() -> canbench_rs::BenchResult {
         vector_memory(),
         vector_memory(),
         vector_memory(),
-        256,
+        crate::labeled::InitialCapacities::uniform(256),
         default,
     )
     .expect("labeled graph");

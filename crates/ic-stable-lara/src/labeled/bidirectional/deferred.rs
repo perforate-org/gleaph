@@ -7,7 +7,7 @@
 use crate::{
     VertexCount, VertexId,
     labeled::{
-        BucketLabelKey,
+        BucketLabelKey, InitialCapacities,
         bucket_label_key::BucketDirectedness,
         graph::{
             EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph, LabeledOperationError,
@@ -557,7 +557,7 @@ where
         reverse_payload_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
-        elem_capacity: u64,
+        capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
         Self::new_with_config(
@@ -593,7 +593,7 @@ where
             reverse_payload_blobs,
             maintenance_queue,
             dirty_work_items,
-            elem_capacity,
+            capacities,
             default_label,
             DeferredConfig::default(),
         )
@@ -634,7 +634,7 @@ where
         reverse_payload_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
-        elem_capacity: u64,
+        capacities: InitialCapacities,
         default_label: BucketLabelKey,
         config: DeferredConfig,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
@@ -657,7 +657,7 @@ where
             forward_payload_free_span_by_start,
             forward_payload_log,
             forward_payload_blobs,
-            elem_capacity,
+            capacities,
             default_label,
         )?;
         let reverse = LabeledLaraGraph::new(
@@ -676,7 +676,7 @@ where
             reverse_payload_free_span_by_start,
             reverse_payload_log,
             reverse_payload_blobs,
-            elem_capacity,
+            capacities,
             default_label,
         )?;
         let maintenance = BidirectionalMaintenanceQueue::new(maintenance_queue, dirty_work_items)?;
@@ -723,7 +723,7 @@ where
         reverse_payload_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
-        elem_capacity: u64,
+        capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
         Self::init_with_config(
@@ -759,7 +759,7 @@ where
             reverse_payload_blobs,
             maintenance_queue,
             dirty_work_items,
-            elem_capacity,
+            capacities,
             default_label,
             DeferredConfig::default(),
         )
@@ -800,7 +800,7 @@ where
         reverse_payload_blobs: M,
         maintenance_queue: M,
         dirty_work_items: M,
-        elem_capacity: u64,
+        capacities: InitialCapacities,
         default_label: BucketLabelKey,
         config: DeferredConfig,
     ) -> Result<Self, DeferredBidirectionalLabeledError> {
@@ -823,7 +823,7 @@ where
             forward_payload_free_span_by_start,
             forward_payload_log,
             forward_payload_blobs,
-            elem_capacity,
+            capacities,
             default_label,
         )
         .map_err(DeferredBidirectionalLabeledError::ForwardInit)?;
@@ -843,7 +843,7 @@ where
             reverse_payload_free_span_by_start,
             reverse_payload_log,
             reverse_payload_blobs,
-            elem_capacity,
+            capacities,
             default_label,
         )
         .map_err(DeferredBidirectionalLabeledError::ReverseInit)?;
@@ -2733,7 +2733,7 @@ mod tests {
             rvblobs,
             vector_memory(),
             vector_memory(),
-            elem_capacity,
+            crate::labeled::InitialCapacities::uniform(elem_capacity),
             BucketLabelKey::from_raw(1),
         )
         .expect("graph")
@@ -3421,7 +3421,7 @@ mod tests {
             rvblobs,
             vector_memory(),
             vector_memory(),
-            128,
+            crate::labeled::InitialCapacities::uniform(128),
             BucketLabelKey::UNLABELED_DIRECTED,
         )
         .expect("graph");
@@ -3904,7 +3904,7 @@ mod tests {
             rvblobs,
             vector_memory(),
             vector_memory(),
-            256,
+            crate::labeled::InitialCapacities::uniform(256),
             BucketLabelKey::UNLABELED_DIRECTED,
         )
         .expect("graph")

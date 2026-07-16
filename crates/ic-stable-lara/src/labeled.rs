@@ -101,6 +101,32 @@ pub(crate) mod hub_tree_prototype;
     )
 )]
 pub(crate) mod invariants;
+
+/// Initial physical capacities for the labeled graph's independent storage slabs.
+///
+/// These values affect only fresh stores. Reopened stores use the capacities persisted in
+/// their own headers. Bucket descriptors, edge slots, and inline payload bytes have different
+/// growth behavior and therefore must not share one capacity value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InitialCapacities {
+    /// Initial number of label-bucket descriptor slots per orientation.
+    pub bucket_slots: u64,
+    /// Initial number of edge slots per orientation.
+    pub edge_slots: u64,
+    /// Initial byte capacity of the inline-payload slab per orientation.
+    pub payload_bytes: u64,
+}
+
+impl InitialCapacities {
+    /// Creates equal capacities for tests and generic labeled-LARA fixtures.
+    pub const fn uniform(value: u64) -> Self {
+        Self {
+            bucket_slots: value,
+            edge_slots: value,
+            payload_bytes: value,
+        }
+    }
+}
 pub mod record;
 pub mod slot_index;
 pub(crate) mod traits;

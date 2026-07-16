@@ -550,7 +550,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
-            1 << 20,
+            crate::labeled::InitialCapacities::uniform(1 << 20),
             BucketLabelKey::from_raw(1),
         )
         .unwrap()
@@ -690,7 +690,7 @@ mod tests {
             value_free_span_by_start.clone(),
             payload_log.clone(),
             value_blobs.clone(),
-            elem_capacity,
+            crate::labeled::InitialCapacities::uniform(elem_capacity),
             default_label,
         )
         .unwrap();
@@ -723,7 +723,7 @@ mod tests {
             value_free_span_by_start,
             payload_log,
             value_blobs,
-            elem_capacity,
+            crate::labeled::InitialCapacities::uniform(elem_capacity),
             default_label,
         )
         .unwrap();

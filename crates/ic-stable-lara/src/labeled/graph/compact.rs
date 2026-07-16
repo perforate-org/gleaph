@@ -2433,7 +2433,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
-            256,
+            crate::labeled::InitialCapacities::uniform(256),
             default,
         )
         .unwrap();
@@ -2676,7 +2676,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
-            1 << 20,
+            crate::labeled::InitialCapacities::uniform(1 << 20),
             BucketLabelKey::from_raw(1),
         )
         .unwrap();
@@ -2733,7 +2733,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
-            1 << 20,
+            crate::labeled::InitialCapacities::uniform(1 << 20),
             BucketLabelKey::from_raw(1),
         )
         .unwrap();
@@ -2827,7 +2827,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
-            1 << 20,
+            crate::labeled::InitialCapacities::uniform(1 << 20),
             BucketLabelKey::from_raw(1),
         )
         .unwrap();

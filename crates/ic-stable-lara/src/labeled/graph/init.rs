@@ -20,6 +20,7 @@ use std::{cell::Cell, marker::PhantomData};
 
 use super::error::{InitError, LabeledOperationError};
 use super::{DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
+use crate::labeled::InitialCapacities;
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -72,10 +73,10 @@ where
         value_free_span_by_start: M,
         payload_log: M,
         value_blobs: M,
-        elem_capacity: u64,
+        capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, crate::GrowFailed> {
-        crate::slab_index::validate_elem_capacity_grow_failed(elem_capacity, edges.size())?;
+        crate::slab_index::validate_elem_capacity_grow_failed(capacities.edge_slots, edges.size())?;
         let segment_count = segment_tree_leaf_count(VertexCount::default(), DEFAULT_SEGMENT_SIZE);
         Ok(Self {
             vertices: VertexStore::new(vertices)?,
@@ -83,7 +84,7 @@ where
                 buckets,
                 bucket_free_spans,
                 bucket_free_span_by_start,
-                elem_capacity,
+                capacities.bucket_slots,
                 DEFAULT_SEGMENT_SIZE,
             )?,
             edges: EdgeStore::new(
@@ -93,7 +94,7 @@ where
                 edge_span_meta,
                 edge_free_spans,
                 edge_free_span_by_start,
-                elem_capacity,
+                capacities.edge_slots,
                 DEFAULT_SEGMENT_SIZE,
                 DEFAULT_SEGMENT_SIZE,
             )?,
@@ -103,7 +104,7 @@ where
                 value_blobs,
                 value_free_spans,
                 value_free_span_by_start,
-                elem_capacity,
+                capacities.payload_bytes,
                 segment_count,
             )?,
             default_label,
@@ -130,7 +131,7 @@ where
         value_free_span_by_start: M,
         payload_log: M,
         value_blobs: M,
-        elem_capacity: u64,
+        capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, InitError> {
         // The vertex column, bucket, edge, and payload subsystems are one
@@ -164,7 +165,7 @@ where
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            elem_capacity,
+            capacities.edge_slots,
             DEFAULT_SEGMENT_SIZE,
             DEFAULT_SEGMENT_SIZE,
         )
@@ -176,7 +177,7 @@ where
                 buckets,
                 bucket_free_spans,
                 bucket_free_span_by_start,
-                elem_capacity,
+                capacities.bucket_slots,
                 DEFAULT_SEGMENT_SIZE,
             )
             .map_err(InitError::Buckets)?,
@@ -187,7 +188,7 @@ where
                 value_blobs,
                 value_free_spans,
                 value_free_span_by_start,
-                elem_capacity,
+                capacities.payload_bytes,
                 edge_segment_count,
             )
             .map_err(InitError::Payloads)?,
@@ -390,7 +391,7 @@ mod tests {
             vfsbs.clone(),
             pl.clone(),
             vb.clone(),
-            256,
+            crate::labeled::InitialCapacities::uniform(256),
             label,
         )
         .unwrap();
@@ -411,7 +412,7 @@ mod tests {
             vfsbs,
             pl,
             vb,
-            256,
+            crate::labeled::InitialCapacities::uniform(256),
             label,
         );
         assert!(matches!(result, Err(InitError::PartialLayout)));
@@ -438,14 +439,62 @@ mod tests {
             vfsbs.clone(),
             pl.clone(),
             vb.clone(),
-            256,
+            crate::labeled::InitialCapacities::uniform(256),
             label,
         )
         .unwrap();
         let reopened = LabeledLaraGraph::<TestEdge, _>::init(
-            v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb, 256, label,
+            v,
+            bk,
+            bfs,
+            bfsbs,
+            ec,
+            e,
+            el,
+            esm,
+            efs,
+            efsbs,
+            ps,
+            vfs,
+            vfsbs,
+            pl,
+            vb,
+            crate::labeled::InitialCapacities::uniform(256),
+            label,
         );
         assert!(reopened.is_ok());
+    }
+
+    #[test]
+    fn fresh_layout_applies_independent_initial_capacities() {
+        let graph = LabeledLaraGraph::<TestEdge, _>::new(
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            crate::labeled::InitialCapacities {
+                bucket_slots: 7,
+                edge_slots: 11,
+                payload_bytes: 13,
+            },
+            BucketLabelKey::directed_from_index(1),
+        )
+        .unwrap();
+
+        assert_eq!(graph.buckets().header().elem_capacity, 7);
+        assert_eq!(graph.edges().header().elem_capacity, 11);
+        assert_eq!(graph.values().byte_capacity(), 13);
     }
 
     #[test]

@@ -629,7 +629,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
-            1 << 20,
+            crate::labeled::InitialCapacities::uniform(1 << 20),
             BucketLabelKey::from_raw(1),
         )
         .unwrap();

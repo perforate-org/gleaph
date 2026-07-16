@@ -126,7 +126,7 @@ pub fn test_graph_with_default(
         mem(),
         mem(),
         mem(),
-        256,
+        crate::labeled::InitialCapacities::uniform(256),
         default_label,
     )
     .unwrap();
@@ -155,7 +155,7 @@ pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::Vect
         mem(),
         mem(),
         mem(),
-        256,
+        crate::labeled::InitialCapacities::uniform(256),
         BucketLabelKey::directed_from_index(1),
     )
     .unwrap()
@@ -272,7 +272,7 @@ pub fn inline_value_test_graph_with_capacity(
         mem(),
         mem(),
         mem(),
-        elem_capacity,
+        crate::labeled::InitialCapacities::uniform(elem_capacity),
         BucketLabelKey::directed_from_index(1),
     )
     .unwrap()
@@ -303,7 +303,7 @@ pub fn build_mixed_label_hub(
         mem(),
         mem(),
         mem(),
-        1 << 20,
+        crate::labeled::InitialCapacities::uniform(1 << 20),
         BucketLabelKey::from_raw(1),
     )
     .unwrap();
@@ -386,7 +386,7 @@ pub fn open_labeled_graph(
         mems[12].clone(),
         mems[13].clone(),
         mems[14].clone(),
-        elem_capacity,
+        crate::labeled::InitialCapacities::uniform(elem_capacity),
         default_label,
     )
     .unwrap()
@@ -415,7 +415,7 @@ pub fn reopen_labeled_graph(
         mems[12].clone(),
         mems[13].clone(),
         mems[14].clone(),
-        elem_capacity,
+        crate::labeled::InitialCapacities::uniform(elem_capacity),
         default_label,
     )
     .unwrap()

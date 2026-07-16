@@ -212,7 +212,7 @@ mod tests {
             mems[12].clone(),
             mems[13].clone(),
             mems[14].clone(),
-            256,
+            crate::labeled::InitialCapacities::uniform(256),
             default_label,
         )
         .unwrap();
@@ -240,7 +240,7 @@ mod tests {
             mems[12].clone(),
             mems[13].clone(),
             mems[14].clone(),
-            256,
+            crate::labeled::InitialCapacities::uniform(256),
             default_label,
         )
         .unwrap()
@@ -265,7 +265,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
-            1,
+            crate::labeled::InitialCapacities::uniform(1),
             default,
         )
         .unwrap();
@@ -390,7 +390,7 @@ mod tests {
             mem(),
             mem(),
             mem(),
-            1 << 16,
+            crate::labeled::InitialCapacities::uniform(1 << 16),
             BucketLabelKey::from_raw(1),
         )
         .unwrap();

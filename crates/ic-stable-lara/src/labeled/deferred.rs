@@ -113,7 +113,7 @@ mod tests {
             vffsbs,
             vlog,
             vblobs,
-            1024,
+            crate::labeled::InitialCapacities::uniform(1024),
             BucketLabelKey::from_raw(1),
         )
         .expect("inner graph");
@@ -589,7 +589,7 @@ where
         payload_log: M,
         value_blobs: M,
         queue_memory: M,
-        elem_capacity: u64,
+        capacities: crate::labeled::InitialCapacities,
         default_label: crate::labeled::BucketLabelKey,
     ) -> Result<Self, InitError> {
         let inner = LabeledLaraGraph::init(
@@ -608,7 +608,7 @@ where
             value_free_span_by_start,
             payload_log,
             value_blobs,
-            elem_capacity,
+            capacities,
             default_label,
         )?;
         let queue = StableVecDeque::init(queue_memory)
