@@ -740,6 +740,9 @@ where
         if had_bytes == 0 {
             // First span for this bucket: bump the occupied tail when the slab already
             // has bytes so we do not place a second bucket at offset 0.
+            if self.payload_compaction_needed(needed_bytes)? {
+                let _ = self.compact_payload_slab()?;
+            }
             let offset = if tail == 0 {
                 self.values
                     .allocate_byte_span(needed_bytes)

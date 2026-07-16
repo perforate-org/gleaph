@@ -61,12 +61,12 @@ Payload-only compaction is available through `compact_payload_slab`. It prefligh
 earlier free-span prefixes, copies only payload slab bytes, updates bucket payload
 offsets, and retires the old spans. Edge slab positions, edge/payload log chains,
 bucket-local live order, and vertex allocation totals are unchanged. The operation
-does not shrink the backing capacity or invoke edge maintenance; threshold-based
-automatic scheduling remains a later policy decision. Callers can use
-`payload_compaction_needed(requested_bytes)` to distinguish aggregate free space
-that is already usable from fragmentation that prevents one contiguous
-allocation; it returns true only when the free-byte total covers the request but
-the largest retired span does not.
+does not shrink the backing capacity or invoke edge maintenance. New payload
+span allocation checks `payload_compaction_needed(requested_bytes)` first and
+attempts this compaction only when aggregate free space covers the request but
+the largest retired span does not. Existing tail growth and non-tail extension
+remain on their direct paths; a failed or conservative no-op compaction falls
+back to the normal allocator.
 
 ## Payload storage class (schema SSOT)
 
