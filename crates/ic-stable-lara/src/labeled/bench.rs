@@ -860,6 +860,29 @@ fn bench_labeled_payload_log_scan_8b_inline_overflow() -> canbench_rs::BenchResu
     })
 }
 
+/// Baseline for exact payload-slab growth before introducing bounded headroom.
+#[bench(raw)]
+fn bench_labeled_payload_exact_growth_256() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = payload_bench_graph(1 << 20);
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        let label = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(vid, label, 2)
+            .expect("payload width");
+        for target in 0..256u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    PayloadBenchEdge::with_payload(target, 2, &(target as u16).to_le_bytes()),
+                )
+                .expect("payload insert");
+        }
+        black_box(graph.out_edges(vid).expect("scan").len());
+    })
+}
+
 /// ADR 0016: scan after tombstone-free direct log unlinks.
 #[bench(raw)]
 fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResult {
