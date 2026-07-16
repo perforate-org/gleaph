@@ -1,7 +1,7 @@
 # Labeled edge inline value storage
 
 Last updated: 2026-07-16
-Anchor timestamp: 2026-07-16 21:32:14 UTC +0000
+Anchor timestamp: 2026-07-16 22:21:38 UTC +0000
 
 ## Overview
 
@@ -47,6 +47,15 @@ be extended in place without relocating it, new values use the independent
 payload log and are folded later. This policy keeps the first value on a sparse
 label at `value_width` bytes while preserving a dense payload slab whenever its
 span remains extendable.
+
+The growth baseline is intentionally exact rather than reserving geometric
+headroom. In the measured 256-edge payload-growth benchmark, the current policy
+used 53.10M instructions, 568 heap pages, and no stable-memory page increase.
+Tail spans already grow in place, while non-tail spans use the payload log; a
+separate reserved-capacity field would therefore add persistent layout and
+delete/log-transition complexity without reducing the existing copy paths.
+Headroom remains deferred until measurements show a workload where that trade-off
+is favorable.
 
 ## Payload storage class (schema SSOT)
 
