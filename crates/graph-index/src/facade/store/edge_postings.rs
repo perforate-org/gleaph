@@ -1,13 +1,16 @@
 //! Edge property equality postings (ADR 0009 §1).
 
-use super::{IndexStore, clamp_posting_page_limit, ensure_index_value_key};
+use super::{
+    IndexStore, clamp_posting_page_limit, ensure_index_value_key, instruction_counter_near_budget,
+};
 use crate::edge_key::EdgePostingKey;
 use crate::facade::stable::INDEX_EDGE_POSTINGS;
 use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, LookupEdgeEqualPageRequest,
+    EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexSubject,
+    LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult, LookupEdgeEqualPageRequest,
 };
 use std::ops::Bound;
 
@@ -203,5 +206,41 @@ impl IndexStore {
                 done: true,
             }
         })
+    }
+
+    /// Batch paginated equality export for many edge `(property_id, value[, label_id])` buckets.
+    pub fn lookup_edge_equal_batch(
+        &self,
+        req: &LookupEdgeEqualBatchRequest,
+    ) -> Result<LookupEdgeEqualBatchResult, IndexError> {
+        let limit = clamp_posting_page_limit(req.limit);
+        let mut pages = Vec::with_capacity(req.specs.len());
+        let mut next = None;
+        for (index, spec) in req.specs.iter().enumerate() {
+            if instruction_counter_near_budget(true) {
+                next = Some(index as u32);
+                break;
+            }
+            let label_id = match spec.subject {
+                IndexSubject::EdgeProperty { label_id } => label_id,
+                IndexSubject::VertexProperty => {
+                    pages.push(EdgePostingHitPage {
+                        hits: Vec::new(),
+                        next: None,
+                        done: true,
+                    });
+                    continue;
+                }
+            };
+            let page = self.lookup_edge_equal_page(&LookupEdgeEqualPageRequest {
+                property_id: spec.property_id,
+                value: spec.value.clone(),
+                label_id,
+                after: req.after.clone(),
+                limit: limit as u32,
+            })?;
+            pages.push(page);
+        }
+        Ok(LookupEdgeEqualBatchResult { pages, next })
     }
 }

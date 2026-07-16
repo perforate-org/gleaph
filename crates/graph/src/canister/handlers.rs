@@ -120,7 +120,9 @@ fn ensure_execution_mode(
     Ok(())
 }
 
-const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = 35_000_000_000;
+const UPDATE_DYNAMIC_INSTRUCTION_BUDGET: u64 = 40_000_000_000;
+const QUERY_DYNAMIC_INSTRUCTION_BUDGET: u64 = 5_000_000_000;
+const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = UPDATE_DYNAMIC_INSTRUCTION_BUDGET;
 
 fn ensure_execute_plan_result_payload(
     result: &ExecutePlanResult,
@@ -330,7 +332,7 @@ pub fn get_mutation_journal_entries(
     let mut entries = Vec::with_capacity(args.mutation_ids.len());
     let mut next = None;
     for mutation_id in args.mutation_ids.into_iter() {
-        if current_instruction_counter() >= DEFAULT_DYNAMIC_INSTRUCTION_BUDGET {
+        if current_instruction_counter() >= QUERY_DYNAMIC_INSTRUCTION_BUDGET {
             next = Some(mutation_id);
             break;
         }

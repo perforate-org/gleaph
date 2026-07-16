@@ -2,7 +2,7 @@
 
 use super::{
     IndexStore, clamp_posting_page_limit, ensure_index_value_key, ensure_posting_range_request,
-    pack_posting_vertex,
+    instruction_counter_near_budget, pack_posting_vertex,
 };
 use crate::facade::stable::{INDEX_VERTEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::key::PostingKey;
@@ -12,13 +12,13 @@ use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    IndexSubject, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
-    LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
-    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
-    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
-    MAX_EQUALITY_INTERSECTION_ARMS, MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit,
-    PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
-    ValuePostingCountCursor, ValuePostingCountPage,
+    IndexSubject, LookupEdgeEqualPageRequest, LookupEqualBatchRequest, LookupEqualBatchResult,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
+    LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
+    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit, PostingHitPage, PostingRangeRequest,
+    PropertyPostingCursor, ValuePostingCount, ValuePostingCountCursor, ValuePostingCountPage,
 };
 use nohash_hasher::IntSet;
 use std::ops::Bound;
@@ -231,6 +231,60 @@ impl IndexStore {
         })?;
         page.hits = self.filter_hits_by_label(req.vertex_label_id, &page.hits);
         Ok(page)
+    }
+    /// Batch paginated equality export for many vertex `(property_id, value)` buckets.
+    /// Each bucket is answered with its own page; paging stops early if the canister nears its
+    /// instruction budget, returning `next` so the Router can resume.
+    pub fn lookup_equal_batch(
+        &self,
+        req: &LookupEqualBatchRequest,
+    ) -> Result<LookupEqualBatchResult, IndexError> {
+        let limit = clamp_posting_page_limit(req.limit);
+        let mut pages = Vec::with_capacity(req.specs.len());
+        let mut next = None;
+        for (index, spec) in req.specs.iter().enumerate() {
+            if instruction_counter_near_budget(true) {
+                next = Some(index as u32);
+                break;
+            }
+            let page = match spec.subject {
+                IndexSubject::VertexProperty => {
+                    self.lookup_equal_page(&LookupEqualPageRequest {
+                        property_id: spec.property_id,
+                        value: spec.value.clone(),
+                        after: req.after.clone(),
+                        limit: limit as u32,
+                    })?
+                }
+                IndexSubject::EdgeProperty { label_id } => {
+                    let edge_page = self.lookup_edge_equal_page(&LookupEdgeEqualPageRequest {
+                        property_id: spec.property_id,
+                        value: spec.value.clone(),
+                        label_id,
+                        after: None,
+                        limit: limit as u32,
+                    })?;
+                    PostingHitPage {
+                        hits: edge_page
+                            .hits
+                            .into_iter()
+                            .map(|h| PostingHit {
+                                shard_id: h.shard_id,
+                                vertex_id: h.owner_vertex_id,
+                            })
+                            .collect(),
+                        next: edge_page.next.map(|c| PropertyPostingCursor {
+                            value: c.value,
+                            shard_id: c.shard_id,
+                            vertex_id: c.owner_vertex_id,
+                        }),
+                        done: edge_page.done,
+                    }
+                }
+            };
+            pages.push(page);
+        }
+        Ok(LookupEqualBatchResult { pages, next })
     }
 
     /// Paginated range export with label membership sieved inside the index canister.

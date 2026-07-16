@@ -32,13 +32,14 @@ pub use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexEqualSpec,
     IndexLabelIntersectionRequest, IndexPostingBatchProgress, IndexPostingMutation, IndexSubject,
     LabelIntersectionPageRequest, LabelLookupPageRequest, LabelLookupPageResult,
-    LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
-    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
-    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
-    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
-    PropertyIntersectionPage, PropertyPostingCursor, ValuePostingCountCursor,
-    ValuePostingCountPage,
+    LabelPostingCursor, LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult,
+    LookupEdgeEqualPageRequest, LookupEqualBatchRequest, LookupEqualBatchResult,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
+    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
+    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
+    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
+    PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
+    PropertyPostingCursor, ValuePostingCountCursor, ValuePostingCountPage,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -205,6 +206,11 @@ fn lookup_equal_page(req: LookupEqualPageRequest) -> PostingHitPage {
 }
 
 #[query(guard = "guard_router_canister")]
+fn lookup_equal_batch(req: LookupEqualBatchRequest) -> LookupEqualBatchResult {
+    canister::lookup_equal_batch(req)
+}
+
+#[query(guard = "guard_router_canister")]
 fn lookup_equal_page_for_label(req: LookupEqualPageForLabelRequest) -> PostingHitPage {
     canister::lookup_equal_page_for_label(req)
 }
@@ -217,6 +223,11 @@ fn lookup_range_page(req: LookupRangePageRequest) -> PostingHitPage {
 #[query(guard = "guard_router_canister")]
 fn lookup_range_page_for_label(req: LookupRangePageForLabelRequest) -> PostingHitPage {
     canister::lookup_range_page_for_label(req)
+}
+
+#[query(guard = "guard_router_canister")]
+fn lookup_edge_equal_batch(req: LookupEdgeEqualBatchRequest) -> LookupEdgeEqualBatchResult {
+    canister::lookup_edge_equal_batch(req)
 }
 
 #[query(guard = "guard_router_canister")]

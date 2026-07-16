@@ -57,6 +57,24 @@ coalesces duplicate inter-canister lookups and throttles planning concurrency.
    issue one batched journal read before per-shard recovery/projection. Missing
    entries are cached as `None` and handled by the existing per-shard logic.
 
+6. **Equality/edge-equality anchor batching.** The anchor cache in point 2
+   originally coalesced only label and label-intersection lookups per shard.
+   Equality (`IndexAnchor::Equal`) and edge-equality (`IndexAnchor::EdgeEqual`)
+   anchors are now collected across the entire wave, grouped by index canister,
+   and resolved through two new index canister query endpoints:
+   `lookup_equal_batch` and `lookup_edge_equal_batch`. The Router chunks the
+   batched request by encoded Candid payload size, and the index canister pages
+   per bucket and stops early when it nears the query instruction budget (5B
+   instructions), returning a `next` spec index so the Router can resume in a
+   follow-up call.
+
+7. **Instruction-budget-aware paging.** Query-side paging now uses the known IC
+   per-message limits: query calls stop at 5B instructions, update calls at 40B
+   instructions. The Graph canister `get_mutation_journal_entries` query and the
+   new index `lookup_equal_batch` / `lookup_edge_equal_batch` queries use the 5B
+   query budget; the Graph `execute_plan_update_batch` update path uses the 40B
+   update budget.
+
 The `PreflightContext` is intentionally wave-local: it is created at the start of
 one `gql_execute_idempotent_batch` ingress call, shared by reference across the
 planning futures, and dropped when the wave finishes. It is not persisted across
@@ -76,6 +94,9 @@ Positive:
   pages transparently.
 - A wave touching `M` shards issues at most `M` `index_pending_min_mutation_id`
   calls.
+- A wave of `N` equality- or edge-equality-anchored mutations issues at most one
+  `lookup_equal_batch` / `lookup_edge_equal_batch` call per index canister (plus
+  size/instruction-budget follow-ups), instead of `N` individual equality calls.
 
 
 Costs and limitations:

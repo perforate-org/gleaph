@@ -3,12 +3,13 @@
 use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHitPage, IndexLabelIntersectionRequest, LabelIntersectionPageRequest,
-    LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
-    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
-    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupRangeIntersectionPageForLabelRequest, LookupRangePageForLabelRequest,
-    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
-    PropertyIntersectionPage, ValuePostingCountPage,
+    LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualBatchRequest,
+    LookupEdgeEqualBatchResult, LookupEdgeEqualPageRequest, LookupEqualBatchRequest,
+    LookupEqualBatchResult, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
+    LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
+    LookupRangePageForLabelRequest, LookupValuePostingCountPageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyIntersectionPage, ValuePostingCountPage,
 };
 
 #[derive(Clone, Debug)]
@@ -63,6 +64,50 @@ impl RouterIndexClient {
         {
             let _ = req;
             Err("lookup_equal_page unavailable in native builds".into())
+        }
+    }
+
+    pub async fn lookup_equal_batch(
+        &self,
+        req: LookupEqualBatchRequest,
+    ) -> Result<LookupEqualBatchResult, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            Call::bounded_wait(self.index_canister, "lookup_equal_batch")
+                .with_args(&(req,))
+                .await
+                .map_err(|e| format!("lookup_equal_batch: {e}"))?
+                .candid()
+                .map_err(|e| format!("lookup_equal_batch decode: {e}"))
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_equal_batch unavailable in native builds".into())
+        }
+    }
+
+    pub async fn lookup_edge_equal_batch(
+        &self,
+        req: LookupEdgeEqualBatchRequest,
+    ) -> Result<LookupEdgeEqualBatchResult, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            Call::bounded_wait(self.index_canister, "lookup_edge_equal_batch")
+                .with_args(&(req,))
+                .await
+                .map_err(|e| format!("lookup_edge_equal_batch: {e}"))?
+                .candid()
+                .map_err(|e| format!("lookup_edge_equal_batch decode: {e}"))
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_edge_equal_batch unavailable in native builds".into())
         }
     }
 

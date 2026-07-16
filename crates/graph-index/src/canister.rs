@@ -11,12 +11,14 @@ use gleaph_graph_kernel::federation::{
 };
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexPostingBatchProgress, IndexPostingMutation,
-    LabelIntersectionPageRequest, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
-    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
-    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
-    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
-    PropertyIntersectionPage, ValuePostingCountPage,
+    LabelIntersectionPageRequest, LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult,
+    LookupEdgeEqualPageRequest, LookupEqualBatchRequest, LookupEqualBatchResult,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
+    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
+    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
+    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
+    PostingHit, PostingHitPage, PostingRangeRequest, PropertyIntersectionPage,
+    ValuePostingCountPage,
 };
 use ic_cdk::api::msg_caller;
 
@@ -303,6 +305,15 @@ pub(crate) fn lookup_equal_page(req: LookupEqualPageRequest) -> PostingHitPage {
         })
 }
 
+pub(crate) fn lookup_equal_batch(req: LookupEqualBatchRequest) -> LookupEqualBatchResult {
+    IndexStore::new()
+        .lookup_equal_batch(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
 pub(crate) fn lookup_equal_page_for_label(req: LookupEqualPageForLabelRequest) -> PostingHitPage {
     IndexStore::new()
         .lookup_equal_page_for_label(&req)
@@ -324,6 +335,17 @@ pub(crate) fn lookup_range_page(req: LookupRangePageRequest) -> PostingHitPage {
 pub(crate) fn lookup_range_page_for_label(req: LookupRangePageForLabelRequest) -> PostingHitPage {
     IndexStore::new()
         .lookup_range_page_for_label(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
+pub(crate) fn lookup_edge_equal_batch(
+    req: LookupEdgeEqualBatchRequest,
+) -> LookupEdgeEqualBatchResult {
+    IndexStore::new()
+        .lookup_edge_equal_batch(&req)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()

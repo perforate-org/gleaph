@@ -25,6 +25,34 @@ pub(super) fn ensure_index_value_key(value: &[u8]) -> Result<(), IndexError> {
     validate_index_value_key_bytes(value).map_err(|_| IndexError::IndexValueKeyTooLarge)
 }
 
+#[cfg(target_family = "wasm")]
+const QUERY_INSTRUCTION_BUDGET: u64 = 5_000_000_000;
+#[cfg(target_family = "wasm")]
+const UPDATE_INSTRUCTION_BUDGET: u64 = 40_000_000_000;
+#[cfg(target_family = "wasm")]
+const QUERY_BUDGET_HEADROOM: u64 = 500_000_000;
+#[cfg(target_family = "wasm")]
+const UPDATE_BUDGET_HEADROOM: u64 = 1_000_000_000;
+
+/// Returns true when the canister has consumed most of its instruction budget for the current
+/// message kind. Query calls use the 5B instruction limit; update calls use the 40B limit.
+fn instruction_counter_near_budget(query: bool) -> bool {
+    #[cfg(target_family = "wasm")]
+    {
+        let (budget, headroom) = if query {
+            (QUERY_INSTRUCTION_BUDGET, QUERY_BUDGET_HEADROOM)
+        } else {
+            (UPDATE_INSTRUCTION_BUDGET, UPDATE_BUDGET_HEADROOM)
+        };
+        ic_cdk::api::instruction_counter() >= budget.saturating_sub(headroom)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = query;
+        false
+    }
+}
+
 pub(super) fn ensure_posting_range_request(req: &PostingRangeRequest) -> Result<(), IndexError> {
     match req {
         PostingRangeRequest::Ge(b)

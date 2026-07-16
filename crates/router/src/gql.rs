@@ -15,7 +15,8 @@ use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
-    IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
+    EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult, PostingHit,
+    ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
@@ -56,7 +57,7 @@ use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::{authorize_adhoc_gql, authorize_index_ddl};
-use crate::seed::{IndexAnchor, SeedAnchorSet, SeedProbe};
+use crate::seed::{EdgeSeedProbe, IndexAnchor, SeedAnchorSet, SeedProbe};
 use crate::state::RouterError;
 
 type BatchOperation = (
@@ -229,9 +230,16 @@ struct BatchRegistration {
     sender: oneshot::Sender<Result<Vec<BatchDispatchResult>, String>>,
 }
 
+struct AnchorPrefetchRegistration {
+    anchors: Option<Vec<IndexAnchor>>,
+    shard_ids: Vec<ShardId>,
+    sender: oneshot::Sender<Result<(), String>>,
+}
+
 struct BatchCoordinatorState {
     expected_items: usize,
     registrations: Vec<Option<BatchRegistration>>,
+    anchor_prefetch: Vec<Option<AnchorPrefetchRegistration>>,
     aborted: Option<String>,
     policy: BatchExecutionPolicy,
 }
@@ -254,9 +262,64 @@ impl BatchDispatchCoordinator {
         Self(Rc::new(RefCell::new(BatchCoordinatorState {
             expected_items,
             registrations: (0..expected_items).map(|_| None).collect(),
+            anchor_prefetch: (0..expected_items).map(|_| None).collect(),
             aborted: None,
             policy,
         })))
+    }
+
+    /// Register this batch item's seed anchors so the coordinator can resolve every unique
+    /// anchor across the wave in one (or a few) batched index calls. Items without anchors
+    /// (pure inserts or replays with saved shard routings) register `None` so the barrier still
+    /// completes.
+    pub(crate) async fn prefetch_anchors(
+        &self,
+        item_index: usize,
+        anchors: Option<Vec<IndexAnchor>>,
+        shard_ids: Vec<ShardId>,
+        index: &RouterIndexLookup,
+        preflight: Option<&PreflightContext>,
+    ) -> Result<(), String> {
+        let (sender, receiver) = oneshot::channel();
+        let registrations = {
+            let mut state = self.0.borrow_mut();
+            if let Some(err) = &state.aborted {
+                return Err(err.clone());
+            }
+            if item_index >= state.expected_items || state.anchor_prefetch[item_index].is_some() {
+                return Err(format!(
+                    "invalid or duplicate anchor prefetch item index {item_index}"
+                ));
+            }
+            state.anchor_prefetch[item_index] = Some(AnchorPrefetchRegistration {
+                anchors,
+                shard_ids,
+                sender,
+            });
+            if state.anchor_prefetch.iter().all(Option::is_some) {
+                state
+                    .anchor_prefetch
+                    .iter_mut()
+                    .map(Option::take)
+                    .collect::<Option<Vec<_>>>()
+            } else {
+                None
+            }
+        };
+
+        if let Some(registrations) = registrations {
+            let results =
+                resolve_anchor_prefetch_registrations(&registrations, index, preflight).await;
+            // The last registering future owns the fan-out. Send failures are harmless when a peer
+            // future has already been cancelled by the ingress caller.
+            for (registration, result) in registrations.into_iter().zip(results) {
+                let _ = registration.sender.send(result);
+            }
+        }
+
+        receiver
+            .await
+            .map_err(|_| "anchor prefetch coordinator was cancelled".to_string())?
     }
 
     pub(crate) async fn register(
@@ -325,6 +388,204 @@ impl BatchDispatchCoordinator {
             let _ = sender.send(Err(error.clone()));
         }
     }
+}
+
+/// One unique anchor/shard pair that needs to be resolved for the wave.
+struct AnchorPrefetchTask {
+    anchor: IndexAnchor,
+    shard_id: ShardId,
+}
+
+enum LabelPrefetchTask {
+    Single(u32),
+    Intersection(Vec<u32>),
+}
+
+/// Resolve every unique anchor requested by a batch wave and cache the results in the shared
+/// preflight context. Equality anchors are collected into `lookup_equal_batch` /
+/// `lookup_edge_equal_batch` calls; label anchors are resolved per shard; intersection anchors
+/// keep their existing single-call shape. Returns a `Vec` aligned with the input registrations.
+async fn resolve_anchor_prefetch_registrations(
+    registrations: &[AnchorPrefetchRegistration],
+    index: &RouterIndexLookup,
+    preflight: Option<&PreflightContext>,
+) -> Vec<Result<(), String>> {
+    let ctx = match preflight {
+        Some(ctx) => ctx,
+        None => return registrations.iter().map(|_| Ok(())).collect(),
+    };
+
+    let mut tasks: Vec<AnchorPrefetchTask> = Vec::new();
+    let mut task_index: std::collections::HashMap<(IndexAnchor, ShardId), usize> =
+        std::collections::HashMap::new();
+    for registration in registrations {
+        if let Some(anchors) = &registration.anchors {
+            for anchor in anchors {
+                let shard_ids: Vec<ShardId> = match anchor {
+                    IndexAnchor::Label { .. } | IndexAnchor::LabelIntersection { .. } => {
+                        registration.shard_ids.clone()
+                    }
+                    _ => vec![ShardId::new(0)],
+                };
+                for shard_id in shard_ids {
+                    task_index
+                        .entry((anchor.clone(), shard_id))
+                        .or_insert_with(|| {
+                            tasks.push(AnchorPrefetchTask {
+                                anchor: anchor.clone(),
+                                shard_id,
+                            });
+                            tasks.len() - 1
+                        });
+                }
+            }
+        }
+    }
+
+    let mut results: Vec<Option<SeedHits>> = vec![None; tasks.len()];
+    let mut vertex_specs: Vec<(IndexEqualSpec, usize)> = Vec::new();
+    let mut edge_specs: Vec<(IndexEqualSpec, usize)> = Vec::new();
+    let mut intersection_tasks: Vec<(usize, Vec<IndexEqualSpec>)> = Vec::new();
+    let mut label_tasks: Vec<(usize, LabelPrefetchTask, Vec<ShardId>)> = Vec::new();
+
+    for (task_id, task) in tasks.iter().enumerate() {
+        match &task.anchor {
+            IndexAnchor::Equal(SeedProbe {
+                property_id,
+                payload_bytes,
+                ..
+            }) => {
+                vertex_specs.push((
+                    IndexEqualSpec::vertex(*property_id, payload_bytes.clone()),
+                    task_id,
+                ));
+            }
+            IndexAnchor::EdgeEqual(EdgeSeedProbe {
+                property_id,
+                payload_bytes,
+                wire_label_ids,
+                ..
+            }) => {
+                if wire_label_ids.is_empty() {
+                    edge_specs.push((
+                        IndexEqualSpec::edge(*property_id, payload_bytes.clone(), None),
+                        task_id,
+                    ));
+                } else {
+                    for label_id in wire_label_ids {
+                        edge_specs.push((
+                            IndexEqualSpec::edge(
+                                *property_id,
+                                payload_bytes.clone(),
+                                Some(*label_id),
+                            ),
+                            task_id,
+                        ));
+                    }
+                }
+            }
+            IndexAnchor::Intersection { specs, .. } => {
+                intersection_tasks.push((task_id, specs.clone()));
+            }
+            IndexAnchor::Label {
+                vertex_label_id, ..
+            } => {
+                label_tasks.push((
+                    task_id,
+                    LabelPrefetchTask::Single(*vertex_label_id),
+                    vec![task.shard_id],
+                ));
+            }
+            IndexAnchor::LabelIntersection {
+                vertex_label_ids, ..
+            } => {
+                label_tasks.push((
+                    task_id,
+                    LabelPrefetchTask::Intersection(vertex_label_ids.clone()),
+                    vec![task.shard_id],
+                ));
+            }
+        }
+    }
+
+    if !vertex_specs.is_empty() {
+        let specs: Vec<IndexEqualSpec> = vertex_specs.iter().map(|(s, _)| s.clone()).collect();
+        let hits_per_spec = match index.lookup_equal_batch(specs).await {
+            Ok(hits) => hits,
+            Err(err) => return vec![Err(err); registrations.len()],
+        };
+        for (i, (_, task_id)) in vertex_specs.iter().enumerate() {
+            results[*task_id] = Some(SeedHits::Vertices(hits_per_spec[i].clone()));
+        }
+    }
+
+    if !edge_specs.is_empty() {
+        let specs: Vec<IndexEqualSpec> = edge_specs.iter().map(|(s, _)| s.clone()).collect();
+        let hits_per_spec = match index.lookup_edge_equal_batch(specs).await {
+            Ok(hits) => hits,
+            Err(err) => return vec![Err(err); registrations.len()],
+        };
+        let mut merged: std::collections::HashMap<
+            usize,
+            (
+                Vec<EdgePostingHit>,
+                std::collections::BTreeSet<(ShardId, u32, u16, u32)>,
+            ),
+        > = std::collections::HashMap::new();
+        for (i, (_, task_id)) in edge_specs.iter().enumerate() {
+            let (hits, seen) = merged.entry(*task_id).or_default();
+            for h in hits_per_spec[i].iter().cloned() {
+                let key = (h.shard_id, h.owner_vertex_id, h.label_id, h.slot_index);
+                if seen.insert(key) {
+                    hits.push(h);
+                }
+            }
+        }
+        for (task_id, (hits, _)) in merged {
+            results[task_id] = Some(SeedHits::Edges(hits));
+        }
+    }
+
+    for (task_id, specs) in intersection_tasks {
+        let result = match index
+            .lookup_intersection(IndexIntersectionRequest { specs })
+            .await
+        {
+            Ok(r) => r,
+            Err(err) => return vec![Err(err); registrations.len()],
+        };
+        results[task_id] = Some(match result {
+            IndexIntersectionResult::Vertices(hits) => SeedHits::Vertices(hits),
+            IndexIntersectionResult::Edges(hits) => SeedHits::Edges(hits),
+        });
+    }
+
+    for (task_id, label_task, shard_ids) in label_tasks {
+        let hits = match label_task {
+            LabelPrefetchTask::Single(label_id) => {
+                collect_label_hits_for_shards(index, label_id, &shard_ids).await
+            }
+            LabelPrefetchTask::Intersection(label_ids) => {
+                collect_label_intersection_hits_for_shards(index, &label_ids, &shard_ids).await
+            }
+        };
+        let hits = match hits {
+            Ok(h) => h,
+            Err(err) => return vec![Err(err); registrations.len()],
+        };
+        results[task_id] = Some(SeedHits::Vertices(hits));
+    }
+
+    {
+        let mut cache = ctx.anchor_hits.borrow_mut();
+        for (task_id, task) in tasks.iter().enumerate() {
+            if let Some(hits) = results[task_id].take() {
+                cache.insert((task.anchor.clone(), task.shard_id), hits);
+            }
+        }
+    }
+
+    registrations.iter().map(|_| Ok(())).collect()
 }
 
 async fn await_batch_item(
@@ -740,7 +1001,10 @@ async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
             }
             Ok(SeedHits::Vertices(merged.unwrap_or_default()))
         }
-        _ => lookup_anchor_hits(index, anchor, shard_ids).await,
+        _ => {
+            ctx.resolve_anchor_hits(index, anchor, ShardId::new(0))
+                .await
+        }
     }
 }
 
@@ -2040,6 +2304,16 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     let constrained_properties = constrained_split.federated;
     let local_constrained_properties = constrained_split.local;
 
+    if let Some((ref coordinator, item_index)) = batch {
+        let router_index = index.as_router_index_lookup().ok_or_else(|| {
+            RouterError::InvalidArgument("anchor prefetch requires RouterIndexLookup".into())
+        })?;
+        coordinator
+            .prefetch_anchors(item_index, None, Vec::new(), router_index, preflight)
+            .await
+            .map_err(|e| RouterError::InvalidArgument(format!("anchor prefetch: {e}")))?;
+    }
+
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
         && !record.shards.is_empty()
     {
@@ -2068,9 +2342,24 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
             }
         };
         let policy = sharding_policy_for(&shards);
+        let shard_ids: Vec<_> = shards.iter().map(|entry| entry.shard_id).collect();
+        if let Some((ref coordinator, item_index)) = batch {
+            let router_index = index.as_router_index_lookup().ok_or_else(|| {
+                RouterError::InvalidArgument("anchor prefetch requires RouterIndexLookup".into())
+            })?;
+            coordinator
+                .prefetch_anchors(
+                    item_index,
+                    seed_anchors.as_ref().map(|s| s.anchors.clone()),
+                    shard_ids.clone(),
+                    router_index,
+                    preflight,
+                )
+                .await
+                .map_err(|e| RouterError::InvalidArgument(format!("anchor prefetch: {e}")))?;
+        }
         let routings = match seed_anchors {
             Some(set) => {
-                let shard_ids: Vec<_> = shards.iter().map(|entry| entry.shard_id).collect();
                 let hits = match resolve_seed_hits_from_anchors(
                     index,
                     &set.anchors,

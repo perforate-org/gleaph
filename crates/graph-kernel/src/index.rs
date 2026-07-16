@@ -452,6 +452,38 @@ pub struct LookupEdgeEqualPageRequest {
     pub after: Option<EdgePostingCursor>,
     pub limit: u32,
 }
+/// Batch paginated equality export for many vertex `(property_id, value)` buckets in one call.
+/// Each bucket is answered independently; per-bucket results are paged under a shared limit.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupEqualBatchRequest {
+    pub specs: Vec<IndexEqualSpec>,
+    pub after: Option<PropertyPostingCursor>,
+    pub limit: u32,
+}
+
+/// Per-bucket page result for [`LookupEqualBatchRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupEqualBatchResult {
+    /// Pages in the same order as `specs`. Each page carries its own cursor/paging state.
+    pub pages: Vec<PostingHitPage>,
+    /// Smallest spec index not fully returned because the canister neared its instruction budget.
+    pub next: Option<u32>,
+}
+
+/// Batch paginated equality export for many edge `(property_id, value[, label_id])` buckets.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupEdgeEqualBatchRequest {
+    pub specs: Vec<IndexEqualSpec>,
+    pub after: Option<EdgePostingCursor>,
+    pub limit: u32,
+}
+
+/// Per-bucket page result for [`LookupEdgeEqualBatchRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupEdgeEqualBatchResult {
+    pub pages: Vec<EdgePostingHitPage>,
+    pub next: Option<u32>,
+}
 
 /// Host entity for an administrator-registered property index (ADR 0009).
 #[derive(
