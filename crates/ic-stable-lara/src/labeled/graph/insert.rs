@@ -293,8 +293,8 @@ where
     /// Storage-owned pre-insert capacity preparation for a new label bucket.
     ///
     /// When the next ordinary insert will create a new bucket for `(src, label_id)`,
-    /// the bucket needs a free `DEFAULT_SEGMENT_SIZE` span inside `src`'s pinned PMA
-    /// leaf block.  If the leaf is already dense or no free span fits, this helper
+    /// the bucket needs a free configured per-vertex quota span inside `src`'s pinned
+    /// PMA leaf block.  If the leaf is already dense or no free span fits, this helper
     /// rebalances / relocates the leaf *before* any canonical edge write, keeping the
     /// subsequent `find_or_create_bucket` path fail-closed.
     ///
@@ -323,11 +323,10 @@ where
             return Ok(());
         }
 
-        // New-bucket contract (ADR 0001): the bucket is created with stored_slots=0
-        // placed at the successor boundary. No edge-slab bytes are reserved for the
-        // bucket itself; the first edges go to the shared leaf overflow log. We only
-        // need to guarantee that the target PMA leaf block is pinned, so a zero-length
-        // placement is valid and subsequent edge inserts can use the leaf log.
+        // New-bucket contract (ADR 0001): later buckets are created with
+        // stored_slots=0 at the successor boundary. The first bucket on a vertex
+        // receives the configured initial quota so a one-edge vertex stays on slab
+        // instead of immediately entering the shared leaf overflow log.
         self.ensure_labeled_leaf_block_pinned(src)?;
         Ok(())
     }
@@ -406,18 +405,18 @@ where
             return Ok(false);
         }
 
-        // Pin even the first bucket's leaf before publishing its zero-length position.
-        // The pin owns physical capacity and PMA total counts; the bucket itself still
-        // reserves no edge slots.
+        // Pin even the first bucket's leaf before publishing its initial position. The
+        // pin owns physical capacity and PMA total counts; the first bucket receives
+        // only the configured per-vertex initial quota from that block.
         self.ensure_labeled_leaf_block_pinned(src)?;
 
-        // A new bucket is always inserted with `stored_slots = 0`. Its edge_start is
-        // placed at the successor bucket's edge_start (or the vertex span end for the
-        // last bucket), giving it a zero-length reservation that is contiguous with its
-        // neighbors. Subsequent edge inserts go through the shared leaf overflow log.
+        // Later buckets are inserted with `stored_slots = 0`. Their edge_start is
+        // placed at the successor bucket's edge_start (or the preceding bucket's end
+        // for the last bucket), giving them zero-length reservations. The first bucket
+        // receives the initial quota and can accept its first edge directly on slab.
         let edge_start = if bucket_index == 0 {
-            // A zero-length first bucket still needs a valid physical anchor inside
-            // its pinned leaf. A leaf mate may already own more than its fixed quota;
+            // The first bucket needs a valid physical anchor inside its pinned leaf. A
+            // leaf mate may already own more than its fixed quota;
             // once this descriptor exists, relocate the whole leaf so the new active
             // vertex participates in the weighted layout before retrying the anchor.
             // Later buckets inherit an existing bucket boundary.
@@ -434,6 +433,13 @@ where
         } else {
             self.bucket_successor_start_after_bucket_for_new_bucket(vertex, bucket_index)?
         };
+        let initial_slots = if bucket_index == 0 && vertex.degree() == 1 {
+            crate::labeled::graph::leaf_pin::labeled_leaf_initial_bucket_quota(
+                self.edges.header().segment_size,
+            )
+        } else {
+            0
+        };
         let bucket = self
             .buckets
             .read_label_bucket_slot(slot)
@@ -444,7 +450,10 @@ where
             .with_edge_range(edge_start, 0)
             .with_overflow_log_head(-1);
         self.buckets.write_label_bucket_slot(slot, bucket)?;
-        // Do not update vertex.stored_slots here; the new bucket owns zero slots.
+        if initial_slots > 0 {
+            self.vertices
+                .set(src, &vertex.with_stored_slots(initial_slots));
+        }
         Ok(true)
     }
 
@@ -551,6 +560,34 @@ mod tests {
             graph.buckets(),
             graph.edges(),
         );
+    }
+
+    #[test]
+    fn first_label_bucket_reserves_initial_edge_quota() {
+        let graph = test_graph();
+        let first_label = BucketLabelKey::from_raw(2);
+        let quota = super::super::leaf_pin::labeled_leaf_initial_bucket_quota(
+            graph.edges().header().segment_size,
+        );
+
+        graph
+            .insert_edge(VertexId::from(0), first_label, TestEdge { target: 10 })
+            .unwrap();
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let first = graph
+            .buckets()
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .unwrap();
+        assert_eq!(vertex.degree(), 1);
+        assert_eq!(vertex.stored_slots, quota);
+        assert_eq!(first.degree(), 1);
+        assert_eq!(first.stored_slots, quota.min(1));
+        if quota == 0 {
+            assert!(first.overflow_log_head() >= 0);
+        } else {
+            assert_eq!(first.overflow_log_head(), -1);
+        }
     }
 
     #[test]
@@ -703,11 +740,15 @@ mod tests {
 
     #[test]
     fn single_label_log_fold_reserves_edge_only_tail_headroom() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+
         let graph = test_graph();
         let vid = VertexId::from(0);
         let road = BucketLabelKey::from_raw(2);
+        let edge_count = labeled_leaf_physical_block_len(graph.edges().header().segment_size)
+            .saturating_add(1) as u32;
 
-        for target in 0..171u32 {
+        for target in 0..edge_count {
             graph.insert_edge(vid, road, TestEdge { target }).unwrap();
         }
 
@@ -716,11 +757,14 @@ mod tests {
             .buckets()
             .read_label_bucket_slot(vertex.base_slot_start())
             .unwrap();
-        assert_eq!(bucket.degree(), 171);
-        assert_eq!(graph.iter_edges_for_label(vid, road).unwrap().len(), 171);
-        assert!(vertex.stored_slots >= DEFAULT_SEGMENT_SIZE);
+        assert_eq!(bucket.degree(), edge_count);
+        assert_eq!(
+            graph.iter_edges_for_label(vid, road).unwrap().len(),
+            edge_count as usize
+        );
+        assert!(vertex.stored_slots >= graph.edges().header().segment_size);
         assert!(vertex.stored_slots > bucket.stored_slots);
-        assert_eq!(bucket.stored_slots, 171);
+        assert_eq!(bucket.stored_slots, edge_count);
         assert_eq!(bucket.overflow_log_head(), -1);
         assert_eq!(bucket.inline_value_slab_slots(), 0);
     }

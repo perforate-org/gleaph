@@ -13,7 +13,7 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{DEFAULT_SEGMENT_SIZE, EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
+use super::{EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -130,6 +130,57 @@ fn log_collect_overflow(message: &str) {
 
 #[cfg(not(target_family = "wasm"))]
 fn log_collect_overflow(_message: &str) {}
+
+/// Returns the next per-vertex edge-span allocation after a fold or rewrite.
+///
+/// The initial leaf quota is deliberately not used as a growth factor. Growth
+/// keeps a segment-sized minimum quantum and otherwise adds configured
+/// geometric headroom to the existing allocation.
+fn next_vertex_edge_span_allocation(
+    old_alloc: u32,
+    min_required: u32,
+    segment_size: u32,
+) -> Result<u32, LaraOperationError> {
+    let segment_size = segment_size.max(1);
+    if old_alloc == 0 {
+        return Ok(min_required.max(segment_size));
+    }
+    let geometric_headroom = {
+        #[cfg(feature = "bucket_row_grow_double")]
+        {
+            old_alloc
+                .checked_mul(2)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+        }
+        #[cfg(all(
+            not(feature = "bucket_row_grow_double"),
+            feature = "bucket_row_grow_150"
+        ))]
+        {
+            old_alloc
+                .checked_mul(3)
+                .and_then(|value| value.checked_add(1))
+                .map(|value| value / 2)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+        }
+        #[cfg(all(
+            not(feature = "bucket_row_grow_double"),
+            not(feature = "bucket_row_grow_150")
+        ))]
+        {
+            old_alloc
+                .checked_mul(5)
+                .and_then(|value| value.checked_add(3))
+                .map(|value| value / 4)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+        }
+    };
+    let growth = segment_size.max(geometric_headroom);
+    old_alloc
+        .checked_add(growth)
+        .map(|grown| grown.max(min_required).max(segment_size))
+        .ok_or(LaraOperationError::CollectAllocationOverflow)
+}
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -450,6 +501,7 @@ where
     {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_rewrite_read_and_plan");
+        let segment_size = self.edges.header().segment_size.max(1);
         let buckets = self.read_vertex_label_buckets(vertex)?;
         let old_alloc = vertex.stored_slots;
         let old_base = buckets
@@ -488,34 +540,13 @@ where
                 buckets, old_alloc, old_base, total_live, new_alloc, moved, new_base, positions,
             ));
         }
-        let mut new_alloc = if compact {
+        let new_alloc = if compact {
             total_live
-        } else if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
-            let doubled_old_alloc = old_alloc
-                .checked_mul(2)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let old_plus_segment = old_alloc
-                .checked_add(DEFAULT_SEGMENT_SIZE)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            old_alloc
-                .max(doubled_old_alloc)
-                .max(old_plus_segment)
-                .max(min_required)
-        } else if old_alloc >= min_required && old_alloc > 0 {
+        } else if !force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
             old_alloc
         } else {
-            let doubled_old_alloc = old_alloc
-                .checked_mul(2)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            min_required
-                .max(DEFAULT_SEGMENT_SIZE)
-                .max(doubled_old_alloc)
+            next_vertex_edge_span_allocation(old_alloc, min_required, segment_size)?
         };
-
-        if force_slack_grow && !compact && total_live > 0 && vertex.degree() <= 8 {
-            let headroom_alloc = ((f64::from(total_live) / 0.85).ceil() as u32).max(min_required);
-            new_alloc = new_alloc.max(headroom_alloc);
-        }
 
         let moved = old_alloc == 0 || new_alloc > old_alloc || compact;
         let new_base = if new_alloc == 0 {
@@ -923,13 +954,11 @@ where
             })
             .count() as u64;
         let mut resident_geometry = 0u64;
-        let mut label_bucket_rows = 0u64;
         for vid_u in start_vid..end_vid {
             let vertex = self.vertices.get(VertexId::from(vid_u));
             if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
                 continue;
             }
-            label_bucket_rows = label_bucket_rows.saturating_add(u64::from(vertex.degree()));
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             let mut resident_slots = 0u32;
             for bucket in &buckets {
@@ -950,13 +979,11 @@ where
             }
             resident_geometry = resident_geometry.saturating_add(u64::from(resident_slots));
         }
-        let interior_slack = label_bucket_rows
-            .saturating_add(active_vertices)
-            .saturating_add(u64::from(DEFAULT_SEGMENT_SIZE));
         let block_len = super::leaf_pin::labeled_leaf_physical_block_len(seg);
+        let geometric_slack = resident_geometry.div_ceil(8).max(u64::from(seg));
         let raw_len = resident_geometry
-            .saturating_add(interior_slack)
-            .saturating_add(u64::from(DEFAULT_SEGMENT_SIZE))
+            .saturating_add(active_vertices)
+            .saturating_add(geometric_slack)
             .max(used.saturating_add(active_vertices))
             .max(old_len.saturating_add(1));
         let new_len = raw_len
@@ -1710,15 +1737,16 @@ where
         let min_required = resident_slots
             .checked_add(preferred_extra)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
+        let segment_size = self.edges.header().segment_size.max(1);
         let mut new_alloc = if force_slack_grow && old_alloc >= min_required && old_alloc > 0 {
             let base = old_alloc.max(min_required);
-            let gap = DEFAULT_SEGMENT_SIZE.max(base / 8);
+            let gap = segment_size.max(base / 8);
             base.saturating_add(gap)
         } else if old_alloc >= min_required && old_alloc > 0 {
             old_alloc
         } else {
-            let base = min_required.max(DEFAULT_SEGMENT_SIZE);
-            let gap = DEFAULT_SEGMENT_SIZE.max(base / 8);
+            let base = min_required.max(segment_size);
+            let gap = segment_size.max(base / 8);
             base.saturating_add(gap)
         };
         new_alloc = new_alloc.max(min_required);
@@ -1857,7 +1885,8 @@ where
         }
         let buckets = self.read_vertex_label_buckets(&vertex)?;
         Ok(buckets.iter().any(|bucket| {
-            bucket.stored_slots.saturating_sub(bucket.degree()) >= DEFAULT_SEGMENT_SIZE
+            bucket.stored_slots.saturating_sub(bucket.degree())
+                >= self.edges.header().segment_size.max(1)
         }))
     }
 
@@ -1966,11 +1995,11 @@ where
         let log_len = self
             .edges
             .overflow_log_chain_len(leaf, bucket.overflow_log_head());
-        // `stored_slots` is the on-slab prefix length. For a brand-new bucket that has
-        // never been folded it is zero and all live edges live in the log. The old
+        // `stored_slots` is the on-slab prefix length. For a later brand-new bucket that
+        // has never been folded it is zero and all live edges live in the log. The old
         // `stored_slots.saturating_sub(log_len)` formula assumed `stored_slots` already
         // included the log suffix, which is no longer true under the zero-length new-bucket
-        // contract.
+        // contract; the segment16/quota1 first bucket has a one-slot initial span.
         let slab_prefix_slots = bucket.stored_slots;
         let edge_start = bucket.edge_start();
 
@@ -2137,6 +2166,7 @@ where
             acc.checked_add(bucket.stored_slots.max(bucket.degree()))
                 .ok_or(LaraOperationError::RowDegreeOverflow)
         })?;
+        let segment_size = self.edges.header().segment_size.max(1);
         if resident_slots <= old_alloc {
             return Ok(());
         }
@@ -2144,10 +2174,7 @@ where
             .iter()
             .all(|bucket| bucket.inline_value_byte_width() == 0);
         let target_alloc = if edge_only {
-            resident_slots
-                .max(DEFAULT_SEGMENT_SIZE)
-                .max(resident_slots.saturating_mul(2))
-                .max(old_alloc.saturating_mul(2))
+            next_vertex_edge_span_allocation(old_alloc, resident_slots, segment_size)?
         } else {
             resident_slots
         };
@@ -3912,6 +3939,24 @@ mod tests {
                 )
                 .unwrap();
         }
+        let peer = BucketLabelKey::directed_from_index(3);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(hub, peer, 2)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                hub,
+                peer,
+                PayloadTestEdge::with_bytes(100, &100u16.to_le_bytes()),
+            )
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                hub,
+                road,
+                PayloadTestEdge::with_bytes(33, &33u16.to_le_bytes()),
+            )
+            .unwrap();
         let read_bucket = || {
             let vertex = graph.vertices().get(hub);
             let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();

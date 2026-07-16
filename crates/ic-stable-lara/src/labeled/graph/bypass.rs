@@ -11,8 +11,8 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
+use super::LabeledLaraGraph;
 use super::error::LabeledOperationError;
-use super::{DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -137,7 +137,7 @@ where
         }
 
         // Plan the segment-bucket rewrite without allocating or mutating anything.
-        let new_alloc = DEFAULT_SEGMENT_SIZE.max(stored_slots);
+        let new_alloc = self.edges.header().segment_size.max(1).max(stored_slots);
         let mut plan = self.buckets.plan_promote_bypass_to_bucket_mode(
             &self.vertices,
             src,

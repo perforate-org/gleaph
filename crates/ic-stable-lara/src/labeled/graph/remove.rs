@@ -1506,6 +1506,18 @@ mod tests {
         }
         let road = BucketLabelKey::from_raw(2);
         let rail = BucketLabelKey::from_raw(3);
+        let other = BucketLabelKey::from_raw(4);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), other, 2u16)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                other,
+                PayloadTestEdge::with_bytes(400, &400u16.to_le_bytes()),
+            )
+            .unwrap();
+
         for (src, label) in [(VertexId::from(0), road), (VertexId::from(1), rail)] {
             graph
                 .ensure_label_bucket_inline_value_byte_width(src, label, 2u16)
@@ -1529,6 +1541,29 @@ mod tests {
                     )
                     .unwrap();
             }
+        }
+
+        let tail_blocker = BucketLabelKey::from_raw(5);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), tail_blocker, 2u16)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                tail_blocker,
+                PayloadTestEdge::with_bytes(500, &500u16.to_le_bytes()),
+            )
+            .unwrap();
+
+        for (src, label) in [(VertexId::from(0), road), (VertexId::from(1), rail)] {
+            let value = if label == road { 33 } else { 330 };
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    PayloadTestEdge::with_bytes(33, &u16::try_from(value).unwrap().to_le_bytes()),
+                )
+                .unwrap();
         }
 
         let vertex = graph.vertices().get(VertexId::from(0));

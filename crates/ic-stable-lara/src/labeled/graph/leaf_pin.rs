@@ -14,12 +14,46 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
+use super::LabeledLaraGraph;
 use super::error::LabeledOperationError;
-use super::{DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
+
+#[cfg(any(
+    all(feature = "labeled_leaf_quota_16", feature = "labeled_leaf_quota_8"),
+    all(feature = "labeled_leaf_quota_16", feature = "labeled_leaf_quota_4"),
+    all(feature = "labeled_leaf_quota_8", feature = "labeled_leaf_quota_4"),
+    all(feature = "labeled_leaf_quota_16", feature = "labeled_leaf_quota_1"),
+    all(feature = "labeled_leaf_quota_8", feature = "labeled_leaf_quota_1"),
+    all(feature = "labeled_leaf_quota_4", feature = "labeled_leaf_quota_1"),
+))]
+compile_error!("labeled leaf quota variants are mutually exclusive");
 
 /// Edge-slab slots reserved per vertex within one PMA leaf block.
 pub(crate) fn labeled_leaf_vertex_edge_quota() -> u32 {
-    DEFAULT_SEGMENT_SIZE
+    #[cfg(feature = "labeled_leaf_quota_16")]
+    const QUOTA: u32 = 16;
+    #[cfg(feature = "labeled_leaf_quota_8")]
+    const QUOTA: u32 = 8;
+    #[cfg(feature = "labeled_leaf_quota_4")]
+    const QUOTA: u32 = 4;
+    #[cfg(feature = "labeled_leaf_quota_1")]
+    const QUOTA: u32 = 1;
+    #[cfg(not(any(
+        feature = "labeled_leaf_quota_16",
+        feature = "labeled_leaf_quota_8",
+        feature = "labeled_leaf_quota_4",
+        feature = "labeled_leaf_quota_1",
+    )))]
+    const QUOTA: u32 = super::DEFAULT_SEGMENT_SIZE;
+    QUOTA
+}
+
+/// Initial edge-span reservation for the segment16/quota1 candidate policy.
+pub(crate) fn labeled_leaf_initial_bucket_quota(segment_size: u32) -> u32 {
+    if segment_size == 16 && labeled_leaf_vertex_edge_quota() == 1 {
+        1
+    } else {
+        0
+    }
 }
 
 /// Total edge-slab slots reserved for one PMA leaf when pinned.

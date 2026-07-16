@@ -1,7 +1,7 @@
 # 0001. Labeled edge physical layer uses PMA leaf segment slide
 
 Date: 2026-06-07  
-Last revised: 2026-07-14 02:55:40 UTC +0000
+Last revised: 2026-07-16 21:32:14 UTC +0000
 Status: accepted
 
 ## Context
@@ -31,7 +31,7 @@ Payload storage ([labeled-edge-inline-values.md](../storage/labeled-edge-inline-
 
 **Adopt the core LARA / DGAP physical contract for labeled edge bytes.**
 
-1. **Physical unit = PMA leaf block.** Up to `segment_size` vertices (default 32) in one leaf share one contiguous edge-slab reservation pinned by `span_meta.physical_start` and `segment_edges_total`.
+1. **Physical unit = PMA leaf block.** Up to `segment_size` vertices (default 16) in one leaf share one contiguous edge-slab reservation pinned by `span_meta.physical_start` and `segment_edges_total`.
 2. **Density and rebalance** for labeled edge bytes are driven by leaf PMA counts, not isolated `VertexEdgeSpan` rewrite as the primary maintenance path.
 3. **Weighted slide** (`rebalance_weighted_with_layout` / segment slide) redistributes labeled edge bytes and proportional label slack **inside the leaf window**, folding per-leaf overflow logs — mirroring DGAP `rebalance_data_V1`.
 4. **Free-span release** applies to **retired leaf physical footprints** after segment relocate or slide completes — **not** per-vertex peel on routine labeled insert or bucket growth.
@@ -56,10 +56,13 @@ Each phase keeps existing `mixed_label_hub_*` regressions green.
 
 When a new bucket is created for an ordinary directed edge insert, storage must not ask the caller to pre-allocate a large edge span. The contract is:
 
-1. **New buckets are inserted with `stored_slots = 0`.**
+1. **New buckets are inserted with `stored_slots = 0`, except the first bucket
+   under the production segment16/quota1 policy.**
    - At creation time the bucket owns no edges, so it needs no edge-slab bytes.
    - Only the bucket row ordering is updated; no edge bytes are written.
-   - This applies to the **first bucket on a vertex** as well as to buckets inserted between or after existing buckets.
+   - The segment16/quota1 first bucket reserves one vertex edge-span slot before
+     the first write; the bucket prefix becomes one slot when that edge is written.
+     Buckets inserted between or after existing buckets remain zero-length.
 
 2. **`edge_start` is placed at the next bucket's start, or at the vertex span end.**
    - If a bucket with a larger `BucketLabelKey` exists, the new bucket's `edge_start` equals that successor bucket's `edge_start`.
@@ -77,17 +80,95 @@ When a new bucket is created for an ordinary directed edge insert, storage must 
    - When the log is full or the leaf becomes dense, `rebalance_edge_log_leaf_for_labeled` or `rebalance_cascade_after_labeled_mutation` folds the log back into the slab.
    - Otherwise, the weighted slide redistributes the leaf block across its active vertices and labels, giving the new bucket real `stored_slots`.
    - If the leaf block still cannot absorb the new label, `relocate_labeled_leaf_physical_block` or element-capacity growth is used.
-   - After folding a single edge-only label, `LabeledVertex::stored_slots` may retain bounded geometric tail headroom inside that vertex's non-overlapping leaf allocation. `LabelBucket::stored_slots` remains the exact resident edge width; later edge-only inserts consume the vertex tail before returning to the shared log. This amortizes repeated full-log folds without changing the zero-length new-bucket contract.
+   - After folding a single edge-only label, `LabeledVertex::stored_slots` may retain bounded geometric tail headroom inside that vertex's non-overlapping leaf allocation. `LabelBucket::stored_slots` remains the exact resident edge width; later edge-only inserts consume the vertex tail before returning to the shared log. This amortizes repeated full-log folds without changing the zero-length later-bucket contract.
    - Labels with inline values do not use this edge-only tail optimization. Their edge slab/log and payload slab/log continue to choose capacity and maintenance timing independently.
 
 5. **Storage-owned preflight guarantees leaf capacity, not per-bucket pre-allocation.**
    - `prepare_labeled_edge_capacity_for_insert` runs before any canonical edge write for both forward `src` and reverse `dst`.
-   - It ensures the target PMA leaf block is pinned and has room for a zero-length bucket placement.
+   - It ensures the target PMA leaf block is pinned and has room for the applicable
+     zero-length or initial-quota placement.
    - It may rebalance or relocate the leaf, but it does **not** reserve `DEFAULT_SEGMENT_SIZE` slots for the new bucket itself.
 
 6. **Tail append at `elem_capacity` is forbidden for normal new-bucket placement.**
    - `ensure_labeled_bucket_edge_span_room` must not fall back to `rebalance_vertex_edge_span` tail append when the leaf is pinned.
    - Growth happens through the PMA leaf slide / relocate / resize paths that the rest of LARA already uses.
+
+### Segment size versus per-vertex quota
+
+The selected next production default for fresh labeled graphs is
+`segment_size = 16` vertices per PMA leaf and a per-vertex edge quota of 1 slot.
+Until the dedicated default-policy slice is implemented, the checked-in
+constructor and quota features remain at the previous policy. These are related but
+distinct quantities:
+
+```text
+initial pinned leaf block = segment_size × vertex_edge_quota
+                           = 16 × 1 = 16 edge slots
+```
+
+The quota is used for fixed-quota placement and the initial pinned leaf block.
+Hub edge-span growth, relocation slack, tombstone pressure, and bypass
+promotion use the persisted `segment_size` from the edge header. It is not a
+dedicated allocation for every vertex or label bucket: later growth remains
+owned by the PMA leaf slide, relocate, and resize paths.
+
+The planned change removes the quota Cargo features and production-facing
+segment32 policy. The low-level persisted segment arithmetic remains generic so the
+storage algorithms can validate arbitrary persisted headers and focused tests
+can exercise boundary sizes, but fresh labeled graph construction will select
+only the 16/1 policy after that slice lands.
+
+### Historical experiments (not active policy)
+
+The segment32 and quota16/8/4/1 comparison results are retained here as
+decision evidence, not as build features or supported production variants. The
+stable-backed sparse probes measured 1,921 pages for all tested policies; the
+segment16/quota1 hub probe measured 2.19M instructions and eight leaf-cascade
+rebalances versus 2.02M instructions and two rebalances for quota8. The data
+supports the 16/1 sparse-memory policy while recording the accepted trade-off
+of more relocation work for sparse slack minimization. Development stable data
+must be recreated when this policy changes.
+
+### Segment-size sizing evidence
+
+DGAP's reference implementation computes the PMA leaf size from the graph
+size rather than treating it as a universal constant: it starts with
+`ceil(log2(num_vertices))`, rounds the segment count down to a power of two,
+then recomputes `segment_size = ceil(num_vertices / segment_count)`. Thus the
+leaf size is approximately logarithmic in the vertex count after power-of-two
+alignment. For example, the implementation yields a segment size of 16 for
+1,024 and 65,536 vertices, and 32 for 1,048,576 vertices. See the [DGAP
+implementation](https://github.com/DIR-LAB/DGAP/blob/main/dgap/src/graph.h#L1139-L1150)
+and [paper](https://daidong.github.io/files/dgap_sc23.pdf), §3.1.1.
+
+The measurements support the selected `segment_size = 16` default rather than
+assuming that 32 vertices per leaf is always appropriate. A stable-backed probe
+with 1,024 vertices and one edge per vertex measured the following historical
+comparison:
+
+| segment size | quota | instructions | stable pages |
+| ---: | ---: | ---: | ---: |
+| 32 | 32 | 401.05M | 1,921 |
+| 32 | 16 | 401.04M | 1,921 |
+| 16 | 32 | 204.31M | 1,921 |
+| 16 | 16 | 204.28M | 1,921 |
+| 16 | 8 | 204.27M | 1,921 |
+| 16 | 4 | 204.26M | 1,921 |
+| 16 | 1 | 222.01M | 1,921 |
+
+The segment-size reduction substantially lowers update work in this sparse
+probe, while stable-memory pages remain dominated by the fifteen MemoryId
+regions and extent/page rounding. The segment16 contract suite covers
+tail-headroom scaling, deduplicated deferred-maintenance enqueue, and a
+17-vertex hub/churn sequence crossing a PMA leaf boundary. These historical
+results justify the selected default; they are not alternate runtime modes.
+
+The quota1 hub/churn contract also bounds a one-edge leaf mate's
+`stored_slots` to `1 + segment_size` after hub growth and maintenance, so leaf
+relocation cannot continuously transfer hub capacity to sparse vertices.
+
+The quota1 result is correctness-valid but more relocation-heavy; its lower
+initial slack does not reduce the coarse stable-page footprint in this fixture.
 
 ### Relationship to the DGAP reference model
 
@@ -109,19 +190,23 @@ In other words:
 | per-vertex gap in `calculate_positions` | per-bucket gap in `calculate_label_edge_span_positions` |
 | `rebalance_weighted`                    | `rebalance_labeled_leaf_weighted_slide_in_block`        |
 
-Adopting `stored_slots = 0` for every new bucket keeps the labeled path aligned with the DGAP reference: edges initially go to the shared log, and leaf-wide weighted rebalance assigns on-slab bytes proportional to live edges (plus slack).
+Keeping later new buckets at `stored_slots = 0` keeps the labeled path aligned
+with the DGAP reference. The segment16/quota1 first-bucket exception avoids
+paying overflow-log and relocation cost for the common one-edge vertex.
 
 ### Why this is sufficient
 
 - A new label typically receives only a few edges before the next maintenance pass.
 - Those edges fit in the shared overflow log alongside other vertices in the same leaf.
 - When the log is folded, the weighted slide allocates proportional slab space to the new bucket in one leaf-wide rewrite.
-- Per-bucket `DEFAULT_SEGMENT_SIZE` pre-allocation is therefore unnecessary and is explicitly rejected as the steady-state growth model.
-- Requiring pre-allocation for the first bucket would make one-edge vertices pay for 32 slots until the next rebalance, which is inconsistent with the DGAP model and with the goal of reducing per-vertex slab waste on many-label hubs.
+- Per-bucket `DEFAULT_SEGMENT_SIZE` pre-allocation is unnecessary and is explicitly rejected as the steady-state growth model.
+- The sole initial reservation is one slot for the segment16/quota1 first-bucket
+  candidate; it is not a 32-slot per-bucket allocation.
 
 ### Implementation impact
 
-- `try_place_new_bucket_edge_span` must place new buckets with `stored_slots = 0` at the successor boundary, for degree-1 vertices as well as higher-degree vertices.
+- `try_place_new_bucket_edge_span` must preserve zero-length successor placement,
+  while reserving one initial vertex slot for the segment16/quota1 first bucket.
 - `prepare_labeled_edge_capacity_for_insert` must check for a zero-length placement opportunity in the pinned leaf, not for a 32-slot free span.
 - `ensure_labeled_bucket_edge_span_room` must not fall back to `rebalance_vertex_edge_span` tail append; instead it must report failure if a zero-length placement cannot be made (the caller must then drive leaf-level rebalance/relocate).
 - `rebalance_vertex_edge_span` may still be used for vertex-level compaction, but not as the default growth path for a new bucket.
@@ -134,6 +219,7 @@ The edge store and edge inline-value store share one logical contract—bucket-l
 - `LabelBucket::stored_slots` counts edge slab slots only. `overflow_log_head` belongs only to the edge leaf log.
 - `LabelBucket::inline_value_slab_slots` counts inline-value slab entries only. `inline_value_log_head` and `inline_value_log_len` belong only to the payload leaf log.
 - A label with `inline_value_byte_width = 0` always has zero inline-value slab slots and no payload log, regardless of its edge degree or edge physical state.
+- A payload-bearing label allocates its first payload span lazily at one value-width entry; subsequent payload slab growth is measured in value-width entries and is not rounded to the edge segment size or edge quota.
 - Edge rebalance, resize, and relocation preserve the current bucket-local live order but do not fold, resize, release, or relocate payload storage.
 - Payload rebalance, resize, and relocation preserve the same current live order but do not fold, resize, release, or relocate edge storage.
 - Insert appends to both logical sequences only when the label has a non-zero inline-value width. Delete resolves the edge physical slot to its bucket-local live ordinal and removes the value at that ordinal. Physical maintenance can then occur in either order.

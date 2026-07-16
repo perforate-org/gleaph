@@ -20,6 +20,12 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 canbench = ["dep:canbench-rs", "dep:candid"]
+# Experimental labeled-LARA sparse-leaf variants. These change only the per-vertex
+# edge quota for capacity benchmarks; the PMA segment size is selected separately.
+labeled_leaf_quota_16 = []
+labeled_leaf_quota_8 = []
+labeled_leaf_quota_4 = []
+labeled_leaf_quota_1 = []
 # Optional multiplicative headroom when growing label-bucket descriptor span on segment rewrite.
 # Default is 1.25× (ceil). `bucket_row_grow_150` selects 1.5×; `bucket_row_grow_double` selects
 # historical 2×. If both optional features are enabled, `bucket_row_grow_double` wins.

@@ -76,8 +76,55 @@ where
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, crate::GrowFailed> {
+        Self::new_with_segment_size(
+            vertices,
+            buckets,
+            bucket_free_spans,
+            bucket_free_span_by_start,
+            edge_counts,
+            edges,
+            edge_log,
+            edge_span_meta,
+            edge_free_spans,
+            edge_free_span_by_start,
+            inline_value_slab,
+            value_free_spans,
+            value_free_span_by_start,
+            payload_log,
+            value_blobs,
+            capacities,
+            default_label,
+            DEFAULT_SEGMENT_SIZE,
+        )
+    }
+
+    /// Creates a fresh graph with an explicit PMA leaf vertex count.
+    ///
+    /// This is crate-visible so capacity benchmarks can compare layout policies;
+    /// persisted graphs reopen from the segment size stored in their edge header.
+    pub(crate) fn new_with_segment_size(
+        vertices: M,
+        buckets: M,
+        bucket_free_spans: M,
+        bucket_free_span_by_start: M,
+        edge_counts: M,
+        edges: M,
+        edge_log: M,
+        edge_span_meta: M,
+        edge_free_spans: M,
+        edge_free_span_by_start: M,
+        inline_value_slab: M,
+        value_free_spans: M,
+        value_free_span_by_start: M,
+        payload_log: M,
+        value_blobs: M,
+        capacities: InitialCapacities,
+        default_label: BucketLabelKey,
+        segment_size: u32,
+    ) -> Result<Self, crate::GrowFailed> {
+        let segment_size = segment_size.max(1);
         crate::slab_index::validate_elem_capacity_grow_failed(capacities.edge_slots, edges.size())?;
-        let segment_count = segment_tree_leaf_count(VertexCount::default(), DEFAULT_SEGMENT_SIZE);
+        let segment_count = segment_tree_leaf_count(VertexCount::default(), segment_size);
         Ok(Self {
             vertices: VertexStore::new(vertices)?,
             buckets: LabelBucketStore::new(
@@ -85,7 +132,7 @@ where
                 bucket_free_spans,
                 bucket_free_span_by_start,
                 capacities.bucket_slots,
-                DEFAULT_SEGMENT_SIZE,
+                segment_size,
             )?,
             edges: EdgeStore::new(
                 edge_counts,
@@ -95,8 +142,8 @@ where
                 edge_free_spans,
                 edge_free_span_by_start,
                 capacities.edge_slots,
-                DEFAULT_SEGMENT_SIZE,
-                DEFAULT_SEGMENT_SIZE,
+                segment_size,
+                segment_size,
             )?,
             values: EdgeInlineValueStore::new(
                 inline_value_slab,

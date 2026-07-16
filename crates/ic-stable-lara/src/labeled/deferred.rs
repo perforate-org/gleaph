@@ -94,10 +94,12 @@ mod tests {
         }
     }
 
-    fn graph() -> DeferredLabeledLaraGraph<TestEdge, crate::VectorMemory> {
+    fn graph_with_segment_size(
+        segment_size: u32,
+    ) -> DeferredLabeledLaraGraph<TestEdge, crate::VectorMemory> {
         let (v, b, bfs, bfsbs, ec, e, el, esm, efs, efsbs, vs, vffs, vffsbs, vlog, vblobs) =
             labeled_lara_memories();
-        let inner = LabeledLaraGraph::new(
+        let inner = LabeledLaraGraph::new_with_segment_size(
             v,
             b,
             bfs,
@@ -115,9 +117,14 @@ mod tests {
             vblobs,
             crate::labeled::InitialCapacities::uniform(1024),
             BucketLabelKey::from_raw(1),
+            segment_size,
         )
         .expect("inner graph");
         DeferredLabeledLaraGraph::new(inner, vector_memory()).expect("deferred graph")
+    }
+
+    fn graph() -> DeferredLabeledLaraGraph<TestEdge, crate::VectorMemory> {
+        graph_with_segment_size(32)
     }
 
     fn drain_vertex_edge_span_compact_queue(
@@ -139,7 +146,7 @@ mod tests {
     #[test]
     fn leaf_mate_insert_does_not_corrupt_oversized_hub_span() {
         // Regression: a vertex whose weighted edge span exceeds the fixed per-vertex
-        // leaf quota (DEFAULT_SEGMENT_SIZE) used to be overwritten when a leaf-mate's
+        // configured leaf quota used to be overwritten when a leaf-mate's
         // first edge was pinned at the (now occupied) fixed quota offset.
         let graph = graph();
         // Leaf-mates: hub (vertex 0) and vertices 1..=8.
@@ -172,7 +179,7 @@ mod tests {
             "hub missing edges before any leaf-mate insert"
         );
 
-        // Each leaf-mate's first edge lands at the fixed quota offset, which now overlaps
+        // Each leaf-mate's first edge lands at the configured quota offset, which now overlaps
         // the hub's oversized span; placement must instead find free, non-overlapping room.
         for mate in 1..=8u32 {
             let value = 10_000 + mate;
@@ -215,18 +222,202 @@ mod tests {
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .unwrap();
         let label = BucketLabelKey::from_raw(2);
-        for target in 0..64u32 {
+        let mut target = 0;
+        while graph.maintenance_queue_len() == 0 && target < 1024 {
             graph
                 .insert_edge(VertexId::from(0), label, TestEdge(target))
                 .unwrap();
+            target += 1;
         }
         let before = graph.maintenance_queue_len();
-        for target in 64..128u32 {
+        assert!(
+            before > 0,
+            "fixture must cross the dense-maintenance threshold"
+        );
+        for target in target..target + 128 {
             graph
                 .insert_edge(VertexId::from(0), label, TestEdge(target))
                 .unwrap();
         }
         assert_eq!(graph.maintenance_queue_len(), before);
+    }
+
+    #[test]
+    fn segment16_tail_headroom_scales_with_segment_size() {
+        use crate::labeled::graph::leaf_pin::labeled_leaf_physical_block_len;
+
+        let graph = graph_with_segment_size(16);
+        graph
+            .inner()
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        const EDGE_COUNT: u32 = 1024;
+        for target in 0..EDGE_COUNT {
+            graph
+                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .unwrap();
+        }
+        let vertex = graph.inner().vertices().get(VertexId::from(0));
+        let bucket = graph
+            .inner()
+            .buckets()
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .unwrap();
+        assert_eq!(bucket.degree(), EDGE_COUNT);
+        assert!(
+            vertex.stored_slots >= 16,
+            "vertex stored={} bucket stored={}",
+            vertex.stored_slots,
+            bucket.stored_slots
+        );
+        assert!(
+            vertex.stored_slots >= bucket.stored_slots,
+            "vertex stored={} bucket stored={}",
+            vertex.stored_slots,
+            bucket.stored_slots
+        );
+        let block_len = labeled_leaf_physical_block_len(16);
+        let required = u64::from(EDGE_COUNT)
+            .saturating_add(1)
+            .saturating_add(u64::from(EDGE_COUNT).div_ceil(8).max(16));
+        let growth_bound = required.div_ceil(block_len).saturating_mul(block_len);
+        assert!(
+            u64::from(vertex.stored_slots) <= growth_bound,
+            "segment16 growth exceeded resident + active + 12.5% headroom: stored={} bound={growth_bound}",
+            vertex.stored_slots
+        );
+    }
+
+    #[cfg(feature = "labeled_leaf_quota_1")]
+    #[test]
+    fn segment16_quota1_first_bucket_stays_on_slab() {
+        let graph = graph_with_segment_size(16);
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .inner()
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), label, TestEdge(10))
+            .unwrap();
+        let vertex = graph.inner().vertices().get(VertexId::from(0));
+        let bucket = graph
+            .inner()
+            .buckets()
+            .read_label_bucket_slot(vertex.base_slot_start())
+            .unwrap();
+        assert_eq!(vertex.stored_slots, 1);
+        assert_eq!(bucket.stored_slots, 1);
+        assert_eq!(bucket.degree(), 1);
+        assert_eq!(bucket.overflow_log_head(), -1);
+    }
+
+    #[test]
+    fn segment16_dense_maintenance_enqueue_deduplicates_per_vertex() {
+        let graph = graph_with_segment_size(16);
+        graph
+            .inner()
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        let mut target = 0;
+        while graph.maintenance_queue_len() == 0 && target < 1024 {
+            graph
+                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .unwrap();
+            target += 1;
+        }
+        let before = graph.maintenance_queue_len();
+        assert!(
+            before > 0,
+            "fixture must cross the dense-maintenance threshold"
+        );
+        for target in target..target + 128 {
+            graph
+                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .unwrap();
+        }
+        assert_eq!(graph.maintenance_queue_len(), before);
+    }
+
+    #[test]
+    fn segment16_hub_churn_preserves_edges_across_leaf_boundary() {
+        let graph = graph_with_segment_size(16);
+        for _ in 0..17 {
+            graph
+                .inner()
+                .push_vertex(crate::labeled::record::LabeledVertex::default())
+                .unwrap();
+        }
+        let label = BucketLabelKey::from_raw(2);
+        let hub = VertexId::from(0);
+        for target in 0..256u32 {
+            graph.insert_edge(hub, label, TestEdge(target)).unwrap();
+        }
+        graph
+            .insert_edge(VertexId::from(16), label, TestEdge(16_000))
+            .unwrap();
+        drain_vertex_edge_span_compact_queue(&graph);
+
+        #[cfg(feature = "labeled_leaf_quota_1")]
+        {
+            let sparse = graph.inner().vertices().get(VertexId::from(16));
+            assert!(
+                sparse.stored_slots <= 1 + 16,
+                "one-edge mate received excessive initial span: {}",
+                sparse.stored_slots
+            );
+        }
+
+        for target in (0..256u32).step_by(2) {
+            assert!(
+                graph
+                    .inner()
+                    .remove_edge_matching(hub, label, |edge| edge.0 == target)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        for target in 1_000..1_128u32 {
+            graph.insert_edge(hub, label, TestEdge(target)).unwrap();
+        }
+        drain_vertex_edge_span_compact_queue(&graph);
+
+        #[cfg(feature = "labeled_leaf_quota_1")]
+        {
+            let sparse = graph.inner().vertices().get(VertexId::from(16));
+            assert!(
+                sparse.stored_slots <= 1 + 16,
+                "one-edge mate grew with hub capacity: {}",
+                sparse.stored_slots
+            );
+        }
+
+        let edges = graph
+            .inner()
+            .out_edges(hub)
+            .unwrap()
+            .iter()
+            .map(|edge| edge.0)
+            .collect::<Vec<_>>();
+        assert_eq!(edges.len(), 256);
+        for target in (1..256u32).step_by(2) {
+            assert!(edges.contains(&target));
+        }
+        for target in 1_000..1_128u32 {
+            assert!(edges.contains(&target));
+        }
+        assert_eq!(
+            graph
+                .inner()
+                .out_edges(VertexId::from(16))
+                .unwrap()
+                .iter()
+                .map(|edge| edge.0)
+                .collect::<Vec<_>>(),
+            vec![16_000]
+        );
     }
 
     #[test]

@@ -338,10 +338,131 @@ const STAGE2_HUB_DEGREE: u32 = 1024;
 
 /// One PMA leaf worth of vertices (matches `DEFAULT_SEGMENT_SIZE`).
 const STAGE2_LEAF: u32 = 32;
-/// Per-leaf-mate degree that near-saturates the leaf block (quota is 32/vertex).
-const STAGE2_LEAF_MATE_DEGREE: u32 = 28;
+#[cfg(target_family = "wasm")]
+const STABLE_CAPACITY_PROBE_VERTICES: u32 = 1024;
 /// Target degree to grow the probed vertex to during the warrant benches.
 const STAGE2_GROW_DEGREE: u32 = 256;
+
+/// Capacity probe for the sparse case: one labeled edge for every vertex in one PMA leaf.
+/// The measured stable-memory increase includes the first leaf pin, so it exposes the
+/// `segment_size × vertex_edge_quota` tradeoff directly.
+#[bench(raw)]
+fn bench_labeled_capacity_sparse_leaf_32_vertices_1_edge() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = bench_graph(16);
+        for _ in 0..STAGE2_LEAF {
+            graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        }
+        for vertex in 0..STAGE2_LEAF {
+            graph
+                .insert_edge(
+                    VertexId::from(vertex),
+                    BucketLabelKey::from_raw(2),
+                    BenchEdge(vertex),
+                )
+                .expect("sparse edge");
+        }
+        black_box(STAGE2_LEAF);
+    })
+}
+
+/// Stable-backed counterpart of the sparse-leaf capacity probe. `DefaultMemoryImpl`
+/// maps to the canister stable memory on wasm, so the result includes the physical
+/// page growth caused by the first labeled leaf pin.
+#[cfg(target_family = "wasm")]
+fn stable_bench_graph(segment_size: u32) -> LabeledLaraGraph<BenchEdge, helper::BenchMemory> {
+    let mut memories = helper::BenchMemoryFactory::new();
+    LabeledLaraGraph::new_with_segment_size(
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        crate::labeled::InitialCapacities::uniform(16),
+        BucketLabelKey::from_raw(1),
+        segment_size,
+    )
+    .expect("stable-backed graph")
+}
+
+#[cfg(target_family = "wasm")]
+fn run_stable_sparse_capacity(vertex_count: u32, segment_size: u32) {
+    let graph = stable_bench_graph(segment_size);
+    for vertex in 0..vertex_count {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        graph
+            .insert_edge(
+                VertexId::from(vertex),
+                BucketLabelKey::from_raw(2),
+                BenchEdge(vertex),
+            )
+            .expect("sparse edge");
+    }
+    black_box(vertex_count);
+}
+
+#[cfg(target_family = "wasm")]
+fn run_stable_hub_growth_capacity(edge_count: u32, segment_size: u32) {
+    let graph = stable_bench_graph(segment_size);
+    graph
+        .push_vertex(LabeledVertex::default())
+        .expect("hub vertex");
+    for edge in 0..edge_count {
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                BucketLabelKey::from_raw(2),
+                BenchEdge(edge),
+            )
+            .expect("hub edge");
+    }
+    black_box(edge_count);
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_labeled_capacity_stable_sparse_leaf_32_vertices_1_edge() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        run_stable_sparse_capacity(STAGE2_LEAF, 32);
+    })
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_labeled_capacity_stable_sparse_leaf_1024_vertices_1_edge() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        run_stable_sparse_capacity(STABLE_CAPACITY_PROBE_VERTICES, 32);
+    })
+}
+
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_labeled_capacity_stable_sparse_segment16_1024_vertices_1_edge() -> canbench_rs::BenchResult
+{
+    bench_fn(|| {
+        run_stable_sparse_capacity(STABLE_CAPACITY_PROBE_VERTICES, 16);
+    })
+}
+
+/// Stable-backed hub growth probe. This crosses the segment16 leaf quota and
+/// exercises overflow-log fold plus leaf relocation/resize.
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_labeled_capacity_stable_hub_segment16_256_edges() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        run_stable_hub_growth_capacity(256, 16);
+    })
+}
 
 /// Seeds `STAGE2_LEAF` vertices in one leaf; when `saturate_mates` is set, fills
 /// every leaf-mate (vids `1..STAGE2_LEAF`) to `STAGE2_LEAF_MATE_DEGREE` on the
@@ -357,8 +478,13 @@ fn seed_stage2_leaf(
     }
     let label = BucketLabelKey::from_raw(2);
     if saturate_mates {
+        // Keep the fixture at the same relative density when testing an experimental
+        // quota. The default quota is 32, so this remains the historical 28-edge fixture.
+        let leaf_mate_degree = crate::labeled::graph::leaf_pin::labeled_leaf_vertex_edge_quota()
+            .saturating_sub(4)
+            .max(1);
         for v in 1..STAGE2_LEAF {
-            for e in 0..STAGE2_LEAF_MATE_DEGREE {
+            for e in 0..leaf_mate_degree {
                 graph
                     .insert_edge(VertexId::from(v), label, BenchEdge(v * 10_000 + e))
                     .expect("leaf-mate seed");
