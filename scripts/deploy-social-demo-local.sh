@@ -63,7 +63,7 @@ ensure_canister() {
     log "Using existing $name canister $id"
   else
     log "Creating $name canister"
-    icp_cmd canister create -e local --quiet "$name"
+    icp_cmd canister create -e local --quiet "$name" >/dev/null
     id="$(icp_cmd canister status -e local -i "$name" 2>/dev/null | head -n 1)"
     log "Created $name canister $id"
   fi
@@ -242,11 +242,10 @@ build_social_config() {
 # Let gql_execute_idempotent_batch page on instruction_budget; no per-call item cap.
 seed_social_graph() {
   log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
-  # ADR 0093 batching reduces inter-canister calls for independent mutations, but the social
-  # demo seeds are heavily dependent (edge inserts reference previously-inserted vertices).
-  # Planning all of them concurrently against the graph-index produces stale anchor lookups,
-  # so dependent INSERTs create no vertices/edges. Fall back to sequential single-mutation
-  # calls for this fixture so each seed sees the index state left by the previous ones.
+  # ADR 0094 synchronous graph-to-index posting flush lets each wave see the previous
+  # wave's writes.  apply-knowledge-map-seeds.mjs groups the manifest into dependency waves
+  # (vertices, user edges, posts, replies, topic/feed assignments) and runs each wave as a
+  # separate gql_execute_idempotent_batch call, preserving parent-before-child order.
   env \
     HOME="$ICP_CLI_HOME" \
     COREPACK_HOME="$ICP_COREPACK_HOME" \
@@ -256,10 +255,11 @@ seed_social_graph() {
     CARGO_HOME="$CARGO_HOME" \
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     ICP_IDENTITY_NAME="$deployer_id" \
+    SEED_PAGE_SIZE=100 \
     node "$ROOT/frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs" \
       "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json" \
       gleaph-router \
-      gql_execute_idempotent
+      gql_execute_idempotent_batch
 }
 
 setup_vector_index() {

@@ -19,6 +19,27 @@ if (pageSize !== undefined && (!Number.isInteger(pageSize) || pageSize <= 0)) {
 
 const seeds = JSON.parse(readFileSync(seedsPath, "utf8")).seeds;
 
+// Map a seed GQL statement to a dependency wave.  Seeds in the same wave are
+// independent and can be dispatched inside one gql_execute_idempotent_batch
+// call.  Waves are executed in numeric order so parent/dependent entities
+// (vertices before referencing edges) exist before a later wave needs them.
+function seedWave(gql) {
+  if (gql.includes('INSERT (n:User')) return 1;
+  if (gql.includes('INSERT (n:Community')) return 1;
+  if (gql.includes('INSERT (n:Topic')) return 1;
+  if (gql.includes('INSERT (n:Feed')) return 1;
+  if (gql.includes('-[:FOLLOWS')) return 2;
+  if (gql.includes('-[:MEMBER_OF')) return 2;
+  if (gql.includes('-[:POSTED')) return 3;
+  if (gql.includes('-[:REPLY_TO')) return 4;
+  if (gql.includes('-[:IN_TOPIC')) return 5;
+  if (gql.includes('-[:IN_PUBLIC_FEED')) return 6;
+  if (gql.includes('-[:IN_HOME')) return 6;
+  // Fallback: assume unrecognised statements depend on everything and place
+  // them after all structured waves.
+  return 7;
+}
+
 const icpEnv = () => ({
   ...process.env,
   HOME: process.env.ICP_CLI_HOME ?? process.env.HOME ?? "",
@@ -70,39 +91,57 @@ const nextIndexFrom = (output) => {
   return match ? Number(match[1]) : undefined;
 };
 
+const runBatchPage = (page) => {
+  const items = page
+    .map(
+      (seed) =>
+        `record { gql_query = "${escapeCandidText(seed.gql)}"; params = vec {}; mutation_key = "${escapeCandidText(seed.key)}" }`,
+    )
+    .join("; ");
+  let startIndex = 0;
+  while (startIndex < page.length) {
+    const output = callRouter(
+      methodName,
+      `(record { mutations = vec { ${items} }; start_index = ${startIndex}; instruction_budget = null })`,
+    );
+    const nextIndex = nextIndexFrom(output);
+    if (nextIndex === undefined) break;
+    if (nextIndex <= startIndex || nextIndex > page.length) {
+      throw new Error(
+        `Router returned invalid next_index ${nextIndex} for page cursor ${startIndex}`,
+      );
+    }
+    startIndex = nextIndex;
+  }
+};
+
 if (methodName !== "gql_execute_idempotent_batch") {
   for (const seed of seeds) {
-    const candid = `(\"${escapeCandidText(seed.gql)}\", vec {}, \"${escapeCandidText(seed.key)}\")`;
+    const candid = `("${escapeCandidText(seed.gql)}", vec {}, "${escapeCandidText(seed.key)}")`;
     callRouter(methodName, candid);
     process.stderr.write(`[seeds] Seeded ${seed.key}\n`);
   }
 } else {
   const effectivePageSize = pageSize ?? seeds.length;
-  for (let offset = 0; offset < seeds.length; offset += effectivePageSize) {
-    const page = seeds.slice(offset, offset + effectivePageSize);
-    const items = page
-      .map(
-        (seed) =>
-          `record { gql_query = \"${escapeCandidText(seed.gql)}\"; params = vec {}; mutation_key = \"${escapeCandidText(seed.key)}\" }`,
-      )
-      .join("; ");
-    let startIndex = 0;
-    while (startIndex < page.length) {
-      const output = callRouter(
-        methodName,
-        `(record { mutations = vec { ${items} }; start_index = ${startIndex}; instruction_budget = null })`,
-      );
-      const nextIndex = nextIndexFrom(output);
-      if (nextIndex === undefined) break;
-      if (nextIndex <= startIndex || nextIndex > page.length) {
-        throw new Error(
-          `Router returned invalid next_index ${nextIndex} for page cursor ${startIndex}`,
-        );
-      }
-      startIndex = nextIndex;
+  // Group seeds into dependency waves so each wave can safely run inside one
+  // gql_execute_idempotent_batch call.  The caller is responsible for seed order.
+  const waves = new Map();
+  for (const seed of seeds) {
+    const wave = seedWave(seed.gql);
+    if (!waves.has(wave)) waves.set(wave, []);
+    waves.get(wave).push(seed);
+  }
+  const sortedWaves = Array.from(waves.entries()).sort((a, b) => a[0] - b[0]);
+  for (const [wave, waveSeeds] of sortedWaves) {
+    if (waveSeeds.length === 0) continue;
+    let seededCount = 0;
+    for (let offset = 0; offset < waveSeeds.length; offset += effectivePageSize) {
+      const page = waveSeeds.slice(offset, offset + effectivePageSize);
+      runBatchPage(page);
+      seededCount += page.length;
     }
     process.stderr.write(
-      `[seeds] Seeded page ${offset / effectivePageSize + 1} (${page.length} seeds): ${page[0].key} .. ${page.at(-1).key}\n`,
+      `[seeds] Seeded wave ${wave} (${seededCount} seeds): ${waveSeeds[0].key} .. ${waveSeeds.at(-1).key}\n`,
     );
   }
 }
