@@ -61,12 +61,19 @@ ensure_canister() {
   log "Resolving canister id for $name"
   if id="$(icp_cmd canister status -e local -i "$name" 2>/dev/null | head -n 1)" && [[ -n "$id" ]]; then
     log "Using existing $name canister $id"
-    printf '%s\n' "$id"
-    return
+  else
+    log "Creating $name canister"
+    icp_cmd canister create -e local --quiet "$name"
+    id="$(icp_cmd canister status -e local -i "$name" 2>/dev/null | head -n 1)"
+    log "Created $name canister $id"
   fi
 
-  log "Creating $name canister"
-  icp_cmd canister create -e local --quiet "$name"
+  # Local replica canisters can drain their free cycle pool across repeated deploys.
+  # Ensure each canister can afford inter-canister update-call reservations (~42B per call).
+  # On the local network cycles are minted for free, so this is a safe no-op cost-wise.
+  icp_cmd canister top-up -e local --amount 10t "$name" >/dev/null || log "WARN: could not top-up $name"
+
+  printf '%s\n' "$id"
 }
 
 local_gateway_url() {
