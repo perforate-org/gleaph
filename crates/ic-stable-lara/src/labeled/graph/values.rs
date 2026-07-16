@@ -17,7 +17,7 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{BucketSearch, LabeledLaraGraph};
+use super::{BucketSearch, LabeledLaraGraph, LabeledPayloadStorageStats};
 
 pub(super) struct BucketPayloadDeletePlan {
     bucket: LabelBucket,
@@ -33,6 +33,42 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// Returns payload live/reserved bytes and allocator-owned fragmentation data.
+    pub fn payload_storage_stats(
+        &self,
+    ) -> Result<LabeledPayloadStorageStats, LabeledOperationError> {
+        let mut live_bytes = 0u64;
+        let mut allocated_bytes = 0u64;
+        for vid_raw in 0..self.vertices.len() {
+            let vid = VertexId::from(vid_raw);
+            let vertex = self.vertices.get(vid);
+            if vertex.is_tombstone() || vertex.is_default_edge_labeled() {
+                continue;
+            }
+            allocated_bytes = allocated_bytes
+                .checked_add(vertex.inline_value_allocated_bytes())
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            for bucket in self.read_vertex_label_buckets(&vertex)? {
+                let bytes = u64::from(bucket.degree())
+                    .checked_mul(u64::from(bucket.inline_value_byte_width()))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                live_bytes = live_bytes
+                    .checked_add(bytes)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            }
+        }
+        let allocator = self.values.allocator_stats();
+        Ok(LabeledPayloadStorageStats {
+            live_bytes,
+            allocated_bytes,
+            byte_capacity: allocator.byte_capacity,
+            slab_occupied_tail: allocator.slab_occupied_tail,
+            free_bytes: allocator.free_bytes,
+            largest_free_span: allocator.largest_free_span,
+            free_span_count: allocator.free_span_count,
+        })
+    }
+
     pub(super) fn bucket_resident_payload_bytes(&self, bucket: &LabelBucket) -> u64 {
         crate::labeled::invariants::bucket_resident_payload_bytes(bucket)
     }
@@ -1043,6 +1079,32 @@ mod tests {
         assert_eq!(plain_bucket.inline_value_slab_slots(), 0);
         assert_eq!(plain_bucket.inline_value_log_head(), -1);
         assert_eq!(vertex.inline_value_allocated_bytes(), 12);
+    }
+
+    #[test]
+    fn payload_storage_stats_join_live_buckets_with_allocator_state() {
+        let graph = inline_value_test_graph();
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(src, label, 2)
+            .unwrap();
+        for target in 0..3u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let stats = graph.payload_storage_stats().unwrap();
+        assert_eq!(stats.live_bytes, 6);
+        assert_eq!(stats.allocated_bytes, 6);
+        assert_eq!(stats.free_bytes, 0);
+        assert_eq!(stats.free_span_count, 0);
+        assert!(stats.byte_capacity >= stats.slab_occupied_tail);
     }
 
     #[test]

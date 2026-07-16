@@ -104,6 +104,25 @@ pub struct EdgeRemoval<E> {
     pub moves: Vec<EdgeSlotMove>,
 }
 
+/// Aggregated payload storage accounting for one labeled graph orientation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LabeledPayloadStorageStats {
+    /// Bytes required by live payload values in bucket-local order.
+    pub live_bytes: u64,
+    /// Bytes reserved by payload slab spans owned by labeled vertices.
+    pub allocated_bytes: u64,
+    /// Payload slab backing capacity in bytes.
+    pub byte_capacity: u64,
+    /// Exclusive end of the append-only occupied payload slab prefix.
+    pub slab_occupied_tail: u64,
+    /// Bytes available in retired payload free spans.
+    pub free_bytes: u64,
+    /// Largest retired payload free span.
+    pub largest_free_span: u64,
+    /// Number of retired payload free spans.
+    pub free_span_count: u64,
+}
+
 /// Result of one incremental [`LabeledLaraGraph::compact_vertex_edge_span_one_step`] call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VertexEdgeSpanCompactOneStep {
