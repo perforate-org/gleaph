@@ -135,3 +135,10 @@ mutations in the wave. The per-call reservation is fixed by the IC cycle model
 number of outbound calls; re-introducing planning chunking is unnecessary and,
 with `ic-cdk 0.20`, previously caused `protected task outlived its canister method`
 panics.
+
+
+A second cause of dependent-seed staleness — the graph shard leaving index
+postings in the durable derived-index outbox instead of reflecting them before
+the next Router call — is resolved by ADR 0094. ADR 0094 makes the graph shard
+drain the outbox synchronously at the end of each wire DML update (single or
+batch), so a dependent seed in the next Router call sees the updated index.

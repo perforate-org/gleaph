@@ -223,10 +223,14 @@ pub(crate) async fn flush_pending(
     }
 
     if ix.supports_posting_batch() {
+        let shard_id = ix.local_shard_id();
+        let mutations: Vec<IndexPostingMutation> = ops.iter().map(to_index_mutation).collect();
         let mut offset = 0usize;
         while offset < ops.len() {
-            let operations = ops[offset..].iter().map(to_index_mutation).collect();
-            let progress = match ix.posting_batch_at(ix.local_shard_id(), operations).await {
+            let chunk_end = offset
+                + crate::index::batch::posting_batch_chunk_end(shard_id, &mutations[offset..], 0);
+            let operations = mutations[offset..chunk_end].to_vec();
+            let progress = match ix.posting_batch_at(shard_id, operations).await {
                 Ok(progress) => progress,
                 Err(error) => {
                     GraphStore::new()
@@ -250,17 +254,19 @@ pub(crate) async fn flush_pending(
             }
             offset = offset.saturating_add(advanced);
             if progress.next_index.is_none() {
-                return if offset == ops.len() {
-                    Ok(())
-                } else {
-                    GraphStore::new()
-                        .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
-                    crate::facade::maintenance_timer::arm_if_needed();
-                    Err(PlanQueryError::IndexFlushDeferred {
-                        op: "vertex_batch_progress",
-                        detail: "index batch returned an invalid terminal progress".into(),
-                    })
-                };
+                if offset == ops.len() {
+                    return Ok(());
+                }
+                if offset == chunk_end {
+                    continue;
+                }
+                GraphStore::new()
+                    .repair_journal_append(mutation_id, ops[offset..].iter().map(to_repair_op));
+                crate::facade::maintenance_timer::arm_if_needed();
+                return Err(PlanQueryError::IndexFlushDeferred {
+                    op: "vertex_batch_progress",
+                    detail: "index batch returned an invalid terminal progress".into(),
+                });
             }
         }
         return Ok(());
@@ -371,13 +377,15 @@ pub(crate) async fn flush_all_pending(
         return Ok(());
     }
 
+    let shard_id = ix.local_shard_id();
+    let mutations: Vec<IndexPostingMutation> =
+        ops.iter().map(|(mutation, _)| mutation.clone()).collect();
     let mut offset = 0usize;
     while offset < ops.len() {
-        let mutations = ops[offset..]
-            .iter()
-            .map(|(mutation, _)| mutation.clone())
-            .collect();
-        let progress = match ix.posting_batch_at(ix.local_shard_id(), mutations).await {
+        let chunk_end = offset
+            + crate::index::batch::posting_batch_chunk_end(shard_id, &mutations[offset..], 0);
+        let chunk_mutations = mutations[offset..chunk_end].to_vec();
+        let progress = match ix.posting_batch_at(shard_id, chunk_mutations).await {
             Ok(progress) => progress,
             Err(error) => {
                 GraphStore::new().repair_journal_append(
@@ -405,19 +413,21 @@ pub(crate) async fn flush_all_pending(
         }
         offset += applied;
         if progress.next_index.is_none() {
-            return if offset == ops.len() {
-                Ok(())
-            } else {
-                GraphStore::new().repair_journal_append(
-                    mutation_id.unwrap_or(0),
-                    ops[offset..].iter().map(|(_, repair)| repair.clone()),
-                );
-                crate::facade::maintenance_timer::arm_if_needed();
-                Err(PlanQueryError::IndexFlushDeferred {
-                    op: "property_batch_progress",
-                    detail: "index batch returned an invalid terminal progress".into(),
-                })
-            };
+            if offset == ops.len() {
+                return Ok(());
+            }
+            if offset == chunk_end {
+                continue;
+            }
+            GraphStore::new().repair_journal_append(
+                mutation_id.unwrap_or(0),
+                ops[offset..].iter().map(|(_, repair)| repair.clone()),
+            );
+            crate::facade::maintenance_timer::arm_if_needed();
+            return Err(PlanQueryError::IndexFlushDeferred {
+                op: "property_batch_progress",
+                detail: "index batch returned an invalid terminal progress".into(),
+            });
         }
     }
     Ok(())

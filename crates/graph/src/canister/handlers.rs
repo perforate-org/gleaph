@@ -7,8 +7,12 @@ use crate::gql_execution_context::GqlExecutionContext;
 use crate::gql_run::{kernel_execution_mode, run_wire_plans_last_read_row_count};
 use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
+use crate::index::repair_journal::drain_outbox_once;
 #[cfg(not(target_family = "wasm"))]
 use crate::index::router::verify_shard_attachment;
+use crate::index::vector_ic::IcVectorIndexClient;
+use crate::index::vector_lookup::VectorIndexLookup;
+use crate::plan::PlanQueryError;
 use crate::plan_wire_guard::ensure_federated_seeds_for_index_anchors;
 use candid::{Decode, Encode};
 use gleaph_gql::Value;
@@ -20,7 +24,6 @@ use gleaph_graph_kernel::plan_exec::{
 };
 
 use super::types::GraphInitArgs;
-use crate::index::vector_lookup::VectorIndexLookup;
 use gleaph_graph_kernel::vector_index::{
     IndexedEmbeddingCatalog, VertexEmbeddingIngestionArgs, VertexEmbeddingIngestionResult,
     VertexEmbeddingProjectionOutcome,
@@ -107,6 +110,27 @@ fn wasm_index_client_holder() -> Option<IcPropertyIndexClient> {
         })
 }
 
+fn wasm_vector_index_client() -> Option<IcVectorIndexClient> {
+    GraphStore::new()
+        .federation_routing()
+        .and_then(|r| r.vector_index_canister)
+        .map(|vector_principal| IcVectorIndexClient { vector_principal })
+}
+
+async fn sync_drain_derived_index_outbox() -> Result<(), String> {
+    let Some(index) = wasm_index_client_holder() else {
+        return Ok(());
+    };
+    let vector = wasm_vector_index_client();
+    let ix = &index as &dyn PropertyIndexLookup;
+    let vx = vector.as_ref().map(|c| c as &dyn VectorIndexLookup);
+    match drain_outbox_once(ix, vx).await {
+        Ok(()) => Ok(()),
+        Err(PlanQueryError::IndexFlushDeferred { .. }) => Ok(()),
+        Err(other) => Err(other.to_string()),
+    }
+}
+
 fn ensure_execution_mode(
     args_mode: GqlExecutionMode,
     expected: GqlExecutionMode,
@@ -151,14 +175,14 @@ fn current_instruction_counter() -> u64 {
 
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
-    let result = execute_plan_impl(args).await?;
+    let result = execute_plan_impl(args, false).await?;
     ensure_execute_plan_result_payload(&result, "execute_plan_query")?;
     Ok(result)
 }
 
 pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Update, "execute_plan_update")?;
-    let result = execute_plan_impl(args).await?;
+    let result = execute_plan_impl(args, true).await?;
     ensure_execute_plan_result_payload(&result, "execute_plan_update")?;
     Ok(result)
 }
@@ -195,11 +219,21 @@ async fn execute_plan_batch(
         }
         results.push(
             match ensure_execution_mode(operation.mode, GqlExecutionMode::Update, entrypoint) {
-                Ok(()) => execute_plan_impl(operation).await,
+                Ok(()) => execute_plan_impl(operation, false).await,
                 Err(err) => Err(err),
             },
         );
     }
+    // Synchronously drain the postings emitted by the successfully executed
+    // operations in this batch. If the drain cannot complete now, the entries
+    // remain in the durable derived-index outbox and the maintenance timer will
+    // converge the index asynchronously (ADR 0094).
+    if results.iter().all(|r| r.is_ok())
+        && let Err(e) = sync_drain_derived_index_outbox().await
+    {
+        return Err(format!("{entrypoint}: synchronous index drain failed: {e}"));
+    }
+
     let result = ExecutePlanBatchResult {
         results,
         next_index,
@@ -215,7 +249,10 @@ async fn execute_plan_batch(
     Ok(result)
 }
 
-async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
+async fn execute_plan_impl(
+    args: ExecutePlanArgs,
+    drain_outbox_after: bool,
+) -> Result<ExecutePlanResult, String> {
     let store = GraphStore::new();
     let routing = store
         .federation_routing()
@@ -301,6 +338,14 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
     )
     .await
     .map_err(|e| e.to_string())?;
+    if drain_outbox_after
+        && let Err(e) = sync_drain_derived_index_outbox().await
+    {
+        return Err(format!(
+            "execute_plan_impl: synchronous index drain failed: {e}"
+        ));
+    }
+
     Ok(ExecutePlanResult {
         row_count: run.row_count as u64,
         rows_blob: run.rows_blob,
@@ -1632,7 +1677,6 @@ mod vertex_embedding_ingestion_tests {
     use super::*;
     use crate::facade::{FederationRouting, GraphStore};
     use crate::index::federation_routing::local_vertex_id_raw;
-    use crate::index::vector_lookup::VectorIndexLookup;
     use async_trait::async_trait;
     use candid::Principal;
     use gleaph_graph_kernel::entry::EmbeddingNameId;

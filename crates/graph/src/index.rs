@@ -1,5 +1,6 @@
 //! Federated property index integration with [`gleaph_graph_index`].
 
+pub mod batch;
 pub mod catalog_context;
 pub mod edge_lookup;
 pub mod edge_pending;
