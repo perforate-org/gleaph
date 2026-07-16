@@ -6,7 +6,7 @@
 //! Best-fit allocation scans size-class bins with intrusive linked lists instead of a
 //! secondary `(len, start)` BTree.
 
-use std::{cell::RefCell, fmt};
+use std::{cell::RefCell, collections::BinaryHeap, fmt};
 
 use ic_stable_paged_ordered_map::StablePagedOrderedMap;
 use ic_stable_structures::Memory;
@@ -217,10 +217,29 @@ pub struct FreeSpanAllocatorStats {
     pub free_span_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MaxSpanCandidate {
+    len: u64,
+    id: SpanId,
+}
+
+impl Ord for MaxSpanCandidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.len.cmp(&other.len).then(self.id.cmp(&other.id))
+    }
+}
+
+impl PartialOrd for MaxSpanCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Stable free-span allocator for retired physical edge-slab ranges.
 pub struct FreeSpanStore<M: Memory> {
     store: M,
     by_start: RefCell<StablePagedOrderedMap<M>>,
+    max_spans: RefCell<BinaryHeap<MaxSpanCandidate>>,
 }
 
 impl<M: Memory> FreeSpanStore<M> {
@@ -248,6 +267,7 @@ impl<M: Memory> FreeSpanStore<M> {
                     delta: 0,
                 }
             })?),
+            max_spans: RefCell::new(BinaryHeap::new()),
         })
     }
 
@@ -273,6 +293,7 @@ impl<M: Memory> FreeSpanStore<M> {
             by_start: RefCell::new(
                 StablePagedOrderedMap::init(by_start_ms).map_err(|_| InitError::OutOfMemory)?,
             ),
+            max_spans: RefCell::new(BinaryHeap::new()),
         };
         // The by-start index must be internally sound, hold exactly one entry per
         // active span, and agree with the records header and size-class bins.
@@ -595,6 +616,7 @@ impl<M: Memory> FreeSpanStore<M> {
                     .insert(remainder.start_slot, id)
                     .expect("paged by_start insert failed");
                 self.relink_active_record(id, remainder)?;
+                self.record_max_candidate(id, remainder.len);
                 self.adjust_summary_after_replace(whole, remainder);
             }
             return Ok(Some(taken));
@@ -889,6 +911,7 @@ impl<M: Memory> FreeSpanStore<M> {
     fn insert_span(&self, span: FreeSpan) -> Result<(), FreeSpanError> {
         let id = self.alloc_record()?;
         self.write_active_record(id, span)?;
+        self.record_max_candidate(id, span.len);
         self.adjust_summary_after_insert(span.len);
         Ok(())
     }
@@ -969,6 +992,7 @@ impl<M: Memory> FreeSpanStore<M> {
                 .expect("paged by_start insert failed");
         }
         self.relink_active_record(id, new)?;
+        self.record_max_candidate(id, new.len);
         self.adjust_summary_after_replace(old, new);
         Ok(())
     }
@@ -1177,6 +1201,12 @@ impl<M: Memory> FreeSpanStore<M> {
         }
     }
 
+    fn record_max_candidate(&self, id: SpanId, len: u64) {
+        self.max_spans
+            .borrow_mut()
+            .push(MaxSpanCandidate { len, id });
+    }
+
     fn adjust_summary_after_remove(&self, len: u64) {
         let free_bytes = crate::read_u64(&self.store, Address::from(OFFSET_FREE_BYTES));
         crate::write_u64(
@@ -1212,6 +1242,8 @@ impl<M: Memory> FreeSpanStore<M> {
     fn rebuild_allocator_stats(&self) {
         let mut free_bytes = 0u64;
         let mut largest = 0u64;
+        let mut max_spans = self.max_spans.borrow_mut();
+        max_spans.clear();
         let by_start = self.by_start.borrow();
         let Some((mut start, mut id)) = by_start.first() else {
             crate::write_u64(&self.store, Address::from(OFFSET_FREE_BYTES), 0);
@@ -1223,6 +1255,7 @@ impl<M: Memory> FreeSpanStore<M> {
             if rec.flags == FLAG_ACTIVE {
                 free_bytes = free_bytes.saturating_add(rec.len);
                 largest = largest.max(rec.len);
+                max_spans.push(MaxSpanCandidate { len: rec.len, id });
             }
             let Some((next_start, next_id)) = by_start.successor(start) else {
                 break;
@@ -1239,28 +1272,18 @@ impl<M: Memory> FreeSpanStore<M> {
     }
 
     fn rebuild_largest_free_span(&self) {
-        // Size-class bins are ordered by length. Once the highest non-empty
-        // bin is found, only that bin can contain the new maximum. This keeps
-        // largest-span recovery proportional to one bin instead of all active
-        // spans in the by-start index.
-        for bin in (0..BIN_COUNT).rev() {
-            let mut largest = 0u64;
-            let mut id = self.read_bin_head(bin);
-            while id != 0 {
-                let rec = self.read_record(id);
-                if rec.flags == FLAG_ACTIVE {
-                    largest = largest.max(rec.len);
-                }
-                id = rec.next_bin;
-            }
-            if largest != 0 {
+        let mut max_spans = self.max_spans.borrow_mut();
+        while let Some(candidate) = max_spans.peek().copied() {
+            let rec = self.read_record(candidate.id);
+            if rec.flags == FLAG_ACTIVE && rec.len == candidate.len {
                 crate::write_u64(
                     &self.store,
                     Address::from(OFFSET_LARGEST_FREE_SPAN),
-                    largest,
+                    candidate.len,
                 );
                 return;
             }
+            max_spans.pop();
         }
         crate::write_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN), 0);
     }
