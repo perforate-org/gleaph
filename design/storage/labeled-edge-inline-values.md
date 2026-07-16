@@ -89,8 +89,8 @@ The free-span allocator now persists `free_bytes` and `largest_free_span` in
 unused metadata space after the bin-head table; `active_count` remains the
 persisted span count. Allocation, split, release, coalescing, and replacement
 update the summary with the corresponding free-span mutation. If a mutation
-removes the current largest span, the largest value is rebuilt from the
-by-start index. Reopen validates the existing free-span structures and rebuilds
+removes the current largest span, the largest value is rebuilt from the highest
+non-empty size-class bin rather than scanning the entire by-start index. Reopen validates the existing free-span structures and rebuilds
 the summary once, which also repairs stores written before the summary fields
 were introduced. Consequently, the pressure predicate no longer materializes
 `free_spans.spans()` on its hot path.

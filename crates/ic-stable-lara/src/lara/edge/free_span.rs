@@ -1239,28 +1239,30 @@ impl<M: Memory> FreeSpanStore<M> {
     }
 
     fn rebuild_largest_free_span(&self) {
-        let mut largest = 0u64;
-        let by_start = self.by_start.borrow();
-        let Some((mut start, mut id)) = by_start.first() else {
-            crate::write_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN), 0);
-            return;
-        };
-        loop {
-            let rec = self.read_record(id);
-            if rec.flags == FLAG_ACTIVE {
-                largest = largest.max(rec.len);
+        // Size-class bins are ordered by length. Once the highest non-empty
+        // bin is found, only that bin can contain the new maximum. This keeps
+        // largest-span recovery proportional to one bin instead of all active
+        // spans in the by-start index.
+        for bin in (0..BIN_COUNT).rev() {
+            let mut largest = 0u64;
+            let mut id = self.read_bin_head(bin);
+            while id != 0 {
+                let rec = self.read_record(id);
+                if rec.flags == FLAG_ACTIVE {
+                    largest = largest.max(rec.len);
+                }
+                id = rec.next_bin;
             }
-            let Some((next_start, next_id)) = by_start.successor(start) else {
-                break;
-            };
-            start = next_start;
-            id = next_id;
+            if largest != 0 {
+                crate::write_u64(
+                    &self.store,
+                    Address::from(OFFSET_LARGEST_FREE_SPAN),
+                    largest,
+                );
+                return;
+            }
         }
-        crate::write_u64(
-            &self.store,
-            Address::from(OFFSET_LARGEST_FREE_SPAN),
-            largest,
-        );
+        crate::write_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN), 0);
     }
 }
 
