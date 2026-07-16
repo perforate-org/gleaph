@@ -1145,14 +1145,16 @@ where
             Vec<LabelBucket>,
             u64,
             u32,
-            Vec<Vec<E>>,
+            Vec<Option<Vec<E>>>,
+            Vec<Option<Vec<u8>>>,
         )> = Vec::with_capacity(slices.len());
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("labeled_leaf_materialize_plans");
         for (i, (vid, _, _)) in slices.iter().enumerate() {
             let vertex = self.vertices.get(*vid);
             let buckets = self.read_vertex_label_buckets(&vertex)?;
-            let mut per_bucket_edges: Vec<Vec<E>> = Vec::with_capacity(buckets.len());
+            let mut per_bucket_edges: Vec<Option<Vec<E>>> = Vec::with_capacity(buckets.len());
+            let mut per_bucket_raw: Vec<Option<Vec<u8>>> = Vec::with_capacity(buckets.len());
             for bucket in &buckets {
                 let log_len = if bucket.overflow_log_head() >= 0 {
                     self.edges
@@ -1164,21 +1166,30 @@ where
                     .stored_slots
                     .checked_add(log_len)
                     .ok_or(LaraOperationError::RowDegreeOverflow)?;
-                let mut resident = Vec::with_capacity(resident_slots as usize);
-                {
-                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                    let _scope = bench_scope("labeled_leaf_read_stored_edges");
+                if bucket.overflow_log_head() < 0 {
+                    let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
+                    let mut raw = vec![0u8; run];
+                    if run > 0 {
+                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                        let _scope = bench_scope("labeled_leaf_read_stored_edges");
+                        self.edges
+                            .read_slots_contiguous(bucket.edge_start(), &mut raw);
+                    }
+                    per_bucket_edges.push(None);
+                    per_bucket_raw.push(Some(raw));
+                } else {
+                    let mut resident = Vec::with_capacity(resident_slots as usize);
                     if bucket.stored_slots > 0 {
                         let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
                         let mut raw = vec![0u8; run];
+                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                        let _scope = bench_scope("labeled_leaf_read_stored_edges");
                         self.edges
                             .read_slots_contiguous(bucket.edge_start(), &mut raw);
                         for bytes in raw.chunks_exact(E::BYTES) {
                             resident.push(E::read_from(bytes));
                         }
                     }
-                }
-                if bucket.overflow_log_head() >= 0 {
                     #[cfg(all(feature = "canbench", target_family = "wasm"))]
                     let _scope = bench_scope("labeled_leaf_read_overflow_edges");
                     for (log_offset, log_index) in self
@@ -1196,27 +1207,39 @@ where
                         let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_index);
                         resident.push(edge.with_slot_index(slot_index));
                     }
+                    debug_assert_eq!(resident.len(), resident_slots as usize);
+                    per_bucket_edges.push(Some(resident));
+                    per_bucket_raw.push(None);
                 }
-                debug_assert_eq!(resident.len(), resident_slots as usize);
-                per_bucket_edges.push(resident);
             }
             let v_start = vertex_starts[i];
             let v_end = vertex_starts.get(i + 1).copied().unwrap_or(leaf_end);
             let span_slots = u32::try_from(v_end.saturating_sub(v_start))
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-            plans.push((*vid, vertex, buckets, v_start, span_slots, per_bucket_edges));
+            plans.push((
+                *vid,
+                vertex,
+                buckets,
+                v_start,
+                span_slots,
+                per_bucket_edges,
+                per_bucket_raw,
+            ));
         }
 
-        plans.sort_by_key(|(_, _, _, v_start, _, _)| std::cmp::Reverse(*v_start));
+        plans.sort_by_key(|(_, _, _, v_start, _, _, _)| std::cmp::Reverse(*v_start));
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_commit_plans");
-            for (vid, vertex, buckets, v_start, span_slots, per_bucket_edges) in plans {
+            for (vid, vertex, buckets, v_start, span_slots, per_bucket_edges, per_bucket_raw) in
+                plans
+            {
                 self.commit_vertex_edge_span_layout(
                     vid,
                     &vertex,
                     &buckets,
                     &per_bucket_edges,
+                    &per_bucket_raw,
                     v_start,
                     span_slots,
                     leaf_relocate_commit,
@@ -1232,7 +1255,8 @@ where
         src: VertexId,
         vertex: &LabeledVertex,
         buckets: &[LabelBucket],
-        per_bucket_edges: &[Vec<E>],
+        per_bucket_edges: &[Option<Vec<E>>],
+        per_bucket_raw: &[Option<Vec<u8>>],
         new_base: u64,
         new_alloc: u32,
         leaf_relocate_commit: bool,
@@ -1248,9 +1272,14 @@ where
             .unwrap_or(0);
         let resident_buckets = buckets
             .iter()
-            .zip(per_bucket_edges.iter())
-            .map(|(bucket, edges)| {
-                let resident_slots = u32::try_from(edges.len())
+            .zip(per_bucket_edges.iter().zip(per_bucket_raw.iter()))
+            .map(|(bucket, (edges, raw))| {
+                let resident_slots = raw
+                    .as_ref()
+                    .map(|raw| raw.len() / E::BYTES)
+                    .or_else(|| edges.as_ref().map(Vec::len))
+                    .unwrap_or(0);
+                let resident_slots = u32::try_from(resident_slots)
                     .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
                 Ok::<LabelBucket, LabeledOperationError>(
                     bucket
@@ -1270,9 +1299,19 @@ where
                 0,
             )?
         };
-        let max_run = per_bucket_edges.iter().try_fold(0usize, |max_run, edges| {
-            Ok::<usize, LabeledOperationError>(max_run.max(Self::edge_bytes_for_len(edges.len())?))
-        })?;
+        let max_run = per_bucket_edges
+            .iter()
+            .zip(per_bucket_raw.iter())
+            .try_fold(0usize, |max_run, (edges, raw)| {
+                let run = if let Some(raw) = raw {
+                    raw.len()
+                } else if let Some(edges) = edges {
+                    Self::edge_bytes_for_len(edges.len())?
+                } else {
+                    0
+                };
+                Ok::<usize, LabeledOperationError>(max_run.max(run))
+            })?;
         let mut buf = vec![0u8; max_run];
         let mut row_buckets = Vec::with_capacity(buckets.len());
         {
@@ -1281,9 +1320,20 @@ where
             for (index, bucket) in resident_buckets.iter().enumerate() {
                 let row_start = positions[index];
                 let edges = &per_bucket_edges[index];
-                if !edges.is_empty() {
-                    let run = Self::edge_bytes_for_len(edges.len())?;
-                    {
+                let raw = &per_bucket_raw[index];
+                let run = if let Some(raw) = raw {
+                    raw.len()
+                } else if let Some(edges) = edges {
+                    Self::edge_bytes_for_len(edges.len())?
+                } else {
+                    0
+                };
+                if run > 0 {
+                    if let Some(raw) = raw {
+                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                        let _scope = bench_scope("labeled_vertex_copy_edge_run");
+                        buf[..run].copy_from_slice(raw);
+                    } else if let Some(edges) = edges {
                         #[cfg(all(feature = "canbench", target_family = "wasm"))]
                         let _scope = bench_scope("labeled_vertex_encode_edge_run");
                         let mut offset = 0usize;

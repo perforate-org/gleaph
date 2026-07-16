@@ -297,6 +297,14 @@ commit itself, especially the encoding and writing of resident edge runs. Any fu
 must preserve descending commit order, bucket-local live order, and the leaf-wide atomic relocation
 contract.
 
+The relocation plan also retains raw bytes for slab-only buckets. Those bytes are captured before
+any destination writes and consumed during commit, so the fast path does not reread a source slot
+that may already have been overwritten by an in-place slide. Buckets with overflow-log entries
+continue through the decoded edge path because their logical order is assembled from two physical
+sources. In the same 16,384 fixture, this reduced the total from 128.59M to 121.06M instructions;
+the encode scope fell from 3.58M to approximately 1K instructions. The raw plan is transient only;
+it does not alter the stable layout or the persisted bucket contract.
+
 The `LabelBucket` stable record grows from 25 to 29 bytes to persist the payload slab-slot count independently. Development stable data using the earlier record width must be wiped; backward decoding is not provided.
 
 ## Consequences
