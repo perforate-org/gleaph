@@ -75,6 +75,13 @@ coalesces duplicate inter-canister lookups and throttles planning concurrency.
    query budget; the Graph `execute_plan_update_batch` update path uses the 40B
    update budget.
 
+8. **Remove `max_items` from the batch API.** `GqlExecuteIdempotentBatchArgs`
+   no longer carries a `max_items` field. Pagination is driven exclusively by
+   `instruction_budget`: when the Router's per-message instruction counter nears
+   the budget it returns `next_index`, and the caller continues from there. This
+   removes the artificial item-count cap that was added as a workaround for
+   liquid-cycles exhaustion and lets the budget be the single paging signal.
+
 The `PreflightContext` is intentionally wave-local: it is created at the start of
 one `gql_execute_idempotent_batch` ingress call, shared by reference across the
 planning futures, and dropped when the wave finishes. It is not persisted across

@@ -116,6 +116,16 @@ fn schedule(delay: core::time::Duration) -> ic_cdk_timers::TimerId {
     ic_cdk_timers::set_timer(delay, on_tick())
 }
 
+#[cfg(target_family = "wasm")]
+async fn on_tick_migratory() {
+    ic_cdk::futures::spawn_migratory(on_tick());
+}
+
+#[cfg(target_family = "wasm")]
+fn schedule_migratory(delay: core::time::Duration) -> ic_cdk_timers::TimerId {
+    ic_cdk_timers::set_timer(delay, on_tick_migratory())
+}
+
 /// Runs one bounded recovery pass, then reschedules per the lap state.
 #[cfg(target_family = "wasm")]
 async fn on_tick() {

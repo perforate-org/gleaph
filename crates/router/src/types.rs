@@ -97,15 +97,17 @@ pub struct GqlExecuteIdempotentBatchItem {
     pub mutation_key: String,
 }
 
-/// Cursor-based idempotent mutation execution. An absent `max_items` means all remaining input.
+/// Cursor-based idempotent mutation execution.
+///
+/// `instruction_budget` bounds the work done in a single ingress update call. When the Router
+/// exhausts this budget it returns `next_index`, allowing the caller to continue with another
+/// call. There is no separate `max_items` field: the budget is the only pagination signal.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GqlExecuteIdempotentBatchArgs {
     pub mutations: Vec<GqlExecuteIdempotentBatchItem>,
     pub start_index: u32,
     /// `None` selects the Router default safety budget below the IC update-call limit.
     pub instruction_budget: Option<u64>,
-    /// `None` means all remaining input; `Some` caps this call's page.
-    pub max_items: Option<u32>,
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -929,7 +931,6 @@ mod outbound_tests {
             }],
             start_index: 0,
             instruction_budget: None,
-            max_items: None,
         };
         let bytes = Encode!(&args).expect("encode batch args");
         let decoded: GqlExecuteIdempotentBatchArgs =
@@ -947,7 +948,6 @@ mod outbound_tests {
             }],
             start_index: 3,
             instruction_budget: Some(35_000_000_000),
-            max_items: Some(64),
         };
         let bytes = Encode!(&args).expect("encode dynamic batch args");
         let decoded: GqlExecuteIdempotentBatchArgs =

@@ -12,14 +12,9 @@ const canisterName = process.argv[3] ?? "gleaph-router";
 const methodName = process.argv[4] ?? "gql_execute_idempotent_batch";
 const pageSizeInput = process.env.SEED_PAGE_SIZE ?? process.argv[5];
 const pageSize = pageSizeInput === undefined ? undefined : Number(pageSizeInput);
-const maxItemsInput = process.env.SEED_MAX_ITEMS ?? process.argv[6];
-const maxItems = maxItemsInput === undefined ? undefined : Number(maxItemsInput);
 
 if (pageSize !== undefined && (!Number.isInteger(pageSize) || pageSize <= 0)) {
   throw new Error("SEED_PAGE_SIZE/page size must be a positive integer when specified");
-}
-if (maxItems !== undefined && (!Number.isInteger(maxItems) || maxItems <= 0)) {
-  throw new Error("SEED_MAX_ITEMS/max items must be a positive integer when specified");
 }
 
 const seeds = JSON.parse(readFileSync(seedsPath, "utf8")).seeds;
@@ -83,7 +78,6 @@ if (methodName !== "gql_execute_idempotent_batch") {
   }
 } else {
   const effectivePageSize = pageSize ?? seeds.length;
-  const maxItemsCandid = maxItems === undefined ? "null" : `opt ${maxItems}`;
   for (let offset = 0; offset < seeds.length; offset += effectivePageSize) {
     const page = seeds.slice(offset, offset + effectivePageSize);
     const items = page
@@ -96,7 +90,7 @@ if (methodName !== "gql_execute_idempotent_batch") {
     while (startIndex < page.length) {
       const output = callRouter(
         methodName,
-        `(record { mutations = vec { ${items} }; start_index = ${startIndex}; instruction_budget = null; max_items = ${maxItemsCandid} })`,
+        `(record { mutations = vec { ${items} }; start_index = ${startIndex}; instruction_budget = null })`,
       );
       const nextIndex = nextIndexFrom(output);
       if (nextIndex === undefined) break;

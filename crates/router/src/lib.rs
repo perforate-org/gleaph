@@ -342,15 +342,6 @@ async fn gql_execute_idempotent_batch(
             args.start_index
         )));
     }
-    let max_items = match args.max_items {
-        None => usize::MAX,
-        Some(value) if value > 0 => value as usize,
-        Some(value) => {
-            return Err(RouterError::InvalidArgument(format!(
-                "max_items {value} must be greater than zero"
-            )));
-        }
-    };
     let budget = match args.instruction_budget {
         None => DEFAULT_DYNAMIC_INSTRUCTION_BUDGET,
         Some(value) if value <= MAX_DYNAMIC_INSTRUCTION_BUDGET => value,
@@ -363,7 +354,7 @@ async fn gql_execute_idempotent_batch(
     };
 
     let mut cursor = args.start_index as usize;
-    let end = cursor.saturating_add(max_items).min(args.mutations.len());
+    let end = args.mutations.len();
     let mut results = Vec::new();
     while cursor < end && current_instruction_counter() < budget {
         let coordinator = gql::BatchDispatchCoordinator::new_dynamic(end - cursor, budget);
