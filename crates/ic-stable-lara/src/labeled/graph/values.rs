@@ -17,7 +17,9 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{BucketSearch, LabeledLaraGraph, LabeledPayloadStorageStats};
+use super::{
+    BucketSearch, LabeledLaraGraph, LabeledPayloadCompactionResult, LabeledPayloadStorageStats,
+};
 
 pub(super) struct BucketPayloadDeletePlan {
     bucket: LabelBucket,
@@ -33,6 +35,110 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// Packs payload slab spans into earlier free spans without touching edge state.
+    ///
+    /// The complete move set is preflighted before any span is consumed. Retired
+    /// destination spans are reserved up front, so the commit path does not need
+    /// additional allocator records.
+    pub fn compact_payload_slab(
+        &self,
+    ) -> Result<LabeledPayloadCompactionResult, LabeledOperationError> {
+        struct SpanPlan {
+            bucket_slot: u64,
+            bucket: LabelBucket,
+            old_offset: u64,
+            len: u64,
+            new_offset: u64,
+        }
+
+        let mut spans = Vec::new();
+        for vid_raw in 0..self.vertices.len() {
+            let vid = VertexId::from(vid_raw);
+            let vertex = self.vertices.get(vid);
+            if vertex.is_tombstone() || vertex.is_default_edge_labeled() {
+                continue;
+            }
+            for bucket_index in 0..vertex.degree() {
+                let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+                let bucket = self
+                    .buckets
+                    .read_label_bucket_slot(bucket_slot)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let len = u64::from(bucket.inline_value_slab_slots())
+                    .checked_mul(u64::from(bucket.inline_value_byte_width()))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if len > 0 {
+                    spans.push((bucket_slot, bucket, bucket.inline_value_offset(), len));
+                }
+            }
+        }
+        spans.sort_by_key(|(_, _, offset, _)| *offset);
+
+        let mut cursor = 0u64;
+        let mut plans = Vec::new();
+        for (bucket_slot, bucket, old_offset, len) in spans {
+            if old_offset < cursor {
+                return Err(LaraOperationError::CollectAllocationOverflow.into());
+            }
+            if old_offset == cursor {
+                cursor = cursor
+                    .checked_add(len)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                continue;
+            }
+            if !self.values.byte_span_available_at(cursor, len) {
+                return Ok(LabeledPayloadCompactionResult::default());
+            }
+            plans.push(SpanPlan {
+                bucket_slot,
+                bucket,
+                old_offset,
+                len,
+                new_offset: cursor,
+            });
+            cursor = cursor
+                .checked_add(len)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        }
+        if plans.is_empty() {
+            return Ok(LabeledPayloadCompactionResult::default());
+        }
+        self.values
+            .reserve_retired_byte_spans(plans.len() as u64)
+            .map_err(LabeledOperationError::from)?;
+
+        let mut result = LabeledPayloadCompactionResult::default();
+        for plan in plans {
+            let taken = self
+                .values
+                .allocate_byte_span_at(plan.new_offset, plan.len)
+                .map_err(LabeledOperationError::from)?;
+            if !taken {
+                panic!("preflighted payload compaction destination disappeared");
+            }
+            let mut bytes = vec![
+                0u8;
+                usize::try_from(plan.len).map_err(|_| {
+                    LaraOperationError::CollectAllocationOverflow
+                })?
+            ];
+            self.values.read_bytes(plan.old_offset, &mut bytes);
+            self.values
+                .write_bytes(plan.new_offset, &bytes)
+                .unwrap_or_else(|_| panic!("preflighted payload compaction write failed"));
+            self.buckets.write_label_bucket_slot(
+                plan.bucket_slot,
+                plan.bucket.with_inline_value_offset(plan.new_offset),
+            )?;
+            self.values
+                .retire_byte_span(plan.old_offset, plan.len)
+                .unwrap_or_else(|_| panic!("reserved payload compaction retirement failed"));
+            result.moved_spans = result.moved_spans.saturating_add(1);
+            result.moved_bytes = result.moved_bytes.saturating_add(plan.len);
+        }
+        Ok(result)
+    }
+
     /// Returns payload live/reserved bytes and allocator-owned fragmentation data.
     pub fn payload_storage_stats(
         &self,
@@ -1105,6 +1211,51 @@ mod tests {
         assert_eq!(stats.free_bytes, 0);
         assert_eq!(stats.free_span_count, 0);
         assert!(stats.byte_capacity >= stats.slab_occupied_tail);
+    }
+
+    #[test]
+    fn payload_compaction_moves_only_payload_spans() {
+        let graph = inline_value_test_graph();
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let first = BucketLabelKey::from_raw(2);
+        let second = BucketLabelKey::from_raw(3);
+        for label in [first, second] {
+            graph
+                .ensure_label_bucket_inline_value_byte_width(src, label, 2)
+                .unwrap();
+            for target in 0..2u32 {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        src,
+                        label,
+                        PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    )
+                    .unwrap();
+            }
+        }
+        for target in 0..2u32 {
+            graph
+                .remove_edge_matching(src, first, |edge| edge.target == target)
+                .unwrap()
+                .expect("first payload edge removed");
+        }
+
+        let before = graph.payload_storage_stats().unwrap();
+        assert!(before.free_bytes >= 4);
+        let result = graph.compact_payload_slab().unwrap();
+        assert_eq!(result.moved_spans, 1);
+        assert_eq!(result.moved_bytes, 4);
+        assert_eq!(
+            graph
+                .iter_edges_for_label(src, second)
+                .unwrap()
+                .into_iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![1, 0]
+        );
+        let after = graph.payload_storage_stats().unwrap();
+        assert_eq!(after.live_bytes, 4);
     }
 
     #[test]

@@ -57,6 +57,13 @@ delete/log-transition complexity without reducing the existing copy paths.
 Headroom remains deferred until measurements show a workload where that trade-off
 is favorable.
 
+Payload-only compaction is available through `compact_payload_slab`. It preflights
+earlier free-span prefixes, copies only payload slab bytes, updates bucket payload
+offsets, and retires the old spans. Edge slab positions, edge/payload log chains,
+bucket-local live order, and vertex allocation totals are unchanged. The operation
+does not shrink the backing capacity or invoke edge maintenance; threshold-based
+automatic scheduling remains a later policy decision.
+
 ## Payload storage class (schema SSOT)
 
 Inline vs blob is **not** a per-slot property stored in the payload slab or log cell. It is derived

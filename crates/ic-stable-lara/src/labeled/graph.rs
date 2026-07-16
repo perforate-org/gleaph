@@ -123,6 +123,15 @@ pub struct LabeledPayloadStorageStats {
     pub free_span_count: u64,
 }
 
+/// Result of a payload-only slab compaction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LabeledPayloadCompactionResult {
+    /// Number of payload slab spans moved.
+    pub moved_spans: u32,
+    /// Total payload bytes copied into earlier free spans.
+    pub moved_bytes: u64,
+}
+
 /// Result of one incremental [`LabeledLaraGraph::compact_vertex_edge_span_one_step`] call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VertexEdgeSpanCompactOneStep {

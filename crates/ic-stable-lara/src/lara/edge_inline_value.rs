@@ -749,6 +749,28 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         self.append_byte_span(len)
     }
 
+    /// Takes a payload free-span prefix at an exact byte offset.
+    pub(crate) fn allocate_byte_span_at(&self, offset: u64, len: u64) -> Result<bool, GrowFailed> {
+        if len == 0 {
+            return Ok(true);
+        }
+        self.free_spans
+            .take_prefix_at(offset, len)
+            .map(|span| span.is_some())
+            .map_err(|_| GrowFailed {
+                current_size: self.byte_capacity(),
+                delta: 0,
+            })
+    }
+
+    pub(crate) fn byte_span_available_at(&self, offset: u64, len: u64) -> bool {
+        len > 0
+            && self
+                .free_spans
+                .free_span_starting_at(offset)
+                .is_some_and(|span| span.len >= len)
+    }
+
     /// Grows a span when it ends at the occupied tail (no free-list churn).
     pub fn grow_byte_span_in_place(
         &self,
