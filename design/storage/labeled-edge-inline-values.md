@@ -73,12 +73,17 @@ the payload-only pass within the caller's maintenance budget. The queue item is
 fixed-width and uses a new stable tag, while unknown tags continue to decode as
 the original bucket-segment item for compatibility with older queue contents.
 
-The deferred A/B benchmark measured 41.15K instructions for the pressure
+The deferred A/B benchmark measured 36.83K instructions for the pressure
 insert's detection and enqueue path, 22.08K for the complete maintenance item,
 and 25.78K for its payload-compaction scope. The corresponding synchronous
 compaction-triggering insert measured 114.89K instructions. These values are
 fixture-specific, but show that the deferred insert avoids paying the full
 compaction cost in the mutation path.
+
+The pressure predicate uses only allocator-owned free-byte and largest-span
+statistics; it does not scan vertices or recompute live/allocated payload bytes.
+The latter remains an observability operation exposed by
+`payload_storage_stats()`.
 
 The queue persistence contract is covered by a reopen test: a pending payload
 item remains queued across graph reconstruction and is consumed by the next

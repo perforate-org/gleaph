@@ -239,8 +239,11 @@ where
         if requested_bytes == 0 {
             return Ok(false);
         }
-        let stats = self.payload_storage_stats()?;
-        Ok(stats.free_bytes >= requested_bytes && stats.largest_free_span < requested_bytes)
+        let allocator = self.values.allocator_stats();
+        Ok(
+            allocator.free_bytes >= requested_bytes
+                && allocator.largest_free_span < requested_bytes,
+        )
     }
 
     pub(super) fn bucket_resident_payload_bytes(&self, bucket: &LabelBucket) -> u64 {
