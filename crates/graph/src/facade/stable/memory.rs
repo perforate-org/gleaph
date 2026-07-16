@@ -129,10 +129,13 @@ const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 4;
     feature = "canbench_uniform_32",
 )))]
 const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
+    // LARA vertex and bucket rows: primary shard cardinality, but fixed-width.
     (FWD_VERTICES, 8),
     (FWD_BUCKETS, 8),
+    // LARA adjacency and overflow logs: PMA/relocation hot path.
     (FWD_EDGES, 16),
     (FWD_EDGE_LOG, 16),
+    // Edge-local inline values: larger variable-width payload domains.
     (FWD_PAYLOAD_SLAB, 32),
     (FWD_PAYLOAD_LOG, 32),
     (FWD_PAYLOAD_BLOBS, 32),
@@ -143,9 +146,11 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (REV_PAYLOAD_SLAB, 32),
     (REV_PAYLOAD_LOG, 32),
     (REV_PAYLOAD_BLOBS, 32),
+    // Label sidecars and value-bearing facade stores.
     (VERTEX_LABEL_SETS, 8),
     (VERTEX_PROPERTIES, 64),
     (EDGE_PROPERTIES, 64),
+    // Adjacency-derived and bounded append/repair domains.
     (EDGE_ALIASES, 16),
     (LABEL_STATS_DELTA_LOG, 8),
     (GRAPH_MUTATION_JOURNAL, 8),

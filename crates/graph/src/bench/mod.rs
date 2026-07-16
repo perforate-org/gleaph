@@ -3,6 +3,8 @@
 //! Run from `crates/graph`: `canbench` (see `canbench.yml`).
 
 #[cfg(feature = "canbench_large")]
+mod capacity;
+#[cfg(feature = "canbench_large")]
 mod large;
 mod stable_layout;
 

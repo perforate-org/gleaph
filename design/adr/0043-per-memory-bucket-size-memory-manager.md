@@ -3,7 +3,7 @@
 Date: 2026-07-16
 Status: Partially Implemented
 Last revised: 2026-07-16
-Anchor timestamp: 2026-07-16 13:36:25 UTC +0000
+Anchor timestamp: 2026-07-16 21:21:47 UTC +0000
 
 ## Context
 
@@ -91,6 +91,112 @@ this ADR. The implementation must benchmark property, adjacency, LARA maintenanc
 payload, embedding, and log workloads before selecting production defaults. As a
 starting hypothesis, tiny metadata regions should use smaller buckets, while
 properties, payloads, and embeddings should use larger buckets.
+
+## Capacity and shard-size decision (2026-07-16)
+
+The current manager has a global `MAX_EXTENTS = 65,536` limit. With the current
+largest policy of 64 Wasm pages, the absolute physical extent-data ceiling is
+`65,536 × 64 × 64 KiB = 256 GiB`, before accounting for the fact that all
+MemoryIds share the extent budget. This is below the ICP stable-memory limit of
+500 GiB; it is not a 16 GiB ceiling. A single region's ceiling is proportional
+to its policy: 8-page regions have a 32 GiB upper bound, 16-page regions 64 GiB,
+32-page regions 128 GiB, and 64-page regions 256 GiB, subject to the shared
+extent budget.
+
+The first capacity fixtures are intentionally small and report physical stable
+memory, including extent slack and LARA metadata:
+
+| fixture | logical content | physical increase | observation |
+| --- | ---: | ---: | --- |
+| vertices | 32,768 vertices | 48 pages | approximately 96 B/vertex in this growth range |
+| edges | 1,024 vertices + 2,048 directed edges | 24 pages | vertex baseline 8 pages; edge increment 16 pages, approximately 512 B/edge in this range |
+| properties | 1,024 vertices + 4,096 Int64 properties | 72 pages | vertex baseline 8 pages; property increment 64 pages, showing the 64-page allocation step |
+
+The follow-up cases make the non-linear effects explicit:
+
+| fixture | physical increase | result |
+| --- | ---: | --- |
+| 256 vertices + 1,024 short-text properties | 72 pages | same 64-page property step as Int64 |
+| 256 vertices + 1,024 256-byte-text properties | 72 pages | still below the next extent step; instructions increase, but physical pages do not yet |
+| 1,025 vertices + 512 edges from one hub | 24 pages | same edge allocation quantum, but approximately 23% more instructions per edge than the distributed-edge fixture |
+| 257 vertices + 256 insert/delete/reinsert edges | 88 pages | churn retains free-span/replacement state; physical usage is much larger than the live edge set |
+
+These slopes are not universal per-row sizes. LARA adjacency has two
+orientations, segment/span metadata, PMA slack, logs, and relocation effects;
+property storage grows in extent-sized steps and its eventual slope depends on
+key/value width and B-tree occupancy. LARA churn can retain physical extents
+even after logical deletion, while high-degree hubs increase relocation work.
+The benchmarks therefore provide
+calibration points for capacity planning rather than a fixed bytes-per-row
+promise. They live in `crates/graph/src/bench/capacity.rs` and are enabled only
+with `canbench_large` because the edge fixture is intentionally expensive.
+
+For the current decision, retain `MAX_EXTENTS = 65,536` and make future growth
+use multiple graph shards. LARA's local relocation and PMA work remains bounded
+to one shard, the failure and upgrade domains stay smaller, and Gleaph already
+has graph-local shard routing. A larger single shard would increase the amount
+of state touched by rebuild, repair, upgrade, and operational inspection even
+when its stable-memory allocation remains below 500 GiB. The ICP resource limit
+also caps stable-memory reads/writes per replicated message at 2 GiB and upgrade
+stable-memory I/O at 8 GiB ([resource limits](https://docs.internetcomputer.org/references/resource-limits/)),
+so a 500 GiB headline does not make one huge shard cheap to maintain. The
+canister-wide stable-memory ceiling is 500 GiB ([canister limits](https://docs.internetcomputer.org/concepts/canisters/)).
+
+Do not double `MAX_EXTENTS` yet. Doubling would require a persistent metadata
+change (at least a 128 KiB owner table and a revised metadata/data boundary) and
+would raise the all-64-page theoretical ceiling to 512 GiB, which is already
+above the ICP 500 GiB canister limit. Reconsider it only after a workload-backed
+capacity run demonstrates that a useful single shard is hitting the 65,536
+extent budget and that cross-shard query fanout, rather than LARA maintenance or
+property/value volume, is the dominant cost. The admission test should include
+edge-degree skew, delete/reinsert churn, property value-size classes, reopen,
+and bounded maintenance calls; a raw stable-memory limit alone is insufficient.
+
+## Per-memory page-size policy
+
+The selected policy is intentionally asymmetric. The page size is an allocation
+quantum, not a reservation: an empty `MemoryId` consumes no data extent. A
+larger value reduces extent-count and address-map pressure after growth, but
+increases the first physical step and the slack retained by that region. The
+following table is the current production-wide Graph policy and the reason for
+each class:
+
+| MemoryIds | current pages | decision | rationale |
+| --- | ---: | --- | --- |
+| `FWD_VERTICES`, `REV_VERTICES` | 8 | retain | Fixed 21-byte labeled rows; vertex count is a primary shard axis and 8 pages keeps the extent count reasonable without the upstream 128-page minimum. |
+| `FWD_BUCKETS`, `REV_BUCKETS` | 8 | retain | 29-byte label-bucket descriptors grow approximately with labeled vertex/edge groups. |
+| `FWD_BUCKET_FREE_SPANS`, `FWD_BUCKET_FREE_SPAN_BY_START`, `REV_BUCKET_FREE_SPANS`, `REV_BUCKET_FREE_SPAN_BY_START` | 4 | retain | Maintenance indexes are sparse and rebuildable; their records should not impose a large first allocation. |
+| `FWD_EDGE_COUNTS`, `REV_EDGE_COUNTS`, `FWD_EDGE_SPAN_META`, `REV_EDGE_SPAN_META` | 4 | retain | Per-segment metadata is small (16-byte count rows and 8-byte span rows); the 4-page quantum is sufficient until very large vertex counts. |
+| `FWD_EDGES`, `REV_EDGES`, `FWD_EDGE_LOG`, `REV_EDGE_LOG` | 16 | retain | Adjacency is the LARA hot path and pays for both PMA slack and relocation/log records; 16 pages gives useful growth without property-sized slack. |
+| `FWD_PAYLOAD_SLAB`, `REV_PAYLOAD_SLAB`, `FWD_PAYLOAD_LOG`, `REV_PAYLOAD_LOG`, `FWD_PAYLOAD_BLOBS`, `REV_PAYLOAD_BLOBS` | 32 | retain | Inline and overflow values are larger and grow with edge volume; payload domains should not compete for the 4-page extent budget. |
+| `FWD_PAYLOAD_FREE_SPANS`, `FWD_PAYLOAD_FREE_SPAN_BY_START`, `REV_PAYLOAD_FREE_SPANS`, `REV_PAYLOAD_FREE_SPAN_BY_START` | 4 | retain | Rebuildable free-span indexes are sparse maintenance state. |
+| `MAINTENANCE_QUEUE`, `DIRTY_WORK_ITEMS` | 4 | retain | Bounded/deferred maintenance state; large pages would only hide queue pressure as slack. |
+| `VERTEX_LABEL_SETS` | 8 | retain | Sidecar rows scale with multi-label vertices but are generally smaller than property values. |
+| `VERTEX_PROPERTIES`, `EDGE_PROPERTIES` | 64 | retain provisionally | Property B-trees are the fastest-growing variable-width domains. The 4,096-Int64 fixture consumed one 64-page property extent, so smaller pages would increase extent pressure; the 64-page step is accepted as a known small-graph slack cost. |
+| `EDGE_ALIASES` | 16 | retain | Alias rows track adjacency and are fixed-width-ish, but can approach edge cardinality. |
+| `GRAPH_METADATA`, `LABEL_STATS_DELTA_SEQ`, `VERTEX_EMBEDDING_INCARNATIONS` | 4 / 4 / 8 | retain | Metadata and sequence state are tiny; incarnation keys can scale with vertex churn and get a larger quantum. |
+| `LABEL_STATS_DELTA_LOG`, `GRAPH_MUTATION_JOURNAL` | 8 | retain | Both are append-heavy but bounded by retention/acknowledgement policy; 8 pages balances append growth and slack. |
+| `PENDING_VERTEX_PURGES` | 4 | retain | Resumable purge state is sparse and operationally bounded. |
+| `INDEX_REPAIR_JOURNAL`, `UNIQUE_EFFECT_OUTBOX`, `DERIVED_INDEX_OUTBOX` | 16 | retain | Failed or deferred cross-canister work can accumulate in bursts; 16 pages avoids repeated tiny extents while remaining below property slack. |
+| `GRAPH_LOCAL_UNIQUE_VALUES` | 64 | retain provisionally | It is a variable-width uniqueness B-tree and can be cardinality-bearing like properties; it must be included in property/value-size capacity runs. |
+| `VERTEX_EMBEDDINGS` | 32 | retain | Vector bytes dominate row metadata and can be large per vertex; 32 pages is a compromise for value-bearing growth. |
+
+The policy is not justified by row width alone. The capacity benchmark must be
+re-run with at least small/medium/large value widths and churn before changing
+the 64-page classes. In particular, a 64-page extent is appropriate only when
+the region is expected to outgrow the small-graph slack; it is not a reason to
+make every MemoryId 64 pages.
+
+This page-size policy is independent of LARA's PMA `segment_size` and
+per-vertex edge quota. LARA currently retains the 32/32 default; the
+experimental segment16 and quota16/8/4/1 variants are tracked in [ADR 0001](0001-labeled-segment-slide.md)
+and must be evaluated separately from the MemoryManager bucket policy. The
+tail-headroom contract now derives its boundary from the persisted segment size
+rather than a fixed 32-slot threshold. Segment16-specific tail-headroom,
+deferred-maintenance deduplication, and hub/churn contract tests pass for the
+default, quota8, quota4, and quota1 variants under segment16. Quota4 and quota1
+still have legacy default-segment geometry failures in the broader experimental
+suite, so this does not promote them to a production policy.
 
 ## Invariants and boundary requirements
 

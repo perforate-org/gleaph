@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46 = 47 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations + Plan 0088 durable derived-index outbox storage; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline value schema record + ADR 0035 Slice 1 provisioning-request catalog + Slice 5 Router outbound accept_envelope send (ROUTER_PROVISION_CONFIG durable binding) + Slice 6 owner-identity-bound intent lock release on Completed and four-branch invocation-owned rollback on send failure (only if current operation inserted the record and it is still AwaitingAck) (no new regions) (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 49 regions, 0–48; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 12 regions, 0–11)
-Anchor timestamp: 2026-07-14 01:17:34 UTC +0000
+Anchor timestamp: 2026-07-16 21:21:47 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 Planned production compatibility and migration policy: [ADR 0039](../adr/0039-production-stable-memory-evolution-and-upgrade-safety.md).
@@ -97,10 +97,28 @@ manager assigns a bucket size per `MemoryId` while implementing the upstream `ic
 The first implementation slice is present in `ic-stable-variable-memory-manager`: it persists
 per-`MemoryId` policies, allocates append-only variable-sized extents, reconstructs mappings on
 reopen, and implements the upstream `ic_stable_structures::Memory` trait. Graph now wires this
-manager with an experimental 4/16/32/64-page policy; migration and production-capacity validation
+manager with an experimental 4/8/16/32/64-page policy; migration and production-capacity validation
 remain outstanding. Stable-memory compatibility is not maintained for the current development
 layout change; existing development data must be recreated, and production rollout requires the
 explicit migration and preflight decision required by ADR 0039.
+
+The manager's global `MAX_EXTENTS = 65,536` currently bounds the all-64-page theoretical
+extent-data capacity at 256 GiB; the 500 GiB ICP stable-memory limit is therefore not reachable
+by this policy in one MemoryId allocation alone. Capacity planning is shard-local: LARA's two
+adjacency orientations, PMA slack, relocation metadata, payloads, and properties share the global
+extent budget. The current decision is to retain this extent count and scale out with graph shards;
+see [ADR 0043](../adr/0043-per-memory-bucket-size-memory-manager.md#capacity-and-shard-size-decision-2026-07-16).
+Capacity-slope benchmarks are in `crates/graph/src/bench/capacity.rs` and are gated behind
+`canbench_large`; they cover fixed-width and text properties, distributed and hub-skewed edges,
+and delete/reinsert churn. Churn capacity must be evaluated separately from live logical rows
+because LARA retains physical free spans for reuse. LARA's labeled PMA benchmark also exposes
+The historical quota16/8/4/1 and explicit segment-size comparisons remain recorded in ADR 0001;
+the planned default-policy slice will remove these Cargo features and production policy variants.
+Fresh labeled graphs are planned to use `segment_size = 16` and vertex quota `1`. The tail-headroom
+contract derives its boundary from the persisted segment size. The segment16 suite covers
+tail-headroom scaling, deferred-maintenance deduplication, and hub/churn across a PMA leaf boundary.
+Existing development stable data must be recreated when this policy changes; no compatibility
+migration is provided.
 
 Fresh Graph stores use independent initial capacities for the labeled orientations:
 `bucket_slots = 1,024`, `edge_slots = 4,096`, and `payload_bytes = 65,536` per orientation.
