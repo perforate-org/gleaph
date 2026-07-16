@@ -175,6 +175,22 @@ where
         })
     }
 
+    /// Returns whether a contiguous payload allocation would benefit from compaction.
+    ///
+    /// Compaction is needed only when the allocator has enough aggregate free
+    /// bytes for the request but no single retired span can satisfy it. This
+    /// keeps fragmentation pressure separate from ordinary payload growth.
+    pub fn payload_compaction_needed(
+        &self,
+        requested_bytes: u64,
+    ) -> Result<bool, LabeledOperationError> {
+        if requested_bytes == 0 {
+            return Ok(false);
+        }
+        let stats = self.payload_storage_stats()?;
+        Ok(stats.free_bytes >= requested_bytes && stats.largest_free_span < requested_bytes)
+    }
+
     pub(super) fn bucket_resident_payload_bytes(&self, bucket: &LabelBucket) -> u64 {
         crate::labeled::invariants::bucket_resident_payload_bytes(bucket)
     }
@@ -1256,6 +1272,40 @@ mod tests {
         );
         let after = graph.payload_storage_stats().unwrap();
         assert_eq!(after.live_bytes, 4);
+    }
+
+    #[test]
+    fn payload_compaction_needed_detects_contiguous_allocation_pressure() {
+        let graph = inline_value_test_graph();
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        for label in 2..=5 {
+            let label = BucketLabelKey::from_raw(label);
+            graph
+                .ensure_label_bucket_inline_value_byte_width(src, label, 2)
+                .unwrap();
+            for target in 0..2u32 {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        src,
+                        label,
+                        PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    )
+                    .unwrap();
+            }
+        }
+        for label in [2, 4] {
+            let label = BucketLabelKey::from_raw(label);
+            for target in 0..2u32 {
+                graph
+                    .remove_edge_matching(src, label, |edge| edge.target == target)
+                    .unwrap()
+                    .expect("payload edge removed");
+            }
+        }
+
+        assert!(!graph.payload_compaction_needed(0).unwrap());
+        assert!(!graph.payload_compaction_needed(4).unwrap());
+        assert!(graph.payload_compaction_needed(6).unwrap());
     }
 
     #[test]

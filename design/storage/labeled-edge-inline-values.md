@@ -62,7 +62,11 @@ earlier free-span prefixes, copies only payload slab bytes, updates bucket paylo
 offsets, and retires the old spans. Edge slab positions, edge/payload log chains,
 bucket-local live order, and vertex allocation totals are unchanged. The operation
 does not shrink the backing capacity or invoke edge maintenance; threshold-based
-automatic scheduling remains a later policy decision.
+automatic scheduling remains a later policy decision. Callers can use
+`payload_compaction_needed(requested_bytes)` to distinguish aggregate free space
+that is already usable from fragmentation that prevents one contiguous
+allocation; it returns true only when the free-byte total covers the request but
+the largest retired span does not.
 
 ## Payload storage class (schema SSOT)
 
