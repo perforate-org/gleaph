@@ -1347,6 +1347,18 @@ mod tests {
         FreeSpanStore::init(m.get(MemoryId::new(40)), m.get(MemoryId::new(41))).unwrap()
     }
 
+    fn assert_allocator_stats_match_spans<M: Memory>(store: &FreeSpanStore<M>) {
+        let spans = store.spans();
+        assert_eq!(
+            store.allocator_stats(),
+            FreeSpanAllocatorStats {
+                free_bytes: spans.iter().map(|span| span.len).sum(),
+                largest_free_span: spans.iter().map(|span| span.len).max().unwrap_or(0),
+                free_span_count: spans.len() as u64,
+            }
+        );
+    }
+
     #[test]
     fn binned_release_coalesces_three() {
         let s = test_store();
@@ -1438,6 +1450,46 @@ mod tests {
                 free_span_count: 2,
             }
         );
+    }
+
+    #[test]
+    fn allocator_summary_matches_every_mutation_shape() {
+        let s = test_store();
+
+        s.release_span(100, 10).unwrap();
+        assert_allocator_stats_match_spans(&s);
+        s.release_span(120, 30).unwrap();
+        assert_allocator_stats_match_spans(&s);
+        s.release_span(110, 10).unwrap();
+        assert_allocator_stats_match_spans(&s);
+
+        let taken = s.take_best_fit(8).unwrap().unwrap();
+        assert_allocator_stats_match_spans(&s);
+        s.restore_allocated_prefix(taken).unwrap();
+        assert_allocator_stats_match_spans(&s);
+
+        let taken = s.take_prefix_at(100, 20).unwrap().unwrap();
+        assert_allocator_stats_match_spans(&s);
+        assert_eq!(taken.len, 20);
+
+        s.release_span(200, 10).unwrap();
+        assert_allocator_stats_match_spans(&s);
+        s.replace_exact_pair_with(
+            FreeSpan {
+                start_slot: 120,
+                len: 30,
+            },
+            FreeSpan {
+                start_slot: 200,
+                len: 10,
+            },
+            FreeSpan {
+                start_slot: 120,
+                len: 90,
+            },
+        )
+        .unwrap();
+        assert_allocator_stats_match_spans(&s);
     }
 
     #[test]
@@ -1761,12 +1813,14 @@ mod tests {
         let result = store.reserve_for_releases(10_000);
         assert!(result.is_err(), "expected records-memory grow to fail");
         assert_eq!(store.len(), active, "no new active spans may be recorded");
+        assert_allocator_stats_match_spans(&store);
 
         store_mem.fail_never();
         store.reserve_for_releases(10_000).unwrap();
         // The store must still accept a real release after the reservation.
         store.release_span(20, 5).unwrap();
         assert_eq!(store.len(), active + 1);
+        assert_allocator_stats_match_spans(&store);
     }
 
     #[test]
@@ -1781,10 +1835,12 @@ mod tests {
         let result = store.reserve_for_releases(10_000);
         assert!(result.is_err(), "expected by-start-memory grow to fail");
         assert_eq!(store.len(), active, "no new active spans may be recorded");
+        assert_allocator_stats_match_spans(&store);
 
         by_start_mem.fail_never();
         store.reserve_for_releases(10_000).unwrap();
         store.release_span(30, 5).unwrap();
         assert_eq!(store.len(), active + 1);
+        assert_allocator_stats_match_spans(&store);
     }
 }
