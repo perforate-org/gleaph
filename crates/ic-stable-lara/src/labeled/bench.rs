@@ -971,6 +971,54 @@ fn bench_labeled_payload_fragmented_compaction_only() -> canbench_rs::BenchResul
     })
 }
 
+/// Measures deferred insertion with payload pressure detection and queue enqueue only.
+#[bench(raw)]
+fn bench_labeled_deferred_payload_fragmented_enqueue_6() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = DeferredLabeledLaraGraph::new(payload_bench_graph(1 << 20), vector_memory())
+            .expect("deferred graph");
+        let vid = seed_fragmented_payload_fixture(graph.inner());
+        let target = BucketLabelKey::directed_from_index(5);
+        graph
+            .inner()
+            .ensure_label_bucket_inline_value_byte_width(vid, target, 6)
+            .expect("payload width");
+        let _scope = canbench_rs::bench_scope("payload_deferred_enqueue_insert");
+        graph
+            .insert_edge(vid, target, PayloadBenchEdge::with_payload(3, 6, &[3u8; 6]))
+            .expect("payload insert");
+        black_box(graph.maintenance_queue_len());
+    })
+}
+
+/// Measures the deferred maintenance step that performs payload compaction.
+#[bench(raw)]
+fn bench_labeled_deferred_payload_fragmented_maintenance_6() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = DeferredLabeledLaraGraph::new(payload_bench_graph(1 << 20), vector_memory())
+            .expect("deferred graph");
+        let vid = seed_fragmented_payload_fixture(graph.inner());
+        let target = BucketLabelKey::directed_from_index(5);
+        graph
+            .inner()
+            .ensure_label_bucket_inline_value_byte_width(vid, target, 6)
+            .expect("payload width");
+        graph
+            .insert_edge(vid, target, PayloadBenchEdge::with_payload(3, 6, &[3u8; 6]))
+            .expect("payload insert");
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: Some(1),
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        let _scope = canbench_rs::bench_scope("payload_deferred_maintenance_compaction");
+        black_box(graph.maintenance(budget));
+    })
+}
+
 /// ADR 0016: scan after tombstone-free direct log unlinks.
 #[bench(raw)]
 fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResult {
