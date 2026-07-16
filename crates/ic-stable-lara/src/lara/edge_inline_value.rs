@@ -343,6 +343,21 @@ pub struct EdgeInlineValueStore<M: Memory> {
     header: Cell<HeaderV1>,
 }
 
+/// Payload-slab accounting derived from the payload allocator owner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PayloadAllocatorStats {
+    /// Backing payload-slab capacity in bytes.
+    pub byte_capacity: u64,
+    /// Exclusive end of the append-only occupied slab prefix.
+    pub slab_occupied_tail: u64,
+    /// Total bytes represented by retired free spans.
+    pub free_bytes: u64,
+    /// Largest individual retired free span.
+    pub largest_free_span: u64,
+    /// Number of retired free spans.
+    pub free_span_count: u64,
+}
+
 impl<M: Memory> EdgeInlineValueStore<M> {
     /// Creates a new edge-inline-value store over empty stable memories.
     pub fn new(
@@ -643,6 +658,18 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         self.header().byte_capacity
     }
 
+    /// Returns allocator-owned capacity and retired-span accounting.
+    pub fn allocator_stats(&self) -> PayloadAllocatorStats {
+        let spans = self.free_spans.spans();
+        PayloadAllocatorStats {
+            byte_capacity: self.byte_capacity(),
+            slab_occupied_tail: self.header().slab_occupied_tail,
+            free_bytes: spans.iter().map(|span| span.len).sum(),
+            largest_free_span: spans.iter().map(|span| span.len).max().unwrap_or(0),
+            free_span_count: spans.len() as u64,
+        }
+    }
+
     /// Sets the payload byte capacity to `end`.
     pub fn set_byte_capacity(&self, end: u64) -> Result<(), GrowFailed> {
         self.slab.set_byte_capacity(end)?;
@@ -834,6 +861,26 @@ mod tests {
 
     fn test_store() -> EdgeInlineValueStore<VectorMemory> {
         EdgeInlineValueStore::new(mem(), mem(), mem(), mem(), mem(), 1024, 1).expect("store")
+    }
+
+    #[test]
+    fn allocator_stats_reports_retired_payload_spans() {
+        let store = test_store();
+        let first = store.append_byte_span(10).unwrap();
+        let second = store.append_byte_span(20).unwrap();
+        store.retire_byte_span(first, 10).unwrap();
+
+        assert_eq!(
+            store.allocator_stats(),
+            PayloadAllocatorStats {
+                byte_capacity: 1024,
+                slab_occupied_tail: 30,
+                free_bytes: 10,
+                largest_free_span: 10,
+                free_span_count: 1,
+            }
+        );
+        assert_eq!(second, 10);
     }
 
     #[test]
