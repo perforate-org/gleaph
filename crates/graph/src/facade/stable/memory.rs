@@ -13,8 +13,12 @@ use ic_stable_lara::{
     labeled::InitialCapacities, lara::maintenance::DeferredConfig,
 };
 use ic_stable_roaring::StableRoaringBitmap;
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_structures::memory_manager::MemoryId;
+#[cfg(feature = "canbench_standard_manager")]
+use ic_stable_structures::memory_manager::{MemoryManager, VirtualMemory};
 use ic_stable_structures::{DefaultMemoryImpl, Memory as StableMemory, StableCell};
+#[cfg(not(feature = "canbench_standard_manager"))]
+use ic_stable_variable_memory_manager::{MemoryManager, VirtualMemory};
 use std::cell::RefCell;
 
 // --- Labeled graph: forward orientation (10 memories) ---
@@ -98,13 +102,67 @@ const GRAPH_INITIAL_BUCKET_CAPACITY: u64 = 1 << 10;
 const GRAPH_INITIAL_EDGE_CAPACITY: u64 = 1 << 12;
 /// Initial inline-payload byte capacity for each labeled orientation (grows as needed).
 const GRAPH_INITIAL_PAYLOAD_BYTES: u64 = 1 << 16;
-/// Stable-memory manager bucket granularity for the graph's many small regions.
-///
-/// The upstream default is 128 Wasm pages (8 MiB), which is too coarse when each
-/// graph-owned `MemoryId` is independently allocated. This layout intentionally
-/// uses 16 pages (1 MiB) so the shard can grow beyond the 16 GiB ceiling imposed
-/// by 8-page buckets without returning to the default's 8 MiB minima.
-const GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES: u16 = 16;
+/// Default policy for regions not listed in `GRAPH_MEMORY_MANAGER_POLICIES`.
+#[cfg(any(feature = "canbench_uniform_4", feature = "canbench_standard_manager",))]
+const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 4;
+#[cfg(feature = "canbench_uniform_8")]
+const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 8;
+#[cfg(feature = "canbench_uniform_16")]
+const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 16;
+#[cfg(feature = "canbench_uniform_32")]
+const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 32;
+#[cfg(not(any(
+    feature = "canbench_uniform_4",
+    feature = "canbench_uniform_8",
+    feature = "canbench_uniform_16",
+    feature = "canbench_uniform_32",
+    feature = "canbench_standard_manager",
+)))]
+const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 4;
+
+/// Larger policies are reserved for regions whose rows or payloads grow materially.
+/// The policy is persisted by the custom manager and must not change on reopen.
+#[cfg(not(any(
+    feature = "canbench_uniform_4",
+    feature = "canbench_uniform_8",
+    feature = "canbench_uniform_16",
+    feature = "canbench_uniform_32",
+)))]
+const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
+    (FWD_VERTICES, 8),
+    (FWD_BUCKETS, 8),
+    (FWD_EDGES, 16),
+    (FWD_EDGE_LOG, 16),
+    (FWD_PAYLOAD_SLAB, 32),
+    (FWD_PAYLOAD_LOG, 32),
+    (FWD_PAYLOAD_BLOBS, 32),
+    (REV_VERTICES, 8),
+    (REV_BUCKETS, 8),
+    (REV_EDGES, 16),
+    (REV_EDGE_LOG, 16),
+    (REV_PAYLOAD_SLAB, 32),
+    (REV_PAYLOAD_LOG, 32),
+    (REV_PAYLOAD_BLOBS, 32),
+    (VERTEX_LABEL_SETS, 8),
+    (VERTEX_PROPERTIES, 64),
+    (EDGE_PROPERTIES, 64),
+    (EDGE_ALIASES, 16),
+    (LABEL_STATS_DELTA_LOG, 8),
+    (GRAPH_MUTATION_JOURNAL, 8),
+    (INDEX_REPAIR_JOURNAL, 16),
+    (UNIQUE_EFFECT_OUTBOX, 16),
+    (GRAPH_LOCAL_UNIQUE_VALUES, 64),
+    (VERTEX_EMBEDDINGS, 32),
+    (VERTEX_EMBEDDING_INCARNATIONS, 8),
+    (DERIVED_INDEX_OUTBOX, 16),
+];
+#[cfg(any(
+    feature = "canbench_uniform_4",
+    feature = "canbench_uniform_8",
+    feature = "canbench_uniform_16",
+    feature = "canbench_uniform_32",
+))]
+const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[];
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
@@ -129,12 +187,26 @@ pub(crate) type StableGraphLocalUniqueTable = super::local_unique::GraphLocalUni
 /// Durable derived-index operations awaiting their first delivery attempt (0088).
 pub(crate) type StableDerivedIndexOutbox = super::derived_index_outbox::DerivedIndexOutbox<Memory>;
 
+#[cfg(feature = "canbench_standard_manager")]
+fn init_memory_manager() -> MemoryManager<DefaultMemoryImpl> {
+    MemoryManager::init_with_bucket_size(
+        DefaultMemoryImpl::default(),
+        GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
+    )
+}
+
+#[cfg(not(feature = "canbench_standard_manager"))]
+fn init_memory_manager() -> MemoryManager<DefaultMemoryImpl> {
+    MemoryManager::init_with_policies(
+        DefaultMemoryImpl::default(),
+        GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
+        GRAPH_MEMORY_MANAGER_POLICIES,
+    )
+}
+
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
-        RefCell::new(MemoryManager::init_with_bucket_size(
-            DefaultMemoryImpl::default(),
-            GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES,
-        ));
+        RefCell::new(init_memory_manager());
 }
 
 pub(crate) fn init_graph() -> StableGraph {
@@ -193,6 +265,13 @@ pub(crate) fn init_graph() -> StableGraph {
     crate::facade::init_ic_gql_extensions();
 
     graph
+}
+
+fn graph_bucket_size(id: MemoryId) -> u16 {
+    GRAPH_MEMORY_MANAGER_POLICIES
+        .iter()
+        .find_map(|(policy_id, bucket_pages)| (*policy_id == id).then_some(*bucket_pages))
+        .unwrap_or(GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES)
 }
 
 /// Reports the logical size of every graph-owned virtual stable-memory region.
@@ -284,13 +363,14 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         .iter()
         .map(|(name, memory_id, id)| {
             let logical_pages = MEMORY_MANAGER.with(|manager| manager.borrow().get(*id).size());
+            let bucket_pages = graph_bucket_size(*id);
             let allocated_pages = logical_pages
-                .div_ceil(u64::from(GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES))
-                .saturating_mul(u64::from(GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES));
+                .div_ceil(u64::from(bucket_pages))
+                .saturating_mul(u64::from(bucket_pages));
             gleaph_graph_kernel::stable_memory::StableMemoryRegionStats {
                 name: (*name).to_string(),
                 memory_id: *memory_id,
-                bucket_pages: GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES,
+                bucket_pages,
                 logical_pages,
                 logical_bytes: logical_pages.saturating_mul(WASM_PAGE_SIZE),
                 allocated_pages,
@@ -306,9 +386,9 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         .iter()
         .map(|region| region.allocated_pages)
         .fold(0, u64::saturating_add);
-    let estimated_allocated_pages = 1u64.saturating_add(allocated_region_pages);
+    let estimated_allocated_pages = 2u64.saturating_add(allocated_region_pages);
     gleaph_graph_kernel::stable_memory::StableMemoryStats {
-        bucket_pages: GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES,
+        bucket_pages: GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
         logical_total_pages,
         logical_total_bytes: logical_total_pages.saturating_mul(WASM_PAGE_SIZE),
         estimated_allocated_pages,
@@ -412,10 +492,37 @@ mod tests {
                 .map(|region| region.logical_pages)
                 .sum::<u64>()
         );
-        assert_eq!(stats.bucket_pages, 16);
+        assert_eq!(stats.bucket_pages, 4);
+        assert_eq!(
+            stats
+                .regions
+                .iter()
+                .find(|r| r.memory_id == 5)
+                .unwrap()
+                .bucket_pages,
+            16
+        );
+        assert_eq!(
+            stats
+                .regions
+                .iter()
+                .find(|r| r.memory_id == 33)
+                .unwrap()
+                .bucket_pages,
+            64
+        );
+        assert_eq!(
+            stats
+                .regions
+                .iter()
+                .find(|r| r.memory_id == 0)
+                .unwrap()
+                .bucket_pages,
+            8
+        );
         assert_eq!(
             stats.estimated_allocated_pages,
-            1 + stats
+            2 + stats
                 .regions
                 .iter()
                 .map(|region| region.allocated_pages)
@@ -427,7 +534,7 @@ mod tests {
                 .iter()
                 .map(|region| region.slack_pages)
                 .sum::<u64>(),
-            stats.estimated_allocated_pages - 1 - stats.logical_total_pages
+            stats.estimated_allocated_pages - 2 - stats.logical_total_pages
         );
         assert_eq!(
             stats.regions.first().map(|region| region.memory_id),

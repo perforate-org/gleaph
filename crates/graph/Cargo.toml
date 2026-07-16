@@ -18,6 +18,11 @@ default = ["gql-parse", "plan-wire"]
 gql-parse = []
 plan-wire = ["gleaph-gql-planner/plan-wire"]
 canbench = ["dep:canbench-rs"]
+canbench_uniform_4 = ["canbench"]
+canbench_uniform_8 = ["canbench"]
+canbench_uniform_16 = ["canbench"]
+canbench_uniform_32 = ["canbench"]
+canbench_standard_manager = ["canbench"]
 # Extra-large query-call benchmarks. These build larger synthetic graphs before each
 # benchmark, so keep them out of the default canbench set.
 canbench_large = ["canbench"]
@@ -57,6 +62,7 @@ ic-cdk-timers.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-roaring.workspace = true
 ic-stable-structures.workspace = true
+ic-stable-variable-memory-manager.workspace = true
 jiff.workspace = true
 nohash-hasher.workspace = true
 pollster.workspace = true

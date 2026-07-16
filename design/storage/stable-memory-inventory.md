@@ -83,19 +83,24 @@ The Router admin composite query `admin_graph_stable_memory_stats(graph_name)` f
 registered graph shard's guarded `admin_stable_memory_stats` query. The response reports the
 logical `VirtualMemory` WebAssembly-page and byte size of all graph-owned regions, including empty
 regions, plus the bucket-rounded allocation and slack estimate for each region. The estimate adds
-the one-page `MemoryManager` metadata area, but the canister's total physical stable-memory usage
+the two-page custom manager metadata area, but the canister's total physical stable-memory usage
 is still reported separately by the IC management API / `icp canister status` because that total
 also includes other canister memory. The query is observability only and does not expose mutable
 storage handles or alter allocation state.
 
-Graph currently uses a 16-page (1 MiB) global `MemoryManager` bucket granularity. This is an interim
-fresh-layout choice: it raises the per-manager capacity ceiling to 32 GiB while remaining much
-finer than the upstream 128-page default, which reserves 8 MiB for each of the graph's many regions.
-ADR 0043 proposes replacing this single global granularity with a custom manager that assigns a
-bucket size per `MemoryId` while implementing the upstream `ic_stable_structures::Memory` trait.
-That manager is not implemented yet. Stable-memory compatibility is not maintained for the current
-development layout change; existing development data must be recreated, and production rollout
-requires the explicit migration and preflight decision required by ADR 0039.
+Graph now uses the custom manager from ADR 0043 with a 4-page default; 8 pages for vertex,
+label-bucket, label-sidecar, and embedding-incarnation rows; 16 pages for edge slab/log, aliases,
+and durable backlog; 32 pages for payload and embeddings; and 64 pages for property and local-unique
+values. This is an experimental fresh-layout choice: it keeps small regions below the upstream
+128-page default while allowing property-like storage to grow with less extent-count pressure. The custom
+manager assigns a bucket size per `MemoryId` while implementing the upstream `ic_stable_structures::Memory` trait.
+The first implementation slice is present in `ic-stable-variable-memory-manager`: it persists
+per-`MemoryId` policies, allocates append-only variable-sized extents, reconstructs mappings on
+reopen, and implements the upstream `ic_stable_structures::Memory` trait. Graph now wires this
+manager with an experimental 4/16/32/64-page policy; migration and production-capacity validation
+remain outstanding. Stable-memory compatibility is not maintained for the current development
+layout change; existing development data must be recreated, and production rollout requires the
+explicit migration and preflight decision required by ADR 0039.
 
 Fresh Graph stores use independent initial capacities for the labeled orientations:
 `bucket_slots = 1,024`, `edge_slots = 4,096`, and `payload_bytes = 65,536` per orientation.

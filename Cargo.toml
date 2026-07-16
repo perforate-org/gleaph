@@ -15,6 +15,7 @@ members = [
     "crates/graph-vector-index",
     "crates/ic-stable-lara",
     "crates/ic-stable-paged-ordered-map",
+    "crates/ic-stable-variable-memory-manager",
     "crates/ic-stable-vec-deque",
     "crates/pocket-ic-tests",
     "crates/provision",
@@ -46,6 +47,7 @@ gleaph-router = { path = "crates/router" }
 gleaph-social-demo-gateway = { path = "crates/social-demo-gateway" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
+ic-stable-variable-memory-manager = { path = "crates/ic-stable-variable-memory-manager" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
 bitflags = "2.13.0"
