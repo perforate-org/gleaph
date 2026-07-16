@@ -915,6 +915,73 @@ fn seed_fragmented_payload_fixture(
     vid
 }
 
+fn seed_payload_free_span_count(
+    graph: &LabeledLaraGraph<PayloadBenchEdge, crate::VectorMemory>,
+    span_count: u32,
+) -> VertexId {
+    let vid = graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let total_labels = span_count.saturating_mul(2);
+    for index in 0..total_labels {
+        let label = BucketLabelKey::directed_from_index(
+            u16::try_from(100 + index).expect("benchmark label fits u16"),
+        );
+        graph
+            .ensure_label_bucket_inline_value_byte_width(vid, label, 2)
+            .expect("payload width");
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                PayloadBenchEdge::with_payload(index, 2, &[index as u8; 2]),
+            )
+            .expect("payload insert");
+        if index % 2 == 0 {
+            graph
+                .remove_edge_matching(vid, label, |edge| edge.target == index)
+                .expect("payload remove")
+                .expect("payload edge removed");
+        }
+    }
+    vid
+}
+
+fn bench_payload_pressure_stats(
+    span_count: u32,
+    scope_name: &'static str,
+) -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = payload_bench_graph(1 << 20);
+        let vid = seed_payload_free_span_count(&graph, span_count);
+        let _scope = canbench_rs::bench_scope(scope_name);
+        for _ in 0..64 {
+            black_box(
+                graph
+                    .payload_compaction_needed(3)
+                    .expect("payload pressure"),
+            );
+        }
+        black_box(graph.vertices().get(vid));
+    })
+}
+
+/// Measures allocator pressure checks with a small retired-span set.
+#[bench(raw)]
+fn bench_labeled_payload_pressure_stats_16() -> canbench_rs::BenchResult {
+    bench_payload_pressure_stats(16, "payload_pressure_stats_16")
+}
+
+/// Measures allocator pressure checks with a medium retired-span set.
+#[bench(raw)]
+fn bench_labeled_payload_pressure_stats_64() -> canbench_rs::BenchResult {
+    bench_payload_pressure_stats(64, "payload_pressure_stats_64")
+}
+
+/// Measures allocator pressure checks with a large retired-span set.
+#[bench(raw)]
+fn bench_labeled_payload_pressure_stats_256() -> canbench_rs::BenchResult {
+    bench_payload_pressure_stats(256, "payload_pressure_stats_256")
+}
+
 /// Measures the first payload allocation that triggers fragmented-slab compaction.
 #[bench(raw)]
 fn bench_labeled_payload_fragmented_first_span_6() -> canbench_rs::BenchResult {

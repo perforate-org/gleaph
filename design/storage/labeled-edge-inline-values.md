@@ -85,6 +85,14 @@ statistics; it does not scan vertices or recompute live/allocated payload bytes.
 The latter remains an observability operation exposed by
 `payload_storage_stats()`.
 
+Allocator-stat scaling is still linear in the number of retired spans because
+the current implementation materializes `free_spans.spans()` on every check.
+The 64-check pressure benchmark measured 6.24M, 27.90M, and 119.04M
+instructions for approximately 16, 64, and 256 retired spans respectively.
+This makes a persisted allocator summary of free bytes, largest span, and span
+count the next optimization target; the summary must be updated atomically with
+free-span allocation and release and rebuilt consistently on reopen.
+
 The queue persistence contract is covered by a reopen test: a pending payload
 item remains queued across graph reconstruction and is consumed by the next
 maintenance step.
