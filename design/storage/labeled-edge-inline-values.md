@@ -57,13 +57,14 @@ delete/log-transition complexity without reducing the existing copy paths.
 Headroom remains deferred until measurements show a workload where that trade-off
 is favorable.
 
-The fragmented first-span benchmark (`bench_labeled_payload_fragmented_first_span_6`)
-measured 37.72M instructions, 568 heap pages, and no stable-memory page increase;
-its four labeled insert scopes consumed 127.82K instructions in total. This
-fixture includes setup, two removals, and the triggering insertion, so it is not
-directly comparable with the 256-edge growth baseline. It confirms that the
-additional compaction scan remains in the fragmented allocation path rather than
-the ordinary tail-growth path.
+The fragmented first-span benchmarks measured 37.72M instructions, 568 heap
+pages, and no stable-memory page increase for the full fixture. On the same
+fixture, a free-span-reuse control insertion consumed 53.39K instructions,
+whereas the compaction-triggering insertion consumed 114.89K instructions; the
+compaction-only scope consumed 74.38K instructions. Thus synchronous
+compaction currently adds about 61.50K instructions over the control path. The
+additional scan remains isolated to fragmented allocation, but its cost is high
+enough that frequent triggers should move to bounded maintenance scheduling.
 
 Payload-only compaction is available through `compact_payload_slab`. It preflights
 earlier free-span prefixes, including spans released by earlier moves in the same

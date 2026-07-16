@@ -883,41 +883,49 @@ fn bench_labeled_payload_exact_growth_256() -> canbench_rs::BenchResult {
     })
 }
 
+fn seed_fragmented_payload_fixture(
+    graph: &LabeledLaraGraph<PayloadBenchEdge, crate::VectorMemory>,
+) -> VertexId {
+    let vid = graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let removed_small = BucketLabelKey::directed_from_index(2);
+    let live_separator = BucketLabelKey::directed_from_index(3);
+    let removed_wide = BucketLabelKey::directed_from_index(4);
+    for (label, target, width) in [
+        (removed_small, 0, 2),
+        (live_separator, 1, 2),
+        (removed_wide, 2, 4),
+    ] {
+        graph
+            .ensure_label_bucket_inline_value_byte_width(vid, label, width)
+            .expect("payload width");
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                PayloadBenchEdge::with_payload(target, width, &target.to_le_bytes()),
+            )
+            .expect("payload insert");
+    }
+    for (label, target) in [(removed_small, 0), (removed_wide, 2)] {
+        graph
+            .remove_edge_matching(vid, label, |edge| edge.target == target)
+            .expect("payload remove")
+            .expect("removed payload edge");
+    }
+    vid
+}
+
 /// Measures the first payload allocation that triggers fragmented-slab compaction.
 #[bench(raw)]
 fn bench_labeled_payload_fragmented_first_span_6() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = payload_bench_graph(1 << 20);
-        let vid = graph.push_vertex(LabeledVertex::default()).expect("vertex");
-        let removed_small = BucketLabelKey::directed_from_index(2);
-        let live_separator = BucketLabelKey::directed_from_index(3);
-        let removed_wide = BucketLabelKey::directed_from_index(4);
-        for (label, target, width) in [
-            (removed_small, 0, 2),
-            (live_separator, 1, 2),
-            (removed_wide, 2, 4),
-        ] {
-            graph
-                .ensure_label_bucket_inline_value_byte_width(vid, label, width)
-                .expect("payload width");
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    vid,
-                    label,
-                    PayloadBenchEdge::with_payload(target, width, &target.to_le_bytes()),
-                )
-                .expect("payload insert");
-        }
-        for (label, target) in [(removed_small, 0), (removed_wide, 2)] {
-            graph
-                .remove_edge_matching(vid, label, |edge| edge.target == target)
-                .expect("payload remove")
-                .expect("removed payload edge");
-        }
+        let vid = seed_fragmented_payload_fixture(&graph);
         let target = BucketLabelKey::directed_from_index(5);
         graph
             .ensure_label_bucket_inline_value_byte_width(vid, target, 6)
             .expect("payload width");
+        let _scope = canbench_rs::bench_scope("payload_fragmented_trigger_insert");
         graph
             .insert_edge_skip_leaf_cascade(
                 vid,
@@ -925,6 +933,40 @@ fn bench_labeled_payload_fragmented_first_span_6() -> canbench_rs::BenchResult {
                 PayloadBenchEdge::with_payload(3, 6, &3u32.to_le_bytes()),
             )
             .expect("payload insert");
+        black_box(graph.payload_storage_stats().expect("payload stats"));
+    })
+}
+
+/// Control for a same-fixture first allocation that can reuse one free span.
+#[bench(raw)]
+fn bench_labeled_payload_fragmented_first_span_4_control() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = payload_bench_graph(1 << 20);
+        let vid = seed_fragmented_payload_fixture(&graph);
+        let target = BucketLabelKey::directed_from_index(5);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(vid, target, 4)
+            .expect("payload width");
+        let _scope = canbench_rs::bench_scope("payload_fragmented_control_insert");
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                target,
+                PayloadBenchEdge::with_payload(3, 4, &3u32.to_le_bytes()),
+            )
+            .expect("payload insert");
+        black_box(graph.payload_storage_stats().expect("payload stats"));
+    })
+}
+
+/// Isolates the payload-only compaction pass for the fragmented fixture.
+#[bench(raw)]
+fn bench_labeled_payload_fragmented_compaction_only() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = payload_bench_graph(1 << 20);
+        let _vid = seed_fragmented_payload_fixture(&graph);
+        let _scope = canbench_rs::bench_scope("payload_fragmented_compaction_only");
+        black_box(graph.compact_payload_slab().expect("payload compaction"));
         black_box(graph.payload_storage_stats().expect("payload stats"));
     })
 }
