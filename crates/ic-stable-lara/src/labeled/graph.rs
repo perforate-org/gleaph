@@ -80,6 +80,7 @@ where
     values: EdgeInlineValueStore<M>,
     default_label: BucketLabelKey,
     last_bucket_lookup: Cell<Option<BucketLookupCache>>,
+    payload_compaction_deferred: Cell<bool>,
     bucket_lookup_cache: [Cell<Option<BucketLookupCache>>; BUCKET_LOOKUP_CACHE_ENTRIES],
     _marker: PhantomData<E>,
 }

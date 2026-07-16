@@ -331,6 +331,21 @@ where
         Ok(())
     }
 
+    pub(crate) fn insert_edge_skip_leaf_cascade_deferred_payload(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        edge: E,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let was_deferred = self.payload_compaction_deferred.replace(true);
+        let result = self.insert_edge_skip_leaf_cascade(src, label_id, edge);
+        self.payload_compaction_deferred.set(was_deferred);
+        result
+    }
+
     pub(super) fn ensure_labeled_bucket_edge_span_room(
         &self,
         src: VertexId,

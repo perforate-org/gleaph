@@ -156,6 +156,7 @@ where
             )?,
             default_label,
             last_bucket_lookup: Cell::new(None),
+            payload_compaction_deferred: Cell::new(false),
             bucket_lookup_cache: std::array::from_fn(|_| Cell::new(None)),
             _marker: PhantomData,
         })
@@ -241,6 +242,7 @@ where
             .map_err(InitError::Payloads)?,
             default_label,
             last_bucket_lookup: Cell::new(None),
+            payload_compaction_deferred: Cell::new(false),
             bucket_lookup_cache: std::array::from_fn(|_| Cell::new(None)),
             _marker: PhantomData,
         })

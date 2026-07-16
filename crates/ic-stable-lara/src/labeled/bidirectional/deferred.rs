@@ -123,6 +123,11 @@ pub enum MaintenanceWorkItem {
         anchor_bucket_index: u32,
         resume_bucket_index: u32,
     },
+    /// Compact the payload slab when aggregate free space is fragmented.
+    CompactPayloadSlab {
+        /// Orientation whose payload slab should be compacted.
+        orientation: Orientation,
+    },
     /// Incrementally remove all incident edges of a deleted vertex, one edge per
     /// step, then clear its rows. Resumable across maintenance calls (ADR 0021).
     DeleteVertex {
@@ -195,6 +200,13 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
             b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
             b[8..12].copy_from_slice(&removed_edges.to_le_bytes());
         }
+        MaintenanceWorkItem::CompactPayloadSlab { orientation } => {
+            b[0] = 6;
+            b[1] = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+        }
     }
     b
 }
@@ -240,6 +252,7 @@ impl Storable for MaintenanceWorkItem {
                 vid,
                 removed_edges: u32::from_le_bytes(b[8..12].try_into().unwrap()),
             },
+            6 => Self::CompactPayloadSlab { orientation },
             _ => Self::CompactLabelBucketVertexSegment { orientation, vid },
         }
     }
@@ -395,6 +408,10 @@ fn work_item_key(item: MaintenanceWorkItem) -> u32 {
             };
             0xA000_0000 | anchor_bucket_index ^ (u32::from(vid) << 1) ^ orient
         }
+        MaintenanceWorkItem::CompactPayloadSlab { orientation } => match orientation {
+            Orientation::Forward => 0x6000_0000,
+            Orientation::Reverse => 0x6000_0001,
+        },
         // DeleteVertex bypasses the dirty gate, so this key is never inserted,
         // checked, or cleared; it exists only to keep the match exhaustive.
         MaintenanceWorkItem::DeleteVertex { vid, .. } => 0xE000_0000 | u32::from(vid),
@@ -918,6 +935,16 @@ where
             .map(|_| ())
     }
 
+    /// Enqueues payload-only compaction for one orientation.
+    pub fn mark_compact_payload_slab(
+        &self,
+        orientation: Orientation,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.maintenance
+            .mark_dirty(MaintenanceWorkItem::CompactPayloadSlab { orientation })
+            .map(|_| ())
+    }
+
     /// Appends one vertex row to both orientations.
     pub fn push_vertex(&self) -> Result<VertexId, DeferredBidirectionalLabeledError> {
         let forward_count = self.forward.vertex_count();
@@ -946,9 +973,18 @@ where
         label_id: BucketLabelKey,
         forward_edge: E,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let payload_compaction_needed = forward_edge.edge_inline_value_byte_width() != 0
+            && self
+                .forward
+                .payload_compaction_needed(u64::from(forward_edge.edge_inline_value_byte_width()))
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.forward
-            .insert_edge_skip_leaf_cascade(src, label_id, forward_edge)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
+            .insert_edge_skip_leaf_cascade_deferred_payload(src, label_id, forward_edge)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        if payload_compaction_needed {
+            self.mark_compact_payload_slab(Orientation::Forward)?;
+        }
+        Ok(())
     }
 
     /// Ensures forward/reverse label buckets declare `inline_value_byte_width` for a directed insert.
@@ -1017,12 +1053,28 @@ where
         self.reverse
             .prepare_labeled_edge_capacity_for_insert(dst, label_id)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        let forward_payload_compaction_needed = forward_edge.edge_inline_value_byte_width() != 0
+            && self
+                .forward
+                .payload_compaction_needed(u64::from(forward_edge.edge_inline_value_byte_width()))
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        let reverse_payload_compaction_needed = reverse_edge.edge_inline_value_byte_width() != 0
+            && self
+                .reverse
+                .payload_compaction_needed(u64::from(reverse_edge.edge_inline_value_byte_width()))
+                .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         self.forward
-            .insert_edge_skip_leaf_cascade(src, label_id, forward_edge)
+            .insert_edge_skip_leaf_cascade_deferred_payload(src, label_id, forward_edge)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.reverse
-            .insert_edge_skip_leaf_cascade(dst, label_id, reverse_edge)
+            .insert_edge_skip_leaf_cascade_deferred_payload(dst, label_id, reverse_edge)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        if forward_payload_compaction_needed {
+            self.mark_compact_payload_slab(Orientation::Forward)?;
+        }
+        if reverse_payload_compaction_needed {
+            self.mark_compact_payload_slab(Orientation::Reverse)?;
+        }
         if self.forward.labeled_leaf_segment_is_dense(src) {
             self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, src)?;
         }
@@ -1883,6 +1935,25 @@ where
                     })
                 }
                 MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
+                MaintenanceWorkItem::CompactPayloadSlab { orientation } => {
+                    let graph = match orientation {
+                        Orientation::Forward => &self.forward,
+                        Orientation::Reverse => &self.reverse,
+                    };
+                    match graph.compact_payload_slab() {
+                        Ok(result) => {
+                            if result.moved_spans > 0 {
+                                report.work.rebalanced_segments =
+                                    report.work.rebalanced_segments.saturating_add(1);
+                            }
+                            None
+                        }
+                        Err(_) => {
+                            stalled = true;
+                            Some(MaintenanceWorkItem::CompactPayloadSlab { orientation })
+                        }
+                    }
+                }
                 MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
                     orientation,
                     vid,
@@ -2530,13 +2601,26 @@ where
                 .prepare_labeled_edge_capacity_for_insert(v, label_id)
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
         }
+        let u_payload_compaction_needed = edge_uv.edge_inline_value_byte_width() != 0
+            && self
+                .forward
+                .payload_compaction_needed(u64::from(edge_uv.edge_inline_value_byte_width()))
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        let v_payload_compaction_needed = edge_vu.edge_inline_value_byte_width() != 0
+            && self
+                .forward
+                .payload_compaction_needed(u64::from(edge_vu.edge_inline_value_byte_width()))
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.forward
-            .insert_edge_skip_leaf_cascade(u, label_id, edge_uv)
+            .insert_edge_skip_leaf_cascade_deferred_payload(u, label_id, edge_uv)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         if u != v {
             self.forward
-                .insert_edge_skip_leaf_cascade(v, label_id, edge_vu)
+                .insert_edge_skip_leaf_cascade_deferred_payload(v, label_id, edge_vu)
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        }
+        if u_payload_compaction_needed || (u != v && v_payload_compaction_needed) {
+            self.mark_compact_payload_slab(Orientation::Forward)?;
         }
         if self.forward.labeled_leaf_segment_is_dense(u) {
             self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, u)?;
@@ -3664,6 +3748,35 @@ mod tests {
             "delete work item fits the fixed 16-byte format"
         );
         assert_eq!(MaintenanceWorkItem::from_bytes(bytes), item);
+    }
+
+    #[test]
+    fn payload_compaction_work_item_round_trips_and_runs_once() {
+        use ic_stable_structures::Storable;
+        let item = MaintenanceWorkItem::CompactPayloadSlab {
+            orientation: Orientation::Reverse,
+        };
+        assert_eq!(MaintenanceWorkItem::from_bytes(item.to_bytes()), item);
+
+        let graph = graph();
+        graph
+            .mark_compact_payload_slab(Orientation::Forward)
+            .unwrap();
+        graph
+            .mark_compact_payload_slab(Orientation::Forward)
+            .unwrap();
+        assert_eq!(graph.maintenance_queue_len(), 1);
+        graph
+            .maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: Some(1),
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .unwrap();
+        assert_eq!(graph.maintenance_queue_len(), 0);
     }
 
     #[test]

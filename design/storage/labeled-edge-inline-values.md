@@ -66,6 +66,13 @@ compaction currently adds about 61.50K instructions over the control path. The
 additional scan remains isolated to fragmented allocation, but its cost is high
 enough that frequent triggers should move to bounded maintenance scheduling.
 
+The deferred labeled wrapper now schedules `CompactPayloadSlab` as a deduplicated
+global queue item when a payload insert detects this pressure. That wrapper
+suppresses synchronous payload compaction for the insert; the queued item runs
+the payload-only pass within the caller's maintenance budget. The queue item is
+fixed-width and uses a new stable tag, while unknown tags continue to decode as
+the original bucket-segment item for compatibility with older queue contents.
+
 Payload-only compaction is available through `compact_payload_slab`. It preflights
 earlier free-span prefixes, including spans released by earlier moves in the same
 plan, copies only payload slab bytes, updates bucket payload offsets, and retires the old spans. Edge slab positions, edge/payload log chains,

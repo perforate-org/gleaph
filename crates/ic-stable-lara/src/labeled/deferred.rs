@@ -55,6 +55,8 @@ pub enum MaintenanceWorkItem {
         /// Next label-bucket index to compact.
         resume_bucket_index: u32,
     },
+    /// Compact the payload slab when aggregate free space is fragmented.
+    CompactPayloadSlab,
 }
 
 #[cfg(test)]
@@ -620,6 +622,37 @@ mod tests {
             "expected deferred wrapper to enqueue compaction when PMA leaf is dense"
         );
     }
+
+    #[test]
+    fn payload_compaction_maintenance_is_deduplicated_and_consumed() {
+        let encoded = MaintenanceWorkItem::CompactPayloadSlab.into_bytes();
+        assert_eq!(
+            MaintenanceWorkItem::from_bytes(Cow::Owned(encoded)),
+            MaintenanceWorkItem::CompactPayloadSlab
+        );
+
+        let graph = graph();
+        graph
+            .inner()
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
+            .unwrap();
+
+        graph.mark_compact_payload_slab().unwrap();
+        graph.mark_compact_payload_slab().unwrap();
+        assert_eq!(graph.maintenance_queue_len(), 1);
+
+        let budget = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: Some(1),
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        let report = graph.maintenance(budget);
+        assert_eq!(report.processed_work_items, 1);
+        assert_eq!(graph.maintenance_queue_len(), 0);
+    }
 }
 
 impl Storable for MaintenanceWorkItem {
@@ -663,6 +696,9 @@ impl Storable for MaintenanceWorkItem {
                 bytes[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
                 bytes[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
             }
+            Self::CompactPayloadSlab => {
+                bytes[0] = 5;
+            }
         }
         Cow::Owned(Vec::from(bytes))
     }
@@ -687,6 +723,7 @@ impl Storable for MaintenanceWorkItem {
                 anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
                 resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
             },
+            5 => Self::CompactPayloadSlab,
             _ => Self::CompactLabelBucketVertexSegment { vid },
         }
     }
@@ -822,9 +859,17 @@ where
         label_id: crate::labeled::BucketLabelKey,
         edge: E,
     ) -> Result<(), DeferredError> {
+        let payload_compaction_needed = edge.edge_inline_value_byte_width() != 0
+            && self
+                .inner
+                .payload_compaction_needed(u64::from(edge.edge_inline_value_byte_width()))
+                .map_err(DeferredError::Inner)?;
         self.inner
-            .insert_edge_skip_leaf_cascade(src, label_id, edge)
+            .insert_edge_skip_leaf_cascade_deferred_payload(src, label_id, edge)
             .map_err(DeferredError::Inner)?;
+        if payload_compaction_needed {
+            self.mark_compact_payload_slab()?;
+        }
         self.maybe_enqueue_dense_vertex_maintenance(src)
     }
 
@@ -862,8 +907,26 @@ where
             MaintenanceWorkItem::CompactVertexEdgeSpan { vid: queued, .. } => queued == vid,
             MaintenanceWorkItem::CompactVertexEdgeAndValueSpan { vid: queued, .. } => queued == vid,
             MaintenanceWorkItem::CompactLabelBucketVertexSegment { .. }
-            | MaintenanceWorkItem::CompactVertexValueSpan { .. } => false,
+            | MaintenanceWorkItem::CompactVertexValueSpan { .. }
+            | MaintenanceWorkItem::CompactPayloadSlab => false,
         })
+    }
+
+    fn payload_compaction_pending(&self) -> bool {
+        self.queue
+            .iter()
+            .any(|item| matches!(item, MaintenanceWorkItem::CompactPayloadSlab))
+    }
+
+    /// Enqueues payload-only compaction, deduplicated across the graph.
+    pub fn mark_compact_payload_slab(&self) -> Result<(), DeferredError> {
+        if self.payload_compaction_pending() {
+            return Ok(());
+        }
+        self.queue
+            .push_back(&MaintenanceWorkItem::CompactPayloadSlab)
+            .map_err(DeferredError::QueueGrow)?;
+        Ok(())
     }
 
     fn maybe_enqueue_dense_vertex_maintenance(&self, vid: VertexId) -> Result<(), DeferredError> {
@@ -1039,6 +1102,21 @@ where
                     })
                 }
                 MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
+                MaintenanceWorkItem::CompactPayloadSlab => {
+                    match self.inner.compact_payload_slab() {
+                        Ok(result) => {
+                            if result.moved_spans > 0 {
+                                report.rebalanced_segments =
+                                    report.rebalanced_segments.saturating_add(1);
+                            }
+                            None
+                        }
+                        Err(_) => {
+                            stalled = true;
+                            Some(MaintenanceWorkItem::CompactPayloadSlab)
+                        }
+                    }
+                }
                 MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
                     vid,
                     anchor_bucket_index,

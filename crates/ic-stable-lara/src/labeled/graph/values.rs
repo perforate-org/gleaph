@@ -759,7 +759,9 @@ where
         if had_bytes == 0 {
             // First span for this bucket: bump the occupied tail when the slab already
             // has bytes so we do not place a second bucket at offset 0.
-            if self.payload_compaction_needed(needed_bytes)? {
+            if !self.payload_compaction_deferred.get()
+                && self.payload_compaction_needed(needed_bytes)?
+            {
                 let _ = self.compact_payload_slab()?;
             }
             let offset = if tail == 0 {
@@ -1329,6 +1331,49 @@ mod tests {
 
         assert!(!graph.payload_compaction_needed(0).unwrap());
         assert!(!graph.payload_compaction_needed(4).unwrap());
+        assert!(graph.payload_compaction_needed(6).unwrap());
+    }
+
+    #[test]
+    fn deferred_payload_insert_skips_synchronous_compaction() {
+        let graph = inline_value_test_graph();
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        for (label, target, width) in [(2, 0, 2), (3, 1, 2), (4, 2, 4)] {
+            let label = BucketLabelKey::from_raw(label);
+            let bytes = vec![target as u8; usize::from(width)];
+            graph
+                .ensure_label_bucket_inline_value_byte_width(src, label, width)
+                .unwrap();
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    PayloadTestEdge::with_bytes(target, &bytes),
+                )
+                .unwrap();
+        }
+        for (label, target) in [(2, 0), (4, 2)] {
+            let label = BucketLabelKey::from_raw(label);
+            graph
+                .remove_edge_matching(src, label, |edge| edge.target == target)
+                .unwrap()
+                .expect("payload edge removed");
+        }
+
+        let target = BucketLabelKey::from_raw(5);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(src, target, 6)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade_deferred_payload(
+                src,
+                target,
+                PayloadTestEdge::with_bytes(3, &[3u8; 6]),
+            )
+            .unwrap();
+
+        let stats = graph.payload_storage_stats().unwrap();
+        assert_eq!(stats.free_bytes, 6);
         assert!(graph.payload_compaction_needed(6).unwrap());
     }
 
