@@ -57,6 +57,14 @@ delete/log-transition complexity without reducing the existing copy paths.
 Headroom remains deferred until measurements show a workload where that trade-off
 is favorable.
 
+The fragmented first-span benchmark (`bench_labeled_payload_fragmented_first_span_6`)
+measured 37.72M instructions, 568 heap pages, and no stable-memory page increase;
+its four labeled insert scopes consumed 127.82K instructions in total. This
+fixture includes setup, two removals, and the triggering insertion, so it is not
+directly comparable with the 256-edge growth baseline. It confirms that the
+additional compaction scan remains in the fragmented allocation path rather than
+the ordinary tail-growth path.
+
 Payload-only compaction is available through `compact_payload_slab`. It preflights
 earlier free-span prefixes, including spans released by earlier moves in the same
 plan, copies only payload slab bytes, updates bucket payload offsets, and retires the old spans. Edge slab positions, edge/payload log chains,
