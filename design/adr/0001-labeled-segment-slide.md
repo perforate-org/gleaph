@@ -273,6 +273,30 @@ Capacity for a structural fold is preflighted as `stored_slots + edge_log_chain_
 the maintenance fold is preflighted as `stored_slots + live_edge_log_entries`. Neither operation
 writes slab bytes before its complete destination range is known to fit.
 
+### Relocation cost and contiguous slab reads
+
+The leaf relocation path materializes every resident edge before committing the weighted slide.
+The stored portion of a label bucket is already a contiguous slab prefix, so reading it one slot at
+a time needlessly repeats the stable-memory read boundary. The relocation path therefore reads the
+whole stored prefix with `read_slots_contiguous` and decodes the fixed-width records in memory.
+Overflow-log entries remain a separate ordered read because they are not physically contiguous with
+the slab prefix.
+
+Focused `bench_labeled_stage2_hub_insert_grow` measurements in the same instrumented build showed
+the relocation-heavy totals changing as follows:
+
+| fixture | before contiguous read | after contiguous read | change |
+| --- | ---: | ---: | ---: |
+| 1,024 | 10.43M | 9.26M | -11.2% |
+| 4,096 | 49.08M | 42.96M | -12.5% |
+| 16,384 | 153.75M | 129.92M | -15.5% |
+
+These are same-run comparisons, not a clean segment-policy A/B: the build also contains the
+segment16/quota1 policy and canbench scopes. The remaining dominant cost is the weighted slide
+commit itself, especially the encoding and writing of resident edge runs. Any further optimization
+must preserve descending commit order, bucket-local live order, and the leaf-wide atomic relocation
+contract.
+
 The `LabelBucket` stable record grows from 25 to 29 bytes to persist the payload slab-slot count independently. Development stable data using the earlier record width must be wiped; backward decoding is not provided.
 
 ## Consequences
