@@ -118,6 +118,20 @@ impl PreflightContext {
         &self,
         targets: &[(Principal, MutationId)],
     ) -> Result<Vec<Option<GraphMutationJournalEntryWire>>, RouterError> {
+        self.resolve_journal_entries_impl(targets, false).await
+    }
+
+    /// Eagerly prefetch mutation journal entries for existing mutations before dispatch. Like
+    /// `resolve_journal_entries`, but records a cache miss as `None` instead of returning an error.
+    async fn prefetch_journal_entries(&self, targets: &[(Principal, MutationId)]) {
+        let _ = self.resolve_journal_entries_impl(targets, true).await;
+    }
+
+    async fn resolve_journal_entries_impl(
+        &self,
+        targets: &[(Principal, MutationId)],
+        permissive: bool,
+    ) -> Result<Vec<Option<GraphMutationJournalEntryWire>>, RouterError> {
         // Group uncached ids by graph canister, preserving the order requested by the caller.
         let mut by_canister: BTreeMap<Principal, Vec<MutationId>> = BTreeMap::new();
         let mut cached: HashMap<(Principal, MutationId), Option<GraphMutationJournalEntryWire>> =
@@ -180,21 +194,21 @@ impl PreflightContext {
             }
         }
 
-        targets
-            .iter()
-            .map(|(canister, mutation_id)| {
-                let key = (*canister, *mutation_id);
-                cached
-                    .get(&key)
-                    .or_else(|| fetched.get(&key))
-                    .cloned()
-                    .ok_or_else(|| {
-                        RouterError::InvalidArgument(
-                            "missing journal entry for requested mutation".into(),
-                        )
-                    })
-            })
-            .collect()
+        let mut out = Vec::with_capacity(targets.len());
+        for (canister, mutation_id) in targets.iter() {
+            let key = (*canister, *mutation_id);
+            if let Some(entry) = cached.get(&key).or_else(|| fetched.get(&key)).cloned() {
+                out.push(entry);
+            } else if permissive {
+                self.journal_entries.borrow_mut().insert(key, None);
+                out.push(None);
+            } else {
+                return Err(RouterError::InvalidArgument(
+                    "missing journal entry for requested mutation".into(),
+                ));
+            }
+        }
+        Ok(out)
     }
 
     /// Read `index_pending_min_mutation_id` once per Graph canister and cache the result.
@@ -2190,10 +2204,16 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         // ADR 0093: a brand-new mutation has no saga record on the Router, so there is no
         // durable projection to reconcile. Skip the Graph journal reads entirely in that case.
         // Replays and retries carry an existing record and still run reconciliation.
-        if store
-            .router_mutation_record(caller, graph_id, key)
-            .is_some()
-        {
+        if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
+            if let Some(ctx) = preflight {
+                let targets: Vec<(Principal, MutationId)> = record
+                    .shards
+                    .iter()
+                    .filter(|shard| shard.completed && !shard.projection_advanced)
+                    .map(|shard| (shard.graph_canister, record.mutation_id))
+                    .collect();
+                ctx.prefetch_journal_entries(&targets).await;
+            }
             reconcile_router_mutation_projection(store, caller, graph_id, key, preflight).await?;
         }
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
