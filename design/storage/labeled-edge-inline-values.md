@@ -111,6 +111,12 @@ instructions with 256 spans and 5.12M with 4,096 spans, compared with the
 previous 5.11M and 59.73M bin-scan measurements. The best-fit split benchmark
 stayed within its noise threshold, with changes of approximately 1%.
 
+Because heap entries are lazily invalidated, the heap is rebuilt from active
+by-start records when its size exceeds `2 * active_count + 64`. This bounds
+stale-candidate memory while keeping ordinary insert/release operations on the
+heap fast. A churn test covering 256 remove/reinsert cycles verifies that the
+bound and allocator summary remain correct.
+
 The queue persistence contract is covered by a reopen test: a pending payload
 item remains queued across graph reconstruction and is consumed by the next
 maintenance step.

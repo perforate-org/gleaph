@@ -42,6 +42,8 @@ const OFFSET_FREE_HEAD: u64 = 24;
 const OFFSET_BIN_HEADS: u64 = 32;
 const OFFSET_FREE_BYTES: u64 = OFFSET_BIN_HEADS + (BIN_COUNT as u64) * 8;
 const OFFSET_LARGEST_FREE_SPAN: u64 = OFFSET_FREE_BYTES + 8;
+const MAX_HEAP_STALE_FACTOR: u64 = 2;
+const MAX_HEAP_STALE_ALLOWANCE: u64 = 64;
 
 const RECORDS_OFFSET: u64 = 4096;
 const RECORD_STRIDE: u64 = 48;
@@ -1202,9 +1204,38 @@ impl<M: Memory> FreeSpanStore<M> {
     }
 
     fn record_max_candidate(&self, id: SpanId, len: u64) {
-        self.max_spans
-            .borrow_mut()
-            .push(MaxSpanCandidate { len, id });
+        let should_rebuild = {
+            let mut max_spans = self.max_spans.borrow_mut();
+            max_spans.push(MaxSpanCandidate { len, id });
+            (max_spans.len() as u64)
+                > self
+                    .len()
+                    .saturating_mul(MAX_HEAP_STALE_FACTOR)
+                    .saturating_add(MAX_HEAP_STALE_ALLOWANCE)
+        };
+        if should_rebuild {
+            self.rebuild_max_heap();
+        }
+    }
+
+    fn rebuild_max_heap(&self) {
+        let mut max_spans = self.max_spans.borrow_mut();
+        max_spans.clear();
+        let by_start = self.by_start.borrow();
+        let Some((mut start, mut id)) = by_start.first() else {
+            return;
+        };
+        loop {
+            let rec = self.read_record(id);
+            if rec.flags == FLAG_ACTIVE {
+                max_spans.push(MaxSpanCandidate { len: rec.len, id });
+            }
+            let Some((next_start, next_id)) = by_start.successor(start) else {
+                break;
+            };
+            start = next_start;
+            id = next_id;
+        }
     }
 
     fn adjust_summary_after_remove(&self, len: u64) {
@@ -1514,6 +1545,34 @@ mod tests {
             },
         )
         .unwrap();
+        assert_allocator_stats_match_spans(&s);
+    }
+
+    #[test]
+    fn max_heap_rebuild_bounds_stale_candidates() {
+        let s = test_store();
+        s.release_span(0, 10_000).unwrap();
+
+        for i in 0..256u64 {
+            let start = 1_000_000u64.saturating_add(i.saturating_mul(1_000));
+            s.release_span(start, 1).unwrap();
+            assert_eq!(
+                s.take_prefix_at(start, 1).unwrap(),
+                Some(FreeSpan {
+                    start_slot: start,
+                    len: 1,
+                })
+            );
+        }
+
+        let heap_len = s.max_spans.borrow().len() as u64;
+        assert!(
+            heap_len
+                <= s.len()
+                    .saturating_mul(MAX_HEAP_STALE_FACTOR)
+                    .saturating_add(MAX_HEAP_STALE_ALLOWANCE),
+            "max heap retained too many stale candidates: {heap_len}"
+        );
         assert_allocator_stats_match_spans(&s);
     }
 
