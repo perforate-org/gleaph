@@ -1,7 +1,7 @@
 # Labeled edge inline value storage
 
-Last updated: 2026-07-13
-Anchor timestamp: 2026-07-13 22:46:07 UTC +0000
+Last updated: 2026-07-16
+Anchor timestamp: 2026-07-16 21:32:14 UTC +0000
 
 ## Overview
 
@@ -34,6 +34,19 @@ Physical ownership is independent:
 - payload slab slots: `inline_value_slab_slots`; payload log: `inline_value_log_head` + `inline_value_log_len`;
 - edge and payload rebalance, resize, and relocation may run in either order and do not mutate the other store's physical metadata;
 - a zero-width label owns no payload slab/log entries.
+
+### Payload capacity policy
+
+Payload capacity uses a separate quota from edge capacity. A payload-bearing
+bucket is allocated lazily on its first value-bearing edge, with an initial
+quota of exactly one entry and `inline_value_byte_width` bytes. A zero-width
+label does not allocate a payload span even when it has edges. Subsequent slab
+growth is expressed in value-width entries and bytes; it is not rounded to the
+edge `segment_size` or edge vertex quota. If the existing payload span cannot
+be extended in place without relocating it, new values use the independent
+payload log and are folded later. This policy keeps the first value on a sparse
+label at `value_width` bytes while preserving a dense payload slab whenever its
+span remains extendable.
 
 ## Payload storage class (schema SSOT)
 

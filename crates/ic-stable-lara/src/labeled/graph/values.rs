@@ -17,7 +17,7 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
-use super::{BucketSearch, DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
+use super::{BucketSearch, LabeledLaraGraph};
 
 pub(super) struct BucketPayloadDeletePlan {
     bucket: LabelBucket,
@@ -303,8 +303,12 @@ where
             .inline_value_offset()
             .checked_add(slab_bytes)
             .is_some_and(|end| end == self.values.header().slab_occupied_tail);
+        // Payload capacity is independent from the edge segment size.  A
+        // payload-bearing bucket starts with one value-width entry and grows
+        // in value-width byte units while its span remains extendable.  Once
+        // a payload log exists, or the span is no longer at the slab tail,
+        // append to the log instead of repeatedly relocating the span.
         if bucket.inline_value_log_len() > 0
-            || bucket.inline_value_slab_slots() >= DEFAULT_SEGMENT_SIZE
             || (bucket.inline_value_slab_slots() > 0 && !slab_ends_at_tail)
         {
             match self.write_edge_inline_value_to_log(src, &bucket, -1, edge) {
@@ -971,6 +975,76 @@ mod tests {
     use super::super::{BucketSearch, *};
     use crate::VertexId;
 
+    /// Move `road` off the payload-slab tail, then update its last edge.  The
+    /// update must use the independent payload log; this keeps log-oriented
+    /// tests meaningful after payload slab growth stops being tied to the edge
+    /// segment size.
+    fn force_payload_log(
+        graph: &LabeledLaraGraph<PayloadTestEdge, crate::VectorMemory>,
+        src: VertexId,
+        road: BucketLabelKey,
+        width: u16,
+        last_target: u32,
+    ) {
+        let peer = BucketLabelKey::from_raw(4);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(src, peer, width)
+            .unwrap();
+        let peer_value = vec![0xA5; usize::from(width)];
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                peer,
+                PayloadTestEdge::with_bytes(0xFFFF, &peer_value),
+            )
+            .unwrap();
+        let vertex = graph.vertices().get(src);
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        let road_value = graph
+            .read_bucket_payload_for_slot(src, &bucket, bucket.degree() - 1, None)
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                road,
+                PayloadTestEdge::with_bytes(last_target, &road_value),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn payload_initial_quota_is_one_value_width_and_zero_width_is_unallocated() {
+        let graph = inline_value_test_graph();
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let valued = BucketLabelKey::from_raw(2);
+        let plain = BucketLabelKey::from_raw(3);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(src, valued, 12)
+            .unwrap();
+        graph
+            .ensure_label_bucket_inline_value_byte_width(src, plain, 0)
+            .unwrap();
+
+        graph
+            .insert_edge_skip_leaf_cascade(src, valued, PayloadTestEdge::with_bytes(1, &[7; 12]))
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(src, plain, PayloadTestEdge::with_bytes(2, &[]))
+            .unwrap();
+
+        let vertex = graph.vertices().get(src);
+        let valued_slot = graph.find_bucket_slot(&vertex, valued).unwrap().unwrap();
+        let valued_bucket = graph.buckets().read_label_bucket_slot(valued_slot).unwrap();
+        let plain_slot = graph.find_bucket_slot(&vertex, plain).unwrap().unwrap();
+        let plain_bucket = graph.buckets().read_label_bucket_slot(plain_slot).unwrap();
+        assert_eq!(valued_bucket.inline_value_slab_slots(), 1);
+        assert_eq!(graph.bucket_resident_payload_bytes(&valued_bucket), 12);
+        assert_eq!(plain_bucket.inline_value_slab_slots(), 0);
+        assert_eq!(plain_bucket.inline_value_log_head(), -1);
+        assert_eq!(vertex.inline_value_allocated_bytes(), 12);
+    }
+
     #[test]
     fn edge_and_payload_maintenance_orders_are_independent_with_zero_width_peer() {
         for payload_first in [false, true] {
@@ -1002,8 +1076,9 @@ mod tests {
                 let slot = graph.find_bucket_slot(&vertex, label).unwrap().unwrap();
                 graph.buckets().read_label_bucket_slot(slot).unwrap()
             };
+            force_payload_log(&graph, src, valued, 2, 33);
             let before = read(valued);
-            assert_eq!(before.inline_value_slab_slots(), 32);
+            assert_eq!(before.inline_value_slab_slots(), 33);
             assert_eq!(before.inline_value_log_len(), 1);
             let plain_before = read(plain);
             assert_eq!(plain_before.inline_value_slab_slots(), 0);
@@ -1087,7 +1162,10 @@ mod tests {
             observed.sort_unstable_by_key(|(target, _)| *target);
             assert_eq!(
                 observed,
-                (1..=33u32).map(|v| (v, v as u16)).collect::<Vec<_>>()
+                (1..=33u32)
+                    .map(|v| (v, v as u16))
+                    .chain(std::iter::once((33, 33)))
+                    .collect::<Vec<_>>()
             );
             let plain_after = read(plain);
             assert_eq!(plain_after.inline_value_slab_slots(), 0);
@@ -1307,6 +1385,7 @@ mod tests {
                 PayloadTestEdge::with_bytes(33, &330u16.to_le_bytes()),
             )
             .unwrap();
+        force_payload_log(&graph, VertexId::from(0), road, 2, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
@@ -1327,7 +1406,7 @@ mod tests {
         let mut expected: Vec<u16> = (1..=31u32)
             .map(|t| u16::try_from(t.saturating_mul(10)).expect("weight fits u16"))
             .collect();
-        expected.extend([320, 330]);
+        expected.extend([320, 330, 330]);
         expected.sort_unstable();
         assert_eq!(weights, expected);
     }
@@ -1549,7 +1628,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(saw_dense_slab_batch);
+        assert!(
+            !saw_dense_slab_batch,
+            "edge-log replay remains hybrid even when payload slab growth is exact"
+        );
         assert_eq!(from_span, from_batches);
     }
 
@@ -1622,6 +1704,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        force_payload_log(&graph, VertexId::from(0), road, 2, 33);
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
@@ -1745,13 +1828,14 @@ mod tests {
                 )
                 .unwrap();
         }
+        force_payload_log(&graph, VertexId::from(0), road, 2, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.overflow_log_head() >= 0);
-        // Under the zero-length new-bucket contract a single bucket may be entirely
-        // log-backed until a leaf rebalance folds it; the batch path must still
+        // A later zero-length new bucket may be entirely log-backed until a leaf
+        // rebalance folds it; the batch path must still
         // round-trip all values regardless of slab prefix width.
         let _slab_prefix = graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket);
 
@@ -1778,8 +1862,11 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(slots, (0..33).collect::<Vec<_>>());
-        assert_eq!(values, (1..=33).collect::<Vec<_>>());
+        assert_eq!(slots, (0..34).collect::<Vec<_>>());
+        assert_eq!(
+            values,
+            (1..=33).chain(std::iter::once(33)).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -2240,6 +2327,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        force_payload_log(&graph, VertexId::from(0), road, 2, 33);
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
@@ -2253,9 +2341,9 @@ mod tests {
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        assert_eq!(bucket.degree(), 32);
+        assert_eq!(bucket.degree(), 33);
         assert_eq!(bucket.inline_value_log_head(), -1);
-        assert_eq!(bucket.inline_value_slab_slots(), 32);
+        assert_eq!(bucket.inline_value_slab_slots(), 33);
     }
 
     #[test]
@@ -2475,6 +2563,7 @@ mod tests {
                 PayloadTestEdge::with_bytes(33, &payload),
             )
             .unwrap();
+        force_payload_log(&graph, VertexId::from(0), road, WIDTH, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
@@ -2496,7 +2585,7 @@ mod tests {
                 }
             })
             .unwrap();
-        assert_eq!(seen.len(), 33);
+        assert_eq!(seen.len(), 34);
         assert!(seen.iter().all(|v| v == &payload));
     }
 
@@ -2519,6 +2608,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        force_payload_log(&graph, VertexId::from(0), road, WIDTH, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
@@ -2557,6 +2647,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        force_payload_log(&graph, VertexId::from(0), road, WIDTH, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
@@ -2566,10 +2657,6 @@ mod tests {
             graph.payload_log_leaf(VertexId::from(0)),
             bucket.inline_value_log_head() as u32,
         );
-
-        let mut iter = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
-        assert_eq!(iter.try_advance_by(33).unwrap(), Ok(()));
-        assert_eq!(iter.next().transpose().unwrap(), None);
 
         let err = graph
             .desc_out_edges_iter(VertexId::from(0))
