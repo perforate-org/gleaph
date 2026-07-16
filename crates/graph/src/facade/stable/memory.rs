@@ -14,7 +14,7 @@ use ic_stable_lara::{
 };
 use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
-use ic_stable_structures::{DefaultMemoryImpl, StableCell};
+use ic_stable_structures::{DefaultMemoryImpl, Memory as StableMemory, StableCell};
 use std::cell::RefCell;
 
 // --- Labeled graph: forward orientation (10 memories) ---
@@ -98,6 +98,13 @@ const GRAPH_INITIAL_BUCKET_CAPACITY: u64 = 1 << 10;
 const GRAPH_INITIAL_EDGE_CAPACITY: u64 = 1 << 12;
 /// Initial inline-payload byte capacity for each labeled orientation (grows as needed).
 const GRAPH_INITIAL_PAYLOAD_BYTES: u64 = 1 << 16;
+/// Stable-memory manager bucket granularity for the graph's many small regions.
+///
+/// The upstream default is 128 Wasm pages (8 MiB), which is too coarse when each
+/// graph-owned `MemoryId` is independently allocated. This layout intentionally
+/// uses 16 pages (1 MiB) so the shard can grow beyond the 16 GiB ceiling imposed
+/// by 8-page buckets without returning to the default's 8 MiB minima.
+const GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES: u16 = 16;
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
@@ -124,7 +131,10 @@ pub(crate) type StableDerivedIndexOutbox = super::derived_index_outbox::DerivedI
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
-        RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
+        RefCell::new(MemoryManager::init_with_bucket_size(
+            DefaultMemoryImpl::default(),
+            GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES,
+        ));
 }
 
 pub(crate) fn init_graph() -> StableGraph {
@@ -183,6 +193,128 @@ pub(crate) fn init_graph() -> StableGraph {
     crate::facade::init_ic_gql_extensions();
 
     graph
+}
+
+/// Reports the logical size of every graph-owned virtual stable-memory region.
+///
+/// `VirtualMemory::size()` excludes the memory manager's bucket rounding. The
+/// canister's total physical stable-memory usage remains observable through the
+/// management API / `icp canister status`.
+pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::StableMemoryStats {
+    const WASM_PAGE_SIZE: u64 = 65_536;
+    const REGIONS: &[(&str, u8, MemoryId)] = &[
+        ("fwd_vertices", 0, FWD_VERTICES),
+        ("fwd_buckets", 1, FWD_BUCKETS),
+        ("fwd_bucket_free_spans", 2, FWD_BUCKET_FREE_SPANS),
+        (
+            "fwd_bucket_free_span_by_start",
+            3,
+            FWD_BUCKET_FREE_SPAN_BY_START,
+        ),
+        ("fwd_edge_counts", 4, FWD_EDGE_COUNTS),
+        ("fwd_edges", 5, FWD_EDGES),
+        ("fwd_edge_log", 6, FWD_EDGE_LOG),
+        ("fwd_edge_span_meta", 7, FWD_EDGE_SPAN_META),
+        ("fwd_edge_free_spans", 8, FWD_EDGE_FREE_SPANS),
+        (
+            "fwd_edge_free_span_by_start",
+            9,
+            FWD_EDGE_FREE_SPAN_BY_START,
+        ),
+        ("fwd_payload_slab", 10, FWD_PAYLOAD_SLAB),
+        ("fwd_payload_free_spans", 11, FWD_PAYLOAD_FREE_SPANS),
+        (
+            "fwd_payload_free_span_by_start",
+            12,
+            FWD_PAYLOAD_FREE_SPAN_BY_START,
+        ),
+        ("fwd_payload_log", 13, FWD_PAYLOAD_LOG),
+        ("fwd_payload_blobs", 14, FWD_PAYLOAD_BLOBS),
+        ("rev_vertices", 15, REV_VERTICES),
+        ("rev_buckets", 16, REV_BUCKETS),
+        ("rev_bucket_free_spans", 17, REV_BUCKET_FREE_SPANS),
+        (
+            "rev_bucket_free_span_by_start",
+            18,
+            REV_BUCKET_FREE_SPAN_BY_START,
+        ),
+        ("rev_edge_counts", 19, REV_EDGE_COUNTS),
+        ("rev_edges", 20, REV_EDGES),
+        ("rev_edge_log", 21, REV_EDGE_LOG),
+        ("rev_edge_span_meta", 22, REV_EDGE_SPAN_META),
+        ("rev_edge_free_spans", 23, REV_EDGE_FREE_SPANS),
+        (
+            "rev_edge_free_span_by_start",
+            24,
+            REV_EDGE_FREE_SPAN_BY_START,
+        ),
+        ("rev_payload_slab", 25, REV_PAYLOAD_SLAB),
+        ("rev_payload_free_spans", 26, REV_PAYLOAD_FREE_SPANS),
+        (
+            "rev_payload_free_span_by_start",
+            27,
+            REV_PAYLOAD_FREE_SPAN_BY_START,
+        ),
+        ("rev_payload_log", 28, REV_PAYLOAD_LOG),
+        ("rev_payload_blobs", 29, REV_PAYLOAD_BLOBS),
+        ("maintenance_queue", 30, MAINTENANCE_QUEUE),
+        ("dirty_work_items", 31, DIRTY_WORK_ITEMS),
+        ("vertex_label_sets", 32, VERTEX_LABEL_SETS),
+        ("vertex_properties", 33, VERTEX_PROPERTIES),
+        ("edge_properties", 34, EDGE_PROPERTIES),
+        ("edge_aliases", 35, EDGE_ALIASES),
+        ("graph_metadata", 36, GRAPH_METADATA),
+        ("label_stats_delta_seq", 37, LABEL_STATS_DELTA_SEQ),
+        ("label_stats_delta_log", 38, LABEL_STATS_DELTA_LOG),
+        ("graph_mutation_journal", 39, GRAPH_MUTATION_JOURNAL),
+        ("pending_vertex_purges", 40, PENDING_VERTEX_PURGES),
+        ("index_repair_journal", 41, INDEX_REPAIR_JOURNAL),
+        ("unique_effect_outbox", 42, UNIQUE_EFFECT_OUTBOX),
+        ("graph_local_unique_values", 43, GRAPH_LOCAL_UNIQUE_VALUES),
+        ("vertex_embeddings", 44, VERTEX_EMBEDDINGS),
+        (
+            "vertex_embedding_incarnations",
+            45,
+            VERTEX_EMBEDDING_INCARNATIONS,
+        ),
+        ("derived_index_outbox", 46, DERIVED_INDEX_OUTBOX),
+    ];
+
+    let regions: Vec<_> = REGIONS
+        .iter()
+        .map(|(name, memory_id, id)| {
+            let logical_pages = MEMORY_MANAGER.with(|manager| manager.borrow().get(*id).size());
+            let allocated_pages = logical_pages
+                .div_ceil(u64::from(GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES))
+                .saturating_mul(u64::from(GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES));
+            gleaph_graph_kernel::stable_memory::StableMemoryRegionStats {
+                name: (*name).to_string(),
+                memory_id: *memory_id,
+                bucket_pages: GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES,
+                logical_pages,
+                logical_bytes: logical_pages.saturating_mul(WASM_PAGE_SIZE),
+                allocated_pages,
+                slack_pages: allocated_pages.saturating_sub(logical_pages),
+            }
+        })
+        .collect();
+    let logical_total_pages = regions
+        .iter()
+        .map(|region| region.logical_pages)
+        .fold(0, u64::saturating_add);
+    let allocated_region_pages = regions
+        .iter()
+        .map(|region| region.allocated_pages)
+        .fold(0, u64::saturating_add);
+    let estimated_allocated_pages = 1u64.saturating_add(allocated_region_pages);
+    gleaph_graph_kernel::stable_memory::StableMemoryStats {
+        bucket_pages: GRAPH_MEMORY_MANAGER_BUCKET_SIZE_PAGES,
+        logical_total_pages,
+        logical_total_bytes: logical_total_pages.saturating_mul(WASM_PAGE_SIZE),
+        estimated_allocated_pages,
+        estimated_allocated_bytes: estimated_allocated_pages.saturating_mul(WASM_PAGE_SIZE),
+        regions,
+    }
 }
 
 pub(crate) fn init_vertex_label_store() -> StableVertexLabelStore {
@@ -261,4 +393,49 @@ pub(crate) fn init_derived_index_outbox() -> StableDerivedIndexOutbox {
     super::derived_index_outbox::DerivedIndexOutbox::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(DERIVED_INDEX_OUTBOX)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stable_memory_stats;
+
+    #[test]
+    fn stable_memory_stats_covers_every_graph_region() {
+        let stats = stable_memory_stats();
+
+        assert_eq!(stats.regions.len(), 47);
+        assert_eq!(
+            stats.logical_total_pages,
+            stats
+                .regions
+                .iter()
+                .map(|region| region.logical_pages)
+                .sum::<u64>()
+        );
+        assert_eq!(stats.bucket_pages, 16);
+        assert_eq!(
+            stats.estimated_allocated_pages,
+            1 + stats
+                .regions
+                .iter()
+                .map(|region| region.allocated_pages)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            stats
+                .regions
+                .iter()
+                .map(|region| region.slack_pages)
+                .sum::<u64>(),
+            stats.estimated_allocated_pages - 1 - stats.logical_total_pages
+        );
+        assert_eq!(
+            stats.regions.first().map(|region| region.memory_id),
+            Some(0)
+        );
+        assert_eq!(
+            stats.regions.last().map(|region| region.memory_id),
+            Some(46)
+        );
+    }
 }

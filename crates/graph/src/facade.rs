@@ -26,6 +26,7 @@ pub use store::{
 };
 
 pub(crate) use stable::ensure_graph_initialized;
+pub(crate) use stable::memory::stable_memory_stats;
 pub use stable::metadata::{FederationRouting, GraphMetadata, GraphMetadataError};
 pub(crate) use stable::repair_journal::RepairPostingOp;
 

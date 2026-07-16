@@ -59,6 +59,15 @@ pub fn authorize_vector_maintenance(caller: &Principal) -> Result<(), RouterErro
     }
 }
 
+/// Stable-memory diagnostics are control-plane observability and therefore Admin-only.
+pub fn authorize_stable_memory_diagnostics(caller: &Principal) -> Result<(), RouterError> {
+    if auth::is_admin(caller) {
+        Ok(())
+    } else {
+        Err(RouterError::Forbidden)
+    }
+}
+
 /// `prepared_register` / `prepared_drop`: Admin or Manager with `PREPARE_REGISTER`.
 pub fn authorize_prepared_catalog_change(caller: &Principal) -> Result<(), RouterError> {
     if auth::can_prepare_register(caller) {
@@ -169,6 +178,20 @@ mod tests {
             ManagerCapability::PREPARE_REGISTER.bits(),
         );
         authorize_index_ddl(&manager).expect("manager with prepare cap may run index DDL");
+    }
+
+    #[test]
+    fn stable_memory_diagnostics_are_admin_only() {
+        let admin = principal(10);
+        upsert_role(admin, Role::Admin, 0);
+        authorize_stable_memory_diagnostics(&admin).expect("admin may inspect stable memory");
+
+        let read = principal(11);
+        upsert_role(read, Role::Read, 0);
+        assert!(matches!(
+            authorize_stable_memory_diagnostics(&read),
+            Err(RouterError::Forbidden)
+        ));
     }
 
     #[test]

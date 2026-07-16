@@ -12,11 +12,12 @@ use crate::types::{
     AdminSweepMutationKeysStepResult, AdminVectorIndexBackfillStepArgs,
     AdminVectorIndexBackfillStepResult, AdminVertexPropertyBackfillStepArgs,
     AdminVertexPropertyBackfillStepResult, EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs,
-    GraphRegistryEntry, LabelBackfillShardStatus, PropertyId, RegisterVectorIndexArgs,
-    RouterVectorSearchRequest, SetVectorIndexTargetArgs, SetVectorMaintenancePolicyArgs, ShardId,
-    ShardRegistryEntry, VectorIndexActivationStateView, VectorIndexActivationStatus,
-    VectorIndexInfo, VectorMaintenancePolicyView, VectorMaintenanceStatusView,
-    VectorMaintenanceStepOutcome, VertexLabelId, VertexPropertyBackfillShardStatus,
+    GraphRegistryEntry, GraphStableMemoryStats, LabelBackfillShardStatus, PropertyId,
+    RegisterVectorIndexArgs, RouterVectorSearchRequest, SetVectorIndexTargetArgs,
+    SetVectorMaintenancePolicyArgs, ShardId, ShardRegistryEntry, VectorIndexActivationStateView,
+    VectorIndexActivationStatus, VectorIndexInfo, VectorMaintenancePolicyView,
+    VectorMaintenanceStatusView, VectorMaintenanceStepOutcome, VertexLabelId,
+    VertexPropertyBackfillShardStatus,
 };
 #[cfg(test)]
 use candid::Decode;
@@ -1152,6 +1153,28 @@ pub(crate) async fn admin_vector_partition_health(
     crate::vector_sync::forward_admin_vector_partition_health(target, index_id)
         .await
         .map_err(RouterError::Internal)
+}
+
+/// Admin-only physical stable-memory inventory for every shard in a graph.
+pub(crate) async fn admin_graph_stable_memory_stats(
+    graph_name: String,
+) -> Result<Vec<GraphStableMemoryStats>, RouterError> {
+    crate::rbac::authorize_stable_memory_diagnostics(&msg_caller())?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&graph_name)?;
+    let shards = store.list_shards_for_graph_id(graph_id)?;
+    let mut stats = Vec::with_capacity(shards.len());
+    for shard in shards {
+        let memory = crate::graph_client::admin_stable_memory_stats(shard.graph_canister)
+            .await
+            .map_err(RouterError::Internal)?;
+        stats.push(GraphStableMemoryStats {
+            shard_id: shard.shard_id,
+            graph_canister: shard.graph_canister,
+            memory,
+        });
+    }
+    Ok(stats)
 }
 
 pub(crate) async fn admin_vector_partition_health_step(

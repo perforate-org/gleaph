@@ -224,6 +224,13 @@ pub async fn finalize_bulk_ingest(
     call_graph_result(graph, "finalize_bulk_ingest", args).await
 }
 
+/// Router → graph: read-only operator memory inventory.
+pub async fn admin_stable_memory_stats(
+    graph: Principal,
+) -> Result<gleaph_graph_kernel::stable_memory::StableMemoryStats, String> {
+    call_graph_args(graph, "admin_stable_memory_stats", &()).await
+}
+
 /// Replicated `Acquire` commit proof for each claim (ADR 0030 §Timeout). An `update` call so the
 /// answer is replicated: a single-replica query is insufficient evidence to act on absence.
 pub async fn read_unique_effect_proof(

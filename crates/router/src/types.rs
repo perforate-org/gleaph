@@ -335,6 +335,14 @@ pub struct VectorIndexActivationStatus {
     pub blocked_reason: Option<String>,
 }
 
+/// Physical stable-memory inventory for one registered graph shard.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct GraphStableMemoryStats {
+    pub shard_id: ShardId,
+    pub graph_canister: Principal,
+    pub memory: gleaph_graph_kernel::stable_memory::StableMemoryStats,
+}
+
 /// Admin: drive one bounded derived vector-index backfill step on a graph shard (ADR 0031 Slice 5).
 /// The caller supplies an explicit resume cursor (`start_vertex_id`) and budget (`max_vertices`) and
 /// loops, feeding [`AdminVectorIndexBackfillStepResult::next_vertex_id`] until `done`. Fails closed

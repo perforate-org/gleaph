@@ -699,6 +699,14 @@ async fn admin_vector_partition_health(
     canister::admin_vector_partition_health(graph_name, index_id).await
 }
 
+/// Admin-only physical stable-memory inventory for every shard in a graph.
+#[query(composite = true)]
+async fn admin_graph_stable_memory_stats(
+    graph_name: String,
+) -> Result<Vec<types::GraphStableMemoryStats>, RouterError> {
+    canister::admin_graph_stable_memory_stats(graph_name).await
+}
+
 /// Bounded page-meta tombstone-health scan step, forwarded to the activated vector target.
 #[query(composite = true)]
 async fn admin_vector_partition_health_step(

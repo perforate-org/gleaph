@@ -35,17 +35,12 @@ mod test_labels;
 )]
 pub mod plan;
 
-#[expect(
-    dead_code,
-    reason = "canister helpers are reached through IC macros and deployment features"
-)]
 mod canister;
 
 // --- Canister surface (ic-cdk macros stay here; logic lives in `canister::`) ---
 
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
-#[cfg(feature = "pocket-ic-e2e")]
 use crate::canister::guards::guard_control_plane_admin;
 use crate::canister::{GraphInitArgs, guards::guard_router_canister};
 
@@ -194,6 +189,12 @@ async fn admin_ingest_vertex_embedding_batch(
     String,
 > {
     canister::handlers::admin_ingest_vertex_embedding_batch(args).await
+}
+
+/// Router → graph: operator-only physical stable-memory inventory.
+#[query(guard = "guard_control_plane_admin")]
+fn admin_stable_memory_stats() -> gleaph_graph_kernel::stable_memory::StableMemoryStats {
+    canister::handlers::admin_stable_memory_stats()
 }
 
 #[cfg(feature = "pocket-ic-e2e")]

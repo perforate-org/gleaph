@@ -75,6 +75,7 @@ Last revised: YYYY-MM-DD
 | [0038](0038-provisioning-authorization-and-cycles-funding.md) | Provisioning authorization and cycles funding | proposed |
 | [0039](0039-production-stable-memory-evolution-and-upgrade-safety.md) | Production stable-memory evolution and canister upgrade safety | proposed |
 | [0040](0040-gql-ast-formatter-and-social-demo-wasm-integration.md) | GQL AST formatter and social-demo WASM integration | Implemented |
+| [0043](0043-per-memory-bucket-size-memory-manager.md) | Per-memory bucket sizing for the stable-memory manager | proposed |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 

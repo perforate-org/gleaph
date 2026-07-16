@@ -95,6 +95,10 @@ pub fn post_upgrade() {
     crate::facade::maintenance_timer::arm_if_needed();
 }
 
+pub fn admin_stable_memory_stats() -> gleaph_graph_kernel::stable_memory::StableMemoryStats {
+    crate::facade::stable_memory_stats()
+}
+
 pub(crate) fn decode_gql_param_map(params: Vec<u8>) -> Result<BTreeMap<String, Value>, String> {
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     let _scope = canbench_rs::bench_scope("gql_ic_params_blob_decode");
