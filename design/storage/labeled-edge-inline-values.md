@@ -100,6 +100,15 @@ of approximately 16, 64, and 256 retired spans, compared with the previous
 6.24M, 27.90M, and 119.04M measurements. The one-time rebuild and largest-span
 rescans remain mutation/reopen work rather than query-time work.
 
+The largest-span recovery benchmark intentionally places one 128-byte span
+and many 96-byte spans in the same `[65, 128]` size-class bin. Sixteen
+take/restore cycles measured 5.11M instructions with 256 spans and 59.73M
+with 4,096 spans. Thus the current bin-local recovery is a substantial
+improvement over scanning every by-start entry, but it remains linear in a
+pathological high-occupancy bin. A future max-record structure should only be
+introduced if production compaction traces show this mutation cost is material;
+the ordinary pressure predicate is already independent of free-span count.
+
 The queue persistence contract is covered by a reopen test: a pending payload
 item remains queued across graph reconstruction and is consumed by the next
 maintenance step.

@@ -117,6 +117,46 @@ fn bench_lara_free_span_store_best_fit_fallback_scan_4096() -> canbench_rs::Benc
     bench_best_fit_fallback_scan(helper::LARGE_N)
 }
 
+/// Builds one size-class bin containing one largest span and many smaller
+/// spans. Removing the largest span forces the allocator to rebuild its cached
+/// maximum from that bin; the measurement therefore tracks the remaining
+/// largest-bin scan rather than the old all-spans by-start scan.
+fn populate_largest_bin_store(n: u64) -> FreeSpanStore<helper::BenchMemory> {
+    let mut memories = helper::BenchMemoryFactory::new();
+    let store = FreeSpanStore::new(memories.memory(), memories.memory()).expect("free span store");
+    store.release_span(0, 128).expect("release largest span");
+    for i in 1..n {
+        store
+            .release_span(i.saturating_mul(1_000_000), 96)
+            .expect("release same-bin span");
+    }
+    store
+}
+
+fn bench_largest_bin_recovery(n: u64) -> canbench_rs::BenchResult {
+    let store = populate_largest_bin_store(n);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_free_span_largest_bin_recovery");
+        for _ in 0..16 {
+            let largest = store
+                .take_best_fit_whole(black_box(128))
+                .expect("take largest span")
+                .expect("largest span");
+            store.release(largest).expect("restore largest span");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_lara_free_span_store_largest_bin_recovery_256() -> canbench_rs::BenchResult {
+    bench_largest_bin_recovery(helper::SMALL_N)
+}
+
+#[bench(raw)]
+fn bench_lara_free_span_store_largest_bin_recovery_4096() -> canbench_rs::BenchResult {
+    bench_largest_bin_recovery(helper::LARGE_N)
+}
+
 /// Measures the cost of reopening a populated free-span store. `init` runs the
 /// full reopen integrity sequence: `by_start.validate`, the
 /// `by_start.len == active_count` cross-check, and `FreeSpanStore::validate`.
