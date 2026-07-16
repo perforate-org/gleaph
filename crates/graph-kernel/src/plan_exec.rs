@@ -318,6 +318,9 @@ pub struct GetMutationJournalEntriesArgs {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct GetMutationJournalEntriesResult {
     pub entries: Vec<Option<GraphMutationJournalEntryWire>>,
+    /// Smallest mutation id not included because the Graph canister neared its instruction budget.
+    /// When present, the Router must issue a follow-up batch read for this and larger ids.
+    pub next: Option<MutationId>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, CandidType, Serialize, Deserialize)]

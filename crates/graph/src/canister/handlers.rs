@@ -327,12 +327,16 @@ pub fn get_mutation_journal_entries(
     args: gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesArgs,
 ) -> gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesResult {
     let store = GraphStore::new();
-    let entries = args
-        .mutation_ids
-        .into_iter()
-        .map(|mutation_id| store.get_mutation_journal_entry(mutation_id))
-        .collect();
-    gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesResult { entries }
+    let mut entries = Vec::with_capacity(args.mutation_ids.len());
+    let mut next = None;
+    for mutation_id in args.mutation_ids.into_iter() {
+        if current_instruction_counter() >= DEFAULT_DYNAMIC_INSTRUCTION_BUDGET {
+            next = Some(mutation_id);
+            break;
+        }
+        entries.push(store.get_mutation_journal_entry(mutation_id));
+    }
+    gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesResult { entries, next }
 }
 
 /// Router → graph (replicated read): the `Acquire` commit proof for each claim. `acquire` is

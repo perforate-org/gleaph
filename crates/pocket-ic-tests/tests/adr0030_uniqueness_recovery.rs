@@ -18,7 +18,7 @@ use candid::{Decode, Encode};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, gql_execute_idempotent_as_admin,
+    FederationEnv, GRAPH_NAME, drain_maintenance_via_timer, gql_execute_idempotent_as_admin,
     gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin,
     install_single_shard_federation, run_router_recovery_after_reservation_ttl, start_graph_shard,
     stop_graph_shard, test_declare_unique_constraint, wasm_bytes,
@@ -92,6 +92,7 @@ fn held_dispatch_recovered_by_idempotent_retry() {
     start_graph_shard(&env, env.graph_source);
     let retried = gql_execute_idempotent_result(&env, &insert_account("g@example.com"), "rollfwd");
     retried.expect("idempotent retry rolls the held reservation forward to a commit");
+    drain_maintenance_via_timer(&env, env.graph_source);
 
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(live.row_count, 1, "the recovered vertex is committed");
@@ -125,6 +126,7 @@ fn abandoned_reservation_reclaimed_after_ttl() {
 
     // The reclaimed value is reusable under a fresh key (verified by the live count below).
     gql_execute_idempotent_as_admin(&env, &insert_account("h@example.com"), "reclaimed");
+    drain_maintenance_via_timer(&env, env.graph_source);
 
     // The abandoned key is terminally failed and is never re-dispatched (no duplicate vertex).
     let replay = gql_execute_idempotent_result(&env, &insert_account("h@example.com"), "abandoned");
@@ -157,6 +159,7 @@ fn upgrade_reopen_reconciles_held_reservation() {
     run_router_recovery_after_reservation_ttl(&env);
 
     gql_execute_idempotent_as_admin(&env, &insert_account("i@example.com"), "upgrade-reclaimed");
+    drain_maintenance_via_timer(&env, env.graph_source);
     let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
     assert_eq!(
         live.row_count, 1,

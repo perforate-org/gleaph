@@ -110,14 +110,15 @@ impl PreflightContext {
     }
 
     /// Read mutation journal entries for the given (graph_canister, mutation_id) pairs,
-    /// issuing at most one Graph canister call per target canister. Results are cached and
-    /// returned in the same order as the input pairs.
+    /// issuing at most one Graph canister call per target canister and per Candid payload limit.
+    /// Results are cached and returned in the same order as the input pairs. The Graph canister
+    /// may stop early when it nears its instruction budget; this helper pages forward transparently.
     async fn resolve_journal_entries(
         &self,
         targets: &[(Principal, MutationId)],
     ) -> Result<Vec<Option<GraphMutationJournalEntryWire>>, RouterError> {
-        // Group uncached ids by graph canister.
-        let mut by_canister: HashMap<Principal, Vec<MutationId>> = HashMap::new();
+        // Group uncached ids by graph canister, preserving the order requested by the caller.
+        let mut by_canister: BTreeMap<Principal, Vec<MutationId>> = BTreeMap::new();
         let mut cached: HashMap<(Principal, MutationId), Option<GraphMutationJournalEntryWire>> =
             HashMap::new();
         {
@@ -135,29 +136,46 @@ impl PreflightContext {
         let mut fetched: HashMap<(Principal, MutationId), Option<GraphMutationJournalEntryWire>> =
             HashMap::new();
         for (canister, mutation_ids) in by_canister {
-            let result = get_mutation_journal_entries(
-                canister,
-                GetMutationJournalEntriesArgs {
-                    mutation_ids: mutation_ids.clone(),
-                },
-            )
-            .await
-            .map_err(|e| {
-                RouterError::InvalidArgument(format!("graph get_mutation_journal_entries: {e}"))
-            })?;
-            // Defensive: the Graph canister must return results in input order and the same count.
-            if result.entries.len() != mutation_ids.len() {
-                return Err(RouterError::InvalidArgument(format!(
-                    "graph get_mutation_journal_entries returned {} entries for {} ids",
-                    result.entries.len(),
-                    mutation_ids.len()
-                )));
-            }
-            for (id, entry) in mutation_ids.into_iter().zip(result.entries) {
-                fetched.insert((canister, id), entry.clone());
-                self.journal_entries
-                    .borrow_mut()
-                    .insert((canister, id), entry);
+            let mut cursor = 0usize;
+            while cursor < mutation_ids.len() {
+                let chunk_end = journal_batch_chunk_end(&mutation_ids, cursor);
+                let result = get_mutation_journal_entries(
+                    canister,
+                    GetMutationJournalEntriesArgs {
+                        mutation_ids: mutation_ids[cursor..chunk_end].to_vec(),
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    RouterError::InvalidArgument(format!("graph get_mutation_journal_entries: {e}"))
+                })?;
+                // Defensive: the Graph canister must return results in input order.
+                let returned = result.entries.len();
+                if returned == 0 || returned > (chunk_end - cursor) {
+                    return Err(RouterError::InvalidArgument(format!(
+                        "graph get_mutation_journal_entries returned {} entries for {} requested ids",
+                        returned,
+                        chunk_end - cursor
+                    )));
+                }
+                for (offset, entry) in result.entries.into_iter().enumerate() {
+                    let id = mutation_ids[cursor + offset];
+                    fetched.insert((canister, id), entry.clone());
+                    self.journal_entries
+                        .borrow_mut()
+                        .insert((canister, id), entry);
+                }
+                if let Some(next_id) = result.next {
+                    // Graph stopped early; locate the next position in the request order.
+                    let next_pos = mutation_ids[cursor + returned..]
+                        .iter()
+                        .position(|id| *id == next_id)
+                        .map(|p| cursor + returned + p)
+                        .unwrap_or_else(|| cursor + returned);
+                    cursor = next_pos;
+                } else {
+                    cursor = chunk_end;
+                }
             }
         }
 
@@ -356,6 +374,31 @@ fn graph_batch_chunk_len(operations: &[(usize, usize, BatchOperation)]) -> Resul
     } else {
         Ok(best)
     }
+}
+
+/// Binary-search the largest sub-slice of `mutation_ids` starting at `offset` that still fits inside
+/// the safe inter-canister request payload limit when encoded as `GetMutationJournalEntriesArgs`.
+fn journal_batch_chunk_end(mutation_ids: &[MutationId], offset: usize) -> usize {
+    let mut low = offset + 1;
+    let mut high = mutation_ids.len();
+    let mut best = mutation_ids.len();
+    while low <= high {
+        let end = low + (high - low) / 2;
+        let candidate = GetMutationJournalEntriesArgs {
+            mutation_ids: mutation_ids[offset..end].to_vec(),
+        };
+        let Ok(encoded) = Encode!(&candidate) else {
+            high = end.saturating_sub(1);
+            continue;
+        };
+        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            best = end;
+            low = end + 1;
+        } else {
+            high = end.saturating_sub(1);
+        }
+    }
+    best.max(offset + 1)
 }
 
 async fn execute_registered_batch(
@@ -1880,7 +1923,15 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                 client_mutation_key,
             ));
         }
-        reconcile_router_mutation_projection(store, caller, graph_id, key, preflight).await?;
+        // ADR 0093: a brand-new mutation has no saga record on the Router, so there is no
+        // durable projection to reconcile. Skip the Graph journal reads entirely in that case.
+        // Replays and retries carry an existing record and still run reconciliation.
+        if store
+            .router_mutation_record(caller, graph_id, key)
+            .is_some()
+        {
+            reconcile_router_mutation_projection(store, caller, graph_id, key, preflight).await?;
+        }
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
             await_batch_item(&batch).await?;
             return Ok(attach_mutation_phase(

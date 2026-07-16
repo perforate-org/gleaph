@@ -8,8 +8,9 @@ use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
-    gql_query_as_admin, install_single_shard_federation,
+    FederationEnv, drain_maintenance_via_timer, gql_execute_idempotent_as_admin,
+    gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin,
+    install_single_shard_federation,
 };
 use std::collections::BTreeMap;
 
@@ -53,6 +54,7 @@ fn scenario_insert_round_trips_through_payload(
 }
 
 fn scenario_assert_distance(env: &FederationEnv, expected: u64) {
+    drain_maintenance_via_timer(env, env.graph_source);
     let result = gql_query_as_admin(
         env,
         "MATCH (a:City)-[e:ROAD]-(b:City) RETURN e.distance AS d",
@@ -143,6 +145,7 @@ fn scenario_insert_mixed_with_sidecar(env: &FederationEnv) {
         "INSERT (:City)-[:ROAD {distance: 7, surface: 'asphalt'}]->(:City)",
         "adr0034_inline_scalar_mutation_mixed_insert",
     );
+    drain_maintenance_via_timer(env, env.graph_source);
 
     let result = gql_query_as_admin(
         env,

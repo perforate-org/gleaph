@@ -2808,6 +2808,9 @@ pub fn seed_social_graph(env: &FederationEnv) {
         let key = seed["key"].as_str().expect("social seed key");
         let row_count = gql_execute_idempotent_as_admin(env, gql, key);
         assert_eq!(row_count, 0, "seed {key} should not return rows");
+        // Later seeds resolve earlier users/posts/feed edges through derived postings. Keep the
+        // fixture deterministic by draining the projection before issuing the next dependent seed.
+        drain_maintenance_via_timer(env, env.graph_source);
     }
 
     // Verify every generated Post body is readable from the graph without coupling this helper

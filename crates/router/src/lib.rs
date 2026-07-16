@@ -72,13 +72,6 @@ const MAX_DYNAMIC_INSTRUCTION_BUDGET: u64 =
     MAX_UPDATE_CALL_INSTRUCTIONS - DYNAMIC_INSTRUCTION_HEADROOM;
 const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
 
-/// Maximum number of mutations that enter the preflight/planning phase concurrently in one
-/// `gql_execute_idempotent_batch` wave. This caps the Router canister's simultaneous inter-canister
-/// call reservations so the liquid cycles balance is not exhausted before the ADR 0041 Graph batch
-/// dispatch begins. The semaphore applies only to planning; the final batch still receives all
-/// operations and ADR 0042 cursor/budget paging remains unchanged.
-const PREFLIGHT_CONCURRENCY: usize = 16;
-
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
     ic_cdk::api::call_context_instruction_counter()
@@ -379,13 +372,9 @@ async fn gql_execute_idempotent_batch(
             .cloned()
             .enumerate()
             .collect::<Vec<_>>();
-        let mut wave_results = Vec::with_capacity(wave_slice.len());
-        let preflight = gql::PreflightContext::new();
-        for chunk in wave_slice.chunks(PREFLIGHT_CONCURRENCY) {
-            if current_instruction_counter() >= budget {
-                break;
-            }
-            let chunk_futures = chunk.iter().cloned().map(|(item_index, mutation)| {
+        let wave_results = {
+            let preflight = gql::PreflightContext::new();
+            let futures = wave_slice.iter().cloned().map(|(item_index, mutation)| {
                 gql::gql_execute_idempotent_with_batch_outcome(
                     mutation.gql_query,
                     mutation.params,
@@ -394,9 +383,8 @@ async fn gql_execute_idempotent_batch(
                     Some(&preflight),
                 )
             });
-            let chunk_results = futures::future::join_all(chunk_futures).await;
-            wave_results.extend(chunk_results);
-        }
+            futures::future::join_all(futures).await
+        };
         let next_deferred = wave_results
             .iter()
             .position(|result| matches!(result, Ok(None)));

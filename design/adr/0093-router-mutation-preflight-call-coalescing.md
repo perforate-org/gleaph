@@ -30,18 +30,23 @@ available: 9046205698, required: 42102453000
 Add a per-wave `PreflightContext` inside `gql_execute_idempotent_batch` that
 coalesces duplicate inter-canister lookups and throttles planning concurrency.
 
-1. **Planning semaphore.** Process at most `PREFLIGHT_CONCURRENCY` (default 16)
-   mutations in parallel during the planning phase. The final batch still receives
-   all operations; only planning is throttled.
+1. **No planning semaphore.** The original `PREFLIGHT_CONCURRENCY`
+   semaphore was removed once preflight coalescing made it unnecessary. With
+   inter-canister calls batched and cached per wave, the number of concurrent
+   call reservations no longer scales with the number of mutations, so no
+   artificial planning chunking is required.
 
 2. **Anchor lookup cache.** Collect unique `(IndexAnchor, ShardId)` pairs across
    the wave and issue one lookup per unique pair. Cached results are reused for
    all mutations referencing the same anchor.
 
 3. **Journal batch endpoint.** Add a Graph canister query
-   `get_mutation_journal_entries(Vec<MutationId>) -> Vec<Option<...>>`. The Router
-   groups uncached `(graph_canister, mutation_id)` pairs by canister and issues
-   one call per canister per wave.
+   `get_mutation_journal_entries(Vec<MutationId>) -> GetMutationJournalEntriesResult`.
+   The Router groups uncached `(graph_canister, mutation_id)` pairs by canister,
+   chunks each canister's ids by encoded Candid payload size, and issues one call
+   per chunk. The Graph canister stops early when its instruction counter nears
+   the dynamic budget and returns `next: Option<MutationId>`; the Router pages
+   forward transparently from that cursor.
 
 4. **Read-consistency sharing.** Cache `index_pending_min_mutation_id` per Graph
    canister within the wave; the first mutation that needs the barrier pays for
@@ -63,13 +68,15 @@ Positive:
 
 - A wave of `N` mutations with the same seed anchor issues one
   `lookup_label_page` per `(anchor, shard)`, not `N`.
-- A wave of `N` mutations that are already completed issues one
-  `get_mutation_journal_entries` per target Graph canister, not `N`
-  `get_mutation_journal_entry` calls.
+- A wave of `N` mutations that are already completed issues at most one
+  `get_mutation_journal_entries` call per target Graph canister, not `N`
+  `get_mutation_journal_entry` calls. If the request or response would exceed the
+  safe inter-canister payload limit, the Router chunks by encoded size; if the
+  Graph canister nears its instruction budget, it returns `next` and the Router
+  pages transparently.
 - A wave touching `M` shards issues at most `M` `index_pending_min_mutation_id`
   calls.
-- The planning semaphore caps simultaneous inter-canister call reservations,
-  preventing liquid-cycles exhaustion for the default social-demo seed workload.
+
 
 Costs and limitations:
 
@@ -92,8 +99,11 @@ Costs and limitations:
 
 ## Follow-up
 
-Raising `GLEAPH_DEMO_SEED_MAX_ITEMS` above the default still hits the local
-replica's per-call liquid-cycles reservation for the batched journal read (and,
-at very large wave sizes, the ICP update-call instruction budget). Further work
-should either top up the Router canister's liquid balance, paginate the journal
-batch read, or both.
+The batch journal read is now both message-size chunked and instruction-paged,
+so the remaining limit is the Router's *liquid* cycles balance, not the number of
+mutations in the wave. The per-call reservation is fixed by the IC cycle model
+(~42.1B cycles per outbound call plus ~1K per byte of payload). The original
+`PREFLIGHT_CONCURRENCY` semaphore was removed because coalescing already bounds the
+number of outbound calls; re-introducing planning chunking is unnecessary and,
+with `ic-cdk 0.20`, previously caused `protected task outlived its canister method`
+panics.
