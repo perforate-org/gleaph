@@ -305,6 +305,20 @@ sources. In the same 16,384 fixture, this reduced the total from 128.59M to 121.
 the encode scope fell from 3.58M to approximately 1K instructions. The raw plan is transient only;
 it does not alter the stable layout or the persisted bucket contract.
 
+### Stable-memory grow amortization
+
+`EdgeStore` keeps logical `elem_capacity` exact but reserves one additional physical stable-memory
+page whenever the slab crosses a page boundary. This reduces repeated `Memory::grow` calls during
+relocation cascades without reserving edge slots or changing free-span ownership. The reserve is
+physical capacity only and is not visible to graph scans or allocation geometry.
+
+The focused 4-page experiment reduced the 16,384-edge relocation cost further but changed failpoint
+timing assumptions in existing allocation-atomicity tests. A 1-page reserve preserves all 393 unit
+tests and does not increase measured stable pages; 2 pages also passed but showed no additional
+large-fixture benefit and slightly higher transient heap use. The selected policy is therefore
+1 page. Tests must assert logical capacity and failure atomicity rather than assume an exact physical
+page boundary.
+
 The `LabelBucket` stable record grows from 25 to 29 bytes to persist the payload slab-slot count independently. Development stable data using the earlier record width must be wiped; backward decoding is not provided.
 
 ## Consequences

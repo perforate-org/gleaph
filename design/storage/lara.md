@@ -119,6 +119,12 @@ This is the **rope**: the leaf physical interval, not individual vertex rows.
 1. `EdgeStore::grow_segment_tree_to` reserves `counts_store`, `span_meta`, and overflow-log capacity before it migrates counts, appends span-meta rows, resets new log indexes, and writes the edge header.
 2. `LabeledLaraGraph::promote_bypass_to_bucket_mode` reserves bucket-slab and free-span capacity (via `LabelBucketStore::plan_promote_bypass_to_bucket_mode` and `LabelBucketStore::reserve_promote_bypass_to_bucket_mode`) before it writes the bucket-mode vertex row, releases the old bypass span, and bumps PMA segment counts.
 
+The edge slab keeps `elem_capacity` exact while reserving one additional physical stable-memory page
+when crossing a page boundary. This amortizes repeated `Memory::grow` calls during relocation-heavy
+workloads without exposing the reserve as allocatable slots or changing free-span ownership. The
+reserve is physical capacity only; failure-atomic tests must target logical allocation boundaries,
+not an assumed exact page-growth event.
+
 After the first commit write, no recoverable `Memory::grow` or allocation error remains. Physical capacity reserved during preflight is not canonical graph state: retaining it after an error is safe, and the pre-error logical layout reopens unchanged.
 
 **Commit order invariant** (from `lara.rs`): relocate and rewrite all live pointers first; **only then** `release_span` old physical ranges. Queries never observe free-span slots as live adjacency.

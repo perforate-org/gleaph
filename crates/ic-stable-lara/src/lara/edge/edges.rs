@@ -59,6 +59,10 @@ const SLAB_OCCUPIED_TAIL_OFFSET: u64 = 36;
 const INITIAL_VERTEX_EDGE_SLOTS_OFFSET: u64 = 44;
 const RESERVED_OFFSET: u64 = 48;
 const RESERVED_SIZE: usize = 16;
+/// Extra physical pages reserved when the edge slab crosses a stable-memory page boundary.
+/// Logical `elem_capacity` remains exact; the reserve only amortizes repeated `Memory::grow`
+/// calls during relocation-heavy workloads.
+const EDGE_SLAB_GROW_RESERVE_PAGES: u64 = 1;
 
 /// Persisted V1 edge slab header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -361,7 +365,16 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
         if need == 0 {
             return Ok(());
         }
-        safe_write(&self.memory, need - 1, &[0])
+        let required_pages = need.div_ceil(crate::WASM_PAGE_SIZE);
+        if self.memory.size() < required_pages {
+            let reserved_pages = required_pages.saturating_add(EDGE_SLAB_GROW_RESERVE_PAGES);
+            let reserved_last_byte = reserved_pages
+                .saturating_mul(crate::WASM_PAGE_SIZE)
+                .saturating_sub(1);
+            safe_write(&self.memory, reserved_last_byte, &[0])
+        } else {
+            Ok(())
+        }
     }
 }
 
