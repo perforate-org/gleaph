@@ -31,14 +31,14 @@ const PUBLIC_TIMELINE_QUERY: &str = "\
 MATCH (feed:Feed {name: 'Public feed'})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
 OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) \
 RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
-ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20";
+ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20 OFFSET $offset";
 
 const ALICE_HOME_FEED_QUERY: &str = "\
 MATCH (u:User {user_id: 'alice'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
 WHERE p.is_public = TRUE \
 OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) \
 RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
-ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20";
+ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20 OFFSET $offset";
 
 const TOPIC_PATH_QUERY: &str = "\
 MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) \
@@ -49,14 +49,14 @@ RETURN p.demo_id AS post_id, \
        author.name AS author_name, \
        t.demo_id AS topic_id, \
        p.body AS body, \
-       p.created_at AS created_at";
+       p.created_at AS created_at LIMIT 20 OFFSET $offset";
 
 const SEMANTIC_EMBEDDING_NAME: &str = "post_vec";
 const SEMANTIC_INDEX_ID: u32 = 1;
 const SEMANTIC_DIMS: u16 = 8;
 
-const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC";
-const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.user_id = 'alice' AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC";
+const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC LIMIT 20 OFFSET $offset";
+const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.user_id = 'alice' AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC LIMIT 20 OFFSET $offset";
 
 const SOCIAL_SEEDS_JSON: &str =
     include_str!("../../../frontend/apps/knowledge-map/seeds/social-seeds.json");
@@ -122,7 +122,7 @@ fn assert_public_timeline_through_gateway(
         env,
         Principal::anonymous(),
         gateway,
-        SocialDemoScenario::PublicTimeline,
+        SocialDemoScenario::PublicTimeline { offset: 0 },
     );
     let rows = decode_rows(&result);
     assert_eq!(
@@ -205,7 +205,7 @@ fn assert_alice_home_feed_through_gateway(
         env,
         Principal::anonymous(),
         gateway,
-        SocialDemoScenario::AliceHomeFeed,
+        SocialDemoScenario::AliceHomeFeed { offset: 0 },
     );
     let rows = decode_rows(&result);
     assert_eq!(
@@ -284,7 +284,7 @@ fn assert_topic_path_explanation_through_gateway(
         env,
         Principal::anonymous(),
         gateway,
-        SocialDemoScenario::TopicPath,
+        SocialDemoScenario::TopicPath { offset: 0 },
     );
     let rows = decode_rows(&result);
     assert_eq!(
@@ -326,7 +326,7 @@ fn assert_semantic_discovery_through_gateway(
         env,
         Principal::anonymous(),
         gateway,
-        SocialDemoScenario::SemanticDiscovery,
+        SocialDemoScenario::SemanticDiscovery { offset: 0 },
     );
     let rows = decode_rows(&result);
     assert_eq!(
@@ -375,7 +375,7 @@ fn assert_alice_semantic_feed_through_gateway(
         env,
         Principal::anonymous(),
         gateway,
-        SocialDemoScenario::AliceSemanticFeed,
+        SocialDemoScenario::AliceSemanticFeed { offset: 0 },
     );
     let rows = decode_rows(&result);
     assert_eq!(
@@ -566,7 +566,7 @@ fn alice_semantic_feed_body_regression() {
         &env,
         Principal::anonymous(),
         gateway,
-        SocialDemoScenario::AliceSemanticFeed,
+        SocialDemoScenario::AliceSemanticFeed { offset: 0 },
     );
     let rows = decode_rows(&result);
     assert_eq!(

@@ -1,9 +1,9 @@
 # social-demo-config
 
-Date: 2026-07-15
+Date: 2026-07-17
 Status: Implemented
-Anchor timestamp: 2026-07-15 01:12:11 UTC +0000
-Last updated: 2026-07-15 UTC
+Anchor timestamp: 2026-07-17 03:17:35 UTC +0000
+Last updated: 2026-07-17 UTC
 
 ## Purpose
 
@@ -113,7 +113,7 @@ An explicit post `id` is rejected. The generator owns opaque Post identity, reso
 | `feedTitle`        | string                   | Feed panel title.                                 |
 | `rdbSummary`       | string                   | Relational summary text.                          |
 | `graphSummary`     | string                   | Graph summary text.                               |
-| `preparedQuery`    | string                   | GQL string for `prepared_register`.               |
+| `preparedQuery`    | string                   | GQL string for `prepared_register`. Must include a `LIMIT ... OFFSET $offset` clause so the frontend can page. |
 | `semanticVector`   | list of floats or `null` | Optional reference vector for semantic scenarios. |
 
 ## Build pipeline
@@ -283,6 +283,18 @@ stored in a thread-local; `scenario_to_request` selects the vector for the activ
 scenario and encodes it as a compact-binary GQL parameter blob. Updating the
 vector therefore requires only changing the YAML and rebuilding the canister
 (after regenerating the JSON artifact).
+
+## Pagination
+
+Every scenario supports server-side pagination through the GQL `OFFSET $offset`
+parameter. The `social-demo-gateway` `SocialDemoScenario` variant carries an
+`offset : nat32` field; the Gateway encodes it as an `Int64` GQL parameter named
+`$offset` (the graph executor binds parameters by their source token, including
+the leading `$`). The prepared query strings include `OFFSET $offset` and a fixed page
+size (currently `LIMIT 20`). The React app tracks an accumulated feed and loads
+the next page through an IntersectionObserver sentinel at the bottom of the list.
+The page size is shared between the YAML `LIMIT` and the frontend constant
+`PAGE_SIZE` in `SocialDemo.tsx`.
 
 ## Out of scope
 

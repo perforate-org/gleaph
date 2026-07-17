@@ -28,12 +28,12 @@ use std::cell::RefCell;
 /// raw vectors, or parameters.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum SocialDemoScenario {
-    PublicTimeline,
-    AliceHomeFeed,
-    YuiHomeFeed,
-    TopicPath,
-    SemanticDiscovery,
-    AliceSemanticFeed,
+    PublicTimeline { offset: u32 },
+    AliceHomeFeed { offset: u32 },
+    YuiHomeFeed { offset: u32 },
+    TopicPath { offset: u32 },
+    SemanticDiscovery { offset: u32 },
+    AliceSemanticFeed { offset: u32 },
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -139,8 +139,8 @@ fn load_semantic_vectors() -> Vec<Vec<f32>> {
 /// lazily here.
 fn semantic_query_vector_for(scenario: SocialDemoScenario) -> Option<Vec<f32>> {
     let index = match scenario {
-        SocialDemoScenario::SemanticDiscovery => 0,
-        SocialDemoScenario::AliceSemanticFeed => 1,
+        SocialDemoScenario::SemanticDiscovery { .. } => 0,
+        SocialDemoScenario::AliceSemanticFeed { .. } => 1,
         _ => return None,
     };
     SEMANTIC_VECTORS.with(|v| {
@@ -151,35 +151,42 @@ fn semantic_query_vector_for(scenario: SocialDemoScenario) -> Option<Vec<f32>> {
     })
 }
 
-/// Encode a per-scenario semantic query vector as a compact-binary GQL parameter blob.
-fn encode_semantic_query_params_for(scenario: SocialDemoScenario) -> Vec<u8> {
-    let vector = semantic_query_vector_for(scenario).expect("scenario has a semantic vector");
-    let bytes: Vec<u8> = vector
-        .into_iter()
-        .flat_map(|v| v.to_le_bytes().to_vec())
-        .collect();
-    gleaph_gql_ic::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        gleaph_gql::Value::Bytes(bytes),
-    )])
-    .expect("semantic query vector encodes")
+/// Encode the query parameters for a scenario as a compact-binary GQL parameter blob.
+/// Every scenario carries an `offset` parameter for pagination. Semantic scenarios also
+/// carry the fixed `query` vector parameter.
+fn encode_query_params_for(scenario: &SocialDemoScenario) -> Vec<u8> {
+    let offset = match scenario {
+        SocialDemoScenario::PublicTimeline { offset }
+        | SocialDemoScenario::AliceHomeFeed { offset }
+        | SocialDemoScenario::YuiHomeFeed { offset }
+        | SocialDemoScenario::TopicPath { offset }
+        | SocialDemoScenario::SemanticDiscovery { offset }
+        | SocialDemoScenario::AliceSemanticFeed { offset } => *offset,
+    };
+    let mut fields: Vec<(String, gleaph_gql::Value)> = vec![(
+        "$offset".to_string(),
+        gleaph_gql::Value::Int64(i64::from(offset)),
+    )];
+    if let Some(vector) = semantic_query_vector_for(scenario.clone()) {
+        let bytes: Vec<u8> = vector
+            .into_iter()
+            .flat_map(|v| v.to_le_bytes().to_vec())
+            .collect();
+        fields.push(("query".to_string(), gleaph_gql::Value::Bytes(bytes)));
+    }
+    gleaph_gql_ic::encode_gql_params_blob(fields).expect("scenario query params encode")
 }
 
 /// Internal mapping from scenario to prepared-query name and parameter blob.
 fn scenario_to_request(scenario: SocialDemoScenario) -> (&'static str, Vec<u8>) {
+    let params = encode_query_params_for(&scenario);
     match scenario {
-        SocialDemoScenario::PublicTimeline => ("public_timeline", Vec::new()),
-        SocialDemoScenario::AliceHomeFeed => ("alice_home_feed", Vec::new()),
-        SocialDemoScenario::YuiHomeFeed => ("yui_home_feed", Vec::new()),
-        SocialDemoScenario::TopicPath => ("topic_path_explanation", Vec::new()),
-        SocialDemoScenario::SemanticDiscovery => (
-            "semantic_discovery",
-            encode_semantic_query_params_for(SocialDemoScenario::SemanticDiscovery),
-        ),
-        SocialDemoScenario::AliceSemanticFeed => (
-            "alice_semantic_feed",
-            encode_semantic_query_params_for(SocialDemoScenario::AliceSemanticFeed),
-        ),
+        SocialDemoScenario::PublicTimeline { .. } => ("public_timeline", params),
+        SocialDemoScenario::AliceHomeFeed { .. } => ("alice_home_feed", params),
+        SocialDemoScenario::YuiHomeFeed { .. } => ("yui_home_feed", params),
+        SocialDemoScenario::TopicPath { .. } => ("topic_path_explanation", params),
+        SocialDemoScenario::SemanticDiscovery { .. } => ("semantic_discovery", params),
+        SocialDemoScenario::AliceSemanticFeed { .. } => ("alice_semantic_feed", params),
     }
 }
 
@@ -211,36 +218,42 @@ mod tests {
     #[test]
     fn scenario_names_match_expected_prepared_queries() {
         assert_eq!(
-            scenario_to_request(SocialDemoScenario::PublicTimeline).0,
+            scenario_to_request(SocialDemoScenario::PublicTimeline { offset: 0 }).0,
             "public_timeline"
         );
         assert_eq!(
-            scenario_to_request(SocialDemoScenario::AliceHomeFeed).0,
+            scenario_to_request(SocialDemoScenario::AliceHomeFeed { offset: 0 }).0,
             "alice_home_feed"
         );
         assert_eq!(
-            scenario_to_request(SocialDemoScenario::YuiHomeFeed).0,
+            scenario_to_request(SocialDemoScenario::YuiHomeFeed { offset: 0 }).0,
             "yui_home_feed"
         );
         assert_eq!(
-            scenario_to_request(SocialDemoScenario::TopicPath).0,
+            scenario_to_request(SocialDemoScenario::TopicPath { offset: 0 }).0,
             "topic_path_explanation"
         );
         assert_eq!(
-            scenario_to_request(SocialDemoScenario::SemanticDiscovery).0,
+            scenario_to_request(SocialDemoScenario::SemanticDiscovery { offset: 0 }).0,
             "semantic_discovery"
         );
         assert_eq!(
-            scenario_to_request(SocialDemoScenario::AliceSemanticFeed).0,
+            scenario_to_request(SocialDemoScenario::AliceSemanticFeed { offset: 0 }).0,
             "alice_semantic_feed"
         );
     }
 
     #[test]
-    fn semantic_query_params_decode_to_fixed_vector() {
-        let (_, params) = scenario_to_request(SocialDemoScenario::SemanticDiscovery);
+    #[allow(clippy::chunks_exact_to_as_chunks)]
+    fn semantic_query_params_decode_to_fixed_vector_and_offset() {
+        let (_, params) = scenario_to_request(SocialDemoScenario::SemanticDiscovery { offset: 0 });
         let decoded = gleaph_gql_ic::decode_gql_params_blob(&params).expect("decode params");
-        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded.len(), 2, "semantic params contain offset and query");
+        let offset = match decoded.get("$offset").expect("offset parameter") {
+            gleaph_gql::Value::Int64(v) => *v,
+            other => panic!("expected Int64 offset parameter, got {other:?}"),
+        };
+        assert_eq!(offset, 0);
         let query = match decoded.get("query").expect("query parameter") {
             gleaph_gql::Value::Bytes(b) => b.clone(),
             other => panic!("expected Bytes query parameter, got {other:?}"),
@@ -252,14 +265,15 @@ mod tests {
             .collect();
         assert_eq!(
             values,
-            semantic_query_vector_for(SocialDemoScenario::SemanticDiscovery)
+            semantic_query_vector_for(SocialDemoScenario::SemanticDiscovery { offset: 0 })
                 .expect("discovery vector")
         );
 
-        let (_, alice_params) = scenario_to_request(SocialDemoScenario::AliceSemanticFeed);
+        let (_, alice_params) =
+            scenario_to_request(SocialDemoScenario::AliceSemanticFeed { offset: 0 });
         assert_eq!(
             alice_params, params,
-            "both semantic scenarios share the fixed query vector"
+            "both semantic scenarios share the fixed query vector and zero offset"
         );
     }
 

@@ -8,7 +8,7 @@
       "feedTitle": "Public posts",
       "rdbSummary": "This is the straightforward RDB case: index public posts by created_at, apply the visibility condition, and read the newest rows. There is no meaningful relational advantage to demonstrate here; the important baseline is a simple, well-indexed table query.",
       "graphSummary": "Gleaph materializes `IN_PUBLIC_FEED` edges from each public Post to a Feed vertex, then reads one fixed-label edge stream. This is not presented as faster than the RDB baseline; it shows that the same Post/User/edge model can extend from a public timeline to relationship-aware feeds without introducing a separate feed schema.",
-      "preparedQuery": "MATCH (feed:Feed {name: 'Public feed'})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, parent_author.name AS parent_author_name, parent.body AS parent_body, parent.created_at AS parent_created_at, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20",
+      "preparedQuery": "MATCH (feed:Feed {name: 'Public feed'})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, parent_author.name AS parent_author_name, parent.body AS parent_body, parent.created_at AS parent_created_at, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20 OFFSET $offset",
       "semanticVector": null
     },
     {
@@ -19,7 +19,7 @@
       "feedTitle": "Alice's home feed",
       "rdbSummary": "At small scale, an RDB can build Alice's feed on read: first get the followee IDs from follows, then fetch their public posts from tweets (a join or subquery). Twitter-like systems often avoid repeating that work for every read by using fan-out on write: copy each new post into followers' home-feed inboxes. At larger scale, a hybrid is common—push ordinary accounts and pull or merge posts from celebrity accounts.",
       "graphSummary": "Gleaph's social-demo uses fan-out on write: when the seed is built, each public Post creates an `IN_HOME_FEED` edge to its author and every follower User. Alice then reads those pre-materialized edges with one bounded expansion, including her own posts. This shifts work from feed reads to post ingestion; a production system can combine it with pull/merge for accounts with very large audiences.",
-      "preparedQuery": "MATCH (u:User {user_id: 'alice'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, parent_author.name AS parent_author_name, parent.body AS parent_body, parent.created_at AS parent_created_at, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20",
+      "preparedQuery": "MATCH (u:User {user_id: 'alice'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, parent_author.name AS parent_author_name, parent.body AS parent_body, parent.created_at AS parent_created_at, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20 OFFSET $offset",
       "semanticVector": null
     },
     {
@@ -30,7 +30,7 @@
       "feedTitle": "Yui's home feed",
       "rdbSummary": "This is the same home-feed problem as Alice's, but the follow graph is intentionally centered on Japanese users. An RDB can join Yui's followees to their public posts on read, or use fan-out on write to maintain her feed inbox. The result makes the cluster visible without changing the feed model.",
       "graphSummary": "Gleaph reads Yui's pre-materialized `IN_HOME_FEED` edges with one bounded expansion. Most results come from the Japanese cluster Yui follows, while occasional cross-cluster posts appear when the seed includes a bridge connection. The query and storage shape are identical to Alice's feed; only the viewer and seeded social neighborhood differ.",
-      "preparedQuery": "MATCH (u:User {user_id: 'yui'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, parent_author.name AS parent_author_name, parent.body AS parent_body, parent.created_at AS parent_created_at, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20",
+      "preparedQuery": "MATCH (u:User {user_id: 'yui'})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post)<-[:POSTED]-(parent_author:User) RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, parent_author.name AS parent_author_name, parent.body AS parent_body, parent.created_at AS parent_created_at, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20 OFFSET $offset",
       "semanticVector": null
     },
     {
@@ -41,7 +41,7 @@
       "feedTitle": "Topic explanation path",
       "rdbSummary": "An RDB can answer this, but this four-hop path is an awkward hot read. In a 1-million-user friends-of-friends benchmark, depth 2 took MySQL 0.016 s versus Neo4j 0.010 s; depth 3 took 30.267 s versus 0.168 s; depth 4 took 1,543.505 s versus 1.359 s; and depth 5 did not finish in one hour for MySQL while Neo4j took 2.132 s. This is an implementation-dependent reference, not a universal benchmark, but it makes the scaling problem concrete: normalized RDB queries must repeatedly build and carry intermediate candidate sets as joins fan out. Production systems often avoid doing this on every request with denormalized paths, materialized recommendations, or precomputed feeds, trading read latency for write and freshness costs.",
       "graphSummary": "The graph pattern follows four relationships directly: Alice follows Bob, Bob follows George, George authored the post, and the post has the selected topic. Gleaph returns the matching edge identities alongside the post, so the multi-hop reason is part of the result rather than a chain reconstructed afterward.",
-      "preparedQuery": "MATCH (u:User)-[follows1:FOLLOWS]->(bridge:User)-[follows2:FOLLOWS]->(author:User)-[posted:POSTED]->(p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE u.user_id = 'alice' AND t.name = 'Graph databases' RETURN p.demo_id AS post_id, author.name AS author_name, t.demo_id AS topic_id, p.body AS body, p.created_at AS created_at, ELEMENT_ID(follows1) AS follows_edge_id, ELEMENT_ID(follows2) AS second_follows_edge_id, ELEMENT_ID(posted) AS posted_edge_id, ELEMENT_ID(has_topic) AS topic_edge_id",
+      "preparedQuery": "MATCH (u:User)-[follows1:FOLLOWS]->(bridge:User)-[follows2:FOLLOWS]->(author:User)-[posted:POSTED]->(p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE u.user_id = 'alice' AND t.name = 'Graph databases' RETURN p.demo_id AS post_id, author.name AS author_name, t.demo_id AS topic_id, p.body AS body, p.created_at AS created_at, ELEMENT_ID(follows1) AS follows_edge_id, ELEMENT_ID(follows2) AS second_follows_edge_id, ELEMENT_ID(posted) AS posted_edge_id, ELEMENT_ID(has_topic) AS topic_edge_id LIMIT 20 OFFSET $offset",
       "semanticVector": null
     },
     {
@@ -52,7 +52,7 @@
       "feedTitle": "Vector-only semantic discovery",
       "rdbSummary": "An RDB with a vector extension can also run this query: search the Post embedding index, filter public posts, and return the nearest neighbors. The key capability here is vector indexing, not a relational join; a separate vector service is another common implementation.",
       "graphSummary": "Gleaph keeps the canonical Post embeddings with the graph data and routes `SEARCH` through its derived vector index. This scenario intentionally has no relationship constraint, so Dave's note appears because it is the nearest public Post—not because the graph has inferred a social connection.",
-      "preparedQuery": "MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC",
+      "preparedQuery": "MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC LIMIT 20 OFFSET $offset",
       "semanticVector": [
         8,
         0,
@@ -72,7 +72,7 @@
       "feedTitle": "Alice's graph-constrained semantic feed",
       "rdbSummary": "A relational implementation must combine two concerns: find posts by vector distance and restrict them to Alice's followees. It can join or pre-filter in the database, but if vector search returns only a small top-k candidate set, filtering afterward can miss eligible posts; over-fetching or filter-aware vector search is needed.",
       "graphSummary": "Gleaph expresses eligibility and ranking in one query: `Alice → FOLLOWS → author → POSTED → Post` plus vector `SEARCH`. Dave's nearer post is excluded because he is not a followee, while eligible posts are ranked by semantic distance. The point is composable relationship filtering, not that graphs replace vector indexes.",
-      "preparedQuery": "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.user_id = 'alice' AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC",
+      "preparedQuery": "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.user_id = 'alice' AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC LIMIT 20 OFFSET $offset",
       "semanticVector": [
         8,
         0,

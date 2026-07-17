@@ -143,12 +143,12 @@ type SocialDemoGatewayError = variant {
 // registered by the deploy administrator; callers cannot supply GQL, names, graph names,
 // raw vectors, or parameters.
 type SocialDemoScenario = variant {
-  SemanticDiscovery;
-  YuiHomeFeed;
-  TopicPath;
-  PublicTimeline;
-  AliceSemanticFeed;
-  AliceHomeFeed;
+  SemanticDiscovery : record { offset : nat32 };
+  YuiHomeFeed : record { offset : nat32 };
+  TopicPath : record { offset : nat32 };
+  PublicTimeline : record { offset : nat32 };
+  AliceSemanticFeed : record { offset : nat32 };
+  AliceHomeFeed : record { offset : nat32 };
 };
 // Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3/4).
 type VectorActivationBlockReason = variant {

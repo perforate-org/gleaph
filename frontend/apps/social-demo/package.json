@@ -16,6 +16,7 @@
   "dependencies": {
     "@icp-sdk/core": "^5.4.0",
     "@solid-primitives/i18n": "^2.2.1",
+    "@solid-primitives/intersection-observer": "2.1.5",
     "solid-js": "^1.9.14"
   },
   "devDependencies": {

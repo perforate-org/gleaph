@@ -8,7 +8,8 @@ rdbSummary: |-
 graphSummary: |-
   Gleaph keeps the canonical Post embeddings with the graph data and routes `SEARCH` through its derived vector index. This scenario intentionally has no relationship constraint, so Dave's note appears because it is the nearest public Post—not because the graph has inferred a social connection.
 preparedQuery: |-
-  MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC
+  MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC LIMIT 20 OFFSET $offset
+
 semanticVector:
   - 8
   - 0

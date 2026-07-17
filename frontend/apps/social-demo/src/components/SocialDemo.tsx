@@ -1,4 +1,13 @@
-import { createResource, createSignal, For, Match, Show, Switch } from "solid-js";
+import { createIntersectionObserver } from "@solid-primitives/intersection-observer";
+import {
+  batch,
+  createEffect,
+  createSignal,
+  For,
+  Match,
+  Show,
+  Switch,
+} from "solid-js";
 
 import {
   type GatewayClient,
@@ -31,6 +40,8 @@ import { FeedItem } from "~/components/FeedItem";
 import { LanguageSwitcher } from "~/components/LanguageSwitcher";
 import { ReplyTree } from "~/components/ReplyTree";
 import { ScenarioNav } from "~/components/ScenarioNav";
+
+const PAGE_SIZE = 20;
 
 const isSemanticScenario = (definition: ScenarioDefinition): boolean =>
   definition.id === "SemanticDiscovery" || definition.id === "AliceSemanticFeed";
@@ -67,13 +78,13 @@ const decodeFeedResult = (definition: ScenarioDefinition, rowsBlob: Uint8Array):
     }
 
     return {
-        kind: "post",
-        postId,
-        parentPostId: optionalInt64(map, "parent_post_id"),
-        parentAuthorName: optionalText(map, "parent_author_name"),
-        parentBody: optionalText(map, "parent_body"),
-        parentCreatedAt: optionalDateTimeSeconds(map, "parent_created_at"),
-        authorName: expectText(map, "author_name"),
+      kind: "post",
+      postId,
+      parentPostId: optionalInt64(map, "parent_post_id"),
+      parentAuthorName: optionalText(map, "parent_author_name"),
+      parentBody: optionalText(map, "parent_body"),
+      parentCreatedAt: optionalDateTimeSeconds(map, "parent_created_at"),
+      authorName: expectText(map, "author_name"),
       body: expectText(map, "body"),
       createdAt: expectDateTimeSeconds(map, "created_at"),
     };
@@ -85,9 +96,10 @@ const decodeFeedResult = (definition: ScenarioDefinition, rowsBlob: Uint8Array):
 const loadScenario = async (
   client: GatewayClient,
   definition: ScenarioDefinition,
+  offset: number,
   t: Translate,
 ): Promise<FeedResult> => {
-  const result = await client.runScenario(definition.scenario);
+  const result = await client.runScenario(definition.scenario(offset));
 
   const rowsBlob = result.rows_blob;
   if (rowsBlob === undefined) {
@@ -95,9 +107,7 @@ const loadScenario = async (
   }
 
   if (result.row_count !== BigInt(decodeWireRows(rowsBlob).rows.length)) {
-    throw new Error(
-      t("feed.malformedRows"),
-    );
+    throw new Error(t("feed.malformedRows"));
   }
 
   return decodeFeedResult(definition, rowsBlob);
@@ -149,16 +159,96 @@ export function SocialDemo() {
   const options = getGatewayClientOptions();
   const client = options ? createGatewayClient(options) : undefined;
 
-  const [result, { refetch }] = createResource(activeScenarioId, async (id) => {
-    const definition = scenarioDefinitionById(id);
-    if (!client) {
-      throw new Error(t("feed.gatewayNotConfigured"));
-    }
-    return loadScenario(client, definition, t);
-  });
+  const [feedResult, setFeedResult] = createSignal<FeedResult | undefined>();
+  const [isLoadingInitial, setIsLoadingInitial] = createSignal(false);
+  const [isLoadingMore, setIsLoadingMore] = createSignal(false);
+  const [hasMore, setHasMore] = createSignal(true);
+  const [error, setError] = createSignal<Error | undefined>();
 
   const activeDefinition = () => scenarioDefinitionById(activeScenarioId());
   const formatDate = (seconds: bigint): string => formatRelativeDate(seconds, t);
+
+  const resetAndLoad = async (id: ScenarioId) => {
+    if (!client) {
+      setError(new Error(t("feed.gatewayNotConfigured")));
+      return;
+    }
+
+    batch(() => {
+      setFeedResult(undefined);
+      setIsLoadingInitial(true);
+      setIsLoadingMore(false);
+      setHasMore(true);
+      setError(undefined);
+    });
+
+    const definition = scenarioDefinitionById(id);
+    try {
+      const result = await loadScenario(client, definition, 0, t);
+      if (activeScenarioId() !== id) return;
+      batch(() => {
+        setFeedResult(result);
+        setHasMore(result.rows.length === PAGE_SIZE);
+        setIsLoadingInitial(false);
+      });
+    } catch (err) {
+      if (activeScenarioId() !== id) return;
+      batch(() => {
+        setError(err instanceof Error ? err : new Error(String(err)));
+        setIsLoadingInitial(false);
+      });
+    }
+  };
+
+  createEffect(() => {
+    const id = activeScenarioId();
+    resetAndLoad(id);
+  });
+
+  const loadMore = async () => {
+    if (!client || isLoadingInitial() || isLoadingMore() || !hasMore()) {
+      return;
+    }
+
+    const id = activeScenarioId();
+    const definition = scenarioDefinitionById(id);
+    const offset = feedResult()?.rows.length ?? 0;
+
+    setIsLoadingMore(true);
+    try {
+      const result = await loadScenario(client, definition, offset, t);
+      if (activeScenarioId() !== id) return;
+      batch(() => {
+        setFeedResult((prev) => {
+          if (!prev) return result;
+          return {
+            rows: [...prev.rows, ...result.rows],
+            rowCount: prev.rowCount + result.rowCount,
+          };
+        });
+        setHasMore(result.rows.length === PAGE_SIZE);
+        setIsLoadingMore(false);
+      });
+    } catch (err) {
+      if (activeScenarioId() !== id) return;
+      batch(() => {
+        setError(err instanceof Error ? err : new Error(String(err)));
+        setIsLoadingMore(false);
+      });
+    }
+  };
+
+  const [sentinel, setSentinel] = createSignal<HTMLElement | undefined>();
+
+  createIntersectionObserver(
+    () => (sentinel() ? [sentinel()!] : []),
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        loadMore();
+      }
+    },
+    { threshold: 0, rootMargin: "200px" },
+  );
 
   return (
     <div class="min-h-screen">
@@ -198,22 +288,25 @@ export function SocialDemo() {
           <Switch
             fallback={
               <FeedList
-                result={result()}
+                result={feedResult()}
                 definition={activeDefinition()}
                 formatDate={formatDate}
+                isLoadingMore={isLoadingMore()}
+                hasMore={hasMore()}
+                sentinelRef={setSentinel}
               />
             }
           >
-            <Match when={result.loading}>
+            <Match when={isLoadingInitial()}>
               <div class="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500 shadow-sm">
                 {t("feed.loading")}
               </div>
             </Match>
-            <Match when={result.error}>
+            <Match when={error()}>
               <ErrorCard
                 title={t("feed.errorTitle")}
-                message={String(result.error)}
-                onRetry={() => refetch()}
+                message={String(error())}
+                onRetry={() => resetAndLoad(activeScenarioId())}
               />
             </Match>
           </Switch>
@@ -233,6 +326,9 @@ function FeedList(props: {
   result: FeedResult | undefined;
   definition: ScenarioDefinition;
   formatDate: (seconds: bigint) => string;
+  isLoadingMore: boolean;
+  hasMore: boolean;
+  sentinelRef: (el: HTMLElement) => void;
 }) {
   const { t } = useI18n();
 
@@ -261,6 +357,20 @@ function FeedList(props: {
             definition={props.definition}
             formatDate={props.formatDate}
           />
+        </Show>
+
+        <Show when={props.hasMore}>
+          <div
+            ref={props.sentinelRef}
+            class="h-8 rounded-xl border border-transparent"
+            aria-hidden="true"
+          />
+        </Show>
+
+        <Show when={props.isLoadingMore}>
+          <div class="rounded-xl border border-slate-200 bg-white p-4 text-center text-slate-500 shadow-sm">
+            {t("feed.loading")}
+          </div>
         </Show>
       </Show>
     </div>

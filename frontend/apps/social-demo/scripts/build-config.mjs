@@ -668,7 +668,7 @@ const buildTsScenarios = () => {
         `graphSummary: ${JSON.stringify(doc.graphSummary)}`,
         `preparedQuery: ${JSON.stringify(doc.preparedQuery)}`,
         `semanticVector: ${JSON.stringify(doc.semanticVector ?? null)}`,
-        `scenario: SocialDemoScenario.${doc.id}`,
+        `scenario: (offset: number): SocialDemoScenario => ({ __kind__: ${JSON.stringify(doc.id)}, ${doc.id}: { offset } })`,
       ].join(",\n    ");
       return `  ${doc.id}: {\n    ${fields},\n  }`;
     })
@@ -704,7 +704,7 @@ export type ScenarioDefinition = {
   graphSummary: string;
   preparedQuery: string;
   semanticVector: number[] | null;
-  scenario: SocialDemoScenario;
+  scenario: (offset: number) => SocialDemoScenario;
 };
 
 export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
