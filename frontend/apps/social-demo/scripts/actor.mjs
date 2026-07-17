@@ -112,32 +112,33 @@ function canisterIdFromLocalNetwork(name) {
   throw new Error(`Canister ${name} not found in local network`);
 }
 
-function createAgent() {
+async function createAgent() {
   const host = getIcpHost();
   const identity = getDeployerIdentity();
   const agent = HttpAgent.createSync({ host, identity, verifyQuerySignatures: false });
-  agent.fetchRootKey().catch(() => {
-    // Ignore root key fetch failures on non-local networks.
-  });
+  // Local replicas use a root key different from the mainnet default. Await
+  // this before creating an actor so the first certified response cannot be
+  // verified with a stale or missing key.
+  await agent.fetchRootKey();
   return agent;
 }
 
-export function createRouterActor(canisterIdOrName) {
-  const agent = createAgent();
+export async function createRouterActor(canisterIdOrName) {
+  const agent = await createAgent();
   const canisterId = resolveCanisterId(canisterIdOrName);
   const actor = Actor.createActor(routerIdlFactory, { agent, canisterId });
   return actor;
 }
 
-export function createGraphActor(canisterIdOrName) {
-  const agent = createAgent();
+export async function createGraphActor(canisterIdOrName) {
+  const agent = await createAgent();
   const canisterId = resolveCanisterId(canisterIdOrName);
   const actor = Actor.createActor(graphIdlFactory, { agent, canisterId });
   return actor;
 }
 
-export function createGatewayActor(canisterIdOrName) {
-  const agent = createAgent();
+export async function createGatewayActor(canisterIdOrName) {
+  const agent = await createAgent();
   const canisterId = resolveCanisterId(canisterIdOrName);
   const actor = Actor.createActor(gatewayIdlFactory, { agent, canisterId });
   return actor;

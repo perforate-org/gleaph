@@ -73,7 +73,7 @@ async function main() {
   console.log(`[social-demo] Registering ${scenarios.length} prepared queries (batch)`);
 
   const records = scenarios.map((s) => [s.preparedQueryId, s.query]);
-  const router = createRouterActor(ROUTER_CANISTER);
+  const router = await createRouterActor(ROUTER_CANISTER);
   const parsed = await router.prepared_register_batch(records);
 
   if (parsed.length !== scenarios.length) {

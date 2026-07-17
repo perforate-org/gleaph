@@ -108,7 +108,7 @@ function normalizeRowsBlob(rowsBlob) {
 
 async function resolveAllElementIds() {
   const query = `MATCH (p:Post) WHERE p.demo_graph = 'social' RETURN p.demo_id AS demo_id, ELEMENT_ID(p) AS element_id`;
-  const router = createRouterActor(ROUTER_CANISTER);
+  const router = await createRouterActor(ROUTER_CANISTER);
   const result = await router.gql_query(query, new Uint8Array());
   if ("Err" in result) {
     throw new Error(`gql_query failed: ${JSON.stringify(result.Err)}`);
@@ -151,7 +151,7 @@ async function ingestEmbeddingsBatch(elementIdMap, embeddings) {
     };
   });
 
-  const router = createRouterActor(ROUTER_CANISTER);
+  const router = await createRouterActor(ROUTER_CANISTER);
   const result = await router.admin_ingest_vertex_embedding_batch({
     logical_graph_name: GRAPH_NAME,
     embedding_name: EMBEDDING_NAME,
