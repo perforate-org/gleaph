@@ -6,7 +6,11 @@
 //! Best-fit allocation scans size-class bins with intrusive linked lists instead of a
 //! secondary `(len, start)` BTree.
 
-use std::{cell::RefCell, collections::BinaryHeap, fmt};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BinaryHeap,
+    fmt,
+};
 
 use ic_stable_paged_ordered_map::StablePagedOrderedMap;
 use ic_stable_structures::Memory;
@@ -242,6 +246,7 @@ pub struct FreeSpanStore<M: Memory> {
     store: M,
     by_start: RefCell<StablePagedOrderedMap<M>>,
     max_spans: RefCell<BinaryHeap<MaxSpanCandidate>>,
+    max_heap_ready: Cell<bool>,
 }
 
 impl<M: Memory> FreeSpanStore<M> {
@@ -270,6 +275,7 @@ impl<M: Memory> FreeSpanStore<M> {
                 }
             })?),
             max_spans: RefCell::new(BinaryHeap::new()),
+            max_heap_ready: Cell::new(true),
         })
     }
 
@@ -296,6 +302,9 @@ impl<M: Memory> FreeSpanStore<M> {
                 StablePagedOrderedMap::init(by_start_ms).map_err(|_| InitError::OutOfMemory)?,
             ),
             max_spans: RefCell::new(BinaryHeap::new()),
+            // The persisted largest-span summary is sufficient for reopen. Rebuild the
+            // transient candidate heap only when a mutation needs it.
+            max_heap_ready: Cell::new(false),
         };
         // The by-start index must be internally sound, hold exactly one entry per
         // active span, and agree with the records header and size-class bins.
@@ -307,7 +316,6 @@ impl<M: Memory> FreeSpanStore<M> {
             return Err(InitError::InvalidLayout);
         }
         this.validate().map_err(|_| InitError::InvalidLayout)?;
-        this.rebuild_allocator_stats();
         Ok(this)
     }
 
@@ -1204,6 +1212,9 @@ impl<M: Memory> FreeSpanStore<M> {
     }
 
     fn record_max_candidate(&self, id: SpanId, len: u64) {
+        if !self.max_heap_ready.get() {
+            self.rebuild_max_heap();
+        }
         let should_rebuild = {
             let mut max_spans = self.max_spans.borrow_mut();
             max_spans.push(MaxSpanCandidate { len, id });
@@ -1223,6 +1234,7 @@ impl<M: Memory> FreeSpanStore<M> {
         max_spans.clear();
         let by_start = self.by_start.borrow();
         let Some((mut start, mut id)) = by_start.first() else {
+            self.max_heap_ready.set(true);
             return;
         };
         loop {
@@ -1236,6 +1248,7 @@ impl<M: Memory> FreeSpanStore<M> {
             start = next_start;
             id = next_id;
         }
+        self.max_heap_ready.set(true);
     }
 
     fn adjust_summary_after_remove(&self, len: u64) {
@@ -1270,39 +1283,10 @@ impl<M: Memory> FreeSpanStore<M> {
         }
     }
 
-    fn rebuild_allocator_stats(&self) {
-        let mut free_bytes = 0u64;
-        let mut largest = 0u64;
-        let mut max_spans = self.max_spans.borrow_mut();
-        max_spans.clear();
-        let by_start = self.by_start.borrow();
-        let Some((mut start, mut id)) = by_start.first() else {
-            crate::write_u64(&self.store, Address::from(OFFSET_FREE_BYTES), 0);
-            crate::write_u64(&self.store, Address::from(OFFSET_LARGEST_FREE_SPAN), 0);
-            return;
-        };
-        loop {
-            let rec = self.read_record(id);
-            if rec.flags == FLAG_ACTIVE {
-                free_bytes = free_bytes.saturating_add(rec.len);
-                largest = largest.max(rec.len);
-                max_spans.push(MaxSpanCandidate { len: rec.len, id });
-            }
-            let Some((next_start, next_id)) = by_start.successor(start) else {
-                break;
-            };
-            start = next_start;
-            id = next_id;
-        }
-        crate::write_u64(&self.store, Address::from(OFFSET_FREE_BYTES), free_bytes);
-        crate::write_u64(
-            &self.store,
-            Address::from(OFFSET_LARGEST_FREE_SPAN),
-            largest,
-        );
-    }
-
     fn rebuild_largest_free_span(&self) {
+        if !self.max_heap_ready.get() {
+            self.rebuild_max_heap();
+        }
         let mut max_spans = self.max_spans.borrow_mut();
         while let Some(candidate) = max_spans.peek().copied() {
             let rec = self.read_record(candidate.id);
@@ -1506,6 +1490,9 @@ mod tests {
                 free_span_count: 2,
             }
         );
+        assert_eq!(reopened.take_prefix_at(2000, 32).unwrap().unwrap().len, 32);
+        assert_eq!(reopened.take_prefix_at(1024, 56).unwrap().unwrap().len, 56);
+        assert_eq!(reopened.allocator_stats().largest_free_span, 0);
     }
 
     #[test]
