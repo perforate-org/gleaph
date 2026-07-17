@@ -62,7 +62,7 @@ const RESERVED_SIZE: usize = 16;
 /// Extra physical pages reserved when the edge slab crosses a stable-memory page boundary.
 /// Logical `elem_capacity` remains exact; the reserve only amortizes repeated `Memory::grow`
 /// calls during relocation-heavy workloads.
-const EDGE_SLAB_GROW_RESERVE_PAGES: u64 = 1;
+const EDGE_SLAB_GROW_RESERVE_PAGES: u64 = 4;
 
 /// Persisted V1 edge slab header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

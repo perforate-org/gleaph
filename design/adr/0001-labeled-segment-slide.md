@@ -320,17 +320,17 @@ instructions, and the commit-plan scope from 5.25M to 3.73M, with no memory-grow
 
 ### Stable-memory grow amortization
 
-`EdgeStore` keeps logical `elem_capacity` exact but reserves one additional physical stable-memory
+`EdgeStore` keeps logical `elem_capacity` exact but reserves four additional physical stable-memory
 page whenever the slab crosses a page boundary. This reduces repeated `Memory::grow` calls during
 relocation cascades without reserving edge slots or changing free-span ownership. The reserve is
 physical capacity only and is not visible to graph scans or allocation geometry.
 
-The focused 4-page experiment reduced the 16,384-edge relocation cost further but changed failpoint
-timing assumptions in existing allocation-atomicity tests. A 1-page reserve preserves all 393 unit
-tests and does not increase measured stable pages; 2 pages also passed but showed no additional
-large-fixture benefit and slightly higher transient heap use. The selected policy is therefore
-1 page. Tests must assert logical capacity and failure atomicity rather than assume an exact physical
-page boundary.
+The focused 4-page experiment initially exposed failpoint tests that assumed a fixed physical grow
+timing. Those tests now search for an actual grow boundary, so all 393 unit tests pass with the
+larger reserve. The 16,384-edge fixture moved from 119.41M to 108.59M instructions, and the
+relocation-cascade scope moved from 20.56M to 9.75M, with no measured stable-page increase. The
+selected policy is therefore 4 pages. Tests must assert logical capacity and failure atomicity
+rather than assume an exact physical page boundary.
 
 The `LabelBucket` stable record grows from 25 to 29 bytes to persist the payload slab-slot count independently. Development stable data using the earlier record width must be wiped; backward decoding is not provided.
 

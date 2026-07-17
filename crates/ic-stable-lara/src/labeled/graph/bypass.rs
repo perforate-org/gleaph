@@ -671,8 +671,8 @@ mod tests {
 
             next += 1;
             assert!(
-                next <= 2000,
-                "bucket slab did not reach a grow boundary in reasonable vertex count"
+                next <= 10000,
+                "bucket slab did not reach a grow boundary within the bounded probe"
             );
         }
     }
