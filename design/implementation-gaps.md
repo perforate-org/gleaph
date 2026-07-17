@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-07-14
-Anchor timestamp: 2026-07-14 03:45:21 UTC +0000
+Last updated: 2026-07-17
+Anchor timestamp: 2026-07-17 10:50:05 UTC +0000
 
 ## Status
 
@@ -46,6 +46,52 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-07-17-001 — Dynamic instruction-budget headrooms lack measured acceptance criteria
+
+- **Status:** Open
+- **Severity:** P1 availability and resumability risk
+- **Owner:** Router, Graph, graph-index, and graph-vector-index dynamic batch boundaries
+- **Observed behavior:** Multiple canister paths stop before the 40B update-call limit using
+  independently chosen values, but no repository benchmark or acceptance table establishes that
+  each headroom covers its owning path's final operation, response encoding, post-operation drain,
+  and cross-canister call overhead. Current examples include Router's 5B headroom, Graph's pending
+  5B headroom for `execute_plan_update_batch`, graph-index and graph-vector-index batch ceilings at
+  32B with 100M per-loop reserves, graph-index's 1B update / 0.5B query lookahead, and Graph timer
+  maintenance at 32B with a 100M reserve. These values have different ownership and semantics and
+  must not be treated as interchangeable.
+- **Expected or needed behavior:** Every dynamic batch or bounded maintenance loop must have a
+  measured, path-specific instruction ceiling and headroom acceptance criterion. A boundary must
+  return continuation progress before the platform limit, including the cost of its final operation,
+  response construction, and owned post-processing. A single operation that cannot fit within the
+  safe ceiling must fail with an explicit bounded-work error or be split at an inner owner boundary;
+  it must not trap by crossing the 40B message limit.
+- **Owner:** The canister that owns each loop and continuation contract: Router for Router mutation
+  batching, Graph for Graph-plan batching and Graph-local drain, graph-index for posting batches,
+  and graph-vector-index for vector sync batches. `design/adr/0042-router-dynamic-instruction-budget-batching.md`
+  describes the API contract but is not evidence that its numeric headroom is sufficient.
+- **Evidence:** `crates/router/src/lib.rs` (`MAX_DYNAMIC_INSTRUCTION_BUDGET`),
+  `crates/graph/src/canister/handlers.rs` (`execute_plan_batch`),
+  `crates/graph-index/src/canister.rs` (`posting_batch`),
+  `crates/graph-vector-index/src/canister.rs` (`vector_sync_batch`),
+  `crates/graph/src/facade/ic_budget.rs` (Graph timer budgets), and the local social-demo failure
+  where `execute_plan_update_batch` reached `IC0522` at 40,000,000,000 instructions before a
+  continuation cursor could be returned.
+- **Impact:** An apparently dynamic batch can still trap instead of returning `next_index`, leaving
+  the caller unable to make progress through the normal cursor path. Conversely, excessive
+  unmeasured headroom reduces throughput and increases the number of ingress calls without a
+  defensible safety benefit.
+- **Next decision:** Add focused canbench and, where required, one bounded PocketIC boundary test
+  per owner path. Measure the maximum single-operation cost and tail cost across representative and
+  adversarial fixtures, define an explicit safety percentile or worst-case bound, then set each
+  headroom independently. Record the resulting values and acceptance evidence in the owning ADR or
+  design document; do not justify a numeric value solely by copying another canister's constant or
+  citing an existing ADR statement.
+- **Related contracts:** [ADR 0041](adr/0041-router-graph-batch-mutation-dispatch.md),
+  [ADR 0042](adr/0042-router-dynamic-instruction-budget-batching.md),
+  [ADR 0020](adr/0020-deferred-maintenance-timer-drain.md),
+  [design/index/property-index.md](index/property-index.md),
+  [design/index/vector-index.md](index/vector-index.md)
 
 ### GAP-2026-07-14-001 — Ordered incremental slab compaction repeatedly scans packed prefixes
 

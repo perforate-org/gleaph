@@ -16,6 +16,7 @@ pub use stable::vertex_embeddings::VertexEmbeddingStoreError;
 pub use stable::vertex_labels::VertexLabelStoreError;
 pub use stable::vertex_properties::VertexPropertyStoreError;
 
+pub(crate) use ic_budget::GRAPH_UPDATE_DYNAMIC_INSTRUCTION_BUDGET;
 pub use ic_budget::{bulk_ingest_finalize_maintenance_budget, timer_lara_maintenance_budget};
 pub(crate) use ic_budget::{delete_maintenance_budget, post_edge_insert_maintenance_budget};
 pub use ic_gql_extensions::{ic_extension_type_names, init_ic_gql_extensions};

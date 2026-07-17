@@ -12,6 +12,13 @@ use ic_stable_lara::MaintenanceBudget;
 /// network documentation changes, update this constant to match.
 pub const IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT: u64 = 40_000_000_000;
 
+/// Dynamic Graph update-batch ceiling. Keep this below the platform limit so
+/// the final operation and response bookkeeping cannot run into the message
+/// instruction limit before the batch can return its continuation cursor.
+pub const GRAPH_UPDATE_DYNAMIC_INSTRUCTION_HEADROOM: u64 = 5_000_000_000;
+pub const GRAPH_UPDATE_DYNAMIC_INSTRUCTION_BUDGET: u64 =
+    IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT - GRAPH_UPDATE_DYNAMIC_INSTRUCTION_HEADROOM;
+
 /// Conservative per-tick cap for LARA deferred maintenance under timer/heartbeat.
 ///
 /// Set below [`IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT`] to leave headroom for
@@ -128,6 +135,15 @@ pub const fn post_edge_insert_maintenance_budget() -> MaintenanceBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_update_budget_leaves_platform_headroom() {
+        assert_eq!(GRAPH_UPDATE_DYNAMIC_INSTRUCTION_BUDGET, 35_000_000_000);
+        assert_eq!(
+            GRAPH_UPDATE_DYNAMIC_INSTRUCTION_BUDGET + GRAPH_UPDATE_DYNAMIC_INSTRUCTION_HEADROOM,
+            IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT
+        );
+    }
 
     #[test]
     fn timer_budget_is_positive_and_below_ic_limit() {
