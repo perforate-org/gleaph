@@ -926,7 +926,9 @@ where
             Some(range) => range,
             None => return Ok(()),
         };
-        self.rebalance_labeled_leaf_weighted_slide_in_block(src, leaf_start, leaf_len, false, true)
+        self.rebalance_labeled_leaf_weighted_slide_in_block(
+            src, leaf_start, leaf_len, false, true, None,
+        )
     }
 
     pub(crate) fn relocate_labeled_leaf_physical_block(
@@ -1023,7 +1025,12 @@ where
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_weighted_slide_commit");
             self.rebalance_labeled_leaf_weighted_slide_in_block(
-                src, new_start, new_len, true, true,
+                src,
+                new_start,
+                new_len,
+                true,
+                true,
+                if grew_in_place { None } else { pinned_range },
             )?;
         }
 
@@ -1065,6 +1072,7 @@ where
         leaf_len: u64,
         leaf_relocate_commit: bool,
         suppress_vertex_footprint_release: bool,
+        source_range: Option<(u64, u64)>,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1140,96 +1148,63 @@ where
             Self::calculate_labeled_leaf_vertex_positions(leaf_start, &position_inputs, gaps)?
         };
 
-        let mut plans: Vec<(
-            VertexId,
-            LabeledVertex,
-            Vec<LabelBucket>,
-            u64,
-            u32,
-            Vec<Option<Vec<E>>>,
-            Vec<Option<Vec<u8>>>,
-        )> = Vec::with_capacity(slices.len());
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = bench_scope("labeled_leaf_materialize_plans");
+        let mut positioned: Vec<(VertexId, LabeledVertex, Vec<LabelBucket>, u64, u32)> =
+            Vec::with_capacity(slices.len());
         for (i, (vid, vertex, buckets, _)) in slices.into_iter().enumerate() {
-            let mut per_bucket_edges: Vec<Option<Vec<E>>> = Vec::with_capacity(buckets.len());
-            let mut per_bucket_raw: Vec<Option<Vec<u8>>> = Vec::with_capacity(buckets.len());
-            for bucket in &buckets {
-                let log_len = if bucket.overflow_log_head() >= 0 {
-                    self.edges
-                        .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-                } else {
-                    0
-                };
-                let resident_slots = bucket
-                    .stored_slots
-                    .checked_add(log_len)
-                    .ok_or(LaraOperationError::RowDegreeOverflow)?;
-                if bucket.overflow_log_head() < 0 {
-                    let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
-                    let mut raw = vec![0u8; run];
-                    if run > 0 {
-                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                        let _scope = bench_scope("labeled_leaf_read_stored_edges");
-                        self.edges
-                            .read_slots_contiguous(bucket.edge_start(), &mut raw);
-                    }
-                    per_bucket_edges.push(None);
-                    per_bucket_raw.push(Some(raw));
-                } else {
-                    let mut resident = Vec::with_capacity(resident_slots as usize);
-                    if bucket.stored_slots > 0 {
-                        let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
-                        let mut raw = vec![0u8; run];
-                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                        let _scope = bench_scope("labeled_leaf_read_stored_edges");
-                        self.edges
-                            .read_slots_contiguous(bucket.edge_start(), &mut raw);
-                        for bytes in raw.chunks_exact(E::BYTES) {
-                            resident.push(E::read_from(bytes));
-                        }
-                    }
-                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                    let _scope = bench_scope("labeled_leaf_read_overflow_edges");
-                    for (log_offset, log_index) in self
-                        .edges
-                        .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head())
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let log_offset = u32::try_from(log_offset)
-                            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-                        let slot_index = bucket
-                            .stored_slots
-                            .checked_add(log_offset)
-                            .ok_or(LaraOperationError::RowDegreeOverflow)?;
-                        let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_index);
-                        resident.push(edge.with_slot_index(slot_index));
-                    }
-                    debug_assert_eq!(resident.len(), resident_slots as usize);
-                    per_bucket_edges.push(Some(resident));
-                    per_bucket_raw.push(None);
-                }
-            }
             let v_start = vertex_starts[i];
             let v_end = vertex_starts.get(i + 1).copied().unwrap_or(leaf_end);
             let span_slots = u32::try_from(v_end.saturating_sub(v_start))
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-            plans.push((
-                vid,
-                vertex,
-                buckets,
-                v_start,
-                span_slots,
-                per_bucket_edges,
-                per_bucket_raw,
-            ));
+            positioned.push((vid, vertex, buckets, v_start, span_slots));
         }
 
-        plans.sort_by_key(|(_, _, _, v_start, _, _, _)| std::cmp::Reverse(*v_start));
-        {
+        positioned.sort_by_key(|(_, _, _, v_start, _)| std::cmp::Reverse(*v_start));
+        let disjoint_source = source_range.filter(|(source_start, source_len)| {
+            *source_len > 0
+                && source_start
+                    .checked_add(*source_len)
+                    .zip(leaf_start.checked_add(leaf_len))
+                    .is_some_and(|(source_end, dest_end)| {
+                        source_end <= leaf_start || dest_end <= *source_start
+                    })
+        });
+        if disjoint_source.is_some() {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _scope = bench_scope("labeled_leaf_commit_plans");
+            let _scope = bench_scope("labeled_leaf_stream_disjoint_relocation");
+            let mut edge_buf = Vec::new();
+            for (vid, vertex, buckets, v_start, span_slots) in positioned {
+                let (per_bucket_edges, per_bucket_raw) =
+                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets)?;
+                self.commit_vertex_edge_span_layout(
+                    vid,
+                    &vertex,
+                    &buckets,
+                    &per_bucket_edges,
+                    &per_bucket_raw,
+                    &mut edge_buf,
+                    v_start,
+                    span_slots,
+                    leaf_relocate_commit,
+                    suppress_vertex_footprint_release,
+                )?;
+            }
+        } else {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("labeled_leaf_materialize_plans");
+            let mut plans = Vec::with_capacity(positioned.len());
+            for (vid, vertex, buckets, v_start, span_slots) in positioned {
+                let (per_bucket_edges, per_bucket_raw) =
+                    self.materialize_labeled_vertex_edge_plan(leaf, &buckets)?;
+                plans.push((
+                    vid,
+                    vertex,
+                    buckets,
+                    v_start,
+                    span_slots,
+                    per_bucket_edges,
+                    per_bucket_raw,
+                ));
+            }
             let mut edge_buf = Vec::new();
             for (vid, vertex, buckets, v_start, span_slots, per_bucket_edges, per_bucket_raw) in
                 plans
@@ -1249,6 +1224,70 @@ where
             }
         }
         Ok(())
+    }
+
+    fn materialize_labeled_vertex_edge_plan(
+        &self,
+        leaf: u32,
+        buckets: &[LabelBucket],
+    ) -> Result<(Vec<Option<Vec<E>>>, Vec<Option<Vec<u8>>>), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let mut per_bucket_edges = Vec::with_capacity(buckets.len());
+        let mut per_bucket_raw = Vec::with_capacity(buckets.len());
+        for bucket in buckets {
+            let log_len = if bucket.overflow_log_head() >= 0 {
+                self.edges
+                    .overflow_log_chain_len(leaf, bucket.overflow_log_head())
+            } else {
+                0
+            };
+            let resident_slots = bucket
+                .stored_slots
+                .checked_add(log_len)
+                .ok_or(LaraOperationError::RowDegreeOverflow)?;
+            if bucket.overflow_log_head() < 0 {
+                let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
+                let mut raw = vec![0u8; run];
+                if run > 0 {
+                    self.edges
+                        .read_slots_contiguous(bucket.edge_start(), &mut raw);
+                }
+                per_bucket_edges.push(None);
+                per_bucket_raw.push(Some(raw));
+            } else {
+                let mut resident = Vec::with_capacity(resident_slots as usize);
+                if bucket.stored_slots > 0 {
+                    let run = Self::edge_bytes_for_len(bucket.stored_slots as usize)?;
+                    let mut raw = vec![0u8; run];
+                    self.edges
+                        .read_slots_contiguous(bucket.edge_start(), &mut raw);
+                    for bytes in raw.chunks_exact(E::BYTES) {
+                        resident.push(E::read_from(bytes));
+                    }
+                }
+                for (log_offset, log_index) in self
+                    .edges
+                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head())
+                    .into_iter()
+                    .enumerate()
+                {
+                    let log_offset = u32::try_from(log_offset)
+                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    let slot_index = bucket
+                        .stored_slots
+                        .checked_add(log_offset)
+                        .ok_or(LaraOperationError::RowDegreeOverflow)?;
+                    let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_index);
+                    resident.push(edge.with_slot_index(slot_index));
+                }
+                debug_assert_eq!(resident.len(), resident_slots as usize);
+                per_bucket_edges.push(Some(resident));
+                per_bucket_raw.push(None);
+            }
+        }
+        Ok((per_bucket_edges, per_bucket_raw))
     }
 
     fn commit_vertex_edge_span_layout(
@@ -3703,6 +3742,54 @@ mod tests {
                 .is_some_and(|span| span.len == old_len)
         );
         assert_eq!(materialized_labeled_edges(&graph, vid).len(), 2);
+    }
+
+    #[test]
+    fn labeled_relocation_preserves_all_leaf_vertices() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+
+        let graph = test_graph();
+        let road = BucketLabelKey::from_raw(2);
+        let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        for (vid, offset) in [(VertexId::from(0), 0u32), (VertexId::from(1), 1u32)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    BucketLabelKey::from_raw(99),
+                    TestEdge {
+                        target: 999 + offset,
+                    },
+                )
+                .unwrap();
+            for target in 0..block_len {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        vid,
+                        road,
+                        TestEdge {
+                            target: target as u32 + offset * 1000,
+                        },
+                    )
+                    .unwrap();
+            }
+        }
+        let before = [
+            materialized_labeled_edges(&graph, VertexId::from(0)),
+            materialized_labeled_edges(&graph, VertexId::from(1)),
+        ];
+        graph
+            .relocate_labeled_leaf_physical_block(VertexId::from(0))
+            .unwrap();
+
+        assert_eq!(
+            materialized_labeled_edges(&graph, VertexId::from(0)),
+            before[0]
+        );
+        assert_eq!(
+            materialized_labeled_edges(&graph, VertexId::from(1)),
+            before[1]
+        );
     }
 
     #[test]

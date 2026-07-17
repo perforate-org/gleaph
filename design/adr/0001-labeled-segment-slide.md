@@ -323,6 +323,16 @@ when a later decoded run is wider; slab-only raw runs do not touch it. This remo
 zero-initialization of the same temporary buffer: the preparation scope moved from about 1.33M to
 16K instructions in the 16,384-edge fixture, without changing stable layout or heap-page growth.
 
+When a physical leaf relocation has a separately allocated destination block, the source and
+destination intervals are disjoint while the old block is still retained. That case no longer
+needs to retain every vertex's captured edge payload: vertices are still ordered by descending
+destination position, but each vertex is materialized and committed immediately. Overlapping
+slides and in-place growth continue to materialize the complete leaf plan before the first write.
+The disjointness check is fail-closed when either interval end overflows, so the source-before-
+destination safety contract remains unchanged. This reduces transient heap pressure and avoids
+the full-leaf plan retention on relocation-heavy sparse workloads; it does not change the
+persistent layout, bucket order, or relocation accounting.
+
 ### Deferred maintenance batching
 
 The deferred wrapper now deduplicates dense labeled maintenance by PMA leaf rather than by
