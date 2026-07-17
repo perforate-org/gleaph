@@ -1094,7 +1094,7 @@ where
         let (slices, total_resident) = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_collect_slices");
-            let mut slices: Vec<(VertexId, u32, u32)> = Vec::new();
+            let mut slices: Vec<(VertexId, LabeledVertex, Vec<LabelBucket>, u32)> = Vec::new();
             let mut total_resident = 0u64;
             for vid_u in start_vid..end_vid {
                 let vid = VertexId::from(vid_u);
@@ -1123,7 +1123,7 @@ where
                 // is actually assigned to it; otherwise an oversized leaf mate consumes
                 // the whole new block and the first bucket cannot obtain an anchor.
                 total_resident = total_resident.saturating_add(u64::from(resident));
-                slices.push((vid, resident, vertex.degree()));
+                slices.push((vid, vertex, buckets, resident));
             }
             (slices, total_resident)
         };
@@ -1132,7 +1132,8 @@ where
         }
 
         let gaps = leaf_len.saturating_sub(total_resident);
-        let position_inputs: Vec<u32> = slices.iter().map(|(_, resident, _)| *resident).collect();
+        let position_inputs: Vec<u32> =
+            slices.iter().map(|(_, _, _, resident)| *resident).collect();
         let vertex_starts = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_calculate_positions");
@@ -1150,9 +1151,7 @@ where
         )> = Vec::with_capacity(slices.len());
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("labeled_leaf_materialize_plans");
-        for (i, (vid, _, _)) in slices.iter().enumerate() {
-            let vertex = self.vertices.get(*vid);
-            let buckets = self.read_vertex_label_buckets(&vertex)?;
+        for (i, (vid, vertex, buckets, _)) in slices.into_iter().enumerate() {
             let mut per_bucket_edges: Vec<Option<Vec<E>>> = Vec::with_capacity(buckets.len());
             let mut per_bucket_raw: Vec<Option<Vec<u8>>> = Vec::with_capacity(buckets.len());
             for bucket in &buckets {
@@ -1217,7 +1216,7 @@ where
             let span_slots = u32::try_from(v_end.saturating_sub(v_start))
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
             plans.push((
-                *vid,
+                vid,
                 vertex,
                 buckets,
                 v_start,

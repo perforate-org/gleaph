@@ -305,6 +305,13 @@ sources. In the same 16,384 fixture, this reduced the total from 128.59M to 121.
 the encode scope fell from 3.58M to approximately 1K instructions. The raw plan is transient only;
 it does not alter the stable layout or the persisted bucket contract.
 
+The same relocation scan now carries the `LabeledVertex` row and its `LabelBucket` descriptors into
+plan materialization. The plan builder therefore does not reread vertex and bucket metadata between
+the geometry pass and source-byte capture. This is a small optimization because source-byte capture
+still dominates the materialization phase; on the 16,384 fixture the materialization scope moved
+from about 8.39M to 8.27M instructions, with no stable-memory change. The cached metadata remains
+transient and is owned by the relocation operation, so it does not change the persistent layout.
+
 ### Stable-memory grow amortization
 
 `EdgeStore` keeps logical `elem_capacity` exact but reserves one additional physical stable-memory
