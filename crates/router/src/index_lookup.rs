@@ -437,14 +437,28 @@ impl RouterIndexLookup {
     }
 
     fn retain_live_vertex_hits(&self, hits: Vec<PostingHit>) -> Vec<PostingHit> {
-        hits.into_iter()
-            .filter(|hit| self.shard_index.contains_key(&hit.shard_id))
-            .collect()
+        Self::filter_live_vertex_hits(&self.shard_index, hits)
     }
 
     fn retain_live_edge_hits(&self, hits: Vec<EdgePostingHit>) -> Vec<EdgePostingHit> {
+        Self::filter_live_edge_hits(&self.shard_index, hits)
+    }
+
+    fn filter_live_vertex_hits(
+        shard_index: &BTreeMap<ShardId, Principal>,
+        hits: Vec<PostingHit>,
+    ) -> Vec<PostingHit> {
         hits.into_iter()
-            .filter(|hit| self.shard_index.contains_key(&hit.shard_id))
+            .filter(|hit| shard_index.contains_key(&hit.shard_id))
+            .collect()
+    }
+
+    fn filter_live_edge_hits(
+        shard_index: &BTreeMap<ShardId, Principal>,
+        hits: Vec<EdgePostingHit>,
+    ) -> Vec<EdgePostingHit> {
+        hits.into_iter()
+            .filter(|hit| shard_index.contains_key(&hit.shard_id))
             .collect()
     }
 }
@@ -934,7 +948,14 @@ impl IndexLookup for RouterIndexLookup {
         let targets = self.targets.clone();
         if targets.len() == 1 {
             let client = RouterIndexClient::new(targets[0]);
-            return Box::pin(async move { IndexLookup::lookup_equal_batch(&client, specs).await });
+            let live_shards = self.shard_index.clone();
+            return Box::pin(async move {
+                let results = IndexLookup::lookup_equal_batch(&client, specs).await?;
+                Ok(results
+                    .into_iter()
+                    .map(|hits| RouterIndexLookup::filter_live_vertex_hits(&live_shards, hits))
+                    .collect())
+            });
         }
         // Federated fallback: drain each bucket individually so the caller still gets batched
         // semantics even when the Router must fan out across index canisters.
@@ -969,9 +990,14 @@ impl IndexLookup for RouterIndexLookup {
         let targets = self.targets.clone();
         if targets.len() == 1 {
             let client = RouterIndexClient::new(targets[0]);
-            return Box::pin(
-                async move { IndexLookup::lookup_edge_equal_batch(&client, specs).await },
-            );
+            let live_shards = self.shard_index.clone();
+            return Box::pin(async move {
+                let results = IndexLookup::lookup_edge_equal_batch(&client, specs).await?;
+                Ok(results
+                    .into_iter()
+                    .map(|hits| RouterIndexLookup::filter_live_edge_hits(&live_shards, hits))
+                    .collect())
+            });
         }
         Box::pin(async move {
             let mut results = vec![Vec::new(); specs.len()];
@@ -1026,5 +1052,75 @@ mod tests {
         ]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].count, 5);
+    }
+
+    #[test]
+    fn batched_vertex_lookup_filters_non_live_shards() {
+        let mut shard_index = BTreeMap::new();
+        shard_index.insert(ShardId::new(0), Principal::anonymous());
+        let lookup = RouterIndexLookup {
+            targets: Vec::new(),
+            shard_index,
+        };
+
+        let hits = vec![RouterIndexLookup::filter_live_vertex_hits(
+            &lookup.shard_index,
+            vec![
+                PostingHit {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 7,
+                },
+                PostingHit {
+                    shard_id: ShardId::new(1),
+                    vertex_id: 8,
+                },
+            ],
+        )];
+
+        assert_eq!(
+            hits,
+            vec![vec![PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 7,
+            }]]
+        );
+    }
+
+    #[test]
+    fn batched_edge_lookup_filters_non_live_shards() {
+        let mut shard_index = BTreeMap::new();
+        shard_index.insert(ShardId::new(0), Principal::anonymous());
+        let lookup = RouterIndexLookup {
+            targets: Vec::new(),
+            shard_index,
+        };
+
+        let hits = vec![RouterIndexLookup::filter_live_edge_hits(
+            &lookup.shard_index,
+            vec![
+                EdgePostingHit {
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: 7,
+                    label_id: 1,
+                    slot_index: 2,
+                },
+                EdgePostingHit {
+                    shard_id: ShardId::new(1),
+                    owner_vertex_id: 8,
+                    label_id: 1,
+                    slot_index: 3,
+                },
+            ],
+        )];
+
+        assert_eq!(
+            hits,
+            vec![vec![EdgePostingHit {
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 7,
+                label_id: 1,
+                slot_index: 2,
+            }]]
+        );
     }
 }

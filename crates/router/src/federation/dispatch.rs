@@ -24,6 +24,21 @@ impl SeedHits {
             Self::Edges(hits) => hits.is_empty(),
         }
     }
+
+    fn retain_live_shards(&mut self, live_shards: &[ShardRegistryEntry]) {
+        match self {
+            Self::Vertices(hits) => hits.retain(|hit| {
+                live_shards
+                    .iter()
+                    .any(|shard| shard.shard_id == hit.shard_id)
+            }),
+            Self::Edges(hits) => hits.retain(|hit| {
+                live_shards
+                    .iter()
+                    .any(|shard| shard.shard_id == hit.shard_id)
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -92,7 +107,7 @@ pub fn latest_shard_routing(
 /// Fan out one routing per distinct shard in index hits.
 pub fn resolve_seed_routings_multi(
     store: &RouterStore,
-    hits: SeedHits,
+    mut hits: SeedHits,
     graph_id: GraphId,
     anchor: IndexAnchor,
 ) -> Result<Vec<SeedRouting>, RouterError> {
@@ -100,6 +115,13 @@ pub fn resolve_seed_routings_multi(
         return Ok(Vec::new());
     }
     let shards = store.list_live_shards_for_graph_id(graph_id)?;
+    // Index postings are derived state and can outlive a shard registration after a local
+    // reinstall or a delayed repair. The Router registry is the source of truth for dispatch;
+    // discard such postings at this boundary instead of routing them as unknown shards.
+    hits.retain_live_shards(&shards);
+    if hits.is_empty() {
+        return Ok(Vec::new());
+    }
     let shard_ids = match &hits {
         SeedHits::Vertices(hits) => {
             let mut shard_ids: Vec<ShardId> = hits.iter().map(|h| h.shard_id).collect();

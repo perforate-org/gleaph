@@ -2379,6 +2379,23 @@ fn router_mutation_journal_records_zero_shard_completion() {
         store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         Some(0)
     );
+    store
+        .record_router_mutation_shard_completed(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            ShardId::new(0),
+            0,
+        )
+        .expect("terminal replay completion is idempotent");
+    store
+        .record_router_mutation_shard_projection_advanced(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            ShardId::new(0),
+        )
+        .expect("terminal replay projection is idempotent");
 }
 
 mod graph_type_catalog_vocabulary {

@@ -633,6 +633,12 @@ impl RouterStore {
             let mut record = m
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            if record.shards.is_empty() && record.completed_row_count.is_some() {
+                // A concurrent/replayed path may have compacted this mutation after the caller's
+                // pre-dispatch check. Graph mutation idempotency has already made it terminal;
+                // there is no shard envelope left to update.
+                return Ok(());
+            }
             let shard = record
                 .shards
                 .iter_mut()
@@ -658,6 +664,9 @@ impl RouterStore {
             let mut record = m
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            if record.shards.is_empty() && record.completed_row_count.is_some() {
+                return Ok(());
+            }
             let shard = record
                 .shards
                 .iter_mut()

@@ -2334,6 +2334,25 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
             .map_err(|e| RouterError::InvalidArgument(format!("anchor prefetch: {e}")))?;
     }
 
+    // The batch preflight above awaits other mutations in the same ingress. A retry or a
+    // duplicate in-flight path can complete this client key while this future is suspended, so
+    // repeat the terminal replay check immediately before constructing dispatches. Without this
+    // second check, a stale preflight path can dispatch a shard for a journal already compacted
+    // with `completed_row_count`, and completion then reports a missing shard envelope.
+    if has_dml
+        && let Some(key) = client_mutation_key
+        && let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key)
+    {
+        await_batch_item(&batch).await?;
+        return Ok(attach_mutation_phase(
+            GqlQueryResult::row_count_only(row_count),
+            store,
+            caller,
+            graph_id,
+            client_mutation_key,
+        ));
+    }
+
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
         && !record.shards.is_empty()
     {
@@ -2515,9 +2534,11 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     // placed on one shard; a single-anchor threaded bundle whose anchor fans out to many shards is
     // dispatched per shard below as a roll-forward saga — each shard atomic shard-locally, cross-shard
     // convergence roll-forward (no global rollback), resumed by idempotent retry / the recovery timer.
-    if let (Some(key), Some(_)) = (client_mutation_key, mutation_id)
-        && mutation_reservation.is_some_and(|reservation| reservation.routing_owner)
-    {
+    if let (Some(key), Some(_)) = (client_mutation_key, mutation_id) {
+        // Persist the envelope whenever this path has a mutation record. The store method is
+        // idempotent and only fills an empty, non-terminal record, so this must not be gated on
+        // the current call owning the routing lease: a retry can have a valid dispatch path while
+        // still needing to repair an envelope that a prior attempt failed to persist.
         let envelope_shards = dispatches
             .iter()
             .map(|dispatch| {
@@ -4541,7 +4562,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_seed_routings_multi_rejects_unknown_shard() {
+    fn resolve_seed_routings_multi_discards_unknown_shard() {
         let store = store_with_shards();
         let probe = SeedProbe {
             variable: "u".into(),
@@ -4553,14 +4574,14 @@ mod tests {
             shard_id: ShardId::new(99),
             vertex_id: 1,
         }];
-        let err = resolve_seed_routings_multi(
+        let routings = resolve_seed_routings_multi(
             &store,
             SeedHits::Vertices(hits),
             tenant_main_graph_id(),
             IndexAnchor::Equal(probe),
         )
-        .expect_err("unknown shard");
-        assert!(matches!(err, RouterError::ShardNotRegistered));
+        .expect("stale index posting is discarded");
+        assert!(routings.is_empty());
     }
 
     #[test]
