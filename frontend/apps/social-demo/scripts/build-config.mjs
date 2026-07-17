@@ -3,6 +3,14 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
+import {
+  readRawUsers,
+  readRawPosts,
+  scaleUsers,
+  scalePostsForUsers,
+  scaleUserEmbeddings,
+  readScaleEnv,
+} from "./social-scale.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(SCRIPT_DIR, "..");
@@ -74,76 +82,29 @@ const sortedYamlFiles = (dir) =>
 const fileStem = (filename) => basename(filename, extname(filename));
 
 // ---------------------------------------------------------------------------
-// Load configuration tree
+// Load configuration tree and apply in-memory scaling
 // ---------------------------------------------------------------------------
+// Scale factors are controlled by environment variables so the same authored
+// YAML can produce a small demo or a larger one without editing files.
 
-const users = [];
-const posts = [];
-const userDir = join(CONFIG_DIR, "users");
+const { userScale, postScale } = readScaleEnv();
 
-const userEmbeddingsById = new Map();
+const rawUsersAndEmbeddings = readRawUsers(CONFIG_DIR);
+const rawUserEmbeddingsById = rawUsersAndEmbeddings.userEmbeddingsById;
+const rawPosts = readRawPosts(CONFIG_DIR, rawUserEmbeddingsById);
 
-for (const userName of sortedDirNames(userDir)) {
-  const profilePath = join(userDir, userName, "profile.yaml");
-  const profile = readYaml(profilePath);
-  if (profile.id !== userName) {
-    throw new Error(
-      `User directory ${userName} does not match profile id ${profile.id}`,
-    );
-  }
-  users.push(profile);
+const users = scaleUsers(rawUsersAndEmbeddings.users, userScale);
+const posts = scalePostsForUsers(rawPosts, users, postScale);
+const userEmbeddingsById = scaleUserEmbeddings(
+  rawUserEmbeddingsById,
+  userScale,
+  postScale,
+);
 
-  const userEmbeddingsPath = join(userDir, userName, "embeddings.yaml");
-  if (existsSync(userEmbeddingsPath)) {
-    userEmbeddingsById.set(userName, readYaml(userEmbeddingsPath));
-  }
-
-  const postsDir = join(userDir, userName, "posts");
-  const postFiles = sortedYamlFiles(postsDir);
-  for (const postFile of postFiles) {
-    const stem = fileStem(postFile);
-    const doc = readYaml(join(postsDir, postFile));
-    const relPath = `users/${userName}/posts/${postFile}`;
-    if (doc.id !== undefined) {
-      throw new Error(
-        `Post ${relPath} must not declare id; Post IDs are generated from the file path`,
-      );
-    }
-    const postId = opaquePostId(relPath);
-    const createdAt = doc.created_at ?? fallbackCreatedAt(relPath);
-    const isPublic = doc.is_public ?? true;
-
-    const userEmbeddings = userEmbeddingsById.get(userName);
-    let embedding;
-    if (
-      userEmbeddings &&
-      Object.prototype.hasOwnProperty.call(userEmbeddings, stem)
-    ) {
-      const e = userEmbeddings[stem];
-      embedding = {
-        name: e.name ?? EMBEDDING_NAME,
-        dims: e.dims ?? EMBEDDING_DIMS,
-        metric: e.metric ?? EMBEDDING_METRIC,
-        values: e.values,
-      };
-    } else {
-      embedding = fallbackEmbedding(postId);
-    }
-
-    posts.push({
-      id: postId,
-      userId: userName,
-      fileStem: stem,
-      reference: `${userName}/${stem}`,
-      label: doc.body,
-      body: doc.body,
-      createdAt,
-      isPublic,
-      topics: doc.topics ?? [],
-      replyToReference: doc.reply_to,
-      embedding,
-    });
-  }
+if (userScale > 1 || postScale > 1) {
+  console.log(
+    `Scaled social demo data: userScale=${userScale}, postScale=${postScale} (${users.length} users, ${posts.length} posts)`,
+  );
 }
 
 const postIdByReference = new Map();
