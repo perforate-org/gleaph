@@ -29,6 +29,20 @@ fn router_stable_reopen_round() {
     black_box(memory::init_edge_inline_value_profiles());
     black_box(memory::init_gql_graph_catalog());
     black_box(memory::init_graph_type_name_catalog());
+    black_box(memory::init_constraint_name_catalog());
+    black_box(memory::init_unique_constraints());
+    black_box(memory::init_unique_reservations());
+    black_box(memory::init_mutation_reservation_index());
+    black_box(memory::init_unique_effect_pending());
+    black_box(memory::init_embedding_name_catalog());
+    black_box(memory::init_vector_indexes());
+    black_box(memory::init_vector_dispatch_activation());
+    black_box(memory::init_vector_maintenance_policies());
+    // provisioning
+    black_box(memory::init_provisioning_requests());
+    black_box(memory::init_provisioning_by_graph());
+    black_box(memory::init_provisioning_intent_locks());
+    black_box(memory::init_provision_config());
     // telemetry
     black_box(memory::init_vertex_label_stats());
     black_box(memory::init_edge_label_stats());

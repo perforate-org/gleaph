@@ -282,6 +282,8 @@ reservation, pending-effect, and provisioning request rows use 16 pages. These v
 capacity/slack hypothesis to validate with Router canbench and stable-memory measurements, not a
 claim that every region should retain its current quantum. The development layout is deliberately
 incompatible with the prior upstream `MemoryManager` format; no compatibility reader is provided.
+The Router stable-layout canbench touches all 49 regions; its persisted baseline therefore includes
+the constraint, vector, and provisioning groups rather than only the original registry/catalog set.
 
 ### Router ephemeral
 
