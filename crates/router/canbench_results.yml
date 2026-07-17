@@ -2,145 +2,169 @@ benches:
   bench_inline_edge_scalar_ddl_parse:
     total:
       calls: 1
-      instructions: 8972
+      instructions: 8941
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       inline_scalar_ddl_parse:
         calls: 1
-        instructions: 7928
+        instructions: 7897
         heap_increase: 0
         stable_memory_increase: 0
   bench_inline_edge_scalar_schema_commit:
     total:
       calls: 1
-      instructions: 1086515
+      instructions: 1085467
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       inline_scalar_schema_commit:
         calls: 1
-        instructions: 1085422
+        instructions: 1084374
         heap_increase: 0
         stable_memory_increase: 0
   bench_inline_edge_scalar_schema_lookup:
     total:
       calls: 1
-      instructions: 357612
+      instructions: 357739
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       inline_scalar_schema_lookup:
         calls: 1
-        instructions: 356519
+        instructions: 356646
         heap_increase: 0
         stable_memory_increase: 0
   bench_inline_edge_struct_schema_commit:
     total:
       calls: 1
-      instructions: 1558730
+      instructions: 1555978
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       inline_struct_schema_commit:
         calls: 1
-        instructions: 1556189
+        instructions: 1553437
         heap_increase: 0
         stable_memory_increase: 0
   bench_layout_router_stable_reopen_touch:
     total:
       calls: 1
-      instructions: 281277
+      instructions: 281323
       heap_increase: 0
       stable_memory_increase: 91
     scopes:
       layout_router_reopen:
         calls: 1
-        instructions: 280240
+        instructions: 280314
         heap_increase: 0
         stable_memory_increase: 91
+  bench_router_prepared_plan_growth_32x256k:
+    total:
+      calls: 1
+      instructions: 271369861
+      heap_increase: 65
+      stable_memory_increase: 144
+    scopes:
+      router_prepared_plan_growth_32x256k:
+        calls: 1
+        instructions: 271368862
+        heap_increase: 65
+        stable_memory_increase: 144
+  bench_router_property_catalog_growth_1024:
+    total:
+      calls: 1
+      instructions: 945594939
+      heap_increase: 0
+      stable_memory_increase: 4
+    scopes:
+      router_property_catalog_growth_1024:
+        calls: 1
+        instructions: 945593902
+        heap_increase: 0
+        stable_memory_increase: 4
   bench_unique_cancel_reclaim:
     total:
       calls: 1
-      instructions: 689788
+      instructions: 689342
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       unique_cancel_reclaim:
         calls: 1
-        instructions: 688789
+        instructions: 688211
         heap_increase: 0
         stable_memory_increase: 0
   bench_unique_clear_acquire_ack:
     total:
       calls: 1
-      instructions: 780673
+      instructions: 780389
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       unique_clear_acquire_ack:
         calls: 1
-        instructions: 779664
+        instructions: 779380
         heap_increase: 0
         stable_memory_increase: 0
   bench_unique_confirm_reservation:
     total:
       calls: 1
-      instructions: 1050021
+      instructions: 1051221
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       unique_confirm_reservation:
         calls: 1
-        instructions: 1048827
+        instructions: 1050159
         heap_increase: 0
         stable_memory_increase: 0
   bench_unique_reclaim_scan_256:
     total:
       calls: 1
-      instructions: 66793796
+      instructions: 67030806
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       unique_reclaim_scan_256:
         calls: 1
-        instructions: 66792667
+        instructions: 67029677
         heap_increase: 0
         stable_memory_increase: 0
   bench_unique_try_reserve_1:
     total:
       calls: 1
-      instructions: 309674
+      instructions: 310938
       heap_increase: 0
       stable_memory_increase: 4
     scopes:
       unique_try_reserve_1:
         calls: 1
-        instructions: 308551
+        instructions: 309815
         heap_increase: 0
         stable_memory_increase: 4
   bench_unique_try_reserve_16:
     total:
       calls: 1
-      instructions: 4574802
+      instructions: 4603838
       heap_increase: 0
       stable_memory_increase: 4
     scopes:
       unique_try_reserve_16:
         calls: 1
-        instructions: 4573679
+        instructions: 4602715
         heap_increase: 0
         stable_memory_increase: 4
   bench_unique_try_reserve_256:
     total:
       calls: 1
-      instructions: 83685422
+      instructions: 84074856
       heap_increase: 1
       stable_memory_increase: 4
     scopes:
       unique_try_reserve_256:
         calls: 1
-        instructions: 83684299
+        instructions: 84073733
         heap_increase: 1
         stable_memory_increase: 4
 version: 0.6.0

@@ -284,6 +284,9 @@ claim that every region should retain its current quantum. The development layou
 incompatible with the prior upstream `MemoryManager` format; no compatibility reader is provided.
 The Router stable-layout canbench touches all 49 regions; its persisted baseline therefore includes
 the constraint, vector, and provisioning groups rather than only the original registry/catalog set.
+Capacity probes currently measure a 2-page property catalog at 1,024 rows and a 16-page prepared
+plan catalog at 32 × 256 KiB. They are growth-slope guards; they do not establish the maximum
+cardinality of an unbounded catalog or replace canister-level stable-memory monitoring.
 
 ### Router ephemeral
 

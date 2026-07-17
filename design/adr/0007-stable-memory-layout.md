@@ -3,7 +3,7 @@
 Date: 2026-06-12
 Status: accepted
 Last revised: 2026-07-11
-Anchor timestamp: 2026-07-17 01:34:45 UTC +0000
+Anchor timestamp: 2026-07-17 01:50:09 UTC +0000
 
 ## Revision history
 
@@ -11,6 +11,7 @@ Anchor timestamp: 2026-07-17 01:34:45 UTC +0000
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-07-17 | Router adopts the custom variable memory manager with an explicit per-`MemoryId` initial policy (default 2 pages; 1–16-page overrides). Stable-memory compatibility is intentionally not supported for this development layout. |
 | 2026-07-17 | Router reopen canbench now touches all 49 stable regions; its persisted baseline is refreshed so capacity/slack comparisons include constraint, vector, and provisioning regions. |
+| 2026-07-17 | Router adds production-API capacity probes for a 2-page property catalog (1,024 rows: 4 stable pages) and a 16-page prepared-plan catalog (32 × 256 KiB: 144 stable pages); these are initial slope measurements, not maximum-capacity claims. |
 | 2026-07-16 | ADR 0043 proposed per-`MemoryId` bucket sizing behind the existing region-ownership policy; Graph's custom manager is now validated and Router follows the same ownership-preserving approach. |
 | 2026-07-11 | ADR 0039 defines the planned production stable-layout manifest, bounded migration, upgrade preflight, and N-1 compatibility gate. This ADR continues to govern physical region allocation; its earlier development-only wipe policy does not define production evolution. |
 | 2026-07-07 | ADR 0035 Slice 7: Provision gains `PROVISION_BOOTSTRAP_AUTH` (MemoryId 4) StableCell singleton and `PROVISION_BOOTSTRAP_AUDIT_LOG` (MemoryId 5) StableBTreeMap audit log; Provision **6 regions (0–5)**. |

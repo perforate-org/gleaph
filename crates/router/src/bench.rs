@@ -3,6 +3,9 @@
 //! Run from `crates/router`: `canbench` (see `canbench.yml`).
 
 use crate::facade::stable::memory;
+use crate::facade::stable::prepared_catalog::{
+    PreparedPlanKey, PreparedPlanRecord, PreparedPlanRecordV1, insert_prepared_plan,
+};
 use canbench_rs::bench;
 use std::hint::black_box;
 
@@ -60,6 +63,45 @@ fn bench_layout_router_stable_reopen_touch() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("layout_router_reopen");
         router_stable_reopen_round();
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Initial per-memory bucket policy capacity probes.
+//
+// These are growth probes, not maximum-capacity tests. They intentionally use the production
+// catalog APIs and distinct keyspaces so the stable-memory delta shows how much extent capacity
+// each policy class consumes for representative Router rows.
+// -----------------------------------------------------------------------------
+
+#[bench(raw)]
+fn bench_router_property_catalog_growth_1024() -> canbench_rs::BenchResult {
+    let graph_id = GraphId::from_raw(970_001);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("router_property_catalog_growth_1024");
+        for i in 0..1024u32 {
+            let name = format!("capacity-property-{i:04}");
+            RouterStore::commit_intern_property_name(black_box(graph_id), black_box(name.as_str()))
+                .expect("intern property name");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_router_prepared_plan_growth_32x256k() -> canbench_rs::BenchResult {
+    let graph_id = GraphId::from_raw(970_002);
+    let plan_blob = vec![0x5a; 256 * 1024];
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("router_prepared_plan_growth_32x256k");
+        for i in 0..32u32 {
+            insert_prepared_plan(
+                PreparedPlanKey::new(graph_id, format!("capacity-plan-{i:02}")),
+                PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                    plan_blob: black_box(plan_blob.clone()),
+                    requires_write_path: false,
+                }),
+            );
+        }
     })
 }
 
