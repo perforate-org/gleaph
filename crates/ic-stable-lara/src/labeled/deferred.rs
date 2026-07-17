@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn dense_maintenance_enqueue_deduplicates_per_vertex() {
+    fn dense_maintenance_enqueue_deduplicates_per_leaf() {
         let graph = graph();
         graph
             .inner()
@@ -360,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn segment16_dense_maintenance_enqueue_deduplicates_per_vertex() {
+    fn segment16_dense_maintenance_enqueue_deduplicates_per_leaf() {
         let graph = graph_with_segment_size(16);
         graph
             .inner()
@@ -385,6 +385,45 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(graph.maintenance_queue_len(), before);
+    }
+
+    #[test]
+    fn segment16_dense_maintenance_deduplicates_leaf_mates() {
+        let graph = graph_with_segment_size(16);
+        for _ in 0..2 {
+            graph
+                .inner()
+                .push_vertex(crate::labeled::record::LabeledVertex::default())
+                .unwrap();
+        }
+        let label = BucketLabelKey::from_raw(2);
+        for target in 0..1024u32 {
+            graph
+                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .unwrap();
+        }
+        assert_eq!(graph.maintenance_queue_len(), 1);
+
+        graph
+            .insert_edge(VertexId::from(1), label, TestEdge(10_000))
+            .unwrap();
+        assert_eq!(graph.maintenance_queue_len(), 1);
+
+        let report = graph.maintenance(MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: Some(1),
+            max_segments: None,
+            max_delete_edge_steps: None,
+        });
+        assert_eq!(report.processed_work_items, 1);
+        assert_eq!(graph.maintenance_queue_len(), 0);
+        assert_eq!(
+            graph.inner().out_edges(VertexId::from(0)).unwrap().len(),
+            1024
+        );
+        assert_eq!(graph.inner().out_edges(VertexId::from(1)).unwrap().len(), 1);
     }
 
     #[test]
@@ -1141,6 +1180,17 @@ where
         })
     }
 
+    fn dense_maintenance_pending_in_leaf(&self, vid: VertexId) -> bool {
+        let segment_size = self.inner.edges().header().segment_size.max(1);
+        let leaf = u32::from(vid) / segment_size;
+        self.queue.iter().any(|item| match item {
+            MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { vid: queued } => {
+                u32::from(queued) / segment_size == leaf
+            }
+            _ => false,
+        })
+    }
+
     fn payload_compaction_pending(&self) -> bool {
         self.queue
             .iter()
@@ -1162,7 +1212,7 @@ where
         if !self.inner.labeled_leaf_segment_is_dense(vid) {
             return Ok(());
         }
-        if self.vertex_edge_span_maintenance_pending(vid) {
+        if self.dense_maintenance_pending_in_leaf(vid) {
             return Ok(());
         }
         #[cfg(feature = "canbench")]
@@ -1192,7 +1242,7 @@ where
         &self,
         vid: VertexId,
     ) -> Result<(), DeferredError> {
-        if self.vertex_edge_span_maintenance_pending(vid) {
+        if self.dense_maintenance_pending_in_leaf(vid) {
             return Ok(());
         }
         self.queue
@@ -1321,14 +1371,22 @@ where
                     }
                 }
                 MaintenanceWorkItem::CompactDenseLabeledVertexMaintenance { vid } => {
-                    if self.inner.compact_label_bucket_vertex_segment(vid).is_ok() {
-                        report.rebalanced_segments = report.rebalanced_segments.saturating_add(1);
+                    if self.inner.compact_label_bucket_vertex_segment(vid).is_err() {
+                        stalled = true;
+                        None
+                    } else {
+                        match self.inner.rebalance_cascade_after_labeled_mutation(vid) {
+                            Ok(()) => {
+                                report.rebalanced_segments =
+                                    report.rebalanced_segments.saturating_add(1);
+                                None
+                            }
+                            Err(_) => {
+                                stalled = true;
+                                None
+                            }
+                        }
                     }
-                    Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
-                        vid,
-                        anchor_bucket_index: 0,
-                        resume_bucket_index: 0,
-                    })
                 }
                 MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
                 MaintenanceWorkItem::CompactPayloadSlab => {

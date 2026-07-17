@@ -323,6 +323,21 @@ when a later decoded run is wider; slab-only raw runs do not touch it. This remo
 zero-initialization of the same temporary buffer: the preparation scope moved from about 1.33M to
 16K instructions in the 16,384-edge fixture, without changing stable layout or heap-page growth.
 
+### Deferred maintenance batching
+
+The deferred wrapper now deduplicates dense labeled maintenance by PMA leaf rather than by
+vertex. A queued `CompactDenseLabeledVertexMaintenance` item uses its vertex only as a stable
+representative for the leaf; when processed, it compacts the representative's bucket segment and
+then executes one leaf-wide labeled rebalance cascade. Inserts and deletes through the synchronous
+graph API retain their existing immediate cascade behavior. Vertex-level tombstone/span work and
+payload maintenance remain independently deduplicated, so a dense-leaf item does not suppress
+unrelated per-vertex or payload work.
+
+This removes repeated O(leaf) scans and relocation attempts when several vertices in one leaf are
+mutated before the maintenance queue is drained. The serialized work-item tag and payload remain
+unchanged; the representative vertex is sufficient to recover the leaf from the persisted segment
+size.
+
 ### Stable-memory grow amortization
 
 `EdgeStore` keeps logical `elem_capacity` exact but reserves four additional physical stable-memory

@@ -51,7 +51,7 @@ where
         false
     }
 
-    pub(super) fn rebalance_cascade_after_labeled_mutation(
+    pub(crate) fn rebalance_cascade_after_labeled_mutation(
         &self,
         src: VertexId,
     ) -> Result<(), LabeledOperationError>

@@ -772,7 +772,9 @@ fn bench_compact_edge_decode_scan_128() -> canbench_rs::BenchResult {
     }
     bench_fn(|| {
         let mut count = 0usize;
-        for chunk in bytes.chunks_exact(BenchEdge::BYTES) {
+        let (chunks, remainder) = bytes.as_chunks::<{ BenchEdge::BYTES }>();
+        debug_assert!(remainder.is_empty());
+        for chunk in chunks {
             let edge = BenchEdge::read_from(chunk);
             count += usize::from(edge.neighbor_vid().0 > 0);
         }
