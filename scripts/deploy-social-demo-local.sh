@@ -394,6 +394,20 @@ main() {
     }
   )"
 
+  # Install the graph shard before registering it in the Router. Shard
+  # registration attaches the shard to the index canister, which requires the
+  # graph canister to be running and able to answer inter-canister calls.
+
+  log "Installing gleaph-graph-shard-0"
+  icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-graph-shard-0 --args "(
+    record {
+      logical_graph_name = opt \"$GRAPH_NAME\";
+      router_canister = opt principal \"$router_id\";
+      shard_id = opt ($SHARD_ID : nat32);
+      index_canister = opt principal \"$index_id\";
+    }
+  )"
+
   log "Registering demo graph in Router with Gateway as graph admin"
   icp_call_expect_ok "Registering demo graph in Router" "Conflict = \"$GRAPH_NAME\"" -e local gleaph-router admin_register_graph "(
     record {
@@ -417,16 +431,6 @@ main() {
       graph_canister = principal \"$graph_id\";
       index_canister = principal \"$index_id\";
       logical_graph_name = \"$GRAPH_NAME\";
-    }
-  )"
-
-  log "Installing gleaph-graph-shard-0"
-  icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-graph-shard-0 --args "(
-    record {
-      logical_graph_name = opt \"$GRAPH_NAME\";
-      router_canister = opt principal \"$router_id\";
-      shard_id = opt ($SHARD_ID : nat32);
-      index_canister = opt principal \"$index_id\";
     }
   )"
 
