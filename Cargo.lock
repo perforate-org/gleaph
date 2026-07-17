@@ -1435,6 +1435,7 @@ dependencies = [
  "ic-cdk-management-canister",
  "ic-cdk-timers",
  "ic-stable-structures",
+ "ic-stable-variable-memory-manager",
  "nohash-hasher",
  "pollster",
  "rapidhash",

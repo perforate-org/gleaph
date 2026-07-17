@@ -27,6 +27,7 @@ ic-cdk-management-canister.workspace = true
 ic-cdk-macros.workspace = true
 ic-cdk-timers.workspace = true
 ic-stable-structures.workspace = true
+ic-stable-variable-memory-manager.workspace = true
 nohash-hasher.workspace = true
 rapidhash.workspace = true
 serde.workspace = true

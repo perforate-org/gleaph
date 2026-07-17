@@ -274,6 +274,15 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 
 Router **49 regions** total (0–48).
 
+Router uses `ic-stable-variable-memory-manager` with the same shared-capacity, append-only
+extent model as Graph. The initial policy is intentionally asymmetric: the default is 2 pages;
+single-cell control state uses 1 page; name catalogs and sparse maintenance state use 2 pages;
+ordinary registry/telemetry/catalog rows use 4–8 pages; and bursty mutation, prepared-query,
+reservation, pending-effect, and provisioning request rows use 16 pages. These values are a
+capacity/slack hypothesis to validate with Router canbench and stable-memory measurements, not a
+claim that every region should retain its current quantum. The development layout is deliberately
+incompatible with the prior upstream `MemoryManager` format; no compatibility reader is provided.
+
 ### Router ephemeral
 
 | Symbol | Location | Role | Reopen behavior |

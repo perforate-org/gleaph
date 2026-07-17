@@ -36,8 +36,9 @@ use crate::types::{
     RouterProvisioningRequest,
 };
 use candid::CandidType;
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_structures::memory_manager::MemoryId;
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
+use ic_stable_variable_memory_manager::{MemoryManager, VirtualMemory};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -281,9 +282,69 @@ pub(crate) type StableVertexPropertyBackfillStateMap =
 pub(crate) type StableEdgeBackfillStateMap =
     BTreeMap<GraphShardKey, EdgeBackfillShardState, Memory>;
 
+/// Initial Router policy: small catalogs/cells use little slack, while variable-sized and bursty
+/// mutation domains receive larger extents. These values are persisted by the custom manager.
+/// Stable-memory compatibility with the former upstream manager is intentionally not supported.
+const ROUTER_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 2;
+const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
+    (ROUTER_AUTH_PRINCIPAL_RECORDS, 2),
+    (ROUTER_GRAPHS, 4),
+    (ROUTER_SHARDS, 4),
+    (ROUTER_SHARD_BY_GRAPH, 2),
+    (ROUTER_SHARDS_BY_GRAPH_ID, 2),
+    (ROUTER_GRAPH_RUNTIME_CONFIG, 2),
+    (ROUTER_MUTATION_COUNTER, 1),
+    (ROUTER_MUTATION_BY_CLIENT_KEY, 16),
+    (ROUTER_PREPARED_PLANS, 16),
+    (ROUTER_VERTEX_LABEL_BY_NAME, 2),
+    (ROUTER_VERTEX_LABEL_BY_ID, 2),
+    (ROUTER_EDGE_LABEL_BY_NAME, 2),
+    (ROUTER_EDGE_LABEL_BY_ID, 2),
+    (ROUTER_PROPERTY_BY_NAME, 2),
+    (ROUTER_PROPERTY_BY_ID, 2),
+    (ROUTER_GRAPH_BY_NAME, 2),
+    (ROUTER_GRAPH_BY_ID, 2),
+    (ROUTER_INDEX_NAME_BY_NAME, 2),
+    (ROUTER_INDEX_NAME_BY_ID, 2),
+    (ROUTER_NAMED_INDEXES, 8),
+    (ROUTER_INDEXED_PROPERTY_SET, 4),
+    (ROUTER_EDGE_PAYLOAD_PROFILES, 8),
+    (ROUTER_GRAPH_TYPE_DEFINITIONS, 8),
+    (ROUTER_GRAPH_SCHEMA_BINDINGS, 8),
+    (ROUTER_GRAPH_TYPE_BY_NAME, 2),
+    (ROUTER_GRAPH_TYPE_BY_ID, 2),
+    (ROUTER_VERTEX_LABEL_STATS, 8),
+    (ROUTER_EDGE_LABEL_STATS, 8),
+    (ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, 4),
+    (ROUTER_EDGE_LABEL_LIVE_BY_SHARD, 4),
+    (ROUTER_LABEL_STATS_PROJECTION, 2),
+    (ROUTER_LABEL_BACKFILL_STATE, 2),
+    (ROUTER_VERTEX_PROPERTY_BACKFILL_STATE, 2),
+    (ROUTER_EDGE_BACKFILL_STATE, 2),
+    (ROUTER_CONSTRAINT_NAME_BY_NAME, 2),
+    (ROUTER_CONSTRAINT_NAME_BY_ID, 2),
+    (ROUTER_UNIQUE_CONSTRAINTS, 8),
+    (ROUTER_UNIQUE_RESERVATIONS, 16),
+    (ROUTER_MUTATION_RESERVATION_INDEX, 4),
+    (ROUTER_UNIQUE_EFFECT_PENDING, 8),
+    (ROUTER_EMBEDDING_NAME_BY_NAME, 2),
+    (ROUTER_EMBEDDING_NAME_BY_ID, 2),
+    (ROUTER_VECTOR_INDEXES, 8),
+    (ROUTER_VECTOR_DISPATCH_ACTIVATION, 1),
+    (ROUTER_VECTOR_MAINTENANCE_POLICIES, 8),
+    (ROUTER_PROVISIONING_REQUESTS, 16),
+    (ROUTER_PROVISIONING_BY_GRAPH, 4),
+    (ROUTER_PROVISIONING_INTENT_LOCK, 4),
+    (ROUTER_PROVISION_CONFIG, 1),
+];
+
 thread_local! {
     pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
-        RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
+        RefCell::new(MemoryManager::init_with_policies(
+            DefaultMemoryImpl::default(),
+            ROUTER_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES,
+            ROUTER_MEMORY_MANAGER_POLICIES,
+        ));
 }
 
 // --- auth ---
@@ -494,4 +555,27 @@ pub(crate) fn init_vertex_property_backfill_state() -> StableVertexPropertyBackf
 
 pub(crate) fn init_edge_backfill_state() -> StableEdgeBackfillStateMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_BACKFILL_STATE)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn initial_memory_policy_covers_each_router_region_once() {
+        assert_eq!(ROUTER_MEMORY_MANAGER_POLICIES.len(), 49);
+        let ids: HashSet<u8> = ROUTER_MEMORY_MANAGER_POLICIES
+            .iter()
+            .map(|(id, _)| {
+                (0..49)
+                    .find(|candidate| *id == MemoryId::new(*candidate))
+                    .expect("policy id is in the Router layout")
+            })
+            .collect();
+        assert_eq!(ids.len(), 49);
+        for id in 0..49 {
+            assert!(ids.contains(&id));
+        }
+    }
 }
