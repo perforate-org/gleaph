@@ -391,6 +391,16 @@ impl<M: Memory> LabelBucketStore<M> {
         start_slot: u64,
         buckets: &[LabelBucket],
     ) -> Result<(), LaraOperationError> {
+        let mut scratch = Vec::new();
+        self.write_label_bucket_slots_contiguous_with_scratch(start_slot, buckets, &mut scratch)
+    }
+
+    fn write_label_bucket_slots_contiguous_with_scratch(
+        &self,
+        start_slot: u64,
+        buckets: &[LabelBucket],
+        scratch: &mut Vec<u8>,
+    ) -> Result<(), LaraOperationError> {
         if buckets.is_empty() {
             return Ok(());
         }
@@ -398,7 +408,7 @@ impl<M: Memory> LabelBucketStore<M> {
             .len()
             .checked_mul(LabelBucket::BYTES)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let mut raw = vec![0u8; nbytes];
+        scratch.resize(nbytes, 0);
         for (i, bucket) in buckets.iter().enumerate() {
             let lo = i
                 .checked_mul(LabelBucket::BYTES)
@@ -406,10 +416,10 @@ impl<M: Memory> LabelBucketStore<M> {
             let hi = lo
                 .checked_add(LabelBucket::BYTES)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            bucket.write_to(&mut raw[lo..hi]);
+            bucket.write_to(&mut scratch[lo..hi]);
         }
         self.slab
-            .write_slots_contiguous(start_slot, &raw)
+            .write_slots_contiguous(start_slot, scratch)
             .map_err(LaraOperationError::WriteEdgeSlotFailed)
     }
 
@@ -419,6 +429,16 @@ impl<M: Memory> LabelBucketStore<M> {
         &self,
         start_slot: u64,
         row: &[LabelBucket],
+    ) -> Result<(), LaraOperationError> {
+        let mut scratch = Vec::new();
+        self.write_label_bucket_row_adaptive_with_scratch(start_slot, row, &mut scratch)
+    }
+
+    pub(crate) fn write_label_bucket_row_adaptive_with_scratch(
+        &self,
+        start_slot: u64,
+        row: &[LabelBucket],
+        scratch: &mut Vec<u8>,
     ) -> Result<(), LaraOperationError> {
         const CONTIGUOUS_WRITE_AT: usize = 8;
         if row.len() < CONTIGUOUS_WRITE_AT {
@@ -430,7 +450,7 @@ impl<M: Memory> LabelBucketStore<M> {
             }
             Ok(())
         } else {
-            self.write_label_bucket_slots_contiguous(start_slot, row)
+            self.write_label_bucket_slots_contiguous_with_scratch(start_slot, row, scratch)
         }
     }
 

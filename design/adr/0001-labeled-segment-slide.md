@@ -323,6 +323,13 @@ when a later decoded run is wider; slab-only raw runs do not touch it. This remo
 zero-initialization of the same temporary buffer: the preparation scope moved from about 1.33M to
 16K instructions in the 16,384-edge fixture, without changing stable layout or heap-page growth.
 
+Large label-bucket descriptor rows use the same bounded relocation lifetime to reuse their
+serialized byte buffer. The optimization is restricted to rows of at least 256 descriptors;
+smaller rows retain the existing adaptive per-slot or short-lived contiguous path so sparse
+round-robin workloads do not retain an unnecessarily large heap buffer. This changes only
+transient allocation behavior and leaves the descriptor wire format and stable-memory write
+ordering unchanged.
+
 When a physical leaf relocation has a separately allocated destination block, the source and
 destination intervals are disjoint while the old block is still retained. That case no longer
 needs to retain every vertex's captured edge payload: vertices are still ordered by descending

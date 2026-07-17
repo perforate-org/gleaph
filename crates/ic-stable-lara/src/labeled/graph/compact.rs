@@ -1172,6 +1172,7 @@ where
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_leaf_stream_disjoint_relocation");
             let mut edge_buf = Vec::new();
+            let mut bucket_row_bytes_buf = Vec::new();
             for (vid, vertex, buckets, v_start, span_slots) in positioned {
                 let (per_bucket_edges, per_bucket_raw) =
                     self.materialize_labeled_vertex_edge_plan(leaf, &buckets)?;
@@ -1182,6 +1183,7 @@ where
                     &per_bucket_edges,
                     &per_bucket_raw,
                     &mut edge_buf,
+                    &mut bucket_row_bytes_buf,
                     v_start,
                     span_slots,
                     leaf_relocate_commit,
@@ -1206,6 +1208,7 @@ where
                 ));
             }
             let mut edge_buf = Vec::new();
+            let mut bucket_row_bytes_buf = Vec::new();
             for (vid, vertex, buckets, v_start, span_slots, per_bucket_edges, per_bucket_raw) in
                 plans
             {
@@ -1216,6 +1219,7 @@ where
                     &per_bucket_edges,
                     &per_bucket_raw,
                     &mut edge_buf,
+                    &mut bucket_row_bytes_buf,
                     v_start,
                     span_slots,
                     leaf_relocate_commit,
@@ -1298,6 +1302,7 @@ where
         per_bucket_edges: &[Option<Vec<E>>],
         per_bucket_raw: &[Option<Vec<u8>>],
         edge_buf: &mut Vec<u8>,
+        bucket_row_bytes_buf: &mut Vec<u8>,
         new_base: u64,
         new_alloc: u32,
         leaf_relocate_commit: bool,
@@ -1411,8 +1416,16 @@ where
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_vertex_write_bucket_row");
-            self.buckets
-                .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
+            if row_buckets.len() >= 256 {
+                self.buckets.write_label_bucket_row_adaptive_with_scratch(
+                    vertex.base_slot_start(),
+                    &row_buckets,
+                    bucket_row_bytes_buf,
+                )?;
+            } else {
+                self.buckets
+                    .write_label_bucket_row_adaptive(vertex.base_slot_start(), &row_buckets)?;
+            }
         }
         if !leaf_relocate_commit
             && !suppress_vertex_footprint_release
