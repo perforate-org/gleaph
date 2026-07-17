@@ -6,8 +6,11 @@
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_structures::memory_manager::MemoryId;
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
+use ic_stable_variable_memory_manager::{
+    MemoryManager as VariableMemoryManager, VirtualMemory as VariableVirtualMemory,
+};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -16,7 +19,7 @@ use crate::edge_key::EdgePostingKey;
 use crate::key::PostingKey;
 use crate::label_key::LabelPostingKey;
 
-pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
+pub(crate) type Memory = VariableVirtualMemory<DefaultMemoryImpl>;
 
 const INDEX_ROUTER: MemoryId = MemoryId::new(0);
 const INDEX_SHARD_CANISTER_BY_SHARD: MemoryId = MemoryId::new(1);
@@ -25,6 +28,10 @@ const INDEX_OWNERSHIP_CONFIG: MemoryId = MemoryId::new(3);
 const INDEX_VERTEX_POSTINGS: MemoryId = MemoryId::new(4);
 const INDEX_VERTEX_LABEL_POSTINGS: MemoryId = MemoryId::new(5);
 const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(6);
+
+const INDEX_METADATA_BUCKET_PAGES: u16 = 4;
+const INDEX_LABEL_POSTINGS_BUCKET_PAGES: u16 = 32;
+const INDEX_PROPERTY_POSTINGS_BUCKET_PAGES: u16 = 128;
 
 pub(crate) type StableIndexRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableIndexOwnershipConfigCell = Cell<IndexOwnershipConfig, Memory>;
@@ -144,8 +151,26 @@ pub(crate) enum ShardCanisterCatalogInsertError {
 }
 
 thread_local! {
-    pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
-        RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
+    pub(crate) static MEMORY_MANAGER: RefCell<VariableMemoryManager<DefaultMemoryImpl>> =
+        RefCell::new(VariableMemoryManager::init_with_policies(
+            DefaultMemoryImpl::default(),
+            INDEX_METADATA_BUCKET_PAGES,
+            &[
+                (INDEX_ROUTER, INDEX_METADATA_BUCKET_PAGES),
+                (
+                    INDEX_SHARD_CANISTER_BY_SHARD,
+                    INDEX_METADATA_BUCKET_PAGES,
+                ),
+                (INDEX_SHARD_BY_CANISTER, INDEX_METADATA_BUCKET_PAGES),
+                (INDEX_OWNERSHIP_CONFIG, INDEX_METADATA_BUCKET_PAGES),
+                (INDEX_VERTEX_POSTINGS, INDEX_PROPERTY_POSTINGS_BUCKET_PAGES),
+                (
+                    INDEX_VERTEX_LABEL_POSTINGS,
+                    INDEX_LABEL_POSTINGS_BUCKET_PAGES,
+                ),
+                (INDEX_EDGE_POSTINGS, INDEX_PROPERTY_POSTINGS_BUCKET_PAGES),
+            ],
+        ));
 }
 
 pub(crate) fn init_index_router() -> StableIndexRouterCell {

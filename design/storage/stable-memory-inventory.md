@@ -304,9 +304,9 @@ cardinality of an unbounded catalog or replace canister-level stable-memory moni
 | 1 | `INDEX_SHARD_CANISTER_BY_SHARD` | `INDEX_SHARD_CANISTER_CATALOG` | `init_index_shard_canister_catalog` | canonical | shard canister catalog | — |
 | 2 | `INDEX_SHARD_BY_CANISTER` | `INDEX_SHARD_CANISTER_CATALOG` | `init_index_shard_canister_catalog` | canonical | shard canister catalog | — |
 | 3 | `INDEX_OWNERSHIP_CONFIG` | `INDEX_OWNERSHIP_CONFIG` | `init_index_ownership_config` | canonical | graph ownership | Graph owner config (`graph_id`, `index_group_size`, `group_index`) for attach range checks (ADR 0019 S4) |
-| 4 | `INDEX_VERTEX_POSTINGS` | `INDEX_VERTEX_POSTINGS` | `init_index_vertex_postings` | derived | vertex property postings | **Implemented:** `backfill_vertex_property_postings` + router `admin_vertex_property_backfill_step` |
-| 5 | `INDEX_VERTEX_LABEL_POSTINGS` | `INDEX_VERTEX_LABEL_POSTINGS` | `init_index_vertex_label_postings` | derived | vertex label postings | `backfill_label_postings` |
-| 6 | `INDEX_EDGE_POSTINGS` | `INDEX_EDGE_POSTINGS` | `init_index_edge_postings` | derived | edge property postings | **Implemented:** `backfill_edge_property_postings` (ADR 0009) |
+| 4 | `INDEX_VERTEX_POSTINGS` | `INDEX_VERTEX_POSTINGS` | `init_index_vertex_postings` | derived | vertex property postings; variable-manager bucket 128 pages | **Implemented:** `backfill_vertex_property_postings` + router `admin_vertex_property_backfill_step` |
+| 5 | `INDEX_VERTEX_LABEL_POSTINGS` | `INDEX_VERTEX_LABEL_POSTINGS` | `init_index_vertex_label_postings` | derived | vertex label postings; variable-manager bucket 32 pages | `backfill_label_postings` |
+| 6 | `INDEX_EDGE_POSTINGS` | `INDEX_EDGE_POSTINGS` | `init_index_edge_postings` | derived | edge property postings; variable-manager bucket 128 pages | **Implemented:** `backfill_edge_property_postings` (ADR 0009) |
 
 ---
 

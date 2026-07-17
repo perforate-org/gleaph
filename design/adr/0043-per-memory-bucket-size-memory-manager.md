@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 Status: Partially Implemented
-Last revised: 2026-07-16
+Last revised: 2026-07-17
 Anchor timestamp: 2026-07-16 21:21:47 UTC +0000
 
 ## Context
@@ -91,6 +91,14 @@ this ADR. The implementation must benchmark property, adjacency, LARA maintenanc
 payload, embedding, and log workloads before selecting production defaults. As a
 starting hypothesis, tiny metadata regions should use smaller buckets, while
 properties, payloads, and embeddings should use larger buckets.
+
+Graph-index now adopts the variable manager with a separate policy from Graph:
+catalog/config regions use 4 pages, vertex-label postings use 32 pages, and both
+vertex-property and edge-property postings use 128 pages. The larger property
+postings quantum preserves the per-region capacity slope for the derived index;
+edge postings retain 128 pages because their keys include an unbounded encoded
+value plus label, shard, owner-vertex, and slot fields. This is a fresh-layout
+development choice; existing graph-index stable data must be recreated.
 
 ## Capacity and shard-size decision (2026-07-16)
 

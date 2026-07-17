@@ -1333,6 +1333,7 @@ dependencies = [
  "ic-cdk",
  "ic-cdk-macros",
  "ic-stable-structures",
+ "ic-stable-variable-memory-manager",
  "nohash-hasher",
  "rapidhash",
  "serde",
