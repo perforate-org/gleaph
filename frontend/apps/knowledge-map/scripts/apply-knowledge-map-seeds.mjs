@@ -91,6 +91,20 @@ const nextIndexFrom = (output) => {
   return match ? Number(match[1]) : undefined;
 };
 
+const PROGRESS_BAR_WIDTH = 28;
+
+const renderProgress = (wave, completed, total) => {
+  const ratio = total === 0 ? 1 : completed / total;
+  const percentage = Math.min(100, Math.floor(ratio * 100));
+  const filled = Math.round(ratio * PROGRESS_BAR_WIDTH);
+  const bar = `${"#".repeat(filled)}${"-".repeat(PROGRESS_BAR_WIDTH - filled)}`;
+  process.stderr.write(
+    `\r[seeds] wave ${wave} [${bar}] ${completed}/${total} (${percentage}%)`,
+  );
+};
+
+const finishProgress = () => process.stderr.write("\n");
+
 const runBatchPage = (page) => {
   const items = page
     .map(
@@ -134,12 +148,20 @@ if (methodName !== "gql_execute_idempotent_batch") {
   const sortedWaves = Array.from(waves.entries()).sort((a, b) => a[0] - b[0]);
   for (const [wave, waveSeeds] of sortedWaves) {
     if (waveSeeds.length === 0) continue;
+    renderProgress(wave, 0, waveSeeds.length);
     let seededCount = 0;
     for (let offset = 0; offset < waveSeeds.length; offset += effectivePageSize) {
       const page = waveSeeds.slice(offset, offset + effectivePageSize);
-      runBatchPage(page);
+      try {
+        runBatchPage(page);
+      } catch (error) {
+        finishProgress();
+        throw error;
+      }
       seededCount += page.length;
+      renderProgress(wave, seededCount, waveSeeds.length);
     }
+    finishProgress();
     process.stderr.write(
       `[seeds] Seeded wave ${wave} (${seededCount} seeds): ${waveSeeds[0].key} .. ${waveSeeds.at(-1).key}\n`,
     );
