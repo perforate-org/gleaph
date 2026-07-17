@@ -312,6 +312,12 @@ still dominates the materialization phase; on the 16,384 fixture the materializa
 from about 8.39M to 8.27M instructions, with no stable-memory change. The cached metadata remains
 transient and is owned by the relocation operation, so it does not change the persistent layout.
 
+Slab-only raw runs are also written directly from that captured plan instead of being copied into
+the reusable encode buffer first. Only overflow-log buckets, whose edges were decoded into the
+plan, use the encode buffer. This preserves the source-before-destination safety boundary while
+removing one byte copy per slab run; in the same fixture the total moved from 120.92M to 119.41M
+instructions, and the commit-plan scope from 5.25M to 3.73M, with no memory-growth change.
+
 ### Stable-memory grow amortization
 
 `EdgeStore` keeps logical `elem_capacity` exact but reserves one additional physical stable-memory

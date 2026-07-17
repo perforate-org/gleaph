@@ -1329,9 +1329,12 @@ where
                 };
                 if run > 0 {
                     if let Some(raw) = raw {
+                        // Slab-only bytes were captured for every plan before any
+                        // destination writes, so they can be written directly without
+                        // copying through the reusable encode buffer.
                         #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                        let _scope = bench_scope("labeled_vertex_copy_edge_run");
-                        buf[..run].copy_from_slice(raw);
+                        let _scope = bench_scope("labeled_vertex_write_edge_run");
+                        self.edges.write_slots_contiguous(row_start, raw)?;
                     } else if let Some(edges) = edges {
                         #[cfg(all(feature = "canbench", target_family = "wasm"))]
                         let _scope = bench_scope("labeled_vertex_encode_edge_run");
@@ -1340,8 +1343,6 @@ where
                             edge.write_to(&mut buf[offset..offset + E::BYTES]);
                             offset += E::BYTES;
                         }
-                    }
-                    {
                         #[cfg(all(feature = "canbench", target_family = "wasm"))]
                         let _scope = bench_scope("labeled_vertex_write_edge_run");
                         self.edges.write_slots_contiguous(row_start, &buf[..run])?;
