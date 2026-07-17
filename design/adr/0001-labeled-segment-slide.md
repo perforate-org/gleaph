@@ -318,6 +318,11 @@ plan, use the encode buffer. This preserves the source-before-destination safety
 removing one byte copy per slab run; in the same fixture the total moved from 120.92M to 119.41M
 instructions, and the commit-plan scope from 5.25M to 3.73M, with no memory-growth change.
 
+The commit loop now reuses one encode scratch buffer across vertex plans. The buffer grows only
+when a later decoded run is wider; slab-only raw runs do not touch it. This removes repeated
+zero-initialization of the same temporary buffer: the preparation scope moved from about 1.33M to
+16K instructions in the 16,384-edge fixture, without changing stable layout or heap-page growth.
+
 ### Stable-memory grow amortization
 
 `EdgeStore` keeps logical `elem_capacity` exact but reserves four additional physical stable-memory
