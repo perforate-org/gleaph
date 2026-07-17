@@ -12,6 +12,7 @@ use gleaph_graph_kernel::entry::{
 use gleaph_graph_kernel::plan_exec::{ResolvedInlineSchema, ResolvedInlineStructField};
 use gleaph_graph_kernel::scoped_name_catalog::GraphScopedIdKey;
 use ic_stable_structures::{Memory, StableBTreeMap};
+use std::cell::RefCell;
 
 /// Fixed-width scalar types accepted in a standalone `CREATE EDGE LABEL ... INLINE` declaration.
 #[derive(
@@ -442,12 +443,21 @@ impl std::error::Error for EdgeInlineValueProfileStoreError {}
 
 pub struct EdgeInlineValueProfileStore<M: Memory> {
     inner: StableBTreeMap<GraphScopedIdKey<EdgeLabelId>, EdgeInlineValueSchemaRecord, M>,
+    /// Heap-only last-value cache. Stable memory remains the SSOT; this is rebuilt empty after
+    /// upgrade and is invalidated or replaced by every store-owned write.
+    last_record: RefCell<Option<CachedSchemaRecord>>,
+}
+
+struct CachedSchemaRecord {
+    key: GraphScopedIdKey<EdgeLabelId>,
+    record: Option<EdgeInlineValueSchemaRecord>,
 }
 
 impl<M: Memory> EdgeInlineValueProfileStore<M> {
     pub fn init(memory: M) -> Self {
         Self {
             inner: StableBTreeMap::init(memory),
+            last_record: RefCell::new(None),
         }
     }
 
@@ -456,10 +466,21 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         graph_id: GraphId,
         label: EdgeLabelId,
     ) -> Option<EdgeInlineValueSchemaRecord> {
-        self.inner.get(&GraphScopedIdKey {
+        let key = GraphScopedIdKey {
             graph_id,
             id: label,
-        })
+        };
+        if let Some(cached) = self.last_record.borrow().as_ref()
+            && cached.key == key
+        {
+            return cached.record.clone();
+        }
+        let record = self.inner.get(&key);
+        *self.last_record.borrow_mut() = Some(CachedSchemaRecord {
+            key,
+            record: record.clone(),
+        });
+        record
     }
 
     /// Physical profile accessor used by tests and by callers that only need the byte width/encoding.
@@ -525,13 +546,15 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         label: EdgeLabelId,
         record: EdgeInlineValueSchemaRecord,
     ) {
-        self.inner.insert(
-            GraphScopedIdKey {
-                graph_id,
-                id: label,
-            },
-            record,
-        );
+        let key = GraphScopedIdKey {
+            graph_id,
+            id: label,
+        };
+        self.inner.insert(key, record.clone());
+        *self.last_record.borrow_mut() = Some(CachedSchemaRecord {
+            key,
+            record: Some(record),
+        });
     }
 
     pub fn insert_unnamed_profile_profile(
@@ -742,6 +765,14 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
     }
 
     pub fn remove_graph(&mut self, graph_id: GraphId) {
+        if self
+            .last_record
+            .borrow()
+            .as_ref()
+            .is_some_and(|cached| cached.key.graph_id == graph_id)
+        {
+            self.last_record.borrow_mut().take();
+        }
         let mut keys = Vec::new();
         for entry in self.inner.iter() {
             if entry.key().graph_id == graph_id {
@@ -821,6 +852,26 @@ mod tests {
                 encoding: EdgeInlineValueEncoding::F32,
             }
         );
+    }
+
+    #[test]
+    fn last_record_cache_is_cleared_when_graph_is_removed() {
+        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let graph = GraphId::from_raw(11);
+        let label = EdgeLabelId::from_raw(12);
+        store
+            .set_inline_scalar_schema(
+                graph,
+                label,
+                PropertyId::from_raw(13),
+                InlineScalarType::F32,
+            )
+            .expect("set inline");
+        assert!(store.get_record(graph, label).is_some());
+
+        store.remove_graph(graph);
+
+        assert!(store.get_record(graph, label).is_none());
     }
 
     #[test]

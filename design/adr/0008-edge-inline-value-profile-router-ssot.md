@@ -2,8 +2,8 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-07-03
-Anchor timestamp: 2026-07-03 09:35:13 UTC +0000
+Last revised: 2026-07-17
+Anchor timestamp: 2026-07-17 01:55:00 UTC +0000
 
 ## Revision history
 
@@ -15,6 +15,7 @@ Anchor timestamp: 2026-07-03 09:35:13 UTC +0000
 | 2026-07-01 | ADR 0034 Slice 20 + Slice 21 + Slice 22: store value is a versioned `EdgeInlineValueSchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; `ResolvedEdgeLabel` carries `inline_property_id` as a router-derived projection consumed by both reads and mutations. Graph encodes mutation values into the payload using the same shared scalar codec and never writes the inline property to sidecar state. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
 | 2026-07-03 | ADR 0034 Slice 24: `EdgeInlineValueSchemaRecord` adds a named fixed-size inline STRUCT variant (`property_id`, declaration-ordered logical field specs `[name, scalar_type]`). Byte offsets, widths, and total width are deterministically derived; the physical profile is `EdgeInlineValueProfile::opaque_bytes(total_byte_width)`. Graph receives only the top-level inline property identity and the opaque physical profile in this slice; struct reads, mutation packing, and `COST BY` over struct fields remain planned. Development stable data must be wiped because the record format version is bumped and no legacy decode fallback is provided. |
 | 2026-07-03 | ADR 0034 Slice 25: `ResolvedEdgeLabel` replaces `inline_property_id` with `inline_schema: Option<ResolvedInlineSchema>` (`None`, `Scalar { property_id }`, or `Struct { property_id, fields }`). Router derives per-field byte offsets and scalar profiles from the canonical `InlineStructLayout` and projects them as a read-only wire shape. Graph consumes this single Router-resolved projection in separate read and mutation paths: the query executor validates and decodes struct payloads into a declaration-ordered `Value::Record`, while the mutation executor rejects any write or removal on a Struct-labeled edge until Slice 26. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
+| 2026-07-17 | Router adds a one-entry heap-only last-schema cache inside `EdgeInlineValueProfileStore`; stable memory remains the SSOT, and the cache is replaced on writes, cleared on graph removal, and empty after upgrade. |
 
 ## Context
 
