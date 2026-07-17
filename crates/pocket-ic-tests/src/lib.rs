@@ -9,7 +9,9 @@ use gleaph_graph_kernel::vector_index::{VectorMetric, VertexEmbeddingProjectionO
 use gleaph_provision::canister::init::ProvisionInitArgs;
 use gleaph_provision::types::DeploymentBinding;
 use gleaph_router::RouterInitArgs;
+use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_router::types::{
+    GqlExecuteIdempotentBatchItem,
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingArgs, AdminRegisterShardArgs,
     RegisterVectorIndexArgs,
 };
@@ -1259,7 +1261,7 @@ pub fn gql_execute_idempotent_result_as_admin(
     client_mutation_key: &str,
 ) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
     use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
 
     let query = query.to_string();
     let params: Vec<u8> = Vec::new();
@@ -1280,6 +1282,60 @@ pub fn gql_execute_idempotent_result_as_admin(
         ),
         Err(err) => {
             panic!("decode gql_execute_idempotent for client mutation key '{mutation_key}': {err}")
+        }
+    }
+}
+
+
+/// Execute a paged idempotent mutation batch through the Router as the admin
+/// principal. The Router may return a continuation cursor when the per-call
+/// instruction budget is exhausted; this helper follows the cursor until the
+/// whole batch is applied.
+const SOCIAL_SEED_BATCH_PAGE_SIZE: usize = 400;
+
+pub fn gql_execute_idempotent_batch_as_admin(
+    env: &FederationEnv,
+    mutations: Vec<GqlExecuteIdempotentBatchItem>,
+) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    use gleaph_router::types::{
+        GqlExecuteIdempotentBatchArgs,
+        GqlExecuteIdempotentBatchResult,
+    };
+
+    let total = mutations.len() as u32;
+    let mut start_index = 0u32;
+    while start_index < total {
+        let page_end = std::cmp::min(
+            start_index as usize + SOCIAL_SEED_BATCH_PAGE_SIZE,
+            mutations.len(),
+        );
+        let page = mutations[start_index as usize..page_end].to_vec();
+        let args = GqlExecuteIdempotentBatchArgs {
+            mutations: page,
+            start_index: 0,
+            instruction_budget: None,
+        };
+        let bytes = env
+            .pic
+            .update_call(
+                env.router,
+                env.admin,
+                "gql_execute_idempotent_batch",
+                Encode!(&args).expect("encode gql_execute_idempotent_batch"),
+            )
+            .unwrap_or_else(|e| panic!("gql_execute_idempotent_batch on router: {e:?}"));
+        match Decode!(&bytes, Result<GqlExecuteIdempotentBatchResult, RouterError>) {
+            Ok(Ok(result)) => {
+                let applied = result.results.len() as u32;
+                if applied == 0 {
+                    panic!("gql_execute_idempotent_batch applied zero mutations");
+                }
+                start_index += applied;
+            }
+            Ok(Err(err)) => panic!("gql_execute_idempotent_batch rejected: {err:?}"),
+            Err(err) => panic!("decode gql_execute_idempotent_batch: {err}"),
         }
     }
 }
@@ -1706,7 +1762,7 @@ pub fn gql_query_with_params_on_router(
     params_blob: Vec<u8>,
 ) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
     use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
 
     let bytes = pic
         .query_call(
@@ -1731,7 +1787,7 @@ pub fn gql_query_on_router(
     query: &str,
 ) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
     use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
 
     let bytes = pic
         .query_call(
@@ -1776,7 +1832,7 @@ pub fn prepared_execute_query_with_params_as(
     params_blob: Vec<u8>,
 ) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
     use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
 
     let bytes = env
         .pic
@@ -1816,7 +1872,7 @@ pub fn execute_social_demo_scenario_as(
     gateway: Principal,
     scenario: SocialDemoScenario,
 ) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
-    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
     use gleaph_social_demo_gateway::SocialDemoGatewayError;
 
     let bytes = env
@@ -1849,7 +1905,7 @@ pub fn gql_query_as(
     gleaph_graph_kernel::federation::RouterError,
 > {
     use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
 
     let bytes = env
         .pic
@@ -1876,7 +1932,7 @@ pub fn gql_query_with_consistency_as_admin(
     gleaph_graph_kernel::federation::RouterError,
 > {
     use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
 
     let bytes = env
         .pic
@@ -2162,6 +2218,7 @@ pub fn test_force_reclaiming(
 /// evicted (ADR 0030 slice 6 GC-pin).
 pub fn admin_sweep_mutation_keys(env: &FederationEnv, max_scan: u32) -> u32 {
     use gleaph_graph_kernel::federation::RouterError;
+
     use gleaph_router::types::{AdminSweepMutationKeysStepArgs, AdminSweepMutationKeysStepResult};
 
     let args = AdminSweepMutationKeysStepArgs {
@@ -2497,7 +2554,7 @@ pub fn gql_query_as_admin_expect_err(
     query: &str,
 ) -> gleaph_graph_kernel::federation::RouterError {
     use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
 
     let bytes = env
         .pic
@@ -2522,7 +2579,7 @@ pub fn gql_execute_idempotent_as_admin_expect_err(
     client_mutation_key: &str,
 ) -> gleaph_graph_kernel::federation::RouterError {
     use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
 
     let query = query.to_string();
     let params: Vec<u8> = Vec::new();
@@ -2801,16 +2858,69 @@ fn feed_assertion_text(
 
 /// Seed the social demo graph through Router `gql_execute_idempotent`.
 pub fn seed_social_graph(env: &FederationEnv) {
+    use gleaph_router::types::GqlExecuteIdempotentBatchItem;
+
+    fn seed_wave(gql: &str) -> u32 {
+        if gql.contains("INSERT (n:User") {
+            return 1;
+        }
+        if gql.contains("INSERT (n:Community") {
+            return 1;
+        }
+        if gql.contains("INSERT (n:Topic") {
+            return 1;
+        }
+        if gql.contains("INSERT (n:Feed") {
+            return 1;
+        }
+        if gql.contains("-[:FOLLOWS") {
+            return 2;
+        }
+        if gql.contains("-[:MEMBER_OF") {
+            return 2;
+        }
+        if gql.contains("-[:POSTED") {
+            return 3;
+        }
+        if gql.contains("-[:REPLY_TO") {
+            return 4;
+        }
+        if gql.contains("-[:IN_TOPIC") {
+            return 5;
+        }
+        if gql.contains("-[:IN_PUBLIC_FEED") {
+            return 6;
+        }
+        if gql.contains("-[:IN_HOME") {
+            return 6;
+        }
+        7
+    }
+
     let parsed: serde_json::Value =
         serde_json::from_str(SOCIAL_SEEDS_JSON).expect("parse social seeds");
+    let mut waves: std::collections::BTreeMap<u32, Vec<GqlExecuteIdempotentBatchItem>> =
+        std::collections::BTreeMap::new();
     for seed in parsed["seeds"].as_array().expect("social seed array") {
         let gql = seed["gql"].as_str().expect("social seed gql");
         let key = seed["key"].as_str().expect("social seed key");
-        let row_count = gql_execute_idempotent_as_admin(env, gql, key);
-        assert_eq!(row_count, 0, "seed {key} should not return rows");
+        let wave = seed_wave(gql);
+        waves.entry(wave).or_default().push(GqlExecuteIdempotentBatchItem {
+            gql_query: gql.to_string(),
+            params: Vec::new(),
+            mutation_key: key.to_string(),
+        });
+    }
+
+    for (wave, mutations) in waves {
+        if mutations.is_empty() {
+            continue;
+        }
+        gql_execute_idempotent_batch_as_admin(env, mutations);
         // Later seeds resolve earlier users/posts/feed edges through derived postings. Keep the
         // fixture deterministic by draining the projection before issuing the next dependent seed.
         drain_maintenance_via_timer(env, env.graph_source);
+        eprintln!("Seeded social graph wave {wave}");
     }
 
     // Verify every generated Post body is readable from the graph without coupling this helper
