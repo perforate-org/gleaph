@@ -555,7 +555,8 @@ for (const edge of graph.edges) {
     seeds.push({
       key: `${DEMO_GRAPH}-seed-edge-${edge.id}`,
       gql:
-        `MATCH ${nodeMatch(source, "a")}, ${nodeMatch(target, "b")} RETURN a NEXT ` +
+        `MATCH ${nodeMatch(source, "a")} RETURN a NEXT ` +
+        `MATCH ${nodeMatch(target, "b")} RETURN b NEXT ` +
         `INSERT (a)-[:${edge.gqlLabel} ${edgeProperties(edge)}]->(b)`,
     });
   } else {
