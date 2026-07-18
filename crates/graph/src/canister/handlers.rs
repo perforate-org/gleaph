@@ -148,10 +148,38 @@ fn ensure_execution_mode(
     Ok(())
 }
 
-const UPDATE_DYNAMIC_INSTRUCTION_BUDGET: u64 =
-    crate::facade::GRAPH_UPDATE_DYNAMIC_INSTRUCTION_BUDGET;
 const QUERY_DYNAMIC_INSTRUCTION_BUDGET: u64 = 5_000_000_000;
-const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = UPDATE_DYNAMIC_INSTRUCTION_BUDGET;
+
+/// Platform instruction ceiling per update call (40B on ICP).
+const GRAPH_UPDATE_INSTRUCTION_LIMIT: u64 =
+    crate::facade::IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT;
+
+/// Conservative budget for the synchronous derived-index drain that follows
+/// a successful batch. Observed cost is ~1.5K instructions; this reserve is
+/// deliberately large to absorb spikes under index pressure.
+const BATCH_DRAIN_BUDGET_ESTIMATE: u64 = 500_000_000;
+
+/// Fixed headroom for response serialization, logging, and post-loop
+/// bookkeeping so the canister never approaches the hard 40B limit.
+const BATCH_FINAL_BOOKKEEPING_HEADROOM: u64 = 2_000_000_000;
+
+/// Returns true if starting another operation would risk exceeding the per-
+/// update-call instruction limit before we can safely return `next_index`.
+/// Uses the largest op cost seen so far as the next-op estimate; on the first
+/// op a conservative fallback is used.
+fn should_cutoff_batch(
+    current_instr: u64,
+    max_op_instr_so_far: u64,
+    drain_budget: u64,
+    headroom: u64,
+) -> bool {
+    let next_op_estimate = max_op_instr_so_far.max(50_000_000);
+    let projected = current_instr
+        .saturating_add(next_op_estimate)
+        .saturating_add(drain_budget)
+        .saturating_add(headroom);
+    projected >= GRAPH_UPDATE_INSTRUCTION_LIMIT
+}
 
 fn ensure_execute_plan_result_payload(
     result: &ExecutePlanResult,
@@ -198,6 +226,77 @@ pub async fn execute_plan_update_batch(
     execute_plan_batch(args, "execute_plan_update_batch").await
 }
 
+#[cfg(feature = "batch-instr-log")]
+const BATCH_INSTR_OP_THRESHOLD: u64 = 500_000_000;
+
+#[cfg(feature = "batch-instr-log")]
+fn log_batch_op(
+    entrypoint: &str,
+    mode: ExecutePlanBatchMode,
+    index: usize,
+    cost: u64,
+    result: &Result<ExecutePlanResult, String>,
+) {
+    ic_cdk::println!(
+        "GLEAPH_BATCH_OP entrypoint={} mode={:?} index={} cost={} result={}",
+        entrypoint,
+        mode,
+        index,
+        cost,
+        if result.is_ok() { "ok" } else { "err" },
+    );
+}
+
+#[cfg(feature = "batch-instr-log")]
+fn log_batch_summary(
+    entrypoint: &str,
+    mode: ExecutePlanBatchMode,
+    ops_executed: usize,
+    total_instr: u64,
+    max_instr: u64,
+    min_instr: u64,
+    errors: usize,
+    next_index: Option<u32>,
+) {
+    ic_cdk::println!(
+        "GLEAPH_BATCH_SUMMARY entrypoint={} mode={:?} ops={} total={} max={} min={} errors={} next_index={:?}",
+        entrypoint,
+        mode,
+        ops_executed,
+        total_instr,
+        max_instr,
+        min_instr,
+        errors,
+        next_index,
+    );
+}
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[allow(dead_code)]
+#[inline]
+fn log_batch_op(
+    _entrypoint: &str,
+    _mode: ExecutePlanBatchMode,
+    _index: usize,
+    _cost: u64,
+    _result: &Result<ExecutePlanResult, String>,
+) {
+}
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[inline]
+fn log_batch_summary(
+    _entrypoint: &str,
+    _mode: ExecutePlanBatchMode,
+    _ops_executed: usize,
+    _total_instr: u64,
+    _max_instr: u64,
+    _min_instr: u64,
+    _errors: usize,
+    _next_index: Option<u32>,
+) {
+}
+
 async fn execute_plan_batch(
     args: ExecutePlanBatchArgs,
     entrypoint: &str,
@@ -213,32 +312,87 @@ async fn execute_plan_batch(
             gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
-    let mut results = Vec::with_capacity(args.operations.len());
+    let total_ops = args.operations.len();
+    let mut results = Vec::with_capacity(total_ops);
     let mut next_index = None;
+    let mut total_instr = 0u64;
+    let mut max_instr = 0u64;
+    let mut min_instr = u64::MAX;
+    let mut errors = 0usize;
     for (index, operation) in args.operations.into_iter().enumerate() {
+        let before = current_instruction_counter();
+        // Early cutoff: stop before starting the next operation if the
+        // remaining per-message budget is unlikely to cover it plus drain and
+        // final bookkeeping. The Router will re-invoke the batch with the
+        // continuation cursor (next_index) inside the same ingress call.
         if args.mode == ExecutePlanBatchMode::Dynamic
-            && current_instruction_counter() >= DEFAULT_DYNAMIC_INSTRUCTION_BUDGET
+            && should_cutoff_batch(
+                before,
+                max_instr,
+                BATCH_DRAIN_BUDGET_ESTIMATE,
+                BATCH_FINAL_BOOKKEEPING_HEADROOM,
+            )
         {
             next_index = Some(index as u32);
+            log_batch_summary(
+                entrypoint,
+                args.mode,
+                index,
+                total_instr,
+                max_instr,
+                if min_instr == u64::MAX { 0 } else { min_instr },
+                errors,
+                next_index,
+            );
             break;
         }
-        results.push(
+        let result =
             match ensure_execution_mode(operation.mode, GqlExecutionMode::Update, entrypoint) {
                 Ok(()) => execute_plan_impl(operation, false).await,
                 Err(err) => Err(err),
-            },
+            };
+        let after = current_instruction_counter();
+        let cost = after.saturating_sub(before);
+        total_instr += cost;
+        max_instr = max_instr.max(cost);
+        min_instr = min_instr.min(cost);
+        if result.is_err() {
+            errors += 1;
+        }
+        #[cfg(feature = "batch-instr-log")]
+        if cost >= BATCH_INSTR_OP_THRESHOLD {
+            log_batch_op(entrypoint, args.mode, index, cost, &result);
+        }
+        results.push(result);
+    }
+    if next_index.is_none() {
+        log_batch_summary(
+            entrypoint,
+            args.mode,
+            total_ops,
+            total_instr,
+            max_instr,
+            if min_instr == u64::MAX { 0 } else { min_instr },
+            errors,
+            None,
         );
     }
     // Synchronously drain the postings emitted by the successfully executed
     // operations in this batch. If the drain cannot complete now, the entries
     // remain in the durable derived-index outbox and the maintenance timer will
     // converge the index asynchronously.
-    if results.iter().all(|r| r.is_ok())
-        && let Err(e) = sync_drain_derived_index_outbox().await
-    {
-        return Err(format!("{entrypoint}: synchronous index drain failed: {e}"));
+    if results.iter().all(|r| r.is_ok()) {
+        let _drain_before = current_instruction_counter();
+        if let Err(e) = sync_drain_derived_index_outbox().await {
+            return Err(format!("{entrypoint}: synchronous index drain failed: {e}"));
+        }
+        #[cfg(feature = "batch-instr-log")]
+        ic_cdk::println!(
+            "GLEAPH_BATCH_DRAIN entrypoint={} cost={}",
+            entrypoint,
+            current_instruction_counter().saturating_sub(_drain_before),
+        );
     }
-
     let result = ExecutePlanBatchResult {
         results,
         next_index,

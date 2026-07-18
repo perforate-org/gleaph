@@ -614,6 +614,16 @@ async fn await_batch_item(
     Ok(())
 }
 
+/// Conservative per-operation instruction estimate used to size Graph batches.
+/// Measured social-demo seed costs peak around 700M instructions per operation
+/// on an empty graph (POSTED / feed edges); this constant intentionally leaves
+/// margin for heavier labels, unique-effect checks, and index maintenance.
+const ESTIMATED_INSTR_PER_GRAPH_OP: u64 = 500_000_000;
+
+/// Graph dynamic batch instruction budget, aligned with the Graph canister's
+/// own early-cutoff logic (40B hard limit with headroom).
+const GRAPH_DYNAMIC_INSTRUCTION_BUDGET: u64 = 35_000_000_000;
+
 fn graph_batch_chunk_len(operations: &[(usize, usize, BatchOperation)]) -> Result<usize, String> {
     if operations.is_empty() {
         return Ok(0);
@@ -642,13 +652,21 @@ fn graph_batch_chunk_len(operations: &[(usize, usize, BatchOperation)]) -> Resul
         }
     }
     if best == 0 {
-        Err(format!(
+        return Err(format!(
             "single Graph batch operation exceeds the safe inter-canister request payload limit of {} bytes",
             gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        ))
-    } else {
-        Ok(best)
+        ));
     }
+
+    // Cap by the Graph canister's per-update-call instruction budget so the
+    // batch is unlikely to be rejected or truncated on the Graph side. This
+    // works together with the Graph-side early cutoff in
+    // `crates/graph/src/canister/handlers.rs`.
+    let instr_limited = (GRAPH_DYNAMIC_INSTRUCTION_BUDGET / ESTIMATED_INSTR_PER_GRAPH_OP)
+        .try_into()
+        .unwrap_or(usize::MAX)
+        .max(1);
+    Ok(best.min(instr_limited))
 }
 
 /// Binary-search the largest sub-slice of `mutation_ids` starting at `offset` that still fits inside

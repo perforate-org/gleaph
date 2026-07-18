@@ -63,7 +63,7 @@ ensure_canister() {
     log "Using existing $name canister $id"
   else
     log "Creating $name canister"
-    icp_cmd canister create -e local --quiet "$name" >/dev/null
+    icp_cmd canister create -e local --quiet --reserved-cycles-limit 100t "$name" >/dev/null
     id="$(icp_cmd canister status -e local -i "$name" 2>/dev/null | head -n 1)"
     log "Created $name canister $id"
   fi
@@ -71,7 +71,7 @@ ensure_canister() {
   # Local replica canisters can drain their free cycle pool across repeated deploys.
   # Ensure each canister can afford inter-canister update-call reservations (~42B per call).
   # On the local network cycles are minted for free, so this is a safe no-op cost-wise.
-  icp_cmd canister top-up -e local --amount 10t "$name" >/dev/null || log "WARN: could not top-up $name"
+  icp_cmd canister top-up -e local --amount 100t "$name" >/dev/null || log "WARN: could not top-up $name"
 
   printf '%s\n' "$id"
 }
@@ -239,7 +239,8 @@ build_social_config() {
   node "$ROOT/frontend/apps/social-demo/scripts/build-config.mjs"
 }
 
-# Let gql_execute_idempotent_batch page on instruction_budget; no per-call item cap.
+# apply-knowledge-map-seeds.mjs pages dynamically by Candid payload size and item cap;
+# no fixed per-call page size is needed here.
 seed_social_graph() {
   log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
   # apply-knowledge-map-seeds.mjs groups the manifest into dependency waves
@@ -254,7 +255,6 @@ seed_social_graph() {
     CARGO_HOME="$CARGO_HOME" \
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     ICP_IDENTITY_NAME="$deployer_id" \
-    SEED_PAGE_SIZE=100 \
     node "$ROOT/frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs" \
       "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json" \
       gleaph-router \

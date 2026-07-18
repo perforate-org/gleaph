@@ -43,6 +43,9 @@ cypher = [
 ]
 # Test-only canister methods for PocketIC multi-canister E2E (not enabled in release benches).
 pocket-ic-e2e = []
+# Debug-only per-operation instruction logging inside execute_plan_update_batch.
+# Do not enable in production: emits ic_cdk::println! for every batch operation.
+batch-instr-log = []
 
 [dependencies]
 async-trait = "0.1"

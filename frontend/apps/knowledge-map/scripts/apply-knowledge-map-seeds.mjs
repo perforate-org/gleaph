@@ -105,6 +105,40 @@ const renderProgress = (wave, completed, total) => {
 
 const finishProgress = () => process.stderr.write("\n");
 
+// Dynamic Candid payload page sizing: each Router ingress call must stay well below the
+// 2 MiB inter-canister request limit.  We use the Candid text length as a conservative proxy
+// (it is close to the encoded binary size for ASCII-heavy social-demo queries) and target
+// 500 KiB so that even waves with longer queries or escaping leave a large safety margin.
+const MAX_CANDID_TEXT_BYTES = 500_000;
+const MAX_ITEMS_PER_PAGE = Number(process.env.SEED_MAX_ITEMS_PER_PAGE ?? 150);
+
+const requestShellBytes = () => {
+  const prefix = '(record { mutations = vec { ';
+  const suffix = ' }; start_index = 0; instruction_budget = null })';
+  return Buffer.byteLength(prefix, 'utf8') + Buffer.byteLength(suffix, 'utf8');
+};
+
+const seedItemTextBytes = (seed) => {
+  const text = `record { gql_query = "${escapeCandidText(seed.gql)}"; params = vec {}; mutation_key = "${escapeCandidText(seed.key)}" }`;
+  return Buffer.byteLength(text, 'utf8');
+};
+
+const payloadPageSize = (waveSeeds, offset, maxTextBytes) => {
+  const shell = requestShellBytes();
+  let used = shell;
+  let count = 0;
+  for (let i = offset; i < waveSeeds.length; i++) {
+    const itemBytes = seedItemTextBytes(waveSeeds[i]);
+    const separator = i === offset ? 0 : 2; // "; " between items
+    if (used + separator + itemBytes > maxTextBytes && count > 0) {
+      break;
+    }
+    used += separator + itemBytes;
+    count += 1;
+  }
+  return count;
+};
+
 const runBatchPage = (page) => {
   const items = page
     .map(
@@ -129,6 +163,28 @@ const runBatchPage = (page) => {
   }
 };
 
+const runBatchPageRetryable = (page) => {
+  let attempt = page;
+  while (attempt.length > 0) {
+    try {
+      runBatchPage(attempt);
+      return attempt.length;
+    } catch (error) {
+      // The inter-canister journal preflight can exceed the Graph canister's liquid cycle
+      // budget when the page is too large. Halve the page and retry from the same offset.
+      if (
+        attempt.length === 1 ||
+        !error.message.includes('insufficient liquid cycles balance')
+      ) {
+        throw error;
+      }
+      const nextSize = Math.max(1, Math.floor(attempt.length / 2));
+      attempt = attempt.slice(0, nextSize);
+    }
+  }
+  return 0;
+};
+
 if (methodName !== "gql_execute_idempotent_batch") {
   for (const seed of seeds) {
     const candid = `("${escapeCandidText(seed.gql)}", vec {}, "${escapeCandidText(seed.key)}")`;
@@ -136,7 +192,7 @@ if (methodName !== "gql_execute_idempotent_batch") {
     process.stderr.write(`[seeds] Seeded ${seed.key}\n`);
   }
 } else {
-  const effectivePageSize = pageSize ?? seeds.length;
+  const explicitPageSize = pageSize ?? Number.POSITIVE_INFINITY;
   // Group seeds into dependency waves so each wave can safely run inside one
   // gql_execute_idempotent_batch call.  The caller is responsible for seed order.
   const waves = new Map();
@@ -150,15 +206,25 @@ if (methodName !== "gql_execute_idempotent_batch") {
     if (waveSeeds.length === 0) continue;
     renderProgress(wave, 0, waveSeeds.length);
     let seededCount = 0;
-    for (let offset = 0; offset < waveSeeds.length; offset += effectivePageSize) {
-      const page = waveSeeds.slice(offset, offset + effectivePageSize);
+    let offset = 0;
+    while (offset < waveSeeds.length) {
+      const dynamicPageSize = payloadPageSize(waveSeeds, offset, MAX_CANDID_TEXT_BYTES);
+      const pageSize = Math.min(
+        dynamicPageSize,
+        explicitPageSize,
+        MAX_ITEMS_PER_PAGE,
+        waveSeeds.length - offset,
+      );
+      const page = waveSeeds.slice(offset, offset + pageSize);
+      let processed;
       try {
-        runBatchPage(page);
+        processed = runBatchPageRetryable(page);
       } catch (error) {
         finishProgress();
         throw error;
       }
-      seededCount += page.length;
+      seededCount += processed;
+      offset += processed;
       renderProgress(wave, seededCount, waveSeeds.length);
     }
     finishProgress();
