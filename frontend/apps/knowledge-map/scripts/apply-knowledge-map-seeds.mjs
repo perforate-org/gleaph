@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { encodeGqlParamsBlob, candidVecBytes } from "./encode-gql-params.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -119,7 +120,9 @@ const requestShellBytes = () => {
 };
 
 const seedItemTextBytes = (seed) => {
-  const text = `record { gql_query = "${escapeCandidText(seed.gql)}"; params = vec {}; mutation_key = "${escapeCandidText(seed.key)}" }`;
+  const params = encodeGqlParamsBlob(seed.params);
+  const paramsText = candidVecBytes(params);
+  const text = `record { gql_query = "${escapeCandidText(seed.gql)}"; params = ${paramsText}; mutation_key = "${escapeCandidText(seed.key)}" }`;
   return Buffer.byteLength(text, 'utf8');
 };
 
@@ -142,8 +145,10 @@ const payloadPageSize = (waveSeeds, offset, maxTextBytes) => {
 const runBatchPage = (page) => {
   const items = page
     .map(
-      (seed) =>
-        `record { gql_query = "${escapeCandidText(seed.gql)}"; params = vec {}; mutation_key = "${escapeCandidText(seed.key)}" }`,
+      (seed) => {
+        const params = encodeGqlParamsBlob(seed.params);
+        return `record { gql_query = "${escapeCandidText(seed.gql)}"; params = ${candidVecBytes(params)}; mutation_key = "${escapeCandidText(seed.key)}" }`;
+      },
     )
     .join("; ");
   let startIndex = 0;
@@ -187,7 +192,8 @@ const runBatchPageRetryable = (page) => {
 
 if (methodName !== "gql_execute_idempotent_batch") {
   for (const seed of seeds) {
-    const candid = `("${escapeCandidText(seed.gql)}", vec {}, "${escapeCandidText(seed.key)}")`;
+    const params = encodeGqlParamsBlob(seed.params);
+    const candid = `("${escapeCandidText(seed.gql)}", ${candidVecBytes(params)}, "${escapeCandidText(seed.key)}")`;
     callRouter(methodName, candid);
     process.stderr.write(`[seeds] Seeded ${seed.key}\n`);
   }

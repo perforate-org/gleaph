@@ -485,28 +485,38 @@ const graph = { nodes, edges };
 
 const escapeGqlString = (value) => String(value).replace(/'/g, "''");
 
-const nodePropertyLiteral = (node) =>
-  `${node.property}: '${escapeGqlString(node.label)}'`;
+const paramName = (prefix, base) => `$${prefix}_${base}`;
 
-const nodeProperties = (node) => {
-  const props = [
-    `demo_id: ${demoId(node.id)}`,
-    `demo_graph: '${DEMO_GRAPH}'`,
-    nodePropertyLiteral(node),
-  ];
+const nodeIdentity = (node, prefix, params) => {
   if (node.gqlLabel === "User") {
-    props.push(`user_id: '${escapeGqlString(node.id)}'`);
+    params[paramName(prefix, "user_id")] = node.id;
+    return `user_id: ${paramName(prefix, "user_id")}`;
   }
+  // demo_id values are small enough to fit in a JS Number for JSON serialization.
+  params[paramName(prefix, "demo_id")] = Number(demoId(node.id));
+  return `demo_id: ${paramName(prefix, "demo_id")}`;
+};
+
+const nodeProperties = (node, prefix, params) => {
+  const props = [
+    nodeIdentity(node, prefix, params),
+    `demo_graph: '${DEMO_GRAPH}'`,
+    `${node.property}: ${paramName(prefix, node.property)}`,
+  ];
+  params[paramName(prefix, node.property)] = node.label;
   if (node.properties) {
     for (const [key, value] of Object.entries(node.properties)) {
       if (value && typeof value === "object" && "raw" in value) {
         props.push(`${key}: ${value.raw}`);
       } else if (typeof value === "string") {
-        props.push(`${key}: '${escapeGqlString(value)}'`);
+        props.push(`${key}: ${paramName(prefix, key)}`);
+        params[paramName(prefix, key)] = value;
       } else if (typeof value === "boolean") {
-        props.push(`${key}: ${value ? "TRUE" : "FALSE"}`);
+        props.push(`${key}: ${paramName(prefix, key)}`);
+        params[paramName(prefix, key)] = value;
       } else if (typeof value === "number") {
-        props.push(`${key}: ${value}`);
+        props.push(`${key}: ${paramName(prefix, key)}`);
+        params[paramName(prefix, key)] = value;
       } else {
         throw new Error(
           `Unsupported property type for ${node.id}.${key}: ${typeof value}`,
@@ -517,26 +527,26 @@ const nodeProperties = (node) => {
   return props.join(", ");
 };
 
-const nodeMatch = (node, variable) => {
-  const identity =
-    node.gqlLabel === "User"
-      ? `user_id: '${escapeGqlString(node.id)}'`
-      : `demo_id: ${demoId(node.id)}`;
-  return `(${variable}:${node.gqlLabel} {${identity}, demo_graph: '${DEMO_GRAPH}'})`;
+const nodeMatch = (node, variable, params) =>
+  `(${variable}:${node.gqlLabel} {${nodeIdentity(node, variable, params)}, demo_graph: '${DEMO_GRAPH}'})`;
+
+const nodeCreate = (node, variable, params) =>
+  `(${variable}:${node.gqlLabel} {${nodeProperties(node, variable, params)}})`;
+
+const edgeProperties = (edge, params) => {
+  params.$edge_id = edge.id;
+  params.$demo_kind = edge.displayLabel;
+  return `{demo_edge_id: $edge_id, demo_kind: $demo_kind}`;
 };
-
-const nodeCreate = (node, variable) =>
-  `(${variable}:${node.gqlLabel} {${nodeProperties(node)}})`;
-
-const edgeProperties = (edge) =>
-  `{demo_edge_id: '${edge.id}', demo_kind: '${edge.displayLabel}'}`;
 
 const seeds = [];
 
 for (const node of graph.nodes.filter((entry) => entry.layer === 0)) {
+  const params = {};
   seeds.push({
     key: `${DEMO_GRAPH}-seed-node-${node.id}`,
-    gql: `INSERT ${nodeCreate(node, "n")}`,
+    gql: `INSERT ${nodeCreate(node, "n", params)}`,
+    params,
   });
 }
 
@@ -551,19 +561,23 @@ for (const edge of graph.edges) {
     throw new Error(`Unknown ${DEMO_GRAPH} edge endpoint: ${edge.id}`);
   }
 
+  const params = {};
+  const edgeProps = edgeProperties(edge, params);
   if (created.has(edge.target)) {
     seeds.push({
       key: `${DEMO_GRAPH}-seed-edge-${edge.id}`,
       gql:
-        `MATCH ${nodeMatch(source, "a")}, ${nodeMatch(target, "b")} RETURN a NEXT ` +
-        `INSERT (a)-[:${edge.gqlLabel} ${edgeProperties(edge)}]->(b)`,
+        `MATCH ${nodeMatch(source, "a", params)}, ${nodeMatch(target, "b", params)} RETURN a NEXT ` +
+        `INSERT (a)-[:${edge.gqlLabel} ${edgeProps}]->(b)`,
+      params,
     });
   } else {
     seeds.push({
       key: `${DEMO_GRAPH}-seed-edge-${edge.id}`,
       gql:
-        `MATCH ${nodeMatch(source, "a")} RETURN a NEXT ` +
-        `INSERT (a)-[:${edge.gqlLabel} ${edgeProperties(edge)}]->${nodeCreate(target, "b")}`,
+        `MATCH ${nodeMatch(source, "a", params)} RETURN a NEXT ` +
+        `INSERT (a)-[:${edge.gqlLabel} ${edgeProps}]->${nodeCreate(target, "b", params)}`,
+      params,
     });
     created.add(edge.target);
   }

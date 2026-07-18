@@ -571,12 +571,9 @@ fn expr_literal_or_param<'a>(
 ) -> Result<&'a Value, RouterError> {
     match &expr.kind {
         ExprKind::Literal(value) => Ok(value),
-        ExprKind::Parameter(name) => {
-            let key = name.strip_prefix('$').unwrap_or(name.as_str());
-            params
-                .get(key)
-                .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))
-        }
+        ExprKind::Parameter(name) => params
+            .get(name.as_str())
+            .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into())),
         _ => Err(RouterError::InvalidArgument(
             "seed filter expects literal or parameter".into(),
         )),
@@ -744,9 +741,8 @@ pub(crate) fn resolve_scan_value(
             RouterError::InvalidArgument("seed filter value is not indexable".into())
         })?,
         ScanValue::Parameter(name) => {
-            let key = name.strip_prefix('$').unwrap_or(name.as_ref());
             let v = parameters
-                .get(key)
+                .get(name.as_ref())
                 .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
             value_to_index_key_bytes(v).map_err(|_| {
                 RouterError::InvalidArgument("seed filter value is not indexable".into())
@@ -933,7 +929,7 @@ mod tests {
         assert_eq!(probe.property_id, 1);
         assert!(!probe.payload_bytes.is_empty());
 
-        params.insert("x".into(), Value::Text("alice".into()));
+        params.insert("$x".into(), Value::Text("alice".into()));
         let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexScan {
             variable: Rc::from("u"),
             property: Rc::from("uid"),

@@ -17,7 +17,8 @@ use crate::plan_wire_guard::ensure_federated_seeds_for_index_anchors;
 use candid::{Decode, Encode};
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
-use gleaph_gql_planner::wire::decode_plan_bundle;
+use gleaph_gql_planner::PhysicalPlan;
+
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
     ExecutePlanResult, GqlExecutionMode, ResolvedSearchWire, SeedBindingsWire,
@@ -496,18 +497,21 @@ async fn execute_plan_impl(
         None => None,
     };
     crate::facade::init_ic_gql_extensions();
-    let (bundle_requires_write, plans) =
-        decode_plan_bundle(&args.plan_blob).map_err(|e| e.to_string())?;
+    let cached_bundle = crate::index::plan_cache::decode_plan_bundle_cached(&args.plan_blob)
+        .map_err(|e| e.to_string())?;
+    let bundle_requires_write = cached_bundle.requires_write_path;
+    let plans: &[PhysicalPlan] = &cached_bundle.plans;
     let _phase_t1 = current_instruction_counter();
+    let (hits, misses) = crate::index::plan_cache::take_hit_miss_counts();
     log_batch_phase(
         "execute_plan_impl",
-        "decode",
+        &format!("decode hits={hits} misses={misses}"),
         _phase_t1.saturating_sub(_phase_t0),
     );
     ensure_federated_seeds_for_index_anchors(
         seeds.as_ref(),
         store.federation_routing().is_some(),
-        &plans,
+        plans,
     )
     .map_err(|e| e.0)?;
     // Router-owned index anchors: federated graph shards must not call index on read path.
@@ -525,7 +529,7 @@ async fn execute_plan_impl(
 
     let run = run_wire_plans_last_read_row_count(
         store,
-        &plans,
+        plans,
         bundle_requires_write,
         &pmap,
         kernel_execution_mode(args.mode),

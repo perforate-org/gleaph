@@ -15,7 +15,6 @@ use gleaph_gql::ast::{Statement, StatementBlock};
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
-use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
 use gleaph_graph_kernel::entry::{ConstraintNameId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
@@ -121,13 +120,7 @@ async fn execute_dml_plan_async(
         .await?
         .unwrap_or_default();
     let mutation_ops = &plan.ops[read_prefix_len(&plan.ops)..];
-    // The mutation tail intentionally runs with empty parameters, matching the prior
-    // single-pass mutation path; $-parameters are resolved in the read phase.
-    let empty_params = BTreeMap::new();
-    Ok(
-        execute_mutation_tail_async(store, mutation_ops, &seed_rows, &empty_params, execution)
-            .await?,
-    )
+    Ok(execute_mutation_tail_async(store, mutation_ops, &seed_rows, parameters, execution).await?)
 }
 
 /// Run a DML plan's read prefix and project the result to mutation seed rows. Returns `None`
@@ -927,13 +920,13 @@ async fn apply_canonical_mutation_segment(
     store: &GraphStore,
     mutation_ops: &[gleaph_gql_planner::plan::PlanOp],
     seed_rows: &[SeededMutationRow],
+    parameters: &BTreeMap<String, Value>,
     execution: GqlExecutionContext,
     mutation_id: Option<MutationId>,
     emitted_delta_first_seq: &mut Option<ShardEventSeq>,
     emitted_delta_last_seq: &mut Option<ShardEventSeq>,
     next_release_ordinal: &mut u32,
 ) -> Result<PlanMutationBindings, GqlRunError> {
-    let empty_params = BTreeMap::new();
     let unique_claims = execution.unique_claims.clone();
     let local_unique_claims = execution.local_unique_claims.clone();
     // Resolve the router-issued encoding key into owned data for this no-`await` canonical segment;
@@ -948,7 +941,7 @@ async fn apply_canonical_mutation_segment(
     }
     let _phase_t0 = current_instruction_counter();
     let mutation =
-        match execute_mutation_tail_async(store, mutation_ops, seed_rows, &empty_params, execution)
+        match execute_mutation_tail_async(store, mutation_ops, seed_rows, parameters, execution)
             .await
         {
             Ok(mutation) => mutation,
@@ -1125,6 +1118,7 @@ async fn run_wire_plans_inner(
                 store,
                 &plan.ops[read_prefix_len(&plan.ops)..],
                 &mutation_seed_rows,
+                parameters,
                 execution.clone(),
                 mutation_id,
                 &mut emitted_delta_first_seq,
@@ -1351,12 +1345,12 @@ pub async fn run_wire_plan_last_read_row_count(
     seeds: Option<SeedBindingsWire>,
     mutation_id: Option<MutationId>,
 ) -> Result<WirePlanRunResult, GqlRunError> {
-    let (bundle_requires_write, plans) =
-        decode_plan_bundle(plan_blob).map_err(|e| GqlRunError::Plan(e.to_string()))?;
+    let cached_bundle = crate::index::plan_cache::decode_plan_bundle_cached(plan_blob)
+        .map_err(|e| GqlRunError::Plan(e.to_string()))?;
     run_wire_plans_last_read_row_count(
         store,
-        &plans,
-        bundle_requires_write,
+        &cached_bundle.plans,
+        cached_bundle.requires_write_path,
         parameters,
         mode,
         index,
