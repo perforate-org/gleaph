@@ -299,7 +299,7 @@ fn flatten_conjunction(expr: &Expr) -> Vec<&Expr> {
 }
 
 /// Extract (variable, property) from `var.prop = <value>`.
-fn extract_equality_predicate(expr: &Expr) -> Option<(String, String)> {
+pub(crate) fn extract_equality_predicate(expr: &Expr) -> Option<(String, String)> {
     if let ExprKind::Compare { left, op, right } = &expr.kind {
         if *op != CmpOp::Eq {
             return None;

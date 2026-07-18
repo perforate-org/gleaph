@@ -5664,3 +5664,37 @@ fn explain_reply_to_with_two_matches() {
     let plan = build_block_plan(&block, Some(&stats)).unwrap();
     println!("\n=== REPLY_TO with two chained MATCHes ===\n{}", explain_plan(&plan));
 }
+
+
+#[test]
+fn explain_two_independent_node_patterns_comma() {
+    let mut stats = TableStats::default();
+    stats.indexed_vertex_properties.insert("demo_id".to_string());
+    stats.indexed_vertex_properties.insert("demo_graph".to_string());
+    let query = "MATCH (a:Post {demo_id: 4284, demo_graph: 'social'}), (b:Post {demo_id: 284, demo_graph: 'social'}) RETURN a, b";
+    let plan = plan_query_with_stats(query, &stats);
+    println!("\n=== comma-separated two independent nodes ===\n{}", explain_plan(&plan));
+}
+
+
+#[test]
+fn explain_single_indexed_property_uses_index_scan() {
+    let mut stats = TableStats::default();
+    stats.indexed_vertex_properties.insert("demo_id".to_string());
+    let query = "MATCH (a:Post {demo_id: 4284, demo_graph: 'social'}), (b:Post {demo_id: 284, demo_graph: 'social'}) RETURN a, b";
+    let plan = plan_query_with_stats(query, &stats);
+    println!("\n=== only demo_id indexed ===\n{}", explain_plan(&plan));
+}
+
+
+#[test]
+fn explain_reply_to_seed_pattern_reverts_to_comma() {
+    let mut stats = TableStats::default();
+    stats.indexed_vertex_properties.insert("demo_id".to_string());
+    let query = "MATCH (a:Post {demo_id: 4284, demo_graph: 'social'}), (b:Post {demo_id: 284, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'x', demo_kind: 'reply to'}]->(b)";
+    let program = parser::parse(query).unwrap();
+    let tx = program.transaction_activity.unwrap();
+    let block = tx.body.unwrap();
+    let plan = build_block_plan(&block, Some(&stats)).unwrap();
+    println!("\n=== REPLY_TO comma pattern (demo_id indexed) ===\n{}", explain_plan(&plan));
+}

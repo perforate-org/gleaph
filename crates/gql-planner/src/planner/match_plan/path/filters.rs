@@ -484,34 +484,84 @@ pub(super) fn emit_scan_for_node(
     ops: &mut Vec<PlanOp>,
     annotations: &mut PlanAnnotations,
 ) {
-    // Check for index intersection opportunity (multiple indexed predicates).
-    if let Some(stats) = stats
-        && let Some(where_expr) = &node.where_clause
-        && let Some(specs) = anchor::find_index_intersection(var, where_expr, stats)
-    {
+    // Collect all equality predicates from inline properties and the inline WHERE clause.
+    let mut equality_preds: Vec<(String, Expr)> = Vec::new();
+    for p in &node.properties {
+        equality_preds.push((
+            p.name.clone(),
+            Expr::new(ExprKind::Compare {
+                left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable(var.to_string()))),
+                    property: p.name.clone(),
+                })),
+                op: CmpOp::Eq,
+                right: Box::new(p.value.clone()),
+            }),
+        ));
+    }
+    if let Some(where_expr) = &node.where_clause {
+        for c in flatten_conjunction(where_expr) {
+            if let Some((v, prop)) = anchor::extract_equality_predicate(&c)
+                && v == var
+            {
+                equality_preds.push((prop, c.clone()));
+            }
+        }
+    }
+
+    // Filter to indexed properties and build scan specs.
+    let mut indexed_specs: Vec<IndexScanSpec> = Vec::new();
+    if let Some(stats) = stats {
+        for (prop, pred) in &equality_preds {
+            if !stats.is_vertex_property_indexed(prop) {
+                continue;
+            }
+            if let ExprKind::Compare { right, .. } = &pred.kind
+                && let Some(sv) = anchor::scan_value_from_expr(right)
+            {
+                indexed_specs.push(IndexScanSpec {
+                    property: prop.clone().into(),
+                    value: sv,
+                    cmp: CmpOp::Eq,
+                });
+            }
+        }
+    }
+
+    if indexed_specs.len() >= 2 {
         ops.push(PlanOp::IndexIntersection {
             variable: Str::from(var),
-            scans: specs,
+            scans: indexed_specs,
             property_projection: None,
         });
         return;
     }
 
-    // Check if anchor selection found an index scan for this variable.
+    if indexed_specs.len() == 1 {
+        let spec = indexed_specs.into_iter().next().unwrap();
+        ops.push(PlanOp::IndexScan {
+            variable: Str::from(var),
+            property: spec.property,
+            value: spec.value,
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        });
+        return;
+    }
+
+    // Anchor-selected range/index scan still matters when no inline indexed equality is present.
     if let Some(anchor) = &annotations.optimizer.anchor
         && &*anchor.variable == var
     {
         match &anchor.source {
             AnchorSource::PropertyEquality { property }
             | AnchorSource::InlinePropertyEquality { property } => {
-                // Find the value from inline properties or inline WHERE.
                 let scan_value = node
                     .properties
                     .iter()
                     .find(|p| p.name == **property)
                     .map(|p| expr_to_scan_value(&p.value))
                     .or_else(|| {
-                        // Try inline WHERE: (n WHERE n.prop = value)
                         node.where_clause
                             .as_ref()
                             .and_then(|w| find_equality_value_in_where(var, property, w))
