@@ -5610,62 +5610,6 @@ fn planner_having_emits_post_aggregate_filter() {
         plan.ops
     );
 }
-
-
-#[test]
-fn explain_reply_to_seed_pattern_no_graph_index() {
-    let mut stats = TableStats::default();
-    stats.indexed_vertex_properties.insert("demo_id".to_string());
-    let query = "MATCH (a:Post {demo_id: 4284, demo_graph: 'social'}), (b:Post {demo_id: 284, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'x', demo_kind: 'reply to'}]->(b)";
-    let program = parser::parse(query).unwrap();
-    let tx = program.transaction_activity.unwrap();
-    let block = tx.body.unwrap();
-    let plan = build_block_plan(&block, Some(&stats)).unwrap();
-    let explained = explain_plan(&plan);
-    println!("\n=== REPLY_TO seed plan (demo_id indexed, demo_graph NOT indexed) ===\n{}", explained);
-}
-
-#[test]
-fn explain_reply_to_seed_pattern_both_indexed() {
-    let mut stats = TableStats::default();
-    stats.indexed_vertex_properties.insert("demo_id".to_string());
-    stats.indexed_vertex_properties.insert("demo_graph".to_string());
-    let query = "MATCH (a:Post {demo_id: 4284, demo_graph: 'social'}), (b:Post {demo_id: 284, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'x', demo_kind: 'reply to'}]->(b)";
-    let program = parser::parse(query).unwrap();
-    let tx = program.transaction_activity.unwrap();
-    let block = tx.body.unwrap();
-    let plan = build_block_plan(&block, Some(&stats)).unwrap();
-    let explained = explain_plan(&plan);
-    println!("\n=== REPLY_TO seed plan (demo_id + demo_graph indexed) ===\n{}", explained);
-}
-
-
-#[test]
-fn explain_single_post_lookup() {
-    let mut stats = TableStats::default();
-    stats.indexed_vertex_properties.insert("demo_id".to_string());
-    let query = "MATCH (b:Post {demo_id: 284, demo_graph: 'social'}) RETURN b";
-    let program = parser::parse(query).unwrap();
-    let tx = program.transaction_activity.unwrap();
-    let block = tx.body.unwrap();
-    let plan = build_block_plan(&block, Some(&stats)).unwrap();
-    println!("\n=== single Post lookup ===\n{}", explain_plan(&plan));
-}
-
-
-#[test]
-fn explain_reply_to_with_two_matches() {
-    let mut stats = TableStats::default();
-    stats.indexed_vertex_properties.insert("demo_id".to_string());
-    let query = "MATCH (a:Post {demo_id: 4284, demo_graph: 'social'}) RETURN a NEXT MATCH (b:Post {demo_id: 284, demo_graph: 'social'}) RETURN b NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'x', demo_kind: 'reply to'}]->(b)";
-    let program = parser::parse(query).unwrap();
-    let tx = program.transaction_activity.unwrap();
-    let block = tx.body.unwrap();
-    let plan = build_block_plan(&block, Some(&stats)).unwrap();
-    println!("\n=== REPLY_TO with two chained MATCHes ===\n{}", explain_plan(&plan));
-}
-
-
 #[test]
 fn explain_two_independent_node_patterns_comma() {
     let mut stats = TableStats::default();
