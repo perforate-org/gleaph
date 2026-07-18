@@ -151,8 +151,7 @@ fn ensure_execution_mode(
 const QUERY_DYNAMIC_INSTRUCTION_BUDGET: u64 = 5_000_000_000;
 
 /// Platform instruction ceiling per update call (40B on ICP).
-const GRAPH_UPDATE_INSTRUCTION_LIMIT: u64 =
-    crate::facade::IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT;
+const GRAPH_UPDATE_INSTRUCTION_LIMIT: u64 = crate::facade::IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT;
 
 /// Conservative budget for the synchronous derived-index drain that follows
 /// a successful batch. Observed cost is ~1.5K instructions; this reserve is
@@ -229,7 +228,7 @@ pub async fn execute_plan_update_batch(
 #[cfg(feature = "batch-instr-log")]
 const BATCH_INSTR_OP_THRESHOLD: u64 = 500_000_000;
 
-#[cfg(feature = "batch-instr-log")]
+#[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
 fn log_batch_op(
     entrypoint: &str,
     mode: ExecutePlanBatchMode,
@@ -247,7 +246,19 @@ fn log_batch_op(
     );
 }
 
-#[cfg(feature = "batch-instr-log")]
+#[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
+#[allow(dead_code)]
+#[inline]
+fn log_batch_op(
+    _entrypoint: &str,
+    _mode: ExecutePlanBatchMode,
+    _index: usize,
+    _cost: u64,
+    _result: &Result<ExecutePlanResult, String>,
+) {
+}
+
+#[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
 fn log_batch_summary(
     entrypoint: &str,
     mode: ExecutePlanBatchMode,
@@ -270,6 +281,36 @@ fn log_batch_summary(
         next_index,
     );
 }
+
+#[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
+#[allow(dead_code)]
+#[inline]
+fn log_batch_summary(
+    _entrypoint: &str,
+    _mode: ExecutePlanBatchMode,
+    _ops_executed: usize,
+    _total_instr: u64,
+    _max_instr: u64,
+    _min_instr: u64,
+    _errors: usize,
+    _next_index: Option<u32>,
+) {
+}
+
+#[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
+fn log_batch_phase(entrypoint: &str, phase: &str, cost: u64) {
+    ic_cdk::println!(
+        "GLEAPH_BATCH_PHASE entrypoint={} phase={} cost={}",
+        entrypoint,
+        phase,
+        cost
+    );
+}
+
+#[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
+#[allow(dead_code)]
+#[inline]
+fn log_batch_phase(_entrypoint: &str, _phase: &str, _cost: u64) {}
 
 #[cfg(not(feature = "batch-instr-log"))]
 #[allow(dead_code)]
@@ -296,6 +337,10 @@ fn log_batch_summary(
     _next_index: Option<u32>,
 ) {
 }
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[inline]
+fn log_batch_phase(_entrypoint: &str, _phase: &str, _cost: u64) {}
 
 async fn execute_plan_batch(
     args: ExecutePlanBatchArgs,
@@ -386,7 +431,7 @@ async fn execute_plan_batch(
         if let Err(e) = sync_drain_derived_index_outbox().await {
             return Err(format!("{entrypoint}: synchronous index drain failed: {e}"));
         }
-        #[cfg(feature = "batch-instr-log")]
+        #[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
         ic_cdk::println!(
             "GLEAPH_BATCH_DRAIN entrypoint={} cost={}",
             entrypoint,
@@ -412,6 +457,7 @@ async fn execute_plan_impl(
     args: ExecutePlanArgs,
     drain_outbox_after: bool,
 ) -> Result<ExecutePlanResult, String> {
+    let _phase_t0 = current_instruction_counter();
     let store = GraphStore::new();
     let routing = store
         .federation_routing()
@@ -455,6 +501,12 @@ async fn execute_plan_impl(
     crate::facade::init_ic_gql_extensions();
     let (bundle_requires_write, plans) =
         decode_plan_bundle(&args.plan_blob).map_err(|e| e.to_string())?;
+    let _phase_t1 = current_instruction_counter();
+    log_batch_phase(
+        "execute_plan_impl",
+        "decode",
+        _phase_t1.saturating_sub(_phase_t0),
+    );
     ensure_federated_seeds_for_index_anchors(
         seeds.as_ref(),
         store.federation_routing().is_some(),
@@ -497,17 +549,36 @@ async fn execute_plan_impl(
     )
     .await
     .map_err(|e| e.to_string())?;
+    let _phase_t2 = current_instruction_counter();
+    log_batch_phase(
+        "execute_plan_impl",
+        "run_wire_plans",
+        _phase_t2.saturating_sub(_phase_t1),
+    );
     if drain_outbox_after && let Err(e) = sync_drain_derived_index_outbox().await {
         return Err(format!(
             "execute_plan_impl: synchronous index drain failed: {e}"
         ));
     }
+    let _phase_t3 = current_instruction_counter();
+    log_batch_phase(
+        "execute_plan_impl",
+        "drain",
+        _phase_t3.saturating_sub(_phase_t2),
+    );
 
-    Ok(ExecutePlanResult {
+    let result = ExecutePlanResult {
         row_count: run.row_count as u64,
         rows_blob: run.rows_blob,
         hot_forward_vertices: run.hot_forward_vertices,
-    })
+    };
+    let _phase_t4 = current_instruction_counter();
+    log_batch_phase(
+        "execute_plan_impl",
+        "result_build",
+        _phase_t4.saturating_sub(_phase_t3),
+    );
+    Ok(result)
 }
 
 pub fn ack_label_stats_deltas_through(through_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq) {

@@ -31,6 +31,35 @@ use ic_stable_lara::VertexId;
 use gleaph_gql_extension_integration::GLEAPH_PATH_EXTENSION_HANDLER;
 use std::collections::BTreeMap;
 
+#[cfg(target_family = "wasm")]
+fn current_instruction_counter() -> u64 {
+    ic_cdk::api::call_context_instruction_counter()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn current_instruction_counter() -> u64 {
+    0
+}
+
+#[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
+fn log_wire_phase(entrypoint: &str, phase: &str, cost: u64) {
+    ic_cdk::println!(
+        "GLEAPH_WIRE_PHASE entrypoint={} phase={} cost={}",
+        entrypoint,
+        phase,
+        cost
+    );
+}
+
+#[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
+#[allow(dead_code)]
+#[inline]
+fn log_wire_phase(_entrypoint: &str, _phase: &str, _cost: u64) {}
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[inline]
+fn log_wire_phase(_entrypoint: &str, _phase: &str, _cost: u64) {}
+
 pub fn kernel_execution_mode(mode: KernelGqlExecutionMode) -> GqlCanisterExecutionMode {
     match mode {
         KernelGqlExecutionMode::Query => GqlCanisterExecutionMode::CompositeQuery,
@@ -1205,6 +1234,7 @@ pub async fn run_wire_plans_last_read_row_count(
 ) -> Result<WirePlanRunResult, GqlRunError> {
     let element_id_key =
         crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
+    let _phase_t0 = current_instruction_counter();
     let run_result = run_wire_plans(
         &store,
         plans,
@@ -1218,9 +1248,21 @@ pub async fn run_wire_plans_last_read_row_count(
         mutation_id,
     )
     .await;
+    let _phase_t1 = current_instruction_counter();
+    log_wire_phase(
+        "run_wire_plans_last_read_row_count",
+        "run_wire_plans",
+        _phase_t1.saturating_sub(_phase_t0),
+    );
     if let Some(mutation_id) = mutation_id {
         persist_pending_to_outbox(&store, mutation_id);
     }
+    let _phase_t2 = current_instruction_counter();
+    log_wire_phase(
+        "run_wire_plans_last_read_row_count",
+        "outbox_persist",
+        _phase_t2.saturating_sub(_phase_t1),
+    );
     let run = run_result?;
     if let Some(mutation_id) = mutation_id {
         store.commit_record_completed_mutation_journal(
@@ -1231,6 +1273,12 @@ pub async fn run_wire_plans_last_read_row_count(
             run.hot_forward_vertices.clone(),
         );
     }
+    let _phase_t3 = current_instruction_counter();
+    log_wire_phase(
+        "run_wire_plans_last_read_row_count",
+        "journal_commit",
+        _phase_t3.saturating_sub(_phase_t2),
+    );
     let rows_blob = if mode == GqlCanisterExecutionMode::CompositeQuery {
         let materialized =
             PlanQueryResult::try_from_plan_rows(&store, &element_id_key, &run.last_read_plan_rows)?;
@@ -1243,6 +1291,12 @@ pub async fn run_wire_plans_last_read_row_count(
     } else {
         None
     };
+    let _phase_t4 = current_instruction_counter();
+    log_wire_phase(
+        "run_wire_plans_last_read_row_count",
+        "encode_rows",
+        _phase_t4.saturating_sub(_phase_t3),
+    );
     Ok(WirePlanRunResult {
         row_count: run.last_read_row_count,
         rows_blob,
