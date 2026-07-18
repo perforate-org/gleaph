@@ -947,6 +947,7 @@ async fn apply_canonical_mutation_segment(
     if !local_unique_claims.is_empty() {
         preflight_local_unique_claims(store, &local_unique_claims)?;
     }
+    let _phase_t0 = current_instruction_counter();
     let mutation =
         match execute_mutation_tail_async(store, mutation_ops, seed_rows, &empty_params, execution)
             .await
@@ -954,6 +955,12 @@ async fn apply_canonical_mutation_segment(
             Ok(mutation) => mutation,
             Err(error) => trap_wire_mutation_failure(error),
         };
+    let _phase_t1 = current_instruction_counter();
+    log_wire_phase(
+        "apply_canonical_mutation_segment",
+        "execute_mutation_tail_async",
+        _phase_t1.saturating_sub(_phase_t0),
+    );
     // ADR 0030 slice 5: pin the cross-shard uniqueness `Acquire` receipts for the element created
     // in this segment. This runs inside the same no-`await` canonical section as the write above, so
     // the receipts commit (or roll back on trap) atomically with the canonical mutation.
@@ -1013,6 +1020,12 @@ async fn apply_canonical_mutation_segment(
             *emitted_delta_last_seq,
         );
     }
+    let _phase_t2 = current_instruction_counter();
+    log_wire_phase(
+        "apply_canonical_mutation_segment",
+        "post_write_bookkeeping",
+        _phase_t2.saturating_sub(_phase_t1),
+    );
     Ok(mutation)
 }
 
@@ -1096,11 +1109,19 @@ async fn run_wire_plans_inner(
             // leading-anchor seed rows once, just like a read-only plan would.
             let router_seed = (skip_index && !seed_rows.is_empty())
                 .then(|| (std::mem::take(&mut seed_rows), true));
+            let _phase_r0 = current_instruction_counter();
             let mutation_seed_rows =
                 read_phase_seed_rows(store, plan, parameters, index, &execution, router_seed)
                     .await?
                     .unwrap_or_default();
+            let _phase_r1 = current_instruction_counter();
+            log_wire_phase(
+                "run_wire_plans_inner",
+                "read_phase_seed_rows",
+                _phase_r1.saturating_sub(_phase_r0),
+            );
             // ADR 0029 §1: shard-local canonical critical section (no inter-canister call).
+            let _phase_m0 = current_instruction_counter();
             let mutation = apply_canonical_mutation_segment(
                 store,
                 &plan.ops[read_prefix_len(&plan.ops)..],
@@ -1112,6 +1133,12 @@ async fn run_wire_plans_inner(
                 &mut next_unique_release_ordinal,
             )
             .await?;
+            let _phase_m1 = current_instruction_counter();
+            log_wire_phase(
+                "run_wire_plans_inner",
+                "apply_canonical_mutation_segment",
+                _phase_m1.saturating_sub(_phase_m0),
+            );
             merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
             merge_hot_forward_vertices(&mut hot_forward_vertices, &mutation.hot_forward_vertices);
             record_mutation_procedure_rows(
