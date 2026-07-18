@@ -236,7 +236,7 @@ fn log_batch_op(
     cost: u64,
     result: &Result<ExecutePlanResult, String>,
 ) {
-    ic_cdk::println!(
+    let line = format!(
         "GLEAPH_BATCH_OP entrypoint={} mode={:?} index={} cost={} result={}",
         entrypoint,
         mode,
@@ -244,6 +244,7 @@ fn log_batch_op(
         cost,
         if result.is_ok() { "ok" } else { "err" },
     );
+    crate::instr_log::push(line);
 }
 
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
@@ -269,17 +270,11 @@ fn log_batch_summary(
     errors: usize,
     next_index: Option<u32>,
 ) {
-    ic_cdk::println!(
+    let line = format!(
         "GLEAPH_BATCH_SUMMARY entrypoint={} mode={:?} ops={} total={} max={} min={} errors={} next_index={:?}",
-        entrypoint,
-        mode,
-        ops_executed,
-        total_instr,
-        max_instr,
-        min_instr,
-        errors,
-        next_index,
+        entrypoint, mode, ops_executed, total_instr, max_instr, min_instr, errors, next_index,
     );
+    crate::instr_log::push(line);
 }
 
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
@@ -299,12 +294,11 @@ fn log_batch_summary(
 
 #[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
 fn log_batch_phase(entrypoint: &str, phase: &str, cost: u64) {
-    ic_cdk::println!(
+    let line = format!(
         "GLEAPH_BATCH_PHASE entrypoint={} phase={} cost={}",
-        entrypoint,
-        phase,
-        cost
+        entrypoint, phase, cost
     );
+    crate::instr_log::push(line);
 }
 
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
@@ -432,11 +426,14 @@ async fn execute_plan_batch(
             return Err(format!("{entrypoint}: synchronous index drain failed: {e}"));
         }
         #[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
-        ic_cdk::println!(
-            "GLEAPH_BATCH_DRAIN entrypoint={} cost={}",
-            entrypoint,
-            current_instruction_counter().saturating_sub(_drain_before),
-        );
+        {
+            let line = format!(
+                "GLEAPH_BATCH_DRAIN entrypoint={} cost={}",
+                entrypoint,
+                current_instruction_counter().saturating_sub(_drain_before),
+            );
+            crate::instr_log::push(line);
+        }
     }
     let result = ExecutePlanBatchResult {
         results,

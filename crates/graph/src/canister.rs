@@ -2,6 +2,7 @@
 
 pub mod guards;
 pub(crate) mod handlers;
+pub(crate) mod instr_log;
 pub mod types;
 
 pub use types::GraphInitArgs;

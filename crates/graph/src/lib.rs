@@ -36,6 +36,7 @@ mod test_labels;
 pub mod plan;
 
 mod canister;
+pub(crate) use canister::instr_log;
 
 // --- Canister surface (ic-cdk macros stay here; logic lives in `canister::`) ---
 
@@ -195,6 +196,12 @@ async fn admin_ingest_vertex_embedding_batch(
 #[query(guard = "guard_control_plane_admin")]
 fn admin_stable_memory_stats() -> gleaph_graph_kernel::stable_memory::StableMemoryStats {
     canister::handlers::admin_stable_memory_stats()
+}
+
+#[cfg(feature = "batch-instr-log")]
+#[query(guard = "guard_control_plane_admin")]
+fn admin_take_batch_instr_log() -> Vec<String> {
+    crate::instr_log::take()
 }
 
 #[cfg(feature = "pocket-ic-e2e")]

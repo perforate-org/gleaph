@@ -43,12 +43,11 @@ fn current_instruction_counter() -> u64 {
 
 #[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
 fn log_wire_phase(entrypoint: &str, phase: &str, cost: u64) {
-    ic_cdk::println!(
+    let line = format!(
         "GLEAPH_WIRE_PHASE entrypoint={} phase={} cost={}",
-        entrypoint,
-        phase,
-        cost
+        entrypoint, phase, cost
     );
+    crate::instr_log::push(line);
 }
 
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
