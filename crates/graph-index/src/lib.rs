@@ -5,8 +5,9 @@
 //!
 //! ## API visibility
 //!
-//! Read APIs are router-only (`guard_router_canister`). Posting sync updates call
-//! `guard_shard_canister` at the canister entrypoint before dispatch. Admin APIs are router-only.
+//! Read APIs accept the configured router or any graph shard attached to this index canister
+//! (`guard_router_or_attached_shard_canister`). Posting sync updates call `guard_shard_canister`
+//! at the canister entrypoint before dispatch. Admin APIs are router-only.
 //!
 //! `lookup_range` uses the same lexicographic order on encoded value bytes as `lookup_equal` (`memcmp`).
 
@@ -46,7 +47,7 @@ pub use key::PostingKey;
 pub use label_key::LabelPostingKey;
 pub use state::IndexError;
 
-use crate::guards::{guard_router_canister, guard_shard_canister};
+use crate::guards::{guard_router_canister, guard_router_or_attached_shard_canister, guard_shard_canister};
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{
@@ -186,12 +187,12 @@ fn posting_batch(
     }
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
     canister::lookup_equal(property_id, value)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_edge_equal(
     property_id: u32,
     value: Vec<u8>,
@@ -200,77 +201,77 @@ fn lookup_edge_equal(
     canister::lookup_edge_equal(property_id, value, label_id)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_equal_page(req: LookupEqualPageRequest) -> PostingHitPage {
     canister::lookup_equal_page(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_equal_batch(req: LookupEqualBatchRequest) -> LookupEqualBatchResult {
     canister::lookup_equal_batch(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_equal_page_for_label(req: LookupEqualPageForLabelRequest) -> PostingHitPage {
     canister::lookup_equal_page_for_label(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_range_page(req: LookupRangePageRequest) -> PostingHitPage {
     canister::lookup_range_page(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_range_page_for_label(req: LookupRangePageForLabelRequest) -> PostingHitPage {
     canister::lookup_range_page_for_label(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_edge_equal_batch(req: LookupEdgeEqualBatchRequest) -> LookupEdgeEqualBatchResult {
     canister::lookup_edge_equal_batch(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_edge_equal_page(req: LookupEdgeEqualPageRequest) -> EdgePostingHitPage {
     canister::lookup_edge_equal_page(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {
     canister::lookup_label(vertex_label_id)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_label_for_shard(vertex_label_id: u32, shard_id: ShardId) -> Vec<PostingHit> {
     canister::lookup_label_for_shard(vertex_label_id, shard_id)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_label_page(req: LabelLookupPageRequest) -> LabelLookupPageResult {
     canister::lookup_label_page(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_label_intersection_page(req: LabelIntersectionPageRequest) -> LabelLookupPageResult {
     canister::lookup_label_intersection_page(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_label_intersection(req: IndexLabelIntersectionRequest) -> Vec<PostingHit> {
     canister::lookup_label_intersection(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
     canister::lookup_range(property_id, req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn count_postings_by_value_page(req: LookupValuePostingCountPageRequest) -> ValuePostingCountPage {
     canister::count_postings_by_value_page(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn count_postings_by_value_for_label_page(
     req: LookupValuePostingCountPageRequest,
     vertex_label_id: u32,
@@ -278,36 +279,36 @@ fn count_postings_by_value_for_label_page(
     canister::count_postings_by_value_for_label_page(req, vertex_label_id)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) -> Vec<PostingHit> {
     canister::filter_hits_by_label(vertex_label_id, hits)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_intersection_page(req: LookupIntersectionPageRequest) -> PostingHitPage {
     canister::lookup_intersection_page(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_property_intersection_page(
     req: LookupPropertyIntersectionPageRequest,
 ) -> PropertyIntersectionPage {
     canister::lookup_property_intersection_page(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_intersection_page_for_label(
     req: LookupIntersectionPageForLabelRequest,
 ) -> PostingHitPage {
     canister::lookup_intersection_page_for_label(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_range_intersection_page(req: LookupRangeIntersectionPageRequest) -> PostingHitPage {
     canister::lookup_range_intersection_page(req)
 }
 
-#[query(guard = "guard_router_canister")]
+#[query(guard = "guard_router_or_attached_shard_canister")]
 fn lookup_range_intersection_page_for_label(
     req: LookupRangeIntersectionPageForLabelRequest,
 ) -> PostingHitPage {

@@ -60,3 +60,37 @@ pub fn guard_shard_canister(shard_id: ShardId) -> Result<(), String> {
         ))
     }
 }
+
+/// Native unit tests call handlers directly without canister caller context.
+#[cfg(not(target_family = "wasm"))]
+pub fn guard_router_or_attached_shard_canister() -> Result<(), String> {
+    Ok(())
+}
+
+/// Read APIs accept the configured router or any graph shard attached to this index canister.
+/// The index canister is graph-dedicated, so every attached shard belongs to the same logical
+/// graph and is entitled to read its own postings.
+#[cfg(target_family = "wasm")]
+pub fn guard_router_or_attached_shard_canister() -> Result<(), String> {
+    use crate::facade::stable::{INDEX_ROUTER, INDEX_SHARD_CANISTER_CATALOG};
+    use candid::Principal;
+    use ic_cdk::api::msg_caller;
+
+    let caller = msg_caller();
+    if caller == Principal::anonymous() {
+        return Err("anonymous caller is not the configured router canister".to_string());
+    }
+    let router = INDEX_ROUTER.with_borrow(|cell| *cell.get());
+    if caller == router {
+        return Ok(());
+    }
+    let attached =
+        INDEX_SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.is_attached_shard_canister(caller));
+    if attached {
+        Ok(())
+    } else {
+        Err(format!(
+            "caller {caller} is not the configured router canister {router} or an attached shard canister"
+        ))
+    }
+}

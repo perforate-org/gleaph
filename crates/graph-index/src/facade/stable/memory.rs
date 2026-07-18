@@ -103,6 +103,11 @@ impl ShardCanisterCatalog {
         self.by_shard.get(&shard_id)
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn is_attached_shard_canister(&self, canister: Principal) -> bool {
+        self.by_canister.contains_key(&canister)
+    }
+
     pub(crate) fn insert(
         &mut self,
         shard_id: ShardId,
