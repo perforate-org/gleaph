@@ -36,6 +36,7 @@ mod test_labels;
 pub mod plan;
 
 mod canister;
+#[cfg(feature = "batch-instr-log")]
 pub(crate) use canister::instr_log;
 
 // --- Canister surface (ic-cdk macros stay here; logic lives in `canister::`) ---

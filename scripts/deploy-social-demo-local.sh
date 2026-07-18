@@ -433,7 +433,38 @@ main() {
       logical_graph_name = \"$GRAPH_NAME\";
     }
   )"
+  # Prime the property index for the lookup keys used by the social-demo seed
+  # GQL. Without these, every MATCH by `user_id` or `demo_id` scans every vertex
+  # of that label. This is a one-time DDL cost paid before seeding.
+  log "Bootstrapping social-demo labels for index registration"
+  local sentinel_offset=9000000
+  local sentinel_user_id="__gleaph_bootstrap_user"
+  icp_call_expect_ok "Bootstrap User label" "" -e local gleaph-router gql_execute_idempotent \
+    "(\"INSERT (n:User {demo_id: $sentinel_offset, demo_graph: 'social', name: '__bootstrap', user_id: '$sentinel_user_id'})\", vec {}, \"social-bootstrap-user\")"
+  icp_call_expect_ok "Bootstrap Post label" "" -e local gleaph-router gql_execute_idempotent \
+    "(\"INSERT (n:Post {demo_id: $sentinel_offset, demo_graph: 'social', body: '__bootstrap'})\", vec {}, \"social-bootstrap-post\")"
+  icp_call_expect_ok "Bootstrap Feed label" "" -e local gleaph-router gql_execute_idempotent \
+    "(\"INSERT (n:Feed {demo_id: $sentinel_offset, demo_graph: 'social', name: '__bootstrap'})\", vec {}, \"social-bootstrap-feed\")"
+  icp_call_expect_ok "Bootstrap Topic label" "" -e local gleaph-router gql_execute_idempotent \
+    "(\"INSERT (n:Topic {demo_id: $sentinel_offset, demo_graph: 'social', name: '__bootstrap'})\", vec {}, \"social-bootstrap-topic\")"
+  icp_call_expect_ok "Bootstrap Community label" "" -e local gleaph-router gql_execute_idempotent \
+    "(\"INSERT (n:Community {demo_id: $sentinel_offset, demo_graph: 'social', name: '__bootstrap'})\", vec {}, \"social-bootstrap-community\")"
 
+  log "Setting indexed vertex properties for social-demo lookups"
+  icp_call_expect_ok "Index User.user_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
+    "(\"$GRAPH_NAME\", \"User\", \"user_id\")"
+  icp_call_expect_ok "Index Post.demo_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
+    "(\"$GRAPH_NAME\", \"Post\", \"demo_id\")"
+  icp_call_expect_ok "Index Feed.demo_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
+    "(\"$GRAPH_NAME\", \"Feed\", \"demo_id\")"
+  icp_call_expect_ok "Index Topic.demo_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
+    "(\"$GRAPH_NAME\", \"Topic\", \"demo_id\")"
+  icp_call_expect_ok "Index User.demo_id" "" -e local gleaph-router admin_set_indexed_vertex_property \
+    "(\"$GRAPH_NAME\", \"User\", \"demo_id\")"
+
+  log "Removing bootstrap vertices"
+  icp_call_expect_ok "Delete bootstrap vertices" "" -e local gleaph-router gql_execute_idempotent \
+    "(\"MATCH (n {demo_id: $sentinel_offset, demo_graph: 'social'}) DETACH DELETE n\", vec {}, \"social-bootstrap-delete\")"
   log "Installing gleaph-vector"
   icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-vector --args "(
     record {

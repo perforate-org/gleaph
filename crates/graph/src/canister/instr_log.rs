@@ -21,10 +21,24 @@ pub fn push(line: String) {
 pub fn push(_line: String) {}
 
 #[cfg(not(feature = "batch-instr-log"))]
+#[allow(dead_code)]
 #[inline]
 pub fn push(_line: String) {}
 
-/// Return a copy of all buffered log lines without clearing.
+#[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
 pub fn dump() -> Vec<String> {
     LOG_BUFFER.with(|buf| buf.borrow().clone())
+}
+
+#[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
+#[allow(dead_code)]
+pub fn dump() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[allow(dead_code)]
+#[inline]
+pub fn dump() -> Vec<String> {
+    Vec::new()
 }
