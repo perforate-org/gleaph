@@ -24,7 +24,7 @@ pub fn push(_line: String) {}
 #[inline]
 pub fn push(_line: String) {}
 
-/// Return all buffered log lines and clear the buffer.
-pub fn take() -> Vec<String> {
-    LOG_BUFFER.with(|buf| buf.borrow_mut().drain(..).collect())
+/// Return a copy of all buffered log lines without clearing.
+pub fn dump() -> Vec<String> {
+    LOG_BUFFER.with(|buf| buf.borrow().clone())
 }

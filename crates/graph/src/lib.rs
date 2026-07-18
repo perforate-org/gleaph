@@ -200,8 +200,12 @@ fn admin_stable_memory_stats() -> gleaph_graph_kernel::stable_memory::StableMemo
 
 #[cfg(feature = "batch-instr-log")]
 #[query(guard = "guard_control_plane_admin")]
-fn admin_take_batch_instr_log() -> Vec<String> {
-    crate::instr_log::take()
+fn admin_take_batch_instr_log(offset: u32, limit: u32) -> Vec<String> {
+    crate::instr_log::dump()
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit.clamp(1, 10_000) as usize)
+        .collect()
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
