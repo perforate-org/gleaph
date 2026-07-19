@@ -24,6 +24,33 @@ use gleaph_graph_kernel::plan_exec::{
     MutationTokenShard, ReadMode, ResolvedSearchWire, ShardEventSeq, UniqueClaimDispatch,
 };
 use ic_cdk::api::msg_caller;
+
+#[cfg(feature = "batch-instr-log")]
+fn log_router_dispatch_phase(phase: &str, cost: u64) {
+    crate::instr_log::push(format!(
+        "GLEAPH_ROUTER_DISPATCH phase={} cost={}",
+        phase, cost
+    ));
+}
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[allow(dead_code)]
+#[inline]
+fn log_router_dispatch_phase(_phase: &str, _cost: u64) {}
+
+#[cfg(feature = "batch-instr-log")]
+fn log_router_preflight(kind: &str, cost: u64) {
+    crate::instr_log::push(format!(
+        "GLEAPH_ROUTER_PREFLIGHT kind={} cost={}",
+        kind, cost
+    ));
+}
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[allow(dead_code)]
+#[inline]
+fn log_router_preflight(_kind: &str, _cost: u64) {}
+
 use nohash_hasher::IntSet;
 use std::collections::{HashMap, HashSet};
 
@@ -2265,6 +2292,8 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     batch: Option<(BatchDispatchCoordinator, usize)>,
     preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
+    #[cfg(feature = "batch-instr-log")]
+    let dispatch_start = crate::current_instruction_counter();
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     // ADR 0029 §6 (Phase 5 contract 1): a completely-new INSERT-only write has no index anchor and
     // no existing-state reads, so it is placed on the graph's latest shard rather than rejected.
@@ -2327,6 +2356,8 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                 .map(|shard| (shard.graph_canister, record.mutation_id))
                 .collect();
             if !targets.is_empty() {
+                #[cfg(feature = "batch-instr-log")]
+                let t0 = crate::current_instruction_counter();
                 if let Some((ref coordinator, item_index)) = batch {
                     coordinator
                         .prefetch_journal_entries(item_index, targets, preflight)
@@ -2337,8 +2368,20 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                 } else if let Some(ctx) = preflight {
                     ctx.prefetch_journal_entries(&targets).await;
                 }
+                #[cfg(feature = "batch-instr-log")]
+                log_router_preflight(
+                    "journal",
+                    crate::current_instruction_counter().saturating_sub(t0),
+                );
             }
+            #[cfg(feature = "batch-instr-log")]
+            let t0 = crate::current_instruction_counter();
             reconcile_router_mutation_projection(store, caller, graph_id, key, preflight).await?;
+            #[cfg(feature = "batch-instr-log")]
+            log_router_preflight(
+                "reconcile",
+                crate::current_instruction_counter().saturating_sub(t0),
+            );
         }
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
             await_batch_item(&batch).await?;
@@ -2857,6 +2900,8 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
             indexed_embeddings: Some(indexed_embeddings.clone()),
             resolved_search_blob: dispatch.resolved_search_blob.clone(),
         };
+    #[cfg(feature = "batch-instr-log")]
+    let graph_call_start = crate::current_instruction_counter();
     let dispatch_results: Vec<BatchDispatchResult> = if let Some((coordinator, item_index)) = batch
     {
         let operation_groups = dispatch_groups
@@ -2919,6 +2964,11 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         }
         results
     };
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "graph_calls",
+        crate::current_instruction_counter().saturating_sub(graph_call_start),
+    );
 
     let mut merged = empty_execute_plan_result();
     // ADR 0029 Phase 2: accumulate per-shard read-your-writes watermarks for the mutation
@@ -2928,6 +2978,8 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     // Coalesce per-wave mutation-journal reads. Dispatch already returned, so any
     // entries that exist are durable; missing entries are cached as `None` and handled by the
     // per-shard recovery/projection logic below.
+    #[cfg(feature = "batch-instr-log")]
+    let journal_read_start = crate::current_instruction_counter();
     if let (Some(ctx), Some(mutation_id)) = (preflight, mutation_id) {
         let mut seen = HashSet::new();
         let targets: Vec<(Principal, MutationId)> = dispatch_results
@@ -2944,6 +2996,11 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
             ctx.resolve_journal_entries(&targets).await?;
         }
     }
+    #[cfg(feature = "batch-instr-log")]
+    log_router_preflight(
+        "post_dispatch_journal",
+        crate::current_instruction_counter().saturating_sub(journal_read_start),
+    );
 
     for (dispatch, result) in dispatch_results {
         let result =
@@ -3113,6 +3170,11 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
             token,
         ));
     }
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "total",
+        crate::current_instruction_counter().saturating_sub(dispatch_start),
+    );
     Ok(attach_mutation_token(
         attach_mutation_phase(
             GqlQueryResult::from_merged(&merged),

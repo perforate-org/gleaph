@@ -39,6 +39,7 @@ canbench-rs = { workspace = true, optional = true }
 default = []
 canbench = ["dep:canbench-rs"]
 pocket-ic-e2e = []
+batch-instr-log = []
 
 [dev-dependencies]
 candid.workspace = true

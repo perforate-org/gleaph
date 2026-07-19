@@ -32,6 +32,10 @@ mod index_lookup;
 mod index_route;
 mod index_sync;
 pub mod init;
+#[cfg(feature = "batch-instr-log")]
+pub(crate) mod instr_log;
+#[cfg(not(feature = "batch-instr-log"))]
+mod instr_log;
 mod label_backfill;
 mod label_stats_projection;
 #[cfg_attr(
@@ -255,6 +259,16 @@ fn admin_sweep_expired_client_mutation_keys(
     canister::admin_sweep_expired_client_mutation_keys(args)
 }
 
+/// Debug-only: dump the in-memory batch instruction log. Requires `batch-instr-log` feature.
+#[query]
+fn admin_take_batch_instr_log(offset: u32, limit: u32) -> Vec<String> {
+    crate::instr_log::dump()
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit.clamp(1, 10_000) as usize)
+        .collect()
+}
+
 #[update]
 fn admin_intern_vertex_label(
     logical_graph_name: String,
@@ -321,12 +335,23 @@ async fn gql_execute_idempotent(
     gql::gql_execute_idempotent(query, params, client_mutation_key).await
 }
 
+#[cfg(feature = "batch-instr-log")]
+fn log_batch_phase(phase: &str, cost: u64) {
+    crate::instr_log::push(format!("GLEAPH_ROUTER_BATCH phase={} cost={}", phase, cost));
+}
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[allow(dead_code)]
+#[inline]
+fn log_batch_phase(_phase: &str, _cost: u64) {}
+
 /// Execute cursor-based idempotent mutations until the Router instruction budget is reached.
 ///
 /// Each wave reuses the fixed batch coordinator and is independently partial-successful. A
 /// returned `next_index` is the only continuation signal; retrying the same cursor is safe because
 /// every item retains its original client mutation key.
 #[update]
+#[allow(unused_variables, unused_assignments)]
 async fn gql_execute_idempotent_batch(
     args: types::GqlExecuteIdempotentBatchArgs,
 ) -> Result<types::GqlExecuteIdempotentBatchResult, RouterError> {
@@ -369,7 +394,12 @@ async fn gql_execute_idempotent_batch(
     let end = args.mutations.len();
     let ingress_end = end.min(start_cursor + MAX_MUTATIONS_PER_INGRESS);
     let mut results = Vec::new();
+    let mut waves_run = 0usize;
+    let mut per_wave_total = 0u64;
+    #[cfg(feature = "batch-instr-log")]
+    let ingress_start_instr = current_instruction_counter();
     while cursor < ingress_end && current_instruction_counter() < budget {
+        let wave_instr_before = current_instruction_counter();
         let wave_end = ingress_end.min(cursor + MAX_BATCH_WAVE_ITEMS);
         let coordinator = gql::BatchDispatchCoordinator::new_dynamic(wave_end - cursor, budget);
         let wave_slice = args.mutations[cursor..wave_end]
@@ -390,6 +420,14 @@ async fn gql_execute_idempotent_batch(
             });
             futures::future::join_all(futures).await
         };
+        let wave_instr_after = current_instruction_counter();
+        let wave_instr = wave_instr_after.saturating_sub(wave_instr_before);
+        waves_run += 1;
+        per_wave_total += wave_instr;
+        log_batch_phase(
+            &format!("wave items={} total", wave_slice.len()),
+            wave_instr,
+        );
         let next_deferred = wave_results
             .iter()
             .position(|result| matches!(result, Ok(None)));
@@ -426,6 +464,26 @@ async fn gql_execute_idempotent_batch(
         return Err(RouterError::InvalidArgument(
             "instruction budget is already exhausted; increase instruction_budget or retry".into(),
         ));
+    }
+    #[cfg(feature = "batch-instr-log")]
+    {
+        let ingress_total = current_instruction_counter().saturating_sub(ingress_start_instr);
+        log_batch_phase(
+            &format!(
+                "ingress_summary waves={} items={} total",
+                waves_run,
+                cursor - start_cursor
+            ),
+            ingress_total,
+        );
+        log_batch_phase(
+            &format!("ingress_summary waves={} per_wave_avg", waves_run),
+            if waves_run == 0 {
+                0
+            } else {
+                per_wave_total / waves_run as u64
+            },
+        );
     }
     let instruction_counter = current_instruction_counter();
     let result = types::GqlExecuteIdempotentBatchResult {
