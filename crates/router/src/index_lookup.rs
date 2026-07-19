@@ -4,19 +4,16 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use candid::{Encode, Principal};
+use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest,
-    IndexIntersectionResult, IndexLabelIntersectionRequest, IndexSubject,
-    LabelIntersectionPageRequest, LabelLookupPageRequest, LabelLookupPageResult,
-    LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult, LookupEdgeEqualPageRequest,
-    LookupEqualBatchRequest, LookupEqualBatchResult, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
+    EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
+    IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
+    LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
+    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
     LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS,
-    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit, PropertyPostingCursor, ValuePostingCount,
-    ValuePostingCountPage,
+    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit, ValuePostingCount, ValuePostingCountPage,
 };
 
 use crate::facade::store::RouterStore;
@@ -81,182 +78,6 @@ async fn collect_value_count_pages_for_label(
         after = page.next;
     }
     Ok(counts)
-}
-
-#[allow(dead_code)]
-/// Chunk a slice of equality specs into a Candid-encodable batch request that stays under the
-/// 2 MiB inter-canister payload limit. Returns the built request and the exclusive end index.
-fn chunk_index_equal_specs<F, R>(
-    specs: &[IndexEqualSpec],
-    start: usize,
-    build: F,
-) -> Result<(R, usize), String>
-where
-    F: Fn(&[IndexEqualSpec]) -> R,
-    R: candid::CandidType,
-{
-    let mut end = specs.len();
-    while end > start {
-        let req = build(&specs[start..end]);
-        let encoded =
-            candid::Encode!(&req).map_err(|e| format!("encode index batch request failed: {e}"))?;
-        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            return Ok((req, end));
-        }
-        if end == start + 1 {
-            return Err(format!(
-                "a single index lookup spec exceeds the safe inter-canister payload limit of {} bytes",
-                gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-            ));
-        }
-        end = (start + end) / 2;
-    }
-    Err("empty index batch chunk".into())
-}
-
-#[allow(dead_code)]
-/// Collect all equality hits for many vertex `(property_id, value)` buckets in one (or a few)
-/// inter-canister call(s). Each bucket is paged individually if the first returned page is not
-/// fully drained.
-async fn collect_equal_hits_batch_paged(
-    client: &RouterIndexClient,
-    specs: Vec<IndexEqualSpec>,
-) -> Result<Vec<Vec<PostingHit>>, String> {
-    if specs.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut all = vec![Vec::new(); specs.len()];
-    let mut start = 0usize;
-    while start < specs.len() {
-        let (req, end) = chunk_index_equal_specs(&specs, start, |chunk| LookupEqualBatchRequest {
-            specs: chunk.to_vec(),
-            after: None,
-            limit: INDEX_LOOKUP_PAGE_LIMIT,
-        })?;
-        let result: LookupEqualBatchResult = client.lookup_equal_batch(req).await?;
-        let processed = result
-            .next
-            .map(|n| n as usize)
-            .unwrap_or(result.pages.len());
-        let mut pending: Vec<(usize, Option<PropertyPostingCursor>)> = Vec::new();
-        for offset in 0..processed {
-            let page = &result.pages[offset];
-            let global = start + offset;
-            all[global].extend(page.hits.iter().cloned());
-            if !page.done {
-                pending.push((global, page.next.clone()));
-            }
-        }
-        // Specs the canister did not reach (instruction-budget shortfall) need full collection.
-        for offset in processed..(end - start) {
-            pending.push((start + offset, None));
-        }
-        for (global, after) in pending {
-            let spec = &specs[global];
-            let hits = if let Some(after) = after {
-                let mut hits = Vec::new();
-                let mut cursor = Some(after);
-                loop {
-                    let page = client
-                        .lookup_equal_page(LookupEqualPageRequest {
-                            property_id: spec.property_id,
-                            value: spec.value.clone(),
-                            after: cursor,
-                            limit: INDEX_LOOKUP_PAGE_LIMIT,
-                        })
-                        .await?;
-                    hits.extend(page.hits);
-                    if page.done {
-                        break;
-                    }
-                    cursor = page.next;
-                }
-                hits
-            } else {
-                collect_equal_hits_paged(client, spec.property_id, spec.value.clone()).await?
-            };
-            all[global] = hits;
-        }
-        start = end;
-    }
-    Ok(all)
-}
-
-/// Collect all edge equality hits for many edge `(property_id, value[, label_id])` buckets in one
-/// (or a few) inter-canister call(s), paging any bucket that is not fully drained.
-async fn collect_edge_equal_hits_batch_paged(
-    client: &RouterIndexClient,
-    specs: Vec<IndexEqualSpec>,
-) -> Result<Vec<Vec<EdgePostingHit>>, String> {
-    if specs.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut all = vec![Vec::new(); specs.len()];
-    let mut start = 0usize;
-    while start < specs.len() {
-        let (req, end) =
-            chunk_index_equal_specs(&specs, start, |chunk| LookupEdgeEqualBatchRequest {
-                specs: chunk.to_vec(),
-                after: None,
-                limit: INDEX_LOOKUP_PAGE_LIMIT,
-            })?;
-        let result: LookupEdgeEqualBatchResult = client.lookup_edge_equal_batch(req).await?;
-        let processed = result
-            .next
-            .map(|n| n as usize)
-            .unwrap_or(result.pages.len());
-        let mut pending: Vec<(usize, Option<EdgePostingCursor>)> = Vec::new();
-        for offset in 0..processed {
-            let page = &result.pages[offset];
-            let global = start + offset;
-            all[global].extend(page.hits.iter().cloned());
-            if !page.done {
-                pending.push((global, page.next.clone()));
-            }
-        }
-        for offset in processed..(end - start) {
-            pending.push((start + offset, None));
-        }
-        for (global, after) in pending {
-            let spec = &specs[global];
-            let label_id = match spec.subject {
-                IndexSubject::EdgeProperty { label_id } => label_id,
-                IndexSubject::VertexProperty => None,
-            };
-            let hits = if let Some(after) = after {
-                let mut hits = Vec::new();
-                let mut cursor = Some(after);
-                loop {
-                    let page = client
-                        .lookup_edge_equal_page(LookupEdgeEqualPageRequest {
-                            property_id: spec.property_id,
-                            value: spec.value.clone(),
-                            label_id,
-                            after: cursor,
-                            limit: INDEX_LOOKUP_PAGE_LIMIT,
-                        })
-                        .await?;
-                    hits.extend(page.hits);
-                    if page.done {
-                        break;
-                    }
-                    cursor = page.next;
-                }
-                hits
-            } else {
-                collect_edge_equal_hits_paged(
-                    client,
-                    spec.property_id,
-                    spec.value.clone(),
-                    label_id,
-                )
-                .await?
-            };
-            all[global] = hits;
-        }
-        start = end;
-    }
-    Ok(all)
 }
 
 async fn collect_property_intersection_pages(
@@ -580,63 +401,8 @@ pub(crate) trait IndexLookup {
         vertex_label_id: u32,
         min_count: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
-
-    #[allow(dead_code)]
-    /// Batch equality lookup for many `(property_id, value)` buckets in as few inter-canister
-    /// calls as possible. The default implementation falls back to sequential single-bucket calls.
-    fn lookup_equal_batch(
-        &self,
-        specs: Vec<IndexEqualSpec>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<PostingHit>>, String>> + '_>> {
-        Box::pin(async move {
-            let mut results = Vec::with_capacity(specs.len());
-            for spec in specs {
-                let hits = match spec.subject {
-                    IndexSubject::VertexProperty => {
-                        self.lookup_equal(spec.property_id, spec.value.clone())
-                            .await?
-                    }
-                    IndexSubject::EdgeProperty { label_id } => self
-                        .lookup_edge_equal(spec.property_id, spec.value.clone(), label_id)
-                        .await?
-                        .into_iter()
-                        .map(|h| PostingHit {
-                            shard_id: h.shard_id,
-                            vertex_id: h.owner_vertex_id,
-                        })
-                        .collect(),
-                };
-                results.push(hits);
-            }
-            Ok(results)
-        })
-    }
-
-    #[allow(dead_code)]
-    /// Batch edge equality lookup for many edge `(property_id, value[, label_id])` buckets.
-    /// The default implementation falls back to sequential single-bucket calls.
-    fn lookup_edge_equal_batch(
-        &self,
-        specs: Vec<IndexEqualSpec>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<EdgePostingHit>>, String>> + '_>> {
-        Box::pin(async move {
-            let mut results = Vec::with_capacity(specs.len());
-            for spec in specs {
-                let label_id = match spec.subject {
-                    IndexSubject::EdgeProperty { label_id } => label_id,
-                    IndexSubject::VertexProperty => None,
-                };
-                results.push(
-                    self.lookup_edge_equal(spec.property_id, spec.value.clone(), label_id)
-                        .await?,
-                );
-            }
-            Ok(results)
-        })
-    }
 }
 
-#[allow(dead_code)]
 impl IndexLookup for RouterIndexClient {
     fn lookup_equal(
         &self,
@@ -729,23 +495,8 @@ impl IndexLookup for RouterIndexClient {
             min_count,
         ))
     }
-
-    fn lookup_equal_batch(
-        &self,
-        specs: Vec<IndexEqualSpec>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<PostingHit>>, String>> + '_>> {
-        Box::pin(collect_equal_hits_batch_paged(self, specs))
-    }
-
-    fn lookup_edge_equal_batch(
-        &self,
-        specs: Vec<IndexEqualSpec>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<EdgePostingHit>>, String>> + '_>> {
-        Box::pin(collect_edge_equal_hits_batch_paged(self, specs))
-    }
 }
 
-#[allow(dead_code)]
 impl IndexLookup for RouterIndexLookup {
     fn lookup_equal(
         &self,
@@ -934,79 +685,6 @@ impl IndexLookup for RouterIndexLookup {
                 );
             }
             Ok(merge_value_posting_counts(groups))
-        })
-    }
-
-    fn lookup_equal_batch(
-        &self,
-        specs: Vec<IndexEqualSpec>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<PostingHit>>, String>> + '_>> {
-        let targets = self.targets.clone();
-        if targets.len() == 1 {
-            let client = RouterIndexClient::new(targets[0]);
-            let live_shards = self.shard_index.clone();
-            return Box::pin(async move {
-                let results = IndexLookup::lookup_equal_batch(&client, specs).await?;
-                Ok(results
-                    .into_iter()
-                    .map(|hits| RouterIndexLookup::filter_live_vertex_hits(&live_shards, hits))
-                    .collect())
-            });
-        }
-        // Federated fallback: drain each bucket individually so the caller still gets batched
-        // semantics even when the Router must fan out across index canisters.
-        Box::pin(async move {
-            let mut results = vec![Vec::new(); specs.len()];
-            for (i, spec) in specs.into_iter().enumerate() {
-                let hits = match spec.subject {
-                    IndexSubject::VertexProperty => {
-                        self.lookup_equal(spec.property_id, spec.value.clone())
-                            .await?
-                    }
-                    IndexSubject::EdgeProperty { label_id } => self
-                        .lookup_edge_equal(spec.property_id, spec.value.clone(), label_id)
-                        .await?
-                        .into_iter()
-                        .map(|h| PostingHit {
-                            shard_id: h.shard_id,
-                            vertex_id: h.owner_vertex_id,
-                        })
-                        .collect(),
-                };
-                results[i] = hits;
-            }
-            Ok(results)
-        })
-    }
-
-    fn lookup_edge_equal_batch(
-        &self,
-        specs: Vec<IndexEqualSpec>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<EdgePostingHit>>, String>> + '_>> {
-        let targets = self.targets.clone();
-        if targets.len() == 1 {
-            let client = RouterIndexClient::new(targets[0]);
-            let live_shards = self.shard_index.clone();
-            return Box::pin(async move {
-                let results = IndexLookup::lookup_edge_equal_batch(&client, specs).await?;
-                Ok(results
-                    .into_iter()
-                    .map(|hits| RouterIndexLookup::filter_live_edge_hits(&live_shards, hits))
-                    .collect())
-            });
-        }
-        Box::pin(async move {
-            let mut results = vec![Vec::new(); specs.len()];
-            for (i, spec) in specs.into_iter().enumerate() {
-                let label_id = match spec.subject {
-                    IndexSubject::EdgeProperty { label_id } => label_id,
-                    IndexSubject::VertexProperty => None,
-                };
-                results[i] = self
-                    .lookup_edge_equal(spec.property_id, spec.value.clone(), label_id)
-                    .await?;
-            }
-            Ok(results)
         })
     }
 }
