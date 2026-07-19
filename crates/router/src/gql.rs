@@ -2308,13 +2308,6 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     // source of truth for mutation lifecycle transitions.
     Ok(PrepareOutcome::Prepared(Box::new(
         crate::batch_wave::PreparedMutation {
-            caller,
-            graph_id,
-            client_mutation_key: client_mutation_key
-                .map(|k| k.to_string())
-                .unwrap_or_default(),
-            already_completed: false,
-            completed_row_count: None,
             has_dml,
             merge_mode,
             dispatches,

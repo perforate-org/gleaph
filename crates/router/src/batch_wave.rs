@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Batch ingress data types and budget constants for Router GQL mutations.
 //!
 //! Mutations are prepared in [`crate::gql::prepare_mutation_for_batch`] and, if they require
@@ -19,16 +17,6 @@ pub(crate) const ROUTER_WORK_HEADROOM: u64 = 4_000_000_000;
 /// All async prefetch (journal, anchors) is already resolved; the executor only needs to run
 /// the Graph dispatch and post-processing phases.
 pub(crate) struct PreparedMutation {
-    /// The caller principal.
-    pub caller: Principal,
-    /// The graph id this mutation targets.
-    pub graph_id: gleaph_graph_kernel::entry::GraphId,
-    /// The client-provided idempotency key.
-    pub client_mutation_key: String,
-    /// Whether this mutation was already completed before dispatch.
-    pub already_completed: bool,
-    /// The precomputed row_count when `already_completed` is true.
-    pub completed_row_count: Option<u64>,
     /// Whether the program contains DML.
     pub has_dml: bool,
     /// Merge mode for federated results.
