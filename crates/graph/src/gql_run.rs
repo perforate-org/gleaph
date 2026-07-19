@@ -1039,12 +1039,12 @@ async fn run_wire_plans_inner(
         if journal.is_completed() {
             return Ok(TransactionBlockRun {
                 last_query_rows: PlanQueryResult::default(),
-                last_read_row_count: journal.row_count as usize,
+                last_read_row_count: journal.row_count() as usize,
                 last_read_plan_rows: Vec::new(),
                 label_stats_delta: LabelStatsDelta::default(),
-                emitted_delta_first_seq: journal.emitted_delta_first_seq,
-                emitted_delta_last_seq: journal.emitted_delta_last_seq,
-                hot_forward_vertices: journal.hot_forward_vertices.clone(),
+                emitted_delta_first_seq: journal.emitted_delta_first_seq(),
+                emitted_delta_last_seq: journal.emitted_delta_last_seq(),
+                hot_forward_vertices: journal.hot_forward_vertices().to_vec().clone(),
             });
         }
         return Err(GqlRunError::Plan(format!(
@@ -2082,13 +2082,13 @@ mod tests {
         let journal = store
             .get_mutation_journal_entry(42)
             .expect("journal entry after first update");
-        assert!(journal.emitted_delta_first_seq.is_some());
+        assert!(journal.emitted_delta_first_seq().is_some());
         assert_eq!(
-            journal.emitted_delta_first_seq,
-            journal.emitted_delta_last_seq
+            journal.emitted_delta_first_seq(),
+            journal.emitted_delta_last_seq()
         );
         let delta = store
-            .pending_label_stats_deltas(journal.emitted_delta_first_seq.unwrap(), 10)
+            .pending_label_stats_deltas(journal.emitted_delta_first_seq().unwrap(), 10)
             .pop()
             .expect("pending delta");
         assert_eq!(delta.mutation_id, 42);
@@ -2261,7 +2261,7 @@ mod tests {
 
         // Projection intent: the label-stats delta is durably logged in the same flow...
         let first_seq = journal
-            .emitted_delta_first_seq
+            .emitted_delta_first_seq()
             .expect("label-stats delta intent recorded");
         let delta = store
             .pending_label_stats_deltas(first_seq, 10)

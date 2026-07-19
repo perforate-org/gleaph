@@ -3,15 +3,21 @@
 use candid::{Decode, Encode};
 use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
-    GraphMutationJournalEntryWire, LabelStatsDeltaEventWire, MutationId, MutationJournalState,
-    ShardEventSeq,
+    GraphBulkMutationProgress, GraphMutationJournalEntryWire, LabelStatsDeltaEventWire, MutationId,
+    MutationJournalState, ShardEventSeq,
 };
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
 use std::ops::Bound as StdBound;
 
+/// Versioned graph-local mutation journal entry (ADR 0015, ADR 0044).
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
-pub struct GraphMutationJournalEntry {
+pub enum GraphMutationJournalEntry {
+    V1(GraphMutationJournalEntryV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct GraphMutationJournalEntryV1 {
     pub mutation_id: MutationId,
     pub state: MutationJournalState,
     pub row_count: u64,
@@ -24,6 +30,13 @@ pub struct GraphMutationJournalEntry {
     /// the pre-upgrade backlog ages out from upgrade time rather than evicting prematurely.
     #[serde(default)]
     pub recorded_at_ns: Option<u64>,
+    /// Bulk operation cursor: for a bulk mutation, points at the next unexecuted operation
+    /// index. For a single mutation it is `None`.
+    #[serde(default)]
+    pub next_index: Option<u32>,
+    /// Bulk-specific progress metadata; present only when `next_index` is used.
+    #[serde(default)]
+    pub bulk_progress: Option<GraphBulkMutationProgress>,
 }
 
 impl GraphMutationJournalEntry {
@@ -33,7 +46,7 @@ impl GraphMutationJournalEntry {
         emitted_delta_last_seq: Option<ShardEventSeq>,
         recorded_at_ns: u64,
     ) -> Self {
-        Self {
+        Self::V1(GraphMutationJournalEntryV1 {
             mutation_id,
             state: MutationJournalState::Incomplete,
             row_count: 0,
@@ -41,7 +54,9 @@ impl GraphMutationJournalEntry {
             emitted_delta_last_seq,
             hot_forward_vertices: Vec::new(),
             recorded_at_ns: Some(recorded_at_ns),
-        }
+            next_index: None,
+            bulk_progress: None,
+        })
     }
 
     pub fn completed(
@@ -52,7 +67,7 @@ impl GraphMutationJournalEntry {
         hot_forward_vertices: Vec<LocalVertexId>,
         recorded_at_ns: u64,
     ) -> Self {
-        Self {
+        Self::V1(GraphMutationJournalEntryV1 {
             mutation_id,
             state: MutationJournalState::Completed,
             row_count,
@@ -60,22 +75,89 @@ impl GraphMutationJournalEntry {
             emitted_delta_last_seq,
             hot_forward_vertices,
             recorded_at_ns: Some(recorded_at_ns),
+            next_index: None,
+            bulk_progress: None,
+        })
+    }
+
+    fn as_v1(&self) -> &GraphMutationJournalEntryV1 {
+        match self {
+            GraphMutationJournalEntry::V1(v1) => v1,
         }
+    }
+
+    fn as_v1_mut(&mut self) -> &mut GraphMutationJournalEntryV1 {
+        match self {
+            GraphMutationJournalEntry::V1(v1) => v1,
+        }
+    }
+
+    pub fn mutation_id(&self) -> MutationId {
+        self.as_v1().mutation_id
+    }
+    pub fn state(&self) -> MutationJournalState {
+        self.as_v1().state
+    }
+    pub fn row_count(&self) -> u64 {
+        self.as_v1().row_count
+    }
+    pub fn emitted_delta_first_seq(&self) -> Option<ShardEventSeq> {
+        self.as_v1().emitted_delta_first_seq
+    }
+    pub fn emitted_delta_last_seq(&self) -> Option<ShardEventSeq> {
+        self.as_v1().emitted_delta_last_seq
+    }
+    pub fn hot_forward_vertices(&self) -> &Vec<LocalVertexId> {
+        &self.as_v1().hot_forward_vertices
+    }
+    pub fn recorded_at_ns(&self) -> Option<u64> {
+        self.as_v1().recorded_at_ns
+    }
+    pub fn next_index(&self) -> Option<u32> {
+        self.as_v1().next_index
+    }
+    pub fn bulk_progress(&self) -> &Option<GraphBulkMutationProgress> {
+        &self.as_v1().bulk_progress
+    }
+
+    pub fn set_state(&mut self, state: MutationJournalState) {
+        self.as_v1_mut().state = state;
+    }
+    pub fn set_row_count(&mut self, row_count: u64) {
+        self.as_v1_mut().row_count = row_count;
+    }
+    pub fn set_emitted_delta_first_seq(&mut self, seq: Option<ShardEventSeq>) {
+        self.as_v1_mut().emitted_delta_first_seq = seq;
+    }
+    pub fn set_emitted_delta_last_seq(&mut self, seq: Option<ShardEventSeq>) {
+        self.as_v1_mut().emitted_delta_last_seq = seq;
+    }
+    pub fn set_hot_forward_vertices(&mut self, vertices: Vec<LocalVertexId>) {
+        self.as_v1_mut().hot_forward_vertices = vertices;
+    }
+    pub fn set_recorded_at_ns(&mut self, recorded_at_ns: Option<u64>) {
+        self.as_v1_mut().recorded_at_ns = recorded_at_ns;
+    }
+    pub fn set_next_index(&mut self, next_index: Option<u32>) {
+        self.as_v1_mut().next_index = next_index;
+    }
+    pub fn set_bulk_progress(&mut self, bulk_progress: Option<GraphBulkMutationProgress>) {
+        self.as_v1_mut().bulk_progress = bulk_progress;
     }
 
     pub fn wire(&self) -> GraphMutationJournalEntryWire {
-        GraphMutationJournalEntryWire {
-            mutation_id: self.mutation_id,
-            state: self.state,
-            row_count: self.row_count,
-            emitted_delta_first_seq: self.emitted_delta_first_seq,
-            emitted_delta_last_seq: self.emitted_delta_last_seq,
-            hot_forward_vertices: self.hot_forward_vertices.clone(),
-        }
+        GraphMutationJournalEntryWire::new(
+            self.as_v1().mutation_id,
+            self.as_v1().state,
+            self.as_v1().row_count,
+            self.as_v1().emitted_delta_first_seq,
+            self.as_v1().emitted_delta_last_seq,
+            self.as_v1().hot_forward_vertices.clone(),
+        )
     }
 
     pub fn is_completed(&self) -> bool {
-        matches!(self.state, MutationJournalState::Completed)
+        matches!(self.as_v1().state, MutationJournalState::Completed)
     }
 }
 
@@ -188,7 +270,7 @@ impl<M: Memory> GraphMutationJournal<M> {
     }
 
     pub fn insert(&mut self, entry: GraphMutationJournalEntry) {
-        self.map.insert(entry.mutation_id, entry);
+        self.map.insert(entry.mutation_id(), entry);
     }
 
     /// One amortized, budgeted retention pass over the keyspace starting strictly after
@@ -216,10 +298,10 @@ impl<M: Memory> GraphMutationJournal<M> {
             let value = entry.value();
             scanned += 1;
             last_key = Some(id);
-            match value.recorded_at_ns {
+            match value.recorded_at_ns() {
                 None => {
                     let mut stamped = value;
-                    stamped.recorded_at_ns = Some(now);
+                    stamped.set_recorded_at_ns(Some(now));
                     to_stamp.push(stamped);
                 }
                 Some(ts) if now.saturating_sub(ts) > retention_ns => to_remove.push(id),
@@ -231,7 +313,7 @@ impl<M: Memory> GraphMutationJournal<M> {
             self.map.remove(id);
         }
         for entry in to_stamp {
-            self.map.insert(entry.mutation_id, entry);
+            self.map.insert(entry.mutation_id(), entry);
         }
         (scanned, removed, last_key)
     }
@@ -288,7 +370,7 @@ mod tests {
     fn lazy_stamps_legacy_entry_then_evicts_after_retention() {
         let mut j = journal();
         // Pre-ADR-0027 bytes decode with no timestamp.
-        j.insert(GraphMutationJournalEntry {
+        j.insert(GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
             mutation_id: 3,
             state: MutationJournalState::Completed,
             row_count: 1,
@@ -296,12 +378,14 @@ mod tests {
             emitted_delta_last_seq: None,
             hot_forward_vertices: Vec::new(),
             recorded_at_ns: None,
-        });
+            next_index: None,
+            bulk_progress: None,
+        }));
         let upgrade_ns = 1_000 * DAY_NS;
         // First visit lazy-stamps to "now" instead of evicting, even though "now" is huge.
         let (_, removed, _) = j.evict_expired(None, 8, upgrade_ns, RETENTION_NS);
         assert_eq!(removed, 0);
-        assert_eq!(j.get(3).unwrap().recorded_at_ns, Some(upgrade_ns));
+        assert_eq!(j.get(3).unwrap().recorded_at_ns(), Some(upgrade_ns));
         // It then ages out from the stamp time, not from epoch.
         let (_, removed_before, _) =
             j.evict_expired(None, 8, upgrade_ns + RETENTION_NS - 1, RETENTION_NS);

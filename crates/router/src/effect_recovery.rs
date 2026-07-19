@@ -148,7 +148,7 @@ async fn reconcile_row(store: &RouterStore, row: PendingEffectRow, now: u64) -> 
 
     // Termination gate: only a mutation whose effect generation has finished can be drained, and
     // only then can an absent reservation be classified as an orphan. The owning record must be the
-    // **same mutation** (`record.mutation_id == key.mutation_id`) and terminal; a missing record
+    // **same mutation** (`record.as_v1().mutation_id == key.mutation_id`) and terminal; a missing record
     // (should not happen while the row GC-pins it), a same-client-key retry that recycled the record
     // onto a different mutation, or a still-non-terminal one is held.
     match store.mutation_terminal_for(&record.client_key, key.mutation_id) {
@@ -417,10 +417,10 @@ mod tests {
 
     fn insert_record(key: &ClientMutationKey, mid: u64, terminal: bool) {
         let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
-        record.routing_in_progress = false;
+        record.as_v1_mut().routing_in_progress = false;
         if terminal {
             // A completed canonical shard makes the record terminal (completed).
-            record.completed_row_count = Some(0);
+            record.as_v1_mut().completed_row_count = Some(0);
         }
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             m.insert(key.clone(), record);

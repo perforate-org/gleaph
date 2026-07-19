@@ -4,7 +4,8 @@ overview: "Implement wave-level saga coalescing for homogeneous seed groups as s
 todos:
   - id: "version-stable-records"
     content: "Version RouterMutationRecord, RouterMutationShard, and GraphMutationJournalEntry as enums with V1 variants."
-    status: pending
+    status: in_progress
+    note: "RouterMutationRecord and RouterMutationShard versioning compile (gleaph-router lib+tests). GraphMutationJournalEntry versioning pending."
   - id: "extend-graph-batch-journal"
     content: "Extend Graph execute_plan_update_batch and mutation journal to support one MutationId with multiple operations and a durable operation cursor."
     status: pending

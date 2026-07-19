@@ -47,16 +47,18 @@ impl MutationStatus {
     pub fn from_record(record: &RouterMutationRecord) -> Self {
         let phase = record.lifecycle_phase();
         let target_shard = record
+            .as_v1()
             .shards
             .iter()
-            .find(|shard| !shard.completed)
+            .find(|shard| !shard.completed())
             .or_else(|| {
                 record
+                    .as_v1()
                     .shards
                     .iter()
-                    .find(|shard| !shard.projection_advanced)
+                    .find(|shard| !shard.projection_advanced())
             })
-            .map(|shard| shard.shard_id);
+            .map(|shard| shard.shard_id());
         let next_action = match phase {
             MutationLifecyclePhase::Completed => "none",
             MutationLifecyclePhase::Failed => "resubmit with a new client_mutation_key",
@@ -73,9 +75,9 @@ impl MutationStatus {
         }
         .to_string();
         Self {
-            mutation_id: record.mutation_id,
+            mutation_id: record.as_v1().mutation_id,
             phase,
-            last_error: record.last_error.clone(),
+            last_error: record.as_v1().last_error.clone(),
             target_shard,
             next_action,
         }
@@ -795,15 +797,15 @@ mod tests {
 
     fn shard(id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShard {
         let mut shard = RouterMutationShard::new(ShardId::new(id), Principal::anonymous(), None);
-        shard.completed = completed;
-        shard.projection_advanced = projection_advanced;
+        shard.set_completed(completed);
+        shard.set_projection_advanced(projection_advanced);
         shard
     }
 
     fn record_with(shards: Vec<RouterMutationShard>) -> RouterMutationRecord {
         let mut record = RouterMutationRecord::new(7, 0, Vec::new());
-        record.routing_in_progress = false;
-        record.shards = shards;
+        record.as_v1_mut().routing_in_progress = false;
+        record.as_v1_mut().shards = shards;
         record
     }
 
@@ -829,7 +831,7 @@ mod tests {
     #[test]
     fn status_for_completed_has_no_target_or_action() {
         let mut record = record_with(vec![shard(0, true, true)]);
-        record.completed_row_count = Some(3);
+        record.as_v1_mut().completed_row_count = Some(3);
         let status = MutationStatus::from_record(&record);
         assert_eq!(status.phase, MutationLifecyclePhase::Completed);
         assert_eq!(status.target_shard, None);

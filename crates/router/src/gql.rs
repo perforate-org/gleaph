@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use crate::types::RouterMutationRecord;
 use candid::{Encode, Principal};
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
@@ -17,13 +18,13 @@ use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog, PostingHit,
     ValuePostingCount,
 };
-use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
     GraphMutationJournalEntryWire, MutationId, MutationJournalState, MutationToken,
     MutationTokenShard, ReadMode, ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire,
     ShardEventSeq, UniqueClaimDispatch,
 };
+use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 use ic_cdk::api::msg_caller;
 
 #[cfg(feature = "batch-instr-log")]
@@ -103,7 +104,9 @@ struct PrepareInstrLogger;
 #[cfg(not(feature = "batch-instr-log"))]
 impl PrepareInstrLogger {
     #[inline]
-    fn new(_key: Option<&str>) -> Self { Self }
+    fn new(_key: Option<&str>) -> Self {
+        Self
+    }
     #[inline]
     fn mark(&mut self, _phase: &'static str) {}
 }
@@ -191,7 +194,6 @@ pub(crate) struct PreflightContext {
     /// `graph_id` -> read-only derived catalog snapshot for dispatch.
     graph_catalog: Rc<RefCell<HashMap<GraphId, GraphCatalogSnapshot>>>,
 }
-
 
 impl PreflightContext {
     pub(crate) fn new() -> Self {
@@ -1960,10 +1962,11 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         // Replays and retries carry an existing record and still run reconciliation.
         if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
             let targets: Vec<(Principal, MutationId)> = record
+                .as_v1()
                 .shards
                 .iter()
-                .filter(|shard| shard.completed && !shard.projection_advanced)
-                .map(|shard| (shard.graph_canister, record.mutation_id))
+                .filter(|shard| shard.completed() && !shard.projection_advanced())
+                .map(|shard| (shard.graph_canister(), record.as_v1().mutation_id))
                 .collect();
             if !targets.is_empty() {
                 #[cfg(feature = "batch-instr-log")]
@@ -2002,7 +2005,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         client_mutation_key.and_then(|key| store.router_mutation_record(caller, graph_id, key));
     let mut resolved_labels = match saved_record
         .as_ref()
-        .and_then(|record| record.resolved_labels.clone())
+        .and_then(|record| record.as_v1().resolved_labels.clone())
     {
         Some(resolved_labels) => resolved_labels,
         None => {
@@ -2035,7 +2038,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     _instr_logger.mark("labels");
     let mut resolved_properties = match saved_record
         .as_ref()
-        .and_then(|record| record.resolved_properties.clone())
+        .and_then(|record| record.as_v1().resolved_properties.clone())
     {
         Some(resolved_properties) => resolved_properties,
         None => {
@@ -2142,15 +2145,16 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
 
     _instr_logger.mark("claims");
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
-        && !record.shards.is_empty()
+        && !record.as_v1().shards.is_empty()
     {
         record
+            .as_v1()
             .shards
             .iter()
             .map(|shard| ShardDispatch {
-                shard_id: shard.shard_id,
-                graph_canister: shard.graph_canister,
-                seed_bindings_blob: shard.seed_bindings_blob.clone(),
+                shard_id: shard.shard_id(),
+                graph_canister: shard.graph_canister(),
+                seed_bindings_blob: shard.seed_bindings_blob().clone(),
                 resolved_search_blob: None,
             })
             .collect()
@@ -2330,20 +2334,22 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
             resolved_properties.clone(),
             envelope_shards,
         )?;
-        if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
-            if let Some(saved_resolved_labels) = record.resolved_labels {
+        if let Some(RouterMutationRecord::V1(v1)) =
+            store.router_mutation_record(caller, graph_id, key)
+        {
+            if let Some(saved_resolved_labels) = v1.resolved_labels {
                 resolved_labels = saved_resolved_labels;
             }
-            if let Some(saved_resolved_properties) = record.resolved_properties {
+            if let Some(saved_resolved_properties) = v1.resolved_properties {
                 resolved_properties = saved_resolved_properties;
             }
-            dispatches = record
+            dispatches = v1
                 .shards
                 .into_iter()
                 .map(|shard| ShardDispatch {
-                    shard_id: shard.shard_id,
-                    graph_canister: shard.graph_canister,
-                    seed_bindings_blob: shard.seed_bindings_blob,
+                    shard_id: shard.shard_id(),
+                    graph_canister: shard.graph_canister(),
+                    seed_bindings_blob: shard.seed_bindings_blob().clone(),
                     resolved_search_blob: None,
                 })
                 .collect();
@@ -2373,42 +2379,46 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         }
     }
 
-    let (element_id_encoding_key, indexed_properties, indexed_embeddings) =
-        if let Some(ctx) = preflight
-            && let Some(snapshot) = ctx.get_graph_catalog(graph_id)
-        {
-            (
-                snapshot.element_id_encoding_key,
-                snapshot.indexed_properties.clone(),
-                snapshot.indexed_embeddings.clone(),
-            )
-        } else {
-            let element_id_encoding_key = store.graph_element_id_encoding_key(graph_id)?.0;
-            // ADR 0023 D1: the router (index definitions SSOT) supplies the indexed-property
-            // catalog per operation so the shard never persists derived index state.
-            let indexed_properties =
-                crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
-            // ADR 0031: the Router (vector-index definitions SSOT) supplies the indexed-embedding
-            // catalog per operation, mirroring `indexed_properties`. The builder is fail-closed on
-            // the dynamic per-graph gate: it exports specs only when dispatch is ready (global
-            // activation flag ON and every live shard vector-attached), otherwise it is empty and
-            // derived vector sync stays inert.
-            let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
-            let indexed_embeddings =
-                crate::facade::stable::vector_index_catalog::to_indexed_embedding_catalog(
-                    graph_id,
-                    dispatch_ready,
-                );
-            if let Some(ctx) = preflight {
-                ctx.insert_graph_catalog(
-                    graph_id,
-                    element_id_encoding_key,
-                    indexed_properties.clone(),
-                    indexed_embeddings.clone(),
-                );
-            }
-            (element_id_encoding_key, indexed_properties, indexed_embeddings)
-        };
+    let (element_id_encoding_key, indexed_properties, indexed_embeddings) = if let Some(ctx) =
+        preflight
+        && let Some(snapshot) = ctx.get_graph_catalog(graph_id)
+    {
+        (
+            snapshot.element_id_encoding_key,
+            snapshot.indexed_properties.clone(),
+            snapshot.indexed_embeddings.clone(),
+        )
+    } else {
+        let element_id_encoding_key = store.graph_element_id_encoding_key(graph_id)?.0;
+        // ADR 0023 D1: the router (index definitions SSOT) supplies the indexed-property
+        // catalog per operation so the shard never persists derived index state.
+        let indexed_properties =
+            crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
+        // ADR 0031: the Router (vector-index definitions SSOT) supplies the indexed-embedding
+        // catalog per operation, mirroring `indexed_properties`. The builder is fail-closed on
+        // the dynamic per-graph gate: it exports specs only when dispatch is ready (global
+        // activation flag ON and every live shard vector-attached), otherwise it is empty and
+        // derived vector sync stays inert.
+        let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
+        let indexed_embeddings =
+            crate::facade::stable::vector_index_catalog::to_indexed_embedding_catalog(
+                graph_id,
+                dispatch_ready,
+            );
+        if let Some(ctx) = preflight {
+            ctx.insert_graph_catalog(
+                graph_id,
+                element_id_encoding_key,
+                indexed_properties.clone(),
+                indexed_embeddings.clone(),
+            );
+        }
+        (
+            element_id_encoding_key,
+            indexed_properties,
+            indexed_embeddings,
+        )
+    };
 
     // ADR 0030 slice 5a: no-`await` Try. All fallible preflight above (routing resolution, the
     // single-shard gate, envelope record, element-id key) has run, so the only step between this
@@ -2692,23 +2702,23 @@ async fn execute_prepared_mutation(
                         preflight,
                     )
                     .await?
-                    && matches!(entry.state, MutationJournalState::Completed)
+                    && matches!(entry.state(), MutationJournalState::Completed)
                 {
                     if has_dml {
                         crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
                             dispatch.graph_canister,
                             dispatch.shard_id,
                             &plans,
-                            &entry.hot_forward_vertices,
+                            &entry.hot_forward_vertices().to_vec(),
                         )
                         .await?;
                     }
                     merge_execute_plan_result(
                         &mut merged,
                         gleaph_graph_kernel::plan_exec::ExecutePlanResult {
-                            row_count: entry.row_count,
+                            row_count: entry.row_count(),
                             rows_blob: None,
-                            hot_forward_vertices: entry.hot_forward_vertices,
+                            hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
                         },
                         merge_mode.clone(),
                     )
@@ -2719,7 +2729,7 @@ async fn execute_prepared_mutation(
                             graph_id,
                             key,
                             dispatch.shard_id,
-                            entry.row_count,
+                            entry.row_count(),
                         )?;
                         store.record_router_mutation_shard_projection_advanced(
                             caller,
@@ -2730,7 +2740,7 @@ async fn execute_prepared_mutation(
                     }
                     token_shards.push(MutationTokenShard {
                         shard_id: dispatch.shard_id,
-                        label_stats_seq: entry.emitted_delta_last_seq,
+                        label_stats_seq: entry.emitted_delta_last_seq(),
                     });
                     continue;
                 }
@@ -2754,7 +2764,7 @@ async fn execute_prepared_mutation(
             .await?;
             token_shards.push(MutationTokenShard {
                 shard_id: dispatch.shard_id,
-                label_stats_seq: entry.emitted_delta_last_seq,
+                label_stats_seq: entry.emitted_delta_last_seq(),
             });
         }
         if has_dml {
@@ -3209,36 +3219,39 @@ async fn reconcile_router_mutation_projection(
         return Ok(());
     };
     for shard in record
+        .as_v1()
         .shards
         .iter()
-        .filter(|shard| shard.completed && !shard.projection_advanced)
+        .filter(|shard| shard.completed() && !shard.projection_advanced())
     {
         let Some(entry) = recover_mutation_outcome(
             store,
             graph_id,
-            shard.graph_canister,
-            shard.shard_id,
-            record.mutation_id,
+            shard.graph_canister(),
+            shard.shard_id(),
+            record.as_v1().mutation_id,
             preflight,
         )
         .await?
         else {
             return Err(RouterError::InvalidArgument(format!(
                 "mutation {} completed on router shard {} but graph journal is unavailable",
-                record.mutation_id, shard.shard_id
+                record.as_v1().mutation_id,
+                shard.shard_id()
             )));
         };
-        if !matches!(entry.state, MutationJournalState::Completed) {
+        if !matches!(entry.state(), MutationJournalState::Completed) {
             return Err(RouterError::InvalidArgument(format!(
                 "mutation {} completed on router shard {} but graph journal is not completed",
-                record.mutation_id, shard.shard_id
+                record.as_v1().mutation_id,
+                shard.shard_id()
             )));
         }
         store.record_router_mutation_shard_projection_advanced(
             caller,
             graph_id,
             client_key,
-            shard.shard_id,
+            shard.shard_id(),
         )?;
     }
     Ok(())
@@ -3281,7 +3294,7 @@ async fn advance_mutation_label_stats_projection(
             "graph shard {shard_id} did not persist mutation journal entry for mutation {mutation_id}"
         )));
     };
-    if !matches!(entry.state, MutationJournalState::Completed) {
+    if !matches!(entry.state(), MutationJournalState::Completed) {
         return Err(RouterError::InvalidArgument(format!(
             "graph shard {shard_id} mutation {mutation_id} did not complete"
         )));
@@ -3291,7 +3304,7 @@ async fn advance_mutation_label_stats_projection(
         graph_id,
         graph_canister,
         shard_id,
-        entry.emitted_delta_last_seq,
+        entry.emitted_delta_last_seq(),
     )
     .await?;
     Ok(entry)
@@ -3309,7 +3322,7 @@ async fn recover_mutation_outcome(
     else {
         return Ok(None);
     };
-    if !matches!(entry.state, MutationJournalState::Completed) {
+    if !matches!(entry.state(), MutationJournalState::Completed) {
         return Ok(None);
     }
     advance_label_stats_projection_through(
@@ -3317,7 +3330,7 @@ async fn recover_mutation_outcome(
         graph_id,
         graph_canister,
         shard_id,
-        entry.emitted_delta_last_seq,
+        entry.emitted_delta_last_seq(),
     )
     .await?;
     Ok(Some(entry))
@@ -3349,36 +3362,36 @@ pub(crate) async fn recover_mutation_record(
     if record.is_terminal() {
         return Ok(());
     }
-    let mutation_id = record.mutation_id;
-    for shard in &record.shards {
-        if shard.completed && shard.projection_advanced {
+    let mutation_id = record.as_v1().mutation_id;
+    for shard in &record.as_v1().shards {
+        if shard.completed() && shard.projection_advanced() {
             continue;
         }
         match recover_mutation_outcome(
             store,
             key.graph_id,
-            shard.graph_canister,
-            shard.shard_id,
+            shard.graph_canister(),
+            shard.shard_id(),
             mutation_id,
             None,
         )
         .await?
         {
             Some(entry) => {
-                if !shard.completed {
+                if !shard.completed() {
                     store.record_router_mutation_shard_completed(
                         key.caller,
                         key.graph_id,
                         &key.client_key,
-                        shard.shard_id,
-                        entry.row_count,
+                        shard.shard_id(),
+                        entry.row_count(),
                     )?;
                 }
                 store.record_router_mutation_shard_projection_advanced(
                     key.caller,
                     key.graph_id,
                     &key.client_key,
-                    shard.shard_id,
+                    shard.shard_id(),
                 )?;
             }
             None => {
@@ -3387,7 +3400,7 @@ pub(crate) async fn recover_mutation_record(
                     format!(
                         "shard {} canonical write not yet committed; retry the idempotent \
                          mutation to resume",
-                        shard.shard_id
+                        shard.shard_id()
                     ),
                 )?;
             }
@@ -4266,14 +4279,14 @@ mod tests {
                 "client-key-1",
             )
             .expect("mutation record");
-        assert_eq!(record.mutation_id, 1);
+        assert_eq!(record.as_v1().mutation_id, 1);
         assert_eq!(
-            record.request_fingerprint,
+            record.as_v1().request_fingerprint,
             request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update)
         );
-        assert!(!record.routing_in_progress);
-        assert!(record.shards.is_empty());
-        assert!(record.completed_row_count.is_none());
+        assert!(!record.as_v1().routing_in_progress);
+        assert!(record.as_v1().shards.is_empty());
+        assert!(record.as_v1().completed_row_count.is_none());
 
         let retry = store
             .reserve_mutation_id_for_client_key(
@@ -4283,7 +4296,7 @@ mod tests {
                 request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update),
             )
             .expect("retry reservation");
-        assert_eq!(retry.mutation_id, record.mutation_id);
+        assert_eq!(retry.mutation_id, record.as_v1().mutation_id);
         assert!(retry.routing_owner);
         assert_eq!(
             store.reserve_mutation_id_for_client_key(
@@ -4343,9 +4356,9 @@ mod tests {
                 "client-key-1",
             )
             .expect("mutation record");
-        assert_eq!(record.completed_row_count, Some(0));
-        assert!(!record.routing_in_progress);
-        assert!(record.shards.is_empty());
+        assert_eq!(record.as_v1().completed_row_count, Some(0));
+        assert!(!record.as_v1().routing_in_progress);
+        assert!(record.as_v1().shards.is_empty());
 
         let rows = futures::executor::block_on(dispatch_with_fake_index(
             &store,
@@ -4387,21 +4400,28 @@ mod tests {
                 "client-key-1",
             )
             .expect("mutation record");
-        assert_eq!(record.mutation_id, 1);
-        assert!(!record.routing_in_progress);
-        assert!(record.completed_row_count.is_none());
-        assert_eq!(record.shards.len(), 1);
-        assert_eq!(record.shards[0].shard_id, ShardId::new(0));
-        assert_eq!(record.shards[0].graph_canister, graph_principal(1));
-        assert!(!record.shards[0].completed);
+        assert_eq!(record.as_v1().mutation_id, 1);
+        assert!(!record.as_v1().routing_in_progress);
+        assert!(record.as_v1().completed_row_count.is_none());
+        assert_eq!(record.as_v1().shards.len(), 1);
+        assert_eq!(record.as_v1().shards[0].shard_id(), ShardId::new(0));
+        assert_eq!(
+            record.as_v1().shards[0].graph_canister(),
+            graph_principal(1)
+        );
+        assert!(!record.as_v1().shards[0].completed());
 
-        let resolved = record.resolved_labels.expect("resolved labels");
+        let resolved = record
+            .as_v1()
+            .resolved_labels
+            .as_ref()
+            .expect("resolved labels");
         assert_eq!(resolved.vertex.len(), 1);
         assert_eq!(resolved.vertex[0].name, "Person");
         assert_eq!(resolved.vertex[0].id.raw(), 1);
 
-        let seed_blob = record.shards[0]
-            .seed_bindings_blob
+        let seed_blob = record.as_v1().shards[0]
+            .seed_bindings_blob()
             .as_ref()
             .expect("seed bindings");
         let seeds: SeedBindingsWire =

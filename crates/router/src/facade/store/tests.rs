@@ -1568,7 +1568,7 @@ fn insert_mutation_record(
 ) -> ClientMutationKey {
     let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.into());
     let mut record = RouterMutationRecord::new(1, created_at_ns, b"fp".to_vec());
-    record.routing_in_progress = routing_in_progress;
+    record.as_v1_mut().routing_in_progress = routing_in_progress;
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         m.insert(key.clone(), record);
     });
@@ -1581,8 +1581,8 @@ fn mutation_journal_len() -> u64 {
 
 fn shard_with(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShard {
     let mut shard = RouterMutationShard::new(ShardId::new(shard_id), graph_principal(9), None);
-    shard.completed = completed;
-    shard.projection_advanced = projection_advanced;
+    shard.set_completed(completed);
+    shard.set_projection_advanced(projection_advanced);
     shard
 }
 
@@ -1594,8 +1594,8 @@ fn insert_mutation_record_with_shards(
 ) -> ClientMutationKey {
     let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.into());
     let mut record = RouterMutationRecord::new(1, created_at_ns, b"fp".to_vec());
-    record.routing_in_progress = false;
-    record.shards = shards;
+    record.as_v1_mut().routing_in_progress = false;
+    record.as_v1_mut().shards = shards;
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         m.insert(key.clone(), record);
     });
@@ -1869,7 +1869,7 @@ fn gc_pin_retains_terminal_record_until_reservation_released() {
 
     // Terminal (Failed: no envelope, no canonical write) and well past the TTL window.
     let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
-    record.routing_in_progress = false;
+    record.as_v1_mut().routing_in_progress = false;
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
     assert!(
         store
@@ -1923,7 +1923,7 @@ fn gc_pin_retains_terminal_record_until_pending_effect_removed() {
 
     // Terminal (Failed: no envelope, no canonical write) and well past the TTL window.
     let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
-    record.routing_in_progress = false;
+    record.as_v1_mut().routing_in_progress = false;
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
 
     // Pin it via a pending-effect row (no reservation reverse-row exists for this mutation).
@@ -2006,7 +2006,7 @@ fn record_last_error_sets_diagnostic_and_skips_terminal() {
     let live = ROUTER_MUTATION_BY_CLIENT_KEY
         .with_borrow(|m| m.get(&pending))
         .expect("record");
-    assert_eq!(live.last_error.as_deref(), Some("boom"));
+    assert_eq!(live.as_v1().last_error.as_deref(), Some("boom"));
 
     let failed = insert_mutation_record(graph_principal(2), "failed", 0, false);
     store
@@ -2016,7 +2016,7 @@ fn record_last_error_sets_diagnostic_and_skips_terminal() {
         .with_borrow(|m| m.get(&failed))
         .expect("record");
     assert!(
-        terminal.last_error.is_none(),
+        terminal.as_v1().last_error.is_none(),
         "a terminal record must not record a recovery diagnostic"
     );
 }
@@ -2198,9 +2198,9 @@ fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
     let record = store
         .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
         .expect("record");
-    assert_eq!(record.mutation_id, first.mutation_id);
-    assert_eq!(record.request_fingerprint, b"a".to_vec());
-    assert!(!record.routing_in_progress);
+    assert_eq!(record.as_v1().mutation_id, first.mutation_id);
+    assert_eq!(record.as_v1().request_fingerprint, b"a".to_vec());
+    assert!(!record.as_v1().routing_in_progress);
 
     let retry = store
         .reserve_mutation_id_for_client_key(
@@ -2246,7 +2246,10 @@ fn router_mutation_journal_tracks_shard_completion() {
     let record = store
         .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
         .expect("record");
-    assert_eq!(record.resolved_labels, Some(ResolvedLabelTable::default()));
+    assert_eq!(
+        record.as_v1().resolved_labels,
+        Some(ResolvedLabelTable::default())
+    );
     assert_eq!(
         store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         None
@@ -2301,10 +2304,14 @@ fn router_mutation_journal_tracks_shard_completion() {
     let compacted = store
         .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
         .expect("record");
-    assert_eq!(compacted.completed_row_count, Some(5));
-    assert!(compacted.shards.is_empty(), "shard fan-out must be dropped");
+    assert_eq!(compacted.as_v1().completed_row_count, Some(5));
     assert!(
-        compacted.resolved_labels.is_none() && compacted.resolved_properties.is_none(),
+        compacted.as_v1().shards.is_empty(),
+        "shard fan-out must be dropped"
+    );
+    assert!(
+        compacted.as_v1().resolved_labels.is_none()
+            && compacted.as_v1().resolved_properties.is_none(),
         "resolved tables must be dropped after completion"
     );
 }
@@ -2373,8 +2380,8 @@ fn router_mutation_journal_records_zero_shard_completion() {
     let record = store
         .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
         .expect("record");
-    assert_eq!(record.completed_row_count, Some(0));
-    assert!(record.shards.is_empty());
+    assert_eq!(record.as_v1().completed_row_count, Some(0));
+    assert!(record.as_v1().shards.is_empty());
     assert_eq!(
         store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         Some(0)

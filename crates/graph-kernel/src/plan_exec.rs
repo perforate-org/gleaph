@@ -296,9 +296,14 @@ pub enum MutationJournalState {
     Completed,
 }
 
-/// Graph shard mutation idempotency journal entry (ADR 0015).
+/// Versioned graph shard mutation idempotency journal entry (ADR 0015, ADR 0044).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct GraphMutationJournalEntryWire {
+pub enum GraphMutationJournalEntryWire {
+    V1(GraphMutationJournalEntryWireV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GraphMutationJournalEntryWireV1 {
     pub mutation_id: MutationId,
     pub state: MutationJournalState,
     pub row_count: u64,
@@ -306,6 +311,127 @@ pub struct GraphMutationJournalEntryWire {
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
     /// Forward hubs observed during DML, persisted so router recovery can still finalize.
     pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
+    /// Bulk operation cursor: for a bulk mutation, points at the next unexecuted
+    /// operation index. For a single mutation it is `None`.
+    #[serde(default)]
+    pub next_index: Option<u32>,
+    /// Bulk-specific progress metadata; present only when `next_index` is used.
+    #[serde(default)]
+    pub bulk_progress: Option<GraphBulkMutationProgress>,
+}
+
+/// Versioned bulk mutation progress metadata stored in a Graph journal entry (ADR 0044).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphBulkMutationProgress {
+    V1(GraphBulkMutationProgressV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GraphBulkMutationProgressV1 {
+    pub operation_count: u32,
+    pub completed_count: u32,
+}
+
+impl GraphMutationJournalEntryWire {
+    pub fn new(
+        mutation_id: MutationId,
+        state: MutationJournalState,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
+    ) -> Self {
+        Self::V1(GraphMutationJournalEntryWireV1 {
+            mutation_id,
+            state,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+            next_index: None,
+            bulk_progress: None,
+        })
+    }
+
+    fn as_v1(&self) -> &GraphMutationJournalEntryWireV1 {
+        match self {
+            GraphMutationJournalEntryWire::V1(v1) => v1,
+        }
+    }
+
+    fn as_v1_mut(&mut self) -> &mut GraphMutationJournalEntryWireV1 {
+        match self {
+            GraphMutationJournalEntryWire::V1(v1) => v1,
+        }
+    }
+
+    pub fn mutation_id(&self) -> MutationId {
+        self.as_v1().mutation_id
+    }
+    pub fn state(&self) -> MutationJournalState {
+        self.as_v1().state
+    }
+    pub fn row_count(&self) -> u64 {
+        self.as_v1().row_count
+    }
+    pub fn emitted_delta_first_seq(&self) -> Option<ShardEventSeq> {
+        self.as_v1().emitted_delta_first_seq
+    }
+    pub fn emitted_delta_last_seq(&self) -> Option<ShardEventSeq> {
+        self.as_v1().emitted_delta_last_seq
+    }
+    pub fn hot_forward_vertices(&self) -> &Vec<crate::federation::LocalVertexId> {
+        &self.as_v1().hot_forward_vertices
+    }
+    pub fn next_index(&self) -> Option<u32> {
+        self.as_v1().next_index
+    }
+    pub fn bulk_progress(&self) -> &Option<GraphBulkMutationProgress> {
+        &self.as_v1().bulk_progress
+    }
+
+    pub fn set_state(&mut self, state: MutationJournalState) {
+        self.as_v1_mut().state = state;
+    }
+    pub fn set_row_count(&mut self, row_count: u64) {
+        self.as_v1_mut().row_count = row_count;
+    }
+    pub fn set_emitted_delta_first_seq(&mut self, seq: Option<ShardEventSeq>) {
+        self.as_v1_mut().emitted_delta_first_seq = seq;
+    }
+    pub fn set_emitted_delta_last_seq(&mut self, seq: Option<ShardEventSeq>) {
+        self.as_v1_mut().emitted_delta_last_seq = seq;
+    }
+    pub fn set_hot_forward_vertices(&mut self, vertices: Vec<crate::federation::LocalVertexId>) {
+        self.as_v1_mut().hot_forward_vertices = vertices;
+    }
+    pub fn set_next_index(&mut self, next_index: Option<u32>) {
+        self.as_v1_mut().next_index = next_index;
+    }
+    pub fn set_bulk_progress(&mut self, bulk_progress: Option<GraphBulkMutationProgress>) {
+        self.as_v1_mut().bulk_progress = bulk_progress;
+    }
+}
+
+impl GraphBulkMutationProgress {
+    pub fn new(operation_count: u32, completed_count: u32) -> Self {
+        Self::V1(GraphBulkMutationProgressV1 {
+            operation_count,
+            completed_count,
+        })
+    }
+
+    pub fn operation_count(&self) -> u32 {
+        match self {
+            GraphBulkMutationProgress::V1(v1) => v1.operation_count,
+        }
+    }
+
+    pub fn completed_count(&self) -> u32 {
+        match self {
+            GraphBulkMutationProgress::V1(v1) => v1.completed_count,
+        }
+    }
 }
 
 /// Router → graph: read a batch of mutation journal entries in one call.

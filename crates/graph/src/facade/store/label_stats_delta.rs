@@ -304,7 +304,7 @@ mod tests {
         // Recorded "long ago" via the timestamped write path.
         store.commit_record_completed_mutation_journal_at(0, id, 3, None, None, Vec::new());
         let entry = store.mutation_journal_entry(id).expect("entry recorded");
-        assert_eq!(entry.recorded_at_ns, Some(0));
+        assert_eq!(entry.recorded_at_ns(), Some(0));
 
         // Drive amortized GC forward at a time well past retention; the round-robin cursor
         // reaches the aged entry within a bounded number of budgeted steps and evicts it.
@@ -343,14 +343,20 @@ mod tests {
 
         let journal = store.mutation_journal_entry(11).expect("journal entry");
         assert!(journal.is_completed());
-        assert_eq!(journal.row_count, 5);
-        assert_eq!(journal.emitted_delta_first_seq, Some(event.shard_event_seq));
-        assert_eq!(journal.emitted_delta_last_seq, Some(event.shard_event_seq));
-        assert_eq!(journal.hot_forward_vertices, vec![7, 42]);
+        assert_eq!(journal.row_count(), 5);
+        assert_eq!(
+            journal.emitted_delta_first_seq(),
+            Some(event.shard_event_seq)
+        );
+        assert_eq!(
+            journal.emitted_delta_last_seq(),
+            Some(event.shard_event_seq)
+        );
+        assert_eq!(journal.hot_forward_vertices().to_vec(), vec![7, 42]);
 
         let wire = store.get_mutation_journal_entry(11).expect("journal wire");
-        assert_eq!(wire.emitted_delta_first_seq, Some(event.shard_event_seq));
-        assert_eq!(wire.emitted_delta_last_seq, Some(event.shard_event_seq));
-        assert_eq!(wire.hot_forward_vertices, vec![7, 42]);
+        assert_eq!(wire.emitted_delta_first_seq(), Some(event.shard_event_seq));
+        assert_eq!(wire.emitted_delta_last_seq(), Some(event.shard_event_seq));
+        assert_eq!(wire.hot_forward_vertices().to_vec(), vec![7, 42]);
     }
 }
