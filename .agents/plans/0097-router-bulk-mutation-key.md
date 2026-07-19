@@ -8,10 +8,11 @@ todos:
     note: "Committed in 71ff0cf8. Router and Graph lib+tests compile; clippy clean."
   - id: "extend-graph-batch-journal"
     content: "Extend Graph execute_plan_update_batch and mutation journal to support one MutationId with multiple operations and a durable operation cursor."
-    status: in_progress
+    status: complete
+    note: "Committed in 5b0d2592. execute_plan_batch detects bulk groups, skips completed ops, and writes one journal entry with next_index/bulk_progress."
   - id: "group-input-mutations"
     content: "Add Router ingress logic to detect consecutive compatible mutations and assign a single client_mutation_key / MutationId per group."
-    status: pending
+    status: in_progress
   - id: "bulk-dispatch-and-continuation"
     content: "Dispatch bulk groups through the existing Graph batch endpoint and handle partial results / next_index inside one ingress call."
     status: pending
