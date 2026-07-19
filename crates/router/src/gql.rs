@@ -14,12 +14,15 @@ use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
-    IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
+    IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog, PostingHit,
+    ValuePostingCount,
 };
+use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
     GraphMutationJournalEntryWire, MutationId, MutationJournalState, MutationToken,
-    MutationTokenShard, ReadMode, ResolvedSearchWire, ShardEventSeq, UniqueClaimDispatch,
+    MutationTokenShard, ReadMode, ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire,
+    ShardEventSeq, UniqueClaimDispatch,
 };
 use ic_cdk::api::msg_caller;
 
@@ -48,6 +51,62 @@ fn log_router_preflight(kind: &str, cost: u64) {
 #[allow(dead_code)]
 #[inline]
 fn log_router_preflight(_kind: &str, _cost: u64) {}
+
+#[cfg(feature = "batch-instr-log")]
+struct PrepareInstrLogger {
+    start: u64,
+    last: u64,
+    key: String,
+    checkpoints: Vec<(&'static str, u64)>,
+}
+
+#[cfg(feature = "batch-instr-log")]
+impl PrepareInstrLogger {
+    fn new(key: Option<&str>) -> Self {
+        let now = crate::current_instruction_counter();
+        Self {
+            start: now,
+            last: now,
+            key: key.unwrap_or("-").to_string(),
+            checkpoints: Vec::new(),
+        }
+    }
+    fn mark(&mut self, phase: &'static str) {
+        let now = crate::current_instruction_counter();
+        let cost = now.saturating_sub(self.last);
+        self.checkpoints.push((phase, cost));
+        self.last = now;
+    }
+}
+
+#[cfg(feature = "batch-instr-log")]
+impl Drop for PrepareInstrLogger {
+    fn drop(&mut self) {
+        let total = crate::current_instruction_counter().saturating_sub(self.start);
+        let mut parts = String::new();
+        for (phase, cost) in &self.checkpoints {
+            if !parts.is_empty() {
+                parts.push(' ');
+            }
+            parts.push_str(&format!("{}={}", phase, cost));
+        }
+        crate::instr_log::push(format!(
+            "GLEAPH_ROUTER_PREPARE key={} total={} {}",
+            self.key, total, parts
+        ));
+    }
+}
+
+#[cfg(not(feature = "batch-instr-log"))]
+struct PrepareInstrLogger;
+
+#[cfg(not(feature = "batch-instr-log"))]
+impl PrepareInstrLogger {
+    #[inline]
+    fn new(_key: Option<&str>) -> Self { Self }
+    #[inline]
+    fn mark(&mut self, _phase: &'static str) {}
+}
 
 use nohash_hasher::IntSet;
 use std::collections::{HashMap, HashSet};
@@ -105,6 +164,14 @@ pub(crate) struct CachedPlanDispatch {
 /// seed anchor or shard do not issue N identical Router→Graph/Index calls during planning.
 /// It also caches parsed/planned/encoded query shapes so repeated query strings inside the
 /// same ingress avoid redundant parse, validate, plan, and plan-blob encode work.
+/// Read-only graph-derived catalog state cached for the lifetime of an ingress.
+#[derive(Clone)]
+pub(crate) struct GraphCatalogSnapshot {
+    element_id_encoding_key: [u8; 16],
+    indexed_properties: IndexedPropertyCatalog,
+    indexed_embeddings: IndexedEmbeddingCatalog,
+}
+
 #[derive(Clone)]
 pub(crate) struct PreflightContext {
     /// `(anchor, shard_id)` -> resolved seed hits.
@@ -117,7 +184,14 @@ pub(crate) struct PreflightContext {
     pub(crate) pending_min_mutation_id: Rc<RefCell<HashMap<Principal, Option<MutationId>>>>,
     /// `(caller, graph_id, query)` -> cached dispatch + plan blob.
     pub(crate) plan_cache: Rc<RefCell<HashMap<(Principal, GraphId, String), CachedPlanDispatch>>>,
+    /// `(graph_id, plan_blob)` -> resolved labels from the planner.
+    resolved_labels: Rc<RefCell<HashMap<(GraphId, Vec<u8>), ResolvedLabelTable>>>,
+    /// `(graph_id, plan_blob)` -> resolved properties from the planner.
+    resolved_properties: Rc<RefCell<HashMap<(GraphId, Vec<u8>), ResolvedPropertyTable>>>,
+    /// `graph_id` -> read-only derived catalog snapshot for dispatch.
+    graph_catalog: Rc<RefCell<HashMap<GraphId, GraphCatalogSnapshot>>>,
 }
+
 
 impl PreflightContext {
     pub(crate) fn new() -> Self {
@@ -126,6 +200,9 @@ impl PreflightContext {
             journal_entries: Rc::new(RefCell::new(HashMap::new())),
             pending_min_mutation_id: Rc::new(RefCell::new(HashMap::new())),
             plan_cache: Rc::new(RefCell::new(HashMap::new())),
+            resolved_labels: Rc::new(RefCell::new(HashMap::new())),
+            resolved_properties: Rc::new(RefCell::new(HashMap::new())),
+            graph_catalog: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -158,6 +235,77 @@ impl PreflightContext {
                 dispatch_graph_id,
                 dispatch,
                 plan_blob,
+            },
+        );
+    }
+
+    /// Return cached resolved labels for this plan shape, if present.
+    pub(crate) fn get_resolved_labels(
+        &self,
+        graph_id: GraphId,
+        plan_blob: &[u8],
+    ) -> Option<ResolvedLabelTable> {
+        self.resolved_labels
+            .borrow()
+            .get(&(graph_id, plan_blob.to_vec()))
+            .cloned()
+    }
+
+    /// Cache resolved labels for this plan shape.
+    pub(crate) fn insert_resolved_labels(
+        &self,
+        graph_id: GraphId,
+        plan_blob: &[u8],
+        labels: ResolvedLabelTable,
+    ) {
+        self.resolved_labels
+            .borrow_mut()
+            .insert((graph_id, plan_blob.to_vec()), labels);
+    }
+
+    /// Return cached resolved properties for this plan shape, if present.
+    pub(crate) fn get_resolved_properties(
+        &self,
+        graph_id: GraphId,
+        plan_blob: &[u8],
+    ) -> Option<ResolvedPropertyTable> {
+        self.resolved_properties
+            .borrow()
+            .get(&(graph_id, plan_blob.to_vec()))
+            .cloned()
+    }
+
+    /// Cache resolved properties for this plan shape.
+    pub(crate) fn insert_resolved_properties(
+        &self,
+        graph_id: GraphId,
+        plan_blob: &[u8],
+        properties: ResolvedPropertyTable,
+    ) {
+        self.resolved_properties
+            .borrow_mut()
+            .insert((graph_id, plan_blob.to_vec()), properties);
+    }
+
+    /// Return cached graph catalog snapshot, if present.
+    pub(crate) fn get_graph_catalog(&self, graph_id: GraphId) -> Option<GraphCatalogSnapshot> {
+        self.graph_catalog.borrow().get(&graph_id).cloned()
+    }
+
+    /// Cache graph catalog snapshot for this graph.
+    pub(crate) fn insert_graph_catalog(
+        &self,
+        graph_id: GraphId,
+        element_id_encoding_key: [u8; 16],
+        indexed_properties: IndexedPropertyCatalog,
+        indexed_embeddings: IndexedEmbeddingCatalog,
+    ) {
+        self.graph_catalog.borrow_mut().insert(
+            graph_id,
+            GraphCatalogSnapshot {
+                element_id_encoding_key,
+                indexed_properties,
+                indexed_embeddings,
             },
         );
     }
@@ -1750,8 +1898,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
     preflight: Option<&PreflightContext>,
 ) -> Result<PrepareOutcome, RouterError> {
-    #[cfg(feature = "batch-instr-log")]
-    let _dispatch_start = crate::current_instruction_counter();
+    let mut _instr_logger = PrepareInstrLogger::new(client_mutation_key);
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     // ADR 0029 §6 (Phase 5 contract 1): a completely-new INSERT-only write has no index anchor and
     // no existing-state reads, so it is placed on the graph's latest shard rather than rejected.
@@ -1775,6 +1922,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
             ));
         }
     }
+    _instr_logger.mark("classify");
     let merge_mode = federated_merge_mode_from_plans(plans);
     let dispatch_plan_blob = federated_dispatch_plan_blob(shards.len(), plan_blob, plans, has_dml)
         .map_err(RouterError::InvalidArgument)?;
@@ -1794,6 +1942,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     } else {
         None
     };
+    _instr_logger.mark("reserve");
     let mutation_id = mutation_reservation.map(|reservation| reservation.mutation_id);
 
     if has_dml && let Some(key) = client_mutation_key {
@@ -1848,6 +1997,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         }
     }
 
+    _instr_logger.mark("replay");
     let saved_record =
         client_mutation_key.and_then(|key| store.router_mutation_record(caller, graph_id, key));
     let mut resolved_labels = match saved_record
@@ -1855,44 +2005,72 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         .and_then(|record| record.resolved_labels.clone())
     {
         Some(resolved_labels) => resolved_labels,
-        None => match store.resolve_plan_labels(graph_id, plans) {
-            Ok(resolved_labels) => resolved_labels,
-            Err(err) => {
-                release_routing_if_owner(
-                    store,
-                    caller,
-                    graph_id,
-                    client_mutation_key,
-                    mutation_reservation,
-                )?;
-                return Err(err);
+        None => {
+            if let Some(ctx) = preflight
+                && let Some(labels) = ctx.get_resolved_labels(graph_id, plan_blob)
+            {
+                labels
+            } else {
+                match store.resolve_plan_labels(graph_id, plans) {
+                    Ok(labels) => {
+                        if let Some(ctx) = preflight {
+                            ctx.insert_resolved_labels(graph_id, plan_blob, labels.clone());
+                        }
+                        labels
+                    }
+                    Err(err) => {
+                        release_routing_if_owner(
+                            store,
+                            caller,
+                            graph_id,
+                            client_mutation_key,
+                            mutation_reservation,
+                        )?;
+                        return Err(err);
+                    }
+                }
             }
-        },
+        }
     };
+    _instr_logger.mark("labels");
     let mut resolved_properties = match saved_record
         .as_ref()
         .and_then(|record| record.resolved_properties.clone())
     {
         Some(resolved_properties) => resolved_properties,
-        None => match store.resolve_plan_properties(graph_id, plans) {
-            Ok(resolved_properties) => resolved_properties,
-            Err(err) => {
-                release_routing_if_owner(
-                    store,
-                    caller,
-                    graph_id,
-                    client_mutation_key,
-                    mutation_reservation,
-                )?;
-                return Err(err);
+        None => {
+            if let Some(ctx) = preflight
+                && let Some(props) = ctx.get_resolved_properties(graph_id, plan_blob)
+            {
+                props
+            } else {
+                match store.resolve_plan_properties(graph_id, plans) {
+                    Ok(props) => {
+                        if let Some(ctx) = preflight {
+                            ctx.insert_resolved_properties(graph_id, plan_blob, props.clone());
+                        }
+                        props
+                    }
+                    Err(err) => {
+                        release_routing_if_owner(
+                            store,
+                            caller,
+                            graph_id,
+                            client_mutation_key,
+                            mutation_reservation,
+                        )?;
+                        return Err(err);
+                    }
+                }
             }
-        },
+        }
     };
 
     // ADR 0030: refuse SET writes that would touch a constrained value before the two-phase
     // acquire/release protocol exists — they would otherwise reach the canonical write unguarded and
     // could create a duplicate once `CREATE CONSTRAINT` is published. Checked before dispatch so the
     // refusal records no envelope and reserves nothing.
+    _instr_logger.mark("props");
     if let Err(err) = store.reject_unsupported_constrained_writes(graph_id, plans) {
         release_routing_if_owner(
             store,
@@ -1962,6 +2140,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         )));
     }
 
+    _instr_logger.mark("claims");
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
         && !record.shards.is_empty()
     {
@@ -2078,6 +2257,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         routings_to_dispatches(routings)
     };
 
+    _instr_logger.mark("routing");
     // ADR 0030 slice 5a single-shard gate. A claim's `Acquire` is attached to the one vertex its
     // single shard creates; the same claim broadcast to multiple shards would let each commit a
     // vertex with the same value. Refuse *before* recording the shard envelope — a rejection after
@@ -2193,21 +2373,42 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         }
     }
 
-    let element_id_encoding_key = store.graph_element_id_encoding_key(graph_id)?.0;
-    // ADR 0023 D1: the router (index definitions SSOT) supplies the indexed-property
-    // catalog per operation so the shard never persists derived index state.
-    let indexed_properties =
-        crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
-    // ADR 0031: the Router (vector-index definitions SSOT) supplies the indexed-embedding catalog
-    // per operation, mirroring `indexed_properties`. The builder is fail-closed on the dynamic
-    // per-graph gate: it exports specs only when dispatch is ready (global activation flag ON and
-    // every live shard vector-attached), otherwise it is empty and derived vector sync stays inert.
-    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
-    let indexed_embeddings =
-        crate::facade::stable::vector_index_catalog::to_indexed_embedding_catalog(
-            graph_id,
-            dispatch_ready,
-        );
+    let (element_id_encoding_key, indexed_properties, indexed_embeddings) =
+        if let Some(ctx) = preflight
+            && let Some(snapshot) = ctx.get_graph_catalog(graph_id)
+        {
+            (
+                snapshot.element_id_encoding_key,
+                snapshot.indexed_properties.clone(),
+                snapshot.indexed_embeddings.clone(),
+            )
+        } else {
+            let element_id_encoding_key = store.graph_element_id_encoding_key(graph_id)?.0;
+            // ADR 0023 D1: the router (index definitions SSOT) supplies the indexed-property
+            // catalog per operation so the shard never persists derived index state.
+            let indexed_properties =
+                crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
+            // ADR 0031: the Router (vector-index definitions SSOT) supplies the indexed-embedding
+            // catalog per operation, mirroring `indexed_properties`. The builder is fail-closed on
+            // the dynamic per-graph gate: it exports specs only when dispatch is ready (global
+            // activation flag ON and every live shard vector-attached), otherwise it is empty and
+            // derived vector sync stays inert.
+            let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
+            let indexed_embeddings =
+                crate::facade::stable::vector_index_catalog::to_indexed_embedding_catalog(
+                    graph_id,
+                    dispatch_ready,
+                );
+            if let Some(ctx) = preflight {
+                ctx.insert_graph_catalog(
+                    graph_id,
+                    element_id_encoding_key,
+                    indexed_properties.clone(),
+                    indexed_embeddings.clone(),
+                );
+            }
+            (element_id_encoding_key, indexed_properties, indexed_embeddings)
+        };
 
     // ADR 0030 slice 5a: no-`await` Try. All fallible preflight above (routing resolution, the
     // single-shard gate, envelope record, element-id key) has run, so the only step between this
@@ -2271,6 +2472,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
             .collect()
     };
 
+    _instr_logger.mark("envelope");
     // ADR 0030 slice 6: register the pending unique-effect discovery rows before the first dispatch
     // `await`, so they co-commit with the reservation/envelope. Any dispatch carrying `unique_claims`
     // (an `Acquire`) or `constrained_properties` (a `Release`) may pin an effect; a crash after that
