@@ -72,6 +72,17 @@ const MAX_DYNAMIC_INSTRUCTION_BUDGET: u64 =
     MAX_UPDATE_CALL_INSTRUCTIONS - DYNAMIC_INSTRUCTION_HEADROOM;
 const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
 
+/// Maximum number of mutations processed in one `gql_execute_idempotent_batch` wave.
+/// The IC limits the number of outstanding inter-canister calls a canister can enqueue in a
+/// single call context; a small wave keeps the per-wave coordinator well below that envelope
+/// while still batching Router->Graph index and execute calls.
+const MAX_BATCH_WAVE_ITEMS: usize = 128;
+
+/// Maximum number of mutations processed in a single `gql_execute_idempotent_batch` ingress
+/// call. Each wave issues a bounded number of inter-canister calls; capping the total per
+/// ingress prevents the call context from exhausting the IC's per-message resource envelope.
+const MAX_MUTATIONS_PER_INGRESS: usize = 512;
+
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
     ic_cdk::api::call_context_instruction_counter()
@@ -353,12 +364,15 @@ async fn gql_execute_idempotent_batch(
         }
     };
 
-    let mut cursor = args.start_index as usize;
+    let start_cursor = args.start_index as usize;
+    let mut cursor = start_cursor;
     let end = args.mutations.len();
+    let ingress_end = end.min(start_cursor + MAX_MUTATIONS_PER_INGRESS);
     let mut results = Vec::new();
-    while cursor < end && current_instruction_counter() < budget {
-        let coordinator = gql::BatchDispatchCoordinator::new_dynamic(end - cursor, budget);
-        let wave_slice = args.mutations[cursor..end]
+    while cursor < ingress_end && current_instruction_counter() < budget {
+        let wave_end = ingress_end.min(cursor + MAX_BATCH_WAVE_ITEMS);
+        let coordinator = gql::BatchDispatchCoordinator::new_dynamic(wave_end - cursor, budget);
+        let wave_slice = args.mutations[cursor..wave_end]
             .iter()
             .cloned()
             .enumerate()
@@ -405,10 +419,10 @@ async fn gql_execute_idempotent_batch(
             }
             cursor = next_cursor;
         } else {
-            cursor = end;
+            cursor = wave_end;
         }
     }
-    if cursor == args.start_index as usize {
+    if cursor == start_cursor {
         return Err(RouterError::InvalidArgument(
             "instruction budget is already exhausted; increase instruction_budget or retry".into(),
         ));

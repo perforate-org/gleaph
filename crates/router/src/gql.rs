@@ -250,10 +250,16 @@ struct AnchorPrefetchRegistration {
     sender: oneshot::Sender<Result<(), String>>,
 }
 
+struct JournalPrefetchRegistration {
+    targets: Vec<(Principal, MutationId)>,
+    sender: oneshot::Sender<Result<(), String>>,
+}
+
 struct BatchCoordinatorState {
     expected_items: usize,
     registrations: Vec<Option<BatchRegistration>>,
     anchor_prefetch: Vec<Option<AnchorPrefetchRegistration>>,
+    journal_prefetch: Vec<Option<JournalPrefetchRegistration>>,
     aborted: Option<String>,
     policy: BatchExecutionPolicy,
 }
@@ -277,6 +283,7 @@ impl BatchDispatchCoordinator {
             expected_items,
             registrations: (0..expected_items).map(|_| None).collect(),
             anchor_prefetch: (0..expected_items).map(|_| None).collect(),
+            journal_prefetch: (0..expected_items).map(|_| None).collect(),
             aborted: None,
             policy,
         })))
@@ -336,6 +343,52 @@ impl BatchDispatchCoordinator {
             .map_err(|_| "anchor prefetch coordinator was cancelled".to_string())?
     }
 
+    /// Register this batch item's mutation journal targets so the coordinator can resolve
+    /// every required journal entry across the wave in one batched Router->Graph call per
+    /// canister. Items without journal targets register an empty vector so the barrier still
+    /// completes.
+    pub(crate) async fn prefetch_journal_entries(
+        &self,
+        item_index: usize,
+        targets: Vec<(Principal, MutationId)>,
+        preflight: Option<&PreflightContext>,
+    ) -> Result<(), String> {
+        let (sender, receiver) = oneshot::channel();
+        let registrations = {
+            let mut state = self.0.borrow_mut();
+            if let Some(err) = &state.aborted {
+                return Err(err.clone());
+            }
+            if item_index >= state.expected_items || state.journal_prefetch[item_index].is_some() {
+                return Err(format!(
+                    "invalid or duplicate journal prefetch item index {item_index}"
+                ));
+            }
+            state.journal_prefetch[item_index] =
+                Some(JournalPrefetchRegistration { targets, sender });
+            if state.journal_prefetch.iter().all(Option::is_some) {
+                state
+                    .journal_prefetch
+                    .iter_mut()
+                    .map(Option::take)
+                    .collect::<Option<Vec<_>>>()
+            } else {
+                None
+            }
+        };
+
+        if let Some(registrations) = registrations {
+            let results = resolve_journal_prefetch_registrations(&registrations, preflight).await;
+            for (registration, result) in registrations.into_iter().zip(results) {
+                let _ = registration.sender.send(result);
+            }
+        }
+
+        receiver
+            .await
+            .map_err(|_| "journal prefetch coordinator was cancelled".to_string())?
+    }
+
     pub(crate) async fn register(
         &self,
         item_index: usize,
@@ -386,19 +439,36 @@ impl BatchDispatchCoordinator {
     }
 
     pub(crate) fn abort(&self, error: String) {
-        let senders = {
+        let (registration_senders, anchor_senders, journal_senders) = {
             let mut state = self.0.borrow_mut();
             if state.aborted.is_some() {
                 return;
             }
             state.aborted = Some(error.clone());
-            state
+            let registration_senders = state
                 .registrations
                 .iter_mut()
                 .filter_map(|registration| registration.take().map(|entry| entry.sender))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            let anchor_senders = state
+                .anchor_prefetch
+                .iter_mut()
+                .filter_map(|registration| registration.take().map(|entry| entry.sender))
+                .collect::<Vec<_>>();
+            let journal_senders = state
+                .journal_prefetch
+                .iter_mut()
+                .filter_map(|registration| registration.take().map(|entry| entry.sender))
+                .collect::<Vec<_>>();
+            (registration_senders, anchor_senders, journal_senders)
         };
-        for sender in senders {
+        for sender in registration_senders {
+            let _ = sender.send(Err(error.clone()));
+        }
+        for sender in anchor_senders {
+            let _ = sender.send(Err(error.clone()));
+        }
+        for sender in journal_senders {
             let _ = sender.send(Err(error.clone()));
         }
     }
@@ -599,6 +669,33 @@ async fn resolve_anchor_prefetch_registrations(
         }
     }
 
+    registrations.iter().map(|_| Ok(())).collect()
+}
+
+async fn resolve_journal_prefetch_registrations(
+    registrations: &[JournalPrefetchRegistration],
+    preflight: Option<&PreflightContext>,
+) -> Vec<Result<(), String>> {
+    let ctx = match preflight {
+        Some(ctx) => ctx,
+        None => return registrations.iter().map(|_| Ok(())).collect(),
+    };
+
+    // Concatenate every registration's targets in input order. resolve_journal_entries
+    // groups by Graph canister, chunks by payload/instruction budget, and caches all results.
+    let mut all_targets = Vec::new();
+    let mut offsets = Vec::with_capacity(registrations.len() + 1);
+    for registration in registrations {
+        offsets.push(all_targets.len());
+        all_targets.extend(registration.targets.iter().cloned());
+    }
+    offsets.push(all_targets.len());
+
+    if let Err(err) = ctx.resolve_journal_entries(&all_targets).await {
+        return vec![Err(err.to_string()); registrations.len()];
+    }
+
+    // Results are cached in the preflight context; callers read them via fetch_journal_entry.
     registrations.iter().map(|_| Ok(())).collect()
 }
 
@@ -2223,14 +2320,23 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         // durable projection to reconcile. Skip the Graph journal reads entirely in that case.
         // Replays and retries carry an existing record and still run reconciliation.
         if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
-            if let Some(ctx) = preflight {
-                let targets: Vec<(Principal, MutationId)> = record
-                    .shards
-                    .iter()
-                    .filter(|shard| shard.completed && !shard.projection_advanced)
-                    .map(|shard| (shard.graph_canister, record.mutation_id))
-                    .collect();
-                ctx.prefetch_journal_entries(&targets).await;
+            let targets: Vec<(Principal, MutationId)> = record
+                .shards
+                .iter()
+                .filter(|shard| shard.completed && !shard.projection_advanced)
+                .map(|shard| (shard.graph_canister, record.mutation_id))
+                .collect();
+            if !targets.is_empty() {
+                if let Some((ref coordinator, item_index)) = batch {
+                    coordinator
+                        .prefetch_journal_entries(item_index, targets, preflight)
+                        .await
+                        .map_err(|e| {
+                            RouterError::InvalidArgument(format!("journal prefetch: {e}"))
+                        })?;
+                } else if let Some(ctx) = preflight {
+                    ctx.prefetch_journal_entries(&targets).await;
+                }
             }
             reconcile_router_mutation_projection(store, caller, graph_id, key, preflight).await?;
         }

@@ -206,6 +206,22 @@ fn current_instruction_counter() -> u64 {
     0
 }
 
+/// Instruction counter for the current message only.
+///
+/// `get_mutation_journal_entries` is invoked by the Router over the replicated (update)
+/// path. Using the call-context counter would count the Router's earlier work against this
+/// read's local budget and cause premature cutoff; the per-message counter measures only the
+/// journal lookup itself.
+#[cfg(target_family = "wasm")]
+fn message_instruction_counter() -> u64 {
+    ic_cdk::api::instruction_counter()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn message_instruction_counter() -> u64 {
+    0
+}
+
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
     let result = execute_plan_impl(args, false).await?;
@@ -606,7 +622,7 @@ pub fn get_mutation_journal_entries(
     let mut entries = Vec::with_capacity(args.mutation_ids.len());
     let mut next = None;
     for mutation_id in args.mutation_ids.into_iter() {
-        if current_instruction_counter() >= QUERY_DYNAMIC_INSTRUCTION_BUDGET {
+        if message_instruction_counter() >= QUERY_DYNAMIC_INSTRUCTION_BUDGET {
             next = Some(mutation_id);
             break;
         }

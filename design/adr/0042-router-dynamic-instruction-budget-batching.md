@@ -7,13 +7,17 @@ Status: Implemented
 Make `gql_execute_idempotent_batch` a cursor-based continuation API. This is a
 breaking replacement for the former separate dynamic endpoint. The caller
 supplies a mutation list, `start_index`, an optional instruction budget, and an
-optional maximum item count. There is no arbitrary item-count cap: when
-`max_items` is omitted, the Router consumes all remaining input that fits its
-instruction and encoded-payload budgets. The Router executes the selected
-mutations in waves, reusing ADR 0041's Graph-canister batch boundary. Graph
-transport chunks each target's operations by encoded request size. Between waves
-it reads the current Router call-context instruction counter and stops before
-starting another wave when the requested budget is reached.
+optional maximum item count. There is no caller-visible item-count cap when
+`max_items` is omitted, but the Router enforces internal hard caps per wave and
+per ingress call to stay within the IC's per-call context resource envelope
+(see ADR 0041). Within those caps the Router consumes all remaining input that
+fits its instruction and encoded-payload budgets. The Router executes the
+selected mutations in waves, reusing ADR 0041's Graph-canister batch boundary.
+Graph transport chunks each target's operations by encoded request size.
+Between waves it reads the current Router call-context instruction counter and
+stops before starting another wave when the requested budget is reached, or when
+the per-ingress mutation limit (`MAX_MUTATIONS_PER_INGRESS`) requires a
+continuation cursor.
 
 The default and maximum budget is 35B instructions, leaving 5B headroom below
 the 40B update-call limit for the final wave and response construction. A
@@ -26,6 +30,11 @@ returns the first unattempted operation. If the Router call context is still
 below its budget, Router sends the remaining operations to that Graph again.
 This repeats until the Graph operations complete or the Router budget requires a
 continuation cursor.
+
+The Graph journal preflight read uses the per-message instruction counter
+(`ic_cdk::api::instruction_counter()`) rather than the call-context counter so
+that the Router's earlier work in the same ingress call is not counted against
+the read's local budget.
 
 This API does not attempt to interrupt a mutation or a Graph batch wave. The
 atomicity unit remains one mutation, and the wave remains a transport grouping
@@ -43,6 +52,9 @@ limit and item-local journal boundary.
 - The caller must retain the original mutation list and feed back `next_index`.
 - A budget exhausted before the first wave is a validation error, not an empty
   successful page, preventing a cursor that cannot advance.
+- Internal per-wave (`MAX_BATCH_WAVE_ITEMS`) and per-ingress
+  (`MAX_MUTATIONS_PER_INGRESS`) caps prevent call-context resource exhaustion
+  on very large pages while still allowing continuation from the returned cursor.
 
 ## Follow-up
 

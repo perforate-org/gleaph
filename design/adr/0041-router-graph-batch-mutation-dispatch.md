@@ -52,7 +52,7 @@ reservation/confirmation, and recovery. Graph remains the owner of Graph-local
 canonical writes and Graph-local mutation idempotency. The batch endpoint is a
 transport and execution aggregation boundary, not a second journal owner.
 
-The public batch endpoint has no arbitrary item-count limit. An optional
+The public batch endpoint exposes no arbitrary caller item-count limit; an optional
 `max_items` value lets a caller impose a cursor page limit; when omitted, the
 Router consumes as many remaining items as the instruction and encoded-payload
 budgets allow. Router chunks each target Graph canister's operations by encoded
@@ -62,6 +62,13 @@ first item in that transport batch is executed. The shared conservative request
 ceiling is 2 MiB, matching ICP's ingress and cross-subnet request limit; this
 keeps the transport valid if canisters move between subnets even though same-
 subnet requests permit a larger payload.
+
+Because the IC limits the number of outstanding inter-canister calls a
+call context can enqueue, the Router also bounds each `gql_execute_idempotent_batch`
+wave to `MAX_BATCH_WAVE_ITEMS` mutations and the total number of mutations
+processed in a single ingress call to `MAX_MUTATIONS_PER_INGRESS`. These caps
+keep the per-call context resource envelope well below the IC threshold while
+preserving the caller's cursor continuation semantics.
 
 The public `gql_execute_idempotent_batch` ingress and its response use the same
 2 MiB conservative payload check. This prevents a caller from bypassing the
@@ -79,6 +86,9 @@ target canister as the Router instruction budget permits. Early-completed
 items register an empty operation set, while
 pre-dispatch errors abort the coordinator so remaining items do not wait
 indefinitely.
+Wave-level journal prefetch is coalesced into one batched Router→Graph call
+per target canister, so the number of preflight journal lookups scales with the
+number of target canisters rather than the number of mutations.
 
 ## Alternatives
 
