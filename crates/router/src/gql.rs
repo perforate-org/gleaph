@@ -94,12 +94,24 @@ type BatchOperation = (
 type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
 const BATCH_DEFERRED_ERROR: &str = "batch operation deferred by instruction budget";
 
-/// Preflight context shared across one `gql_execute_idempotent_batch` wave.
+/// Cached plan/plan-blob for a concrete `(caller, graph, query)` shape.
+#[derive(Clone)]
+pub(crate) struct CachedPlanDispatch {
+    /// The graph on which the cached plan executes.
+    dispatch_graph_id: GraphId,
+    /// The Router dispatch decision (EffectiveGraph or Single only for now).
+    dispatch: crate::use_graph::UseGraphV2Dispatch,
+    /// The encoded plan blob ready to send to a Graph shard.
+    plan_blob: Vec<u8>,
+}
+
+/// Preflight context shared across one `gql_execute_idempotent_batch` ingress.
 ///
 /// Holds coalesced inter-canister lookup results so that N mutations referencing the same
 /// seed anchor or shard do not issue N identical Router→Graph/Index calls during planning.
-/// The cache is scoped to a single wave and is intentionally not cross-wave durable.
-#[derive(Clone, Default)]
+/// It also caches parsed/planned/encoded query shapes so repeated query strings inside the
+/// same ingress avoid redundant parse, validate, plan, and plan-blob encode work.
+#[derive(Clone)]
 pub(crate) struct PreflightContext {
     /// `(anchor, shard_id)` -> resolved seed hits.
     anchor_hits: Rc<RefCell<std::collections::HashMap<(IndexAnchor, ShardId), SeedHits>>>,
@@ -108,6 +120,8 @@ pub(crate) struct PreflightContext {
         Rc<RefCell<HashMap<(Principal, MutationId), Option<GraphMutationJournalEntryWire>>>>,
     /// `graph_canister` -> cached `index_pending_min_mutation_id` result.
     pending_min_mutation_id: Rc<RefCell<HashMap<Principal, Option<MutationId>>>>,
+    /// `(caller, graph_id, query)` -> cached dispatch + plan blob.
+    plan_cache: Rc<RefCell<HashMap<(Principal, GraphId, String), CachedPlanDispatch>>>,
 }
 
 impl PreflightContext {
@@ -116,7 +130,41 @@ impl PreflightContext {
             anchor_hits: Rc::new(RefCell::new(HashMap::new())),
             journal_entries: Rc::new(RefCell::new(HashMap::new())),
             pending_min_mutation_id: Rc::new(RefCell::new(HashMap::new())),
+            plan_cache: Rc::new(RefCell::new(HashMap::new())),
         }
+    }
+
+    /// Return a cached dispatch and plan blob for the given query shape.
+    pub(crate) fn get_cached_plan(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        query: &str,
+    ) -> Option<CachedPlanDispatch> {
+        self.plan_cache
+            .borrow()
+            .get(&(caller, graph_id, query.to_string()))
+            .cloned()
+    }
+
+    /// Cache a parsed/planned/encoded query shape for the lifetime of this ingress.
+    pub(crate) fn insert_cached_plan(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        query: String,
+        dispatch_graph_id: GraphId,
+        dispatch: crate::use_graph::UseGraphV2Dispatch,
+        plan_blob: Vec<u8>,
+    ) {
+        self.plan_cache.borrow_mut().insert(
+            (caller, graph_id, query),
+            CachedPlanDispatch {
+                dispatch_graph_id,
+                dispatch,
+                plan_blob,
+            },
+        );
     }
 
     async fn resolve_anchor_hits<I: IndexLookup + ?Sized>(
@@ -1719,6 +1767,54 @@ async fn run_gql_unchecked(
     enforce_read_consistency_with_preflight(&store, resolved.graph_id, &read_mode, preflight)
         .await?;
 
+    // Fast path: repeated query strings inside the same ingress re-use the cached
+    // parsed/planned/encoded shape. DDL/admin paths are excluded above, and the cache is
+    // scoped to a single ingress so it can never outlive a catalog mutation.
+    if read_mode == ReadMode::Eventual
+        && let Some(ctx) = preflight
+        && let Some(entry) = ctx.get_cached_plan(caller, resolved.graph_id, query)
+    {
+        let pmap = decode_gql_params_blob(params)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        return match entry.dispatch {
+                    crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
+                        let stats = graph_stats_for(entry.dispatch_graph_id);
+                        dispatch_plan_blob_with_batch(
+                            entry.dispatch_graph_id,
+                            &entry.plan_blob,
+                            std::slice::from_ref(&plan),
+                            &pmap,
+                            params,
+                            mode,
+                            client_mutation_key,
+                            &stats,
+                            batch.clone(),
+                            Some(ctx),
+                        )
+                        .await
+                    }
+                    crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
+                        let stats = graph_stats_for(graph_id);
+                        dispatch_plan_blob_with_batch(
+                            graph_id,
+                            &entry.plan_blob,
+                            std::slice::from_ref(&plan),
+                            &pmap,
+                            params,
+                            mode,
+                            client_mutation_key,
+                            &stats,
+                            batch.clone(),
+                            Some(ctx),
+                        )
+                        .await
+                    }
+            _ => Err(RouterError::InvalidArgument(
+                "cached plan dispatch variant not supported".into(),
+            )),
+        };
+    }
+
     let tx = program
         .transaction_activity
         .as_ref()
@@ -1848,6 +1944,16 @@ async fn run_gql_unchecked(
         crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
             let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
                 .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+            if let Some(ctx) = preflight {
+                ctx.insert_cached_plan(
+                    caller,
+                    resolved.graph_id,
+                    query.to_string(),
+                    dispatch.dispatch_graph_id,
+                    crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan: plan.clone() },
+                    plan_blob.clone(),
+                );
+            }
             dispatch_plan_blob_with_batch(
                 dispatch.dispatch_graph_id,
                 &plan_blob,
@@ -1866,6 +1972,19 @@ async fn run_gql_unchecked(
             let stats = graph_stats_for(graph_id);
             let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
                 .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+            if let Some(ctx) = preflight {
+                ctx.insert_cached_plan(
+                    caller,
+                    resolved.graph_id,
+                    query.to_string(),
+                    graph_id,
+                    crate::use_graph::UseGraphV2Dispatch::Single {
+                        graph_id,
+                        plan: plan.clone(),
+                    },
+                    plan_blob.clone(),
+                );
+            }
             dispatch_plan_blob_with_batch(
                 graph_id,
                 &plan_blob,

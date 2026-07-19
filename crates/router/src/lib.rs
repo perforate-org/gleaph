@@ -398,6 +398,7 @@ async fn gql_execute_idempotent_batch(
     let mut per_wave_total = 0u64;
     #[cfg(feature = "batch-instr-log")]
     let ingress_start_instr = current_instruction_counter();
+    let preflight = gql::PreflightContext::new();
     while cursor < ingress_end && current_instruction_counter() < budget {
         let wave_instr_before = current_instruction_counter();
         let wave_end = ingress_end.min(cursor + MAX_BATCH_WAVE_ITEMS);
@@ -408,7 +409,6 @@ async fn gql_execute_idempotent_batch(
             .enumerate()
             .collect::<Vec<_>>();
         let wave_results = {
-            let preflight = gql::PreflightContext::new();
             let futures = wave_slice.iter().cloned().map(|(item_index, mutation)| {
                 gql::gql_execute_idempotent_with_batch_outcome(
                     mutation.gql_query,
