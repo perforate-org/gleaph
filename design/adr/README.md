@@ -75,7 +75,11 @@ Last revised: YYYY-MM-DD
 | [0038](0038-provisioning-authorization-and-cycles-funding.md) | Provisioning authorization and cycles funding | proposed |
 | [0039](0039-production-stable-memory-evolution-and-upgrade-safety.md) | Production stable-memory evolution and canister upgrade safety | proposed |
 | [0040](0040-gql-ast-formatter-and-social-demo-wasm-integration.md) | GQL AST formatter and social-demo WASM integration | Implemented |
+| [0041](0041-router-graph-batch-mutation-dispatch.md) | Router-to-Graph batch mutation dispatch | implemented |
+| [0042](0042-router-dynamic-instruction-budget-batching.md) | Router instruction-budget mutation batching API | implemented |
 | [0043](0043-per-memory-bucket-size-memory-manager.md) | Per-memory bucket sizing for the stable-memory manager | proposed |
+| [0044](0044-router-bulk-mutation-key.md) | Router bulk mutation key for wave-level saga coalescing | proposed |
+| [0045](0045-unordered-batch-graph-mutations-and-lara-placement.md) | Unordered batch graph mutations and LARA placement planning | proposed |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 
