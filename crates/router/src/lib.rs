@@ -76,16 +76,21 @@ const MAX_DYNAMIC_INSTRUCTION_BUDGET: u64 =
     MAX_UPDATE_CALL_INSTRUCTIONS - DYNAMIC_INSTRUCTION_HEADROOM;
 const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
 
-/// Maximum number of mutations processed in one `gql_execute_idempotent_batch` wave.
-/// The IC limits the number of outstanding inter-canister calls a canister can enqueue in a
-/// single call context; a small wave keeps the per-wave coordinator well below that envelope
-/// while still batching Router->Graph index and execute calls.
-const MAX_BATCH_WAVE_ITEMS: usize = 128;
+/// Hard ceiling on mutations processed in one `gql_execute_idempotent_batch` wave.
+/// Bounded by the IC's outstanding inter-canister call envelope and the safe Candid
+/// inter-canister payload limit. The actual wave size is chosen dynamically below this cap.
+const MAX_BATCH_WAVE_ITEMS: usize = 256;
 
-/// Maximum number of mutations processed in a single `gql_execute_idempotent_batch` ingress
-/// call. Each wave issues a bounded number of inter-canister calls; capping the total per
-/// ingress prevents the call context from exhausting the IC's per-message resource envelope.
-const MAX_MUTATIONS_PER_INGRESS: usize = 512;
+/// Hard ceiling on mutations processed in a single `gql_execute_idempotent_batch` ingress call.
+/// The actual ingress size is chosen dynamically from the caller-provided instruction budget.
+const MAX_MUTATIONS_PER_INGRESS: usize = 1024;
+
+/// Estimated Router-side instructions consumed per batch item after the per-ingress plan cache is
+/// warm. Measured locally with the social-demo seed workload at userScale=5/postScale=20.
+/// A generous safety margin is included because the counter also advances while awaiting the
+/// Graph canister (which is outside our control). The estimate is used only to size waves; each
+/// wave is still bounded by `MAX_BATCH_WAVE_ITEMS` and the hard `instruction_budget`.
+const ESTIMATED_INSTR_PER_BATCH_ITEM: u64 = 50_000_000;
 
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
@@ -401,7 +406,15 @@ async fn gql_execute_idempotent_batch(
     let preflight = gql::PreflightContext::new();
     while cursor < ingress_end && current_instruction_counter() < budget {
         let wave_instr_before = current_instruction_counter();
-        let wave_end = ingress_end.min(cursor + MAX_BATCH_WAVE_ITEMS);
+        // Dynamic wave sizing: use the remaining instruction budget, capped by the hard ceiling
+        // and by the remaining items in this ingress. Keep a small headroom so a wave that is
+        // already in flight does not run out of instructions while finalizing results.
+        let remaining = budget.saturating_sub(current_instruction_counter());
+        let headroom = remaining / 10;
+        let budgeted_items = (remaining.saturating_sub(headroom) / ESTIMATED_INSTR_PER_BATCH_ITEM)
+            .max(1)
+            .min(MAX_BATCH_WAVE_ITEMS as u64) as usize;
+        let wave_end = ingress_end.min(cursor + budgeted_items);
         let coordinator = gql::BatchDispatchCoordinator::new_dynamic(wave_end - cursor, budget);
         let wave_slice = args.mutations[cursor..wave_end]
             .iter()
