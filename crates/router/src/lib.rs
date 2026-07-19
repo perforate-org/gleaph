@@ -65,6 +65,7 @@ pub use init::{RouterInitArgs, RouterUpgradeArgs};
 pub use state::RouterError;
 
 use candid::{Encode, Principal};
+use futures::stream::StreamExt;
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
 use crate::provisioning::sender::send_accept_envelope;
@@ -80,12 +81,18 @@ const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
 /// The IC limits the number of outstanding inter-canister calls a canister can enqueue in a
 /// single call context; a small wave keeps the per-wave coordinator well below that envelope
 /// while still batching Router->Graph index and execute calls.
-const MAX_BATCH_WAVE_ITEMS: usize = 128;
+const MAX_BATCH_WAVE_ITEMS: usize = 256;
 
 /// Maximum number of mutations processed in a single `gql_execute_idempotent_batch` ingress
 /// call. Each wave issues a bounded number of inter-canister calls; capping the total per
 /// ingress prevents the call context from exhausting the IC's per-message resource envelope.
-const MAX_MUTATIONS_PER_INGRESS: usize = 512;
+const MAX_MUTATIONS_PER_INGRESS: usize = 1024;
+
+/// Maximum number of `gql_execute_idempotent_with_batch_outcome` futures polled concurrently
+/// inside one wave. The IC/CDK protected-task executor panics if too many outstanding tasks
+/// outlive the canister method. Limiting concurrency lets us raise `MAX_BATCH_WAVE_ITEMS`
+/// without exceeding the executor's outstanding-task envelope.
+const MAX_CONCURRENT_BATCH_ITEMS: usize = 64;
 
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
@@ -403,29 +410,38 @@ async fn gql_execute_idempotent_batch(
         let wave_instr_before = current_instruction_counter();
         let wave_end = ingress_end.min(cursor + MAX_BATCH_WAVE_ITEMS);
         let coordinator = gql::BatchDispatchCoordinator::new_dynamic(wave_end - cursor, budget);
-        let wave_slice = args.mutations[cursor..wave_end]
+        let wave_slice: Vec<_> = args.mutations[cursor..wave_end]
             .iter()
             .cloned()
             .enumerate()
-            .collect::<Vec<_>>();
-        let wave_results = {
-            let futures = wave_slice.iter().cloned().map(|(item_index, mutation)| {
-                gql::gql_execute_idempotent_with_batch_outcome(
-                    mutation.gql_query,
-                    mutation.params,
-                    mutation.mutation_key,
-                    Some((coordinator.clone(), item_index)),
-                    Some(&preflight),
-                )
-            });
-            futures::future::join_all(futures).await
+            .collect();
+        let wave_items = wave_slice.len();
+        let preflight_ref = &preflight;
+        let wave_results: Vec<Result<Option<gleaph_graph_kernel::plan_exec::GqlQueryResult>, RouterError>> = {
+            futures::stream::iter(wave_slice)
+                .map(|(item_index, mutation)| {
+                    let coordinator = coordinator.clone();
+                    async move {
+                        gql::gql_execute_idempotent_with_batch_outcome(
+                            mutation.gql_query,
+                            mutation.params,
+                            mutation.mutation_key,
+                            Some((coordinator, item_index)),
+                            Some(preflight_ref),
+                        )
+                        .await
+                    }
+                })
+                .buffered(MAX_CONCURRENT_BATCH_ITEMS)
+                .collect()
+                .await
         };
         let wave_instr_after = current_instruction_counter();
         let wave_instr = wave_instr_after.saturating_sub(wave_instr_before);
         waves_run += 1;
         per_wave_total += wave_instr;
         log_batch_phase(
-            &format!("wave items={} total", wave_slice.len()),
+            &format!("wave items={} total", wave_items),
             wave_instr,
         );
         let next_deferred = wave_results
