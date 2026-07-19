@@ -5,8 +5,8 @@ use crate::facade::stable::label_stats_delta::GraphMutationJournalEntry;
 use crate::facade::stable::{GRAPH_MUTATION_JOURNAL, LABEL_STATS_DELTA_LOG, LABEL_STATS_DELTA_SEQ};
 use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
-    GraphMutationJournalEntryWire, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
-    ShardEventSeq,
+    GraphBulkMutationProgress, GraphMutationJournalEntryWire, LabelStatsDelta,
+    LabelStatsDeltaEventWire, MutationId, MutationJournalState, ShardEventSeq,
 };
 use std::cell::RefCell;
 
@@ -135,6 +135,43 @@ impl GraphStore {
         // Amortized retention sweep: the completed-journal write is the per-mutation
         // growth source, so each one funds one bounded eviction step (ADR 0027).
         self.gc_mutation_journal_at(now_ns);
+    }
+
+    /// Record a bulk mutation journal entry with an operation cursor and progress metadata
+    /// (ADR 0044). `next_index` is the first unexecuted operation; `completed_count` is the number of
+    /// operations whose canonical write has already committed.
+    pub(crate) fn commit_record_bulk_mutation_journal(
+        &self,
+        mutation_id: MutationId,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<LocalVertexId>,
+        operation_count: u32,
+        completed_count: u32,
+        next_index: Option<u32>,
+    ) {
+        let now_ns = ic_time_ns();
+        let mut entry = GraphMutationJournalEntry::completed(
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+            now_ns,
+        );
+        entry.set_next_index(next_index);
+        entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(
+            operation_count,
+            completed_count,
+        )));
+        // If the bulk group is not fully done, downgrade the state to Incomplete so retries resume.
+        if next_index.is_some() {
+            entry.set_state(MutationJournalState::Incomplete);
+        }
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| {
+            m.insert(entry);
+        });
     }
 
     /// One bounded, round-robin retention step over the mutation journal (ADR 0027).

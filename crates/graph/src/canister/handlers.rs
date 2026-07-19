@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
-use crate::gql_run::{kernel_execution_mode, run_wire_plans_last_read_row_count};
+use crate::gql_run::{
+    extend_delta_seq_range, kernel_execution_mode, run_wire_plans_last_read_row_count,
+};
 use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::repair_journal::drain_outbox_once;
@@ -21,7 +23,8 @@ use gleaph_gql_planner::PhysicalPlan;
 
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
-    ExecutePlanResult, GqlExecutionMode, ResolvedSearchWire, SeedBindingsWire,
+    ExecutePlanResult, GqlExecutionMode, MutationId, ResolvedSearchWire, SeedBindingsWire,
+    ShardEventSeq,
 };
 
 use super::types::GraphInitArgs;
@@ -224,14 +227,14 @@ fn message_instruction_counter() -> u64 {
 
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
-    let result = execute_plan_impl(args, false).await?;
+    let result = execute_plan_impl(args, false, true, false).await?.0;
     ensure_execute_plan_result_payload(&result, "execute_plan_query")?;
     Ok(result)
 }
 
 pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Update, "execute_plan_update")?;
-    let result = execute_plan_impl(args, true).await?;
+    let result = execute_plan_impl(args, true, true, true).await?.0;
     ensure_execute_plan_result_payload(&result, "execute_plan_update")?;
     Ok(result)
 }
@@ -364,7 +367,7 @@ async fn execute_plan_batch(
         Encode!(&args).map_err(|err| format!("{entrypoint} request encode failed: {err}"))?;
     if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(format!(
-            "{entrypoint} request exceeds the safe payload limit of {} bytes",
+            "{entrypoint} request exceeds the safe payload limit of {}",
             gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
@@ -375,7 +378,70 @@ async fn execute_plan_batch(
     let mut max_instr = 0u64;
     let mut min_instr = u64::MAX;
     let mut errors = 0usize;
+
+    // ADR 0044: a bulk group is one batch where every operation carries the same mutation_id.
+    let bulk_mutation_id = detect_bulk_mutation_id(&args.operations);
+    let is_bulk = bulk_mutation_id.is_some();
+    let mut bulk_state = if let Some(mutation_id) = bulk_mutation_id {
+        let store = GraphStore::new();
+        if let Some(journal) = store.mutation_journal_entry(mutation_id) {
+            if journal.is_completed() {
+                // Entire bulk group is already durable: return success for every input operation.
+                return Ok(ExecutePlanBatchResult {
+                    results: (0..total_ops)
+                        .map(|_| {
+                            Ok(ExecutePlanResult {
+                                row_count: 0,
+                                rows_blob: None,
+                                hot_forward_vertices: Vec::new(),
+                            })
+                        })
+                        .collect(),
+                    next_index: None,
+                });
+            }
+            let start = journal.next_index().unwrap_or(0) as usize;
+            Some(BulkState {
+                mutation_id,
+                start_index: start,
+                completed_count: journal
+                    .bulk_progress()
+                    .as_ref()
+                    .map(|p| p.completed_count())
+                    .unwrap_or(0),
+                row_count: journal.row_count(),
+                emitted_delta_first_seq: journal.emitted_delta_first_seq(),
+                emitted_delta_last_seq: journal.emitted_delta_last_seq(),
+                hot_forward_vertices: journal.hot_forward_vertices().to_vec(),
+            })
+        } else {
+            Some(BulkState {
+                mutation_id,
+                start_index: 0,
+                completed_count: 0,
+                row_count: 0,
+                emitted_delta_first_seq: None,
+                emitted_delta_last_seq: None,
+                hot_forward_vertices: Vec::new(),
+            })
+        }
+    } else {
+        None
+    };
+
     for (index, operation) in args.operations.into_iter().enumerate() {
+        // Bulk op that was already completed: emit a synthetic success and continue.
+        if let Some(ref mut state) = bulk_state
+            && index < state.start_index
+        {
+            results.push(Ok(ExecutePlanResult {
+                row_count: 0,
+                rows_blob: None,
+                hot_forward_vertices: Vec::new(),
+            }));
+            continue;
+        }
+
         let before = current_instruction_counter();
         // Early cutoff: stop before starting the next operation if the
         // remaining per-message budget is unlikely to cover it plus drain and
@@ -402,9 +468,15 @@ async fn execute_plan_batch(
             );
             break;
         }
-        let result =
+
+        let (check_journal, write_journal) = if is_bulk {
+            (false, false)
+        } else {
+            (true, true)
+        };
+        let raw_result =
             match ensure_execution_mode(operation.mode, GqlExecutionMode::Update, entrypoint) {
-                Ok(()) => execute_plan_impl(operation, false).await,
+                Ok(()) => execute_plan_impl(operation, false, check_journal, write_journal).await,
                 Err(err) => Err(err),
             };
         let after = current_instruction_counter();
@@ -412,16 +484,71 @@ async fn execute_plan_batch(
         total_instr += cost;
         max_instr = max_instr.max(cost);
         min_instr = min_instr.min(cost);
-        if result.is_err() {
+        let result_for_caller = raw_result
+            .as_ref()
+            .map(|(r, _first, _last)| r.clone())
+            .map_err(|e| e.clone());
+        if raw_result.is_err() {
             errors += 1;
         }
         #[cfg(feature = "batch-instr-log")]
         if cost >= BATCH_INSTR_OP_THRESHOLD {
-            log_batch_op(entrypoint, args.mode, index, cost, &result);
+            log_batch_op(entrypoint, args.mode, index, cost, &result_for_caller);
         }
-        results.push(result);
+
+        // Aggregate bulk mutation durable state for the operations that committed.
+        if let Some(ref mut state) = bulk_state {
+            match raw_result {
+                Ok((exec_result, first_seq, last_seq)) => {
+                    state.row_count = state.row_count.saturating_add(exec_result.row_count);
+                    if let Some(seq) = first_seq {
+                        extend_delta_seq_range(
+                            &mut state.emitted_delta_first_seq,
+                            &mut state.emitted_delta_last_seq,
+                            seq,
+                        );
+                    }
+                    if let Some(seq) = last_seq {
+                        extend_delta_seq_range(
+                            &mut state.emitted_delta_first_seq,
+                            &mut state.emitted_delta_last_seq,
+                            seq,
+                        );
+                    }
+                    state
+                        .hot_forward_vertices
+                        .extend(exec_result.hot_forward_vertices.clone());
+                    state.completed_count += 1;
+                    results.push(Ok(exec_result));
+                }
+                Err(error) => {
+                    // Partial failure: persist progress before the failed op and stop.
+                    next_index = Some((index + 1) as u32);
+                    results.push(Err(error));
+                    break;
+                }
+            }
+        } else {
+            results.push(result_for_caller);
+        }
     }
-    if next_index.is_none() {
+
+    // Persist the durable bulk journal entry when we managed one for this batch.
+    if let Some(ref state) = bulk_state {
+        let store = GraphStore::new();
+        store.commit_record_bulk_mutation_journal(
+            state.mutation_id,
+            state.row_count,
+            state.emitted_delta_first_seq,
+            state.emitted_delta_last_seq,
+            state.hot_forward_vertices.clone(),
+            total_ops as u32,
+            state.completed_count,
+            next_index,
+        );
+    }
+
+    if next_index.is_none() && bulk_state.is_none() {
         log_batch_summary(
             entrypoint,
             args.mode,
@@ -432,12 +559,26 @@ async fn execute_plan_batch(
             errors,
             None,
         );
+    } else if next_index.is_some() && bulk_state.is_none() {
+        // summary already logged at cutoff
+    } else if let Some(ref state) = bulk_state {
+        log_batch_summary(
+            entrypoint,
+            args.mode,
+            state.completed_count as usize,
+            total_instr,
+            max_instr,
+            if min_instr == u64::MAX { 0 } else { min_instr },
+            errors,
+            next_index,
+        );
     }
+
     // Synchronously drain the postings emitted by the successfully executed
     // operations in this batch. If the drain cannot complete now, the entries
     // remain in the durable derived-index outbox and the maintenance timer will
     // converge the index asynchronously.
-    if results.iter().all(|r| r.is_ok()) {
+    if results.iter().all(|r| r.is_ok()) && next_index.is_none() {
         let _drain_before = current_instruction_counter();
         if let Err(e) = sync_drain_derived_index_outbox().await {
             return Err(format!("{entrypoint}: synchronous index drain failed: {e}"));
@@ -460,17 +601,50 @@ async fn execute_plan_batch(
         Encode!(&result).map_err(|err| format!("{entrypoint} response encode failed: {err}"))?;
     if response_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(format!(
-            "{entrypoint} response exceeds the safe payload limit of {} bytes",
+            "{entrypoint} response exceeds the safe payload limit of {}",
             gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
     Ok(result)
 }
 
+/// Detects a bulk mutation: all operations must share the same `mutation_id`.
+fn detect_bulk_mutation_id(operations: &[ExecutePlanArgs]) -> Option<MutationId> {
+    if operations.is_empty() {
+        return None;
+    }
+    let first = operations.first()?.mutation_id?;
+    if operations.iter().all(|op| op.mutation_id == Some(first)) {
+        Some(first)
+    } else {
+        None
+    }
+}
+
+/// Aggregated durable state for a bulk mutation group managed by `execute_plan_batch`.
+struct BulkState {
+    mutation_id: MutationId,
+    start_index: usize,
+    completed_count: u32,
+    row_count: u64,
+    emitted_delta_first_seq: Option<ShardEventSeq>,
+    emitted_delta_last_seq: Option<ShardEventSeq>,
+    hot_forward_vertices: Vec<gleaph_graph_kernel::federation::LocalVertexId>,
+}
+
 async fn execute_plan_impl(
     args: ExecutePlanArgs,
     drain_outbox_after: bool,
-) -> Result<ExecutePlanResult, String> {
+    check_journal: bool,
+    write_journal: bool,
+) -> Result<
+    (
+        ExecutePlanResult,
+        Option<ShardEventSeq>,
+        Option<ShardEventSeq>,
+    ),
+    String,
+> {
     let _phase_t0 = current_instruction_counter();
     let store = GraphStore::new();
     let routing = store
@@ -560,9 +734,12 @@ async fn execute_plan_impl(
             local_unique_claims: args.local_unique_claims.unwrap_or_default(),
             local_constrained_properties: args.local_constrained_properties.unwrap_or_default(),
             resolved_search,
+            write_journal,
         },
         seeds,
         args.mutation_id,
+        check_journal,
+        write_journal,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -587,15 +764,17 @@ async fn execute_plan_impl(
     let result = ExecutePlanResult {
         row_count: run.row_count as u64,
         rows_blob: run.rows_blob,
-        hot_forward_vertices: run.hot_forward_vertices,
+        hot_forward_vertices: run.hot_forward_vertices.clone(),
     };
+    let emitted_delta_first_seq = run.emitted_delta_first_seq;
+    let emitted_delta_last_seq = run.emitted_delta_last_seq;
     let _phase_t4 = current_instruction_counter();
     log_batch_phase(
         "execute_plan_impl",
         "result_build",
         _phase_t4.saturating_sub(_phase_t3),
     );
-    Ok(result)
+    Ok((result, emitted_delta_first_seq, emitted_delta_last_seq))
 }
 
 pub fn ack_label_stats_deltas_through(through_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq) {

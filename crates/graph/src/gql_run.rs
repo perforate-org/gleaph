@@ -253,6 +253,8 @@ pub struct WirePlanRunResult {
     pub row_count: usize,
     pub rows_blob: Option<Vec<u8>>,
     pub hot_forward_vertices: Vec<u32>,
+    pub emitted_delta_first_seq: Option<ShardEventSeq>,
+    pub emitted_delta_last_seq: Option<ShardEventSeq>,
 }
 
 fn merge_hot_forward_vertices(target: &mut Vec<u32>, source: &[VertexId]) {
@@ -469,7 +471,7 @@ fn unique_acquire_trap(message: &str) -> ! {
     }
 }
 
-fn extend_delta_seq_range(
+pub(crate) fn extend_delta_seq_range(
     first: &mut Option<ShardEventSeq>,
     last: &mut Option<ShardEventSeq>,
     seq: ShardEventSeq,
@@ -875,6 +877,7 @@ async fn run_wire_plans(
     seeds: Option<SeedBindingsWire>,
     materialize: TransactionReadMaterialize,
     mutation_id: Option<MutationId>,
+    check_journal: bool,
 ) -> Result<TransactionBlockRun, GqlRunError> {
     crate::edge_inline_value_schema::set_execution_resolved_labels(
         execution.resolved_labels.clone(),
@@ -892,6 +895,7 @@ async fn run_wire_plans(
         seeds,
         materialize,
         mutation_id,
+        check_journal,
     )
     .await;
     crate::edge_inline_value_schema::clear_execution_resolved_labels();
@@ -927,6 +931,7 @@ async fn apply_canonical_mutation_segment(
     emitted_delta_last_seq: &mut Option<ShardEventSeq>,
     next_release_ordinal: &mut u32,
 ) -> Result<PlanMutationBindings, GqlRunError> {
+    let write_journal = execution.write_journal;
     let unique_claims = execution.unique_claims.clone();
     let local_unique_claims = execution.local_unique_claims.clone();
     // Resolve the router-issued encoding key into owned data for this no-`await` canonical segment;
@@ -1005,7 +1010,9 @@ async fn apply_canonical_mutation_segment(
             event.shard_event_seq,
         );
     }
-    if let Some(mutation_id) = mutation_id {
+    if let Some(mutation_id) = mutation_id
+        && write_journal
+    {
         store.commit_record_incomplete_mutation_journal(
             mutation_id,
             *emitted_delta_first_seq,
@@ -1032,8 +1039,10 @@ async fn run_wire_plans_inner(
     seeds: Option<SeedBindingsWire>,
     materialize: TransactionReadMaterialize,
     mutation_id: Option<MutationId>,
+    check_journal: bool,
 ) -> Result<TransactionBlockRun, GqlRunError> {
-    if let Some(mutation_id) = mutation_id
+    if check_journal
+        && let Some(mutation_id) = mutation_id
         && let Some(journal) = store.mutation_journal_entry(mutation_id)
     {
         if journal.is_completed() {
@@ -1251,6 +1260,8 @@ pub async fn run_wire_plans_last_read_row_count(
     execution: GqlExecutionContext,
     seeds: Option<SeedBindingsWire>,
     mutation_id: Option<MutationId>,
+    check_journal: bool,
+    write_journal: bool,
 ) -> Result<WirePlanRunResult, GqlRunError> {
     let element_id_key =
         crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
@@ -1266,6 +1277,7 @@ pub async fn run_wire_plans_last_read_row_count(
         seeds,
         TransactionReadMaterialize::LastReadBindingsOnly,
         mutation_id,
+        check_journal,
     )
     .await;
     let _phase_t1 = current_instruction_counter();
@@ -1284,7 +1296,7 @@ pub async fn run_wire_plans_last_read_row_count(
         _phase_t2.saturating_sub(_phase_t1),
     );
     let run = run_result?;
-    if let Some(mutation_id) = mutation_id {
+    if write_journal && let Some(mutation_id) = mutation_id {
         store.commit_record_completed_mutation_journal(
             mutation_id,
             run.last_read_row_count as u64,
@@ -1321,6 +1333,8 @@ pub async fn run_wire_plans_last_read_row_count(
         row_count: run.last_read_row_count,
         rows_blob,
         hot_forward_vertices: run.hot_forward_vertices,
+        emitted_delta_first_seq: run.emitted_delta_first_seq,
+        emitted_delta_last_seq: run.emitted_delta_last_seq,
     })
 }
 
@@ -1357,6 +1371,8 @@ pub async fn run_wire_plan_last_read_row_count(
         execution,
         seeds,
         mutation_id,
+        true,
+        true,
     )
     .await
 }

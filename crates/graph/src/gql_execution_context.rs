@@ -15,8 +15,9 @@ use gleaph_graph_kernel::plan_exec::{
 };
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GqlExecutionContext {
+    // Default impl is provided below so write_journal defaults to true.
     /// Internet Computer caller principal when executing on a canister.
     pub caller: Option<Principal>,
     /// Router-resolved label names for this execution.
@@ -44,6 +45,26 @@ pub struct GqlExecutionContext {
     /// top-level `PlanOp::Search` joins input rows against this lookup. Kept as the raw wire so the
     /// executor builds the per-invocation hash lookup at query time.
     pub resolved_search: Option<ResolvedSearchWire>,
+    /// When false, the canonical segment must not write the durable mutation journal entry.
+    /// Used by `execute_plan_update_batch` when it manages one journal entry for a bulk group.
+    pub write_journal: bool,
+}
+
+impl Default for GqlExecutionContext {
+    fn default() -> Self {
+        Self {
+            caller: None,
+            resolved_labels: None,
+            resolved_properties: None,
+            element_id_encoding_key: None,
+            unique_claims: Vec::new(),
+            constrained_properties: Vec::new(),
+            local_unique_claims: Vec::new(),
+            local_constrained_properties: Vec::new(),
+            resolved_search: None,
+            write_journal: true,
+        }
+    }
 }
 
 impl GqlExecutionContext {
