@@ -84,8 +84,8 @@ pub fn guard_router_or_attached_shard_canister() -> Result<(), String> {
     if caller == router {
         return Ok(());
     }
-    let attached =
-        INDEX_SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.is_attached_shard_canister(caller));
+    let attached = INDEX_SHARD_CANISTER_CATALOG
+        .with_borrow(|catalog| catalog.is_attached_shard_canister(caller));
     if attached {
         Ok(())
     } else {

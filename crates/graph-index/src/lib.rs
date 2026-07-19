@@ -47,7 +47,9 @@ pub use key::PostingKey;
 pub use label_key::LabelPostingKey;
 pub use state::IndexError;
 
-use crate::guards::{guard_router_canister, guard_router_or_attached_shard_canister, guard_shard_canister};
+use crate::guards::{
+    guard_router_canister, guard_router_or_attached_shard_canister, guard_shard_canister,
+};
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{
