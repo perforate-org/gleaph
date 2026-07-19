@@ -111,7 +111,6 @@ const finishProgress = () => process.stderr.write("\n");
 // (it is close to the encoded binary size for ASCII-heavy social-demo queries) and target
 // 500 KiB so that even waves with longer queries or escaping leave a large safety margin.
 const MAX_CANDID_TEXT_BYTES = 500_000;
-const MAX_ITEMS_PER_PAGE = Number(process.env.SEED_MAX_ITEMS_PER_PAGE ?? 150);
 
 const requestShellBytes = () => {
   const prefix = '(record { mutations = vec { ';
@@ -142,7 +141,7 @@ const payloadPageSize = (waveSeeds, offset, maxTextBytes) => {
   return count;
 };
 
-const runBatchPage = (page) => {
+const runBatchPage = (page, onProgress) => {
   const items = page
     .map(
       (seed) => {
@@ -158,29 +157,40 @@ const runBatchPage = (page) => {
       `(record { mutations = vec { ${items} }; start_index = ${startIndex}; instruction_budget = null })`,
     );
     const nextIndex = nextIndexFrom(output);
-    if (nextIndex === undefined) break;
-    if (nextIndex <= startIndex || nextIndex > page.length) {
+    if (nextIndex === undefined) {
+      // Router applied all items in this page in a single call.
+      startIndex = page.length;
+    } else if (nextIndex <= startIndex || nextIndex > page.length) {
       throw new Error(
         `Router returned invalid next_index ${nextIndex} for page cursor ${startIndex}`,
       );
+    } else {
+      startIndex = nextIndex;
     }
-    startIndex = nextIndex;
+    if (onProgress) onProgress(startIndex);
   }
+  return startIndex;
 };
 
-const runBatchPageRetryable = (page) => {
+const RETRYABLE_BUDGET_ERRORS = [
+  'insufficient liquid cycles balance',
+  'instruction budget was exhausted before the next mutation could start',
+  'call perform failed',
+];
+
+const isRetryableBudgetError = (error) =>
+  RETRYABLE_BUDGET_ERRORS.some((marker) => error.message.includes(marker));
+
+const runBatchPageRetryable = (page, onProgress) => {
   let attempt = page;
   while (attempt.length > 0) {
     try {
-      runBatchPage(attempt);
-      return attempt.length;
+      return runBatchPage(attempt, onProgress);
     } catch (error) {
-      // The inter-canister journal preflight can exceed the Graph canister's liquid cycle
-      // budget when the page is too large. Halve the page and retry from the same offset.
-      if (
-        attempt.length === 1 ||
-        !error.message.includes('insufficient liquid cycles balance')
-      ) {
+      // Router-side per-call instruction/cycle budgets can be exceeded when the page is
+      // too large for a single ingress call. Halve the page and retry from the same
+      // offset so the dynamic paging keeps making forward progress.
+      if (attempt.length === 1 || !isRetryableBudgetError(error)) {
         throw error;
       }
       const nextSize = Math.max(1, Math.floor(attempt.length / 2));
@@ -218,13 +228,15 @@ if (methodName !== "gql_execute_idempotent_batch") {
       const pageSize = Math.min(
         dynamicPageSize,
         explicitPageSize,
-        MAX_ITEMS_PER_PAGE,
         waveSeeds.length - offset,
       );
       const page = waveSeeds.slice(offset, offset + pageSize);
+      const updateProgress = (pageCompleted) => {
+        renderProgress(wave, seededCount + pageCompleted, waveSeeds.length);
+      };
       let processed;
       try {
-        processed = runBatchPageRetryable(page);
+        processed = runBatchPageRetryable(page, updateProgress);
       } catch (error) {
         finishProgress();
         throw error;
