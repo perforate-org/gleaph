@@ -6,6 +6,7 @@ mod bench;
 #[cfg(feature = "pocket-ic-e2e")]
 mod test_fault;
 
+mod batch_wave;
 mod bulk_ingest_finalize;
 mod canister;
 mod constraint_ddl;
@@ -65,7 +66,6 @@ pub use init::{RouterInitArgs, RouterUpgradeArgs};
 pub use state::RouterError;
 
 use candid::{Encode, Principal};
-use futures::stream::StreamExt;
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
 use crate::provisioning::sender::send_accept_envelope;
@@ -77,22 +77,10 @@ const MAX_DYNAMIC_INSTRUCTION_BUDGET: u64 =
     MAX_UPDATE_CALL_INSTRUCTIONS - DYNAMIC_INSTRUCTION_HEADROOM;
 const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
 
-/// Maximum number of mutations processed in one `gql_execute_idempotent_batch` wave.
-/// The IC limits the number of outstanding inter-canister calls a canister can enqueue in a
-/// single call context; a small wave keeps the per-wave coordinator well below that envelope
-/// while still batching Router->Graph index and execute calls.
-const MAX_BATCH_WAVE_ITEMS: usize = 256;
-
 /// Maximum number of mutations processed in a single `gql_execute_idempotent_batch` ingress
 /// call. Each wave issues a bounded number of inter-canister calls; capping the total per
 /// ingress prevents the call context from exhausting the IC's per-message resource envelope.
 const MAX_MUTATIONS_PER_INGRESS: usize = 1024;
-
-/// Maximum number of `gql_execute_idempotent_with_batch_outcome` futures polled concurrently
-/// inside one wave. The IC/CDK protected-task executor panics if too many outstanding tasks
-/// outlive the canister method. Limiting concurrency lets us raise `MAX_BATCH_WAVE_ITEMS`
-/// without exceeding the executor's outstanding-task envelope.
-const MAX_CONCURRENT_BATCH_ITEMS: usize = 64;
 
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
@@ -354,9 +342,9 @@ fn log_batch_phase(_phase: &str, _cost: u64) {}
 
 /// Execute cursor-based idempotent mutations until the Router instruction budget is reached.
 ///
-/// Each wave reuses the fixed batch coordinator and is independently partial-successful. A
-/// returned `next_index` is the only continuation signal; retrying the same cursor is safe because
-/// every item retains its original client mutation key.
+/// Mutations are prepared and executed sequentially within one ingress. A returned `next_index`
+/// is the only continuation signal; retrying the same cursor is safe because every item retains
+/// its original client mutation key.
 #[update]
 #[allow(unused_variables, unused_assignments)]
 async fn gql_execute_idempotent_batch(
@@ -398,83 +386,34 @@ async fn gql_execute_idempotent_batch(
 
     let start_cursor = args.start_index as usize;
     let mut cursor = start_cursor;
-    let end = args.mutations.len();
-    let ingress_end = end.min(start_cursor + MAX_MUTATIONS_PER_INGRESS);
+    let end = args
+        .mutations
+        .len()
+        .min(start_cursor + MAX_MUTATIONS_PER_INGRESS);
     let mut results = Vec::new();
-    let mut waves_run = 0usize;
-    let mut per_wave_total = 0u64;
     #[cfg(feature = "batch-instr-log")]
     let ingress_start_instr = current_instruction_counter();
     let preflight = gql::PreflightContext::new();
-    while cursor < ingress_end && current_instruction_counter() < budget {
-        let wave_instr_before = current_instruction_counter();
-        let wave_end = ingress_end.min(cursor + MAX_BATCH_WAVE_ITEMS);
-        let coordinator = gql::BatchDispatchCoordinator::new_dynamic(wave_end - cursor, budget);
-        let wave_slice: Vec<_> = args.mutations[cursor..wave_end]
-            .iter()
-            .cloned()
-            .enumerate()
-            .collect();
-        let wave_items = wave_slice.len();
-        let preflight_ref = &preflight;
-        let wave_results: Vec<Result<Option<gleaph_graph_kernel::plan_exec::GqlQueryResult>, RouterError>> = {
-            futures::stream::iter(wave_slice)
-                .map(|(item_index, mutation)| {
-                    let coordinator = coordinator.clone();
-                    async move {
-                        gql::gql_execute_idempotent_with_batch_outcome(
-                            mutation.gql_query,
-                            mutation.params,
-                            mutation.mutation_key,
-                            Some((coordinator, item_index)),
-                            Some(preflight_ref),
-                        )
-                        .await
-                    }
-                })
-                .buffered(MAX_CONCURRENT_BATCH_ITEMS)
-                .collect()
-                .await
-        };
-        let wave_instr_after = current_instruction_counter();
-        let wave_instr = wave_instr_after.saturating_sub(wave_instr_before);
-        waves_run += 1;
-        per_wave_total += wave_instr;
-        log_batch_phase(
-            &format!("wave items={} total", wave_items),
-            wave_instr,
-        );
-        let next_deferred = wave_results
-            .iter()
-            .position(|result| matches!(result, Ok(None)));
-        let next_cursor = next_deferred.map(|offset| cursor + offset);
-        let result_limit = next_deferred.unwrap_or(wave_results.len());
-        results.extend(
-            wave_results
-                .into_iter()
-                .take(result_limit)
-                .map(|result| {
-                    result.and_then(|value| {
-                        value.ok_or_else(|| {
-                            RouterError::InvalidArgument(
-                                "unexpected deferred mutation in completed prefix".into(),
-                            )
-                        })
-                    })
-                })
-                .collect::<Result<Vec<_>, RouterError>>()?,
-        );
-        if let Some(next_cursor) = next_cursor {
-            if next_cursor == cursor {
-                return Err(RouterError::InvalidArgument(
-                    "instruction budget was exhausted before the next mutation could start; retry"
-                        .into(),
-                ));
-            }
-            cursor = next_cursor;
-        } else {
-            cursor = wave_end;
+    while cursor < end {
+        let stop_threshold = budget.saturating_sub(crate::batch_wave::ROUTER_WORK_HEADROOM);
+        if current_instruction_counter() >= stop_threshold {
+            break;
         }
+        let mutation = &args.mutations[cursor];
+        let result = gql::gql_execute_idempotent_with_batch_outcome(
+            mutation.gql_query.clone(),
+            mutation.params.clone(),
+            mutation.mutation_key.clone(),
+            Some(&preflight),
+        )
+        .await?;
+        let result = result.ok_or_else(|| {
+            RouterError::InvalidArgument(
+                "unexpected deferred mutation in sequential batch ingress".into(),
+            )
+        })?;
+        results.push(result);
+        cursor += 1;
     }
     if cursor == start_cursor {
         return Err(RouterError::InvalidArgument(
@@ -485,20 +424,8 @@ async fn gql_execute_idempotent_batch(
     {
         let ingress_total = current_instruction_counter().saturating_sub(ingress_start_instr);
         log_batch_phase(
-            &format!(
-                "ingress_summary waves={} items={} total",
-                waves_run,
-                cursor - start_cursor
-            ),
+            &format!("ingress_summary items={} total", cursor - start_cursor),
             ingress_total,
-        );
-        log_batch_phase(
-            &format!("ingress_summary waves={} per_wave_avg", waves_run),
-            if waves_run == 0 {
-                0
-            } else {
-                per_wave_total / waves_run as u64
-            },
         );
     }
     let instruction_counter = current_instruction_counter();

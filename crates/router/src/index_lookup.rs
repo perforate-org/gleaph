@@ -83,6 +83,7 @@ async fn collect_value_count_pages_for_label(
     Ok(counts)
 }
 
+#[allow(dead_code)]
 /// Chunk a slice of equality specs into a Candid-encodable batch request that stays under the
 /// 2 MiB inter-canister payload limit. Returns the built request and the exclusive end index.
 fn chunk_index_equal_specs<F, R>(
@@ -113,6 +114,7 @@ where
     Err("empty index batch chunk".into())
 }
 
+#[allow(dead_code)]
 /// Collect all equality hits for many vertex `(property_id, value)` buckets in one (or a few)
 /// inter-canister call(s). Each bucket is paged individually if the first returned page is not
 /// fully drained.
@@ -579,6 +581,7 @@ pub(crate) trait IndexLookup {
         min_count: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
 
+    #[allow(dead_code)]
     /// Batch equality lookup for many `(property_id, value)` buckets in as few inter-canister
     /// calls as possible. The default implementation falls back to sequential single-bucket calls.
     fn lookup_equal_batch(
@@ -609,6 +612,7 @@ pub(crate) trait IndexLookup {
         })
     }
 
+    #[allow(dead_code)]
     /// Batch edge equality lookup for many edge `(property_id, value[, label_id])` buckets.
     /// The default implementation falls back to sequential single-bucket calls.
     fn lookup_edge_equal_batch(
@@ -630,14 +634,9 @@ pub(crate) trait IndexLookup {
             Ok(results)
         })
     }
-
-    /// If this lookup implementation is the production `RouterIndexLookup`, return it so the
-    /// batch coordinator can issue batched equality calls. Other implementations return `None`.
-    fn as_router_index_lookup(&self) -> Option<&RouterIndexLookup> {
-        None
-    }
 }
 
+#[allow(dead_code)]
 impl IndexLookup for RouterIndexClient {
     fn lookup_equal(
         &self,
@@ -746,6 +745,7 @@ impl IndexLookup for RouterIndexClient {
     }
 }
 
+#[allow(dead_code)]
 impl IndexLookup for RouterIndexLookup {
     fn lookup_equal(
         &self,
@@ -935,10 +935,6 @@ impl IndexLookup for RouterIndexLookup {
             }
             Ok(merge_value_posting_counts(groups))
         })
-    }
-
-    fn as_router_index_lookup(&self) -> Option<&RouterIndexLookup> {
-        Some(self)
     }
 
     fn lookup_equal_batch(

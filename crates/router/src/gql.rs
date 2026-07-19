@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use candid::{Encode, Principal};
-use futures::channel::oneshot;
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
@@ -15,8 +14,7 @@ use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult, PostingHit,
-    ValuePostingCount,
+    IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
@@ -84,15 +82,11 @@ use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::{authorize_adhoc_gql, authorize_index_ddl};
-use crate::seed::{EdgeSeedProbe, IndexAnchor, SeedAnchorSet, SeedProbe};
+use crate::seed::{IndexAnchor, SeedAnchorSet, SeedProbe};
 use crate::state::RouterError;
 
-type BatchOperation = (
-    ShardDispatch,
-    gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
-);
-type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
-const BATCH_DEFERRED_ERROR: &str = "batch operation deferred by instruction budget";
+pub(crate) type BatchDispatchResult = (ShardDispatch, Option<Result<ExecutePlanResult, String>>);
+pub(crate) const BATCH_DEFERRED_ERROR: &str = "batch operation deferred by instruction budget";
 
 /// Cached plan/plan-blob for a concrete `(caller, graph, query)` shape.
 #[derive(Clone)]
@@ -114,14 +108,15 @@ pub(crate) struct CachedPlanDispatch {
 #[derive(Clone)]
 pub(crate) struct PreflightContext {
     /// `(anchor, shard_id)` -> resolved seed hits.
-    anchor_hits: Rc<RefCell<std::collections::HashMap<(IndexAnchor, ShardId), SeedHits>>>,
+    pub(crate) anchor_hits:
+        Rc<RefCell<std::collections::HashMap<(IndexAnchor, ShardId), SeedHits>>>,
     /// `(graph_canister, mutation_id)` -> cached journal entry.
-    journal_entries:
+    pub(crate) journal_entries:
         Rc<RefCell<HashMap<(Principal, MutationId), Option<GraphMutationJournalEntryWire>>>>,
     /// `graph_canister` -> cached `index_pending_min_mutation_id` result.
-    pending_min_mutation_id: Rc<RefCell<HashMap<Principal, Option<MutationId>>>>,
+    pub(crate) pending_min_mutation_id: Rc<RefCell<HashMap<Principal, Option<MutationId>>>>,
     /// `(caller, graph_id, query)` -> cached dispatch + plan blob.
-    plan_cache: Rc<RefCell<HashMap<(Principal, GraphId, String), CachedPlanDispatch>>>,
+    pub(crate) plan_cache: Rc<RefCell<HashMap<(Principal, GraphId, String), CachedPlanDispatch>>>,
 }
 
 impl PreflightContext {
@@ -309,538 +304,6 @@ impl PreflightContext {
     }
 }
 
-#[derive(Clone, Copy)]
-enum BatchExecutionPolicy {
-    Dynamic { router_budget: u64 },
-}
-
-struct BatchRegistration {
-    groups: Vec<Vec<BatchOperation>>,
-    sender: oneshot::Sender<Result<Vec<BatchDispatchResult>, String>>,
-}
-
-struct AnchorPrefetchRegistration {
-    anchors: Option<Vec<IndexAnchor>>,
-    shard_ids: Vec<ShardId>,
-    sender: oneshot::Sender<Result<(), String>>,
-}
-
-struct JournalPrefetchRegistration {
-    targets: Vec<(Principal, MutationId)>,
-    sender: oneshot::Sender<Result<(), String>>,
-}
-
-struct BatchCoordinatorState {
-    expected_items: usize,
-    registrations: Vec<Option<BatchRegistration>>,
-    anchor_prefetch: Vec<Option<AnchorPrefetchRegistration>>,
-    journal_prefetch: Vec<Option<JournalPrefetchRegistration>>,
-    aborted: Option<String>,
-    policy: BatchExecutionPolicy,
-}
-
-/// Coordinates the fixed raw-GQL page at the Router→Graph boundary. Planning remains per
-/// mutation, but all mutation futures rendezvous before Graph calls are issued, allowing the
-/// coordinator to group prepared operations by target Graph canister.
-#[derive(Clone)]
-pub(crate) struct BatchDispatchCoordinator(Rc<RefCell<BatchCoordinatorState>>);
-
-impl BatchDispatchCoordinator {
-    pub(crate) fn new_dynamic(expected_items: usize, router_budget: u64) -> Self {
-        Self::with_policy(
-            expected_items,
-            BatchExecutionPolicy::Dynamic { router_budget },
-        )
-    }
-
-    fn with_policy(expected_items: usize, policy: BatchExecutionPolicy) -> Self {
-        Self(Rc::new(RefCell::new(BatchCoordinatorState {
-            expected_items,
-            registrations: (0..expected_items).map(|_| None).collect(),
-            anchor_prefetch: (0..expected_items).map(|_| None).collect(),
-            journal_prefetch: (0..expected_items).map(|_| None).collect(),
-            aborted: None,
-            policy,
-        })))
-    }
-
-    /// Register this batch item's seed anchors so the coordinator can resolve every unique
-    /// anchor across the wave in one (or a few) batched index calls. Items without anchors
-    /// (pure inserts or replays with saved shard routings) register `None` so the barrier still
-    /// completes.
-    pub(crate) async fn prefetch_anchors(
-        &self,
-        item_index: usize,
-        anchors: Option<Vec<IndexAnchor>>,
-        shard_ids: Vec<ShardId>,
-        index: &RouterIndexLookup,
-        preflight: Option<&PreflightContext>,
-    ) -> Result<(), String> {
-        let (sender, receiver) = oneshot::channel();
-        let registrations = {
-            let mut state = self.0.borrow_mut();
-            if let Some(err) = &state.aborted {
-                return Err(err.clone());
-            }
-            if item_index >= state.expected_items || state.anchor_prefetch[item_index].is_some() {
-                return Err(format!(
-                    "invalid or duplicate anchor prefetch item index {item_index}"
-                ));
-            }
-            state.anchor_prefetch[item_index] = Some(AnchorPrefetchRegistration {
-                anchors,
-                shard_ids,
-                sender,
-            });
-            if state.anchor_prefetch.iter().all(Option::is_some) {
-                state
-                    .anchor_prefetch
-                    .iter_mut()
-                    .map(Option::take)
-                    .collect::<Option<Vec<_>>>()
-            } else {
-                None
-            }
-        };
-
-        if let Some(registrations) = registrations {
-            let results =
-                resolve_anchor_prefetch_registrations(&registrations, index, preflight).await;
-            // The last registering future owns the fan-out. Send failures are harmless when a peer
-            // future has already been cancelled by the ingress caller.
-            for (registration, result) in registrations.into_iter().zip(results) {
-                let _ = registration.sender.send(result);
-            }
-        }
-
-        receiver
-            .await
-            .map_err(|_| "anchor prefetch coordinator was cancelled".to_string())?
-    }
-
-    /// Register this batch item's mutation journal targets so the coordinator can resolve
-    /// every required journal entry across the wave in one batched Router->Graph call per
-    /// canister. Items without journal targets register an empty vector so the barrier still
-    /// completes.
-    pub(crate) async fn prefetch_journal_entries(
-        &self,
-        item_index: usize,
-        targets: Vec<(Principal, MutationId)>,
-        preflight: Option<&PreflightContext>,
-    ) -> Result<(), String> {
-        let (sender, receiver) = oneshot::channel();
-        let registrations = {
-            let mut state = self.0.borrow_mut();
-            if let Some(err) = &state.aborted {
-                return Err(err.clone());
-            }
-            if item_index >= state.expected_items || state.journal_prefetch[item_index].is_some() {
-                return Err(format!(
-                    "invalid or duplicate journal prefetch item index {item_index}"
-                ));
-            }
-            state.journal_prefetch[item_index] =
-                Some(JournalPrefetchRegistration { targets, sender });
-            if state.journal_prefetch.iter().all(Option::is_some) {
-                state
-                    .journal_prefetch
-                    .iter_mut()
-                    .map(Option::take)
-                    .collect::<Option<Vec<_>>>()
-            } else {
-                None
-            }
-        };
-
-        if let Some(registrations) = registrations {
-            let results = resolve_journal_prefetch_registrations(&registrations, preflight).await;
-            for (registration, result) in registrations.into_iter().zip(results) {
-                let _ = registration.sender.send(result);
-            }
-        }
-
-        receiver
-            .await
-            .map_err(|_| "journal prefetch coordinator was cancelled".to_string())?
-    }
-
-    pub(crate) async fn register(
-        &self,
-        item_index: usize,
-        groups: Vec<Vec<BatchOperation>>,
-    ) -> Result<Vec<BatchDispatchResult>, String> {
-        let (sender, receiver) = oneshot::channel();
-        let registrations = {
-            let mut state = self.0.borrow_mut();
-            if let Some(err) = &state.aborted {
-                return Err(err.clone());
-            }
-            if item_index >= state.expected_items || state.registrations[item_index].is_some() {
-                return Err(format!(
-                    "invalid or duplicate batch item index {item_index}"
-                ));
-            }
-            state.registrations[item_index] = Some(BatchRegistration { groups, sender });
-            if state.registrations.iter().all(Option::is_some) {
-                state
-                    .registrations
-                    .iter_mut()
-                    .map(Option::take)
-                    .collect::<Option<Vec<_>>>()
-            } else {
-                None
-            }
-        };
-
-        if let Some(registrations) = registrations {
-            let mut groups = Vec::with_capacity(registrations.len());
-            let mut senders = Vec::with_capacity(registrations.len());
-            for registration in registrations {
-                groups.push(registration.groups);
-                senders.push(registration.sender);
-            }
-            let policy = self.0.borrow().policy;
-            let results = execute_registered_batch(groups, policy).await;
-            // The last registering future owns the result fan-out. Send failures are harmless when
-            // a peer future has already been cancelled by the ingress caller.
-            for (sender, result) in senders.into_iter().zip(results) {
-                let _ = sender.send(result);
-            }
-        }
-
-        receiver
-            .await
-            .map_err(|_| "batch coordinator was cancelled".to_string())?
-    }
-
-    pub(crate) fn abort(&self, error: String) {
-        let (registration_senders, anchor_senders, journal_senders) = {
-            let mut state = self.0.borrow_mut();
-            if state.aborted.is_some() {
-                return;
-            }
-            state.aborted = Some(error.clone());
-            let registration_senders = state
-                .registrations
-                .iter_mut()
-                .filter_map(|registration| registration.take().map(|entry| entry.sender))
-                .collect::<Vec<_>>();
-            let anchor_senders = state
-                .anchor_prefetch
-                .iter_mut()
-                .filter_map(|registration| registration.take().map(|entry| entry.sender))
-                .collect::<Vec<_>>();
-            let journal_senders = state
-                .journal_prefetch
-                .iter_mut()
-                .filter_map(|registration| registration.take().map(|entry| entry.sender))
-                .collect::<Vec<_>>();
-            (registration_senders, anchor_senders, journal_senders)
-        };
-        for sender in registration_senders {
-            let _ = sender.send(Err(error.clone()));
-        }
-        for sender in anchor_senders {
-            let _ = sender.send(Err(error.clone()));
-        }
-        for sender in journal_senders {
-            let _ = sender.send(Err(error.clone()));
-        }
-    }
-}
-
-/// One unique anchor/shard pair that needs to be resolved for the wave.
-struct AnchorPrefetchTask {
-    anchor: IndexAnchor,
-    shard_id: ShardId,
-}
-
-enum LabelPrefetchTask {
-    Single(u32),
-    Intersection(Vec<u32>),
-}
-
-/// Resolve every unique anchor requested by a batch wave and cache the results in the shared
-/// preflight context. Equality anchors are collected into `lookup_equal_batch` /
-/// `lookup_edge_equal_batch` calls; label anchors are resolved per shard; intersection anchors
-/// keep their existing single-call shape. Returns a `Vec` aligned with the input registrations.
-async fn resolve_anchor_prefetch_registrations(
-    registrations: &[AnchorPrefetchRegistration],
-    index: &RouterIndexLookup,
-    preflight: Option<&PreflightContext>,
-) -> Vec<Result<(), String>> {
-    let ctx = match preflight {
-        Some(ctx) => ctx,
-        None => return registrations.iter().map(|_| Ok(())).collect(),
-    };
-
-    let mut tasks: Vec<AnchorPrefetchTask> = Vec::new();
-    let mut task_index: std::collections::HashMap<(IndexAnchor, ShardId), usize> =
-        std::collections::HashMap::new();
-    for registration in registrations {
-        if let Some(anchors) = &registration.anchors {
-            for anchor in anchors {
-                let shard_ids: Vec<ShardId> = match anchor {
-                    IndexAnchor::Label { .. } | IndexAnchor::LabelIntersection { .. } => {
-                        registration.shard_ids.clone()
-                    }
-                    _ => vec![ShardId::new(0)],
-                };
-                for shard_id in shard_ids {
-                    task_index
-                        .entry((anchor.clone(), shard_id))
-                        .or_insert_with(|| {
-                            tasks.push(AnchorPrefetchTask {
-                                anchor: anchor.clone(),
-                                shard_id,
-                            });
-                            tasks.len() - 1
-                        });
-                }
-            }
-        }
-    }
-
-    let mut results: Vec<Option<SeedHits>> = vec![None; tasks.len()];
-    let mut vertex_specs: Vec<(IndexEqualSpec, usize)> = Vec::new();
-    let mut edge_specs: Vec<(IndexEqualSpec, usize)> = Vec::new();
-    let mut intersection_tasks: Vec<(usize, Vec<IndexEqualSpec>)> = Vec::new();
-    let mut label_tasks: Vec<(usize, LabelPrefetchTask, Vec<ShardId>)> = Vec::new();
-
-    for (task_id, task) in tasks.iter().enumerate() {
-        match &task.anchor {
-            IndexAnchor::Equal(SeedProbe {
-                property_id,
-                payload_bytes,
-                ..
-            }) => {
-                vertex_specs.push((
-                    IndexEqualSpec::vertex(*property_id, payload_bytes.clone()),
-                    task_id,
-                ));
-            }
-            IndexAnchor::EdgeEqual(EdgeSeedProbe {
-                property_id,
-                payload_bytes,
-                wire_label_ids,
-                ..
-            }) => {
-                if wire_label_ids.is_empty() {
-                    edge_specs.push((
-                        IndexEqualSpec::edge(*property_id, payload_bytes.clone(), None),
-                        task_id,
-                    ));
-                } else {
-                    for label_id in wire_label_ids {
-                        edge_specs.push((
-                            IndexEqualSpec::edge(
-                                *property_id,
-                                payload_bytes.clone(),
-                                Some(*label_id),
-                            ),
-                            task_id,
-                        ));
-                    }
-                }
-            }
-            IndexAnchor::Intersection { specs, .. } => {
-                intersection_tasks.push((task_id, specs.clone()));
-            }
-            IndexAnchor::Label {
-                vertex_label_id, ..
-            } => {
-                label_tasks.push((
-                    task_id,
-                    LabelPrefetchTask::Single(*vertex_label_id),
-                    vec![task.shard_id],
-                ));
-            }
-            IndexAnchor::LabelIntersection {
-                vertex_label_ids, ..
-            } => {
-                label_tasks.push((
-                    task_id,
-                    LabelPrefetchTask::Intersection(vertex_label_ids.clone()),
-                    vec![task.shard_id],
-                ));
-            }
-        }
-    }
-
-    if !vertex_specs.is_empty() {
-        let specs: Vec<IndexEqualSpec> = vertex_specs.iter().map(|(s, _)| s.clone()).collect();
-        let hits_per_spec = match index.lookup_equal_batch(specs).await {
-            Ok(hits) => hits,
-            Err(err) => return vec![Err(err); registrations.len()],
-        };
-        for (i, (_, task_id)) in vertex_specs.iter().enumerate() {
-            results[*task_id] = Some(SeedHits::Vertices(hits_per_spec[i].clone()));
-        }
-    }
-
-    if !edge_specs.is_empty() {
-        let specs: Vec<IndexEqualSpec> = edge_specs.iter().map(|(s, _)| s.clone()).collect();
-        let hits_per_spec = match index.lookup_edge_equal_batch(specs).await {
-            Ok(hits) => hits,
-            Err(err) => return vec![Err(err); registrations.len()],
-        };
-        let mut merged: std::collections::HashMap<
-            usize,
-            (
-                Vec<EdgePostingHit>,
-                std::collections::BTreeSet<(ShardId, u32, u16, u32)>,
-            ),
-        > = std::collections::HashMap::new();
-        for (i, (_, task_id)) in edge_specs.iter().enumerate() {
-            let (hits, seen) = merged.entry(*task_id).or_default();
-            for h in hits_per_spec[i].iter().cloned() {
-                let key = (h.shard_id, h.owner_vertex_id, h.label_id, h.slot_index);
-                if seen.insert(key) {
-                    hits.push(h);
-                }
-            }
-        }
-        for (task_id, (hits, _)) in merged {
-            results[task_id] = Some(SeedHits::Edges(hits));
-        }
-    }
-
-    for (task_id, specs) in intersection_tasks {
-        let result = match index
-            .lookup_intersection(IndexIntersectionRequest { specs })
-            .await
-        {
-            Ok(r) => r,
-            Err(err) => return vec![Err(err); registrations.len()],
-        };
-        results[task_id] = Some(match result {
-            IndexIntersectionResult::Vertices(hits) => SeedHits::Vertices(hits),
-            IndexIntersectionResult::Edges(hits) => SeedHits::Edges(hits),
-        });
-    }
-
-    for (task_id, label_task, shard_ids) in label_tasks {
-        let hits = match label_task {
-            LabelPrefetchTask::Single(label_id) => {
-                collect_label_hits_for_shards(index, label_id, &shard_ids).await
-            }
-            LabelPrefetchTask::Intersection(label_ids) => {
-                collect_label_intersection_hits_for_shards(index, &label_ids, &shard_ids).await
-            }
-        };
-        let hits = match hits {
-            Ok(h) => h,
-            Err(err) => return vec![Err(err); registrations.len()],
-        };
-        results[task_id] = Some(SeedHits::Vertices(hits));
-    }
-
-    {
-        let mut cache = ctx.anchor_hits.borrow_mut();
-        for (task_id, task) in tasks.iter().enumerate() {
-            if let Some(hits) = results[task_id].take() {
-                cache.insert((task.anchor.clone(), task.shard_id), hits);
-            }
-        }
-    }
-
-    registrations.iter().map(|_| Ok(())).collect()
-}
-
-async fn resolve_journal_prefetch_registrations(
-    registrations: &[JournalPrefetchRegistration],
-    preflight: Option<&PreflightContext>,
-) -> Vec<Result<(), String>> {
-    let ctx = match preflight {
-        Some(ctx) => ctx,
-        None => return registrations.iter().map(|_| Ok(())).collect(),
-    };
-
-    // Concatenate every registration's targets in input order. resolve_journal_entries
-    // groups by Graph canister, chunks by payload/instruction budget, and caches all results.
-    let mut all_targets = Vec::new();
-    let mut offsets = Vec::with_capacity(registrations.len() + 1);
-    for registration in registrations {
-        offsets.push(all_targets.len());
-        all_targets.extend(registration.targets.iter().cloned());
-    }
-    offsets.push(all_targets.len());
-
-    if let Err(err) = ctx.resolve_journal_entries(&all_targets).await {
-        return vec![Err(err.to_string()); registrations.len()];
-    }
-
-    // Results are cached in the preflight context; callers read them via fetch_journal_entry.
-    registrations.iter().map(|_| Ok(())).collect()
-}
-
-async fn await_batch_item(
-    batch: &Option<(BatchDispatchCoordinator, usize)>,
-) -> Result<(), RouterError> {
-    if let Some((coordinator, item_index)) = batch {
-        coordinator
-            .register(*item_index, Vec::new())
-            .await
-            .map_err(RouterError::InvalidArgument)?;
-    }
-    Ok(())
-}
-
-/// Conservative per-operation instruction estimate used to size Graph batches.
-/// Measured social-demo seed costs peak around 700M instructions per operation
-/// on an empty graph (POSTED / feed edges); this constant intentionally leaves
-/// margin for heavier labels, unique-effect checks, and index maintenance.
-const ESTIMATED_INSTR_PER_GRAPH_OP: u64 = 500_000_000;
-
-/// Graph dynamic batch instruction budget, aligned with the Graph canister's
-/// own early-cutoff logic (40B hard limit with headroom).
-const GRAPH_DYNAMIC_INSTRUCTION_BUDGET: u64 = 35_000_000_000;
-
-fn graph_batch_chunk_len(operations: &[(usize, usize, BatchOperation)]) -> Result<usize, String> {
-    if operations.is_empty() {
-        return Ok(0);
-    }
-    let mut low = 1;
-    let mut high = operations.len();
-    let mut best = 0;
-    while low <= high {
-        let count = low + (high - low) / 2;
-        let candidate = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
-            operations: operations[..count]
-                .iter()
-                .map(|(_, _, operation)| operation.1.clone())
-                .collect(),
-            mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
-        };
-        let Ok(encoded) = Encode!(&candidate) else {
-            high = count.saturating_sub(1);
-            continue;
-        };
-        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            best = count;
-            low = count + 1;
-        } else {
-            high = count.saturating_sub(1);
-        }
-    }
-    if best == 0 {
-        return Err(format!(
-            "single Graph batch operation exceeds the safe inter-canister request payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        ));
-    }
-
-    // Cap by the Graph canister's per-update-call instruction budget so the
-    // batch is unlikely to be rejected or truncated on the Graph side. This
-    // works together with the Graph-side early cutoff in
-    // `crates/graph/src/canister/handlers.rs`.
-    let instr_limited = (GRAPH_DYNAMIC_INSTRUCTION_BUDGET / ESTIMATED_INSTR_PER_GRAPH_OP)
-        .try_into()
-        .unwrap_or(usize::MAX)
-        .max(1);
-    Ok(best.min(instr_limited))
-}
-
 /// Binary-search the largest sub-slice of `mutation_ids` starting at `offset` that still fits inside
 /// the safe inter-canister request payload limit when encoded as `GetMutationJournalEntriesArgs`.
 fn journal_batch_chunk_end(mutation_ids: &[MutationId], offset: usize) -> usize {
@@ -849,7 +312,7 @@ fn journal_batch_chunk_end(mutation_ids: &[MutationId], offset: usize) -> usize 
     let mut best = mutation_ids.len();
     while low <= high {
         let end = low + (high - low) / 2;
-        let candidate = GetMutationJournalEntriesArgs {
+        let candidate = gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesArgs {
             mutation_ids: mutation_ids[offset..end].to_vec(),
         };
         let Ok(encoded) = Encode!(&candidate) else {
@@ -866,115 +329,6 @@ fn journal_batch_chunk_end(mutation_ids: &[MutationId], offset: usize) -> usize 
     best.max(offset + 1)
 }
 
-async fn execute_registered_batch(
-    registrations: Vec<Vec<Vec<BatchOperation>>>,
-    policy: BatchExecutionPolicy,
-) -> Vec<Result<Vec<BatchDispatchResult>, String>> {
-    let mut operations_by_graph: Vec<(Principal, Vec<(usize, usize, BatchOperation)>)> = Vec::new();
-    for (item_index, groups) in registrations.iter().enumerate() {
-        for (ordinal, operation) in groups.iter().flatten().cloned().enumerate() {
-            let graph_canister = operation.0.graph_canister;
-            if let Some((_, operations)) = operations_by_graph
-                .iter_mut()
-                .find(|(target, _)| *target == graph_canister)
-            {
-                operations.push((item_index, ordinal, operation));
-            } else {
-                operations_by_graph.push((graph_canister, vec![(item_index, ordinal, operation)]));
-            }
-        }
-    }
-    let mut output: Vec<Vec<(usize, BatchDispatchResult)>> =
-        (0..registrations.len()).map(|_| Vec::new()).collect();
-    for (graph, operations) in operations_by_graph {
-        let mut start = 0;
-        while start < operations.len() {
-            let BatchExecutionPolicy::Dynamic { router_budget } = policy;
-            if crate::current_instruction_counter() >= router_budget {
-                for (item_index, ordinal, (dispatch, _)) in &operations[start..] {
-                    output[*item_index].push((*ordinal, (dispatch.clone(), None)));
-                }
-                break;
-            }
-            let chunk_len = match graph_batch_chunk_len(&operations[start..]) {
-                Ok(0) => break,
-                Ok(chunk_len) => chunk_len,
-                Err(err) => {
-                    for (item_index, ordinal, (dispatch, _)) in &operations[start..] {
-                        output[*item_index]
-                            .push((*ordinal, (dispatch.clone(), Some(Err(err.clone())))));
-                    }
-                    break;
-                }
-            };
-            let operation_slice = &operations[start..start + chunk_len];
-            let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
-                operations: operation_slice
-                    .iter()
-                    .map(|(_, _, operation)| operation.1.clone())
-                    .collect(),
-                mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
-            };
-            let batch = match execute_plan_batch_on_graph(graph, args).await {
-                Ok(batch) => batch,
-                Err(err) => {
-                    for (item_index, ordinal, (dispatch, _)) in &operations[start..] {
-                        output[*item_index]
-                            .push((*ordinal, (dispatch.clone(), Some(Err(err.clone())))));
-                    }
-                    break;
-                }
-            };
-            if batch.results.len() > operation_slice.len() {
-                let err = format!(
-                    "graph batch returned {} results for {} operations",
-                    batch.results.len(),
-                    operation_slice.len()
-                );
-                for (item_index, ordinal, (dispatch, _)) in &operations[start..] {
-                    output[*item_index]
-                        .push((*ordinal, (dispatch.clone(), Some(Err(err.clone())))));
-                }
-                break;
-            }
-            let result_count = batch.results.len();
-            for (entry, result) in operation_slice.iter().zip(batch.results) {
-                let (item_index, ordinal, (dispatch, _)) = entry;
-                output[*item_index].push((*ordinal, (dispatch.clone(), Some(result))));
-            }
-            let processed = match batch.next_index {
-                Some(next) if usize::try_from(next).ok().is_some_and(|n| n > 0) => {
-                    usize::try_from(next).expect("checked next index")
-                }
-                Some(_) => {
-                    for (item_index, ordinal, (dispatch, _)) in &operations[start + result_count..]
-                    {
-                        output[*item_index].push((*ordinal, (dispatch.clone(), None)));
-                    }
-                    break;
-                }
-                None => result_count,
-            };
-            if processed == 0 || processed > operation_slice.len() {
-                break;
-            }
-            start += processed;
-        }
-    }
-    output
-        .into_iter()
-        .map(|mut results| {
-            results.sort_by_key(|(ordinal, _)| *ordinal);
-            Ok(results.into_iter().map(|(_, result)| result).collect())
-        })
-        .collect()
-}
-
-/// Build a Router ingress block plan with the shared Gleaph path-extension handler.
-///
-/// All production Router planning entry points that may see path-pattern extensions
-/// (ad-hoc `run_gql`, prepared registration, and `USE GRAPH` defocus/replanning) must use
-/// this helper so that `COST BY` and `GLEAPH.COST` are not rejected by the default handler.
 pub(crate) fn build_router_block_plan(
     block: &gleaph_gql::ast::StatementBlock,
     schema: &dyn gleaph_gql::type_check::PropertySchema,
@@ -1367,7 +721,6 @@ pub async fn gql_query(query: String, params: Vec<u8>) -> Result<GqlQueryResult,
         None,
         ReadMode::Eventual,
         None,
-        None,
     )
     .await
 }
@@ -1393,7 +746,6 @@ pub async fn gql_query_with_consistency(
         None,
         read_mode,
         None,
-        None,
     )
     .await
 }
@@ -1408,7 +760,6 @@ pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterEr
         None,
         ReadMode::Eventual,
         None,
-        None,
     )
     .await?
     .row_count)
@@ -1419,16 +770,15 @@ pub async fn gql_execute_idempotent(
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<GqlQueryResult, RouterError> {
-    gql_execute_idempotent_with_batch(query, params, client_mutation_key, None).await
+    gql_execute_idempotent_with_batch(query, params, client_mutation_key).await
 }
 
 pub(crate) async fn gql_execute_idempotent_with_batch(
     query: String,
     params: Vec<u8>,
     client_mutation_key: String,
-    batch: Option<(BatchDispatchCoordinator, usize)>,
 ) -> Result<GqlQueryResult, RouterError> {
-    gql_execute_idempotent_with_batch_outcome(query, params, client_mutation_key, batch, None)
+    gql_execute_idempotent_with_batch_outcome(query, params, client_mutation_key, None)
         .await?
         .ok_or_else(|| RouterError::InvalidArgument(BATCH_DEFERRED_ERROR.to_string()))
 }
@@ -1437,7 +787,6 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
     query: String,
     params: Vec<u8>,
     client_mutation_key: String,
-    batch: Option<(BatchDispatchCoordinator, usize)>,
     preflight: Option<&PreflightContext>,
 ) -> Result<Option<GqlQueryResult>, RouterError> {
     let result = run_gql(
@@ -1448,15 +797,9 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
         false,
         Some(&client_mutation_key),
         ReadMode::Eventual,
-        batch.clone(),
         preflight,
     )
     .await;
-    if let Err(error) = &result
-        && let Some((coordinator, _)) = &batch
-    {
-        coordinator.abort(error.to_string());
-    }
     // ADR 0029 Phase 4: a federated mutation that committed canonically but could not
     // finish projection inline (returned here as an error) is left non-terminal; arm the
     // recovery driver so it converges without the client retrying. Self-guarding no-op when
@@ -1479,7 +822,6 @@ pub async fn force_gql_execute(query: String, params: Vec<u8>) -> Result<u64, Ro
         true,
         None,
         ReadMode::Eventual,
-        None,
         None,
     )
     .await?
@@ -1596,7 +938,6 @@ async fn run_gql(
     force: bool,
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
-    batch: Option<(BatchDispatchCoordinator, usize)>,
     preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     let result = run_gql_unchecked(
@@ -1607,7 +948,6 @@ async fn run_gql(
         force,
         client_mutation_key,
         read_mode,
-        batch,
         preflight,
     )
     .await?;
@@ -1640,7 +980,6 @@ async fn run_gql_unchecked(
     force: bool,
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
-    batch: Option<(BatchDispatchCoordinator, usize)>,
     preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     if let Some(ddl) = crate::index_ddl::try_parse(query) {
@@ -1777,38 +1116,36 @@ async fn run_gql_unchecked(
         let pmap = decode_gql_params_blob(params)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
         return match entry.dispatch {
-                    crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
-                        let stats = graph_stats_for(entry.dispatch_graph_id);
-                        dispatch_plan_blob_with_batch(
-                            entry.dispatch_graph_id,
-                            &entry.plan_blob,
-                            std::slice::from_ref(&plan),
-                            &pmap,
-                            params,
-                            mode,
-                            client_mutation_key,
-                            &stats,
-                            batch.clone(),
-                            Some(ctx),
-                        )
-                        .await
-                    }
-                    crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
-                        let stats = graph_stats_for(graph_id);
-                        dispatch_plan_blob_with_batch(
-                            graph_id,
-                            &entry.plan_blob,
-                            std::slice::from_ref(&plan),
-                            &pmap,
-                            params,
-                            mode,
-                            client_mutation_key,
-                            &stats,
-                            batch.clone(),
-                            Some(ctx),
-                        )
-                        .await
-                    }
+            crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
+                let stats = graph_stats_for(entry.dispatch_graph_id);
+                dispatch_plan_blob_with_batch(
+                    entry.dispatch_graph_id,
+                    &entry.plan_blob,
+                    std::slice::from_ref(&plan),
+                    &pmap,
+                    params,
+                    mode,
+                    client_mutation_key,
+                    &stats,
+                    Some(ctx),
+                )
+                .await
+            }
+            crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
+                let stats = graph_stats_for(graph_id);
+                dispatch_plan_blob_with_batch(
+                    graph_id,
+                    &entry.plan_blob,
+                    std::slice::from_ref(&plan),
+                    &pmap,
+                    params,
+                    mode,
+                    client_mutation_key,
+                    &stats,
+                    Some(ctx),
+                )
+                .await
+            }
             _ => Err(RouterError::InvalidArgument(
                 "cached plan dispatch variant not supported".into(),
             )),
@@ -1963,7 +1300,6 @@ async fn run_gql_unchecked(
                 mode,
                 client_mutation_key,
                 &stats,
-                batch.clone(),
                 preflight,
             )
             .await
@@ -1994,7 +1330,6 @@ async fn run_gql_unchecked(
                 mode,
                 client_mutation_key,
                 &stats,
-                batch.clone(),
                 preflight,
             )
             .await
@@ -2223,7 +1558,6 @@ async fn dispatch_plan_blob_with_batch(
     mode: GqlExecutionMode,
     client_mutation_key: Option<&str>,
     stats: &RouterGraphStats,
-    batch: Option<(BatchDispatchCoordinator, usize)>,
     preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     dispatch_plan_blob_with_search_and_batch(
@@ -2237,7 +1571,6 @@ async fn dispatch_plan_blob_with_batch(
         stats,
         None,
         msg_caller(),
-        batch,
         preflight,
     )
     .await
@@ -2270,7 +1603,6 @@ pub async fn dispatch_plan_blob_with_search(
         resolved_search,
         caller,
         None,
-        None,
     )
     .await
 }
@@ -2287,7 +1619,6 @@ async fn dispatch_plan_blob_with_search_and_batch(
     stats: &RouterGraphStats,
     resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
     caller: Principal,
-    batch: Option<(BatchDispatchCoordinator, usize)>,
     preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
@@ -2311,7 +1642,6 @@ async fn dispatch_plan_blob_with_search_and_batch(
         caller,
         stats,
         resolved_search,
-        batch,
         preflight,
     )
     .await
@@ -2320,7 +1650,7 @@ async fn dispatch_plan_blob_with_search_and_batch(
 /// Attach the ADR 0029 federated mutation lifecycle phase to a DML result. The phase is
 /// derived from the saga record, so it is only present when the caller tracks an idempotent
 /// mutation via `client_mutation_key`; read queries and non-idempotent writes stay `None`.
-fn attach_mutation_phase(
+pub(crate) fn attach_mutation_phase(
     result: GqlQueryResult,
     store: &RouterStore,
     caller: Principal,
@@ -2388,13 +1718,23 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         stats,
         resolved_search,
         None,
-        None,
     )
     .await
 }
 
+/// Outcome of preparing a mutation for batch execution.
+enum PrepareOutcome {
+    /// The mutation did not need Graph dispatch (DDL, read, or already completed).
+    Early(GqlQueryResult),
+    /// The mutation is ready for coalesced Graph dispatch.
+    Prepared(Box<crate::batch_wave::PreparedMutation>),
+}
+
+/// Prepare a mutation for batch execution. Returns either an early result (for DDL,
+/// reads, or already-completed mutations) or a [`PreparedMutation`] ready for the
+/// coalesced Graph dispatch phase.
 #[allow(clippy::too_many_arguments)]
-async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
+async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     graph_id: GraphId,
     plan_blob: &[u8],
     plans: &[PhysicalPlan],
@@ -2408,11 +1748,10 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     caller: Principal,
     stats: &RouterGraphStats,
     resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
-    batch: Option<(BatchDispatchCoordinator, usize)>,
     preflight: Option<&PreflightContext>,
-) -> Result<GqlQueryResult, RouterError> {
+) -> Result<PrepareOutcome, RouterError> {
     #[cfg(feature = "batch-instr-log")]
-    let dispatch_start = crate::current_instruction_counter();
+    let _dispatch_start = crate::current_instruction_counter();
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     // ADR 0029 §6 (Phase 5 contract 1): a completely-new INSERT-only write has no index anchor and
     // no existing-state reads, so it is placed on the graph's latest shard rather than rejected.
@@ -2420,16 +1759,20 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     if mode == GqlExecutionMode::Query && !has_dml {
         if let Some(label_path) = try_label_count_telemetry_fast_path(plans, stats, store, pmap) {
             let live_count = vertex_label_live_count(store, graph_id, label_path.vertex_label_id);
-            return gql_query_result_from_label_live_count(&label_path, live_count)
-                .map_err(RouterError::InvalidArgument);
+            return Ok(PrepareOutcome::Early(
+                gql_query_result_from_label_live_count(&label_path, live_count)
+                    .map_err(RouterError::InvalidArgument)?,
+            ));
         }
         if let Some(fast_path) = try_aggregate_index_fast_path(plans, stats, store, pmap)
             && let Some(counts) = execute_grouped_aggregate_fast_path(index, &fast_path)
                 .await
                 .map_err(RouterError::InvalidArgument)?
         {
-            return gql_query_result_from_posting_counts(&fast_path, counts)
-                .map_err(RouterError::InvalidArgument);
+            return Ok(PrepareOutcome::Early(
+                gql_query_result_from_posting_counts(&fast_path, counts)
+                    .map_err(RouterError::InvalidArgument)?,
+            ));
         }
     }
     let merge_mode = federated_merge_mode_from_plans(plans);
@@ -2455,14 +1798,13 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
 
     if has_dml && let Some(key) = client_mutation_key {
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
-            await_batch_item(&batch).await?;
-            return Ok(attach_mutation_phase(
+            return Ok(PrepareOutcome::Early(attach_mutation_phase(
                 GqlQueryResult::row_count_only(row_count),
                 store,
                 caller,
                 graph_id,
                 client_mutation_key,
-            ));
+            )));
         }
         // A brand-new mutation has no saga record on the Router, so there is no
         // durable projection to reconcile. Skip the Graph journal reads entirely in that case.
@@ -2477,14 +1819,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
             if !targets.is_empty() {
                 #[cfg(feature = "batch-instr-log")]
                 let t0 = crate::current_instruction_counter();
-                if let Some((ref coordinator, item_index)) = batch {
-                    coordinator
-                        .prefetch_journal_entries(item_index, targets, preflight)
-                        .await
-                        .map_err(|e| {
-                            RouterError::InvalidArgument(format!("journal prefetch: {e}"))
-                        })?;
-                } else if let Some(ctx) = preflight {
+                if let Some(ctx) = preflight {
                     ctx.prefetch_journal_entries(&targets).await;
                 }
                 #[cfg(feature = "batch-instr-log")]
@@ -2503,14 +1838,13 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
             );
         }
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
-            await_batch_item(&batch).await?;
-            return Ok(attach_mutation_phase(
+            return Ok(PrepareOutcome::Early(attach_mutation_phase(
                 GqlQueryResult::row_count_only(row_count),
                 store,
                 caller,
                 graph_id,
                 client_mutation_key,
-            ));
+            )));
         }
     }
 
@@ -2610,16 +1944,6 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     let constrained_properties = constrained_split.federated;
     let local_constrained_properties = constrained_split.local;
 
-    if let Some((ref coordinator, item_index)) = batch {
-        let router_index = index.as_router_index_lookup().ok_or_else(|| {
-            RouterError::InvalidArgument("anchor prefetch requires RouterIndexLookup".into())
-        })?;
-        coordinator
-            .prefetch_anchors(item_index, None, Vec::new(), router_index, preflight)
-            .await
-            .map_err(|e| RouterError::InvalidArgument(format!("anchor prefetch: {e}")))?;
-    }
-
     // The batch preflight above awaits other mutations in the same ingress. A retry or a
     // duplicate in-flight path can complete this client key while this future is suspended, so
     // repeat the terminal replay check immediately before constructing dispatches. Without this
@@ -2629,14 +1953,13 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         && let Some(key) = client_mutation_key
         && let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key)
     {
-        await_batch_item(&batch).await?;
-        return Ok(attach_mutation_phase(
+        return Ok(PrepareOutcome::Early(attach_mutation_phase(
             GqlQueryResult::row_count_only(row_count),
             store,
             caller,
             graph_id,
             client_mutation_key,
-        ));
+        )));
     }
 
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
@@ -2668,21 +1991,6 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         };
         let policy = sharding_policy_for(&shards);
         let shard_ids: Vec<_> = shards.iter().map(|entry| entry.shard_id).collect();
-        if let Some((ref coordinator, item_index)) = batch {
-            let router_index = index.as_router_index_lookup().ok_or_else(|| {
-                RouterError::InvalidArgument("anchor prefetch requires RouterIndexLookup".into())
-            })?;
-            coordinator
-                .prefetch_anchors(
-                    item_index,
-                    seed_anchors.as_ref().map(|s| s.anchors.clone()),
-                    shard_ids.clone(),
-                    router_index,
-                    preflight,
-                )
-                .await
-                .map_err(|e| RouterError::InvalidArgument(format!("anchor prefetch: {e}")))?;
-        }
         let routings = match seed_anchors {
             Some(set) => {
                 let hits = match resolve_seed_hits_from_anchors(
@@ -2717,14 +2025,13 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                             0,
                         )?;
                     }
-                    await_batch_item(&batch).await?;
-                    return Ok(attach_mutation_phase(
+                    return Ok(PrepareOutcome::Early(attach_mutation_phase(
                         GqlQueryResult::row_count_only(0),
                         store,
                         caller,
                         graph_id,
                         client_mutation_key,
-                    ));
+                    )));
                 }
                 match policy.resolve_with_hits(store, graph_id, &shards, set.routing_anchor(), hits)
                 {
@@ -2999,90 +2306,143 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     // Aggregate only dispatches targeting the same Graph canister. The batch endpoint returns one
     // outcome per operation, so the existing per-shard journal/recovery logic below remains the
     // source of truth for mutation lifecycle transitions.
-    let dispatch_groups = group_dispatches_by_graph(dispatches);
+    Ok(PrepareOutcome::Prepared(Box::new(
+        crate::batch_wave::PreparedMutation {
+            caller,
+            graph_id,
+            client_mutation_key: client_mutation_key
+                .map(|k| k.to_string())
+                .unwrap_or_default(),
+            already_completed: false,
+            completed_row_count: None,
+            has_dml,
+            merge_mode,
+            dispatches,
+            mutation_id,
+            unique_claims: dispatch_unique_claims.clone(),
+            unique_proof_targets: unique_proof_targets.clone(),
+            constrained_properties: dispatch_constrained_properties.clone(),
+            unique_release_targets: unique_release_targets.clone(),
+            local_unique_claims: dispatch_local_unique_claims.clone(),
+            local_constrained_properties: dispatch_local_constrained_properties.clone(),
+            indexed_properties: indexed_properties.clone(),
+            indexed_embeddings: indexed_embeddings.clone(),
+            element_id_encoding_key: gleaph_graph_kernel::federation::ElementIdEncodingKey(
+                element_id_encoding_key,
+            ),
+            resolved_labels: resolved_labels.clone(),
+            resolved_properties: resolved_properties.clone(),
+            plan_blob: dispatch_plan_blob.clone(),
+            pmap: pmap.clone(),
+            params: params.to_vec(),
+            mode,
+            plans: plans.to_vec(),
+        },
+    )))
+}
+
+/// Execute a single prepared mutation (the Graph dispatch and post-processing phases).
+async fn execute_prepared_mutation(
+    prepared: crate::batch_wave::PreparedMutation,
+    store: &RouterStore,
+    caller: Principal,
+    graph_id: GraphId,
+    client_mutation_key: Option<&str>,
+    preflight: Option<&PreflightContext>,
+) -> Result<GqlQueryResult, RouterError> {
+    let mode = prepared.mode;
+    let has_dml = prepared.has_dml;
+    let mutation_id = prepared.mutation_id;
+    let unique_claims = prepared.unique_claims.clone().unwrap_or_default();
+    let unique_proof_targets = prepared.unique_proof_targets.clone();
+    let constrained_properties = prepared.constrained_properties.clone().unwrap_or_default();
+    let unique_release_targets = prepared.unique_release_targets.clone();
+    let merge_mode = prepared.merge_mode.clone();
+    let plans = prepared.plans.clone();
+    let pmap = prepared.pmap.clone();
+    let element_id_encoding_key = prepared.element_id_encoding_key.0;
+
     let build_execute_args =
         |dispatch: &ShardDispatch| gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
             target_shard_id: dispatch.shard_id,
             element_id_encoding_key,
             mutation_id,
-            plan_blob: dispatch_plan_blob.clone(),
-            params_blob: params.to_vec(),
+            plan_blob: prepared.plan_blob.clone(),
+            params_blob: prepared.params.clone(),
             mode,
             seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
-            resolved_labels: Some(resolved_labels.clone()),
-            resolved_properties: Some(resolved_properties.clone()),
-            indexed_properties: Some(indexed_properties.clone()),
-            unique_claims: dispatch_unique_claims.clone(),
-            constrained_properties: dispatch_constrained_properties.clone(),
-            local_unique_claims: dispatch_local_unique_claims.clone(),
-            local_constrained_properties: dispatch_local_constrained_properties.clone(),
-            indexed_embeddings: Some(indexed_embeddings.clone()),
+            resolved_labels: Some(prepared.resolved_labels.clone()),
+            resolved_properties: Some(prepared.resolved_properties.clone()),
+            indexed_properties: Some(prepared.indexed_properties.clone()),
+            unique_claims: prepared.unique_claims.clone(),
+            constrained_properties: prepared.constrained_properties.clone(),
+            local_unique_claims: prepared.local_unique_claims.clone(),
+            local_constrained_properties: prepared.local_constrained_properties.clone(),
+            indexed_embeddings: Some(prepared.indexed_embeddings.clone()),
             resolved_search_blob: dispatch.resolved_search_blob.clone(),
         };
+
     #[cfg(feature = "batch-instr-log")]
     let graph_call_start = crate::current_instruction_counter();
-    let dispatch_results: Vec<BatchDispatchResult> = if let Some((coordinator, item_index)) = batch
-    {
-        let operation_groups = dispatch_groups
-            .into_iter()
-            .map(|group| {
-                group
-                    .into_iter()
-                    .map(|dispatch| {
-                        let args = build_execute_args(&dispatch);
-                        (dispatch, args)
-                    })
-                    .collect()
-            })
-            .collect();
-        coordinator
-            .register(item_index, operation_groups)
-            .await
-            .map_err(RouterError::InvalidArgument)?
-    } else {
-        let mut results = Vec::new();
-        for group in dispatch_groups {
-            let group_len = group.len();
+
+    let dispatch_groups = group_dispatches_by_graph(prepared.dispatches);
+    let mut dispatch_results: Vec<BatchDispatchResult> = Vec::new();
+
+    // Dispatch groups in parallel across target Graph canisters. Within a single
+    // canister we issue sequential dynamic chunks so the message size and Graph
+    // instruction budget stay safe.
+    let mut group_futures: Vec<
+        futures::future::BoxFuture<Result<Vec<BatchDispatchResult>, RouterError>>,
+    > = Vec::new();
+    for group in dispatch_groups {
+        group_futures.push(Box::pin(async {
+            let mut results = Vec::new();
             let group_graph = group[0].graph_canister;
-            if mode == GqlExecutionMode::Query || group_len == 1 {
-                let dispatch = group.into_iter().next().expect("single dispatch group");
-                results.push((
-                    dispatch.clone(),
-                    Some(execute_plan_on_graph(group_graph, build_execute_args(&dispatch)).await),
-                ));
+            if mode == GqlExecutionMode::Query || group.len() == 1 {
+                for dispatch in group {
+                    let args = build_execute_args(&dispatch);
+                    results.push((
+                        dispatch.clone(),
+                        Some(execute_plan_on_graph(group_graph, args).await),
+                    ));
+                }
             } else {
-                let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
-                    operations: group.iter().map(build_execute_args).collect(),
-                    mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Fixed,
-                };
-                match execute_plan_batch_on_graph(group_graph, args).await {
-                    Ok(batch) if batch.results.len() == group_len => {
-                        results.extend(group.into_iter().zip(batch.results.into_iter().map(Some)));
-                    }
-                    Ok(batch) => {
-                        let err = format!(
-                            "graph batch returned {} results for {} operations",
-                            batch.results.len(),
-                            group_len
-                        );
-                        results.extend(
-                            group
-                                .into_iter()
-                                .map(|dispatch| (dispatch, Some(Err(err.clone())))),
-                        );
-                    }
-                    Err(err) => {
-                        results.extend(
-                            group
-                                .into_iter()
-                                .map(|dispatch| (dispatch, Some(Err(err.clone())))),
-                        );
+                let mut remaining = group;
+                while !remaining.is_empty() {
+                    let chunk_len =
+                        graph_batch_chunk_len_for_dispatches(&remaining, &build_execute_args)?;
+                    let chunk: Vec<ShardDispatch> = remaining.drain(..chunk_len).collect();
+                    let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
+                        operations: chunk.iter().map(&build_execute_args).collect(),
+                        mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
+                    };
+                    match execute_plan_batch_on_graph(group_graph, args).await {
+                        Ok(batch) if batch.results.len() == chunk.len() => {
+                            results
+                                .extend(chunk.into_iter().zip(batch.results.into_iter().map(Some)));
+                        }
+                        Ok(batch) => {
+                            let err = format!(
+                                "graph batch returned {} results for {} operations",
+                                batch.results.len(),
+                                chunk.len()
+                            );
+                            results.extend(chunk.into_iter().map(|d| (d, Some(Err(err.clone())))));
+                        }
+                        Err(err) => {
+                            results.extend(chunk.into_iter().map(|d| (d, Some(Err(err.clone())))));
+                        }
                     }
                 }
             }
-        }
-        results
-    };
+            Ok(results)
+        }));
+    }
+
+    for group_result in futures::future::join_all(group_futures).await {
+        dispatch_results.extend(group_result?);
+    }
+
     #[cfg(feature = "batch-instr-log")]
     log_router_dispatch_phase(
         "graph_calls",
@@ -3143,7 +2503,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                         crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
                             dispatch.graph_canister,
                             dispatch.shard_id,
-                            plans,
+                            &plans,
                             &entry.hot_forward_vertices,
                         )
                         .await?;
@@ -3179,10 +2539,6 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
                     });
                     continue;
                 }
-                // ADR 0030 slice 10: a `ShardLocalGlobal` duplicate is detected on the owning shard
-                // (no Router-side reservation Try), so its violation arrives here as a string. Re-type
-                // it to the non-retryable `UniquenessViolation` the FederatedTcc path returns directly,
-                // instead of a generic `InvalidArgument`.
                 if let Some(detail) = err
                     .strip_prefix(gleaph_graph_kernel::federation::UNIQUENESS_VIOLATION_WIRE_PREFIX)
                 {
@@ -3210,7 +2566,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
             crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
                 dispatch.graph_canister,
                 dispatch.shard_id,
-                plans,
+                &plans,
                 &result.hot_forward_vertices,
             )
             .await?;
@@ -3233,17 +2589,10 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         merge_execute_plan_result(&mut merged, result, merge_mode.clone())
             .map_err(RouterError::InvalidArgument)?;
     }
-    // ADR 0030 slice 5a: Confirm the cross-shard uniqueness reservations now that every shard's
-    // canonical write (and its pinned `Acquire`) is durable. Best-effort and idempotent — the
-    // canonical write cannot be rolled back, so a read/ack failure leaves the reservation `Reserved`
-    // for the slice-6 recovery reconciler rather than failing the (succeeded) mutation.
+
     if let Some(mutation_id) = mutation_id
         && !unique_claims.is_empty()
     {
-        // ADR 0030 slice 7 (failure injection): trap in the post-dispatch callback before Confirm.
-        // The shard's canonical write + pinned `Acquire` are already durable; only the Router-side
-        // Confirm rolls back, leaving the reservation `Reserved` (commit-but-reply-lost) for recovery
-        // to converge — Confirm is re-runnable and the reservation is never lost.
         #[cfg(feature = "pocket-ic-e2e")]
         crate::test_fault::maybe_trap_before_confirm();
 
@@ -3256,25 +2605,23 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         )
         .await;
     }
-    // ADR 0030 slice 5b: reconcile the `Release` effects the constrained delete/remove pinned, now
-    // that the canonical write is durable. Best-effort and idempotent — a removed reservation cannot
-    // un-delete the element, and a held/failed release is left pinned for slice-6 recovery.
+
     if let Some(mutation_id) = mutation_id
         && !constrained_properties.is_empty()
     {
         reconcile_unique_releases(store, graph_id, mutation_id, &unique_release_targets).await;
     }
+
     if let FederatedMergeMode::Aggregate(spec) = &merge_mode {
-        apply_federated_aggregate_having(&mut merged, spec, pmap)
+        apply_federated_aggregate_having(&mut merged, spec, &pmap)
             .map_err(RouterError::InvalidArgument)?;
     }
-    // ADR 0029 Phase 2: issue a read-your-writes token for the idempotent mutation. The
-    // index barrier is keyed by the monotonic mutation_id; label-stats barriers by each
-    // shard's emitted delta seq. Enforcement is Phase 3.
+
     let token = mutation_id.map(|mutation_id| MutationToken {
         mutation_id,
         shards: token_shards,
     });
+
     if let Some(key) = client_mutation_key
         && let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key)
     {
@@ -3289,11 +2636,13 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
             token,
         ));
     }
+
     #[cfg(feature = "batch-instr-log")]
     log_router_dispatch_phase(
         "total",
-        crate::current_instruction_counter().saturating_sub(dispatch_start),
+        crate::current_instruction_counter().saturating_sub(graph_call_start),
     );
+
     Ok(attach_mutation_token(
         attach_mutation_phase(
             GqlQueryResult::from_merged(&merged),
@@ -3306,8 +2655,102 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
     ))
 }
 
+fn graph_batch_chunk_len_for_dispatches(
+    dispatches: &[ShardDispatch],
+    build_execute_args: &impl Fn(&ShardDispatch) -> gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
+) -> Result<usize, RouterError> {
+    if dispatches.is_empty() {
+        return Ok(0);
+    }
+    let mut low = 1;
+    let mut high = dispatches.len();
+    let mut best = 0;
+    while low <= high {
+        let count = low + (high - low) / 2;
+        let candidate = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
+            operations: dispatches[..count].iter().map(build_execute_args).collect(),
+            mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
+        };
+        let Ok(encoded) = Encode!(&candidate) else {
+            high = count.saturating_sub(1);
+            continue;
+        };
+        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            best = count;
+            low = count + 1;
+        } else {
+            high = count.saturating_sub(1);
+        }
+    }
+    if best == 0 {
+        return Err(RouterError::InvalidArgument(format!(
+            "single Graph batch operation exceeds the safe inter-canister request payload limit of {}",
+            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        )));
+    }
+    const ESTIMATED_INSTR_PER_GRAPH_OP: u64 = 500_000_000;
+    const GRAPH_DYNAMIC_INSTRUCTION_BUDGET: u64 = 35_000_000_000;
+    let instr_limited = (GRAPH_DYNAMIC_INSTRUCTION_BUDGET / ESTIMATED_INSTR_PER_GRAPH_OP)
+        .try_into()
+        .unwrap_or(usize::MAX)
+        .max(1);
+    Ok(best.min(instr_limited))
+}
+
+async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
+    graph_id: GraphId,
+    plan_blob: &[u8],
+    plans: &[PhysicalPlan],
+    pmap: &BTreeMap<String, gleaph_gql::Value>,
+    params: &[u8],
+    mode: GqlExecutionMode,
+    client_mutation_key: Option<&str>,
+    store: &RouterStore,
+    shards: Vec<ShardRegistryEntry>,
+    index: &I,
+    caller: Principal,
+    stats: &RouterGraphStats,
+    resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
+    preflight: Option<&PreflightContext>,
+) -> Result<GqlQueryResult, RouterError> {
+    let prepared = prepare_mutation_for_batch(
+        graph_id,
+        plan_blob,
+        plans,
+        pmap,
+        params,
+        mode,
+        client_mutation_key,
+        store,
+        shards,
+        index,
+        caller,
+        stats,
+        resolved_search,
+        preflight,
+    )
+    .await?;
+    match prepared {
+        PrepareOutcome::Early(result) => Ok(result),
+        PrepareOutcome::Prepared(prepared) => {
+            execute_prepared_mutation(
+                *prepared,
+                store,
+                caller,
+                graph_id,
+                client_mutation_key,
+                preflight,
+            )
+            .await
+        }
+    }
+}
+
 /// Attach an ADR 0029 Phase 2 mutation token when one was issued for this dispatch.
-fn attach_mutation_token(result: GqlQueryResult, token: Option<MutationToken>) -> GqlQueryResult {
+pub(crate) fn attach_mutation_token(
+    result: GqlQueryResult,
+    token: Option<MutationToken>,
+) -> GqlQueryResult {
     match token {
         Some(token) => result.with_token(token),
         None => result,
@@ -3815,21 +3258,6 @@ mod tests {
         enforce_read_consistency_with_lookup, request_fingerprint,
     };
 
-    #[test]
-    fn batch_coordinator_releases_all_empty_items_once_page_is_ready() {
-        let coordinator = super::BatchDispatchCoordinator::new_dynamic(2, u64::MAX);
-        let first = coordinator.clone();
-        let second = coordinator.clone();
-        let (first_result, second_result) = futures::executor::block_on(async move {
-            futures::future::join(
-                first.register(0, Vec::new()),
-                second.register(1, Vec::new()),
-            )
-            .await
-        });
-        assert_eq!(first_result.expect("first item released").len(), 0);
-        assert_eq!(second_result.expect("second item released").len(), 0);
-    }
     use crate::init::RouterInitArgs;
     use crate::planner_stats::RouterGraphStats;
     use crate::seed::SeedAnchorSet;
