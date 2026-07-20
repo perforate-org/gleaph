@@ -3492,3 +3492,128 @@ mod tests {
         assert_eq!(out.rows[0].get("name"), Some(&Value::Text("anchor".into())));
     }
 }
+
+#[cfg(test)]
+mod wave_4_regression_tests {
+    use super::*;
+
+    #[test]
+    fn wave_4_regression_match_two_post_return_a_next_insert_reply_to() {
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use std::collections::BTreeMap;
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        pollster::block_on(run_adhoc_gql(
+            store.clone(),
+            "INSERT (:User {user_id: 'alice', demo_graph: 'social'})",
+            &params,
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
+        ))
+        .unwrap();
+        for demo_id in [284u64, 4284u64] {
+            let mut p = BTreeMap::new();
+            p.insert("$demo_id".to_string(), gleaph_gql::Value::Uint64(demo_id));
+            p.insert(
+                "$body".to_string(),
+                gleaph_gql::Value::Text("x".to_string()),
+            );
+            p.insert("$is_public".to_string(), gleaph_gql::Value::Bool(true));
+            pollster::block_on(run_adhoc_gql(
+                store.clone(),
+                "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'e', demo_kind: 'posted'}]->(b:Post {demo_id: $demo_id, demo_graph: 'social', body: $body, created_at: CURRENT_TIMESTAMP, is_public: $is_public})",
+                &p,
+                None,
+                GqlCanisterExecutionMode::Update,
+                GqlExecutionContext::default(),
+            ))
+            .unwrap();
+        }
+        let mut p = BTreeMap::new();
+        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let plan = build_block_plan_with_schema(block, None, &NoSchema).unwrap();
+        let result = pollster::block_on(execute_dml_plan_async(
+            &store,
+            &plan,
+            &p,
+            None,
+            GqlExecutionContext::default(),
+            None,
+        ));
+        result.expect("wave 4 shape must bind a and b");
+    }
+
+    #[test]
+    fn wave_4_regression_wire_block_match_two_post_return_a_next_insert_reply_to() {
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use gleaph_gql_planner::wire::encode_block_plans;
+        use std::collections::BTreeMap;
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        pollster::block_on(run_adhoc_gql(
+            store.clone(),
+            "INSERT (:User {user_id: 'alice', demo_graph: 'social'})",
+            &params,
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
+        ))
+        .unwrap();
+        for demo_id in [284u64, 4284u64] {
+            let mut p = BTreeMap::new();
+            p.insert("$demo_id".to_string(), gleaph_gql::Value::Uint64(demo_id));
+            p.insert(
+                "$body".to_string(),
+                gleaph_gql::Value::Text("x".to_string()),
+            );
+            p.insert("$is_public".to_string(), gleaph_gql::Value::Bool(true));
+            pollster::block_on(run_adhoc_gql(
+                store.clone(),
+                "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'e', demo_kind: 'posted'}]->(b:Post {demo_id: $demo_id, demo_graph: 'social', body: $body, created_at: CURRENT_TIMESTAMP, is_public: $is_public})",
+                &p,
+                None,
+                GqlCanisterExecutionMode::Update,
+                GqlExecutionContext::default(),
+            ))
+            .unwrap();
+        }
+        let mut p = BTreeMap::new();
+        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let plan = build_block_plan_with_schema(block, None, &NoSchema).unwrap();
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+        let result = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &p,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            None,
+            Some(1),
+        ));
+        result.expect("wire wave 4 shape must bind a and b");
+    }
+}
