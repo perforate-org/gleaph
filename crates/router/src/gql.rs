@@ -2572,6 +2572,14 @@ pub(crate) async fn execute_bulk_group(
         None => return Ok(None),
     };
 
+    // Bulk grouping requires a per-item seed binding surface (index anchors, remote
+    // seeds, etc.) because the dispatch envelope built from the first item would be wrong for
+    // the rest.  Pure inserts have no seed bindings; fall back to the normal sequential path
+    // otherwise.
+    if plan_requires_per_item_seed_bindings(&plans, &base_pmap, graph_id, &RouterStore::new())? {
+        return Ok(None);
+    }
+
     let stats = graph_stats_for(graph_id);
     let prepared = prepare_single_mutation(
         graph_id,
@@ -2627,29 +2635,6 @@ pub(crate) async fn execute_bulk_group(
         return Ok(None);
     }
 
-    // Bulk grouping requires a per-item seed binding surface (index anchors, remote seeds,
-    // etc.) because the dispatch envelope built from the first item would be wrong for the rest.
-    // Pure inserts have no seed bindings; fall back to the normal sequential path otherwise.
-    if base.dispatches.iter().any(|d| {
-        d.seed_bindings_blob
-            .as_ref()
-            .is_some_and(|blob| !blob.is_empty())
-    }) {
-        release_routing_if_owner(
-            &RouterStore::new(),
-            caller,
-            graph_id,
-            Some(group_key),
-            base.mutation_id
-                .map(|mid| crate::facade::store::ClientMutationReservation {
-                    mutation_id: mid,
-                    routing_owner: true,
-                }),
-        )?;
-        return Ok(None);
-    }
-
-    // Decode params for the remaining items.
     let mut extra_items = Vec::with_capacity(items.len() - 1);
     for item in &items[1..] {
         let pmap = decode_gql_params_blob(&item.params)
@@ -2672,6 +2657,23 @@ pub(crate) async fn execute_bulk_group(
     .await
     .map(Some)
 }
+/// Returns true when the plan needs per-item seed bindings that differ per params.
+/// Bulk grouping cannot share one dispatch envelope across such items.
+fn plan_requires_per_item_seed_bindings(
+    plans: &[PhysicalPlan],
+    _pmap: &BTreeMap<String, gleaph_gql::Value>,
+    graph_id: GraphId,
+    store: &RouterStore,
+) -> Result<bool, RouterError> {
+    let stats = graph_stats_for(graph_id);
+    Ok(
+        match SeedAnchorSet::from_plans(plans, _pmap, store, &stats)? {
+            Some(set) => !set.anchors.is_empty(),
+            None => false,
+        },
+    )
+}
+
 /// Plan a simple single-graph DML query for the bulk-group path (ADR 0044).
 /// Returns `(graph_id, plan_blob, plans, pmap)` when the query is a plain DML write on the
 /// caller's default graph with no `use_graph`, no DDL, and no SEARCH. Returns `None` for queries
@@ -6039,5 +6041,82 @@ mod tests {
                 "stale release must not remove the live reservation"
             );
         }
+    }
+
+    #[test]
+    fn wave_4_multi_anchor_seed_returns_none() {
+        use crate::gql::build_router_block_plan;
+        use crate::planner_stats::RouterGraphStats;
+        use gleaph_gql::type_check::NoSchema;
+        use std::collections::BTreeMap;
+
+        let store = store_with_one_shard();
+        let graph_id = tenant_main_graph_id();
+        let admin = Principal::from_slice(&[1; 29]);
+        store
+            .admin_intern_vertex_label(admin, "tenant.main", "Post")
+            .expect("intern Post");
+        store
+            .admin_intern_property(admin, "tenant.main", "demo_id")
+            .expect("intern demo_id");
+        store
+            .admin_intern_property(admin, "tenant.main", "demo_graph")
+            .expect("intern demo_graph");
+
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).expect("parse");
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+
+        let stats_no_index = RouterGraphStats::from_catalog(
+            graph_id,
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+        );
+        let plan_no_index =
+            build_router_block_plan(block, &NoSchema, &stats_no_index).expect("plan no index");
+        assert!(
+            SeedAnchorSet::from_plans(&[plan_no_index], &BTreeMap::new(), &store, &stats_no_index,)
+                .expect("parse anchors")
+                .is_none(),
+            "multi-variable no-index plan must not produce a single seed anchor"
+        );
+
+        let stats_indexed = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["demo_id"]);
+        let plan_indexed =
+            build_router_block_plan(block, &NoSchema, &stats_indexed).expect("plan indexed");
+        let mut params = BTreeMap::new();
+        params.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(1));
+        params.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(2));
+        assert!(
+            SeedAnchorSet::from_plans(
+                std::slice::from_ref(&plan_indexed),
+                &params,
+                &store,
+                &stats_indexed,
+            )
+            .expect("parse anchors")
+            .is_none(),
+            "multi-variable indexed plan must not produce a single seed anchor"
+        );
+
+        // The bulk-group guard must therefore allow grouping for this shape.
+        let bulk_guard = super::plan_requires_per_item_seed_bindings(
+            std::slice::from_ref(&plan_indexed),
+            &params,
+            graph_id,
+            &store,
+        )
+        .expect("guard check");
+        assert!(
+            !bulk_guard,
+            "wave 4 plan should not require per-item seed bindings"
+        );
     }
 }

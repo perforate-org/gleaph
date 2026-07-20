@@ -3505,7 +3505,7 @@ mod wave_4_regression_tests {
         let store = GraphStore::new();
         let params = BTreeMap::new();
         pollster::block_on(run_adhoc_gql(
-            store.clone(),
+            store,
             "INSERT (:User {user_id: 'alice', demo_graph: 'social'})",
             &params,
             None,
@@ -3522,7 +3522,7 @@ mod wave_4_regression_tests {
             );
             p.insert("$is_public".to_string(), gleaph_gql::Value::Bool(true));
             pollster::block_on(run_adhoc_gql(
-                store.clone(),
+                store,
                 "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'e', demo_kind: 'posted'}]->(b:Post {demo_id: $demo_id, demo_graph: 'social', body: $body, created_at: CURRENT_TIMESTAMP, is_public: $is_public})",
                 &p,
                 None,
@@ -3564,7 +3564,7 @@ mod wave_4_regression_tests {
         let store = GraphStore::new();
         let params = BTreeMap::new();
         pollster::block_on(run_adhoc_gql(
-            store.clone(),
+            store,
             "INSERT (:User {user_id: 'alice', demo_graph: 'social'})",
             &params,
             None,
@@ -3581,7 +3581,7 @@ mod wave_4_regression_tests {
             );
             p.insert("$is_public".to_string(), gleaph_gql::Value::Bool(true));
             pollster::block_on(run_adhoc_gql(
-                store.clone(),
+                store,
                 "MATCH (a:User {user_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'e', demo_kind: 'posted'}]->(b:Post {demo_id: $demo_id, demo_graph: 'social', body: $body, created_at: CURRENT_TIMESTAMP, is_public: $is_public})",
                 &p,
                 None,

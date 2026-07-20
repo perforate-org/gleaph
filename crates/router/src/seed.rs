@@ -290,6 +290,7 @@ pub(crate) fn parse_seed_anchor_prefix(
 
     let mut anchors = Vec::new();
     let mut bound_var: Option<String> = None;
+    let mut multi_variable = false;
     let mut i = 0;
     while i < ops.len() {
         match &ops[i] {
@@ -298,7 +299,10 @@ pub(crate) fn parse_seed_anchor_prefix(
                 variable,
                 ..
             } => {
-                record_bound_var(&mut bound_var, variable)?;
+                if !record_bound_var(&mut bound_var, variable)? {
+                    multi_variable = true;
+                    break;
+                }
                 push_unique_anchor(
                     &mut anchors,
                     label_anchor(store, graph_id, label.as_ref(), variable)?,
@@ -312,7 +316,10 @@ pub(crate) fn parse_seed_anchor_prefix(
                 cmp,
                 ..
             } if *cmp == CmpOp::Eq => {
-                record_bound_var(&mut bound_var, variable)?;
+                if !record_bound_var(&mut bound_var, variable)? {
+                    multi_variable = true;
+                    break;
+                }
                 push_unique_anchor(
                     &mut anchors,
                     equal_anchor(store, graph_id, params, variable, property.as_ref(), value)?,
@@ -321,7 +328,10 @@ pub(crate) fn parse_seed_anchor_prefix(
             PlanOp::IndexIntersection {
                 variable, scans, ..
             } if scans.len() >= 2 && scans.iter().all(|scan| scan.cmp == CmpOp::Eq) => {
-                record_bound_var(&mut bound_var, variable)?;
+                if !record_bound_var(&mut bound_var, variable)? {
+                    multi_variable = true;
+                    break;
+                }
                 let mut specs = Vec::with_capacity(scans.len());
                 for scan in scans {
                     let payload_bytes =
@@ -350,7 +360,10 @@ pub(crate) fn parse_seed_anchor_prefix(
                 value,
                 ..
             } => {
-                record_bound_var(&mut bound_var, variable)?;
+                if !record_bound_var(&mut bound_var, variable)? {
+                    multi_variable = true;
+                    break;
+                }
                 let edge_label = ops.get(i + 1).and_then(|next| match next {
                     PlanOp::EdgeBindEndpoints {
                         label: Some(label),
@@ -374,9 +387,13 @@ pub(crate) fn parse_seed_anchor_prefix(
                 );
                 break;
             }
-            PlanOp::IndexScan { .. } | PlanOp::IndexIntersection { .. } => break,
+            PlanOp::IndexScan { variable, .. } | PlanOp::IndexIntersection { variable, .. } => {
+                if !record_bound_var(&mut bound_var, variable)? {
+                    multi_variable = true;
+                }
+                break;
+            }
             PlanOp::PropertyFilter { predicates, .. } => {
-                let mut pushed = false;
                 for predicate in predicates {
                     if let Some(anchor) = anchor_from_property_predicate(
                         predicate,
@@ -385,19 +402,23 @@ pub(crate) fn parse_seed_anchor_prefix(
                         store,
                         stats,
                     )? {
-                        record_bound_var(&mut bound_var, anchor.variable())?;
-                        if push_unique_anchor(&mut anchors, anchor) {
-                            pushed = true;
+                        if !record_bound_var(&mut bound_var, anchor.variable())? {
+                            multi_variable = true;
+                            break;
                         }
+                        push_unique_anchor(&mut anchors, anchor);
                     }
                 }
-                if !pushed {
+                if multi_variable {
                     break;
                 }
             }
             _ => break,
         }
         i += 1;
+    }
+    if multi_variable {
+        return Ok(None);
     }
     if anchors.is_empty() {
         Ok(None)
@@ -444,17 +465,15 @@ fn collapse_label_anchors(anchors: Vec<IndexAnchor>) -> Vec<IndexAnchor> {
 fn record_bound_var(
     bound_var: &mut Option<String>,
     variable: impl AsRef<str>,
-) -> Result<(), RouterError> {
+) -> Result<bool, RouterError> {
     if let Some(existing) = bound_var {
         if existing != variable.as_ref() {
-            return Err(RouterError::InvalidArgument(
-                "seed anchor prefix binds multiple variables".into(),
-            ));
+            return Ok(false);
         }
     } else {
         *bound_var = Some(variable.as_ref().to_string());
     }
-    Ok(())
+    Ok(true)
 }
 
 fn label_anchor(
