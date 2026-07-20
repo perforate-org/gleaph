@@ -394,12 +394,37 @@ async fn gql_execute_idempotent_batch(
     #[cfg(feature = "batch-instr-log")]
     let ingress_start_instr = current_instruction_counter();
     let preflight = gql::PreflightContext::new();
+    let caller = ic_cdk::api::msg_caller();
     while cursor < end {
         let stop_threshold = budget.saturating_sub(crate::batch_wave::ROUTER_WORK_HEADROOM);
         if current_instruction_counter() >= stop_threshold {
             break;
         }
         let mutation = &args.mutations[cursor];
+
+        // ADR 0044: try to coalesce consecutive mutations that share the same query plan into
+        // one bulk group with a single mutation id / saga record.
+        let mut group_end = cursor + 1;
+        while group_end < end && args.mutations[group_end].gql_query == mutation.gql_query {
+            group_end += 1;
+        }
+        if group_end - cursor >= 2 {
+            let group_key = format!("{}#bulk-{}", mutation.mutation_key, cursor);
+            if let Some(bulk_results) = gql::execute_bulk_group(
+                caller,
+                &group_key,
+                &args.mutations[cursor..group_end],
+                gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update,
+                Some(&preflight),
+            )
+            .await?
+            {
+                results.extend(bulk_results);
+                cursor = group_end;
+                continue;
+            }
+        }
+
         let result = gql::gql_execute_idempotent_with_batch_outcome(
             mutation.gql_query.clone(),
             mutation.params.clone(),

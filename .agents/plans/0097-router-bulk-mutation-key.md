@@ -12,25 +12,31 @@ todos:
     note: "Committed in 5b0d2592. execute_plan_batch detects bulk groups, skips completed ops, and writes one journal entry with next_index/bulk_progress."
   - id: "group-input-mutations"
     content: "Add Router ingress logic to detect consecutive compatible mutations and assign a single client_mutation_key / MutationId per group."
-    status: in_progress
+    status: completed
+    note: "Wired in crates/router/src/lib.rs and gql.rs; groups by identical gql_query with stable cursor-based group key."
   - id: "bulk-dispatch-and-continuation"
     content: "Dispatch bulk groups through the existing Graph batch endpoint and handle partial results / next_index inside one ingress call."
-    status: pending
+    status: completed
+    note: "execute_prepared_bulk_group chunks by payload and resumes on Graph next_index."
   - id: "per-mutation-results"
     content: "Map bulk group results back to one GqlQueryResult per input mutation while preserving input order."
-    status: pending
+    status: completed
+    note: "Implemented in execute_prepared_bulk_group."
   - id: "update-recovery"
     content: "Ensure Router recovery and projection semantics handle bulk mutation records correctly."
     status: pending
   - id: "disable-bulk-under-constraints"
     content: "Reject bulk path for mutations under active uniqueness or constrained-property constraints (ADR 0030)."
-    status: pending
+    status: completed
+    note: "Guard checks unique/constrained claims and seed_bindings_blob."
   - id: "tests"
     content: "Add focused unit and PocketIC tests for bulk grouping, partial progress, retry idempotency, and single-mutation compatibility."
-    status: pending
+    status: in_progress
+    note: "Existing lib tests pass; new bulk-specific tests still needed."
   - id: "measure"
     content: "Run social-demo deploy with batch-instr-log and verify per-ingress seed count improves over baseline."
     status: pending
+    note: "Deploy reaches wave 4; wave 4 hits pre-existing per-item Graph error, blocking full measurement."
   - id: "docs"
     content: "Update ADR 0029/0041/0042/0030 references as listed in ADR 0044."
     status: pending

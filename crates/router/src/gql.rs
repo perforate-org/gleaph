@@ -19,10 +19,11 @@ use gleaph_graph_kernel::index::{
     ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanResult, GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult,
-    GraphMutationJournalEntryWire, MutationId, MutationJournalState, MutationToken,
-    MutationTokenShard, ReadMode, ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire,
-    ShardEventSeq, UniqueClaimDispatch,
+    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanResult,
+    GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire,
+    MutationId, MutationJournalState, MutationToken, MutationTokenShard, ReadMode,
+    ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire, ShardEventSeq,
+    UniqueClaimDispatch,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 use ic_cdk::api::msg_caller;
@@ -1873,7 +1874,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
 }
 
 /// Outcome of preparing a mutation for batch execution.
-enum PrepareOutcome {
+pub(crate) enum PrepareOutcome {
     /// The mutation did not need Graph dispatch (DDL, read, or already completed).
     Early(GqlQueryResult),
     /// The mutation is ready for coalesced Graph dispatch.
@@ -2546,6 +2547,275 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     )))
 }
 
+/// ADR 0044 bulk group path. Plans the first item, prepares one shared mutation, and dispatches
+/// all items under a single `mutation_id`. Returns one `GqlQueryResult` per input item. Falls back
+/// to `None` when the query is not eligible for bulk grouping (caller should execute items
+/// sequentially instead).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_bulk_group(
+    caller: Principal,
+    group_key: &str,
+    items: &[crate::types::GqlExecuteIdempotentBatchItem],
+    mode: GqlExecutionMode,
+    preflight: Option<&PreflightContext>,
+) -> Result<Option<Vec<GqlQueryResult>>, RouterError> {
+    if items.len() < 2 {
+        return Ok(None);
+    }
+
+    let first = &items[0];
+    let plan_result =
+        plan_simple_query_for_bulk(caller, &first.gql_query, &first.params, mode, preflight)
+            .await?;
+    let (graph_id, plan_blob, plans, base_pmap) = match plan_result {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+
+    let stats = graph_stats_for(graph_id);
+    let prepared = prepare_single_mutation(
+        graph_id,
+        &plan_blob,
+        &plans,
+        &base_pmap,
+        &first.params,
+        mode,
+        Some(group_key),
+        &RouterStore::new(),
+        caller,
+        &stats,
+        None,
+        preflight,
+    )
+    .await?;
+
+    let base = match prepared {
+        PrepareOutcome::Early(result) => {
+            // The whole group is already durable (or requires no Graph dispatch).
+            // Return the same result for every input item, preserving order.
+            return Ok(Some(vec![result; items.len()]));
+        }
+        PrepareOutcome::Prepared(p) => *p,
+    };
+
+    // Bulk path is only safe when no uniqueness or constrained-property effects are active.
+    if base.unique_claims.as_ref().is_some_and(|v| !v.is_empty())
+        || base
+            .constrained_properties
+            .as_ref()
+            .is_some_and(|v| !v.is_empty())
+        || base
+            .local_unique_claims
+            .as_ref()
+            .is_some_and(|v| !v.is_empty())
+        || base
+            .local_constrained_properties
+            .as_ref()
+            .is_some_and(|v| !v.is_empty())
+    {
+        release_routing_if_owner(
+            &RouterStore::new(),
+            caller,
+            graph_id,
+            Some(group_key),
+            base.mutation_id
+                .map(|mid| crate::facade::store::ClientMutationReservation {
+                    mutation_id: mid,
+                    routing_owner: true,
+                }),
+        )?;
+        return Ok(None);
+    }
+
+    // Bulk grouping requires a per-item seed binding surface (index anchors, remote seeds,
+    // etc.) because the dispatch envelope built from the first item would be wrong for the rest.
+    // Pure inserts have no seed bindings; fall back to the normal sequential path otherwise.
+    if base.dispatches.iter().any(|d| {
+        d.seed_bindings_blob
+            .as_ref()
+            .is_some_and(|blob| !blob.is_empty())
+    }) {
+        release_routing_if_owner(
+            &RouterStore::new(),
+            caller,
+            graph_id,
+            Some(group_key),
+            base.mutation_id
+                .map(|mid| crate::facade::store::ClientMutationReservation {
+                    mutation_id: mid,
+                    routing_owner: true,
+                }),
+        )?;
+        return Ok(None);
+    }
+
+    // Decode params for the remaining items.
+    let mut extra_items = Vec::with_capacity(items.len() - 1);
+    for item in &items[1..] {
+        let pmap = decode_gql_params_blob(&item.params)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        extra_items.push(crate::batch_wave::BulkGroupItem {
+            params: item.params.clone(),
+            pmap,
+        });
+    }
+
+    let group = crate::batch_wave::PreparedBulkGroup { base, extra_items };
+    execute_prepared_bulk_group(
+        group,
+        &RouterStore::new(),
+        caller,
+        graph_id,
+        Some(group_key),
+        preflight,
+    )
+    .await
+    .map(Some)
+}
+/// Plan a simple single-graph DML query for the bulk-group path (ADR 0044).
+/// Returns `(graph_id, plan_blob, plans, pmap)` when the query is a plain DML write on the
+/// caller's default graph with no `use_graph`, no DDL, and no SEARCH. Returns `None` for queries
+/// that must fall back to the normal sequential path.
+async fn plan_simple_query_for_bulk(
+    caller: Principal,
+    query: &str,
+    params: &[u8],
+    mode: GqlExecutionMode,
+    preflight: Option<&PreflightContext>,
+) -> Result<
+    Option<(
+        GraphId,
+        Vec<u8>,
+        Vec<PhysicalPlan>,
+        BTreeMap<String, gleaph_gql::Value>,
+    )>,
+    RouterError,
+> {
+    // DDL/admin paths are not eligible for bulk grouping.
+    if crate::index_ddl::try_parse(query).is_some()
+        || crate::constraint_ddl::try_parse(query).is_some()
+        || crate::edge_inline_value_ddl::try_parse(query).is_some()
+    {
+        return Ok(None);
+    }
+
+    let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let flags = classify_program(&program);
+    if mode == GqlExecutionMode::Query || !flags.requires_write_path() {
+        return Ok(None);
+    }
+
+    let store = RouterStore::new();
+    let resolved = crate::graph_context::resolve_graph_context(&store, &program, caller)?;
+    let default_graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
+    if resolved.graph_id != default_graph_id {
+        // `use_graph` or session activity targeted a non-default graph: fall back.
+        return Ok(None);
+    }
+
+    let seed = crate::graph_context::session_graph_seed(&store, resolved, caller);
+    gleaph_gql::validate::validate_with_seed(&program, Some(&seed))
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+
+    let tx = program
+        .transaction_activity
+        .as_ref()
+        .ok_or_else(|| RouterError::InvalidArgument("missing transaction".into()))?;
+    let block = tx
+        .body
+        .as_ref()
+        .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
+
+    if crate::facade::stable::graph_type_catalog::block_has_catalog_ddl(block) {
+        return Ok(None);
+    }
+
+    let stats = graph_stats_for(resolved.graph_id);
+    let open = NoSchema;
+    let mut typed = None;
+    let schema = crate::facade::stable::graph_type_catalog::property_schema_for_planning(
+        resolved.graph_id,
+        &open,
+        &mut typed,
+    )?;
+    let plan = build_router_block_plan(block, schema, &stats)?;
+    let requires_write_path = plan.has_dml();
+    if !requires_write_path {
+        return Ok(None);
+    }
+
+    // Multi-DML bundles on a federated graph are rejected by the normal path; keep the same gate.
+    if !plan.is_pure_insert() && !plan.is_single_anchor_threaded_bundle() {
+        enforce_multi_dml_bundle_gate(&store, resolved.graph_id, block)?;
+    }
+
+    if gleaph_gql_planner::plan_contains_search(&plan) {
+        return Ok(None);
+    }
+
+    let pmap =
+        decode_gql_params_blob(params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+
+    if let Some(ctx) = preflight {
+        ctx.insert_cached_plan(
+            caller,
+            resolved.graph_id,
+            query.to_string(),
+            resolved.graph_id,
+            crate::use_graph::UseGraphV2Dispatch::Single {
+                graph_id: resolved.graph_id,
+                plan: plan.clone(),
+            },
+            plan_blob.clone(),
+        );
+    }
+
+    Ok(Some((resolved.graph_id, plan_blob, vec![plan], pmap)))
+}
+/// Prepare a single mutation through the same pipeline used by `dispatch_plan_blob_with_index_and_batch`,
+/// but return the prepared outcome instead of executing it. Used by the bulk-group path to share one
+/// plan/label resolution across multiple input mutations.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn prepare_single_mutation(
+    graph_id: GraphId,
+    plan_blob: &[u8],
+    plans: &[PhysicalPlan],
+    pmap: &BTreeMap<String, gleaph_gql::Value>,
+    params: &[u8],
+    mode: GqlExecutionMode,
+    client_mutation_key: Option<&str>,
+    store: &RouterStore,
+    caller: Principal,
+    stats: &RouterGraphStats,
+    resolved_search: Option<BTreeMap<ShardId, ResolvedSearchWire>>,
+    preflight: Option<&PreflightContext>,
+) -> Result<PrepareOutcome, RouterError> {
+    let shards = store.list_live_shards_for_graph_id(graph_id)?;
+    if shards.is_empty() {
+        return Err(RouterError::ShardNotRegistered);
+    }
+    let index =
+        RouterIndexLookup::from_shards(graph_id, &shards).map_err(RouterError::InvalidArgument)?;
+    prepare_mutation_for_batch(
+        graph_id,
+        plan_blob,
+        plans,
+        pmap,
+        params,
+        mode,
+        client_mutation_key,
+        store,
+        shards,
+        &index,
+        caller,
+        stats,
+        resolved_search,
+        preflight,
+    )
+    .await
+}
 /// Execute a single prepared mutation (the Graph dispatch and post-processing phases).
 async fn execute_prepared_mutation(
     prepared: crate::batch_wave::PreparedMutation,
@@ -2860,6 +3130,331 @@ async fn execute_prepared_mutation(
     ))
 }
 
+/// Execute a prepared bulk group (ADR 0044). All items share `base.plan_blob`, labels, properties,
+/// and a single `mutation_id`; only `params` differ per item. Returns one `GqlQueryResult` per input
+/// item, preserving item order.
+async fn execute_prepared_bulk_group(
+    group: crate::batch_wave::PreparedBulkGroup,
+    store: &RouterStore,
+    caller: Principal,
+    graph_id: GraphId,
+    client_mutation_key: Option<&str>,
+    preflight: Option<&PreflightContext>,
+) -> Result<Vec<GqlQueryResult>, RouterError> {
+    let base = group.base;
+    let mode = base.mode;
+    let mutation_id = base
+        .mutation_id
+        .ok_or_else(|| RouterError::Internal("bulk group requires a mutation id".into()))?;
+    let merge_mode = base.merge_mode.clone();
+    let plans = base.plans.clone();
+    let element_id_encoding_key = base.element_id_encoding_key.0;
+    let item_count = 1 + group.extra_items.len();
+
+    // Collect per-item params, starting with the first item represented by `base`.
+    let mut item_params: Vec<(Vec<u8>, BTreeMap<String, gleaph_gql::Value>)> =
+        Vec::with_capacity(item_count);
+    item_params.push((base.params.clone(), base.pmap.clone()));
+    for extra in &group.extra_items {
+        item_params.push((extra.params.clone(), extra.pmap.clone()));
+    }
+
+    let build_execute_args = |dispatch: &crate::federation::ShardDispatch, params_blob: &[u8]| {
+        gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
+            target_shard_id: dispatch.shard_id,
+            element_id_encoding_key,
+            mutation_id: Some(mutation_id),
+            plan_blob: base.plan_blob.clone(),
+            params_blob: params_blob.to_vec(),
+            mode,
+            seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
+            resolved_labels: Some(base.resolved_labels.clone()),
+            resolved_properties: Some(base.resolved_properties.clone()),
+            indexed_properties: Some(base.indexed_properties.clone()),
+            unique_claims: base.unique_claims.clone(),
+            constrained_properties: base.constrained_properties.clone(),
+            local_unique_claims: base.local_unique_claims.clone(),
+            local_constrained_properties: base.local_constrained_properties.clone(),
+            indexed_embeddings: Some(base.indexed_embeddings.clone()),
+            resolved_search_blob: dispatch.resolved_search_blob.clone(),
+        }
+    };
+
+    #[cfg(feature = "batch-instr-log")]
+    let graph_call_start = crate::current_instruction_counter();
+
+    let dispatch_groups = group_dispatches_by_graph(base.dispatches.clone());
+
+    // Per-canister results stored as (dispatch_index_in_group, item_index, result).
+    // We preserve group order so item results can be reconstructed deterministically.
+    type ItemDispatchResult = (usize, usize, Result<ExecutePlanResult, String>);
+    let mut canister_results: Vec<(Principal, Vec<ItemDispatchResult>)> = Vec::new();
+
+    let mut group_futures: Vec<
+        futures::future::BoxFuture<Result<(Principal, Vec<ItemDispatchResult>), RouterError>>,
+    > = Vec::new();
+
+    for group in dispatch_groups {
+        let item_params = item_params.clone();
+        group_futures.push(Box::pin(async move {
+            let group_graph = group[0].graph_canister;
+            let mut results: Vec<ItemDispatchResult> = Vec::new();
+            let group_len = group.len();
+            let mut operations: Vec<gleaph_graph_kernel::plan_exec::ExecutePlanArgs> =
+                Vec::with_capacity(item_count * group_len);
+            let mut index_map: Vec<(usize, usize)> = Vec::with_capacity(item_count * group_len);
+
+            for (item_index, (params_blob, _)) in item_params.iter().enumerate() {
+                for (dispatch_index, dispatch) in group.iter().enumerate() {
+                    operations.push(build_execute_args(dispatch, params_blob));
+                    index_map.push((item_index, dispatch_index));
+                }
+            }
+
+            // Chunk dynamically by payload size / instruction budget.
+            let mut start = 0usize;
+            while start < operations.len() {
+                let chunk_len = graph_batch_chunk_len_for_bulk(&operations[start..], group_len)?;
+                let chunk_end = start + chunk_len;
+                let chunk_ops = operations[start..chunk_end].to_vec();
+                let chunk_map = index_map[start..chunk_end].to_vec();
+                let args = ExecutePlanBatchArgs {
+                    operations: chunk_ops,
+                    mode: ExecutePlanBatchMode::Dynamic,
+                };
+                let batch = match execute_plan_batch_on_graph(group_graph, args).await {
+                    Ok(batch) => batch,
+                    Err(err) => {
+                        for (item_index, dispatch_index) in chunk_map {
+                            results.push((dispatch_index, item_index, Err(err.clone())));
+                        }
+                        break;
+                    }
+                };
+                let attempted = batch.results.len();
+                if attempted > chunk_map.len() {
+                    let err = format!(
+                        "graph bulk batch returned {} results for {} operations",
+                        attempted,
+                        chunk_map.len()
+                    );
+                    for (item_index, dispatch_index) in chunk_map {
+                        results.push((dispatch_index, item_index, Err(err.clone())));
+                    }
+                    break;
+                }
+                let mut failed = false;
+                for ((item_index, dispatch_index), result) in
+                    chunk_map.iter().copied().zip(batch.results)
+                {
+                    failed = result.is_err();
+                    results.push((dispatch_index, item_index, result));
+                    if failed {
+                        break;
+                    }
+                }
+                if failed {
+                    break;
+                }
+                // If Graph cut off before the end of the chunk, continue with the remaining
+                // operations in the same ingress call.
+                start += attempted;
+            }
+
+            Ok((group_graph, results))
+        }));
+    }
+
+    for group_result in futures::future::join_all(group_futures).await {
+        let (graph, results) = group_result?;
+        canister_results.push((graph, results));
+    }
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "graph_calls",
+        crate::current_instruction_counter().saturating_sub(graph_call_start),
+    );
+
+    // Group results by item. Within each canister group, results are ordered by item then
+    // dispatch. The global dispatch order is the canister group order.
+    let mut per_item_results: Vec<Vec<ExecutePlanResult>> =
+        (0..item_count).map(|_| Vec::new()).collect();
+    let mut per_item_errors: Vec<Option<String>> = (0..item_count).map(|_| None).collect();
+
+    for (_graph, results) in &canister_results {
+        for (_dispatch_index, item_index, result) in results {
+            match result {
+                Ok(r) => per_item_results[*item_index].push(r.clone()),
+                Err(e) => {
+                    if per_item_errors[*item_index].is_none() {
+                        per_item_errors[*item_index] = Some(e.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Merge successful per-item results. If any dispatch for an item errored, the item fails.
+    let mut item_merged: Vec<ExecutePlanResult> = Vec::with_capacity(item_count);
+    for i in 0..item_count {
+        if let Some(err) = &per_item_errors[i] {
+            return Err(RouterError::InvalidArgument(err.clone()));
+        }
+        let mut merged = empty_execute_plan_result();
+        for result in &per_item_results[i] {
+            merge_execute_plan_result(&mut merged, result.clone(), merge_mode.clone())
+                .map_err(RouterError::InvalidArgument)?;
+        }
+        item_merged.push(merged);
+    }
+
+    // Per-shard aggregation: total row count and hot vertices across all items on that shard.
+    struct ShardAggregate {
+        graph_canister: Principal,
+        row_count: u64,
+        hot_forward_vertices: Vec<u32>,
+    }
+    let mut shard_aggregates: BTreeMap<ShardId, ShardAggregate> = BTreeMap::new();
+
+    // Reuse the same canister-group ordering as the dispatch loop.
+    let dispatch_groups_for_aggregate = group_dispatches_by_graph(base.dispatches.clone());
+    for (graph, results) in &canister_results {
+        let group = dispatch_groups_for_aggregate
+            .iter()
+            .find(|g| g[0].graph_canister == *graph)
+            .expect("canister group must exist");
+        for (dispatch_index, _item_index, result) in results {
+            if let Ok(r) = result {
+                let dispatch = group
+                    .get(*dispatch_index)
+                    .expect("dispatch index must resolve");
+                let agg = shard_aggregates
+                    .entry(dispatch.shard_id)
+                    .or_insert_with(|| ShardAggregate {
+                        graph_canister: *graph,
+                        row_count: 0,
+                        hot_forward_vertices: Vec::new(),
+                    });
+                agg.row_count = agg.row_count.saturating_add(r.row_count);
+                agg.hot_forward_vertices
+                    .extend(r.hot_forward_vertices.iter().copied());
+                agg.hot_forward_vertices.sort_unstable();
+                agg.hot_forward_vertices.dedup();
+            }
+        }
+    }
+
+    // Finalize hot vertices, advance projection, and record shard outcomes once per shard.
+    let mut token_shards: Vec<MutationTokenShard> = Vec::new();
+    for (shard_id, aggregate) in shard_aggregates {
+        if !aggregate.hot_forward_vertices.is_empty() {
+            crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
+                aggregate.graph_canister,
+                shard_id,
+                &plans,
+                &aggregate.hot_forward_vertices,
+            )
+            .await?;
+        }
+        let entry = advance_mutation_label_stats_projection(
+            store,
+            graph_id,
+            aggregate.graph_canister,
+            shard_id,
+            mutation_id,
+            preflight,
+        )
+        .await?;
+        token_shards.push(MutationTokenShard {
+            shard_id,
+            label_stats_seq: entry.emitted_delta_last_seq(),
+        });
+        if let Some(key) = client_mutation_key {
+            store.record_router_mutation_shard_completed(
+                caller,
+                graph_id,
+                key,
+                shard_id,
+                aggregate.row_count,
+            )?;
+            store.record_router_mutation_shard_projection_advanced(
+                caller, graph_id, key, shard_id,
+            )?;
+        }
+    }
+
+    let token = Some(MutationToken {
+        mutation_id,
+        shards: token_shards,
+    });
+
+    // If the mutation record was compacted inline, use the compacted row count for every item.
+    let compacted_row_count = client_mutation_key
+        .and_then(|key| store.router_mutation_completed_row_count(caller, graph_id, key));
+
+    let mut results = Vec::with_capacity(item_count);
+    for merged in item_merged {
+        let row_count = compacted_row_count.unwrap_or(merged.row_count);
+        let result = GqlQueryResult {
+            row_count,
+            rows_blob: merged.rows_blob,
+            phase: None,
+            token: token.clone(),
+        };
+        let result = if let Some(key) = client_mutation_key {
+            attach_mutation_phase(result, store, caller, graph_id, Some(key))
+        } else {
+            result
+        };
+        results.push(attach_mutation_token(result, token.clone()));
+    }
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "total",
+        crate::current_instruction_counter().saturating_sub(graph_call_start),
+    );
+
+    Ok(results)
+}
+
+/// Chunk a bulk batch by the safe inter-canister payload size. All operations share the same
+/// plan blob; the dominant variable is the params blob per item. We keep full canister groups
+/// together when possible and split only when the encoded batch would exceed the safe limit.
+fn graph_batch_chunk_len_for_bulk(
+    operations: &[ExecutePlanArgs],
+    _group_len: usize,
+) -> Result<usize, RouterError> {
+    if operations.is_empty() {
+        return Ok(0);
+    }
+    let mut low = 1;
+    let mut high = operations.len();
+    let mut best = 0;
+    while low <= high {
+        let count = low + (high - low) / 2;
+        let candidate = ExecutePlanBatchArgs {
+            operations: operations[..count].to_vec(),
+            mode: ExecutePlanBatchMode::Dynamic,
+        };
+        let encoded = Encode!(&candidate).map_err(|e| {
+            RouterError::InvalidArgument(format!("bulk batch encode probe failed: {e}"))
+        })?;
+        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            best = count;
+            low = count + 1;
+        } else {
+            high = count - 1;
+        }
+    }
+    if best == 0 {
+        return Err(RouterError::InvalidArgument(
+            "a single bulk operation exceeds the safe inter-canister payload limit".into(),
+        ));
+    }
+    Ok(best)
+}
 fn graph_batch_chunk_len_for_dispatches(
     dispatches: &[ShardDispatch],
     build_execute_args: &impl Fn(&ShardDispatch) -> gleaph_graph_kernel::plan_exec::ExecutePlanArgs,

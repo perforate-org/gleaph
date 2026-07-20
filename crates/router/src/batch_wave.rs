@@ -60,3 +60,21 @@ pub(crate) struct PreparedMutation {
     /// Physical plans (needed for post-dispatch hot-vertex finalization).
     pub plans: Vec<gleaph_gql_planner::PhysicalPlan>,
 }
+
+/// One input mutation inside a bulk group that shares a single plan and mutation id.
+pub(crate) struct BulkGroupItem {
+    /// Encoded parameter blob for this item.
+    pub params: Vec<u8>,
+    /// Decoded parameter map for this item.
+    pub pmap: BTreeMap<String, gleaph_gql::Value>,
+}
+
+/// A group of input mutations that share the same query plan and are dispatched under one
+/// `mutation_id` to each target Graph canister (ADR 0044).
+pub(crate) struct PreparedBulkGroup {
+    /// Common prepared state, taken from the first item.
+    pub base: PreparedMutation,
+    /// Additional items beyond the first. The first item is represented by `base.params` /
+    /// `base.pmap` and is not duplicated here.
+    pub extra_items: Vec<BulkGroupItem>,
+}
