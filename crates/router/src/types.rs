@@ -345,6 +345,15 @@ pub struct GraphStableMemoryStats {
     pub memory: gleaph_graph_kernel::stable_memory::StableMemoryStats,
 }
 
+/// One page of the Graph shard's batch instruction log, forwarded by the Router
+/// so callers do not need Router principal access.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct GraphBatchInstrLogPage {
+    pub shard_id: ShardId,
+    pub graph_canister: Principal,
+    pub lines: Vec<String>,
+}
+
 /// Admin: drive one bounded derived vector-index backfill step on a graph shard (ADR 0031 Slice 5).
 /// The caller supplies an explicit resume cursor (`start_vertex_id`) and budget (`max_vertices`) and
 /// loops, feeding [`AdminVectorIndexBackfillStepResult::next_vertex_id`] until `done`. Fails closed

@@ -12,8 +12,8 @@ use crate::types::{
     AdminSweepMutationKeysStepResult, AdminVectorIndexBackfillStepArgs,
     AdminVectorIndexBackfillStepResult, AdminVertexPropertyBackfillStepArgs,
     AdminVertexPropertyBackfillStepResult, EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs,
-    GraphRegistryEntry, GraphStableMemoryStats, LabelBackfillShardStatus, PropertyId,
-    RegisterVectorIndexArgs, RouterVectorSearchRequest, SetVectorIndexTargetArgs,
+    GraphBatchInstrLogPage, GraphRegistryEntry, GraphStableMemoryStats, LabelBackfillShardStatus,
+    PropertyId, RegisterVectorIndexArgs, RouterVectorSearchRequest, SetVectorIndexTargetArgs,
     SetVectorMaintenancePolicyArgs, ShardId, ShardRegistryEntry, VectorIndexActivationStateView,
     VectorIndexActivationStatus, VectorIndexInfo, VectorMaintenancePolicyView,
     VectorMaintenanceStatusView, VectorMaintenanceStepOutcome, VertexLabelId,
@@ -1175,6 +1175,31 @@ pub(crate) async fn admin_graph_stable_memory_stats(
         });
     }
     Ok(stats)
+}
+
+/// Admin-only batch-instrumentation log proxy: one page per shard in the named graph.
+pub(crate) async fn admin_graph_batch_instr_log(
+    graph_name: String,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<GraphBatchInstrLogPage>, RouterError> {
+    crate::rbac::authorize_stable_memory_diagnostics(&msg_caller())?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&graph_name)?;
+    let shards = store.list_shards_for_graph_id(graph_id)?;
+    let mut pages = Vec::with_capacity(shards.len());
+    for shard in shards {
+        let lines =
+            crate::graph_client::admin_take_batch_instr_log(shard.graph_canister, offset, limit)
+                .await
+                .map_err(RouterError::Internal)?;
+        pages.push(GraphBatchInstrLogPage {
+            shard_id: shard.shard_id,
+            graph_canister: shard.graph_canister,
+            lines,
+        });
+    }
+    Ok(pages)
 }
 
 pub(crate) async fn admin_vector_partition_health_step(

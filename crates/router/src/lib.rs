@@ -747,6 +747,17 @@ async fn admin_graph_stable_memory_stats(
     canister::admin_graph_stable_memory_stats(graph_name).await
 }
 
+#[cfg(feature = "batch-instr-log")]
+/// Admin-only proxy: per-shard batch instruction logs from the Graph shard.
+#[query(composite = true)]
+async fn admin_graph_batch_instr_log(
+    graph_name: String,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<types::GraphBatchInstrLogPage>, RouterError> {
+    canister::admin_graph_batch_instr_log(graph_name, offset, limit).await
+}
+
 /// Bounded page-meta tombstone-health scan step, forwarded to the activated vector target.
 #[query(composite = true)]
 async fn admin_vector_partition_health_step(

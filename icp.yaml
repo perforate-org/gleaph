@@ -6,6 +6,7 @@ canisters:
       type: "@dfinity/rust@v3.3.0"
       configuration:
         shrink: true
+        features: batch-instr-log
         package: gleaph-router
 
   - name: gleaph-graph-index
@@ -20,6 +21,7 @@ canisters:
       type: "@dfinity/rust@v3.3.0"
       configuration:
         shrink: true
+        features: batch-instr-log
         package: gleaph-graph
 
   - name: gleaph-social-demo-gateway

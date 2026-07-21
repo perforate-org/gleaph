@@ -231,6 +231,15 @@ pub async fn admin_stable_memory_stats(
     call_graph_args(graph, "admin_stable_memory_stats", &()).await
 }
 
+/// Forward a batch-instrumentation log page from the Graph shard to the Router.
+pub async fn admin_take_batch_instr_log(
+    graph: Principal,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<String>, String> {
+    call_graph_args(graph, "admin_take_batch_instr_log", &(offset, limit)).await
+}
+
 /// Replicated `Acquire` commit proof for each claim (ADR 0030 §Timeout). An `update` call so the
 /// answer is replicated: a single-replica query is insufficient evidence to act on absence.
 pub async fn read_unique_effect_proof(
@@ -330,6 +339,13 @@ mod tests {
                 resolved_search_blob: None,
             },
         );
+        let err = futures::executor::block_on(fut).expect_err("native unavailable");
+        assert!(err.contains("unavailable"));
+    }
+
+    #[test]
+    fn graph_instr_log_proxy_native_unavailable() {
+        let fut = admin_take_batch_instr_log(Principal::anonymous(), 0, 100);
         let err = futures::executor::block_on(fut).expect_err("native unavailable");
         assert!(err.contains("unavailable"));
     }
