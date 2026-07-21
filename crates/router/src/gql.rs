@@ -67,15 +67,19 @@ pub(crate) struct SeedResolutionMetrics;
 fn log_router_seed_resolution_summary(total: u64, metrics: &SeedResolutionMetrics) {
     let explicit = metrics
         .admission_setup
-        .saturating_add(metrics.per_item_anchor_set)
-        .saturating_add(metrics.cache_lookup_clone)
-        .saturating_add(metrics.remote_index_await)
-        .saturating_add(metrics.anchor_intersection)
-        .saturating_add(metrics.seed_row_build)
-        .saturating_add(metrics.candid_encode);
-    let loop_bookkeeping = total.saturating_sub(explicit);
+        .wrapping_add(metrics.per_item_anchor_set)
+        .wrapping_add(metrics.cache_lookup_clone)
+        .wrapping_add(metrics.remote_index_await)
+        .wrapping_add(metrics.anchor_intersection)
+        .wrapping_add(metrics.seed_row_build)
+        .wrapping_add(metrics.candid_encode);
+    let (loop_bookkeeping, measurement_valid) = if explicit > total {
+        (total, false)
+    } else {
+        (total - explicit, true)
+    };
     crate::instr_log::push(format!(
-        "GLEAPH_ROUTER_SEED_RESOLUTION phase=seed_resolution total={} admission_setup={} per_item_anchor_set={} cache_lookup_clone={} remote_index_await={} anchor_intersection={} seed_row_build={} candid_encode={} loop_bookkeeping={} items={} dispatches={} cache_hits={} cache_misses={}",
+        "GLEAPH_ROUTER_SEED_RESOLUTION phase=seed_resolution total={} admission_setup={} per_item_anchor_set={} cache_lookup_clone={} remote_index_await={} anchor_intersection={} seed_row_build={} candid_encode={} loop_bookkeeping={} items={} dispatches={} cache_hits={} cache_misses={} measurement_valid={}",
         total,
         metrics.admission_setup,
         metrics.per_item_anchor_set,
@@ -89,6 +93,7 @@ fn log_router_seed_resolution_summary(total: u64, metrics: &SeedResolutionMetric
         metrics.dispatch_count,
         metrics.cache_hits,
         metrics.cache_misses,
+        measurement_valid,
     ));
 }
 
@@ -395,16 +400,7 @@ impl PreflightContext {
             metrics.cache_misses += 1;
         }
 
-        #[cfg(feature = "batch-instr-log")]
-        let remote_start = crate::current_instruction_counter();
-
         let hits = lookup_anchor_hits(index, anchor, &[shard_id], metrics).await?;
-
-        #[cfg(feature = "batch-instr-log")]
-        {
-            metrics.remote_index_await +=
-                crate::current_instruction_counter().saturating_sub(remote_start);
-        }
 
         self.anchor_hits.borrow_mut().insert(key, hits.clone());
         Ok(hits)
@@ -978,18 +974,9 @@ async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
             let mut merged: Option<Vec<PostingHit>> = None;
             let mut saw_edges = false;
             for &shard_id in shard_ids {
-                #[cfg(feature = "batch-instr-log")]
-                let cache_start = crate::current_instruction_counter();
-
                 let hits = ctx
                     .resolve_anchor_hits(index, anchor, shard_id, metrics)
                     .await?;
-
-                #[cfg(feature = "batch-instr-log")]
-                {
-                    metrics.cache_lookup_clone +=
-                        crate::current_instruction_counter().saturating_sub(cache_start);
-                }
 
                 match hits {
                     SeedHits::Vertices(h) => {
@@ -1008,20 +995,7 @@ async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
             Ok(SeedHits::Vertices(merged.unwrap_or_default()))
         }
         _ => {
-            #[cfg(feature = "batch-instr-log")]
-            let cache_start = crate::current_instruction_counter();
-
-            let result = ctx
-                .resolve_anchor_hits(index, anchor, ShardId::new(0), metrics)
-                .await;
-
-            #[cfg(feature = "batch-instr-log")]
-            {
-                metrics.cache_lookup_clone +=
-                    crate::current_instruction_counter().saturating_sub(cache_start);
-            }
-
-            result
+            ctx.resolve_anchor_hits(index, anchor, ShardId::new(0), metrics).await
         }
     }
 }
