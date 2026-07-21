@@ -4,11 +4,11 @@ use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHitPage, IndexLabelIntersectionRequest, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
-    LookupEqualBatchRequest, LookupEqualBatchResult, LookupEqualPageForLabelRequest,
-    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
-    LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
-    LookupRangePageForLabelRequest, LookupValuePostingCountPageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, PropertyIntersectionPage, ValuePostingCountPage,
+    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
+    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
+    LookupRangeIntersectionPageForLabelRequest, LookupRangePageForLabelRequest,
+    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
+    PropertyIntersectionPage, ValuePostingCountPage,
 };
 
 #[derive(Clone, Debug)]
@@ -63,30 +63,6 @@ impl RouterIndexClient {
         {
             let _ = req;
             Err("lookup_equal_page unavailable in native builds".into())
-        }
-    }
-
-    pub async fn lookup_equal_batch(
-        &self,
-        req: LookupEqualBatchRequest,
-    ) -> Result<LookupEqualBatchResult, String> {
-        #[cfg(target_family = "wasm")]
-        {
-            use ic_cdk::call::Call;
-
-            let result: LookupEqualBatchResult =
-                Call::bounded_wait(self.index_canister, "lookup_equal_batch")
-                    .with_args(&(req,))
-                    .await
-                    .map_err(|e| format!("lookup_equal_batch: {e}"))?
-                    .candid()
-                    .map_err(|e| format!("lookup_equal_batch decode: {e}"))?;
-            Ok(result)
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let _ = req;
-            Err("lookup_equal_batch unavailable in native builds".into())
         }
     }
 
