@@ -42,6 +42,19 @@ fn log_router_dispatch_phase(phase: &str, cost: u64) {
 fn log_router_dispatch_phase(_phase: &str, _cost: u64) {}
 
 #[cfg(feature = "batch-instr-log")]
+fn log_router_seed_resolution_phase(phase: &str, cost: u64) {
+    crate::instr_log::push(format!(
+        "GLEAPH_ROUTER_SEED_RESOLUTION phase={} cost={}",
+        phase, cost
+    ));
+}
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[allow(dead_code)]
+#[inline]
+fn log_router_seed_resolution_phase(_phase: &str, _cost: u64) {}
+
+#[cfg(feature = "batch-instr-log")]
 fn log_router_preflight(kind: &str, cost: u64) {
     crate::instr_log::push(format!(
         "GLEAPH_ROUTER_PREFLIGHT kind={} cost={}",
@@ -2998,7 +3011,7 @@ async fn execute_prepared_mutation(
         };
 
     #[cfg(feature = "batch-instr-log")]
-    let graph_call_start = crate::current_instruction_counter();
+    let graph_request_build_start = crate::current_instruction_counter();
 
     let dispatch_groups = group_dispatches_by_graph(prepared.dispatches);
     let mut dispatch_results: Vec<BatchDispatchResult> = Vec::new();
@@ -3054,15 +3067,27 @@ async fn execute_prepared_mutation(
         }));
     }
 
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "graph_request_build",
+        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let graph_await_start = crate::current_instruction_counter();
+
     for group_result in futures::future::join_all(group_futures).await {
         dispatch_results.extend(group_result?);
     }
 
     #[cfg(feature = "batch-instr-log")]
     log_router_dispatch_phase(
-        "graph_calls",
-        crate::current_instruction_counter().saturating_sub(graph_call_start),
+        "graph_await",
+        crate::current_instruction_counter().saturating_sub(graph_await_start),
     );
+
+    #[cfg(feature = "batch-instr-log")]
+    let post_dispatch_start = crate::current_instruction_counter();
 
     let mut merged = empty_execute_plan_result();
     // ADR 0029 Phase 2: accumulate per-shard read-your-writes watermarks for the mutation
@@ -3094,6 +3119,18 @@ async fn execute_prepared_mutation(
     log_router_preflight(
         "post_dispatch_journal",
         crate::current_instruction_counter().saturating_sub(journal_read_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "post_dispatch",
+        crate::current_instruction_counter().saturating_sub(post_dispatch_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "dispatch_total",
+        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
     );
 
     for (dispatch, result) in dispatch_results {
@@ -3254,8 +3291,8 @@ async fn execute_prepared_mutation(
 
     #[cfg(feature = "batch-instr-log")]
     log_router_dispatch_phase(
-        "total",
-        crate::current_instruction_counter().saturating_sub(graph_call_start),
+        "dispatch_total",
+        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
     );
 
     Ok(attach_mutation_token(
@@ -3341,7 +3378,7 @@ async fn execute_prepared_bulk_group(
     };
 
     #[cfg(feature = "batch-instr-log")]
-    let graph_call_start = crate::current_instruction_counter();
+    let seed_resolution_start = crate::current_instruction_counter();
 
     // Pre-resolve complete-row seed blobs before spawning async blocks. The index lookup
     // futures are not Send, so we cannot await them inside the BoxFuture dispatched below.
@@ -3373,6 +3410,15 @@ async fn execute_prepared_bulk_group(
     } else {
         Vec::new()
     };
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_seed_resolution_phase(
+        "seed_resolution",
+        crate::current_instruction_counter().saturating_sub(seed_resolution_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let graph_request_build_start = crate::current_instruction_counter();
 
     // Map each dispatch to its index in `base.dispatches` so per-item pre-resolved seeds can be
     // looked up inside the Send futures.
@@ -3476,6 +3522,15 @@ async fn execute_prepared_bulk_group(
         }));
     }
 
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "graph_request_build",
+        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let graph_await_start = crate::current_instruction_counter();
+
     for group_result in futures::future::join_all(group_futures).await {
         let (graph, results) = group_result?;
         canister_results.push((graph, results));
@@ -3483,9 +3538,12 @@ async fn execute_prepared_bulk_group(
 
     #[cfg(feature = "batch-instr-log")]
     log_router_dispatch_phase(
-        "graph_calls",
-        crate::current_instruction_counter().saturating_sub(graph_call_start),
+        "graph_await",
+        crate::current_instruction_counter().saturating_sub(graph_await_start),
     );
+
+    #[cfg(feature = "batch-instr-log")]
+    let post_dispatch_start = crate::current_instruction_counter();
 
     // Group results by item. Within each canister group, results are ordered by item then
     // dispatch. The global dispatch order is the canister group order.
@@ -3623,8 +3681,14 @@ async fn execute_prepared_bulk_group(
 
     #[cfg(feature = "batch-instr-log")]
     log_router_dispatch_phase(
-        "total",
-        crate::current_instruction_counter().saturating_sub(graph_call_start),
+        "post_dispatch",
+        crate::current_instruction_counter().saturating_sub(post_dispatch_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "dispatch_total",
+        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
     );
 
     Ok(results)
