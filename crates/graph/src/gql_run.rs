@@ -305,9 +305,16 @@ async fn read_phase_seed_rows(
 
     // ADR 0046 Phase 2: when the router supplied complete rows for the entire read prefix,
     // re-validate the skipped leading anchor operators against current canonical Graph state.
+    let _phase_v0 = current_instruction_counter();
     if complete_prefix_rows {
         revalidate_seed_rows_against_read_prefix(store, plan, parameters, execution, &mut rows)?;
     }
+    let _phase_v1 = current_instruction_counter();
+    log_wire_phase(
+        "read_phase_seed_rows",
+        "revalidation",
+        _phase_v1.saturating_sub(_phase_v0),
+    );
 
     Ok(Some(rows.iter().map(seeded_mutation_row).collect()))
 }
@@ -4064,5 +4071,298 @@ mod wave_4_regression_tests {
         ))
         .expect("execution should complete");
         assert_eq!(result.row_count, 0, "missing label must drop the row");
+    }
+
+    #[test]
+    fn wave_4_complete_row_seed_drops_tombstoned_vertex() {
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use gleaph_gql_planner::wire::encode_block_plans;
+        use gleaph_graph_kernel::plan_exec::{SeedBindingsWire, SeedRowWire, SeedVertexBinding};
+        use std::collections::BTreeMap;
+
+        let store = GraphStore::new();
+
+        let a_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(4284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post a");
+        let b_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post b");
+
+        // Delete vertex a so it becomes a tombstone; seed hydration will already drop it, but
+        // this test guards the end-to-end path.
+        store.detach_delete_vertex(a_id).expect("delete a");
+
+        let mut p = BTreeMap::new();
+        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let plan = build_block_plan_with_schema(block, None, &NoSchema).unwrap();
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![
+                    SeedVertexBinding {
+                        variable: "a".into(),
+                        local_vertex_id: u32::try_from(u64::from(a_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                    SeedVertexBinding {
+                        variable: "b".into(),
+                        local_vertex_id: u32::try_from(u64::from(b_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                ],
+                float64_bindings: Vec::new(),
+            }],
+            complete_prefix_rows: true,
+        };
+
+        let result = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &p,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            Some(1),
+        ))
+        .expect("execution should complete");
+        assert_eq!(result.row_count, 0, "tombstoned vertex must drop the row");
+    }
+
+    #[test]
+    fn wave_4_complete_row_seed_intersection_filters_stale_arm() {
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use gleaph_gql_planner::wire::encode_block_plans;
+        use gleaph_graph_kernel::plan_exec::{SeedBindingsWire, SeedRowWire, SeedVertexBinding};
+        use std::collections::BTreeMap;
+
+        let store = GraphStore::new();
+
+        let a_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(4284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                    ("topic", gleaph_gql::Value::Text("ic".into())),
+                ],
+            )
+            .expect("insert post a");
+        let b_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post b");
+
+        // Stale the `topic` arm of an intersection while demo_id stays correct.
+        store
+            .set_vertex_property(
+                a_id,
+                crate::test_labels::property_id_for_name("topic"),
+                gleaph_gql::Value::Text("other".into()),
+            )
+            .expect("stale topic");
+
+        let mut p = BTreeMap::new();
+        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("$a_topic".to_string(), gleaph_gql::Value::Text("ic".into()));
+        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, topic: $a_topic, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let plan = build_block_plan_with_schema(block, None, &NoSchema).unwrap();
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![
+                    SeedVertexBinding {
+                        variable: "a".into(),
+                        local_vertex_id: u32::try_from(u64::from(a_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                    SeedVertexBinding {
+                        variable: "b".into(),
+                        local_vertex_id: u32::try_from(u64::from(b_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                ],
+                float64_bindings: Vec::new(),
+            }],
+            complete_prefix_rows: true,
+        };
+
+        let result = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &p,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            Some(1),
+        ))
+        .expect("execution should complete");
+        assert_eq!(
+            result.row_count, 0,
+            "stale intersection arm must drop the row"
+        );
+    }
+
+    #[test]
+    fn wave_4_complete_row_seed_keeps_matching_product_rows() {
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use gleaph_gql_planner::wire::encode_block_plans;
+        use gleaph_graph_kernel::plan_exec::{SeedBindingsWire, SeedRowWire, SeedVertexBinding};
+        use std::collections::BTreeMap;
+
+        let store = GraphStore::new();
+
+        // Two source posts and two target posts; only (a1,b1) matches the parameter filters.
+        let a1 = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(1)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert a1");
+        let a2 = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(2)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert a2");
+        let b1 = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(3)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert b1");
+        let b2 = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(4)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert b2");
+
+        let mut p = BTreeMap::new();
+        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(1));
+        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(3));
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let plan = build_block_plan_with_schema(block, None, &NoSchema).unwrap();
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![
+                SeedRowWire {
+                    vertex_bindings: vec![
+                        SeedVertexBinding {
+                            variable: "a".into(),
+                            local_vertex_id: u32::try_from(u64::from(a1)).unwrap(),
+                            required_vertex_label_ids: Vec::new(),
+                        },
+                        SeedVertexBinding {
+                            variable: "b".into(),
+                            local_vertex_id: u32::try_from(u64::from(b1)).unwrap(),
+                            required_vertex_label_ids: Vec::new(),
+                        },
+                    ],
+                    float64_bindings: Vec::new(),
+                },
+                SeedRowWire {
+                    vertex_bindings: vec![
+                        SeedVertexBinding {
+                            variable: "a".into(),
+                            local_vertex_id: u32::try_from(u64::from(a2)).unwrap(),
+                            required_vertex_label_ids: Vec::new(),
+                        },
+                        SeedVertexBinding {
+                            variable: "b".into(),
+                            local_vertex_id: u32::try_from(u64::from(b2)).unwrap(),
+                            required_vertex_label_ids: Vec::new(),
+                        },
+                    ],
+                    float64_bindings: Vec::new(),
+                },
+            ],
+            complete_prefix_rows: true,
+        };
+
+        pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &p,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            Some(1),
+        ))
+        .expect("execution should complete");
+        let reply_edges = |vid| GraphStore::new().directed_out_edges(vid).unwrap().len();
+        assert_eq!(
+            reply_edges(a1) + reply_edges(a2),
+            1,
+            "only the supplied row matching the read-prefix filters must mutate"
+        );
     }
 }
