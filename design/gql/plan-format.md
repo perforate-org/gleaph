@@ -62,11 +62,12 @@ contracts must be distinguished.
 - `SeedAnchorSet` does not emit a partial seed when the supported leading prefix binds more than one
   variable. Such a plan executes without that Router seed or uses the current sequential fallback.
 
-**ADR 0046 Phase 1 contract (implemented):**
+**ADR 0046 Phase 1/2 contract (implemented):**
 
 - `SeedBindingsWire.complete_prefix_rows: bool` marks the `rows` as complete for the entire read
-  prefix. When set, Graph bypasses the read phase and feeds the rows directly to the canonical
-  mutation segment.
+  prefix. When set, Graph executes the read prefix from the supplied rows while skipping the leading
+  index/label scan operators; the skipped operators are re-validated against current canonical Graph
+  state. Residual `PropertyFilter`s, joins, and Cartesian products run normally.
 - The bulk path detects a multi-variable leading prefix, resolves per-item per-shard candidate domains,
   materializes a bounded Cartesian product (currently ≤1024 rows) into complete `SeedRowWire` rows,
   and sets `complete_prefix_rows: true`.

@@ -11,10 +11,11 @@ use crate::plan::{
     read_prefix_len,
 };
 use gleaph_gql::Value;
-use gleaph_gql::ast::{Statement, StatementBlock};
+use gleaph_gql::ast::{CmpOp, Statement, StatementBlock};
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
+use gleaph_gql_planner::plan::{PlanOp, ScanValue};
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
 use gleaph_graph_kernel::entry::{ConstraintNameId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
@@ -116,11 +117,159 @@ async fn execute_dml_plan_async(
     execution: GqlExecutionContext,
     router_seed: Option<(Vec<PlanQueryRow>, bool)>,
 ) -> Result<PlanMutationBindings, GqlRunError> {
-    let seed_rows = read_phase_seed_rows(store, plan, parameters, index, &execution, router_seed)
-        .await?
-        .unwrap_or_default();
+    let seed_rows = read_phase_seed_rows(
+        store,
+        plan,
+        parameters,
+        index,
+        &execution,
+        router_seed,
+        false,
+    )
+    .await?;
     let mutation_ops = &plan.ops[read_prefix_len(&plan.ops)..];
-    Ok(execute_mutation_tail_async(store, mutation_ops, &seed_rows, parameters, execution).await?)
+    let mutation = match seed_rows {
+        None => {
+            // Bare INSERT: run the mutation tail once with no seed rows.
+            execute_mutation_tail_async(store, mutation_ops, &[], parameters, execution).await?
+        }
+        Some(rows) if rows.is_empty() => {
+            // Read prefix produced zero matches; nothing to mutate.
+            PlanMutationBindings::default()
+        }
+        Some(rows) => {
+            execute_mutation_tail_async(store, mutation_ops, &rows, parameters, execution).await?
+        }
+    };
+    Ok(mutation)
+}
+
+/// ADR 0046 Phase 2: seed rows supplied as complete-prefix candidates must still be validated
+/// against canonical Graph state for the leading scan ops that the executor skips. This function
+/// re-applies the semantic of each leading `NodeScan`, equality `IndexScan`, and
+/// `IndexIntersection` arm against the current local vertex, without using Property Index.
+///
+/// The physical plan remains the single source of predicate semantics; this helper only performs
+/// the checks that the skipped scan ops would otherwise have narrowed. Residual
+/// `PropertyFilter`s, joins, and Cartesian products are evaluated by the normal executor.
+fn revalidate_seed_rows_against_read_prefix(
+    store: &GraphStore,
+    plan: &gleaph_gql_planner::PhysicalPlan,
+    parameters: &BTreeMap<String, Value>,
+    execution: &GqlExecutionContext,
+    rows: &mut Vec<PlanQueryRow>,
+) -> Result<(), GqlRunError> {
+    for op in plan
+        .ops
+        .iter()
+        .take_while(|op| is_seed_skippable_anchor_op(op))
+    {
+        match op {
+            PlanOp::NodeScan {
+                variable,
+                label: Some(label_ref),
+                ..
+            } => {
+                let Some(label_id) = execution.resolved_vertex_label_id(label_ref.as_ref()) else {
+                    return Err(GqlRunError::Plan(format!(
+                        "resolved label id not found for {} in complete-prefix seed validation",
+                        label_ref.as_ref()
+                    )));
+                };
+                rows.retain(|row| {
+                    let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
+                        return false;
+                    };
+                    let Some(vertex) = store.vertex(*vid) else {
+                        return false;
+                    };
+                    store.vertex_labels(*vid, vertex).contains(&label_id)
+                });
+            }
+            PlanOp::IndexScan {
+                variable,
+                property,
+                value,
+                cmp,
+                ..
+            } if *cmp == CmpOp::Eq => {
+                let Some(property_id) = execution.resolved_property_id(property.as_ref()) else {
+                    return Err(GqlRunError::Plan(format!(
+                        "resolved property id not found for {} in complete-prefix seed validation",
+                        property.as_ref()
+                    )));
+                };
+                let expected = resolve_scan_value_to_value(value, parameters)?;
+                rows.retain(|row| {
+                    let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
+                        return false;
+                    };
+                    let actual = store.vertex_property(*vid, property_id);
+                    actual.as_ref() == Some(&expected)
+                });
+            }
+            PlanOp::IndexIntersection {
+                variable, scans, ..
+            } => {
+                rows.retain(|row| {
+                    let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
+                        return false;
+                    };
+                    scans.iter().all(|scan| {
+                        if scan.cmp != CmpOp::Eq {
+                            return true;
+                        }
+                        let Some(property_id) =
+                            execution.resolved_property_id(scan.property.as_ref())
+                        else {
+                            return false;
+                        };
+                        let Ok(expected) = resolve_scan_value_to_value(&scan.value, parameters)
+                        else {
+                            return false;
+                        };
+                        store.vertex_property(*vid, property_id).as_ref() == Some(&expected)
+                    })
+                });
+            }
+            PlanOp::NodeScan { label: None, .. } | PlanOp::EdgeIndexScan { .. } => {
+                // Non-equality scans and label-less scans do not impose a check beyond existence,
+                // which seed hydration already verified. Edge seeds are not produced by the current
+                // multi-variable path; equality range scans fall back to ordinary execution.
+            }
+            PlanOp::IndexScan { cmp, .. } if *cmp != CmpOp::Eq => {
+                // Non-equality index scans are not validated here; the executor handles them when
+                // they are not skipped.
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn is_seed_skippable_anchor_op(op: &PlanOp) -> bool {
+    matches!(
+        op,
+        PlanOp::NodeScan { label: Some(_), .. }
+            | PlanOp::IndexScan { .. }
+            | PlanOp::IndexIntersection { .. }
+            | PlanOp::EdgeIndexScan { .. }
+    )
+}
+
+fn resolve_scan_value_to_value(
+    value: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Value, GqlRunError> {
+    match value {
+        ScanValue::Literal(v) => Ok(v.clone()),
+        ScanValue::Parameter(name) => parameters.get(name.as_ref()).cloned().ok_or_else(|| {
+            GqlRunError::Plan(format!(
+                "missing parameter {} in complete-prefix seed validation",
+                name.as_ref()
+            ))
+        }),
+    }
 }
 
 /// Run a DML plan's read prefix and project the result to mutation seed rows. Returns `None`
@@ -132,6 +281,7 @@ async fn read_phase_seed_rows(
     index: Option<&dyn PropertyIndexLookup>,
     execution: &GqlExecutionContext,
     router_seed: Option<(Vec<PlanQueryRow>, bool)>,
+    complete_prefix_rows: bool,
 ) -> Result<Option<Vec<SeededMutationRow>>, GqlRunError> {
     let prefix_len = read_prefix_len(&plan.ops);
     if prefix_len == 0 {
@@ -142,7 +292,7 @@ async fn read_phase_seed_rows(
         Some((rows, skip)) => (rows, skip),
         None => (vec![crate::plan::empty_row_for_plan(&read_plan)], false),
     };
-    let rows = execute_plan_query_bindings_with_initial_rows(
+    let mut rows = execute_plan_query_bindings_with_initial_rows(
         store,
         &read_plan,
         parameters,
@@ -152,6 +302,13 @@ async fn read_phase_seed_rows(
         skip_leading,
     )
     .await?;
+
+    // ADR 0046 Phase 2: when the router supplied complete rows for the entire read prefix,
+    // re-validate the skipped leading anchor operators against current canonical Graph state.
+    if complete_prefix_rows {
+        revalidate_seed_rows_against_read_prefix(store, plan, parameters, execution, &mut rows)?;
+    }
+
     Ok(Some(rows.iter().map(seeded_mutation_row).collect()))
 }
 
@@ -1112,15 +1269,18 @@ async fn run_wire_plans_inner(
             // ADR 0046 Phase 1: when the router supplied complete rows for the entire read prefix,
             // skip the read phase entirely and use the seed rows as mutation inputs.
             let _phase_r0 = current_instruction_counter();
-            let mutation_seed_rows = if complete_prefix_rows {
-                seed_rows.iter().map(seeded_mutation_row).collect()
-            } else {
-                let router_seed = (skip_index && !seed_rows.is_empty())
-                    .then(|| (std::mem::take(&mut seed_rows), true));
-                read_phase_seed_rows(store, plan, parameters, index, &execution, router_seed)
-                    .await?
-                    .unwrap_or_default()
-            };
+            let router_seed = (skip_index && !seed_rows.is_empty())
+                .then(|| (std::mem::take(&mut seed_rows), true));
+            let mutation_seed_rows = read_phase_seed_rows(
+                store,
+                plan,
+                parameters,
+                index,
+                &execution,
+                router_seed,
+                complete_prefix_rows,
+            )
+            .await?;
             let _phase_r1 = current_instruction_counter();
             log_wire_phase(
                 "run_wire_plans_inner",
@@ -1129,18 +1289,41 @@ async fn run_wire_plans_inner(
             );
             // ADR 0029 §1: shard-local canonical critical section (no inter-canister call).
             let _phase_m0 = current_instruction_counter();
-            let mutation = apply_canonical_mutation_segment(
-                store,
-                &plan.ops[read_prefix_len(&plan.ops)..],
-                &mutation_seed_rows,
-                parameters,
-                execution.clone(),
-                mutation_id,
-                &mut emitted_delta_first_seq,
-                &mut emitted_delta_last_seq,
-                &mut next_unique_release_ordinal,
-            )
-            .await?;
+            let mutation = match mutation_seed_rows {
+                None => {
+                    // Bare INSERT: run the mutation tail once with no seed rows.
+                    apply_canonical_mutation_segment(
+                        store,
+                        &plan.ops[read_prefix_len(&plan.ops)..],
+                        &[],
+                        parameters,
+                        execution.clone(),
+                        mutation_id,
+                        &mut emitted_delta_first_seq,
+                        &mut emitted_delta_last_seq,
+                        &mut next_unique_release_ordinal,
+                    )
+                    .await?
+                }
+                Some(rows) if rows.is_empty() => {
+                    // Read prefix produced zero matches; nothing to mutate.
+                    PlanMutationBindings::default()
+                }
+                Some(rows) => {
+                    apply_canonical_mutation_segment(
+                        store,
+                        &plan.ops[read_prefix_len(&plan.ops)..],
+                        &rows,
+                        parameters,
+                        execution.clone(),
+                        mutation_id,
+                        &mut emitted_delta_first_seq,
+                        &mut emitted_delta_last_seq,
+                        &mut next_unique_release_ordinal,
+                    )
+                    .await?
+                }
+            };
             let _phase_m1 = current_instruction_counter();
             log_wire_phase(
                 "run_wire_plans_inner",
@@ -3705,5 +3888,181 @@ mod wave_4_regression_tests {
             Some(1),
         ));
         result.expect("complete row seed must insert REPLY_TO edge");
+    }
+    #[test]
+    fn wave_4_complete_row_seed_drops_stale_property_value() {
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use gleaph_gql_planner::wire::encode_block_plans;
+        use gleaph_graph_kernel::plan_exec::{SeedBindingsWire, SeedRowWire, SeedVertexBinding};
+        use std::collections::BTreeMap;
+
+        let store = GraphStore::new();
+
+        let a_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(4284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post a");
+        let b_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post b");
+
+        // Stale the canonical demo_id on `a` after the seed was produced.
+        store
+            .set_vertex_property(
+                a_id,
+                crate::test_labels::property_id_for_name("demo_id"),
+                gleaph_gql::Value::Uint64(9999),
+            )
+            .expect("stale demo_id");
+
+        let mut p = BTreeMap::new();
+        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let plan = build_block_plan_with_schema(block, None, &NoSchema).unwrap();
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![
+                    SeedVertexBinding {
+                        variable: "a".into(),
+                        local_vertex_id: u32::try_from(u64::from(a_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                    SeedVertexBinding {
+                        variable: "b".into(),
+                        local_vertex_id: u32::try_from(u64::from(b_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                ],
+                float64_bindings: Vec::new(),
+            }],
+            complete_prefix_rows: true,
+        };
+
+        let result = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &p,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            Some(1),
+        ))
+        .expect("execution should complete");
+        assert_eq!(
+            result.row_count, 0,
+            "stale property value must drop the row"
+        );
+    }
+
+    #[test]
+    fn wave_4_complete_row_seed_drops_missing_label() {
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use gleaph_gql_planner::wire::encode_block_plans;
+        use gleaph_graph_kernel::plan_exec::{SeedBindingsWire, SeedRowWire, SeedVertexBinding};
+        use std::collections::BTreeMap;
+
+        let store = GraphStore::new();
+
+        let a_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(4284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post a");
+        let b_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post b");
+
+        // Remove the Post label from `a` after the seed was produced.
+        let a_vertex = store.vertex(a_id).expect("a exists");
+        let post_label_id = store
+            .vertex_labels(a_id, a_vertex)
+            .into_iter()
+            .find(|label| *label == crate::test_labels::vertex_label_id_for_name("Post"))
+            .expect("Post label");
+        store.remove_vertex_label(a_id, a_vertex, post_label_id);
+
+        let mut p = BTreeMap::new();
+        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let plan = build_block_plan_with_schema(block, None, &NoSchema).unwrap();
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![
+                    SeedVertexBinding {
+                        variable: "a".into(),
+                        local_vertex_id: u32::try_from(u64::from(a_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                    SeedVertexBinding {
+                        variable: "b".into(),
+                        local_vertex_id: u32::try_from(u64::from(b_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                ],
+                float64_bindings: Vec::new(),
+            }],
+            complete_prefix_rows: true,
+        };
+
+        let result = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &p,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            Some(1),
+        ))
+        .expect("execution should complete");
+        assert_eq!(result.row_count, 0, "missing label must drop the row");
     }
 }

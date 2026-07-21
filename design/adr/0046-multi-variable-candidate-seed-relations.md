@@ -333,8 +333,6 @@ Phase 1 implementation:
 Phase 1 deliberately does **not** implement:
 
 - the candidate-domain V2 envelope;
-- Graph-side bound-anchor canonical revalidation (property equality is not re-checked after the
-  prefix skip);
 - lazy or chunked product generation;
 - cross-shard routing for multi-variable products;
 - bulk lookup deduplication across items;
@@ -344,8 +342,9 @@ Phase 1 deliberately does **not** implement:
 Focused tests added:
 
 - multi-variable `SeedAnchorSet` extraction for the wave 4 `demo_id` shape;
-- bounded Cartesian-product generation and its row limit; and
-- Graph execution with complete row seeds for the wave 4 plan shape.
+- bounded Cartesian-product generation and its row limit;
+- Graph execution with complete row seeds for the wave 4 plan shape; and
+- Graph canonical revalidation filtering out stale property values and removed labels.
 
 Remaining work for the full ADR includes candidate-domain V2 wire, Graph bound-anchor
 revalidation, lazy/chunked products, cross-shard routing, bulk lookup deduplication, payload and

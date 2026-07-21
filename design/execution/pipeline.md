@@ -51,13 +51,16 @@ seeds into `PlanRow`s. It validates local existence, tombstones, and required la
 may then skip the supported leading scan/index anchor while retaining residual `PropertyFilter`
 operators.
 
-`SeedBindingsWire.complete_prefix_rows` (ADR 0046 Phase 1) signals that the supplied `rows` are
-complete for the entire read prefix. When set, Graph bypasses the read phase entirely and feeds the
-seed rows directly into the no-await canonical mutation segment. This is currently used for multi-
-variable leading prefixes on the bulk path: Router resolves each variable's equality anchors on the
-target shard, multiplies the per-variable candidate domains with checked arithmetic (bounded to 1024
-rows), and sends one complete row per Cartesian-product tuple. Empty domains are encoded as a zero-
-row complete-prefix relation and report zero matches without a separate Router short-circuit.
+`SeedBindingsWire.complete_prefix_rows` (ADR 0046 Phase 1/2) signals that the supplied `rows` are
+complete for the entire read prefix. When set, Graph executes the read prefix starting from the seed
+rows, skips the leading index/label scan operators, and re-validates those skipped operators against
+current canonical Graph state. Residual `PropertyFilter`s, joins, and Cartesian products run normally;
+the surviving rows are then fed into the no-await canonical mutation segment. This is currently used
+for multi-variable leading prefixes on the bulk path: Router resolves each variable's equality
+anchors on the target shard, multiplies the per-variable candidate domains with checked arithmetic
+(bounded to 1024 rows), and sends one complete row per Cartesian-product tuple. Empty domains are
+encoded as a zero-row complete-prefix relation and report zero matches without a separate Router
+short-circuit.
 
 A multi-variable prefix is only seeded when every anchored variable has at least one non-label
 equality anchor. Label-only or unsupported multi-variable prefixes still fall back to Graph-local
@@ -77,13 +80,15 @@ flowchart LR
     G --> H[No-await canonical mutation segment]
 ```
 
-The full design generates candidate domains before Graph dispatch and keeps Graph as the canonical
-match authority: a bound label scan checks the current label; a bound equality index scan reads the
-current canonical property locally; intersections validate every arm; and residual filters/joins run
-unchanged. Graph should produce independent-domain products lazily or in bounded chunks, using
-checked multiplication and proving the shared row/instruction bound. Exceeding a candidate, product,
-payload, consistency, or instruction bound never truncates the relation: execution uses an exact
-local fallback or rejects the broad mutation explicitly.
+The Phase 2 implementation validates skipped bound `NodeScan` / equality `IndexScan` /
+`IndexIntersection` operators against the current canonical label and property state before the rows
+reach the mutation segment. The full design still keeps Graph as the canonical match authority and
+extends the same principle: bound label scans check the current label; bound equality index scans
+read the current canonical property locally; intersections validate every arm; and residual
+filters/joins run unchanged. Graph should produce independent-domain products lazily or in bounded
+chunks, using checked multiplication and proving the shared row/instruction bound. Exceeding a
+candidate, product, payload, consistency, or instruction bound never truncates the relation:
+execution uses an exact local fallback or rejects the broad mutation explicitly.
 
 An active declared constraint may choose a semantics-equivalent access path. A single-shard
 `ShardLocalGlobal` UNIQUE owner lookup can avoid both Property Index lookup and full scan; other
