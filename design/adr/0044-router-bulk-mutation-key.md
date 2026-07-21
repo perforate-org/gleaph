@@ -1,17 +1,22 @@
 # ADR 0044: Router bulk mutation key for wave-level saga coalescing
 
-Status: Proposed
+Status: Partially Implemented
 Date: 2026-07-19 15:12:46 UTC
+Last revised: 2026-07-21
+Anchor timestamp: 2026-07-21 01:42:34 UTC +0000
 
 ## Context
 
 `gql_execute_idempotent_batch` accepts a list of idempotent GQL mutations and
 executes each mutation through the Router mutation lifecycle described in ADR
-0029 and ADR 0041/0042. Today every mutation carries its own
-`client_mutation_key`, so the Router stable saga (`ROUTER_MUTATION_BY_CLIENT_KEY`)
-and Graph mutation journal (`MUTATION_JOURNAL`) contain one record per seed.
+0029 and ADR 0041/0042. Before the bulk path was implemented, every mutation
+carried its own `client_mutation_key`, so the Router stable saga
+(`ROUTER_MUTATION_BY_CLIENT_KEY`) and Graph mutation journal (`MUTATION_JOURNAL`)
+contained one record per seed. As verified from the repository on 2026-07-21
+UTC, eligible homogeneous groups now share one bulk key and `MutationId`; the
+remaining parameter-dependent seed limitation is documented below.
 
-Live measurement (`batch-instr-log`) for the social-demo seed workload
+Measurement recorded on 2026-07-19 UTC (`batch-instr-log`) for the social-demo seed workload
 (`SOCIAL_DEMO_USER_SCALE=5 POST_SCALE=20`) shows that Router-side preparation
 of a single seed consumes about 25.7M instructions on average. The dominant
 costs are stable saga operations:
@@ -153,10 +158,11 @@ the bulk operation cursor: for a bulk mutation it points at the next
 unexecuted operation index; for a single mutation it has its existing meaning.
 No new cursor field is introduced.
 
-Because the system has no production canisters today, the initial rollout can
-deploy these enums with a single V1 variant. Future variants will be added
-without removing V1, and post-upgrade logic will migrate V1 records to newer
-variants when necessary.
+The original proposal assumed an initial V1 deployment with no production-state migration. That
+deployment assumption was not reverified on 2026-07-21 UTC and is not a migration proof. Before any
+schema rollout, the operator must inventory deployed record versions. Future variants retain V1
+decoding, and any populated incompatible state requires an explicit pre-upgrade or post-upgrade
+migration path.
 
 ### Router ingress behavior
 
@@ -180,6 +186,21 @@ Inside one `gql_execute_idempotent_batch` call:
    `next_index` pointing at the next unprocessed input mutation. The durable
    Graph journal cursor ensures that a retry of the same group resumes from
    the correct operation.
+
+The implemented bulk path currently admits only groups whose dispatch envelope can be shared safely.
+Parameterized index anchors require item-specific seed bindings and therefore fall back to the
+sequential path when detected. A leading prefix that binds several independently indexed variables
+currently produces no partial Router seed, so Graph executes the complete read prefix instead.
+
+ADR 0046 defines the planned generalization. The Router will continue to plan once per homogeneous
+group, but it will resolve candidate domains per item, deduplicate identical lookup keys across the
+group, and attach the exact item-specific relation to each `ExecutePlanArgs`. The first item's seed
+must never be copied to later parameter sets.
+
+Because one bulk `MutationId` may then contain different seed relations for each operation, the
+current one-blob-per-shard `RouterMutationShard` representation is insufficient. The ADR 0046 path
+requires a versioned ordered per-operation dispatch envelope. Recovery replays the persisted seed
+relation and must not repeat Property Index lookup to reconstruct it.
 
 ### Graph behavior
 
@@ -212,6 +233,13 @@ out of scope for this slice. The bulk path rejects such mutations until ADR
 0030 is extended to handle per-operation claims and effects inside a bulk
 mutation. Social-demo seeding does not activate constraints, so this limitation
 is acceptable for the target workload.
+
+This rejection is the **current implementation state**, not the long-term seed-resolution rule.
+ADR 0046 permits declared constraints to select a semantics-equivalent access path. In particular,
+an active single-shard `ShardLocalGlobal` UNIQUE constraint may resolve an equality-bound variable
+through the existing canonical local unique-value table. Constraint-backed bulk claims/effects still
+require their own ADR 0030 extension before constrained writes themselves are admitted to the bulk
+mutation-key path.
 
 ## Alternatives
 
@@ -246,6 +274,8 @@ objects whose semantics will evolve as bulk behavior matures.
 - The public Candid API and per-mutation result ordering are unchanged.
 - Single-mutation callers continue to use one `MutationId` per mutation.
 - Stable value types are versioned, protecting future canister upgrades.
+- Parameter-dependent multi-variable groups remain outside the optimized path until ADR 0046's
+  per-item immutable seed envelope and Graph canonical-revalidation contract are implemented.
 
 ## Trade-offs
 
@@ -259,9 +289,10 @@ objects whose semantics will evolve as bulk behavior matures.
 
 ## Migration
 
-No production canisters exist today. The new enums are deployed with a single
-V1 variant. Future variants will be added alongside V1, with post-upgrade
-migration converting old variants when required.
+The original V1 rollout assumption depended on an empty production-state inventory. That assumption
+must be reverified immediately before deployment. V1 remains decodable; any populated incompatible
+record set requires an explicit migration and rollback plan rather than relying on this ADR's
+2026-07-19 environment.
 
 ## Design document impact
 
@@ -277,4 +308,5 @@ migration converting old variants when required.
 - ADR 0030: cross-shard uniqueness TCC reservation.
 - ADR 0041: Router-to-Graph batch mutation dispatch.
 - ADR 0042: Router dynamic instruction-budget batching.
+- ADR 0046: multi-variable candidate seed relations and canonical Graph revalidation.
 - Plan 0096: Router sequential chunk dispatch.

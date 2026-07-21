@@ -2,7 +2,7 @@
 
 Date: 2026-06-22
 Status: accepted (partially implemented)
-Last revised: 2026-06-23
+Last revised: 2026-07-21
 
 > **Status note:** The decision is **accepted**. Implementation is **complete through slice 7:
 > catalog/DDL + value encoding + reservation table & no-`await` Try + pinned unique-effect outbox + the
@@ -1124,6 +1124,27 @@ The strategy taxonomy is **`FederatedTcc | ShardLocalGlobal | ShardLocalScoped`*
 - **Not sufficient:** a particular mutation having exactly one dispatch is not by itself proof that a
   graph-wide unique value does not already exist on another shard. `dispatches.len() == 1` can be a
   routing fact about the new write, not a scope proof about all existing values.
+
+#### Constraint-backed seed lookup (planned ADR 0046 specialization)
+
+An `Active` constraint may provide a narrower access path for a read-prefix equality anchor without
+changing ownership or query semantics. This is an optimization of ADR 0046's general candidate-domain
+path, not a second uniqueness mechanism:
+
+- `ShardLocalGlobal` may expose a narrow owner lookup on the existing canonical
+  `(constraint_id, encoded_value) -> owner_element_id` table. Graph then validates the element's
+  current label/property and applies the mutation in the same no-`await` message segment.
+- a confirmed `FederatedTcc` reservation may narrow Router routing to its recorded owner, but Graph
+  still revalidates canonical element state before mutation;
+- the Router must select either path from the constraint catalog's `Active` record and frozen
+  enforcement strategy; application data that merely appears unique is never sufficient; and
+- the fast path must return the same rows, errors, idempotency result, and mutation effects as the
+  general candidate-domain path.
+
+This lookup use is **planned and not implemented as of 2026-07-21 UTC**. It requires no new stable
+region for `ShardLocalGlobal`; a new map would duplicate the constraint's source of truth. Bulk
+mutations that acquire or release constrained values remain rejected until per-operation ADR 0030
+claims/effects are designed independently.
 
 ### Deferred extensions after the first cut
 

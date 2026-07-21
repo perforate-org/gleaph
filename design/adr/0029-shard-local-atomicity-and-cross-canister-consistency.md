@@ -2,7 +2,7 @@
 
 Date: 2026-06-21
 Status: accepted
-Last revised: 2026-07-11
+Last revised: 2026-07-21
 
 ## Context
 
@@ -49,6 +49,28 @@ committed in the same message segment where the relevant invariant requires all-
 Code must fetch remote inputs before entering the canonical mutation segment. If a mutation reads
 state before an `await` and writes after it, the write boundary must revalidate an owner-controlled
 revision or equivalent precondition.
+
+#### Candidate seeds are remote inputs, not canonical match authority
+
+Router-resolved label/property postings narrow shard routing and read-prefix candidates, but the
+postings are derived state. They do not transfer predicate ownership from Graph. For a seeded
+mutation, Graph must validate current existence, tombstone state, labels, canonical properties, and
+edge identity required by the physical plan after the final remote input and before the first
+canonical write. Removing an index operator is sound only when equivalent owner-local validation
+remains in the execution path.
+
+ADR 0046 proposes the general multi-variable form: Router sends bounded candidate domains per item;
+Graph evaluates the original read-prefix semantics against those bound candidates and only then
+enters the no-`await` canonical mutation segment. Its exact per-item candidate relation is part of
+the immutable Router mutation envelope so recovery cannot select a different match set. This
+generalization is **planned, not implemented as of 2026-07-21 UTC**.
+
+Candidate completeness remains subject to the selected read-consistency contract. An
+`AtLeast(token)` projection barrier can establish the requested derived-index watermark, but a
+pre-dispatch remote result cannot by itself prove absence of a vertex that becomes matching before
+Graph commits. Latest-canonical completeness requires an owner-local access path or exact local scan;
+otherwise the candidate relation is the routing snapshot and Graph revalidation removes stale
+positives.
 
 #### Shard-local preflight and commit discipline
 
