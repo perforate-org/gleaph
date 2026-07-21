@@ -377,16 +377,35 @@ impl PreflightContext {
             if let Some(hits) = cache.get(&key) {
                 #[cfg(feature = "batch-instr-log")]
                 {
+                    let clone_start = crate::current_instruction_counter();
+                    let cloned = hits.clone();
+                    metrics.cache_lookup_clone +=
+                        crate::current_instruction_counter().saturating_sub(clone_start);
                     metrics.cache_hits += 1;
+                    return Ok(cloned);
                 }
-                return Ok(hits.clone());
+                #[cfg(not(feature = "batch-instr-log"))]
+                {
+                    return Ok(hits.clone());
+                }
             }
         }
         #[cfg(feature = "batch-instr-log")]
         {
             metrics.cache_misses += 1;
         }
+
+        #[cfg(feature = "batch-instr-log")]
+        let remote_start = crate::current_instruction_counter();
+
         let hits = lookup_anchor_hits(index, anchor, &[shard_id]).await?;
+
+        #[cfg(feature = "batch-instr-log")]
+        {
+            metrics.remote_index_await +=
+                crate::current_instruction_counter().saturating_sub(remote_start);
+        }
+
         self.anchor_hits.borrow_mut().insert(key, hits.clone());
         Ok(hits)
     }
@@ -708,20 +727,19 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
         return Ok(SeedHits::Vertices(Vec::new()));
     }
 
-    #[cfg(feature = "batch-instr-log")]
-    let first_start = crate::current_instruction_counter();
-
     let first = if let Some(ctx) = preflight {
         resolve_anchor_hits_for_shards(ctx, index, &anchors[0], shard_ids, metrics).await?
     } else {
-        lookup_anchor_hits(index, &anchors[0], shard_ids).await?
+        #[cfg(feature = "batch-instr-log")]
+        let remote_start = crate::current_instruction_counter();
+        let hits = lookup_anchor_hits(index, &anchors[0], shard_ids).await?;
+        #[cfg(feature = "batch-instr-log")]
+        {
+            metrics.remote_index_await +=
+                crate::current_instruction_counter().saturating_sub(remote_start);
+        }
+        hits
     };
-
-    #[cfg(feature = "batch-instr-log")]
-    {
-        metrics.remote_index_await +=
-            crate::current_instruction_counter().saturating_sub(first_start);
-    }
 
     if first.is_empty() {
         return Ok(first);
@@ -732,20 +750,19 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     match first {
         SeedHits::Vertices(mut accumulated) => {
             for anchor in &anchors[1..] {
-                #[cfg(feature = "batch-instr-log")]
-                let next_start = crate::current_instruction_counter();
-
                 let hits = if let Some(ctx) = preflight {
                     resolve_anchor_hits_for_shards(ctx, index, anchor, shard_ids, metrics).await?
                 } else {
-                    lookup_anchor_hits(index, anchor, shard_ids).await?
+                    #[cfg(feature = "batch-instr-log")]
+                    let remote_start = crate::current_instruction_counter();
+                    let hits = lookup_anchor_hits(index, anchor, shard_ids).await?;
+                    #[cfg(feature = "batch-instr-log")]
+                    {
+                        metrics.remote_index_await +=
+                            crate::current_instruction_counter().saturating_sub(remote_start);
+                    }
+                    hits
                 };
-
-                #[cfg(feature = "batch-instr-log")]
-                {
-                    metrics.remote_index_await +=
-                        crate::current_instruction_counter().saturating_sub(next_start);
-                }
 
                 #[cfg(feature = "batch-instr-log")]
                 let intersect_start = crate::current_instruction_counter();
