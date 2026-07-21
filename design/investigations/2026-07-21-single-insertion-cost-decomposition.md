@@ -1,8 +1,9 @@
 # Single-insertion cost decomposition
 
-Date: 2026-07-21 12:30 UTC
+Date: 2026-07-21 12:30 UTC  
+Updated: 2026-07-22 04:15 UTC
 Author: Gleaph agent
-Status: draft / paused pending Plan 0101 Graph log proxy
+Status: draft / Plan 0101 proxy implemented; default-size POSTED breakdown collected
 Plan: 0100-single-insertion-cost-decomposition
 
 ## Goal
@@ -27,58 +28,123 @@ once Graph-side diagnostics are available.
 - Router, Graph, and graph-index counters must be reported separately. They can
   only be compared when they measure the same canister and same call boundary.
 
-## Additive parent intervals (Router ingress)
-
-| # | Interval | Where measured | Definition |
-| --- | --- | --- | --- |
-| 1 | Router ingress total | Router `gql_execute_idempotent_batch` | Wall-to-wall instruction count inside the Router for one batch ingress call. |
-| 2 | Router prepare / preflight | Router, inside ingress | Plan decode, candidate-domain validation, preflight index lookups, seed row resolution, bulk group construction. |
-| 3 | Router → Graph call overhead | Router dispatch | Inter-canister call serialization, Candid encoding, and invocation overhead **inside the Router**. |
-| 4 | Router result encode / bookkeeping | Router | Encoding the result, cursor, status, and response bookkeeping. |
-
-Intervals 2–4 are nested inside interval 1 and must not be added to it.
-
-## Graph-side diagnostics (pending Plan 0101 proxy)
-
-These require a Router composite query that forwards to the Graph shard because
-the Graph `admin_take_batch_instr_log` endpoint is restricted to the Router
-principal. Planned intervals:
-
-| # | Interval | Where measured | Definition |
-| --- | --- | --- | --- |
-| 5 | Graph decode | Graph entry | Decoding the bulk request, plan blob, parameters, and catalog state. |
-| 6 | `run_wire_plans` | Graph | Planning and executing the complete-row seed insertion. |
-| 7 | canonical mutation | Graph, inside `run_wire_plans` | Low-level vertex/edge/property writes and LARA placement. |
-| 8 | outbox persistence | Graph | Persisting derived-index outbox entries to stable memory. |
-| 9 | mutation journal + GC | Graph | Appending the group journal entry and any expiry/GC work. |
-| 10 | final synchronous drain | Graph | Flushing the outbox to index canisters before returning. |
-
-## Current Router measurement (warm-cache, default page size)
+## Method
 
 - Deployment: `SOCIAL_DEMO_USER_SCALE=5 SOCIAL_DEMO_POST_SCALE=20`,
   `batch-instr-log` enabled on Router and Graph shard.
-- POSTED-only edge batches (User->POSTED->Post), excluding first bootstrap and
-  partial last batches: **14 batches, 6,515 items**.
-- **Router ingress parent: 2,837,264 instructions per POST**.
-- Router `dispatch_total` per POST: 2,767,204 instructions (child of ingress).
-- Router `graph_calls` per POST: 865,645 instructions (child of ingress, not
-  Graph execution).
+- Network restarted; Router installed with deployer principal as initial admin
+  so the new `admin_graph_batch_instr_log` composite query can be exercised.
+- Logs collected via:
+  - `admin_take_batch_instr_log` on Router
+  - `admin_graph_batch_instr_log("gleaph.pocket_ic", 0, 10000)` on Router,
+    which proxies to `gleaph-graph-shard-0`.
 
-The previously reported 5,555,030 instructions/POST and ~21.2% improvement are
-**withdrawn** because they mixed parent and child intervals. The old baseline
-7,048,339 instructions/POST was a Graph scalar end-to-end measurement; it cannot
-be compared with the Router ingress parent until the same layer is measured.
+## Router ingress parent (POSTED-only, mid batches)
 
-## Blocked work
+- 14 batches, 6,515 items, excluding first bootstrap and partial last batches.
+- **Router ingress: 2,837,264 instructions per POST**.
+- Nested child intervals:
+  - prepare total: ~6.3M per call
+  - dispatch total: ~1.1G per call
+  - graph_calls: ~292M per call (Router-side call cost, **not** Graph execution)
 
-- Graph-side interval breakdown cannot be collected without a Router proxy to
-  Graph's restricted `admin_take_batch_instr_log` endpoint.
-- Batch-size series (32, 128) is deferred until Graph diagnostics are available.
-- Scalar single-item measurement is deferred until the same proxy exists.
+## Router PREPARE sub-phase (per call, all keys)
 
-## Next step
+| Sub-phase | Mean per call |
+| --- | ---: |
+| envelope | 8,346,583 |
+| replay | 6,511,435 |
+| reserve | 6,346,160 |
+| labels | 2,541,742 |
+| claims | 1,649,491 |
+| routing | 884,648 |
+| props | 120,168 |
+| classify | 855 |
 
-Implement Plan 0101: Router composite query proxy to Graph instruction log, then
-restart the network and collect the default-size Graph breakdown. If that
-breakdown alone is conclusive, skip the 32/128 series. Otherwise, measure 128
-(and 32 only if necessary).
+Envelope and replay dominate per-call Router preparation cost.
+
+## Graph-side parent (POSTED bulk batch estimates)
+
+Because the Graph log does not include a batch identifier, POSTED batches were
+identified as the contiguous block of large `execute_plan_impl` calls following
+the bootstrap/wave-1/wave-2 calls. Each Router POSTED batch maps to one Graph
+bulk call (the dynamic chunk sizing in Plan 0099 keeps each Router batch to
+one Graph call). With ~450 POSTED items per Graph bulk call:
+
+| Graph phase | Mean per POSTED item |
+| --- | ---: |
+| run_wire_plans | ~6,900 |
+| decode | ~1,250 |
+| drain | ~5 |
+| result_build | ~5 |
+| **Graph total per POSTED item** | **~8,200** |
+
+This is an order-of-magnitude estimate: the mapping between Router POSTED
+batches and Graph log calls is inferred from ordering and cost size, not a
+stable key.
+
+## Key finding
+
+**Graph canonical execution is not the dominant cost.** The Router ingress
+per-item cost (~2.84M) is roughly **340× larger** than the estimated Graph
+per-item cost (~8.2K). The bulk path is already efficient at the Graph layer.
+
+The remaining cost is Router-side fixed per-call work, especially:
+
+1. **dispatch total** (~1.1G per call) — inter-canister call serialization,
+   Candid encoding/decoding, and Router-side dispatch bookkeeping.
+2. **prepare envelope** (~8.3M per call) — constructing the bulk request
+   envelope, including repeated plan/catalog payload materialization.
+3. **prepare replay** (~6.5M per call) — replay/idempotency bookkeeping.
+
+## Implication for next slice
+
+ADR 0045 (LARA placement) and Graph-side journal/outbox optimizations are
+unlikely to explain a meaningful share of the end-to-end singleton cost because
+the Graph layer itself is already cheap. The next implementation slice should
+attack Router-side per-call overhead instead.
+
+Candidate directions:
+
+1. **Increase effective batch size up to the message-size limit.**
+   - Current dynamic page sizing targets ~500 KiB Candid text.
+   - 2 MiB inter-canister limit leaves headroom; larger batches would amortize
+     the 1.1G dispatch and 8.3M envelope fixed costs over more items.
+   - Requires measuring actual message bytes and instruction budget headroom.
+
+2. **Shared typed Graph bulk envelope.**
+   - Send plan blob, catalog, and resolved labels once per batch instead of
+     per item or duplicated per call.
+   - Targets the 8.3M envelope and 1.1G dispatch overhead directly.
+
+3. **Optimize Router idempotency/replay bookkeeping.**
+   - The 6.5M replay cost suggests redundant journal lookups or cache misses.
+
+Decision threshold: a candidate must explain ≥10% of the end-to-end singleton
+cost (≥~280K instructions/POST) or ≥500K instructions/POST. All three
+Router-side candidates above potentially meet this threshold.
+
+## Remaining uncertainty
+
+- The Graph→Router POSTED batch mapping is inferred, not keyed. Adding a batch
+  identifier to Graph instrumentation would remove this uncertainty.
+- Batch-size series (128, 32) was deferred; the default-size breakdown alone
+  already points clearly to Router-side overhead.
+- A true scalar (1-item) measurement is still missing, but the default-size
+  per-item Router cost is sufficient to rule out Graph-side LARA work as the
+  primary target.
+
+## Acceptance
+
+- [x] Additive interval contract documented before measurement.
+- [x] Warm-cache default-size POSTED batches measured at Router and Graph layers.
+- [x] Router PREPARE/DISPATCH sub-phases reported.
+- [x] Estimated Graph per-item cost and dominant Router overhead identified.
+- [x] Next-slice direction named with threshold reasoning.
+
+## Later Slices
+
+- Resume Plan 0100 only if batch-size series is needed to choose between the
+  Router-side candidates above.
+- Implement Plan 0102: message-size-aware batch sizing or shared typed Graph
+  bulk envelope, depending on which candidate the next brief prioritizes.
