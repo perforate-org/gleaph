@@ -2,118 +2,83 @@
 
 Date: 2026-07-21 12:30 UTC
 Author: Gleaph agent
-Status: draft / measurement plan
+Status: draft / paused pending Plan 0101 Graph log proxy
 Plan: 0100-single-insertion-cost-decomposition
 
 ## Goal
 
-Decompose the end-to-end cost of one social-demo `User -[:POSTED]-> Post` edge
-insertion into an additive cost model
+Decompose the Router and Graph instruction costs of one social-demo
+`User -[:POSTED]-> Post` edge insertion, respecting the ICP performance-counter
+layer boundary. Fit
 
 ```
 cost(batch_size) = fixed_per_batch + batch_size × marginal_per_item
 ```
 
-and use the largest residual singleton cost to pick the next implementation
-slice.
+once Graph-side diagnostics are available.
 
-## Measurement constraints
+## Measurement-layer contract
 
-- Warm cache only: run the full seed at least once, then discard the first run.
-- Exclude the first bootstrap batch and any partial last batch.
-- Measure scalar (1 item) and bulk sizes 2, 8, 32, and 128.
-- Repeat each size enough times to obtain a stable mean; report variance if the
-  sample allows.
-- Do not change canister code for this slice; only `batch-instr-log` is enabled.
+- `call_context_instruction_counter` counts only instructions executed **inside
+  the current canister**. It does **not** include cross-canister call execution.
+- Router ingress cost ≠ Graph execution cost.
+- `dispatch_total` and `graph_calls` reported by the Router are child intervals
+  of the Router ingress interval, not Graph measurements.
+- Router, Graph, and graph-index counters must be reported separately. They can
+  only be compared when they measure the same canister and same call boundary.
 
-## Additive parent intervals
-
-These numbers can be added to reconstruct the end-to-end Router ingress cost for
-a single batch. Child intervals listed later are **nested inside** these parents
-and must not be added to them.
+## Additive parent intervals (Router ingress)
 
 | # | Interval | Where measured | Definition |
 | --- | --- | --- | --- |
-| 1 | Router ingress total | Router `gql_execute_idempotent_batch` | Wall-to-wall instruction count for one batch ingress call. |
-| 2 | Router prepare / preflight | Router, between ingress entry and Graph dispatch | Plan decode, candidate-domain validation, preflight index lookups, seed row resolution, bulk group construction. |
-| 3 | Router → Graph call | Router dispatch | Cost of the inter-canister call serialization, Candid encoding, and cross-canister invocation overhead. |
-| 4 | Graph decode | Graph entry | Decoding the bulk request, plan blob, parameters, and catalog state. |
-| 5 | `run_wire_plans` | Graph | Planning and executing the complete-row seed insertion against the graph engine. |
-| 6 | canonical mutation | Graph, inside `run_wire_plans` | Low-level vertex/edge/property writes and LARA placement (currently inside the same interval). |
-| 7 | outbox persistence | Graph | Persisting derived-index outbox entries to stable memory. |
-| 8 | mutation journal + GC | Graph | Appending the group journal entry and any expiry / GC work. |
-| 9 | final synchronous drain | Graph | Flushing the outbox to the property/vector index canisters before returning. |
-| 10 | result encode / bookkeeping | Graph / Router | Encoding the result, cursor, status, and Router-side response bookkeeping. |
+| 1 | Router ingress total | Router `gql_execute_idempotent_batch` | Wall-to-wall instruction count inside the Router for one batch ingress call. |
+| 2 | Router prepare / preflight | Router, inside ingress | Plan decode, candidate-domain validation, preflight index lookups, seed row resolution, bulk group construction. |
+| 3 | Router → Graph call overhead | Router dispatch | Inter-canister call serialization, Candid encoding, and invocation overhead **inside the Router**. |
+| 4 | Router result encode / bookkeeping | Router | Encoding the result, cursor, status, and response bookkeeping. |
 
-For the linear fit, only **interval 1** (Router ingress total) is used as the
-dependent variable. Intervals 2–10 are explanatory diagnostics and must be
-reported separately.
+Intervals 2–4 are nested inside interval 1 and must not be added to it.
 
-## Nested child diagnostics (non-additive)
+## Graph-side diagnostics (pending Plan 0101 proxy)
 
-If an implementation exposes finer markers, report them as children of the
-parent interval above. Examples:
+These require a Router composite query that forwards to the Graph shard because
+the Graph `admin_take_batch_instr_log` endpoint is restricted to the Router
+principal. Planned intervals:
 
-- `decode phase` inside interval 4.
-- `completed journal plus GC` inside interval 8.
-- `outbox persistence` already listed as interval 7; do not add it again to
-  interval 9.
+| # | Interval | Where measured | Definition |
+| --- | --- | --- | --- |
+| 5 | Graph decode | Graph entry | Decoding the bulk request, plan blob, parameters, and catalog state. |
+| 6 | `run_wire_plans` | Graph | Planning and executing the complete-row seed insertion. |
+| 7 | canonical mutation | Graph, inside `run_wire_plans` | Low-level vertex/edge/property writes and LARA placement. |
+| 8 | outbox persistence | Graph | Persisting derived-index outbox entries to stable memory. |
+| 9 | mutation journal + GC | Graph | Appending the group journal entry and any expiry/GC work. |
+| 10 | final synchronous drain | Graph | Flushing the outbox to index canisters before returning. |
 
-## Cost model
+## Current Router measurement (warm-cache, default page size)
 
-For each measured batch size `n`, record `cost_1(n)` = Router ingress total.
-Fit
+- Deployment: `SOCIAL_DEMO_USER_SCALE=5 SOCIAL_DEMO_POST_SCALE=20`,
+  `batch-instr-log` enabled on Router and Graph shard.
+- POSTED-only edge batches (User->POSTED->Post), excluding first bootstrap and
+  partial last batches: **14 batches, 6,515 items**.
+- **Router ingress parent: 2,837,264 instructions per POST**.
+- Router `dispatch_total` per POST: 2,767,204 instructions (child of ingress).
+- Router `graph_calls` per POST: 865,645 instructions (child of ingress, not
+  Graph execution).
 
-```
-cost_1(n) = F + n × M
-```
+The previously reported 5,555,030 instructions/POST and ~21.2% improvement are
+**withdrawn** because they mixed parent and child intervals. The old baseline
+7,048,339 instructions/POST was a Graph scalar end-to-end measurement; it cannot
+be compared with the Router ingress parent until the same layer is measured.
 
-using ordinary least squares over the warm-cache mid-batch samples.
+## Blocked work
 
-Derived metrics:
+- Graph-side interval breakdown cannot be collected without a Router proxy to
+  Graph's restricted `admin_take_batch_instr_log` endpoint.
+- Batch-size series (32, 128) is deferred until Graph diagnostics are available.
+- Scalar single-item measurement is deferred until the same proxy exists.
 
-- `fixed_per_batch` = `F`
-- `marginal_per_item` = `M`
-- `singleton_equivalent` = `F + M` (extrapolated cost of one item if it were
-  the only item in a batch)
-- `fixed_share` = `F / (F + M)` (share of a singleton that is fixed per-call
-  work)
+## Next step
 
-## Decision threshold
-
-A candidate direction is worth pursuing only if it explains **≥10% of the
-end-to-end singleton cost** or **≥~500k instructions per POST**.
-
-## Candidate mapping
-
-| Dominant residual | Likely interval | Next slice |
-| --- | --- | --- |
-| Journal append / GC | 8 | Plan 0101: expiry-aware journal GC and frequency tuning |
-| Synchronous drain / outbox | 7, 9 | Plan 0101: posting batching and lazy drain policy |
-| Decode / duplicated payload | 4 | Plan 0101: shared typed Graph bulk envelope |
-| Canonical edge insertion / LARA | 5, 6 | Plan 0101: ADR 0045 LARA placement minimum slice |
-
-## Required commands
-
-Enable instrumentation by temporarily adding `features: [batch-instr-log]` to
-the rust canisters in `icp.yaml`. Run a fresh local deployment, then execute the
-social-demo seed workload twice. Discard the first run.
-
-```bash
-icp network stop
-icp network start local -d
-SOCIAL_DEMO_USER_SCALE=5 SOCIAL_DEMO_POST_SCALE=20 GLEAPH_DEMO_FORCE_VITE_IC_HOST=1 ./scripts/deploy-social-demo-local.sh 2>&1 | tee /tmp/social-demo-warm-1.log
-SOCIAL_DEMO_USER_SCALE=5 SOCIAL_DEMO_POST_SCALE=20 GLEAPH_DEMO_FORCE_VITE_IC_HOST=1 ./scripts/deploy-social-demo-local.sh 2>&1 | tee /tmp/social-demo-warm-2.log
-```
-
-After the second run, collect Router and Graph instruction markers from the
-replica output or the canister logs. Aggregate POSTED-only batches by size and
-compute the fit.
-
-## Acceptance
-
-- [ ] Interval contract documented before measurement.
-- [ ] Warm-cache scalar and bulk size series measured.
-- [ ] Linear fit and fixed/marginal share reported.
-- [ ] Dominant residual identified with threshold evidence.
-- [ ] Next slice named and linked from this brief.
+Implement Plan 0101: Router composite query proxy to Graph instruction log, then
+restart the network and collect the default-size Graph breakdown. If that
+breakdown alone is conclusive, skip the 32/128 series. Otherwise, measure 128
+(and 32 only if necessary).
