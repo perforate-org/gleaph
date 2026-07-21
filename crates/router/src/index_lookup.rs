@@ -11,13 +11,17 @@ use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
-    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
+    LookupEqualBatchRequest, LookupEqualBatchResult, LookupEqualPageRequest,
+    LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
     LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS,
-    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit, ValuePostingCount, ValuePostingCountPage,
+    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit, PostingHitPage, ValuePostingCount,
+    ValuePostingCountPage,
 };
 
 use crate::facade::store::RouterStore;
+use crate::federation::SeedHits;
 use crate::index_client::RouterIndexClient;
+use crate::seed::{IndexAnchor, SeedProbe};
 
 /// Page size for paginated property / edge equality exports during seed routing. Bounds the
 /// per-message materialization on the index canister (no full-bucket heap materialization).
@@ -172,6 +176,185 @@ async fn collect_edge_equal_hits_paged(
         after = page.next;
     }
     Ok(hits)
+}
+
+/// Maximum number of equality specs in a single `lookup_equal_batch` call. The encoded
+/// `IndexEqualSpec::value` is the dominant payload contributor; 100 keeps the Candid message
+/// comfortably under the 2 MiB inter-canister limit while amortizing fixed call cost.
+const EQUAL_BATCH_MAX_SPECS: usize = 100;
+
+/// Resolve a deduplicated set of equality `IndexAnchor::Equal` anchors in the fewest possible
+/// index calls. Uses `lookup_equal_batch(after=None)` for the first page, then continues any
+/// `done=false` bucket from its own `page.next`, and resumes a budget-truncated batch from the
+/// returned `next` index with another `after=None` batch.
+/// Batch equality lookup driver parameterized by caller closures so native unit tests can
+/// inject responses without crossing the `ic_cdk::call` boundary.
+async fn collect_equal_hits_batched_with_caller<F, Fut, G, Gf>(
+    anchors: &[IndexAnchor],
+    mut call_batch: F,
+    mut call_page: G,
+) -> Result<Vec<PostingHit>, String>
+where
+    F: FnMut(LookupEqualBatchRequest) -> Fut,
+    Fut: Future<Output = Result<LookupEqualBatchResult, String>>,
+    G: FnMut(LookupEqualPageRequest) -> Gf,
+    Gf: Future<Output = Result<PostingHitPage, String>>,
+{
+    let mut pending: Vec<(IndexEqualSpec, (u32, Vec<u8>))> = Vec::new();
+    for anchor in anchors {
+        let IndexAnchor::Equal(probe) = anchor else {
+            return Err("collect_equal_hits_batched requires Equal anchors".into());
+        };
+        let spec = IndexEqualSpec::vertex(probe.property_id, probe.payload_bytes.clone());
+        let dedup_key = (probe.property_id, probe.payload_bytes.clone());
+        if !pending.iter().any(|(_, k)| *k == dedup_key) {
+            pending.push((spec, dedup_key));
+        }
+    }
+
+    let mut all_hits: Vec<PostingHit> = Vec::new();
+    let mut start = 0usize;
+    while start < pending.len() {
+        let end = (start + EQUAL_BATCH_MAX_SPECS).min(pending.len());
+        let specs: Vec<IndexEqualSpec> =
+            pending[start..end].iter().map(|(s, _)| s.clone()).collect();
+        let result = call_batch(LookupEqualBatchRequest {
+            specs,
+            after: None,
+            limit: INDEX_LOOKUP_PAGE_LIMIT,
+        })
+        .await?;
+
+        match result.next {
+            Some(next) if next as usize > result.pages.len() => {
+                return Err(format!(
+                    "lookup_equal_batch returned invalid next {} (pages={})",
+                    next,
+                    result.pages.len()
+                ));
+            }
+            Some(next) if next as usize != result.pages.len() => {
+                return Err(format!(
+                    "lookup_equal_batch returned next={} but {} pages",
+                    next,
+                    result.pages.len()
+                ));
+            }
+            _ => {}
+        }
+        if result.next.is_none() && result.pages.len() != end - start {
+            return Err(format!(
+                "lookup_equal_batch returned {} pages for {} specs",
+                result.pages.len(),
+                end - start
+            ));
+        }
+        if let Some(next) = result.next {
+            // specs [0..next) returned at least one page and the canister stopped before
+            // spec next. Treat [next..end) as not yet processed; they will be handled in the
+            // next outer iteration from `start + next`.
+            // But first finish any done pages in [0..next).
+            for (offset, page) in result.pages.iter().enumerate().take(next as usize) {
+                all_hits.extend(page.hits.clone());
+                if !page.done {
+                    if page.next.is_none() {
+                        return Err(format!(
+                            "lookup_equal_batch returned done=false but next=None for spec {}",
+                            start + offset
+                        ));
+                    }
+                    let spec = pending[start + offset].0.clone();
+                    let continued =
+                        continue_equal_page_with_caller(&mut call_page, spec, page.next.clone())
+                            .await?;
+                    all_hits.extend(continued);
+                }
+            }
+            start += next as usize;
+            continue;
+        }
+
+        // No early stop: all pages returned.
+        for (offset, page) in result.pages.iter().enumerate() {
+            all_hits.extend(page.hits.clone());
+            if !page.done {
+                if page.next.is_none() {
+                    return Err(format!(
+                        "lookup_equal_batch returned done=false but next=None for spec {}",
+                        start + offset
+                    ));
+                }
+                let spec = pending[start + offset].0.clone();
+                let continued =
+                    continue_equal_page_with_caller(&mut call_page, spec, page.next.clone())
+                        .await?;
+                all_hits.extend(continued);
+            }
+        }
+        start = end;
+    }
+
+    all_hits.sort_unstable_by_key(|h| (h.shard_id, h.vertex_id));
+    all_hits.dedup_by_key(|h| (h.shard_id, h.vertex_id));
+    Ok(all_hits)
+}
+
+pub(crate) async fn collect_equal_hits_batched(
+    client: &RouterIndexClient,
+    anchors: &[IndexAnchor],
+) -> Result<Vec<PostingHit>, String> {
+    collect_equal_hits_batched_with_caller(
+        anchors,
+        |req| client.lookup_equal_batch(req),
+        |req| client.lookup_equal_page(req),
+    )
+    .await
+}
+
+async fn continue_equal_page_with_caller<G, Gf>(
+    call_page: &mut G,
+    spec: IndexEqualSpec,
+    after: Option<gleaph_graph_kernel::index::PropertyPostingCursor>,
+) -> Result<Vec<PostingHit>, String>
+where
+    G: FnMut(LookupEqualPageRequest) -> Gf,
+    Gf: Future<Output = Result<PostingHitPage, String>>,
+{
+    let mut hits = Vec::new();
+    let mut after = after;
+    loop {
+        let page: PostingHitPage = call_page(LookupEqualPageRequest {
+            property_id: spec.property_id,
+            value: spec.value.clone(),
+            after,
+            limit: INDEX_LOOKUP_PAGE_LIMIT,
+        })
+        .await?;
+        hits.extend(page.hits);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    Ok(hits)
+}
+
+async fn lookup_anchor_hits_for_index<I: IndexLookup + ?Sized>(
+    index: &I,
+    anchor: &IndexAnchor,
+) -> Result<SeedHits, String> {
+    match anchor {
+        IndexAnchor::Equal(SeedProbe {
+            property_id,
+            payload_bytes,
+            ..
+        }) => Ok(SeedHits::Vertices(
+            index
+                .lookup_equal(*property_id, payload_bytes.clone())
+                .await?,
+        )),
+        _ => Err("lookup_anchor_hits_for_index only supports equality anchors".into()),
+    }
 }
 
 /// `true` when every arm targets a vertex property (the planner's `IndexIntersection` shape, which
@@ -352,6 +535,28 @@ pub(crate) trait IndexLookup {
         vertex_filter_packed: Option<Vec<u64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
 
+    /// Batch equality lookup for a set of `IndexAnchor::Equal` anchors. Default
+    /// implementation fans out to per-anchor paged equality; `RouterIndexClient` overrides
+    /// with a single `lookup_equal_batch` inter-canister call.
+    fn lookup_equal_batch<'a>(
+        &'a self,
+        anchors: &'a [IndexAnchor],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + 'a>> {
+        Box::pin(async move {
+            let mut hits = Vec::new();
+            for anchor in anchors {
+                let SeedHits::Vertices(h) = lookup_anchor_hits_for_index(self, anchor).await?
+                else {
+                    return Err("batched equality lookup produced edge hits".into());
+                };
+                hits.extend(h);
+            }
+            hits.sort_unstable_by_key(|h| (h.shard_id, h.vertex_id));
+            hits.dedup_by_key(|h| (h.shard_id, h.vertex_id));
+            Ok(hits)
+        })
+    }
+
     fn lookup_label_page(
         &self,
         req: LabelLookupPageRequest,
@@ -410,6 +615,13 @@ impl IndexLookup for RouterIndexClient {
         value: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
         Box::pin(collect_equal_hits_paged(self, property_id, value))
+    }
+
+    fn lookup_equal_batch<'a>(
+        &'a self,
+        anchors: &'a [IndexAnchor],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + 'a>> {
+        Box::pin(collect_equal_hits_batched(self, anchors))
     }
 
     fn lookup_intersection(
@@ -517,6 +729,26 @@ impl IndexLookup for RouterIndexLookup {
                 );
             }
             Ok(merge_posting_hits(self.retain_live_vertex_hits(merged)))
+        })
+    }
+
+    fn lookup_equal_batch<'a>(
+        &'a self,
+        anchors: &'a [IndexAnchor],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + 'a>> {
+        let targets = self.targets.clone();
+        let shard_index = self.shard_index.clone();
+        Box::pin(async move {
+            let mut merged = Vec::new();
+            for principal in targets {
+                merged.extend(
+                    collect_equal_hits_batched(&RouterIndexClient::new(principal), anchors).await?,
+                );
+            }
+            Ok(merge_posting_hits(Self::filter_live_vertex_hits(
+                &shard_index,
+                merged,
+            )))
         })
     }
 
@@ -692,6 +924,241 @@ impl IndexLookup for RouterIndexLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_graph_kernel::index::PropertyPostingCursor;
+
+    fn equal_anchor(property_id: u32, payload: &[u8]) -> IndexAnchor {
+        IndexAnchor::Equal(SeedProbe {
+            variable: "v".into(),
+            property: "p".into(),
+            property_id,
+            payload_bytes: payload.to_vec(),
+        })
+    }
+
+    fn posting_hit(shard_id: u32, vertex_id: u32) -> PostingHit {
+        PostingHit {
+            shard_id: ShardId::new(shard_id),
+            vertex_id,
+        }
+    }
+
+    fn page(
+        hits: Vec<PostingHit>,
+        done: bool,
+        next: Option<PropertyPostingCursor>,
+    ) -> PostingHitPage {
+        PostingHitPage { hits, next, done }
+    }
+
+    fn cursor(value: Vec<u8>, shard_id: u32, vertex_id: u32) -> PropertyPostingCursor {
+        PropertyPostingCursor {
+            value,
+            shard_id: ShardId::new(shard_id),
+            vertex_id,
+        }
+    }
+
+    #[test]
+    fn batched_equal_lookup_dedupes_duplicate_anchors() {
+        futures::executor::block_on(async {
+            let anchors = vec![
+                equal_anchor(1, b"a"),
+                equal_anchor(1, b"a"),
+                equal_anchor(1, b"b"),
+            ];
+            let mut batch_calls = 0;
+            let hits = collect_equal_hits_batched_with_caller(
+                &anchors,
+                |req| {
+                    batch_calls += 1;
+                    assert_eq!(req.specs.len(), 2);
+                    async move {
+                        Ok(LookupEqualBatchResult {
+                            pages: vec![
+                                page(vec![posting_hit(0, 1)], true, None),
+                                page(vec![posting_hit(0, 2)], true, None),
+                            ],
+                            next: None,
+                        })
+                    }
+                },
+                |_req| async move { unreachable!("no continuation expected") },
+            )
+            .await
+            .unwrap();
+            assert_eq!(batch_calls, 1);
+            assert_eq!(hits.len(), 2);
+            assert!(hits.contains(&posting_hit(0, 1)));
+            assert!(hits.contains(&posting_hit(0, 2)));
+        });
+    }
+
+    #[test]
+    fn batched_equal_lookup_does_not_dedup_same_payload_different_property() {
+        futures::executor::block_on(async {
+            let anchors = vec![equal_anchor(1, b"x"), equal_anchor(2, b"x")];
+            let mut batch_calls = 0;
+            let hits = collect_equal_hits_batched_with_caller(
+                &anchors,
+                |req| {
+                    batch_calls += 1;
+                    assert_eq!(req.specs.len(), 2);
+                    async move {
+                        Ok(LookupEqualBatchResult {
+                            pages: vec![
+                                page(vec![posting_hit(0, 1)], true, None),
+                                page(vec![posting_hit(0, 2)], true, None),
+                            ],
+                            next: None,
+                        })
+                    }
+                },
+                |_req| async move { unreachable!("no continuation expected") },
+            )
+            .await
+            .unwrap();
+            assert_eq!(batch_calls, 1);
+            assert_eq!(hits.len(), 2);
+        });
+    }
+
+    #[test]
+    fn batched_equal_lookup_resumes_from_budget_next() {
+        futures::executor::block_on(async {
+            let anchors = vec![
+                equal_anchor(1, b"a"),
+                equal_anchor(1, b"b"),
+                equal_anchor(1, b"c"),
+            ];
+            let mut calls: Vec<Vec<u32>> = Vec::new();
+            let hits = collect_equal_hits_batched_with_caller(
+                &anchors,
+                |req| {
+                    let pids: Vec<u32> = req.specs.iter().map(|s| s.property_id).collect();
+                    calls.push(pids);
+                    async move {
+                        if req.specs.len() == 3 {
+                            Ok(LookupEqualBatchResult {
+                                pages: vec![
+                                    page(vec![posting_hit(0, 1)], true, None),
+                                    page(vec![posting_hit(0, 2)], true, None),
+                                ],
+                                next: Some(2),
+                            })
+                        } else {
+                            Ok(LookupEqualBatchResult {
+                                pages: vec![page(vec![posting_hit(0, 3)], true, None)],
+                                next: None,
+                            })
+                        }
+                    }
+                },
+                |_req| async move { unreachable!("no continuation expected") },
+            )
+            .await
+            .unwrap();
+            assert_eq!(calls, vec![vec![1, 1, 1], vec![1]]);
+            assert_eq!(hits.len(), 3);
+        });
+    }
+
+    #[test]
+    fn batched_equal_lookup_continues_non_done_page_with_own_cursor() {
+        futures::executor::block_on(async {
+            let anchors = vec![equal_anchor(1, b"a")];
+            let mut batch_calls = 0;
+            let mut page_calls = 0;
+            let hits = collect_equal_hits_batched_with_caller(
+                &anchors,
+                |req| {
+                    batch_calls += 1;
+                    assert_eq!(req.specs.len(), 1);
+                    async move {
+                        Ok(LookupEqualBatchResult {
+                            pages: vec![page(
+                                vec![posting_hit(0, 1)],
+                                false,
+                                Some(cursor(b"a".to_vec(), 0, 1)),
+                            )],
+                            next: None,
+                        })
+                    }
+                },
+                |req| {
+                    page_calls += 1;
+                    assert_eq!(req.property_id, 1);
+                    let after = req.after.as_ref().expect("continuation should have cursor");
+                    assert_eq!(after.vertex_id, 1);
+                    async move { Ok(page(vec![posting_hit(0, 2)], true, None)) }
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(batch_calls, 1);
+            assert_eq!(page_calls, 1);
+            assert_eq!(hits.len(), 2);
+        });
+    }
+
+    #[test]
+    fn batched_equal_lookup_rejects_page_count_mismatch() {
+        futures::executor::block_on(async {
+            let anchors = vec![equal_anchor(1, b"a"), equal_anchor(1, b"b")];
+            let err = collect_equal_hits_batched_with_caller(
+                &anchors,
+                |_req| async move {
+                    Ok(LookupEqualBatchResult {
+                        pages: vec![page(vec![], true, None)],
+                        next: None,
+                    })
+                },
+                |_req| async move { unreachable!() },
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("returned 1 pages for 2 specs"));
+        });
+    }
+
+    #[test]
+    fn batched_equal_lookup_rejects_invalid_next() {
+        futures::executor::block_on(async {
+            let anchors = vec![equal_anchor(1, b"a")];
+            let err = collect_equal_hits_batched_with_caller(
+                &anchors,
+                |_req| async move {
+                    Ok(LookupEqualBatchResult {
+                        pages: vec![page(vec![], true, None)],
+                        next: Some(5),
+                    })
+                },
+                |_req| async move { unreachable!() },
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("invalid next"));
+        });
+    }
+
+    #[test]
+    fn batched_equal_lookup_rejects_done_false_without_next() {
+        futures::executor::block_on(async {
+            let anchors = vec![equal_anchor(1, b"a")];
+            let err = collect_equal_hits_batched_with_caller(
+                &anchors,
+                |_req| async move {
+                    Ok(LookupEqualBatchResult {
+                        pages: vec![page(vec![], false, None)],
+                        next: None,
+                    })
+                },
+                |_req| async move { unreachable!() },
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("done=false but next=None"));
+        });
+    }
 
     #[test]
     fn merge_posting_hits_dedupes() {

@@ -696,6 +696,34 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
 /// Phase 1). Bounded to keep Router memory, wire size, and Graph instruction spend modest.
 const MAX_COMPLETE_ROW_SEED_ROWS: usize = 1024;
 
+/// True when every anchor is an equality `IndexScan` (the only shape that supports batched
+/// graph-index lookup).
+fn all_anchors_are_equal(anchors: &[IndexAnchor]) -> bool {
+    !anchors.is_empty() && anchors.iter().all(|a| matches!(a, IndexAnchor::Equal(_)))
+}
+
+/// Resolve equality anchors in a single batched call when no preflight cache is present, or
+/// fall back to the per-anchor path (which itself consults the cache) when a preflight context
+/// exists. The batched path is used only for cold cache to maximize the first-call savings;
+/// repeated lookups inside the same ingress call are served from `PreflightContext`.
+async fn resolve_seed_hits_equal_batched<I: IndexLookup + ?Sized>(
+    index: &I,
+    anchors: &[IndexAnchor],
+    preflight: Option<&PreflightContext>,
+) -> Result<SeedHits, String> {
+    if let Some(ctx) = preflight {
+        // Use the existing cached per-anchor path so intersection semantics and cache SSOT
+        // remain unchanged. The cache is populated by the batched resolver on cache misses
+        // elsewhere.
+        resolve_seed_hits_from_anchors(index, anchors, &[ShardId::new(0)], Some(ctx)).await
+    } else {
+        let hits = index.lookup_equal_batch(anchors).await?;
+        Ok(SeedHits::Vertices(hits))
+    }
+}
+
+/// Batched equality lookup adapter for the `IndexLookup` trait. Only the `RouterIndexClient`
+/// direct path implements it; federated multi-target lookup falls back to per-target paged
 /// Resolve a selective [`SeedAnchorSet`] into a complete-row seed relation for one target
 /// shard. Single-variable seeds produce one row per local vertex id; multi-variable seeds
 /// intersect each variable's anchors on the shard and multiply the per-variable candidate
@@ -717,9 +745,15 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
 
     if set.variables.len() == 1 {
         let var = &set.variables[0];
-        let hits = resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight)
-            .await
-            .map_err(RouterError::InvalidArgument)?;
+        let hits = if all_anchors_are_equal(&var.anchors) {
+            resolve_seed_hits_equal_batched(index, &var.anchors, preflight)
+                .await
+                .map_err(RouterError::InvalidArgument)?
+        } else {
+            resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight)
+                .await
+                .map_err(RouterError::InvalidArgument)?
+        };
         let rows = hits_to_local_vertex_ids(hits)?
             .into_iter()
             .map(|local_vertex_id| SeedRowWire {
