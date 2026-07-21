@@ -3770,9 +3770,17 @@ async fn execute_prepared_bulk_group(
         shards: token_shards,
     });
 
-    // If the mutation record was compacted inline, use the compacted row count for every item.
-    let compacted_row_count = client_mutation_key
-        .and_then(|key| store.router_mutation_completed_row_count(caller, graph_id, key));
+    // Pre-load the mutation record once per batch. The record is stable-written above and is
+    // immutable for the remainder of this ingress call, so each item can reuse its row_count
+    // and lifecycle phase without a separate stable read.
+    let mutation_record_snapshot =
+        client_mutation_key.and_then(|key| store.router_mutation_record(caller, graph_id, key));
+    let compacted_row_count = mutation_record_snapshot
+        .as_ref()
+        .and_then(|record| record.as_v1().completed_row_count);
+    let shared_phase = mutation_record_snapshot
+        .as_ref()
+        .map(|record| record.lifecycle_phase());
 
     #[cfg(feature = "batch-instr-log")]
     let result_materialize_start = crate::current_instruction_counter();
@@ -3783,13 +3791,8 @@ async fn execute_prepared_bulk_group(
         let result = GqlQueryResult {
             row_count,
             rows_blob: merged.rows_blob,
-            phase: None,
+            phase: shared_phase,
             token: token.clone(),
-        };
-        let result = if let Some(key) = client_mutation_key {
-            attach_mutation_phase(result, store, caller, graph_id, Some(key))
-        } else {
-            result
         };
         results.push(attach_mutation_token(result, token.clone()));
     }
