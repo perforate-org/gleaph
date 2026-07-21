@@ -822,19 +822,10 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
     if set.variables.len() == 1 {
         let var = &set.variables[0];
 
-        #[cfg(feature = "batch-instr-log")]
-        let lookup_start = crate::current_instruction_counter();
-
         let hits =
             resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight, metrics)
                 .await
                 .map_err(RouterError::InvalidArgument)?;
-
-        #[cfg(feature = "batch-instr-log")]
-        {
-            metrics.remote_index_await +=
-                crate::current_instruction_counter().saturating_sub(lookup_start);
-        }
 
         #[cfg(feature = "batch-instr-log")]
         let row_build_start = crate::current_instruction_counter();
@@ -864,9 +855,6 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
         }));
     }
 
-    #[cfg(feature = "batch-instr-log")]
-    let lookup_start = crate::current_instruction_counter();
-
     let mut variable_domains: Vec<(String, Vec<u32>)> = Vec::with_capacity(set.variables.len());
     for var in &set.variables {
         let hits =
@@ -882,12 +870,6 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
             }));
         }
         variable_domains.push((var.variable.clone(), ids));
-    }
-
-    #[cfg(feature = "batch-instr-log")]
-    {
-        metrics.remote_index_await +=
-            crate::current_instruction_counter().saturating_sub(lookup_start);
     }
 
     #[cfg(feature = "batch-instr-log")]
