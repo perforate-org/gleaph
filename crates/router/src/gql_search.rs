@@ -1158,6 +1158,7 @@ fn build_search_seeds(
             let wire = SeedBindingsWire {
                 entries: Vec::new(),
                 rows,
+                complete_prefix_rows: false,
             };
             (shard_id, wire)
         })
@@ -1372,6 +1373,7 @@ async fn dispatch_search_read_plan(
     let empty_seed_wire = SeedBindingsWire {
         entries: Vec::new(),
         rows: Vec::new(),
+        complete_prefix_rows: false,
     };
     let mut dispatched_any = false;
     for shard in shards {

@@ -1,7 +1,7 @@
 # Execution pipeline
 
-Last updated: 2026-07-04
-Anchor timestamp: 2026-07-04 01:39:31 UTC +0000
+Last updated: 2026-07-21
+Anchor timestamp: 2026-07-21 01:42:34 UTC +0000
 
 ## Purpose
 
@@ -43,6 +43,53 @@ flowchart LR
 ```
 
 `ExecutePlanArgs.resolved_search_blob` carries the Router-resolved non-leading `SEARCH` relation for the target shard. `QueryArena::reset()` at query start; thread-local pool reused across operators within one query.
+
+## Seed hydration and mutation read prefixes
+
+Current `SeedBindingsWire` hydration expands grouped entries into one-variable rows and complete row
+seeds into `PlanRow`s. It validates local existence, tombstones, and required labels. Seeded execution
+may then skip the supported leading scan/index anchor while retaining residual `PropertyFilter`
+operators.
+
+`SeedBindingsWire.complete_prefix_rows` (ADR 0046 Phase 1) signals that the supplied `rows` are
+complete for the entire read prefix. When set, Graph bypasses the read phase entirely and feeds the
+seed rows directly into the no-await canonical mutation segment. This is currently used for multi-
+variable leading prefixes on the bulk path: Router resolves each variable's equality anchors on the
+target shard, multiplies the per-variable candidate domains with checked arithmetic (bounded to 1024
+rows), and sends one complete row per Cartesian-product tuple. Empty domains are encoded as a zero-
+row complete-prefix relation and report zero matches without a separate Router short-circuit.
+
+A multi-variable prefix is only seeded when every anchored variable has at least one non-label
+equality anchor. Label-only or unsupported multi-variable prefixes still fall back to Graph-local
+execution. Single-variable parameter-dependent seeds continue to fall back to the sequential path;
+the implemented bulk group envelope would otherwise reuse the first item's dispatch.
+
+ADR 0046 defines the planned general pipeline:
+
+```mermaid
+flowchart LR
+    A[Bulk plan + item params] --> B[Deduplicated bounded index lookups]
+    B --> C[Per-item per-shard candidate domains]
+    C --> D[Graph hydrate local candidates]
+    D --> E[Bound-anchor canonical revalidation]
+    E --> F[Residual filters and joins]
+    F --> G[Bounded mutation seed rows]
+    G --> H[No-await canonical mutation segment]
+```
+
+The full design generates candidate domains before Graph dispatch and keeps Graph as the canonical
+match authority: a bound label scan checks the current label; a bound equality index scan reads the
+current canonical property locally; intersections validate every arm; and residual filters/joins run
+unchanged. Graph should produce independent-domain products lazily or in bounded chunks, using
+checked multiplication and proving the shared row/instruction bound. Exceeding a candidate, product,
+payload, consistency, or instruction bound never truncates the relation: execution uses an exact
+local fallback or rejects the broad mutation explicitly.
+
+An active declared constraint may choose a semantics-equivalent access path. A single-shard
+`ShardLocalGlobal` UNIQUE owner lookup can avoid both Property Index lookup and full scan; other
+strategies may narrow routing but do not remove Graph canonical revalidation. The full candidate-
+domain V2 envelope, bound-anchor revalidation, lazy/chunked products, cross-shard routing, bulk
+lookup deduplication, and constraint fast paths remain planned work.
 
 ## PlanRow
 
@@ -228,3 +275,4 @@ Hot scopes instrumented under `feature = "canbench"` (e.g. `hash_join_vertex_pro
 - [operators.md](operators.md)
 - [gql/plan-format.md](../gql/plan-format.md)
 - [federation/query-semantics.md](../federation/query-semantics.md)
+- [ADR 0046: multi-variable candidate seed relations](../adr/0046-multi-variable-candidate-seed-relations.md)

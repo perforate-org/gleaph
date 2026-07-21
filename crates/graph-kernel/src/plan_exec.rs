@@ -661,6 +661,12 @@ pub struct SeedRowWire {
 pub struct SeedBindingsWire {
     pub entries: Vec<SeedBindingEntry>,
     pub rows: Vec<SeedRowWire>,
+    /// When true, `rows` are complete for the entire read prefix and the Graph executor may skip
+    /// the whole prefix rather than only the leading index-anchor ops. Introduced for ADR 0046
+    /// Phase 1 multi-variable seed relations; `false` preserves the legacy `SEARCH`/single-variable
+    /// semantics. Missing field decodes as `false` for stable blobs encoded before this addition.
+    #[serde(default)]
+    pub complete_prefix_rows: bool,
 }
 
 /// One vertex hit inside a Router-resolved non-leading `SEARCH` relation (ADR 0034 Slice 5).
@@ -834,6 +840,7 @@ mod tests {
                     value: 1.5,
                 }],
             }],
+            complete_prefix_rows: false,
         };
         let seed_blob = Encode!(&seed).expect("seed encode");
         let args = ExecutePlanArgs {
@@ -1041,6 +1048,7 @@ mod tests {
                     value: 0.25,
                 }],
             }],
+            complete_prefix_rows: false,
         };
         let bytes = Encode!(&wire).expect("encode");
         let decoded: SeedBindingsWire = Decode!(&bytes, SeedBindingsWire).expect("decode");
@@ -1068,6 +1076,7 @@ mod tests {
                 ],
             }],
             rows: Vec::new(),
+            complete_prefix_rows: false,
         };
         let bytes = Encode!(&wire).expect("encode");
         let decoded: SeedBindingsWire = Decode!(&bytes, SeedBindingsWire).expect("decode");

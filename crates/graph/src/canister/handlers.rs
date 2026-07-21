@@ -1954,6 +1954,7 @@ mod tests {
                 local_edge_postings: Vec::new(),
             }],
             rows: Vec::new(),
+            complete_prefix_rows: false,
         };
         let seed_blob = Encode!(&seeds).expect("encode seeds");
         (plan_blob, seed_blob, local_vid)
@@ -2028,6 +2029,7 @@ mod tests {
                 local_edge_postings: Vec::new(),
             }],
             rows: Vec::new(),
+            complete_prefix_rows: false,
         };
         let seed_blob = Encode!(&seeds).expect("encode seeds");
         let params_blob = encode_gql_params_blob(vec![]).expect("encode params");

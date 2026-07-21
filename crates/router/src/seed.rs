@@ -88,11 +88,38 @@ impl IndexAnchor {
     }
 }
 
-/// One or more index/label anchors on the same variable for router seed routing.
+/// One or more index/label anchors for one variable in a multi-variable seed prefix.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SeedAnchorSet {
+pub struct VariableAnchor {
     pub variable: String,
     pub anchors: Vec<IndexAnchor>,
+}
+
+impl VariableAnchor {
+    pub fn routing_anchor(&self) -> IndexAnchor {
+        self.anchors
+            .first()
+            .expect("VariableAnchor has at least one anchor")
+            .clone()
+    }
+}
+
+/// One or more index/label anchors on the same variable for router seed routing.
+///
+/// ADR 0046 Phase 1: expanded to represent multiple independently anchored variables in the
+/// leading read prefix. Single-variable callers continue to use the first variable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeedAnchorSet {
+    pub variables: Vec<VariableAnchor>,
+}
+
+fn has_non_label_anchor(anchor: &VariableAnchor) -> bool {
+    anchor.anchors.iter().any(|a| {
+        !matches!(
+            a,
+            IndexAnchor::Label { .. } | IndexAnchor::LabelIntersection { .. }
+        )
+    })
 }
 
 impl SeedAnchorSet {
@@ -103,23 +130,40 @@ impl SeedAnchorSet {
         store: &RouterStore,
         stats: &RouterGraphStats,
     ) -> Result<Option<Self>, RouterError> {
+        let mut all: Vec<VariableAnchor> = Vec::new();
         for plan in plans {
-            if let Some(anchors) = parse_seed_anchor_prefix(&plan.ops, parameters, store, stats)? {
-                return Ok(Some(Self {
-                    variable: anchors[0].variable().to_string(),
-                    anchors,
-                }));
+            if let Some(prefix) =
+                parse_seed_anchor_prefix_multi(&plan.ops, parameters, store, stats)?
+            {
+                all.extend(prefix);
             }
         }
-        Ok(None)
+        if all.is_empty() {
+            return Ok(None);
+        }
+        // ADR 0046 Phase 1: a multi-variable prefix is only useful when every variable has at
+        // least one selective equality/index anchor. Label-only variables would explode the
+        // Cartesian product and provide no index path, so fall back to Graph-local execution.
+        if all.len() > 1 && !all.iter().all(has_non_label_anchor) {
+            return Ok(None);
+        }
+        Ok(Some(Self { variables: all }))
+    }
+
+    /// Variable of the first anchored variable (backward-compatible accessor).
+    #[cfg_attr(not(test), expect(dead_code, reason = "backward-compatible accessor"))]
+    pub fn variable(&self) -> &str {
+        self.variables[0].variable.as_str()
+    }
+
+    /// Anchors of the first anchored variable (backward-compatible accessor).
+    pub fn anchors(&self) -> &[IndexAnchor] {
+        &self.variables[0].anchors
     }
 
     /// Representative anchor for [`crate::federation::SeedRouting`].
     pub fn routing_anchor(&self) -> IndexAnchor {
-        self.anchors
-            .first()
-            .expect("SeedAnchorSet has at least one anchor")
-            .clone()
+        self.variables[0].routing_anchor()
     }
 }
 
@@ -258,7 +302,116 @@ fn variable_from_expr(expr: &Expr) -> Option<&str> {
 }
 
 /// Leading plan ops that establish index/label membership for one variable.
-pub(crate) fn parse_seed_anchor_prefix(
+/// Parse a leading read prefix into one `VariableAnchor` per independently anchored
+/// variable. Only contiguous leading anchor ops on distinct variables are extracted; the first
+/// non-anchor op or the first unsupported op stops parsing for that variable group.
+///
+/// ADR 0046 Phase 1: the implementation is intentionally conservative. Correlated predicates,
+/// optional bindings, and unsupported joins stop extraction so the caller falls back to Graph-local
+/// execution rather than emitting a partial or wrong seed relation.
+pub(crate) fn parse_seed_anchor_prefix_multi(
+    ops: &[PlanOp],
+    params: &BTreeMap<String, Value>,
+    store: &RouterStore,
+    stats: &RouterGraphStats,
+) -> Result<Option<Vec<VariableAnchor>>, RouterError> {
+    let mut variables: Vec<VariableAnchor> = Vec::new();
+    let mut i = 0usize;
+    while i < ops.len() {
+        // Try to extract the next variable's anchor prefix starting at `i`.
+        let prefix = parse_seed_anchor_prefix_single(&ops[i..], params, store, stats)?;
+        let Some(prefix) = prefix else {
+            break;
+        };
+        if prefix.is_empty() {
+            break;
+        }
+        let variable = prefix[0].variable().to_string();
+        // Reject duplicate variables in the prefix.
+        if variables.iter().any(|v| v.variable == variable) {
+            break;
+        }
+        // Advance by the number of ops consumed for this variable. We approximate by walking
+        // forward while ops still belong to the same variable or are skippable structural ops.
+        let consumed = consumed_anchor_ops(&ops[i..], &variable);
+        variables.push(VariableAnchor {
+            variable,
+            anchors: prefix,
+        });
+        i += consumed.max(1);
+    }
+    if variables.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(variables))
+    }
+}
+
+/// Count how many leading ops of `ops` were consumed by the anchor prefix for `variable`.
+/// Stops at the first op that either belongs to a different anchored variable or is not a
+/// seed-skippable structural op (`PropertyFilter` on the same variable).
+fn consumed_anchor_ops(ops: &[PlanOp], variable: &str) -> usize {
+    let mut i = 0usize;
+    while i < ops.len() {
+        match &ops[i] {
+            PlanOp::NodeScan {
+                label: Some(_),
+                variable: v,
+                ..
+            } if v.as_ref() == variable => i += 1,
+            PlanOp::IndexScan { variable: v, .. } if v.as_ref() == variable => i += 1,
+            PlanOp::IndexIntersection { variable: v, .. } if v.as_ref() == variable => i += 1,
+            PlanOp::EdgeIndexScan { variable: v, .. } if v.as_ref() == variable => {
+                // EdgeIndexScan is always the last anchor op for its variable.
+                return i
+                    + 1
+                    + usize::from(
+                        ops.get(i + 1)
+                            .is_some_and(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. })),
+                    );
+            }
+            PlanOp::PropertyFilter { predicates, .. } => {
+                // A PropertyFilter is part of the anchor prefix only when every predicate
+                // refers to the current variable and strengthens an existing anchor.
+                let all_same_var = predicates.iter().all(|pred| {
+                    anchor_from_property_predicate_target_variable(pred) == Some(variable)
+                });
+                if all_same_var {
+                    i += 1;
+                } else {
+                    return i;
+                }
+            }
+            _ => return i,
+        }
+    }
+    i
+}
+
+/// If the predicate is a supported seed anchor predicate, return the target variable name.
+fn anchor_from_property_predicate_target_variable(predicate: &Expr) -> Option<&str> {
+    match &predicate.kind {
+        ExprKind::IsLabeled {
+            expr,
+            label: LabelExpr::Name(_),
+            negated: false,
+        } => variable_from_expr(expr),
+        ExprKind::Compare {
+            left,
+            op: CmpOp::Eq,
+            ..
+        } => {
+            if let ExprKind::PropertyAccess { expr, .. } = &left.kind {
+                variable_from_expr(expr)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn parse_seed_anchor_prefix_single(
     ops: &[PlanOp],
     params: &BTreeMap<String, Value>,
     store: &RouterStore,
@@ -300,7 +453,6 @@ pub(crate) fn parse_seed_anchor_prefix(
                 ..
             } => {
                 if !record_bound_var(&mut bound_var, variable)? {
-                    multi_variable = true;
                     break;
                 }
                 push_unique_anchor(
@@ -317,7 +469,6 @@ pub(crate) fn parse_seed_anchor_prefix(
                 ..
             } if *cmp == CmpOp::Eq => {
                 if !record_bound_var(&mut bound_var, variable)? {
-                    multi_variable = true;
                     break;
                 }
                 push_unique_anchor(
@@ -329,7 +480,6 @@ pub(crate) fn parse_seed_anchor_prefix(
                 variable, scans, ..
             } if scans.len() >= 2 && scans.iter().all(|scan| scan.cmp == CmpOp::Eq) => {
                 if !record_bound_var(&mut bound_var, variable)? {
-                    multi_variable = true;
                     break;
                 }
                 let mut specs = Vec::with_capacity(scans.len());
@@ -361,7 +511,6 @@ pub(crate) fn parse_seed_anchor_prefix(
                 ..
             } => {
                 if !record_bound_var(&mut bound_var, variable)? {
-                    multi_variable = true;
                     break;
                 }
                 let edge_label = ops.get(i + 1).and_then(|next| match next {
@@ -387,10 +536,7 @@ pub(crate) fn parse_seed_anchor_prefix(
                 );
                 break;
             }
-            PlanOp::IndexScan { variable, .. } | PlanOp::IndexIntersection { variable, .. } => {
-                if !record_bound_var(&mut bound_var, variable)? {
-                    multi_variable = true;
-                }
+            PlanOp::IndexScan { .. } | PlanOp::IndexIntersection { .. } => {
                 break;
             }
             PlanOp::PropertyFilter { predicates, .. } => {
@@ -416,9 +562,6 @@ pub(crate) fn parse_seed_anchor_prefix(
             _ => break,
         }
         i += 1;
-    }
-    if multi_variable {
-        return Ok(None);
     }
     if anchors.is_empty() {
         Ok(None)
@@ -800,6 +943,7 @@ pub fn seeds_for_local_shard(
             local_edge_postings: Vec::new(),
         }],
         rows: Vec::new(),
+        complete_prefix_rows: false,
     };
     Some(Encode!(&wire).expect("SeedBindingsWire encode"))
 }
@@ -829,6 +973,7 @@ pub fn seeds_for_local_shard_edges(
             local_edge_postings: local_postings,
         }],
         rows: Vec::new(),
+        complete_prefix_rows: false,
     };
     Some(Encode!(&wire).expect("SeedBindingsWire encode"))
 }
@@ -1055,9 +1200,9 @@ mod tests {
         )
         .expect("anchors")
         .expect("compound anchors");
-        assert_eq!(set.variable, "n");
-        assert_eq!(set.anchors.len(), 2);
-        assert!(set.anchors.iter().any(|anchor| {
+        assert_eq!(set.variable(), "n");
+        assert_eq!(set.anchors().len(), 2);
+        assert!(set.anchors().iter().any(|anchor| {
             matches!(
                 anchor,
                 IndexAnchor::Label {
@@ -1067,7 +1212,7 @@ mod tests {
             )
         }));
         assert!(
-            set.anchors
+            set.anchors()
                 .iter()
                 .any(|anchor| matches!(anchor, IndexAnchor::Equal(_)))
         );

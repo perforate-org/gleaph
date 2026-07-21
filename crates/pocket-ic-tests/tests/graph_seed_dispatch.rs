@@ -49,6 +49,7 @@ fn graph_execute_plan_query_skips_index_scan_with_seed_bindings() {
             local_edge_postings: Vec::new(),
         }],
         rows: Vec::new(),
+        complete_prefix_rows: false,
     };
     let seed_blob = Encode!(&seeds).expect("encode seeds");
 

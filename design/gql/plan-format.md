@@ -1,7 +1,7 @@
 # Physical plan format
 
-Last updated: 2026-07-13
-Anchor timestamp: 2026-07-13 08:38:44 UTC +0000
+Last updated: 2026-07-21
+Anchor timestamp: 2026-07-21 01:42:34 UTC +0000
 
 ## Purpose
 
@@ -50,12 +50,49 @@ See [execution/operators.md](../execution/operators.md) for the full list. Group
 
 ## Router seed contract
 
-When router supplies `seed_bindings_blob`:
+`ExecutePlanArgs.seed_bindings_blob` is an opaque Router-to-Graph relation transport. Three
+contracts must be distinguished.
 
-- Graph **skips** the first anchor `IndexScan` for that variable.
-- Binds listed **local** `VertexId`s on the target shard only.
+**Current implemented contract:**
 
-Plan must be written so remaining ops are valid given seeded rows (planner + router `SeedProbe` agree on property/value).
+- grouped `entries` bind local vertex/edge hits for one anchor variable;
+- complete `rows` bind row-shaped relations used by supported leading `SEARCH` lowering;
+- Graph hydrates existence/tombstone state and required labels, skips supported leading anchor
+  operators, and executes the remaining read prefix; and
+- `SeedAnchorSet` does not emit a partial seed when the supported leading prefix binds more than one
+  variable. Such a plan executes without that Router seed or uses the current sequential fallback.
+
+**ADR 0046 Phase 1 contract (implemented):**
+
+- `SeedBindingsWire.complete_prefix_rows: bool` marks the `rows` as complete for the entire read
+  prefix. When set, Graph bypasses the read phase and feeds the rows directly to the canonical
+  mutation segment.
+- The bulk path detects a multi-variable leading prefix, resolves per-item per-shard candidate domains,
+  materializes a bounded Cartesian product (currently ≤1024 rows) into complete `SeedRowWire` rows,
+  and sets `complete_prefix_rows: true`.
+- Multi-variable seeding requires every anchored variable to have at least one non-label equality
+  anchor; otherwise the prefix falls back to Graph-local execution.
+- Empty domains produce a zero-row complete-prefix relation, so the item reports zero matches without
+  a separate Router short-circuit.
+
+**Planned ADR 0046 full contract:**
+
+- a versioned V2 seed relation carries one bounded candidate domain per independently anchored
+  variable and is attached per bulk item, not copied from the first item's parameters;
+- Router deduplicates identical lookup keys across a homogeneous bulk group but persists the exact
+  per-item relation for deterministic replay;
+- candidate domains are not complete authoritative match rows and do not enumerate an unbounded
+  Cartesian product on the wire;
+- Graph evaluates bound `NodeScan` / equality `IndexScan` / `IndexIntersection` semantics against
+  current local labels and canonical properties instead of simply deleting those predicates;
+- residual filters and joins retain ordinary physical-plan semantics; and
+- checked candidate, product, encoded-payload, and instruction bounds fail closed without
+  truncation.
+
+The physical plan remains the single source of predicate/join semantics. Gleaph-specific seed
+lowering must not add shard, canister, constraint, or Property Index concepts to the generic planner.
+Declared constraints may select an equivalent Router/Graph integration fast path, but observed data
+uniqueness is not a plan contract.
 
 ## NEXT / YIELD binding contract
 
@@ -239,3 +276,4 @@ Violations → `PlanQueryError` at execution time.
 - [layers.md](layers.md)
 - [execution/pipeline.md](../execution/pipeline.md)
 - [execution/operators.md](../execution/operators.md)
+- [ADR 0046: multi-variable candidate seed relations](../adr/0046-multi-variable-candidate-seed-relations.md)

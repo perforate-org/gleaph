@@ -22,8 +22,8 @@ use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanResult,
     GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire,
     MutationId, MutationJournalState, MutationToken, MutationTokenShard, ReadMode,
-    ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire, ShardEventSeq,
-    UniqueClaimDispatch,
+    ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire, SeedBindingsWire, SeedRowWire,
+    SeedVertexBinding, ShardEventSeq, UniqueClaimDispatch,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 use ic_cdk::api::msg_caller;
@@ -637,7 +637,7 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
     }
 }
 
-async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
+pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     index: &I,
     anchors: &[IndexAnchor],
     shard_ids: &[ShardId],
@@ -677,6 +677,112 @@ async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
         }
         SeedHits::Edges(_) => Err("edge anchor cannot combine with additional anchors".into()),
     }
+}
+
+/// Maximum Cartesian-product rows materialized for a multi-variable seed relation (ADR 0046
+/// Phase 1). Bounded to keep Router memory, wire size, and Graph instruction spend modest.
+const MAX_MULTI_VARIABLE_SEED_ROWS: usize = 1024;
+
+/// Resolve a multi-variable [`SeedAnchorSet`] into a complete-row seed relation for one target
+/// shard. Each variable's anchors are intersected on the shard; the per-variable candidate
+/// domains are multiplied up to [`MAX_MULTI_VARIABLE_SEED_ROWS`].
+pub(crate) async fn resolve_multi_variable_seed_rows<I: IndexLookup + ?Sized>(
+    index: &I,
+    plans: &[PhysicalPlan],
+    pmap: &BTreeMap<String, gleaph_gql::Value>,
+    store: &RouterStore,
+    stats: &RouterGraphStats,
+    shard_id: ShardId,
+    preflight: Option<&PreflightContext>,
+) -> Result<Option<SeedBindingsWire>, RouterError> {
+    let set = match SeedAnchorSet::from_plans(plans, pmap, store, stats)? {
+        Some(set) if set.variables.len() > 1 => set,
+        _ => return Ok(None),
+    };
+
+    let mut variable_domains: Vec<(String, Vec<u32>)> = Vec::with_capacity(set.variables.len());
+    for var in &set.variables {
+        let hits = resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight)
+            .await
+            .map_err(RouterError::InvalidArgument)?;
+        let ids = hits_to_local_vertex_ids(hits)?;
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        variable_domains.push((var.variable.clone(), ids));
+    }
+
+    let product = bounded_cartesian_product(variable_domains, MAX_MULTI_VARIABLE_SEED_ROWS)
+        .map_err(RouterError::InvalidArgument)?;
+
+    let rows = product
+        .into_iter()
+        .map(|row| SeedRowWire {
+            vertex_bindings: row
+                .into_iter()
+                .map(|(variable, local_vertex_id)| SeedVertexBinding {
+                    variable,
+                    local_vertex_id,
+                    required_vertex_label_ids: Vec::new(),
+                })
+                .collect(),
+            float64_bindings: Vec::new(),
+        })
+        .collect();
+
+    Ok(Some(SeedBindingsWire {
+        entries: Vec::new(),
+        rows,
+        complete_prefix_rows: true,
+    }))
+}
+
+fn hits_to_local_vertex_ids(hits: SeedHits) -> Result<Vec<u32>, RouterError> {
+    match hits {
+        SeedHits::Vertices(hits) => Ok(hits.into_iter().map(|h| h.vertex_id).collect()),
+        SeedHits::Edges(_) => Err(RouterError::InvalidArgument(
+            "edge anchor not supported in multi-variable seed relation".into(),
+        )),
+    }
+}
+
+fn bounded_cartesian_product(
+    domains: Vec<(String, Vec<u32>)>,
+    max_rows: usize,
+) -> Result<Vec<Vec<(String, u32)>>, String> {
+    if domains.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut total: usize = 1;
+    for (_, domain) in &domains {
+        total = total
+            .checked_mul(domain.len())
+            .ok_or_else(|| "multi-variable seed product size overflow".to_string())?;
+        if total > max_rows {
+            return Err(format!(
+                "multi-variable seed product exceeds {} rows",
+                max_rows
+            ));
+        }
+    }
+    let mut product: Vec<Vec<(String, u32)>> = vec![Vec::new()];
+    for (var, domain) in domains {
+        let mut next = Vec::with_capacity(
+            product
+                .len()
+                .checked_mul(domain.len())
+                .ok_or_else(|| "multi-variable seed product size overflow".to_string())?,
+        );
+        for partial in &product {
+            for &id in &domain {
+                let mut row = partial.clone();
+                row.push((var.clone(), id));
+                next.push(row);
+            }
+        }
+        product = next;
+    }
+    Ok(product)
 }
 
 async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
@@ -2179,7 +2285,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
             Some(set) => {
                 let hits = match resolve_seed_hits_from_anchors(
                     index,
-                    &set.anchors,
+                    set.anchors(),
                     &shard_ids,
                     preflight,
                 )
@@ -2668,7 +2774,11 @@ fn plan_requires_per_item_seed_bindings(
     let stats = graph_stats_for(graph_id);
     Ok(
         match SeedAnchorSet::from_plans(plans, _pmap, store, &stats)? {
-            Some(set) => !set.anchors.is_empty(),
+            // ADR 0046 Phase 1: multi-variable seeds are resolved per item inside the bulk path,
+            // so grouping remains allowed. Single-variable seeded plans still fall back to the
+            // sequential path because they share the first item's dispatch envelope.
+            Some(set) if set.variables.len() > 1 => false,
+            Some(set) => !set.anchors().is_empty(),
             None => false,
         },
     )
@@ -3161,7 +3271,9 @@ async fn execute_prepared_bulk_group(
         item_params.push((extra.params.clone(), extra.pmap.clone()));
     }
 
-    let build_execute_args = |dispatch: &crate::federation::ShardDispatch, params_blob: &[u8]| {
+    let build_execute_args = |dispatch: &crate::federation::ShardDispatch,
+                              params_blob: &[u8],
+                              seed_bindings_blob: Option<Vec<u8>>| {
         gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
             target_shard_id: dispatch.shard_id,
             element_id_encoding_key,
@@ -3169,7 +3281,7 @@ async fn execute_prepared_bulk_group(
             plan_blob: base.plan_blob.clone(),
             params_blob: params_blob.to_vec(),
             mode,
-            seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
+            seed_bindings_blob,
             resolved_labels: Some(base.resolved_labels.clone()),
             resolved_properties: Some(base.resolved_properties.clone()),
             indexed_properties: Some(base.indexed_properties.clone()),
@@ -3182,8 +3294,66 @@ async fn execute_prepared_bulk_group(
         }
     };
 
+    // ADR 0046 Phase 1: detect multi-variable seed prefixes so each bulk item can resolve its own
+    // candidate domain. Single-variable prefixes continue to reuse the first item's dispatch envelope.
+    let stats = graph_stats_for(graph_id);
+    let is_multi_variable_seed = match SeedAnchorSet::from_plans(&plans, &base.pmap, store, &stats)?
+    {
+        Some(set) => set.variables.len() > 1,
+        None => false,
+    };
+    let multi_variable_index = if is_multi_variable_seed {
+        let shards = store.list_live_shards_for_graph_id(graph_id)?;
+        Some(
+            RouterIndexLookup::from_shards(graph_id, &shards)
+                .map_err(RouterError::InvalidArgument)?,
+        )
+    } else {
+        None
+    };
+
     #[cfg(feature = "batch-instr-log")]
     let graph_call_start = crate::current_instruction_counter();
+
+    // Pre-resolve multi-variable seed blobs before spawning async blocks. The index lookup
+    // futures are not Send, so we cannot await them inside the BoxFuture dispatched below.
+    let multi_variable_seeds: Vec<Vec<Option<Vec<u8>>>> =
+        if let Some(ref index) = multi_variable_index {
+            let mut seeds = vec![vec![None; base.dispatches.len()]; item_count];
+            for (item_index, (_, pmap)) in item_params.iter().enumerate() {
+                for (dispatch_index, dispatch) in base.dispatches.iter().enumerate() {
+                    let resolved = resolve_multi_variable_seed_rows(
+                        index,
+                        &plans,
+                        pmap,
+                        store,
+                        &stats,
+                        dispatch.shard_id,
+                        preflight,
+                    )
+                    .await?;
+                    let wire = resolved.unwrap_or_else(|| SeedBindingsWire {
+                        entries: Vec::new(),
+                        rows: Vec::new(),
+                        complete_prefix_rows: true,
+                    });
+                    seeds[item_index][dispatch_index] =
+                        Some(Encode!(&wire).expect("encode multi-variable seed bindings"));
+                }
+            }
+            seeds
+        } else {
+            Vec::new()
+        };
+
+    // Map each dispatch to its index in `base.dispatches` so per-item pre-resolved seeds can be
+    // looked up inside the Send futures.
+    let dispatch_global_index: std::collections::BTreeMap<(Principal, ShardId), usize> = base
+        .dispatches
+        .iter()
+        .enumerate()
+        .map(|(i, d)| ((d.graph_canister, d.shard_id), i))
+        .collect();
 
     let dispatch_groups = group_dispatches_by_graph(base.dispatches.clone());
 
@@ -3198,6 +3368,8 @@ async fn execute_prepared_bulk_group(
 
     for group in dispatch_groups {
         let item_params = item_params.clone();
+        let multi_variable_seeds = multi_variable_seeds.clone();
+        let dispatch_global_index = dispatch_global_index.clone();
         group_futures.push(Box::pin(async move {
             let group_graph = group[0].graph_canister;
             let mut results: Vec<ItemDispatchResult> = Vec::new();
@@ -3208,7 +3380,16 @@ async fn execute_prepared_bulk_group(
 
             for (item_index, (params_blob, _)) in item_params.iter().enumerate() {
                 for (dispatch_index, dispatch) in group.iter().enumerate() {
-                    operations.push(build_execute_args(dispatch, params_blob));
+                    let seed_blob = if is_multi_variable_seed {
+                        let global_index = dispatch_global_index
+                            .get(&(group_graph, dispatch.shard_id))
+                            .copied()
+                            .expect("dispatch must exist in base.dispatches");
+                        multi_variable_seeds[item_index][global_index].clone()
+                    } else {
+                        dispatch.seed_bindings_blob.clone()
+                    };
+                    operations.push(build_execute_args(dispatch, params_blob, seed_blob));
                     index_map.push((item_index, dispatch_index));
                 }
             }
@@ -5143,12 +5324,12 @@ mod tests {
         )
         .expect("anchors")
         .expect("compound anchors");
-        assert_eq!(set.anchors.len(), 2);
+        assert_eq!(set.anchors().len(), 2);
 
         let fake = compound_seed_fake_index();
         let hits = futures::executor::block_on(super::resolve_seed_hits_from_anchors(
             &fake,
-            &set.anchors,
+            set.anchors(),
             &[ShardId::new(0), ShardId::new(1)],
             None,
         ))
@@ -6044,7 +6225,7 @@ mod tests {
     }
 
     #[test]
-    fn wave_4_multi_anchor_seed_returns_none() {
+    fn wave_4_multi_anchor_seed_extracts_two_variables() {
         use crate::gql::build_router_block_plan;
         use crate::planner_stats::RouterGraphStats;
         use gleaph_gql::type_check::NoSchema;
@@ -6094,16 +6275,22 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(1));
         params.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(2));
-        assert!(
-            SeedAnchorSet::from_plans(
-                std::slice::from_ref(&plan_indexed),
-                &params,
-                &store,
-                &stats_indexed,
-            )
-            .expect("parse anchors")
-            .is_none(),
-            "multi-variable indexed plan must not produce a single seed anchor"
+        let indexed_set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&plan_indexed),
+            &params,
+            &store,
+            &stats_indexed,
+        )
+        .expect("parse anchors")
+        .expect("multi-variable indexed plan must produce seed anchors");
+        assert_eq!(
+            indexed_set
+                .variables
+                .iter()
+                .map(|v| v.variable.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"],
+            "indexed demo_id should anchor both a and b"
         );
 
         // The bulk-group guard must therefore allow grouping for this shape.
@@ -6118,5 +6305,37 @@ mod tests {
             !bulk_guard,
             "wave 4 plan should not require per-item seed bindings"
         );
+    }
+
+    #[test]
+    fn bounded_cartesian_product_computes_variable_bindings_and_enforces_limit() {
+        let domains = vec![
+            ("a".to_string(), vec![1u32, 2, 3]),
+            ("b".to_string(), vec![10u32, 20]),
+        ];
+        let product = super::bounded_cartesian_product(domains, 1024).expect("product");
+        assert_eq!(product.len(), 6);
+        let mut keys: Vec<String> = product
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|(v, id)| format!("{}={}", v, id))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "a=1,b=10", "a=1,b=20", "a=2,b=10", "a=2,b=20", "a=3,b=10", "a=3,b=20",
+            ]
+        );
+
+        let big = vec![
+            ("a".to_string(), vec![1u32; 100]),
+            ("b".to_string(), vec![1u32; 100]),
+        ];
+        assert!(super::bounded_cartesian_product(big, 1024).is_err());
     }
 }

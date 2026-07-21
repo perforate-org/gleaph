@@ -1093,10 +1093,11 @@ async fn run_wire_plans_inner(
     // the mutation's `Acquire` ordinals (which occupy `0..unique_claims.len()`).
     let mut next_unique_release_ordinal = execution.unique_claims.len() as u32;
 
-    let (mut seed_rows, mut skip_index) = if let Some(ref s) = seeds {
-        seed_initial_rows(store, s)?
+    let (mut seed_rows, mut skip_index, mut complete_prefix_rows) = if let Some(ref s) = seeds {
+        let (rows, skip) = seed_initial_rows(store, s)?;
+        (rows, skip, s.complete_prefix_rows)
     } else {
-        (Vec::new(), false)
+        (Vec::new(), false, false)
     };
     // Tracks whether the router's seed relation has not yet been consumed by the first read plan.
     // This lets an explicitly empty seed relation (zero rows) still drive the first read plan
@@ -1108,13 +1109,18 @@ async fn run_wire_plans_inner(
         if plan_needs_mutation_executor(plan) {
             // ADR 0029: read phase (with index) binds matched variables; consumes the router's
             // leading-anchor seed rows once, just like a read-only plan would.
-            let router_seed = (skip_index && !seed_rows.is_empty())
-                .then(|| (std::mem::take(&mut seed_rows), true));
+            // ADR 0046 Phase 1: when the router supplied complete rows for the entire read prefix,
+            // skip the read phase entirely and use the seed rows as mutation inputs.
             let _phase_r0 = current_instruction_counter();
-            let mutation_seed_rows =
+            let mutation_seed_rows = if complete_prefix_rows {
+                seed_rows.iter().map(seeded_mutation_row).collect()
+            } else {
+                let router_seed = (skip_index && !seed_rows.is_empty())
+                    .then(|| (std::mem::take(&mut seed_rows), true));
                 read_phase_seed_rows(store, plan, parameters, index, &execution, router_seed)
                     .await?
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+            };
             let _phase_r1 = current_instruction_counter();
             log_wire_phase(
                 "run_wire_plans_inner",
@@ -1152,6 +1158,7 @@ async fn run_wire_plans_inner(
             );
             skip_index = false;
             seed_rows.clear();
+            complete_prefix_rows = false;
             seeds_remaining = false;
         } else {
             // Seeds apply to the first read plan that consumes them; `mem::take` consumes them once.
@@ -2355,6 +2362,7 @@ mod tests {
                 local_edge_postings: Vec::new(),
             }],
             rows: Vec::new(),
+            complete_prefix_rows: false,
         };
         let params = BTreeMap::new();
 
@@ -2421,6 +2429,7 @@ mod tests {
                 local_edge_postings: Vec::new(),
             }],
             rows: Vec::new(),
+            complete_prefix_rows: false,
         };
         let params = BTreeMap::new();
 
@@ -2507,6 +2516,7 @@ mod tests {
                     value: 1.25,
                 }],
             }],
+            complete_prefix_rows: false,
         };
         let params = BTreeMap::new();
 
@@ -2617,6 +2627,7 @@ mod tests {
                     }],
                 },
             ],
+            complete_prefix_rows: false,
         };
         let params = BTreeMap::new();
 
@@ -2729,6 +2740,7 @@ mod tests {
                     }],
                 },
             ],
+            complete_prefix_rows: false,
         };
         let params = BTreeMap::new();
 
@@ -3615,5 +3627,83 @@ mod wave_4_regression_tests {
             Some(1),
         ));
         result.expect("wire wave 4 shape must bind a and b");
+    }
+
+    #[test]
+    fn wave_4_regression_complete_row_seed_skips_read_prefix() {
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use gleaph_gql_planner::wire::encode_block_plans;
+        use gleaph_graph_kernel::plan_exec::{SeedBindingsWire, SeedRowWire, SeedVertexBinding};
+        use std::collections::BTreeMap;
+
+        let store = GraphStore::new();
+
+        // Create the two endpoint posts directly so we know their local vertex ids.
+        let a_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(4284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post a");
+        let b_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post b");
+
+        let mut p = BTreeMap::new();
+        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let plan = build_block_plan_with_schema(block, None, &NoSchema).unwrap();
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![
+                    SeedVertexBinding {
+                        variable: "a".into(),
+                        local_vertex_id: u32::try_from(u64::from(a_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                    SeedVertexBinding {
+                        variable: "b".into(),
+                        local_vertex_id: u32::try_from(u64::from(b_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                ],
+                float64_bindings: Vec::new(),
+            }],
+            complete_prefix_rows: true,
+        };
+
+        let result = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &p,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            Some(1),
+        ));
+        result.expect("complete row seed must insert REPLY_TO edge");
     }
 }
