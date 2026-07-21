@@ -398,7 +398,7 @@ impl PreflightContext {
         #[cfg(feature = "batch-instr-log")]
         let remote_start = crate::current_instruction_counter();
 
-        let hits = lookup_anchor_hits(index, anchor, &[shard_id]).await?;
+        let hits = lookup_anchor_hits(index, anchor, &[shard_id], metrics).await?;
 
         #[cfg(feature = "batch-instr-log")]
         {
@@ -661,8 +661,12 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
     shard_ids: &[ShardId],
+    metrics: &mut SeedResolutionMetrics,
 ) -> Result<SeedHits, String> {
-    match anchor {
+    #[cfg(feature = "batch-instr-log")]
+    let remote_start = crate::current_instruction_counter();
+
+    let result: Result<SeedHits, String> = match anchor {
         IndexAnchor::Equal(SeedProbe {
             property_id,
             payload_bytes,
@@ -713,7 +717,15 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
                     .await?,
             ))
         }
+    };
+
+    #[cfg(feature = "batch-instr-log")]
+    {
+        metrics.remote_index_await +=
+            crate::current_instruction_counter().saturating_sub(remote_start);
     }
+
+    result
 }
 
 pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
@@ -730,15 +742,8 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     let first = if let Some(ctx) = preflight {
         resolve_anchor_hits_for_shards(ctx, index, &anchors[0], shard_ids, metrics).await?
     } else {
-        #[cfg(feature = "batch-instr-log")]
-        let remote_start = crate::current_instruction_counter();
-        let hits = lookup_anchor_hits(index, &anchors[0], shard_ids).await?;
-        #[cfg(feature = "batch-instr-log")]
-        {
-            metrics.remote_index_await +=
-                crate::current_instruction_counter().saturating_sub(remote_start);
-        }
-        hits
+        let mut _lookup_metrics = SeedResolutionMetrics::default();
+        lookup_anchor_hits(index, &anchors[0], shard_ids, &mut _lookup_metrics).await?
     };
 
     if first.is_empty() {
@@ -753,15 +758,8 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
                 let hits = if let Some(ctx) = preflight {
                     resolve_anchor_hits_for_shards(ctx, index, anchor, shard_ids, metrics).await?
                 } else {
-                    #[cfg(feature = "batch-instr-log")]
-                    let remote_start = crate::current_instruction_counter();
-                    let hits = lookup_anchor_hits(index, anchor, shard_ids).await?;
-                    #[cfg(feature = "batch-instr-log")]
-                    {
-                        metrics.remote_index_await +=
-                            crate::current_instruction_counter().saturating_sub(remote_start);
-                    }
-                    hits
+                    let mut _lookup_metrics = SeedResolutionMetrics::default();
+                    lookup_anchor_hits(index, anchor, shard_ids, &mut _lookup_metrics).await?
                 };
 
                 #[cfg(feature = "batch-instr-log")]
@@ -1050,7 +1048,8 @@ async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
 ) -> Result<SeedHits, String> {
-    lookup_anchor_hits(index, anchor, &[]).await
+    let mut _metrics = SeedResolutionMetrics::default();
+    lookup_anchor_hits(index, anchor, &[], &mut _metrics).await
 }
 
 async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
