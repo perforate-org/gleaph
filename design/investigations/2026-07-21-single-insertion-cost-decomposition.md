@@ -89,7 +89,12 @@ stable key.
 per-item cost (~2.84M) is roughly **340× larger** than the estimated Graph
 per-item cost (~8.2K). The bulk path is already efficient at the Graph layer.
 
-The remaining cost is Router-side fixed per-call work, especially:
+The remaining Router cost is dominated by **per-item seed resolution and
+dispatch** inside the ingress call. From one default-size measurement we cannot
+yet separate fixed-per-call and marginal-per-item components; the labels below
+are therefore diagnostic, not a fitted cost model.
+
+The largest diagnostic intervals are:
 
 1. **dispatch total** (~1.1G per call) — inter-canister call serialization,
    Candid encoding/decoding, and Router-side dispatch bookkeeping.
@@ -106,23 +111,26 @@ attack Router-side per-call overhead instead.
 
 Candidate directions:
 
-1. **Increase effective batch size up to the message-size limit.**
-   - Current dynamic page sizing targets ~500 KiB Candid text.
-   - 2 MiB inter-canister limit leaves headroom; larger batches would amortize
-     the 1.1G dispatch and 8.3M envelope fixed costs over more items.
-   - Requires measuring actual message bytes and instruction budget headroom.
+1. **Batch equality index lookups for complete-row seeds (Plan 0102).**
+   - Current path resolves each item's anchor through graph-index
+     `lookup_equal_page` inside the Router ingress call.
+   - With ~450 items per batch this yields ~450 index calls.
+   - graph-index already exposes `lookup_equal_batch`; deduplicate anchors and
+     map results back to item ordinals.
+   - Directly targets the largest diagnostic interval.
 
-2. **Shared typed Graph bulk envelope.**
-   - Send plan blob, catalog, and resolved labels once per batch instead of
-     per item or duplicated per call.
-   - Targets the 8.3M envelope and 1.1G dispatch overhead directly.
+2. **Increase effective batch size up to the message-size limit.**
+   - Larger batches would amortize fixed dispatch/serialization work over more
+     items, but only after seed resolution is batched.
 
-3. **Optimize Router idempotency/replay bookkeeping.**
-   - The 6.5M replay cost suggests redundant journal lookups or cache misses.
+3. **Shared typed Graph bulk envelope.**
+   - Send plan blob, catalog, and resolved labels once per batch.
+   - Targets request-build cost if it remains item-proportional after Plan 0102.
 
 Decision threshold: a candidate must explain ≥10% of the end-to-end singleton
-cost (≥~280K instructions/POST) or ≥500K instructions/POST. All three
-Router-side candidates above potentially meet this threshold.
+cost (≥~280K instructions/POST) or ≥500K instructions/POST. Plan 0102 is the
+first candidate because it reuses an existing index API and preserves the
+Router's ownership of seed resolution.
 
 ## Remaining uncertainty
 
