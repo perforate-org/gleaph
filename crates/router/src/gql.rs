@@ -3122,16 +3122,7 @@ async fn execute_prepared_mutation(
     );
 
     #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "post_dispatch",
-        crate::current_instruction_counter().saturating_sub(post_dispatch_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_dispatch_phase(
-        "dispatch_total",
-        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
-    );
+    let result_regroup_merge_start = crate::current_instruction_counter();
 
     for (dispatch, result) in dispatch_results {
         let result =
@@ -3264,15 +3255,65 @@ async fn execute_prepared_mutation(
         reconcile_unique_releases(store, graph_id, mutation_id, &unique_release_targets).await;
     }
 
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "result_regroup_merge",
+        crate::current_instruction_counter().saturating_sub(result_regroup_merge_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let hot_vertex_finalize_start = crate::current_instruction_counter();
+
+    if let Some(mutation_id) = mutation_id
+        && !unique_claims.is_empty()
+    {
+        #[cfg(feature = "pocket-ic-e2e")]
+        crate::test_fault::maybe_trap_before_confirm();
+
+        confirm_unique_reservations(
+            store,
+            graph_id,
+            mutation_id,
+            &unique_claims,
+            &unique_proof_targets,
+        )
+        .await;
+    }
+
+    if let Some(mutation_id) = mutation_id
+        && !constrained_properties.is_empty()
+    {
+        reconcile_unique_releases(store, graph_id, mutation_id, &unique_release_targets).await;
+    }
+
     if let FederatedMergeMode::Aggregate(spec) = &merge_mode {
         apply_federated_aggregate_having(&mut merged, spec, &pmap)
             .map_err(RouterError::InvalidArgument)?;
     }
 
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "hot_vertex_finalize",
+        crate::current_instruction_counter().saturating_sub(hot_vertex_finalize_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let projection_advance_start = crate::current_instruction_counter();
+
+    // No additional projection work here for non-bulk; token was built during the loop.
     let token = mutation_id.map(|mutation_id| MutationToken {
         mutation_id,
         shards: token_shards,
     });
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "projection_advance",
+        crate::current_instruction_counter().saturating_sub(projection_advance_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let router_journal_update_start = crate::current_instruction_counter();
 
     if let Some(key) = client_mutation_key
         && let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key)
@@ -3291,11 +3332,14 @@ async fn execute_prepared_mutation(
 
     #[cfg(feature = "batch-instr-log")]
     log_router_dispatch_phase(
-        "dispatch_total",
-        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
+        "router_journal_update",
+        crate::current_instruction_counter().saturating_sub(router_journal_update_start),
     );
 
-    Ok(attach_mutation_token(
+    #[cfg(feature = "batch-instr-log")]
+    let result_materialize_start = crate::current_instruction_counter();
+
+    let result = attach_mutation_token(
         attach_mutation_phase(
             GqlQueryResult::from_merged(&merged),
             store,
@@ -3304,7 +3348,27 @@ async fn execute_prepared_mutation(
             client_mutation_key,
         ),
         token,
-    ))
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "result_materialize",
+        crate::current_instruction_counter().saturating_sub(result_materialize_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "post_dispatch",
+        crate::current_instruction_counter().saturating_sub(post_dispatch_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "dispatch_total",
+        crate::current_instruction_counter().saturating_sub(graph_request_build_start),
+    );
+
+    Ok(result)
 }
 
 /// Execute a prepared bulk group (ADR 0044). All items share `base.plan_blob`, labels, properties,
