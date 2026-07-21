@@ -3642,6 +3642,15 @@ async fn execute_prepared_bulk_group(
         item_merged.push(merged);
     }
 
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "result_regroup_merge",
+        crate::current_instruction_counter().saturating_sub(post_dispatch_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let shard_aggregate_start = crate::current_instruction_counter();
+
     // Per-shard aggregation: total row count and hot vertices across all items on that shard.
     struct ShardAggregate {
         graph_canister: Principal,
@@ -3678,44 +3687,83 @@ async fn execute_prepared_bulk_group(
         }
     }
 
-    // Finalize hot vertices, advance projection, and record shard outcomes once per shard.
-    let mut token_shards: Vec<MutationTokenShard> = Vec::new();
-    for (shard_id, aggregate) in shard_aggregates {
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "shard_aggregate",
+        crate::current_instruction_counter().saturating_sub(shard_aggregate_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let hot_vertex_finalize_start = crate::current_instruction_counter();
+
+    // Finalize hot vertices once per shard.
+    for (shard_id, aggregate) in &shard_aggregates {
         if !aggregate.hot_forward_vertices.is_empty() {
             crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
                 aggregate.graph_canister,
-                shard_id,
+                *shard_id,
                 &plans,
                 &aggregate.hot_forward_vertices,
             )
             .await?;
         }
+    }
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "hot_vertex_finalize",
+        crate::current_instruction_counter().saturating_sub(hot_vertex_finalize_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let projection_advance_start = crate::current_instruction_counter();
+
+    let mut token_shards: Vec<MutationTokenShard> = Vec::new();
+    for (shard_id, aggregate) in &shard_aggregates {
         let entry = advance_mutation_label_stats_projection(
             store,
             graph_id,
             aggregate.graph_canister,
-            shard_id,
+            *shard_id,
             mutation_id,
             preflight,
         )
         .await?;
         token_shards.push(MutationTokenShard {
-            shard_id,
+            shard_id: *shard_id,
             label_stats_seq: entry.emitted_delta_last_seq(),
         });
+    }
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "projection_advance",
+        crate::current_instruction_counter().saturating_sub(projection_advance_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let router_journal_update_start = crate::current_instruction_counter();
+
+    for (shard_id, aggregate) in &shard_aggregates {
         if let Some(key) = client_mutation_key {
             store.record_router_mutation_shard_completed(
                 caller,
                 graph_id,
                 key,
-                shard_id,
+                *shard_id,
                 aggregate.row_count,
             )?;
             store.record_router_mutation_shard_projection_advanced(
-                caller, graph_id, key, shard_id,
+                caller, graph_id, key, *shard_id,
             )?;
         }
     }
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "router_journal_update",
+        crate::current_instruction_counter().saturating_sub(router_journal_update_start),
+    );
 
     let token = Some(MutationToken {
         mutation_id,
@@ -3725,6 +3773,9 @@ async fn execute_prepared_bulk_group(
     // If the mutation record was compacted inline, use the compacted row count for every item.
     let compacted_row_count = client_mutation_key
         .and_then(|key| store.router_mutation_completed_row_count(caller, graph_id, key));
+
+    #[cfg(feature = "batch-instr-log")]
+    let result_materialize_start = crate::current_instruction_counter();
 
     let mut results = Vec::with_capacity(item_count);
     for merged in item_merged {
@@ -3742,6 +3793,12 @@ async fn execute_prepared_bulk_group(
         };
         results.push(attach_mutation_token(result, token.clone()));
     }
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_dispatch_phase(
+        "result_materialize",
+        crate::current_instruction_counter().saturating_sub(result_materialize_start),
+    );
 
     #[cfg(feature = "batch-instr-log")]
     log_router_dispatch_phase(
