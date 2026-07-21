@@ -117,11 +117,13 @@ fn schedule(delay: core::time::Duration) -> ic_cdk_timers::TimerId {
 }
 
 #[cfg(target_family = "wasm")]
+#[allow(dead_code)]
 async fn on_tick_migratory() {
     ic_cdk::futures::spawn_migratory(on_tick());
 }
 
 #[cfg(target_family = "wasm")]
+#[allow(dead_code)]
 fn schedule_migratory(delay: core::time::Duration) -> ic_cdk_timers::TimerId {
     ic_cdk_timers::set_timer(delay, on_tick_migratory())
 }

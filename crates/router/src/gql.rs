@@ -681,12 +681,14 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
 
 /// Maximum Cartesian-product rows materialized for a multi-variable seed relation (ADR 0046
 /// Phase 1). Bounded to keep Router memory, wire size, and Graph instruction spend modest.
-const MAX_MULTI_VARIABLE_SEED_ROWS: usize = 1024;
+const MAX_COMPLETE_ROW_SEED_ROWS: usize = 1024;
 
-/// Resolve a multi-variable [`SeedAnchorSet`] into a complete-row seed relation for one target
-/// shard. Each variable's anchors are intersected on the shard; the per-variable candidate
-/// domains are multiplied up to [`MAX_MULTI_VARIABLE_SEED_ROWS`].
-pub(crate) async fn resolve_multi_variable_seed_rows<I: IndexLookup + ?Sized>(
+/// Resolve a selective [`SeedAnchorSet`] into a complete-row seed relation for one target
+/// shard. Single-variable seeds produce one row per local vertex id; multi-variable seeds
+/// intersect each variable's anchors on the shard and multiply the per-variable candidate
+/// domains up to [`MAX_COMPLETE_ROW_SEED_ROWS`]. Empty domains are represented as a complete
+/// empty row set so Graph can skip the read prefix while preserving the item ordinal.
+pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
     index: &I,
     plans: &[PhysicalPlan],
     pmap: &BTreeMap<String, gleaph_gql::Value>,
@@ -696,9 +698,32 @@ pub(crate) async fn resolve_multi_variable_seed_rows<I: IndexLookup + ?Sized>(
     preflight: Option<&PreflightContext>,
 ) -> Result<Option<SeedBindingsWire>, RouterError> {
     let set = match SeedAnchorSet::from_plans(plans, pmap, store, stats)? {
-        Some(set) if set.variables.len() > 1 => set,
+        Some(set) if set.is_selective_complete_row_seed() => set,
         _ => return Ok(None),
     };
+
+    if set.variables.len() == 1 {
+        let var = &set.variables[0];
+        let hits = resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight)
+            .await
+            .map_err(RouterError::InvalidArgument)?;
+        let rows = hits_to_local_vertex_ids(hits)?
+            .into_iter()
+            .map(|local_vertex_id| SeedRowWire {
+                vertex_bindings: vec![SeedVertexBinding {
+                    variable: var.variable.clone(),
+                    local_vertex_id,
+                    required_vertex_label_ids: Vec::new(),
+                }],
+                float64_bindings: Vec::new(),
+            })
+            .collect();
+        return Ok(Some(SeedBindingsWire {
+            entries: Vec::new(),
+            rows,
+            complete_prefix_rows: true,
+        }));
+    }
 
     let mut variable_domains: Vec<(String, Vec<u32>)> = Vec::with_capacity(set.variables.len());
     for var in &set.variables {
@@ -707,12 +732,16 @@ pub(crate) async fn resolve_multi_variable_seed_rows<I: IndexLookup + ?Sized>(
             .map_err(RouterError::InvalidArgument)?;
         let ids = hits_to_local_vertex_ids(hits)?;
         if ids.is_empty() {
-            return Ok(None);
+            return Ok(Some(SeedBindingsWire {
+                entries: Vec::new(),
+                rows: Vec::new(),
+                complete_prefix_rows: true,
+            }));
         }
         variable_domains.push((var.variable.clone(), ids));
     }
 
-    let product = bounded_cartesian_product(variable_domains, MAX_MULTI_VARIABLE_SEED_ROWS)
+    let product = bounded_cartesian_product(variable_domains, MAX_COMPLETE_ROW_SEED_ROWS)
         .map_err(RouterError::InvalidArgument)?;
 
     let rows = product
@@ -2767,18 +2796,17 @@ pub(crate) async fn execute_bulk_group(
 /// Bulk grouping cannot share one dispatch envelope across such items.
 fn plan_requires_per_item_seed_bindings(
     plans: &[PhysicalPlan],
-    _pmap: &BTreeMap<String, gleaph_gql::Value>,
+    pmap: &BTreeMap<String, gleaph_gql::Value>,
     graph_id: GraphId,
     store: &RouterStore,
 ) -> Result<bool, RouterError> {
     let stats = graph_stats_for(graph_id);
     Ok(
-        match SeedAnchorSet::from_plans(plans, _pmap, store, &stats)? {
-            // ADR 0046 Phase 1: multi-variable seeds are resolved per item inside the bulk path,
-            // so grouping remains allowed. Single-variable seeded plans still fall back to the
-            // sequential path because they share the first item's dispatch envelope.
-            Some(set) if set.variables.len() > 1 => false,
-            Some(set) => !set.anchors().is_empty(),
+        match SeedAnchorSet::from_plans(plans, pmap, store, &stats)? {
+            // ADR 0046 Phase 1: complete-row seeds (single- or multi-variable selective
+            // equality/index anchors) are resolved per item inside the bulk path, so grouping
+            // remains allowed. Unsupported seeded plans fall back to the sequential path.
+            Some(set) => !set.is_selective_complete_row_seed(),
             None => false,
         },
     )
@@ -3294,15 +3322,15 @@ async fn execute_prepared_bulk_group(
         }
     };
 
-    // ADR 0046 Phase 1: detect multi-variable seed prefixes so each bulk item can resolve its own
-    // candidate domain. Single-variable prefixes continue to reuse the first item's dispatch envelope.
+    // ADR 0046 Phase 1: detect complete-row seed prefixes (single- or multi-variable
+    // selective equality/index anchors) so each bulk item can resolve its own candidate domain.
+    // Unsupported prefixes reuse the first item's dispatch envelope and fall back to scalar
+    // execution upstream.
     let stats = graph_stats_for(graph_id);
-    let is_multi_variable_seed = match SeedAnchorSet::from_plans(&plans, &base.pmap, store, &stats)?
-    {
-        Some(set) => set.variables.len() > 1,
-        None => false,
-    };
-    let multi_variable_index = if is_multi_variable_seed {
+    let complete_row_anchor_set = SeedAnchorSet::from_plans(&plans, &base.pmap, store, &stats)?
+        .filter(|set| set.is_selective_complete_row_seed());
+    let is_complete_row_seed = complete_row_anchor_set.is_some();
+    let complete_row_index = if is_complete_row_seed {
         let shards = store.list_live_shards_for_graph_id(graph_id)?;
         Some(
             RouterIndexLookup::from_shards(graph_id, &shards)
@@ -3315,36 +3343,36 @@ async fn execute_prepared_bulk_group(
     #[cfg(feature = "batch-instr-log")]
     let graph_call_start = crate::current_instruction_counter();
 
-    // Pre-resolve multi-variable seed blobs before spawning async blocks. The index lookup
+    // Pre-resolve complete-row seed blobs before spawning async blocks. The index lookup
     // futures are not Send, so we cannot await them inside the BoxFuture dispatched below.
-    let multi_variable_seeds: Vec<Vec<Option<Vec<u8>>>> =
-        if let Some(ref index) = multi_variable_index {
-            let mut seeds = vec![vec![None; base.dispatches.len()]; item_count];
-            for (item_index, (_, pmap)) in item_params.iter().enumerate() {
-                for (dispatch_index, dispatch) in base.dispatches.iter().enumerate() {
-                    let resolved = resolve_multi_variable_seed_rows(
-                        index,
-                        &plans,
-                        pmap,
-                        store,
-                        &stats,
-                        dispatch.shard_id,
-                        preflight,
-                    )
-                    .await?;
-                    let wire = resolved.unwrap_or_else(|| SeedBindingsWire {
-                        entries: Vec::new(),
-                        rows: Vec::new(),
-                        complete_prefix_rows: true,
-                    });
-                    seeds[item_index][dispatch_index] =
-                        Some(Encode!(&wire).expect("encode multi-variable seed bindings"));
-                }
+    let complete_row_seeds: Vec<Vec<Option<Vec<u8>>>> = if let Some(ref index) = complete_row_index
+    {
+        let mut seeds = vec![vec![None; base.dispatches.len()]; item_count];
+        for (item_index, (_, pmap)) in item_params.iter().enumerate() {
+            for (dispatch_index, dispatch) in base.dispatches.iter().enumerate() {
+                let resolved = resolve_complete_row_seed_rows(
+                    index,
+                    &plans,
+                    pmap,
+                    store,
+                    &stats,
+                    dispatch.shard_id,
+                    preflight,
+                )
+                .await?;
+                let wire = resolved.unwrap_or_else(|| SeedBindingsWire {
+                    entries: Vec::new(),
+                    rows: Vec::new(),
+                    complete_prefix_rows: true,
+                });
+                seeds[item_index][dispatch_index] =
+                    Some(Encode!(&wire).expect("encode complete-row seed bindings"));
             }
-            seeds
-        } else {
-            Vec::new()
-        };
+        }
+        seeds
+    } else {
+        Vec::new()
+    };
 
     // Map each dispatch to its index in `base.dispatches` so per-item pre-resolved seeds can be
     // looked up inside the Send futures.
@@ -3368,7 +3396,7 @@ async fn execute_prepared_bulk_group(
 
     for group in dispatch_groups {
         let item_params = item_params.clone();
-        let multi_variable_seeds = multi_variable_seeds.clone();
+        let complete_row_seeds = complete_row_seeds.clone();
         let dispatch_global_index = dispatch_global_index.clone();
         group_futures.push(Box::pin(async move {
             let group_graph = group[0].graph_canister;
@@ -3380,12 +3408,12 @@ async fn execute_prepared_bulk_group(
 
             for (item_index, (params_blob, _)) in item_params.iter().enumerate() {
                 for (dispatch_index, dispatch) in group.iter().enumerate() {
-                    let seed_blob = if is_multi_variable_seed {
+                    let seed_blob = if is_complete_row_seed {
                         let global_index = dispatch_global_index
                             .get(&(group_graph, dispatch.shard_id))
                             .copied()
                             .expect("dispatch must exist in base.dispatches");
-                        multi_variable_seeds[item_index][global_index].clone()
+                        complete_row_seeds[item_index][global_index].clone()
                     } else {
                         dispatch.seed_bindings_blob.clone()
                     };
@@ -6304,6 +6332,115 @@ mod tests {
         assert!(
             !bulk_guard,
             "wave 4 plan should not require per-item seed bindings"
+        );
+    }
+
+    #[test]
+    fn single_variable_bulk_seed_admits_selective_anchor() {
+        use crate::gql::build_router_block_plan;
+        use crate::planner_stats::RouterGraphStats;
+        use gleaph_gql::type_check::NoSchema;
+        use std::collections::BTreeMap;
+
+        let store = store_with_one_shard();
+        let graph_id = tenant_main_graph_id();
+        let admin = Principal::from_slice(&[1; 29]);
+        store
+            .admin_intern_vertex_label(admin, "tenant.main", "User")
+            .expect("intern User");
+        store
+            .admin_intern_property(admin, "tenant.main", "user_id")
+            .expect("intern user_id");
+        store
+            .admin_intern_property(admin, "tenant.main", "demo_graph")
+            .expect("intern demo_graph");
+
+        let gql = "MATCH (a:User {user_id: $a_user_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'p'}]->(b:Post {demo_id: $b_demo_id})";
+        let program = parser::parse(gql).expect("parse");
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+
+        let stats_indexed = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["user_id"]);
+        let plan_indexed =
+            build_router_block_plan(block, &NoSchema, &stats_indexed).expect("plan indexed");
+
+        let mut params = BTreeMap::new();
+        params.insert("$a_user_id".to_string(), gleaph_gql::Value::Uint64(1));
+        params.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(100));
+        let indexed_set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&plan_indexed),
+            &params,
+            &store,
+            &stats_indexed,
+        )
+        .expect("parse anchors")
+        .expect("single-variable indexed plan must produce seed anchor");
+        assert_eq!(
+            indexed_set
+                .variables
+                .iter()
+                .map(|v| v.variable.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a"],
+            "indexed user_id should anchor variable a"
+        );
+        assert!(
+            indexed_set.is_selective_complete_row_seed(),
+            "single-variable equality anchor is a selective complete-row seed"
+        );
+
+        // The bulk-group guard must allow grouping for this shape.
+        let bulk_guard = super::plan_requires_per_item_seed_bindings(
+            std::slice::from_ref(&plan_indexed),
+            &params,
+            graph_id,
+            &store,
+        )
+        .expect("guard check");
+        assert!(
+            !bulk_guard,
+            "single-variable selective anchor should not require per-item seed bindings"
+        );
+
+        // Label-only single-variable plans must still fall back to scalar execution.
+        let label_only_gql = "MATCH (a:User) RETURN a NEXT INSERT (a)-[:POSTED]->(b:Post)";
+        let label_only_program = parser::parse(label_only_gql).expect("parse label only");
+        let label_only_block = label_only_program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let label_only_plan = build_router_block_plan(label_only_block, &NoSchema, &stats_indexed)
+            .expect("plan label only");
+        let label_only_set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&label_only_plan),
+            &BTreeMap::new(),
+            &store,
+            &stats_indexed,
+        )
+        .expect("parse anchors")
+        .expect("label-only plan produces a label anchor");
+        assert!(
+            !label_only_set.is_selective_complete_row_seed(),
+            "label-only anchor is not a selective complete-row seed"
+        );
+        let label_only_guard = super::plan_requires_per_item_seed_bindings(
+            std::slice::from_ref(&label_only_plan),
+            &BTreeMap::new(),
+            graph_id,
+            &store,
+        )
+        .expect("guard check");
+        assert!(
+            label_only_guard,
+            "label-only single-variable plan must fall back to scalar execution"
         );
     }
 

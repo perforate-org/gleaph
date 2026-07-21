@@ -187,15 +187,13 @@ Inside one `gql_execute_idempotent_batch` call:
    Graph journal cursor ensures that a retry of the same group resumes from
    the correct operation.
 
-The implemented bulk path currently admits only groups whose dispatch envelope can be shared safely.
-Parameterized index anchors require item-specific seed bindings and therefore fall back to the
-sequential path when detected. A leading prefix that binds several independently indexed variables
-currently produces no partial Router seed, so Graph executes the complete read prefix instead.
-
-ADR 0046 defines the planned generalization. The Router will continue to plan once per homogeneous
-group, but it will resolve candidate domains per item, deduplicate identical lookup keys across the
-group, and attach the exact item-specific relation to each `ExecutePlanArgs`. The first item's seed
-must never be copied to later parameter sets.
+The implemented bulk path admits homogeneous groups whose dispatch envelope can be shared
+safely. Parameterized index anchors that resolve to selective equality or index predicates are now
+handled through the ADR 0046 complete-row seed path: the Router resolves per-item candidate domains
+and attaches the exact item-specific `SeedBindingsWire` relation to each `ExecutePlanArgs`. The
+first item's seed is never copied to later parameter sets. Unsupported shapes (label-only anchors,
+edge anchors, correlated/optional seeds, and constrained mutations) fall back to the existing
+sequential path.
 
 Because one bulk `MutationId` may then contain different seed relations for each operation, the
 current one-blob-per-shard `RouterMutationShard` representation is insufficient. The ADR 0046 path
@@ -274,8 +272,8 @@ objects whose semantics will evolve as bulk behavior matures.
 - The public Candid API and per-mutation result ordering are unchanged.
 - Single-mutation callers continue to use one `MutationId` per mutation.
 - Stable value types are versioned, protecting future canister upgrades.
-- Parameter-dependent multi-variable groups remain outside the optimized path until ADR 0046's
-  per-item immutable seed envelope and Graph canonical-revalidation contract are implemented.
+- Selective single-variable and multi-variable anchored groups use the ADR 0046 complete-row
+  seed path; unsupported shapes fall back to the sequential path.
 
 ## Trade-offs
 

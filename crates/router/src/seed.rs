@@ -165,6 +165,18 @@ impl SeedAnchorSet {
     pub fn routing_anchor(&self) -> IndexAnchor {
         self.variables[0].routing_anchor()
     }
+
+    /// Returns true when every anchored variable has at least one selective equality/index
+    /// anchor (`Equal` or `Intersection`). Label-only, edge, and unsupported anchors are
+    /// rejected so the caller can fall back to Graph-local scalar execution.
+    pub fn is_selective_complete_row_seed(&self) -> bool {
+        !self.variables.is_empty()
+            && self.variables.iter().all(|var| {
+                var.anchors
+                    .iter()
+                    .any(|a| matches!(a, IndexAnchor::Equal(_) | IndexAnchor::Intersection { .. }))
+            })
+    }
 }
 
 /// Equality `IndexScan` anchor (one property lookup via `lookup_equal`).

@@ -315,9 +315,10 @@ derived projection.
 ## Implementation and validation status
 
 This ADR remains **Proposed** for the full candidate-domain/V2 design. **Phase 1** of the multi-
-variable bulk path is implemented as of 2026-07-21 UTC.
+variable bulk path is implemented as of 2026-07-21 UTC, and a **Phase 1 extension** for selective
+single-variable anchored mutations was implemented the same day.
 
-Phase 1 implementation:
+Phase 1 implementation (multi-variable):
 
 - `SeedAnchorSet` parses multiple independently anchored variables from the leading read prefix.
 - Multi-variable prefixes require every anchored variable to have at least one non-label equality
@@ -329,6 +330,18 @@ Phase 1 implementation:
   the canonical mutation segment.
 - Empty domains produce a durable zero-row complete-prefix relation, so the item reports zero
   matches without requiring a separate Router short-circuit.
+
+Phase 1 extension (single-variable):
+
+- The same complete-row mechanism applies to a single anchored variable whose seed can be resolved
+  from at least one selective non-label equality/index anchor (`IndexScan` equality or
+  `IndexIntersection`).
+- Label-only, edge, correlated, optional, and uniqueness-constrained single-variable mutations
+  remain fail-closed on the existing scalar fallback.
+- Per-item parameter binding resolves independently for every bulk item and target shard; the first
+  item's seed is never reused for later items.
+- Zero-hit items retain their response position through an empty complete-prefix row set, with no
+  per-item journal entry.
 
 Phase 1 deliberately does **not** implement:
 
