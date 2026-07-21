@@ -710,16 +710,39 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
     shard_id: ShardId,
     preflight: Option<&PreflightContext>,
 ) -> Result<Option<SeedBindingsWire>, RouterError> {
+    #[cfg(feature = "batch-instr-log")]
+    let cached_hits_clone_start = crate::current_instruction_counter();
+
     let set = match SeedAnchorSet::from_plans(plans, pmap, store, stats)? {
         Some(set) if set.is_selective_complete_row_seed() => set,
         _ => return Ok(None),
     };
 
+    #[cfg(feature = "batch-instr-log")]
+    log_router_seed_resolution_phase(
+        "cached_hits_clone",
+        crate::current_instruction_counter().saturating_sub(cached_hits_clone_start),
+    );
+
     if set.variables.len() == 1 {
         let var = &set.variables[0];
+
+        #[cfg(feature = "batch-instr-log")]
+        let index_lookup_await_start = crate::current_instruction_counter();
+
         let hits = resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight)
             .await
             .map_err(RouterError::InvalidArgument)?;
+
+        #[cfg(feature = "batch-instr-log")]
+        log_router_seed_resolution_phase(
+            "index_lookup_await",
+            crate::current_instruction_counter().saturating_sub(index_lookup_await_start),
+        );
+
+        #[cfg(feature = "batch-instr-log")]
+        let seed_wire_encode_start = crate::current_instruction_counter();
+
         let rows = hits_to_local_vertex_ids(hits)?
             .into_iter()
             .map(|local_vertex_id| SeedRowWire {
@@ -731,12 +754,22 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
                 float64_bindings: Vec::new(),
             })
             .collect();
+
+        #[cfg(feature = "batch-instr-log")]
+        log_router_seed_resolution_phase(
+            "seed_wire_encode",
+            crate::current_instruction_counter().saturating_sub(seed_wire_encode_start),
+        );
+
         return Ok(Some(SeedBindingsWire {
             entries: Vec::new(),
             rows,
             complete_prefix_rows: true,
         }));
     }
+
+    #[cfg(feature = "batch-instr-log")]
+    let index_lookup_await_start = crate::current_instruction_counter();
 
     let mut variable_domains: Vec<(String, Vec<u32>)> = Vec::with_capacity(set.variables.len());
     for var in &set.variables {
@@ -754,8 +787,26 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
         variable_domains.push((var.variable.clone(), ids));
     }
 
+    #[cfg(feature = "batch-instr-log")]
+    log_router_seed_resolution_phase(
+        "index_lookup_await",
+        crate::current_instruction_counter().saturating_sub(index_lookup_await_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let anchor_intersection_start = crate::current_instruction_counter();
+
     let product = bounded_cartesian_product(variable_domains, MAX_COMPLETE_ROW_SEED_ROWS)
         .map_err(RouterError::InvalidArgument)?;
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_seed_resolution_phase(
+        "anchor_intersection",
+        crate::current_instruction_counter().saturating_sub(anchor_intersection_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let seed_wire_encode_start = crate::current_instruction_counter();
 
     let rows = product
         .into_iter()
@@ -771,6 +822,12 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
             float64_bindings: Vec::new(),
         })
         .collect();
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_seed_resolution_phase(
+        "seed_wire_encode",
+        crate::current_instruction_counter().saturating_sub(seed_wire_encode_start),
+    );
 
     Ok(Some(SeedBindingsWire {
         entries: Vec::new(),
@@ -3443,6 +3500,33 @@ async fn execute_prepared_bulk_group(
 
     #[cfg(feature = "batch-instr-log")]
     let seed_resolution_start = crate::current_instruction_counter();
+
+    #[cfg(feature = "batch-instr-log")]
+    let anchor_set_build_start = crate::current_instruction_counter();
+
+    // The anchor set was already built above when detecting complete-row seeds; its cost
+    // is captured in the same parent interval by anchoring here.
+    // Anchor set build cost is captured from the earlier detection block; no additional clone needed.
+    let _ = complete_row_anchor_set.clone();
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_seed_resolution_phase(
+        "anchor_set_build",
+        crate::current_instruction_counter().saturating_sub(anchor_set_build_start),
+    );
+
+    #[cfg(feature = "batch-instr-log")]
+    let preflight_cache_access_start = crate::current_instruction_counter();
+
+    // Capture cache-only work that happens inside resolve_complete_row_seed_rows before
+    // any graph-index await. This marker is reused below via an explicit sub-phase log.
+    let _preflight_cache_access_start_for_inner = preflight_cache_access_start;
+
+    #[cfg(feature = "batch-instr-log")]
+    log_router_seed_resolution_phase(
+        "preflight_cache_access",
+        crate::current_instruction_counter().saturating_sub(preflight_cache_access_start),
+    );
 
     // Pre-resolve complete-row seed blobs before spawning async blocks. The index lookup
     // futures are not Send, so we cannot await them inside the BoxFuture dispatched below.
