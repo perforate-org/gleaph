@@ -41,18 +41,56 @@ fn log_router_dispatch_phase(phase: &str, cost: u64) {
 #[inline]
 fn log_router_dispatch_phase(_phase: &str, _cost: u64) {}
 
+// Per-phase summaries are emitted once per bulk group by log_router_seed_resolution_summary.
+
 #[cfg(feature = "batch-instr-log")]
-fn log_router_seed_resolution_phase(phase: &str, cost: u64) {
-    crate::instr_log::push(format!(
-        "GLEAPH_ROUTER_SEED_RESOLUTION phase={} cost={}",
-        phase, cost
-    ));
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) struct SeedResolutionMetrics {
+    admission_setup: u64,
+    per_item_anchor_set: u64,
+    cache_lookup_clone: u64,
+    remote_index_await: u64,
+    anchor_intersection: u64,
+    seed_row_build: u64,
+    candid_encode: u64,
+    item_count: u64,
+    dispatch_count: u64,
+    cache_hits: u64,
+    cache_misses: u64,
 }
 
 #[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
-#[inline]
-fn log_router_seed_resolution_phase(_phase: &str, _cost: u64) {}
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) struct SeedResolutionMetrics;
+
+#[cfg(feature = "batch-instr-log")]
+fn log_router_seed_resolution_summary(total: u64, metrics: &SeedResolutionMetrics) {
+    let explicit = metrics
+        .admission_setup
+        .saturating_add(metrics.per_item_anchor_set)
+        .saturating_add(metrics.cache_lookup_clone)
+        .saturating_add(metrics.remote_index_await)
+        .saturating_add(metrics.anchor_intersection)
+        .saturating_add(metrics.seed_row_build)
+        .saturating_add(metrics.candid_encode);
+    let loop_bookkeeping = total.saturating_sub(explicit);
+    crate::instr_log::push(format!(
+        "GLEAPH_ROUTER_SEED_RESOLUTION phase=seed_resolution total={} admission_setup={} per_item_anchor_set={} cache_lookup_clone={} remote_index_await={} anchor_intersection={} seed_row_build={} candid_encode={} loop_bookkeeping={} items={} dispatches={} cache_hits={} cache_misses={}",
+        total,
+        metrics.admission_setup,
+        metrics.per_item_anchor_set,
+        metrics.cache_lookup_clone,
+        metrics.remote_index_await,
+        metrics.anchor_intersection,
+        metrics.seed_row_build,
+        metrics.candid_encode,
+        loop_bookkeeping,
+        metrics.item_count,
+        metrics.dispatch_count,
+        metrics.cache_hits,
+        metrics.cache_misses,
+    ));
+}
 
 #[cfg(feature = "batch-instr-log")]
 fn log_router_preflight(kind: &str, cost: u64) {
@@ -331,13 +369,22 @@ impl PreflightContext {
         index: &I,
         anchor: &IndexAnchor,
         shard_id: ShardId,
+        metrics: &mut SeedResolutionMetrics,
     ) -> Result<SeedHits, String> {
         let key = (anchor.clone(), shard_id);
         {
             let cache = self.anchor_hits.borrow();
             if let Some(hits) = cache.get(&key) {
+                #[cfg(feature = "batch-instr-log")]
+                {
+                    metrics.cache_hits += 1;
+                }
                 return Ok(hits.clone());
             }
+        }
+        #[cfg(feature = "batch-instr-log")]
+        {
+            metrics.cache_misses += 1;
         }
         let hits = lookup_anchor_hits(index, anchor, &[shard_id]).await?;
         self.anchor_hits.borrow_mut().insert(key, hits.clone());
@@ -655,15 +702,27 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     anchors: &[IndexAnchor],
     shard_ids: &[ShardId],
     preflight: Option<&PreflightContext>,
+    metrics: &mut SeedResolutionMetrics,
 ) -> Result<SeedHits, String> {
     if anchors.is_empty() {
         return Ok(SeedHits::Vertices(Vec::new()));
     }
+
+    #[cfg(feature = "batch-instr-log")]
+    let first_start = crate::current_instruction_counter();
+
     let first = if let Some(ctx) = preflight {
-        resolve_anchor_hits_for_shards(ctx, index, &anchors[0], shard_ids).await?
+        resolve_anchor_hits_for_shards(ctx, index, &anchors[0], shard_ids, metrics).await?
     } else {
         lookup_anchor_hits(index, &anchors[0], shard_ids).await?
     };
+
+    #[cfg(feature = "batch-instr-log")]
+    {
+        metrics.remote_index_await +=
+            crate::current_instruction_counter().saturating_sub(first_start);
+    }
+
     if first.is_empty() {
         return Ok(first);
     }
@@ -673,15 +732,35 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     match first {
         SeedHits::Vertices(mut accumulated) => {
             for anchor in &anchors[1..] {
+                #[cfg(feature = "batch-instr-log")]
+                let next_start = crate::current_instruction_counter();
+
                 let hits = if let Some(ctx) = preflight {
-                    resolve_anchor_hits_for_shards(ctx, index, anchor, shard_ids).await?
+                    resolve_anchor_hits_for_shards(ctx, index, anchor, shard_ids, metrics).await?
                 } else {
                     lookup_anchor_hits(index, anchor, shard_ids).await?
                 };
+
+                #[cfg(feature = "batch-instr-log")]
+                {
+                    metrics.remote_index_await +=
+                        crate::current_instruction_counter().saturating_sub(next_start);
+                }
+
+                #[cfg(feature = "batch-instr-log")]
+                let intersect_start = crate::current_instruction_counter();
+
                 let SeedHits::Vertices(hits) = hits else {
                     return Err("mixed vertex and edge anchors in seed prefix".into());
                 };
                 accumulated = intersect_posting_hits(vec![accumulated, hits]);
+
+                #[cfg(feature = "batch-instr-log")]
+                {
+                    metrics.anchor_intersection +=
+                        crate::current_instruction_counter().saturating_sub(intersect_start);
+                }
+
                 if accumulated.is_empty() {
                     return Ok(SeedHits::Vertices(Vec::new()));
                 }
@@ -709,9 +788,10 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
     stats: &RouterGraphStats,
     shard_id: ShardId,
     preflight: Option<&PreflightContext>,
+    metrics: &mut SeedResolutionMetrics,
 ) -> Result<Option<SeedBindingsWire>, RouterError> {
     #[cfg(feature = "batch-instr-log")]
-    let cached_hits_clone_start = crate::current_instruction_counter();
+    let anchor_set_start = crate::current_instruction_counter();
 
     let set = match SeedAnchorSet::from_plans(plans, pmap, store, stats)? {
         Some(set) if set.is_selective_complete_row_seed() => set,
@@ -719,29 +799,30 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
     };
 
     #[cfg(feature = "batch-instr-log")]
-    log_router_seed_resolution_phase(
-        "cached_hits_clone",
-        crate::current_instruction_counter().saturating_sub(cached_hits_clone_start),
-    );
+    {
+        metrics.per_item_anchor_set +=
+            crate::current_instruction_counter().saturating_sub(anchor_set_start);
+    }
 
     if set.variables.len() == 1 {
         let var = &set.variables[0];
 
         #[cfg(feature = "batch-instr-log")]
-        let index_lookup_await_start = crate::current_instruction_counter();
+        let lookup_start = crate::current_instruction_counter();
 
-        let hits = resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight)
-            .await
-            .map_err(RouterError::InvalidArgument)?;
-
-        #[cfg(feature = "batch-instr-log")]
-        log_router_seed_resolution_phase(
-            "index_lookup_await",
-            crate::current_instruction_counter().saturating_sub(index_lookup_await_start),
-        );
+        let hits =
+            resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight, metrics)
+                .await
+                .map_err(RouterError::InvalidArgument)?;
 
         #[cfg(feature = "batch-instr-log")]
-        let seed_wire_encode_start = crate::current_instruction_counter();
+        {
+            metrics.remote_index_await +=
+                crate::current_instruction_counter().saturating_sub(lookup_start);
+        }
+
+        #[cfg(feature = "batch-instr-log")]
+        let row_build_start = crate::current_instruction_counter();
 
         let rows = hits_to_local_vertex_ids(hits)?
             .into_iter()
@@ -756,10 +837,10 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
             .collect();
 
         #[cfg(feature = "batch-instr-log")]
-        log_router_seed_resolution_phase(
-            "seed_wire_encode",
-            crate::current_instruction_counter().saturating_sub(seed_wire_encode_start),
-        );
+        {
+            metrics.seed_row_build +=
+                crate::current_instruction_counter().saturating_sub(row_build_start);
+        }
 
         return Ok(Some(SeedBindingsWire {
             entries: Vec::new(),
@@ -769,13 +850,14 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
     }
 
     #[cfg(feature = "batch-instr-log")]
-    let index_lookup_await_start = crate::current_instruction_counter();
+    let lookup_start = crate::current_instruction_counter();
 
     let mut variable_domains: Vec<(String, Vec<u32>)> = Vec::with_capacity(set.variables.len());
     for var in &set.variables {
-        let hits = resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight)
-            .await
-            .map_err(RouterError::InvalidArgument)?;
+        let hits =
+            resolve_seed_hits_from_anchors(index, &var.anchors, &[shard_id], preflight, metrics)
+                .await
+                .map_err(RouterError::InvalidArgument)?;
         let ids = hits_to_local_vertex_ids(hits)?;
         if ids.is_empty() {
             return Ok(Some(SeedBindingsWire {
@@ -788,25 +870,25 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
     }
 
     #[cfg(feature = "batch-instr-log")]
-    log_router_seed_resolution_phase(
-        "index_lookup_await",
-        crate::current_instruction_counter().saturating_sub(index_lookup_await_start),
-    );
+    {
+        metrics.remote_index_await +=
+            crate::current_instruction_counter().saturating_sub(lookup_start);
+    }
 
     #[cfg(feature = "batch-instr-log")]
-    let anchor_intersection_start = crate::current_instruction_counter();
+    let intersection_start = crate::current_instruction_counter();
 
     let product = bounded_cartesian_product(variable_domains, MAX_COMPLETE_ROW_SEED_ROWS)
         .map_err(RouterError::InvalidArgument)?;
 
     #[cfg(feature = "batch-instr-log")]
-    log_router_seed_resolution_phase(
-        "anchor_intersection",
-        crate::current_instruction_counter().saturating_sub(anchor_intersection_start),
-    );
+    {
+        metrics.anchor_intersection +=
+            crate::current_instruction_counter().saturating_sub(intersection_start);
+    }
 
     #[cfg(feature = "batch-instr-log")]
-    let seed_wire_encode_start = crate::current_instruction_counter();
+    let row_build_start = crate::current_instruction_counter();
 
     let rows = product
         .into_iter()
@@ -824,10 +906,10 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
         .collect();
 
     #[cfg(feature = "batch-instr-log")]
-    log_router_seed_resolution_phase(
-        "seed_wire_encode",
-        crate::current_instruction_counter().saturating_sub(seed_wire_encode_start),
-    );
+    {
+        metrics.seed_row_build +=
+            crate::current_instruction_counter().saturating_sub(row_build_start);
+    }
 
     Ok(Some(SeedBindingsWire {
         entries: Vec::new(),
@@ -889,6 +971,7 @@ async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
     shard_ids: &[ShardId],
+    metrics: &mut SeedResolutionMetrics,
 ) -> Result<SeedHits, String> {
     // Label and LabelIntersection anchors already fan out to all shards in a single call,
     // so they are coalesced per (anchor, shard) only when shard_ids has one element.
@@ -898,7 +981,19 @@ async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
             let mut merged: Option<Vec<PostingHit>> = None;
             let mut saw_edges = false;
             for &shard_id in shard_ids {
-                let hits = ctx.resolve_anchor_hits(index, anchor, shard_id).await?;
+                #[cfg(feature = "batch-instr-log")]
+                let cache_start = crate::current_instruction_counter();
+
+                let hits = ctx
+                    .resolve_anchor_hits(index, anchor, shard_id, metrics)
+                    .await?;
+
+                #[cfg(feature = "batch-instr-log")]
+                {
+                    metrics.cache_lookup_clone +=
+                        crate::current_instruction_counter().saturating_sub(cache_start);
+                }
+
                 match hits {
                     SeedHits::Vertices(h) => {
                         if let Some(ref mut acc) = merged {
@@ -916,8 +1011,20 @@ async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
             Ok(SeedHits::Vertices(merged.unwrap_or_default()))
         }
         _ => {
-            ctx.resolve_anchor_hits(index, anchor, ShardId::new(0))
-                .await
+            #[cfg(feature = "batch-instr-log")]
+            let cache_start = crate::current_instruction_counter();
+
+            let result = ctx
+                .resolve_anchor_hits(index, anchor, ShardId::new(0), metrics)
+                .await;
+
+            #[cfg(feature = "batch-instr-log")]
+            {
+                metrics.cache_lookup_clone +=
+                    crate::current_instruction_counter().saturating_sub(cache_start);
+            }
+
+            result
         }
     }
 }
@@ -2382,11 +2489,13 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         let shard_ids: Vec<_> = shards.iter().map(|entry| entry.shard_id).collect();
         let routings = match seed_anchors {
             Some(set) => {
+                let mut _scalar_seed_metrics = SeedResolutionMetrics::default();
                 let hits = match resolve_seed_hits_from_anchors(
                     index,
                     set.anchors(),
                     &shard_ids,
                     preflight,
+                    &mut _scalar_seed_metrics,
                 )
                 .await
                 .map_err(RouterError::InvalidArgument)
@@ -3501,35 +3610,10 @@ async fn execute_prepared_bulk_group(
     #[cfg(feature = "batch-instr-log")]
     let seed_resolution_start = crate::current_instruction_counter();
 
-    #[cfg(feature = "batch-instr-log")]
-    let anchor_set_build_start = crate::current_instruction_counter();
-
-    // The anchor set was already built above when detecting complete-row seeds; its cost
-    // is captured in the same parent interval by anchoring here.
-    // Anchor set build cost is captured from the earlier detection block; no additional clone needed.
-    let _ = complete_row_anchor_set.clone();
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_seed_resolution_phase(
-        "anchor_set_build",
-        crate::current_instruction_counter().saturating_sub(anchor_set_build_start),
-    );
-
-    #[cfg(feature = "batch-instr-log")]
-    let preflight_cache_access_start = crate::current_instruction_counter();
-
-    // Capture cache-only work that happens inside resolve_complete_row_seed_rows before
-    // any graph-index await. This marker is reused below via an explicit sub-phase log.
-    let _preflight_cache_access_start_for_inner = preflight_cache_access_start;
-
-    #[cfg(feature = "batch-instr-log")]
-    log_router_seed_resolution_phase(
-        "preflight_cache_access",
-        crate::current_instruction_counter().saturating_sub(preflight_cache_access_start),
-    );
-
     // Pre-resolve complete-row seed blobs before spawning async blocks. The index lookup
     // futures are not Send, so we cannot await them inside the BoxFuture dispatched below.
+    let mut seed_resolution_acc = SeedResolutionMetrics::default();
+
     let complete_row_seeds: Vec<Vec<Option<Vec<u8>>>> = if let Some(ref index) = complete_row_index
     {
         let mut seeds = vec![vec![None; base.dispatches.len()]; item_count];
@@ -3543,8 +3627,11 @@ async fn execute_prepared_bulk_group(
                     &stats,
                     dispatch.shard_id,
                     preflight,
+                    &mut seed_resolution_acc,
                 )
                 .await?;
+                #[cfg(feature = "batch-instr-log")]
+                let encode_start = crate::current_instruction_counter();
                 let wire = resolved.unwrap_or_else(|| SeedBindingsWire {
                     entries: Vec::new(),
                     rows: Vec::new(),
@@ -3552,7 +3639,17 @@ async fn execute_prepared_bulk_group(
                 });
                 seeds[item_index][dispatch_index] =
                     Some(Encode!(&wire).expect("encode complete-row seed bindings"));
+                #[cfg(feature = "batch-instr-log")]
+                {
+                    seed_resolution_acc.candid_encode +=
+                        crate::current_instruction_counter().saturating_sub(encode_start);
+                    seed_resolution_acc.dispatch_count += 1;
+                }
             }
+        }
+        #[cfg(feature = "batch-instr-log")]
+        {
+            seed_resolution_acc.item_count = item_count as u64;
         }
         seeds
     } else {
@@ -3560,10 +3657,11 @@ async fn execute_prepared_bulk_group(
     };
 
     #[cfg(feature = "batch-instr-log")]
-    log_router_seed_resolution_phase(
-        "seed_resolution",
-        crate::current_instruction_counter().saturating_sub(seed_resolution_start),
-    );
+    {
+        let seed_resolution_total =
+            crate::current_instruction_counter().saturating_sub(seed_resolution_start);
+        log_router_seed_resolution_summary(seed_resolution_total, &seed_resolution_acc);
+    }
 
     #[cfg(feature = "batch-instr-log")]
     let graph_request_build_start = crate::current_instruction_counter();
@@ -5627,11 +5725,13 @@ mod tests {
         assert_eq!(set.anchors().len(), 2);
 
         let fake = compound_seed_fake_index();
+        let mut _test_metrics = super::SeedResolutionMetrics::default();
         let hits = futures::executor::block_on(super::resolve_seed_hits_from_anchors(
             &fake,
             set.anchors(),
             &[ShardId::new(0), ShardId::new(1)],
             None,
+            &mut _test_metrics,
         ))
         .expect("intersect label and property hits");
         assert_eq!(
