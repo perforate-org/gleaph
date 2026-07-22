@@ -2,8 +2,8 @@
 
 Status: Partially Implemented
 Date: 2026-07-19 15:12:46 UTC
-Last revised: 2026-07-21
-Anchor timestamp: 2026-07-21 01:42:34 UTC +0000
+Last revised: 2026-07-22
+Anchor timestamp: 2026-07-22 00:40:15 UTC +0000
 
 ## Context
 
@@ -87,13 +87,17 @@ coalescing happened.
 ### Stable record versioning
 
 This ADR originally defined V1 stable records sufficient for homogeneous bulk groups where every
-operation shares the same seed relation. ADR 0047 introduces `RouterMutationRecord::V2` for bulk
-groups with distinct per-operation typed seed relations. V1 records remain decodable; new bulk
-groups that require per-operation replay use V2. See ADR 0047 for the V2 schema and conversion
-rules.
+operation shares the same seed relation. Because Gleaph has no deployed Router stable state to
+preserve, ADR 0047 redefines `RouterMutationRecord::V1` incompatibly with exhaustive `Scalar`,
+`LegacyBulk`, and `TypedSeedBulk` payload variants. The typed payload persists the exact ordered per-operation relation before
+the first Graph await and cannot coexist with a legacy seed blob. No Router V2 or stable migration
+is introduced. Initial installation and rollback to older Router Wasm require fresh install/reset.
+See ADR 0047 for the schema, bounds, capability activation, and reset procedure.
 
-The following stable value types are versioned as enums so that future
-extensions can add new variants without breaking the stable layout:
+The following is the proposed replacement shape. Retaining the `V1` tag names the first launch
+schema; it does not promise decode compatibility with the superseded, never-deployed V1 bytes.
+After launch, future extensions must add variants or provide an explicit migration rather than
+redefining V1 again:
 
 ```rust
 pub enum RouterMutationRecord {
@@ -109,23 +113,20 @@ pub(crate) struct RouterMutationRecordV1 {
     completed_row_count: Option<u64>,
     resolved_labels: Option<ResolvedLabelTable>,
     resolved_properties: Option<ResolvedPropertyTable>,
-    shards: Vec<RouterMutationShard>,
+    payload: RouterMutationPayloadV1,
     created_at_ns: u64,
     last_error: Option<String>,
-    is_bulk: bool,
-    bulk_state: Option<RouterBulkMutationState>,
 }
 
-pub enum RouterBulkMutationState {
-    V1(RouterBulkMutationStateV1),
-}
-
-pub(crate) struct RouterBulkMutationStateV1 {
-    total_ops: u32,
-}
-
-pub enum RouterMutationShard {
-    V1(RouterMutationShardV1),
+pub enum RouterMutationPayloadV1 {
+    Scalar {
+        shards: Vec<RouterMutationShardV1>,
+    },
+    LegacyBulk {
+        total_ops: u32,
+        shards: Vec<RouterMutationShardV1>,
+    },
+    TypedSeedBulk(TypedSeedBulkReplayV1),
 }
 
 pub(crate) struct RouterMutationShardV1 {
@@ -136,6 +137,9 @@ pub(crate) struct RouterMutationShardV1 {
     projection_advanced: bool,
     row_count: u64,
 }
+
+// TypedSeedBulkReplayV1 owns one target shard, its outcome, shared execution
+// fields, and the ordered per-operation params plus typed seeds. See ADR 0047.
 
 pub enum GraphMutationJournalEntry {
     V1(GraphMutationJournalEntryV1),
@@ -164,11 +168,11 @@ the bulk operation cursor: for a bulk mutation it points at the next
 unexecuted operation index; for a single mutation it has its existing meaning.
 No new cursor field is introduced.
 
-The original proposal assumed an initial V1 deployment with no production-state migration. That
-deployment assumption was not reverified on 2026-07-21 UTC and is not a migration proof. Before any
-schema rollout, the operator must inventory deployed record versions. Future variants retain V1
-decoding, and any populated incompatible state requires an explicit pre-upgrade or post-upgrade
-migration path.
+The original proposal assumed an initial V1 deployment with no production state. That remains the
+explicit prerequisite for the ADR 0047 incompatible V1 replacement: the operator must verify that
+there is no deployed state to preserve, then fresh-install/reset the Router. If that prerequisite is
+false at implementation or rollout time, this decision is invalid and a separate migration design
+is required before changing the schema.
 
 ### Router ingress behavior
 
@@ -293,10 +297,10 @@ objects whose semantics will evolve as bulk behavior matures.
 
 ## Migration
 
-The original V1 rollout assumption depended on an empty production-state inventory. That assumption
-must be reverified immediately before deployment. V1 remains decodable; any populated incompatible
-record set requires an explicit migration and rollback plan rather than relying on this ADR's
-2026-07-19 environment.
+The incompatible V1 replacement depends on an empty production-state inventory. Reverify that
+precondition immediately before installation and fresh-install/reset the Router. The previous V1
+bytes are intentionally not decodable. If any state must be retained, stop this rollout and create a
+separate migration and data-preserving rollback decision.
 
 ## Design document impact
 

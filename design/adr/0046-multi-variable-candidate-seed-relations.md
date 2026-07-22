@@ -2,8 +2,8 @@
 
 Date: 2026-07-21
 Status: Proposed
-Last revised: 2026-07-21
-Anchor timestamp: 2026-07-21 01:42:34 UTC +0000
+Last revised: 2026-07-22
+Anchor timestamp: 2026-07-22 00:40:15 UTC +0000
 
 ## Context
 
@@ -208,17 +208,20 @@ ADR 0029 requires immutable seed bindings in the Router mutation envelope. The c
 `RouterMutationShard` shape stores one seed blob per shard and cannot represent different relations
 for several operations sharing one `MutationId`.
 
-Bulk support for V2 therefore requires a new version of the Router mutation record containing an
-ordered per-operation dispatch envelope. Each operation records its request/parameter fingerprint
+Bulk support for the candidate-domain V2 seed envelope therefore requires an ordered per-operation
+dispatch envelope in Router durable state. Because Gleaph has no deployed Router stable state to
+preserve, ADR 0047 redefines `RouterMutationRecord::V1` incompatibly instead of adding a Router V2.
+Each operation records its request/parameter fingerprint
 and either `Dispatches(per_shard_seed_relations)` or `NoDispatchZeroMatch`. Seed relations may
 reference an immutable deduplicated blob table in the same record. The envelope also records the
 mapping from public item order to each Graph canister's shard-local operation ordinal. Recovery
 resends the persisted relation, preserves zero-match positions, and never repeats Property Index
 lookup to reconstruct a possibly different candidate set.
 
-This is a stable-value schema evolution, not a new stable-memory region. V1 remains decodable.
+This is a stable-value schema replacement, not a new stable-memory region. The previous Router V1
+bytes are intentionally not decodable; initial installation and rollback require fresh install/reset.
 Implementation must update the stable-memory inventory only if it introduces a new region rather
-than versioning the existing value.
+than replacing the existing value schema.
 
 ### 7. Apply shared, explicit bounds and fail closed
 
@@ -365,10 +368,11 @@ instruction bounds shared across Router and Graph, V1/V2 decode compatibility, d
 constraint-catalog gating, and focused canbench coverage comparing full scan, 1x1 candidate domains,
 repeated-value bulk deduplication, bounded non-unique products, and `ShardLocalGlobal` owner lookup.
 
-ADR 0047 now owns the shared typed bulk execution envelope that will carry per-operation seeds
-(including candidate-domain and complete-row seeds) from Router to Graph and persist them for
-deterministic replay. ADR 0046 remains the owner of candidate-domain semantics, Graph canonical
-revalidation, and bound-anchor executor behavior.
+ADR 0047 now owns the planned shared typed bulk execution envelope and deterministic replay for its
+initial eligible subset: one target shard, complete-row seeds, no resolved-search relation, and no
+constraint/uniqueness dispatch. Candidate-domain and multi-shard typed transport remain future
+versions rather than implicit ADR 0047 V1 behavior. ADR 0046 remains the owner of candidate-domain
+semantics, Graph canonical revalidation, and bound-anchor executor behavior.
 
 ## Related documents
 

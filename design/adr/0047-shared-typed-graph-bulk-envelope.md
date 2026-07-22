@@ -3,7 +3,7 @@
 Date: 2026-07-22
 Status: Proposed
 Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 00:33:37 UTC +0000
+Anchor timestamp: 2026-07-22 00:40:15 UTC +0000
 
 ## Context
 
@@ -52,7 +52,8 @@ Design a production Router→Graph bulk transport that:
    `next_index` continuation, partial failure, and Graph journal resume;
 6. provides a durable, deterministic replay representation so recovery does not repeat Property
    Index lookup;
-7. defines a safe mixed-version deployment and rollback sequence; and
+7. defines a safe Graph-first activation sequence and the required reset boundary for the
+   intentionally incompatible Router V1 stable schema; and
 8. fails closed if the actual encoded request exceeds the safe inter-canister payload limit or the
    Graph instruction budget.
 
@@ -118,8 +119,9 @@ Rationale:
 - Changing `ExecutePlanArgs` in place would require proving Candid subtyping for every existing
   caller and would introduce the invalid blob-plus-typed-seed combination. A new request type
   avoids both problems.
-- A new method lets Graph prove capability simply by being deployed; Router can fall back to the
-  legacy batch method during any mixed-version window.
+- A separately named method preserves Candid compatibility. Activation is an explicit durable
+  Router-registry decision after Graph advertises support; method rejection is not used as routine
+  feature negotiation.
 - The minimum-change alternative (keep nested blobs but use a cheaper inner codec) cannot retain
   the measured typed-vector saving without either a second seed schema or hand-written Candid
   patching, neither of which is acceptable.
@@ -139,7 +141,7 @@ pub struct ExecutePlanBatchTypedArgs {
     pub shared: ExecutePlanBatchTypedShared,
     /// Ordered per-operation records. The order is the public item order seen by the caller.
     pub operations: Vec<ExecutePlanTypedOp>,
-    pub mode: ExecutePlanBatchMode,
+    pub batch_mode: ExecutePlanBatchMode,
 }
 
 pub struct ExecutePlanBatchTypedShared {
@@ -147,26 +149,17 @@ pub struct ExecutePlanBatchTypedShared {
     pub element_id_encoding_key: [u8; 16],
     pub mutation_id: MutationId,
     pub plan_blob: Vec<u8>,
-    pub mode: GqlExecutionMode,
     pub resolved_labels: Option<ResolvedLabelTable>,
     pub resolved_properties: Option<ResolvedPropertyTable>,
     pub indexed_properties: Option<IndexedPropertyCatalog>,
     pub indexed_embeddings: Option<IndexedEmbeddingCatalog>,
-    pub unique_claims: Option<Vec<UniqueClaimDispatch>>,
-    pub constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
-    pub local_unique_claims: Option<Vec<UniqueClaimDispatch>>,
-    pub local_constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
 }
 
 pub struct ExecutePlanTypedOp {
     /// Per-operation GQL parameter map, already encoded.
     pub params_blob: Vec<u8>,
-    /// The seed relation for this operation. Absent means the same semantics as
-    /// `seed_bindings_blob: None` on scalar `ExecutePlanArgs`.
-    pub seed: Option<SeedBindingsWire>,
-    /// Per-operation resolved non-leading SEARCH relation. `None` for operations whose shard
-    /// has no such relation.
-    pub resolved_search: Option<ResolvedSearchWire>,
+    /// Required complete-row seed relation. Zero matches use an empty `rows` vector.
+    pub seed: SeedBindingsWire,
 }
 ```
 
@@ -174,21 +167,24 @@ Notes:
 
 - `mutation_id` is still in the shared header. Every operation in the batch belongs to the same
   bulk group and shares one `MutationId`, matching the current ADR 0044 implementation.
-- `target_shard_id` is shared because one batch call targets one Graph canister. Cross-shard
-  dispatch remains separate calls.
+- Typed V1 is limited to one target Graph canister and one target shard. The Router proves
+  `dispatches.len() == 1`; multi-shard groups retain their existing semantics-safe path. This makes shared
+  `target_shard_id` an enforced invariant rather than a POSTED-only assumption.
 - `plan_blob`, resolved tables, and catalogs are shared for the homogeneous POSTED case. The Router
   builder is responsible for not moving heterogeneous fields into the shared header.
-- `mode` appears both in shared header (group mode) and could be omitted per op. It is kept once
-  because all operations in one batch have the same mode.
-- `resolved_search` remains per operation because it can differ per shard and per item even within
-  a homogeneous group.
+- The new method is an update method, so `GqlExecutionMode` is not carried. `batch_mode` retains the
+  existing Fixed/Dynamic instruction-budget behavior.
+- Typed V1 admits only complete-row seeded groups with no resolved-search relation and with all
+  federated/local uniqueness and constrained-property dispatch vectors empty. Other groups retain
+  their existing semantics-safe path. The V1 wire therefore carries no dormant claim/search fields.
 
 ### Seed representation and invalid-state prevention
 
-`ExecutePlanTypedOp.seed` is `Option<SeedBindingsWire>`. The legacy scalar path uses
+`ExecutePlanTypedOp.seed` is a required `SeedBindingsWire`. The legacy scalar path uses
 `ExecutePlanArgs.seed_bindings_blob: Option<Vec<u8>>`. Because the two request shapes are distinct,
 there is no value that contains both. This satisfies the "no blob-plus-typed-seed dual state"
-requirement without an exhaustive enum.
+requirement. Zero-match operations remain explicit typed seeds with empty rows, so absence cannot
+silently change complete-prefix semantics.
 
 ### Result shape
 
@@ -198,12 +194,15 @@ Reuse `ExecutePlanBatchResult`. It already returns ordered per-operation results
 ### Graph behavior
 
 1. The new method decodes `ExecutePlanBatchTypedArgs`.
-2. It converts the typed request into the same internal representation the legacy batch uses:
-   ordered operations, each with its own `ExecutePlanArgs`-equivalent state. The conversion is local
-   to Graph; the durable journal remains unchanged.
-3. Bulk detection, journal resume, sequential execution, result ordering, partial failure, and
-   journal commit use the existing `execute_plan_batch` machinery.
-4. The instruction-budget cutoff (`Dynamic` mode) continues to set `next_index` to the first
+2. Graph validates the single-shard target, non-empty bounded operation list, required complete-row
+   seeds, and the actual encoded request size before executing an operation.
+3. The execution core accepts already-decoded `Option<SeedBindingsWire>` and
+   `Option<ResolvedSearchWire>` values. The legacy handlers decode their blobs once and call this
+   core; the typed handler passes `Some(op.seed)` directly. It must not encode a typed seed back to
+   bytes or invoke the legacy inner decoder.
+4. Bulk detection, journal resume, sequential execution, result ordering, partial failure, and
+   journal commit use the existing batch machinery after this boundary normalization.
+5. The instruction-budget cutoff (`Dynamic` mode) continues to set `next_index` to the first
    unattempted operation.
 
 This means the Graph durable state does not need a new variant to support typed seeds; it only
@@ -212,54 +211,49 @@ Router's responsibility.
 
 ### Durable Router replay envelope
 
-A new `RouterMutationRecord` variant is required. The V1 record cannot represent distinct ordered
-per-operation seeds. Define:
+Gleaph has no deployed Router stable state that must survive this change. Do not add a V2 migration
+layer. Redefine `RouterMutationRecord::V1` incompatibly around one exhaustive payload so that the
+legacy and typed replay forms cannot coexist:
 
 ```rust
 pub enum RouterMutationRecord {
     V1(RouterMutationRecordV1),
-    V2(RouterMutationRecordV2),
 }
 
-pub struct RouterMutationRecordV2 {
-    pub mutation_id: MutationId,
-    pub created_at_ns: u64,
-    pub request_fingerprint: Vec<u8>,
-    pub routing_in_progress: bool,
-    pub routing_lease_ns: Option<u64>,
-    pub terminal_failure: Option<String>,
-    pub last_error: Option<String>,
-    pub completed_row_count: Option<u64>,
-    // Shared immutable group context, exactly what the typed batch sends.
-    pub shared: TypedBatchSharedReplay,
-    // Ordered per-operation replay records.
-    pub operations: Vec<TypedBatchOperationReplay>,
-    // Per-shard outcome state, parallel to legacy shard records but without seed blobs.
-    pub shard_outcomes: Vec<TypedBatchShardOutcome>,
+pub struct RouterMutationRecordV1 {
+    // Existing mutation identity, fingerprint, lifecycle, resolved tables,
+    // routing lease, timestamps, and error fields remain here.
+    pub payload: RouterMutationPayloadV1,
 }
 
-pub struct TypedBatchSharedReplay {
-    pub plan_blob: Vec<u8>,
+pub enum RouterMutationPayloadV1 {
+    Scalar {
+        shards: Vec<RouterMutationShardV1>,
+    },
+    LegacyBulk {
+        total_ops: u32,
+        shards: Vec<RouterMutationShardV1>,
+    },
+    TypedSeedBulk(TypedSeedBulkReplayV1),
+}
+
+pub struct TypedSeedBulkReplayV1 {
+    pub shard: RouterTypedSeedShardV1,
+    pub total_ops: u32,
+    pub batch_mode: ExecutePlanBatchMode,
     pub element_id_encoding_key: [u8; 16],
-    pub mode: GqlExecutionMode,
-    pub resolved_labels: Option<ResolvedLabelTable>,
-    pub resolved_properties: Option<ResolvedPropertyTable>,
+    pub plan_blob: Vec<u8>,
     pub indexed_properties: Option<IndexedPropertyCatalog>,
     pub indexed_embeddings: Option<IndexedEmbeddingCatalog>,
-    pub unique_claims: Option<Vec<UniqueClaimDispatch>>,
-    pub constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
-    pub local_unique_claims: Option<Vec<UniqueClaimDispatch>>,
-    pub local_constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
+    pub operations: Vec<TypedSeedBulkReplayOpV1>,
 }
 
-pub struct TypedBatchOperationReplay {
+pub struct TypedSeedBulkReplayOpV1 {
     pub params_blob: Vec<u8>,
-    pub seed: Option<SeedBindingsWire>,
-    pub resolved_search: Option<ResolvedSearchWire>,
-    pub fingerprint: Vec<u8>,
+    pub seed: SeedBindingsWire,
 }
 
-pub struct TypedBatchShardOutcome {
+pub struct RouterTypedSeedShardV1 {
     pub shard_id: ShardId,
     pub graph_canister: Principal,
     pub completed: bool,
@@ -268,43 +262,73 @@ pub struct TypedBatchShardOutcome {
 }
 ```
 
-Design constraints on the durable envelope:
+`RouterMutationRecordV1.mutation_id`, `request_fingerprint`, `resolved_labels`, and
+`resolved_properties` remain authoritative. `TypedSeedBulkReplayV1.shard` owns the sole target and
+its outcome; the remainder of `TypedSeedBulkReplayV1` owns the shared plan/catalog data and ordered
+params/seeds. The typed variant has no `seed_bindings_blob`, so the stable source of truth cannot
+represent both encodings. Scalar and legacy-bulk lifecycle shape is also exhaustive rather than a
+boolean plus an optional bulk record. The Router reconstructs `ExecutePlanBatchTypedArgs` directly
+from this payload, including the original batch mode.
 
-- It is the single source of truth for replay. Recovery never repeats Property Index lookup.
-- Seed relations are stored as `SeedBindingsWire`, not as a second encoded blob, so there is one
-  canonical in-memory representation.
-- Bounds: total operation count, total encoded seed byte size, and per-operation parameter/blob size
-  must have explicit limits. Exceeding a bound fails closed with an explicit error.
-- The V1 record remains decodable. New records are written as V2 only when the typed batch path is
-  used. Rollback recovery must be able to read V2 and either continue with the typed method or
-  convert to the legacy batch method if the Graph canister does not yet support the new method.
+Typed V1 is single-shard, and `replay.operations.len() == total_ops`. The owning constructor and
+stable write boundary validate this invariant; general multi-shard typed replay is a later schema,
+not an implicit parallel-vector contract.
+
+The complete typed V1 payload is persisted before the first Graph `await`, in the same Router
+message that publishes the outbound call. Any validation or encoding failure occurs before that
+await and emits no Graph call. If Graph commits but the Router callback fails, the durable typed
+payload remains `CanonicalPending`; recovery resends the same ordered operations and relies on
+Graph's journal cursor.
+
+Typed V1 bounds are normative:
+
+- `1 <= total_ops <= 1024`;
+- each seed has at most 1,024 complete rows, preserving the existing complete-row bound;
+- each encoded `params_blob` and canonical encoded seed is at most 2 MiB;
+- Candid encoding of the reconstructed full `ExecutePlanBatchTypedArgs` is at most 2 MiB; and
+- Candid encoding of the complete `RouterMutationRecord::V1` typed payload is at
+  most 2 MiB.
+
+The Router owning constructor checks every bound before the stable write. Graph independently checks
+operation count, seed row count, target shard, and full request bytes. If any typed bound fails, the
+Router selects a semantics-safe existing path before writing typed state; it never silently
+truncates or writes a record that cannot be dispatched. A group with distinct per-operation seeds
+must fall back to the existing sequential scalar path, because the legacy bulk record's one blob per
+shard cannot replay that group. The legacy batch path is eligible only when its existing replay
+contract is independently sufficient, such as a shared seed relation.
 
 ### Capability and rollout
 
 1. **Graph-first deployment.** Deploy a Graph canister build that exposes the new typed batch method
    while keeping the legacy scalar and batch methods. The new method is inert until a Router calls
    it.
-2. **Router capability check.** Router determines whether the target Graph canister supports the
-   new method before invoking it. The capability is recorded in the Router registry for each graph
-   canister (a stable registry entry or ephemeral cached flag). Do not use call rejection as
-   routine feature negotiation after a mutation may have committed.
+2. **Capability advertisement and activation.** Graph exposes a read-only
+   `execution_capabilities` query containing an exhaustive `TypedSeedBatchV1` capability. A
+   control-plane-admin Router refresh method calls that query and writes
+   `typed_seed_batch_v1: bool` into the redefined shard-registry V1 record. The
+   durable registry field is the data-plane source of truth; no heap cache or call rejection enables
+   the path.
 3. **Router cutover.** Once all target Graph canisters for a graph support the new method, the
    Router uses it for eligible homogeneous bulk groups.
-4. **Mixed-version window.** During the window, Router falls back to the legacy batch method for
-   canisters that do not yet support the typed method. The durable V2 replay envelope must be
-   convertible to legacy `ExecutePlanArgs` (encode each `SeedBindingsWire` as a blob) for this
-   fallback.
-5. **Router rollback.** Router may be rolled back to a version that does not know the typed method.
-   It continues to use the legacy batch method. In-flight V2 records must either be completed by
-   the newer Router before rollback or be recoverable by the older Router using legacy conversion.
-6. **Graph rollback prohibition.** Do not roll back Graph while any active Router/recovery record
-   may issue the typed method. This is the same constraint that applies to any new Candid method.
+4. **Capability-disabled fallback.** Before durable admission, a false capability selects the
+   existing scalar path for groups with distinct per-operation seeds. It may select the legacy batch
+   path only when that path can replay the group exactly.
+5. **Incompatible V1 installation.** Before installing the Router implementation, stop the local or
+   pre-production stack and fresh-install/reset Router stable state. The old and new V1 byte layouts
+   are intentionally not mutually decodable; no migration or backward-decoder is provided.
+6. **Rollback boundary.** This pre-production decision does not provide data-preserving rollback to
+   an older Router. Rolling the Router back requires another fresh install/reset. Before removing
+   the Graph method, disable the capability and stop/reset any Router that can still replay typed
+   records. Graph-first deployment still allows the new Graph method to be rolled out inertly.
 
 ### Chunking and payload bounds
 
-- Chunking uses the actual encoded byte length of `ExecutePlanBatchTypedArgs` under
-  `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`, exactly as `graph_batch_chunk_len_for_bulk`
-  does today.
+- Typed V1 admits only a group whose complete actual encoded request fits under
+  `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`. The existing binary-search sizing helper is
+  reused as a full-request proof; an oversized distinct-seed group selects the sequential scalar
+  path before typed persistence.
+  Multi-request typed size chunking is deferred because splitting one Graph journal ordinal space
+  requires a separate protocol decision.
 - An independent operation-count/instruction bound remains: `Dynamic` mode in Graph stops at the
   first unattempted operation when the instruction budget is exhausted.
 - The encoded size probe is performed before the inter-canister call, so no call is issued with an
@@ -313,7 +337,7 @@ Design constraints on the durable envelope:
 ### Performance expectation
 
 The design is expected to retain the Plan 0105 measured saving for the inner seed encoding because
-`ExecutePlanTypedOp.seed: Option<SeedBindingsWire>` replaces `ExecutePlanArgs.seed_bindings_blob`
+`ExecutePlanTypedOp.seed: SeedBindingsWire` replaces `ExecutePlanArgs.seed_bindings_blob`
 with a typed vector. Additional outer-envelope encoding work is expected to be small because the
 shared header is encoded once. The end-to-end adoption gate is 156,799 Router instructions saved
 per POSTED item after a fresh social-demo deployment.
@@ -341,12 +365,18 @@ introduce scope not justified by the measured POSTED problem.
 
 - A new public Candid method is added to Graph canisters. Router registry gains a capability flag
   per graph canister.
-- Router durable mutation records gain a V2 variant with ordered per-operation replay state.
+- `RouterMutationRecord::V1` is redefined incompatibly with exhaustive `Scalar`, `LegacyBulk`, and
+  `TypedSeedBulk` payload variants. No Router V2 or stable migration is introduced.
+- Typed V1 is deliberately single-shard, complete-row seeded, unconstrained, and search-free.
+- The stable shard registry gains an explicit admin-refreshed `typed_seed_batch_v1` capability.
 - Recovery no longer needs to repeat Property Index lookup for bulk groups that used the typed
   path.
-- The legacy scalar and batch methods remain available for mixed-version support and fallback.
+- The legacy scalar method remains the semantics-safe fallback for distinct-seed groups. The legacy
+  batch method remains available only where its existing durable replay shape is sufficient.
+- Initial Router rollout and rollback to older Router Wasm require fresh install/reset because the
+  V1 stable layout is intentionally incompatible and Gleaph has no deployed state to migrate.
 - End-to-end adoption is gated on measured Router ingress savings; if the gate fails, the typed
-  method and V2 record are not adopted.
+  method and typed V1 payload are not adopted.
 - The new surface must be covered by focused PocketIC Router→Graph tests before production release.
 
 ## Related documents

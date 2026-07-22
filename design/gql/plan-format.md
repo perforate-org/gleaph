@@ -1,7 +1,7 @@
 # Physical plan format
 
-Last updated: 2026-07-21
-Anchor timestamp: 2026-07-21 01:42:34 UTC +0000
+Last updated: 2026-07-22
+Anchor timestamp: 2026-07-22 00:40:15 UTC +0000
 
 ## Purpose
 
@@ -92,15 +92,21 @@ contracts must be distinguished.
 
 **ADR 0047 planned contract:**
 
-- a new Router→Graph update method accepts a batch with a shared immutable group header and ordered
-  per-operation typed seeds (`SeedBindingsWire`) and typed resolved-search relations;
+- a new Router→Graph update method accepts an eligible single-shard batch with a shared immutable
+  group header and required ordered per-operation complete-row seeds (`SeedBindingsWire`);
+- V1 rejects resolved-search and constraint/uniqueness dispatch and uses the existing
+  semantics-safe path for those groups;
 - the scalar `ExecutePlanArgs.seed_bindings_blob` path and the legacy blob batch method remain
-  unchanged and are the only paths for mixed-version or fallback use;
+  unchanged; scalar is the fallback for distinct-seed groups, while legacy batch is used only when
+  its existing replay representation is sufficient;
 - the new method reuses `ExecutePlanBatchResult` (ordered per-item results and `next_index`);
-- a versioned `RouterMutationRecord::V2` persists the exact ordered per-operation seed relation
-  for deterministic recovery replay;
-- the typed path is activated only after Graph capability is proven and the end-to-end Router
-  ingress saving meets the adoption gate.
+- `RouterMutationRecord::V1` is redefined incompatibly with exhaustive scalar, legacy-bulk, and
+  typed-bulk payload variants; the typed payload persists the exact ordered replay relation without a
+  parallel blob representation;
+- the typed path is activated only from an admin-refreshed durable shard-registry capability, and
+  initial Router installation or rollback to older Router Wasm requires fresh install/reset because
+  there is no deployed stable state to migrate;
+- the end-to-end Router ingress saving must still meet the adoption gate.
 
 The physical plan remains the single source of predicate/join semantics. Gleaph-specific seed
 lowering must not add shard, canister, constraint, or Property Index concepts to the generic planner.
