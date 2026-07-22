@@ -86,6 +86,12 @@ coalescing happened.
 
 ### Stable record versioning
 
+This ADR originally defined V1 stable records sufficient for homogeneous bulk groups where every
+operation shares the same seed relation. ADR 0047 introduces `RouterMutationRecord::V2` for bulk
+groups with distinct per-operation typed seed relations. V1 records remain decodable; new bulk
+groups that require per-operation replay use V2. See ADR 0047 for the V2 schema and conversion
+rules.
+
 The following stable value types are versioned as enums so that future
 extensions can add new variants without breaking the stable layout:
 

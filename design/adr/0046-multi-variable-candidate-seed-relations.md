@@ -365,6 +365,11 @@ instruction bounds shared across Router and Graph, V1/V2 decode compatibility, d
 constraint-catalog gating, and focused canbench coverage comparing full scan, 1x1 candidate domains,
 repeated-value bulk deduplication, bounded non-unique products, and `ShardLocalGlobal` owner lookup.
 
+ADR 0047 now owns the shared typed bulk execution envelope that will carry per-operation seeds
+(including candidate-domain and complete-row seeds) from Router to Graph and persist them for
+deterministic replay. ADR 0046 remains the owner of candidate-domain semantics, Graph canonical
+revalidation, and bound-anchor executor behavior.
+
 ## Related documents
 
 - [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md): canonical Graph
@@ -373,5 +378,7 @@ repeated-value bulk deduplication, bounded non-unique products, and `ShardLocalG
   `ShardLocalGlobal` canonical unique-value table.
 - [ADR 0044](0044-router-bulk-mutation-key.md): bulk mutation identity, progress, and per-item
   result mapping.
+- [ADR 0047](0047-shared-typed-graph-bulk-envelope.md): shared typed bulk execution envelope
+  for per-operation seed replay.
 - [Physical plan format](../gql/plan-format.md): seed transport and executor assumptions.
 - [Execution pipeline](../execution/pipeline.md): Graph seed hydration and read-prefix execution.

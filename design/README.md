@@ -72,3 +72,4 @@ Each document should include where possible:
 ## Keeping docs honest
 
 When behavior changes, update the design doc in the same PR when the change affects invariants or public semantics. Stale docs are worse than none—prefer marking sections **Implemented** / **Planned** / **Not implemented**.
+| [ADR 0047: Shared typed Graph bulk execution envelope](design/adr/0047-shared-typed-graph-bulk-envelope.md) | proposed | Router→Graph typed seed batch envelope with shared header and per-operation replay |

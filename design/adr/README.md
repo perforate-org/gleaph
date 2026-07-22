@@ -81,6 +81,7 @@ Last revised: YYYY-MM-DD
 | [0044](0044-router-bulk-mutation-key.md) | Router bulk mutation key for wave-level saga coalescing | partially implemented |
 | [0045](0045-unordered-batch-graph-mutations-and-lara-placement.md) | Unordered batch graph mutations and LARA placement planning | proposed |
 | [0046](0046-multi-variable-candidate-seed-relations.md) | Multi-variable candidate seed relations with canonical Graph revalidation | proposed |
+| [0047](0047-shared-typed-graph-bulk-envelope.md) | Shared typed Graph bulk execution envelope | proposed |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 

@@ -90,6 +90,18 @@ contracts must be distinguished.
 - checked candidate, product, encoded-payload, and instruction bounds fail closed without
   truncation.
 
+**ADR 0047 planned contract:**
+
+- a new Router→Graph update method accepts a batch with a shared immutable group header and ordered
+  per-operation typed seeds (`SeedBindingsWire`) and typed resolved-search relations;
+- the scalar `ExecutePlanArgs.seed_bindings_blob` path and the legacy blob batch method remain
+  unchanged and are the only paths for mixed-version or fallback use;
+- the new method reuses `ExecutePlanBatchResult` (ordered per-item results and `next_index`);
+- a versioned `RouterMutationRecord::V2` persists the exact ordered per-operation seed relation
+  for deterministic recovery replay;
+- the typed path is activated only after Graph capability is proven and the end-to-end Router
+  ingress saving meets the adoption gate.
+
 The physical plan remains the single source of predicate/join semantics. Gleaph-specific seed
 lowering must not add shard, canister, constraint, or Property Index concepts to the generic planner.
 Declared constraints may select an equivalent Router/Graph integration fast path, but observed data
