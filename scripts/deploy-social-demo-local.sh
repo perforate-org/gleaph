@@ -389,7 +389,8 @@ main() {
   log "Building all canisters"
   # The managed recipe's progress renderer can terminate early in non-interactive shells;
   # debug mode keeps the build operation attached and reports the actual completion result.
-  icp_cmd build --debug
+  icp_cmd build --debug \
+    gleaph-graph-index gleaph-graph-shard-0 gleaph-social-demo-gateway gleaph-vector
   local router_wasm
   router_wasm="$(build_instrumented_router_wasm)"
 
