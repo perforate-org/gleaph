@@ -1,14 +1,15 @@
 # 0047. Shared typed Graph bulk execution envelope
 
 Date: 2026-07-22
-Status: Implemented; adoption rejected for current POSTED workload; transport effectiveness unproven
+Status: Implemented; typed transport passes the exercised 71-item POSTED gate; broader workload adoption remains bounded
 
 Implementation boundary as of 2026-07-22: the Graph endpoint, shared wire, exhaustive admission
 classifier, response-bound proof, Router capability activation, durable typed dispatch, and
-recovery are implemented in Plan 0111. Plan 0112 measured the current POSTED workload, but the
-typed path was not exercised because selective complete-row seeds trigger the existing sequential
-scalar fallback. Adoption was therefore rejected for that workload; transport effectiveness remains
-unproven and is deferred to Plan 0113.
+recovery are implemented in Plan 0111. Plan 0112 lacked capability refresh before seeding. Plan
+0113 corrected the order, observed an accepted 71-item typed batch, and measured approximately
+2.69M Router instructions/item versus 118.16M/item for the capability-disabled legacy control,
+exceeding the 156,799/item gate. Other groups still fall back because their seed shape or derived
+indexed-embedding dispatch is outside Typed V1.
 Last revised: 2026-07-22
 Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
 
@@ -23,12 +24,9 @@ also cheaper by about 289K instructions per item at N=512, and the encoded byte 
 75,791 to 8,836 bytes. Both per-item Router savings exceeded the 156,799-instruction adoption
 threshold in the isolated transport benchmark.
 
-Plan 0112 later measured the same workload end-to-end on a fresh local network and found that the
-production POSTED path emits typed-admission decisions but rejects them because the current typed V1
-contract does not support `indexed_embeddings`. No typed Graph call is therefore exercised for the
-dominant POSTED items, so the end-to-end Router ingress gate cannot establish typed transport
-effectiveness. Adoption is rejected for the current production workload; the implementation remains
-available for groups without derived embedding dispatch.
+Plan 0112 later measured the same workload end-to-end without refreshing capability before seeding.
+Plan 0113 repeated it with the corrected order and observed typed execution for the 71-item POSTED
+batch. Groups carrying `indexed_embeddings` or non-threaded seed plans still use the legacy fallback.
 
 The existing boundaries are:
 
