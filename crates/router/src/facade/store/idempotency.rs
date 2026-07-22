@@ -14,8 +14,10 @@ use crate::facade::auth;
 use crate::state::RouterError;
 use crate::types::{AdminSweepMutationKeysStepResult, ShardId};
 use candid::Principal;
+use gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::plan_exec::{MutationId, ResolvedLabelTable, ResolvedPropertyTable};
+use ic_stable_structures::Storable;
 use std::cell::RefCell;
 use std::ops::Bound;
 
@@ -131,17 +133,25 @@ pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
     record.as_v1_mut().resolved_labels = None;
     record.as_v1_mut().resolved_properties = None;
     // ADR 0025 mechanism E: scalar terminal representation stays `Scalar {{ shards: [] }}`,
-    // while active bulk payloads compact to `CompletedBulk {{ total_ops }}`.
+    // while active bulk payloads compact to `CompletedBulk`. Typed completion retains only the
+    // ordered result cardinalities needed for exact idempotent replay.
     match record.payload().clone() {
         RouterMutationPayloadV1::Scalar { .. } => {
             record.payload_mut().scalar_clear_shards();
         }
         RouterMutationPayloadV1::LegacyBulk { total_ops, .. } => {
-            *record.payload_mut() = RouterMutationPayloadV1::CompletedBulk { total_ops };
+            *record.payload_mut() = RouterMutationPayloadV1::CompletedBulk {
+                total_ops,
+                operation_row_counts: Vec::new(),
+            };
         }
         RouterMutationPayloadV1::TypedSeedBulk(ref replay) => {
             let total_ops = replay.total_ops;
-            *record.payload_mut() = RouterMutationPayloadV1::CompletedBulk { total_ops };
+            let operation_row_counts = replay.target.operation_row_counts.clone();
+            *record.payload_mut() = RouterMutationPayloadV1::CompletedBulk {
+                total_ops,
+                operation_row_counts,
+            };
         }
         RouterMutationPayloadV1::CompletedBulk { .. } => {}
     }
@@ -649,6 +659,11 @@ impl RouterStore {
             v1.payload = RouterMutationPayloadV1::TypedSeedBulk(Box::new(replay));
             v1.routing_in_progress = false;
             v1.routing_lease_ns = None;
+            if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+                return Err(RouterError::InvalidArgument(
+                    "typed seed bulk record exceeds safe inter-canister payload bound".into(),
+                ));
+            }
             m.insert(key, record);
             Ok(())
         })
@@ -674,7 +689,19 @@ impl RouterStore {
             match &record.as_v1().payload {
                 RouterMutationPayloadV1::Scalar { shards }
                     if shards.is_empty() && record.as_v1().completed_row_count.is_none() => {}
-                _ => return Ok(()),
+                RouterMutationPayloadV1::Scalar { shards: existing }
+                    if existing == &shards
+                        && record.as_v1().resolved_labels.as_ref() == Some(&resolved_labels)
+                        && record.as_v1().resolved_properties.as_ref()
+                            == Some(&resolved_properties) =>
+                {
+                    return Ok(());
+                }
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "scalar shard writer requires a pristine Scalar payload".into(),
+                    ));
+                }
             }
             record.as_v1_mut().resolved_labels = Some(resolved_labels);
             record.as_v1_mut().resolved_properties = Some(resolved_properties);
@@ -695,6 +722,7 @@ impl RouterStore {
         client_key: &str,
         shard_id: ShardId,
         row_count: u64,
+        operation_row_counts: Vec<u64>,
     ) -> Result<(), RouterError> {
         let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
@@ -704,7 +732,7 @@ impl RouterStore {
             if record.is_terminal() {
                 return Ok(());
             }
-            let Some(target) = record.typed_target_mut() else {
+            let Some(target) = record.typed_target() else {
                 return Err(RouterError::Internal(
                     "typed bulk completion requires a TypedSeedBulk payload".into(),
                 ));
@@ -712,8 +740,36 @@ impl RouterStore {
             if target.shard_id != shard_id {
                 return Err(RouterError::ShardNotRegistered);
             }
+            let expected = record.bulk_total_ops().unwrap_or_default() as usize;
+            if operation_row_counts.len() != expected
+                || operation_row_counts
+                    .iter()
+                    .copied()
+                    .fold(0_u64, u64::saturating_add)
+                    != row_count
+            {
+                return Err(RouterError::InvalidArgument(
+                    "typed bulk operation row counts must match total_ops and aggregate row_count"
+                        .into(),
+                ));
+            }
+            if target.completed {
+                return if target.row_count == row_count
+                    && target.operation_row_counts == operation_row_counts
+                {
+                    Ok(())
+                } else {
+                    Err(RouterError::Conflict(
+                        "typed bulk completion conflicts with the persisted outcome".into(),
+                    ))
+                };
+            }
+            let target = record
+                .typed_target_mut()
+                .expect("payload was checked above");
             target.completed = true;
             target.row_count = row_count;
+            target.operation_row_counts = operation_row_counts;
             m.insert(key, record);
             Ok(())
         })
@@ -745,12 +801,15 @@ impl RouterStore {
             if target.shard_id != shard_id {
                 return Err(RouterError::ShardNotRegistered);
             }
+            if !target.completed {
+                return Err(RouterError::Conflict(
+                    "typed bulk projection cannot advance before canonical completion".into(),
+                ));
+            }
             target.projection_advanced = true;
             let row_count = target.row_count;
-            if target.completed {
-                record.as_v1_mut().completed_row_count = Some(row_count);
-                compact_completed_record(&mut record);
-            }
+            record.as_v1_mut().completed_row_count = Some(row_count);
+            compact_completed_record(&mut record);
             m.insert(key, record);
             Ok(())
         })
@@ -774,7 +833,20 @@ impl RouterStore {
             match &record.as_v1().payload {
                 RouterMutationPayloadV1::Scalar { shards }
                     if shards.is_empty() && record.as_v1().completed_row_count.is_none() => {}
-                _ => return Ok(()),
+                RouterMutationPayloadV1::Scalar { shards }
+                    if shards.is_empty()
+                        && record.as_v1().completed_row_count == Some(row_count)
+                        && record.as_v1().resolved_labels.as_ref() == Some(&resolved_labels)
+                        && record.as_v1().resolved_properties.as_ref()
+                            == Some(&resolved_properties) =>
+                {
+                    return Ok(());
+                }
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "scalar completion writer requires a pristine Scalar payload".into(),
+                    ));
+                }
             }
             record.as_v1_mut().resolved_labels = Some(resolved_labels);
             record.as_v1_mut().resolved_properties = Some(resolved_properties);

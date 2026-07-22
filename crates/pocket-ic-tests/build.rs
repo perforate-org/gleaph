@@ -221,6 +221,14 @@ fn build_wasm(manifest_dir: &Path) {
     );
     println!(
         "cargo:rerun-if-changed={}",
+        manifest_dir.join("../gql-integration/src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../graph-kernel/src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
         manifest_dir.join("../router/src").display()
     );
     println!(

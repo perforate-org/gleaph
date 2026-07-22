@@ -149,6 +149,7 @@ impl GraphStore {
         hot_forward_vertices: Vec<LocalVertexId>,
         operation_count: u32,
         completed_count: u32,
+        operation_row_counts: Vec<u64>,
         next_index: Option<u32>,
     ) {
         let now_ns = ic_time_ns();
@@ -164,9 +165,10 @@ impl GraphStore {
         entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(
             operation_count,
             completed_count,
+            operation_row_counts,
         )));
         // If the bulk group is not fully done, downgrade the state to Incomplete so retries resume.
-        if next_index.is_some() {
+        if next_index.is_some() || completed_count != operation_count {
             entry.set_state(MutationJournalState::Incomplete);
         }
         GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| {

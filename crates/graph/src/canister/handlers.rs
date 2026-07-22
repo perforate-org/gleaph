@@ -517,12 +517,32 @@ async fn execute_plan_batch_internal(
         let store = GraphStore::new();
         if let Some(journal) = store.mutation_journal_entry(mutation_id) {
             if journal.is_completed() {
-                // Entire bulk group is already durable: return success for every input operation.
+                let persisted_row_counts = journal
+                    .bulk_progress()
+                    .as_ref()
+                    .map(|progress| progress.operation_row_counts())
+                    .unwrap_or_default();
+                if !persisted_row_counts.is_empty() && persisted_row_counts.len() != total_ops {
+                    return Err(format!(
+                        "{entrypoint}: completed bulk journal row-count cardinality {} does not match operation count {total_ops}",
+                        persisted_row_counts.len()
+                    ));
+                }
+                // Journals written before ordered row-count persistence decode with an empty
+                // vector. Preserve their legacy synthetic-zero replay contract; typed V1 was not
+                // active before the field existed and therefore always requires exact counts.
+                let row_counts = if persisted_row_counts.is_empty() {
+                    vec![0; total_ops]
+                } else {
+                    persisted_row_counts.to_vec()
+                };
+                // Entire bulk group is already durable: replay its ordered per-operation counts.
                 return Ok(ExecutePlanBatchResult {
-                    results: (0..total_ops)
-                        .map(|_| {
+                    results: row_counts
+                        .iter()
+                        .map(|row_count| {
                             Ok(ExecutePlanResult {
-                                row_count: 0,
+                                row_count: *row_count,
                                 rows_blob: None,
                                 hot_forward_vertices: Vec::new(),
                             })
@@ -532,6 +552,11 @@ async fn execute_plan_batch_internal(
                 });
             }
             let start = journal.next_index().unwrap_or(0) as usize;
+            let persisted_row_counts = journal
+                .bulk_progress()
+                .as_ref()
+                .map(|progress| progress.operation_row_counts().to_vec())
+                .unwrap_or_default();
             Some(BulkState {
                 mutation_id,
                 start_index: start,
@@ -544,6 +569,11 @@ async fn execute_plan_batch_internal(
                 emitted_delta_first_seq: journal.emitted_delta_first_seq(),
                 emitted_delta_last_seq: journal.emitted_delta_last_seq(),
                 hot_forward_vertices: journal.hot_forward_vertices().to_vec(),
+                operation_row_counts: if persisted_row_counts.is_empty() {
+                    vec![0; start]
+                } else {
+                    persisted_row_counts
+                },
             })
         } else {
             Some(BulkState {
@@ -554,6 +584,7 @@ async fn execute_plan_batch_internal(
                 emitted_delta_first_seq: None,
                 emitted_delta_last_seq: None,
                 hot_forward_vertices: Vec::new(),
+                operation_row_counts: Vec::new(),
             })
         }
     } else {
@@ -565,8 +596,11 @@ async fn execute_plan_batch_internal(
         if let Some(ref mut state) = bulk_state
             && index < state.start_index
         {
+            let row_count = *state.operation_row_counts.get(index).ok_or_else(|| {
+                format!("{entrypoint}: bulk journal row-count prefix is missing operation {index}")
+            })?;
             results.push(Ok(ExecutePlanResult {
-                row_count: 0,
+                row_count,
                 rows_blob: None,
                 hot_forward_vertices: Vec::new(),
             }));
@@ -654,11 +688,12 @@ async fn execute_plan_batch_internal(
                         .hot_forward_vertices
                         .extend(exec_result.hot_forward_vertices.clone());
                     state.completed_count += 1;
+                    state.operation_row_counts.push(exec_result.row_count);
                     results.push(Ok(exec_result));
                 }
                 Err(error) => {
                     // Partial failure: persist progress before the failed op and stop.
-                    next_index = Some((index + 1) as u32);
+                    next_index = Some(index as u32);
                     results.push(Err(error));
                     break;
                 }
@@ -679,6 +714,7 @@ async fn execute_plan_batch_internal(
             state.hot_forward_vertices.clone(),
             total_ops as u32,
             state.completed_count,
+            state.operation_row_counts.clone(),
             next_index,
         );
     }
@@ -768,6 +804,7 @@ struct BulkState {
     emitted_delta_first_seq: Option<ShardEventSeq>,
     emitted_delta_last_seq: Option<ShardEventSeq>,
     hot_forward_vertices: Vec<gleaph_graph_kernel::federation::LocalVertexId>,
+    operation_row_counts: Vec<u64>,
 }
 
 fn ensure_target_shard(

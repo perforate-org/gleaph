@@ -319,6 +319,7 @@ export const idlFactory = ({ IDL }) => {
     'mutation_ids' : IDL.Vec(IDL.Nat64),
   });
   const GraphBulkMutationProgressV1 = IDL.Record({
+    'operation_row_counts' : IDL.Vec(IDL.Nat64),
     'completed_count' : IDL.Nat32,
     'operation_count' : IDL.Nat32,
   });

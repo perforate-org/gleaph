@@ -107,8 +107,9 @@ without reconstructing the seeds. ADR 0046 already identifies this gap.
 ### Durable Graph state
 
 `GraphMutationJournalEntryV1` stores `mutation_id`, `state`, `committed_row_count`,
-`next_index`, and `bulk_progress`. It does not store per-operation seeds; it relies on the Router
-resending them.
+`next_index`, and `bulk_progress`. `bulk_progress` stores the ordered row counts for the committed
+operation prefix so a completed replay preserves per-item result counts. It does not store
+per-operation seeds; it relies on the Router resending them.
 
 ## Decision
 
@@ -181,8 +182,9 @@ Notes:
 - Typed V1 admits only complete-row seeded groups with no resolved-search relation and with all
   federated/local uniqueness and constrained-property dispatch vectors empty. Other groups retain
   their existing semantics-safe path. The V1 wire therefore carries no dormant claim/search fields.
-- Typed V1 also requires a mutation plan whose result shape has a conservative encoded-response
-  bound: returned columns are absent, and the execution shape has a finite per-operation bound for
+- Typed V1 also requires a mutation plan whose update-result shape has a conservative
+  encoded-response bound. Update execution never materializes `rows_blob`, regardless of plan
+  output metadata, and the execution shape has a finite per-operation bound for
   `hot_forward_vertices`. `gleaph-gql-integration::typed_batch` exhaustively classifies supported
   row-preserving operators, derives that bound from the plan once per group, and is used by both
   Router admission and Graph validation; `gleaph-graph-kernel` owns only the portable wire and byte
@@ -247,6 +249,8 @@ pub enum RouterMutationPayloadV1 {
     TypedSeedBulk(Box<TypedSeedBulkReplayV1>),
     CompletedBulk {
         total_ops: u32,
+        // Empty for legacy bulk; exactly total_ops entries for typed bulk.
+        operation_row_counts: Vec<u64>,
     },
 }
 
@@ -266,6 +270,7 @@ pub struct TypedSeedBulkTargetV1 {
     pub completed: bool,
     pub projection_advanced: bool,
     pub row_count: u64,
+    pub operation_row_counts: Vec<u64>,
 }
 
 pub struct TypedSeedBulkSharedHeaderV1 {
@@ -299,11 +304,13 @@ Typed V1 is single-shard, and `replay.operations.len() == total_ops`. The owning
 stable write boundary validate this invariant; general multi-shard typed replay is a later schema,
 not an implicit parallel-vector contract.
 
-The complete typed V1 payload is persisted before the first Graph `await`, in the same Router
-message that publishes the outbound call. Any validation or encoding failure occurs before that
-await and emits no Graph call. If Graph commits but the Router callback fails, the durable typed
-payload remains `CanonicalPending`; recovery resends the same ordered operations and relies on
-Graph's journal cursor.
+The exact transient request and the prospective complete typed V1 stable record are both encoded
+and size-validated before the stable transition and first Graph `await`. Any validation or encoding
+failure therefore leaves the pristine scalar reservation available for fallback and emits no typed
+Graph call. If Graph commits but the Router callback fails, the durable typed payload remains
+`CanonicalPending`; recovery resends the same ordered operations, verifies terminal Graph journal
+cardinality, records canonical completion from the journal aggregate, advances the existing label
+projection cursor, and only then compacts the Router record.
 
 Typed V1 bounds are normative:
 
@@ -373,8 +380,8 @@ sufficient, such as a shared seed relation.
 - Before typed persistence, the Router calls the shared `gleaph-gql-integration::typed_batch`
   classifier to prove a conservative
   bound for the complete encoded `ExecutePlanBatchResult`: fixed per-item result overhead plus the
-  derived maximum `hot_forward_vertices` must fit under the same portable 2 MiB limit, and
-  `rows_blob` must be statically absent. Graph applies the same classifier before executing the first
+  derived maximum `hot_forward_vertices` must fit under the same portable 2 MiB limit. The update
+  executor guarantees `rows_blob=None`; Graph applies the same classifier before executing the first
   operation. The classifier includes at most one UTF-8-safe bounded item error because execution
   stops at the first failure. Graph retains its final actual-response encode guard as defense in
   depth, not as the admission mechanism after mutations may already have committed. A plan without

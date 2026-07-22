@@ -20,9 +20,9 @@ use gleaph_graph_kernel::index::{
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanResult,
     GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire,
-    MutationId, MutationJournalState, MutationToken, MutationTokenShard, ReadMode,
-    ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire, SeedBindingsWire, SeedRowWire,
-    SeedVertexBinding, ShardEventSeq, UniqueClaimDispatch,
+    MutationId, MutationJournalState, MutationLifecyclePhase, MutationToken, MutationTokenShard,
+    ReadMode, ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire, SeedBindingsWire,
+    SeedRowWire, SeedVertexBinding, ShardEventSeq, UniqueClaimDispatch,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 use ic_cdk::api::msg_caller;
@@ -2201,6 +2201,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
     preflight: Option<&PreflightContext>,
     pre_reserved_mutation: Option<ClientMutationReservation>,
+    persist_dispatch_envelope: bool,
 ) -> Result<PrepareOutcome, RouterError> {
     let mut _instr_logger = PrepareInstrLogger::new(client_mutation_key);
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
@@ -2621,7 +2622,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
     // placed on one shard; a single-anchor threaded bundle whose anchor fans out to many shards is
     // dispatched per shard below as a roll-forward saga — each shard atomic shard-locally, cross-shard
     // convergence roll-forward (no global rollback), resumed by idempotent retry / the recovery timer.
-    if let (Some(key), Some(_)) = (client_mutation_key, mutation_id) {
+    if persist_dispatch_envelope && let (Some(key), Some(_)) = (client_mutation_key, mutation_id) {
         // Persist the envelope whenever this path has a mutation record. The store method is
         // idempotent and only fills an empty, non-terminal record, so this must not be gated on
         // the current call owning the routing lease: a retry can have a valid dispatch path while
@@ -2910,6 +2911,14 @@ pub(crate) async fn execute_bulk_group(
     let group_reservation =
         store.reserve_mutation_id_for_client_key(caller, graph_id, group_key, group_fingerprint)?;
 
+    // A compacted typed record retains ordered per-operation cardinalities so an idempotent retry
+    // reproduces the original batch result rather than repeating the aggregate for every item.
+    if let Some(existing_record) = store.router_mutation_record(caller, graph_id, group_key)
+        && let Some(operation_row_counts) = existing_record.completed_bulk_operation_row_counts()
+    {
+        return completed_typed_bulk_results(operation_row_counts, items.len()).map(Some);
+    }
+
     // ADR 0047: if a durable typed seed bulk record already exists for this exact ordered group,
     // redispatch it directly from stable replay state without re-planning or re-resolving seeds.
     if let Some(existing_record) = store.router_mutation_record(caller, graph_id, group_key)
@@ -3019,10 +3028,67 @@ pub(crate) async fn execute_bulk_group(
         return Ok(Some(typed_results));
     }
 
-    // Fall back to the legacy scalar/legacy-batch path.
+    // Distinct complete-row seeds cannot be represented by the legacy one-seed-per-shard replay
+    // envelope. Release the provisional group reservation and let the caller execute each item
+    // through its own scalar idempotency record.
+    if SeedAnchorSet::from_plans(&group.base.plans, &group.base.pmap, &store, &stats)?
+        .is_some_and(|set| set.is_selective_complete_row_seed())
+    {
+        #[cfg(feature = "pocket-ic-e2e")]
+        crate::test_fault::record_typed_batch_trace("sequential-scalar-fallback");
+        store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
+        return Ok(None);
+    }
+
+    // Seed-invariant groups may use the legacy batch envelope. Preparation deliberately left the
+    // reservation pristine so typed admission could win first; persist the legacy envelope now,
+    // still before the first Graph dispatch await.
+    let envelope_shards = group
+        .base
+        .dispatches
+        .iter()
+        .map(|dispatch| {
+            crate::facade::stable::label_stats::RouterMutationShardV1::new(
+                dispatch.shard_id,
+                dispatch.graph_canister,
+                dispatch.seed_bindings_blob.clone(),
+            )
+        })
+        .collect();
+    store.record_router_mutation_shards(
+        caller,
+        graph_id,
+        group_key,
+        group.base.resolved_labels.clone(),
+        group.base.resolved_properties.clone(),
+        envelope_shards,
+    )?;
+
+    // Fall back to the legacy batch path.
     execute_prepared_bulk_group(group, &store, caller, graph_id, Some(group_key), preflight)
         .await
         .map(Some)
+}
+
+fn completed_typed_bulk_results(
+    operation_row_counts: &[u64],
+    expected_items: usize,
+) -> Result<Vec<GqlQueryResult>, RouterError> {
+    if operation_row_counts.len() != expected_items {
+        return Err(RouterError::Internal(
+            "completed typed bulk result cardinality does not match request".into(),
+        ));
+    }
+    Ok(operation_row_counts
+        .iter()
+        .copied()
+        .map(|row_count| GqlQueryResult {
+            row_count,
+            rows_blob: None,
+            phase: Some(MutationLifecyclePhase::Completed),
+            token: None,
+        })
+        .collect())
 }
 /// Returns true when the plan needs per-item seed bindings that differ per params.
 /// Bulk grouping cannot share one dispatch envelope across such items.
@@ -3187,6 +3253,7 @@ pub(crate) async fn prepare_single_mutation(
         resolved_search,
         preflight,
         pre_reserved_mutation,
+        false,
     )
     .await
 }
@@ -4142,16 +4209,7 @@ async fn execute_typed_bulk_replay(
                         "typed batch V1 graph call failed: {error}"
                     ))
                 })?;
-        if batch.results.is_empty() && batch.next_index.is_none() {
-            for _ in results.len()..item_count {
-                results.push(Ok(ExecutePlanResult {
-                    row_count: 0,
-                    rows_blob: None,
-                    hot_forward_vertices: Vec::new(),
-                }));
-            }
-            break;
-        }
+        let batch_ends_in_error = batch.results.last().is_some_and(Result::is_err);
         for result in batch.results {
             if results.len() >= item_count {
                 return Err(RouterError::InvalidArgument(
@@ -4161,6 +4219,7 @@ async fn execute_typed_bulk_replay(
             results.push(result);
         }
         match batch.next_index {
+            Some(next) if batch_ends_in_error && next as usize + 1 == results.len() => break,
             None => break,
             Some(next) if next as usize >= item_count => {
                 return Err(RouterError::InvalidArgument(format!(
@@ -4184,14 +4243,13 @@ async fn execute_typed_bulk_replay(
         )));
     }
 
-    let mut aggregate_row_count: u64 = 0;
-    let mut hot_forward_vertices: Vec<u32> = Vec::new();
+    #[cfg(feature = "pocket-ic-e2e")]
+    crate::test_fault::maybe_trap_after_typed_graph_commit();
+
     let mut successful_results: Vec<ExecutePlanResult> = Vec::with_capacity(item_count);
     for result in results {
         match result {
             Ok(r) => {
-                aggregate_row_count = aggregate_row_count.saturating_add(r.row_count);
-                hot_forward_vertices.extend(r.hot_forward_vertices.iter().copied());
                 successful_results.push(r);
             }
             Err(error) => {
@@ -4199,6 +4257,23 @@ async fn execute_typed_bulk_replay(
             }
         }
     }
+
+    let entry = fetch_journal_entry(
+        preflight,
+        replay.target.graph_canister,
+        typed_args.shared.mutation_id,
+        replay.target.shard_id,
+    )
+    .await?
+    .ok_or_else(|| {
+        RouterError::InvalidArgument(format!(
+            "graph shard {} did not persist typed mutation journal entry for mutation {}",
+            replay.target.shard_id, typed_args.shared.mutation_id
+        ))
+    })?;
+    validate_completed_typed_journal(&entry, item_count)?;
+
+    let mut hot_forward_vertices = entry.hot_forward_vertices().clone();
     hot_forward_vertices.sort_unstable();
     hot_forward_vertices.dedup();
 
@@ -4228,13 +4303,26 @@ async fn execute_typed_bulk_replay(
         .await?;
     }
 
-    let entry = advance_mutation_label_stats_projection(
+    store.record_typed_bulk_target_completed(
+        caller,
+        graph_id,
+        client_key,
+        replay.target.shard_id,
+        entry.row_count(),
+        entry
+            .bulk_progress()
+            .as_ref()
+            .expect("validated typed journal has bulk progress")
+            .operation_row_counts()
+            .to_vec(),
+    )?;
+
+    advance_label_stats_projection_through(
         store,
         graph_id,
         replay.target.graph_canister,
         replay.target.shard_id,
-        typed_args.shared.mutation_id,
-        preflight,
+        entry.emitted_delta_last_seq(),
     )
     .await?;
     let token = Some(MutationToken {
@@ -4245,13 +4333,6 @@ async fn execute_typed_bulk_replay(
         }],
     });
 
-    store.record_typed_bulk_target_completed(
-        caller,
-        graph_id,
-        client_key,
-        replay.target.shard_id,
-        aggregate_row_count,
-    )?;
     store.record_typed_bulk_target_projection_advanced(
         caller,
         graph_id,
@@ -4260,6 +4341,34 @@ async fn execute_typed_bulk_replay(
     )?;
 
     Ok((successful_results, token))
+}
+
+fn validate_completed_typed_journal(
+    entry: &GraphMutationJournalEntryWire,
+    item_count: usize,
+) -> Result<(), RouterError> {
+    if !matches!(entry.state(), MutationJournalState::Completed) || entry.next_index().is_some() {
+        return Err(RouterError::InvalidArgument(
+            "typed batch Graph journal is not terminal".into(),
+        ));
+    }
+    let progress = entry.bulk_progress().as_ref().ok_or_else(|| {
+        RouterError::InvalidArgument("typed batch Graph journal is missing bulk progress".into())
+    })?;
+    let expected = u32::try_from(item_count)
+        .map_err(|_| RouterError::InvalidArgument("typed batch operation count overflow".into()))?;
+    if progress.operation_count() != expected
+        || progress.completed_count() != expected
+        || progress.operation_row_counts().len() != item_count
+    {
+        return Err(RouterError::InvalidArgument(format!(
+            "typed batch Graph journal progress mismatch: operations={}, completed={}, row_counts={}, expected={expected}",
+            progress.operation_count(),
+            progress.completed_count(),
+            progress.operation_row_counts().len()
+        )));
+    }
+    Ok(())
 }
 
 async fn execute_prepared_bulk_group_typed(
@@ -4276,6 +4385,9 @@ async fn execute_prepared_bulk_group_typed(
     };
     use gleaph_gql_integration::typed_batch::{TypedBatchCandidate, TypedBatchCandidateOp};
 
+    #[cfg(feature = "pocket-ic-e2e")]
+    crate::test_fault::record_typed_batch_trace("entered");
+
     let base = group.base;
     let Some(mutation_id) = base.mutation_id else {
         return Ok(None);
@@ -4291,6 +4403,8 @@ async fn execute_prepared_bulk_group_typed(
     let dispatch = &base.dispatches[0];
     let shard = store.resolve_shard(graph_id, dispatch.shard_id)?;
     if !shard.typed_seed_batch_v1 {
+        #[cfg(feature = "pocket-ic-e2e")]
+        crate::test_fault::record_typed_batch_trace("capability-disabled");
         return Ok(None);
     }
     if base.unique_claims.as_ref().is_some_and(|v| !v.is_empty())
@@ -4372,9 +4486,24 @@ async fn execute_prepared_bulk_group_typed(
             })
             .collect(),
     };
-    if gleaph_gql_integration::typed_batch::classify_typed_batch_candidate(&candidate).is_err() {
-        return Ok(None);
-    }
+    let validated_typed_args =
+        match gleaph_gql_integration::typed_batch::build_and_validate_typed_batch_args(
+            &candidate,
+            Some(base.resolved_labels.clone()),
+            Some(base.resolved_properties.clone()),
+            Some(base.indexed_properties.clone()),
+            &base.indexed_embeddings,
+            gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
+        ) {
+            Ok(args) => args,
+            Err(_error) => {
+                #[cfg(feature = "pocket-ic-e2e")]
+                crate::test_fault::record_typed_batch_trace(format!("request-rejected: {_error}"));
+                return Ok(None);
+            }
+        };
+    #[cfg(feature = "pocket-ic-e2e")]
+    crate::test_fault::record_typed_batch_trace("validated");
 
     let group_fingerprint = bulk_group_fingerprint(
         &base.plan_blob,
@@ -4389,17 +4518,17 @@ async fn execute_prepared_bulk_group_typed(
         total_ops: item_count as u32,
         target: TypedSeedBulkTargetV1::new(dispatch.shard_id, dispatch.graph_canister),
         shared: TypedSeedBulkSharedHeaderV1 {
-            element_id_encoding_key: base.element_id_encoding_key.0,
-            plan_blob: base.plan_blob.clone(),
+            element_id_encoding_key: validated_typed_args.shared.element_id_encoding_key,
+            plan_blob: validated_typed_args.shared.plan_blob,
             mode: base.mode,
-            indexed_properties: Some(base.indexed_properties.clone()),
+            indexed_properties: validated_typed_args.shared.indexed_properties,
         },
-        operations: candidate
+        operations: validated_typed_args
             .operations
-            .iter()
+            .into_iter()
             .map(|op| TypedSeedBulkOperationV1 {
-                params: op.params_blob.clone(),
-                seed_bindings: op.seed.clone(),
+                params: op.params_blob,
+                seed_bindings: op.seed,
             })
             .collect(),
     };
@@ -4413,6 +4542,8 @@ async fn execute_prepared_bulk_group_typed(
         base.resolved_properties.clone(),
         replay,
     )?;
+    #[cfg(feature = "pocket-ic-e2e")]
+    crate::test_fault::record_typed_batch_trace("persisted");
 
     let record = store
         .router_mutation_record(caller, graph_id, key)
@@ -4569,6 +4700,7 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         resolved_search,
         preflight,
         None,
+        true,
     )
     .await?;
     match prepared {
@@ -5028,11 +5160,6 @@ async fn recover_typed_bulk_record(
     record: &crate::facade::stable::label_stats::RouterMutationRecord,
 ) -> Result<(), RouterError> {
     use crate::facade::stable::label_stats::RouterMutationPayloadV1;
-    use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
-        ExecutePlanTypedOp,
-    };
-
     let replay = match record.payload() {
         RouterMutationPayloadV1::TypedSeedBulk(replay) => replay,
         _ => return Ok(()),
@@ -5041,104 +5168,23 @@ async fn recover_typed_bulk_record(
         return Ok(());
     }
 
-    let typed_args = ExecutePlanBatchTypedArgs {
-        shared: ExecutePlanBatchTypedShared {
-            target_shard_id: replay.target.shard_id,
-            element_id_encoding_key: replay.shared.element_id_encoding_key,
-            mutation_id: record.as_v1().mutation_id,
-            plan_blob: replay.shared.plan_blob.clone(),
-            resolved_labels: record.as_v1().resolved_labels.clone(),
-            resolved_properties: record.as_v1().resolved_properties.clone(),
-            indexed_properties: replay.shared.indexed_properties.clone(),
-        },
-        operations: replay
-            .operations
-            .iter()
-            .map(|op| ExecutePlanTypedOp {
-                params_blob: op.params.clone(),
-                seed: op.seed_bindings.clone(),
-            })
-            .collect(),
-        batch_mode: ExecutePlanBatchMode::Dynamic,
-    };
-    typed_args
-        .validate()
-        .map_err(|e| RouterError::InvalidArgument(format!("typed recovery validation: {e}")))?;
-
-    let mut results: Vec<Result<ExecutePlanResult, String>> = Vec::new();
-    let item_count = typed_args.operations.len();
-    const MAX_TYPED_RECOVERY_ATTEMPTS: usize = 100;
-    let mut attempts = 0usize;
-    loop {
-        attempts += 1;
-        if attempts > MAX_TYPED_RECOVERY_ATTEMPTS {
-            store.record_router_mutation_last_error(
-                key,
-                "typed bulk recovery exceeded maximum continuation attempts".into(),
-            )?;
-            return Ok(());
-        }
-        let batch =
-            execute_plan_batch_typed_v1_on_graph(replay.target.graph_canister, typed_args.clone())
-                .await
-                .map_err(|error| {
-                    RouterError::InvalidArgument(format!("typed recovery call: {error}"))
-                })?;
-        for result in batch.results {
-            if results.len() >= item_count {
-                return Err(RouterError::InvalidArgument(
-                    "typed recovery returned more results than operations".into(),
-                ));
-            }
-            results.push(result);
-        }
-        match batch.next_index {
-            None => break,
-            Some(next) if next as usize >= item_count => {
-                return Err(RouterError::InvalidArgument(format!(
-                    "typed recovery next_index {next} is out of range"
-                )));
-            }
-            Some(next) if next as usize == results.len() => continue,
-            Some(next) => {
-                return Err(RouterError::InvalidArgument(format!(
-                    "typed recovery next_index {next} does not match result count {}",
-                    results.len()
-                )));
-            }
+    match execute_typed_bulk_replay(
+        replay,
+        store,
+        key.caller,
+        key.graph_id,
+        &key.client_key,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            store.record_router_mutation_last_error(key, error.to_string())?;
+            Ok(())
         }
     }
-    if results.len() != item_count {
-        return Err(RouterError::InvalidArgument(format!(
-            "typed recovery final result count {} does not match operation count {}",
-            results.len(),
-            item_count
-        )));
-    }
-
-    let aggregate_row_count: u64 = results
-        .iter()
-        .flatten()
-        .map(|r| r.row_count)
-        .fold(0u64, |a, b| a.saturating_add(b));
-    if !replay.target.completed {
-        store.record_typed_bulk_target_completed(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
-            replay.target.shard_id,
-            aggregate_row_count,
-        )?;
-    }
-    if !replay.target.projection_advanced {
-        store.record_typed_bulk_target_projection_advanced(
-            key.caller,
-            key.graph_id,
-            &key.client_key,
-            replay.target.shard_id,
-        )?;
-    }
-    Ok(())
 }
 
 #[cfg(target_family = "wasm")]
@@ -5232,9 +5278,31 @@ mod tests {
         ValuePostingCount,
     };
     use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelStatsDelta,
-        LabelStatsDeltaEventWire, MutationToken, MutationTokenShard, ReadMode, SeedBindingsWire,
+        ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphBulkMutationProgress,
+        GraphMutationJournalEntryWire, LabelStatsDelta, LabelStatsDeltaEventWire,
+        MutationJournalState, MutationLifecyclePhase, MutationToken, MutationTokenShard, ReadMode,
+        SeedBindingsWire,
     };
+
+    #[test]
+    fn typed_journal_validation_requires_exact_terminal_progress() {
+        let mut entry = GraphMutationJournalEntryWire::new(
+            7,
+            MutationJournalState::Completed,
+            2,
+            None,
+            None,
+            Vec::new(),
+        );
+        entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(2, 2, vec![1, 1])));
+        super::validate_completed_typed_journal(&entry, 2).expect("exact terminal progress");
+
+        entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(2, 1, vec![1])));
+        assert!(super::validate_completed_typed_journal(&entry, 2).is_err());
+        entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(2, 2, vec![1, 1])));
+        entry.set_next_index(Some(1));
+        assert!(super::validate_completed_typed_journal(&entry, 2).is_err());
+    }
 
     #[test]
     fn gql_result_payload_guard_rejects_oversized_rows_blob() {
@@ -7519,5 +7587,23 @@ mod tests {
             ("b".to_string(), vec![1u32; 100]),
         ];
         assert!(super::bounded_cartesian_product(big, 1024).is_err());
+    }
+
+    #[test]
+    fn completed_typed_bulk_retry_preserves_ordered_nonzero_row_counts() {
+        let results = super::completed_typed_bulk_results(&[3, 0, 4], 3).expect("valid results");
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.row_count)
+                .collect::<Vec<_>>(),
+            vec![3, 0, 4]
+        );
+        assert!(results.iter().all(|result| {
+            result.phase == Some(MutationLifecyclePhase::Completed)
+                && result.rows_blob.is_none()
+                && result.token.is_none()
+        }));
+        assert!(super::completed_typed_bulk_results(&[3, 4], 3).is_err());
     }
 }

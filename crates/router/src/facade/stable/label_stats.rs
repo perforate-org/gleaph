@@ -256,14 +256,17 @@ pub enum RouterMutationPayloadV1 {
         total_ops: u32,
         shards: Vec<RouterMutationShardV1>,
     },
-    /// Ordered per-operation typed seed replay for a single target shard. Dormant in this slice:
-    /// no production path constructs or dispatches it; it exists only so the later typed transport
-    /// slices can persist durable replay state without a blob-plus-typed dual authority.
+    /// Ordered per-operation typed seed replay for a single target shard. Router admission persists
+    /// this exact relation before dispatch; retry and maintenance recovery reconstruct the same
+    /// typed request without a blob-plus-typed dual authority.
     TypedSeedBulk(Box<TypedSeedBulkReplayV1>),
-    /// Terminal compacted form for both legacy and typed bulk. Carries no shard, plan, catalog,
-    /// params, seed, or resolved-table replay state because top-level `completed_row_count` is
-    /// authoritative and replay already short-circuits.
-    CompletedBulk { total_ops: u32 },
+    /// Terminal compacted form for both legacy and typed bulk. Typed completion retains the
+    /// ordered per-operation row counts required to reproduce the original batch result; legacy
+    /// completion uses an empty vector because that path only owns the aggregate row count.
+    CompletedBulk {
+        total_ops: u32,
+        operation_row_counts: Vec<u64>,
+    },
 }
 
 /// Durable typed seed replay state for one bulk group (ADR 0047).
@@ -299,6 +302,9 @@ pub struct TypedSeedBulkTargetV1 {
     pub completed: bool,
     pub projection_advanced: bool,
     pub row_count: u64,
+    /// Ordered row counts copied from the terminal Graph journal before projection advancement.
+    /// Empty until canonical completion; then its length must equal `total_ops`.
+    pub operation_row_counts: Vec<u64>,
 }
 
 impl TypedSeedBulkTargetV1 {
@@ -309,6 +315,7 @@ impl TypedSeedBulkTargetV1 {
             completed: false,
             projection_advanced: false,
             row_count: 0,
+            operation_row_counts: Vec::new(),
         }
     }
 }
@@ -423,6 +430,7 @@ impl RouterMutationRecord {
         if replay.target.completed
             || replay.target.projection_advanced
             || replay.target.row_count != 0
+            || !replay.target.operation_row_counts.is_empty()
         {
             return Err(RouterError::InvalidArgument(
                 "typed bulk V1 target must be pristine at admission".into(),
@@ -497,7 +505,7 @@ impl RouterMutationRecord {
         match self.payload() {
             RouterMutationPayloadV1::LegacyBulk { total_ops, .. } => Some(*total_ops),
             RouterMutationPayloadV1::TypedSeedBulk(replay) => Some(replay.total_ops),
-            RouterMutationPayloadV1::CompletedBulk { total_ops } => Some(*total_ops),
+            RouterMutationPayloadV1::CompletedBulk { total_ops, .. } => Some(*total_ops),
             _ => None,
         }
     }
@@ -506,6 +514,17 @@ impl RouterMutationRecord {
     pub fn typed_target(&self) -> Option<&TypedSeedBulkTargetV1> {
         match self.payload() {
             RouterMutationPayloadV1::TypedSeedBulk(replay) => Some(&replay.target),
+            _ => None,
+        }
+    }
+
+    /// Ordered result cardinalities retained by a completed typed bulk record.
+    pub fn completed_bulk_operation_row_counts(&self) -> Option<&[u64]> {
+        match self.payload() {
+            RouterMutationPayloadV1::CompletedBulk {
+                operation_row_counts,
+                ..
+            } if !operation_row_counts.is_empty() => Some(operation_row_counts),
             _ => None,
         }
     }
@@ -923,7 +942,10 @@ mod tests {
         let mut record = RouterMutationRecord::new(1, 0, Vec::new());
         record.as_v1_mut().routing_in_progress = false;
         record.as_v1_mut().completed_row_count = Some(7);
-        record.as_v1_mut().payload = RouterMutationPayloadV1::CompletedBulk { total_ops: 7 };
+        record.as_v1_mut().payload = RouterMutationPayloadV1::CompletedBulk {
+            total_ops: 7,
+            operation_row_counts: Vec::new(),
+        };
         assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);
         assert!(record.is_bulk());
         assert!(!record.is_uncommitted_dispatch());
@@ -934,11 +956,21 @@ mod tests {
         let mut record = typed_seed_bulk_record(5);
         record.as_v1_mut().routing_in_progress = false;
         record.as_v1_mut().completed_row_count = Some(5);
+        record.typed_target_mut().unwrap().operation_row_counts = vec![1; 5];
         compact_completed_record(&mut record);
         assert!(matches!(
             record.payload(),
-            RouterMutationPayloadV1::CompletedBulk { total_ops: 5 }
+            RouterMutationPayloadV1::CompletedBulk {
+                total_ops: 5,
+                operation_row_counts,
+            } if operation_row_counts == &[1; 5]
         ));
+        assert_eq!(
+            record.completed_bulk_operation_row_counts(),
+            Some(&[1; 5][..])
+        );
+        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
+        assert_eq!(decoded, record);
         assert!(record.as_v1().resolved_labels.is_none());
         assert!(record.as_v1().resolved_properties.is_none());
         assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);

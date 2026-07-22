@@ -38,9 +38,10 @@ fan-out are never read again: replay short-circuits on `completed_row_count`
 the heavy fields). At that point `record_router_mutation_shard_projection_advanced` pins
 the final `completed_row_count` and drops `resolved_labels`, `resolved_properties`, and any
 shard/plan/seed replay. Scalar terminal records stay `Scalar { shards: [] }`; active bulk payloads
-(both `LegacyBulk` and `TypedSeedBulk`) compact to `CompletedBulk { total_ops }`. The record shrinks
-to `{ mutation_id, created_at_ns, request_fingerprint, completed_row_count, payload }` with the
-smallest possible payload variant, which is all replay and TTL eviction need.
+(both `LegacyBulk` and `TypedSeedBulk`) compact to `CompletedBulk`. Legacy completion retains only
+`total_ops`; typed completion additionally retains exactly `total_ops` ordered row counts so a
+same-key retry reproduces each operation's original result rather than repeating the aggregate.
+The bounded row-count vector is the only typed result state retained for replay and TTL eviction.
 
 ### B — amortized GC on the write path (bound count, automatic)
 

@@ -146,14 +146,17 @@ impl GraphMutationJournalEntry {
     }
 
     pub fn wire(&self) -> GraphMutationJournalEntryWire {
-        GraphMutationJournalEntryWire::new(
+        let mut wire = GraphMutationJournalEntryWire::new(
             self.as_v1().mutation_id,
             self.as_v1().state,
             self.as_v1().row_count,
             self.as_v1().emitted_delta_first_seq,
             self.as_v1().emitted_delta_last_seq,
             self.as_v1().hot_forward_vertices.clone(),
-        )
+        );
+        wire.set_next_index(self.as_v1().next_index);
+        wire.set_bulk_progress(self.as_v1().bulk_progress.clone());
+        wire
     }
 
     pub fn is_completed(&self) -> bool {
@@ -333,6 +336,19 @@ mod tests {
 
     fn completed_at(mutation_id: MutationId, recorded_at_ns: u64) -> GraphMutationJournalEntry {
         GraphMutationJournalEntry::completed(mutation_id, 1, None, None, Vec::new(), recorded_at_ns)
+    }
+
+    #[test]
+    fn wire_preserves_bulk_cursor_and_progress() {
+        let mut entry = completed_at(9, 0);
+        entry.set_next_index(Some(1));
+        entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(2, 1, vec![3])));
+        let wire = entry.wire();
+        assert_eq!(wire.next_index(), Some(1));
+        let progress = wire.bulk_progress().as_ref().expect("bulk progress");
+        assert_eq!(progress.operation_count(), 2);
+        assert_eq!(progress.completed_count(), 1);
+        assert_eq!(progress.operation_row_counts(), &[3]);
     }
 
     #[test]

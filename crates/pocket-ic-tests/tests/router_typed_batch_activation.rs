@@ -18,7 +18,7 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::encode_gql_params_blob;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
+    admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label, arm_router_fault,
     create_vertex_property_index, gql_execute_idempotent_as_admin, install_single_shard_federation,
 };
 use gleaph_router::types::{
@@ -50,7 +50,6 @@ fn params_blob(items: Vec<(&str, Value)>) -> Vec<u8> {
 
 fn execute_batch_as_admin(
     env: &gleaph_pocket_ic_tests::FederationEnv,
-    _client_key: &str,
     mutations: Vec<GqlExecuteIdempotentBatchItem>,
 ) -> Vec<gleaph_graph_kernel::plan_exec::GqlQueryResult> {
     let args = GqlExecuteIdempotentBatchArgs {
@@ -147,6 +146,21 @@ fn clear_capability(env: &gleaph_pocket_ic_tests::FederationEnv) {
     result.unwrap_or_else(|e| panic!("clear rejected: {e:?}"))
 }
 
+fn typed_batch_trace(env: &gleaph_pocket_ic_tests::FederationEnv) -> String {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "test_typed_batch_trace",
+            Encode!(&()).expect("encode typed trace args"),
+        )
+        .expect("query typed trace");
+    Decode!(&bytes, Result<String, RouterError>)
+        .expect("decode typed trace")
+        .expect("typed trace authorized")
+}
+
 #[test]
 fn typed_batch_activation_lifecycle_drives_capability_fallback_and_retry() {
     let env = install_single_shard_federation();
@@ -193,8 +207,9 @@ fn typed_batch_activation_lifecycle_drives_capability_fallback_and_retry() {
     // 2. With the registry capability in its default (disabled) state, the first batch
     //    falls back to the scalar bulk path and succeeds.
     let fallback_posts = post_mutations(&["alice", "bob"], 1);
-    execute_batch_as_admin(&env, "fallback-batch", fallback_posts.clone());
+    execute_batch_as_admin(&env, fallback_posts.clone());
     assert_eq!(count_posts(&env), 2, "fallback batch must create two posts");
+    assert_eq!(typed_batch_trace(&env), "sequential-scalar-fallback");
 
     // 3. Refresh the capability. The Graph endpoint advertises support, so the bit commits.
     assert!(
@@ -204,11 +219,48 @@ fn typed_batch_activation_lifecycle_drives_capability_fallback_and_retry() {
 
     // 4. With capability enabled, the next eligible batch executes through the typed endpoint.
     let typed_posts = post_mutations(&["carol", "alice"], 3);
-    let typed_results = execute_batch_as_admin(&env, "typed-batch", typed_posts.clone());
+    arm_router_fault(&env, 3);
+    let trapped_args = GqlExecuteIdempotentBatchArgs {
+        mutations: typed_posts.clone(),
+        start_index: 0,
+        instruction_budget: None,
+    };
+    let trapped = env.pic.update_call(
+        env.router,
+        env.admin,
+        "gql_execute_idempotent_batch",
+        Encode!(&trapped_args).expect("encode trapped typed batch"),
+    );
+    assert!(
+        trapped.is_err(),
+        "fault must trap after the Graph commit; typed trace: {}",
+        typed_batch_trace(&env)
+    );
+    assert_eq!(
+        typed_batch_trace(&env),
+        "persisted",
+        "fault must occur only after durable typed replay admission"
+    );
+    arm_router_fault(&env, 0);
+    assert_eq!(
+        count_posts(&env),
+        4,
+        "Graph canonical writes must survive the Router callback trap"
+    );
+
+    let typed_results = execute_batch_as_admin(&env, typed_posts.clone());
     assert_eq!(
         typed_results.len(),
         2,
         "typed batch must return one result per operation"
+    );
+    assert_eq!(
+        typed_results
+            .iter()
+            .map(|result| result.row_count)
+            .collect::<Vec<_>>(),
+        vec![0, 0],
+        "POSTED update transport reports no materialized result rows"
     );
     assert_eq!(
         count_posts(&env),
@@ -217,11 +269,22 @@ fn typed_batch_activation_lifecycle_drives_capability_fallback_and_retry() {
     );
 
     // 5. Retry with the same client key is idempotent and does not duplicate canonical effects.
-    let retry_results = execute_batch_as_admin(&env, "typed-batch", typed_posts.clone());
+    let retry_results = execute_batch_as_admin(&env, typed_posts.clone());
     assert_eq!(
         retry_results.len(),
         2,
         "retry of a completed typed group must return the same number of results"
+    );
+    assert_eq!(
+        retry_results
+            .iter()
+            .map(|result| result.row_count)
+            .collect::<Vec<_>>(),
+        typed_results
+            .iter()
+            .map(|result| result.row_count)
+            .collect::<Vec<_>>(),
+        "completed replay must preserve ordered row counts"
     );
     assert_eq!(
         count_posts(&env),
@@ -231,7 +294,7 @@ fn typed_batch_activation_lifecycle_drives_capability_fallback_and_retry() {
 
     // 6. Clear the capability. Existing typed records continue to resolve on retry.
     clear_capability(&env);
-    let after_clear_retry = execute_batch_as_admin(&env, "typed-batch", typed_posts.clone());
+    let after_clear_retry = execute_batch_as_admin(&env, typed_posts.clone());
     assert_eq!(
         after_clear_retry.len(),
         2,
@@ -245,10 +308,11 @@ fn typed_batch_activation_lifecycle_drives_capability_fallback_and_retry() {
 
     // 7. New admission after clear falls back to the scalar path.
     let after_clear_posts = post_mutations(&["bob", "carol"], 5);
-    execute_batch_as_admin(&env, "after-clear-batch", after_clear_posts);
+    execute_batch_as_admin(&env, after_clear_posts);
     assert_eq!(
         count_posts(&env),
         6,
         "post-clear batch must create two more posts via scalar fallback"
     );
+    assert_eq!(typed_batch_trace(&env), "sequential-scalar-fallback");
 }

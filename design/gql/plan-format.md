@@ -102,11 +102,15 @@ contracts must be distinguished.
 - the scalar `ExecutePlanArgs.seed_bindings_blob` path and the legacy blob batch method remain
   unchanged; scalar is the fallback for distinct-seed groups, while legacy batch is used only when
   its existing replay representation is sufficient;
-- the new method reuses `ExecutePlanBatchResult` (ordered per-item results and `next_index`);
+- the new method reuses `ExecutePlanBatchResult` (ordered per-item results and `next_index`), while
+  Graph journal bulk progress persists committed-prefix row counts so replay preserves those results;
+- typed update admission may retain plan output metadata because the update executor always returns
+  `rows_blob=None`; response admission instead bounds result cardinality, errors, and hot vertices;
 - `RouterMutationRecord::V1` is redefined incompatibly with exhaustive scalar, legacy-bulk,
   typed-bulk, and terminal completed-bulk payload variants; the typed payload persists the exact
-  ordered replay relation without a parallel blob representation, and completed records compact to
-  `CompletedBulk { total_ops }` per ADR 0025 mechanism E;
+  ordered replay relation without a parallel blob representation, and completed records discard the
+  heavy replay envelope while retaining bounded ordered row counts for exact typed-batch retry per
+  ADR 0025 mechanism E;
 - Router activation is implemented: the typed path is selected only when the durable shard-registry V2 entry records `typed_seed_batch_v1: true` from an admin-refreshed, post-await target-revalidated capability; ambiguous typed-call outcomes retain typed durable replay under the same mutation id and operation order;
 - initial Router installation or rollback to older Router Wasm requires fresh install/reset because
   there is no deployed stable state to migrate;

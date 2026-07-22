@@ -340,6 +340,11 @@ export type GqlExecutionMode = {
  */
 export type GraphBulkMutationProgress = { 'V1' : GraphBulkMutationProgressV1 };
 export interface GraphBulkMutationProgressV1 {
+  /**
+   * Ordered row counts for the committed prefix. Persisted so a completed replay can return the
+   * same per-operation result cardinality instead of synthetic zeroes.
+   */
+  'operation_row_counts' : BigUint64Array,
   'completed_count' : number,
   'operation_count' : number,
 }

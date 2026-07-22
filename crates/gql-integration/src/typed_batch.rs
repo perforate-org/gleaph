@@ -12,8 +12,9 @@
 //! - a required complete-row seed relation with no legacy grouped `entries`;
 //! - no resolved-search relation;
 //! - no uniqueness, constrained, local-unique, or indexed-embedding dispatch state;
-//! - a physical plan that requires the write path, produces no `rows_blob`, and is a single-anchor
-//!   threaded bundle so the number of hot-forward vertices is bounded by the plan structure.
+//! - a physical plan that requires the write path and is a single-anchor threaded bundle so the
+//!   number of hot-forward vertices is bounded by the plan structure. Graph update execution never
+//!   materializes `rows_blob`, even when a plan carries output metadata.
 //!
 //! Anything else keeps the existing scalar or legacy-batch path.
 
@@ -21,8 +22,9 @@ use candid::{Decode, Encode};
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanBatchResult, ExecutePlanBatchTypedArgs, ExecutePlanResult,
-    GqlExecutionMode, MAX_TYPED_BATCH_ERROR_BYTES, SeedBindingsWire,
+    ExecutePlanArgs, ExecutePlanBatchMode, ExecutePlanBatchResult, ExecutePlanBatchTypedArgs,
+    ExecutePlanBatchTypedShared, ExecutePlanResult, ExecutePlanTypedOp, GqlExecutionMode,
+    MAX_TYPED_BATCH_ERROR_BYTES, ResolvedLabelTable, ResolvedPropertyTable, SeedBindingsWire,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 
@@ -74,7 +76,7 @@ pub(crate) struct TypedBatchPlanBounds {
 /// Checks:
 /// - the blob is a decodable plan bundle;
 /// - the bundle requires the write path;
-/// - the final output produces no `rows_blob` (no explicit RETURN columns in update mode);
+/// - update execution produces no `rows_blob`; output metadata therefore does not affect the wire;
 /// - the plan is a single-anchor threaded bundle, so all graph reads come from the seeded anchor;
 /// - the number of `InsertEdge` operators is bounded.
 ///
@@ -91,9 +93,6 @@ fn validate_typed_batch_plan(plan_blob: &[u8]) -> Result<TypedBatchPlanBounds, &
     }
     let mut insert_edges_per_input_row = 0usize;
     for plan in &plans {
-        if !plan.output.columns.is_empty() {
-            return Err("typed V1 does not support plans with returned columns");
-        }
         if !plan.is_single_anchor_threaded_bundle() {
             return Err("typed V1 requires a single-anchor threaded bundle");
         }
@@ -393,7 +392,16 @@ pub fn classify_typed_batch_eligibility(operations: &[ExecutePlanArgs]) -> Typed
 /// This is the Router-side production entry point: complete-row seeds have already been resolved
 /// as [`SeedBindingsWire`], so the candidate carries them directly without per-operation Candid
 /// encoding. It reuses the same plan and response-bound rules as the legacy-args classifier.
-pub fn classify_typed_batch_candidate(candidate: &TypedBatchCandidate) -> Result<(), &'static str> {
+pub fn classify_typed_batch_candidate(
+    candidate: &TypedBatchCandidate,
+    indexed_embeddings: &IndexedEmbeddingCatalog,
+) -> Result<(), &'static str> {
+    if !indexed_embeddings.is_empty() {
+        return Err("typed V1 does not support indexed-embedding dispatch");
+    }
+    if candidate.operations.is_empty() || candidate.operations.len() > 1024 {
+        return Err("typed V1 operation count must be 1..=1024");
+    }
     let plan_bounds = validate_typed_batch_plan(&candidate.plan_blob)?;
     for op in &candidate.operations {
         if !op.seed.entries.is_empty() {
@@ -414,6 +422,44 @@ pub fn classify_typed_batch_candidate(candidate: &TypedBatchCandidate) -> Result
         plan_bounds,
     )?;
     Ok(())
+}
+
+/// Build and validate the exact production typed request that crosses the Router→Graph boundary.
+///
+/// Keeping construction here makes the semantic classifier, full-request size validation, Router
+/// admission, and canbench probe share one implementation. Callers must complete this check before
+/// persisting a durable typed replay payload; any rejection is a pre-dispatch fallback decision.
+pub fn build_and_validate_typed_batch_args(
+    candidate: &TypedBatchCandidate,
+    resolved_labels: Option<ResolvedLabelTable>,
+    resolved_properties: Option<ResolvedPropertyTable>,
+    indexed_properties: Option<gleaph_graph_kernel::index::IndexedPropertyCatalog>,
+    indexed_embeddings: &IndexedEmbeddingCatalog,
+    batch_mode: ExecutePlanBatchMode,
+) -> Result<ExecutePlanBatchTypedArgs, String> {
+    classify_typed_batch_candidate(candidate, indexed_embeddings).map_err(str::to_string)?;
+    let args = ExecutePlanBatchTypedArgs {
+        shared: ExecutePlanBatchTypedShared {
+            target_shard_id: candidate.target_shard_id,
+            element_id_encoding_key: candidate.element_id_encoding_key,
+            mutation_id: candidate.mutation_id,
+            plan_blob: candidate.plan_blob.clone(),
+            resolved_labels,
+            resolved_properties,
+            indexed_properties,
+        },
+        operations: candidate
+            .operations
+            .iter()
+            .map(|op| ExecutePlanTypedOp {
+                params_blob: op.params_blob.clone(),
+                seed: op.seed.clone(),
+            })
+            .collect(),
+        batch_mode,
+    };
+    args.validate()?;
+    Ok(args)
 }
 
 /// Validate that a Graph-ingress typed batch envelope is eligible for the V1 path.
@@ -765,13 +811,11 @@ mod tests {
     }
 
     #[test]
-    fn plan_that_produces_rows_blob_is_ineligible() {
+    fn returned_columns_remain_eligible_on_update_transport() {
         let mut op = base_op();
         op.plan_blob = write_plan_with_return();
         let result = classify_typed_batch_eligibility(&[op]);
-        assert!(
-            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("returned columns"))
-        );
+        assert!(matches!(result, TypedBatchEligibility::Eligible(_)));
     }
 
     #[test]
@@ -875,6 +919,72 @@ mod tests {
         };
         let err = validate_typed_batch_eligibility_for_graph(&args).expect_err("empty ops");
         assert!(err.contains("at least one operation"));
+    }
+
+    #[test]
+    fn production_builder_rejects_empty_and_full_request_oversize_candidates() {
+        let TypedBatchEligibility::Eligible(mut candidate) =
+            classify_typed_batch_eligibility(&[base_op()])
+        else {
+            panic!("base operation must be typed-eligible");
+        };
+        candidate.operations.clear();
+        assert!(
+            build_and_validate_typed_batch_args(
+                &candidate,
+                None,
+                None,
+                None,
+                &IndexedEmbeddingCatalog::default(),
+                ExecutePlanBatchMode::Dynamic,
+            )
+            .expect_err("empty candidate")
+            .contains("1..=1024")
+        );
+
+        let TypedBatchEligibility::Eligible(mut candidate) =
+            classify_typed_batch_eligibility(&[base_op()])
+        else {
+            panic!("base operation must be typed-eligible");
+        };
+        let mut operation = candidate.operations[0].clone();
+        operation.params_blob = vec![0; 3_000];
+        candidate.operations = vec![operation; 1024];
+        assert!(
+            build_and_validate_typed_batch_args(
+                &candidate,
+                None,
+                None,
+                None,
+                &IndexedEmbeddingCatalog::default(),
+                ExecutePlanBatchMode::Dynamic,
+            )
+            .expect_err("full request must exceed portable payload bound")
+            .contains("request exceeds")
+        );
+
+        let indexed_embeddings = IndexedEmbeddingCatalog {
+            embeddings: vec![gleaph_graph_kernel::vector_index::IndexedEmbeddingSpec {
+                embedding_name_id: 5,
+                index_id: 11,
+                kind: gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+                metric: gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+                encoding: gleaph_graph_kernel::vector_index::VectorEncoding::F32,
+                dims: 16,
+            }],
+        };
+        assert!(
+            build_and_validate_typed_batch_args(
+                &candidate,
+                None,
+                None,
+                None,
+                &indexed_embeddings,
+                ExecutePlanBatchMode::Dynamic,
+            )
+            .expect_err("indexed embeddings require scalar dispatch")
+            .contains("indexed-embedding")
+        );
     }
 
     #[test]

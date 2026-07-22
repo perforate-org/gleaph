@@ -532,13 +532,20 @@ fn test_declare_unique_constraint(
     canister::test_declare_unique_constraint(logical_graph_name, constraint_name, label, property)
 }
 
-/// Test-only (`pocket-ic-e2e`): arm (or clear, with `0`) an ADR 0030 write-path fault injection so
-/// the failure-injection e2e suite can reproduce trap boundaries (Try-then-trap, Confirm-then-trap).
+/// Test-only (`pocket-ic-e2e`): arm (or clear, with `0`) a Router write-path fault injection so
+/// E2E suites can reproduce canonical commit / Router callback trap boundaries.
 /// Admin-authorized. See [`crate::test_fault`].
 #[cfg(feature = "pocket-ic-e2e")]
 #[update]
 fn test_arm_fault(code: u8) -> Result<(), RouterError> {
     canister::test_arm_fault(code)
+}
+
+/// Test-only (`pocket-ic-e2e`): report the last typed-admission stage for transport assertions.
+#[cfg(feature = "pocket-ic-e2e")]
+#[query]
+fn test_typed_batch_trace() -> Result<String, RouterError> {
+    canister::test_typed_batch_trace()
 }
 
 /// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation into `Reclaiming` (admin), so the

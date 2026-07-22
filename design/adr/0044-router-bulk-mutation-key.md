@@ -90,8 +90,10 @@ This ADR originally defined V1 stable records sufficient for homogeneous bulk gr
 operation shares the same seed relation. Because Gleaph has no deployed Router stable state to
 preserve, ADR 0047 redefines `RouterMutationRecord::V1` incompatibly with exhaustive `Scalar`,
 `LegacyBulk`, `TypedSeedBulk`, and terminal `CompletedBulk` payload variants. The typed payload persists the exact ordered per-operation relation before
-the first Graph await and cannot coexist with a legacy seed blob. `CompletedBulk` compacts away all
-heavy replay state once every shard outcome and projection converges, satisfying the existing
+the first Graph await and cannot coexist with a legacy seed blob. `CompletedBulk` compacts away the
+plan, params, seeds, target, and resolved tables once every shard outcome and projection converges,
+while typed completion retains only its bounded ordered operation row counts for exact retry,
+satisfying the existing
 ADR 0025 mechanism-E contract. No Router V2 or stable migration is introduced. Initial installation
 and rollback to older Router Wasm require fresh install/reset. See ADR 0047 for the schema, bounds,
 capability activation, and reset procedure.
@@ -131,6 +133,8 @@ pub enum RouterMutationPayloadV1 {
     TypedSeedBulk(Box<TypedSeedBulkReplayV1>),
     CompletedBulk {
         total_ops: u32,
+        // Empty for legacy bulk; exactly total_ops entries for typed bulk.
+        operation_row_counts: Vec<u64>,
     },
 }
 
@@ -167,6 +171,7 @@ pub enum GraphBulkMutationProgress {
 pub struct GraphBulkMutationProgressV1 {
     pub operation_count: u32,
     pub completed_count: u32,
+    pub operation_row_counts: Vec<u64>,
 }
 ```
 
@@ -225,9 +230,13 @@ journal entry keyed by that `mutation_id`. The entry records:
 
 - `committed_row_count`: total successful operations so far.
 - `next_index`: next unexecuted operation index.
-- `bulk_progress`: total and completed counts.
+- `bulk_progress`: total/completed counts plus ordered row counts for the committed prefix.
 
-On retry, Graph reads the journal entry and skips already completed operations.
+On retry, Graph reads the journal entry and skips already completed operations while replaying their
+persisted row counts in ordinal order. Router accepts a typed terminal outcome only when journal
+state is `Completed`, `next_index` is absent, and all three progress cardinalities equal the durable
+typed operation count. The journal aggregate row count, not callback-local synthetic results, is the
+source of truth for Router completion.
 Each operation still executes through the existing single-operation core, so
 shard-local atomicity and idempotency per operation are preserved.
 

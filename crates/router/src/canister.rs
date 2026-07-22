@@ -211,7 +211,7 @@ pub(crate) fn test_declare_unique_constraint(
     store.create_unique_constraint(graph_id, &constraint_name, false, &label, &property)
 }
 
-/// Test-only (`pocket-ic-e2e`): arm/clear an ADR 0030 write-path fault injection (admin-only).
+/// Test-only (`pocket-ic-e2e`): arm/clear a Router write-path fault injection (admin-only).
 #[cfg(feature = "pocket-ic-e2e")]
 pub(crate) fn test_arm_fault(code: u8) -> Result<(), RouterError> {
     auth::require_admin(&msg_caller())?;
@@ -219,6 +219,12 @@ pub(crate) fn test_arm_fault(code: u8) -> Result<(), RouterError> {
         .ok_or_else(|| RouterError::InvalidArgument(format!("unknown fault code {code}")))?;
     crate::test_fault::arm(fault);
     Ok(())
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn test_typed_batch_trace() -> Result<String, RouterError> {
+    auth::require_admin(&msg_caller())?;
+    Ok(crate::test_fault::typed_batch_trace())
 }
 
 /// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation into `Reclaiming` (admin-only), so the

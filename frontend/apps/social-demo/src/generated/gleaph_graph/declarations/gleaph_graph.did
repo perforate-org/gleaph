@@ -225,6 +225,9 @@ type GqlExecutionMode = variant {
 // Versioned bulk mutation progress metadata stored in a Graph journal entry (ADR 0044).
 type GraphBulkMutationProgress = variant { V1 : GraphBulkMutationProgressV1 };
 type GraphBulkMutationProgressV1 = record {
+  // Ordered row counts for the committed prefix. Persisted so a completed replay can return the
+  // same per-operation result cardinality instead of synthetic zeroes.
+  operation_row_counts : vec nat64;
   completed_count : nat32;
   operation_count : nat32;
 };

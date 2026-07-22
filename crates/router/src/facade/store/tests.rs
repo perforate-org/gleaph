@@ -1808,6 +1808,57 @@ fn typed_recovery_lifecycle_and_scan() {
         "typed bulk record must appear in recoverable scan"
     );
 
+    let typed_snapshot = store
+        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .expect("typed record present");
+    assert!(
+        store
+            .record_router_mutation_shards(
+                caller,
+                tenant_main_graph_id(),
+                client_key,
+                Default::default(),
+                Default::default(),
+                vec![shard_with(0, false, false)],
+            )
+            .is_err(),
+        "legacy shard writer must reject a typed payload"
+    );
+    assert!(
+        store
+            .record_router_mutation_completed_without_shards(
+                caller,
+                tenant_main_graph_id(),
+                client_key,
+                Default::default(),
+                Default::default(),
+                99,
+            )
+            .is_err(),
+        "scalar completion writer must reject a typed payload"
+    );
+    assert_eq!(
+        store.router_mutation_record(caller, tenant_main_graph_id(), client_key),
+        Some(typed_snapshot.clone()),
+        "cross-variant writes must leave the typed record unchanged"
+    );
+    assert!(
+        store
+            .record_typed_bulk_target_projection_advanced(
+                caller,
+                tenant_main_graph_id(),
+                client_key,
+                ShardId::new(0),
+            )
+            .is_err(),
+        "projection cannot advance before canonical completion"
+    );
+    assert_eq!(
+        store.router_mutation_record(caller, tenant_main_graph_id(), client_key),
+        Some(typed_snapshot),
+        "rejected projection transition must not mutate stable state"
+    );
+
     // Wrong shard id is rejected for completion.
     assert!(
         store
@@ -1817,8 +1868,44 @@ fn typed_recovery_lifecycle_and_scan() {
                 client_key,
                 ShardId::new(99),
                 7,
+                vec![3, 4],
             )
             .is_err()
+    );
+
+    let before_invalid_counts = store
+        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .expect("typed record before invalid row counts");
+    assert!(
+        store
+            .record_typed_bulk_target_completed(
+                caller,
+                tenant_main_graph_id(),
+                client_key,
+                ShardId::new(0),
+                7,
+                vec![7],
+            )
+            .is_err(),
+        "typed completion must reject the wrong operation cardinality"
+    );
+    assert!(
+        store
+            .record_typed_bulk_target_completed(
+                caller,
+                tenant_main_graph_id(),
+                client_key,
+                ShardId::new(0),
+                7,
+                vec![3, 3],
+            )
+            .is_err(),
+        "typed completion must reject an aggregate mismatch"
+    );
+    assert_eq!(
+        store.router_mutation_record(caller, tenant_main_graph_id(), client_key),
+        Some(before_invalid_counts),
+        "invalid typed result cardinalities must not mutate stable state"
     );
 
     // Complete the typed target with a row count.
@@ -1829,8 +1916,40 @@ fn typed_recovery_lifecycle_and_scan() {
             client_key,
             ShardId::new(0),
             7,
+            vec![3, 4],
         )
         .expect("complete typed target");
+    store
+        .record_typed_bulk_target_completed(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            ShardId::new(0),
+            7,
+            vec![3, 4],
+        )
+        .expect("exact typed completion repeat is idempotent");
+    let completed_snapshot = store
+        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .expect("completed typed target");
+    assert!(
+        store
+            .record_typed_bulk_target_completed(
+                caller,
+                tenant_main_graph_id(),
+                client_key,
+                ShardId::new(0),
+                7,
+                vec![4, 3],
+            )
+            .is_err(),
+        "a conflicting ordered outcome must be rejected"
+    );
+    assert_eq!(
+        store.router_mutation_record(caller, tenant_main_graph_id(), client_key),
+        Some(completed_snapshot),
+        "a conflicting repeat must not mutate stable state"
+    );
 
     // Advance projection; this compacts to CompletedBulk because completed is already true.
     store
@@ -1853,8 +1972,14 @@ fn typed_recovery_lifecycle_and_scan() {
         .expect("record present");
     assert_eq!(record.as_v1().completed_row_count, Some(7));
     assert!(
-        matches!(record.payload(), RouterMutationPayloadV1::CompletedBulk { total_ops } if *total_ops == 2),
-        "completed typed bulk must compact to CompletedBulk {{ total_ops }}"
+        matches!(
+            record.payload(),
+            RouterMutationPayloadV1::CompletedBulk {
+                total_ops,
+                operation_row_counts,
+            } if *total_ops == 2 && operation_row_counts == &[3, 4]
+        ),
+        "completed typed bulk must retain ordered row counts"
     );
 }
 

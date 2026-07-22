@@ -214,8 +214,21 @@ fn graph_typed_batch_enforces_boundary_executes_and_replays_once() {
     assert_eq!(replay.results.len(), 2, "replay must return both results");
     assert!(
         replay.results.iter().all(Result::is_ok),
-        "replay results must be synthetic successes: {:?}",
+        "replay results must be journal-backed successes: {:?}",
         replay.results
+    );
+    assert_eq!(
+        replay
+            .results
+            .iter()
+            .map(|result| result.as_ref().expect("replay success").row_count)
+            .collect::<Vec<_>>(),
+        first
+            .results
+            .iter()
+            .map(|result| result.as_ref().expect("first success").row_count)
+            .collect::<Vec<_>>(),
+        "completed journal replay must preserve ordered row counts"
     );
 
     assert_eq!(

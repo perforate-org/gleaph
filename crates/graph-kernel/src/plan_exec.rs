@@ -447,6 +447,10 @@ pub enum GraphBulkMutationProgress {
 pub struct GraphBulkMutationProgressV1 {
     pub operation_count: u32,
     pub completed_count: u32,
+    /// Ordered row counts for the committed prefix. Persisted so a completed replay can return the
+    /// same per-operation result cardinality instead of synthetic zeroes.
+    #[serde(default)]
+    pub operation_row_counts: Vec<u64>,
 }
 
 impl GraphMutationJournalEntryWire {
@@ -531,10 +535,11 @@ impl GraphMutationJournalEntryWire {
 }
 
 impl GraphBulkMutationProgress {
-    pub fn new(operation_count: u32, completed_count: u32) -> Self {
+    pub fn new(operation_count: u32, completed_count: u32, operation_row_counts: Vec<u64>) -> Self {
         Self::V1(GraphBulkMutationProgressV1 {
             operation_count,
             completed_count,
+            operation_row_counts,
         })
     }
 
@@ -547,6 +552,12 @@ impl GraphBulkMutationProgress {
     pub fn completed_count(&self) -> u32 {
         match self {
             GraphBulkMutationProgress::V1(v1) => v1.completed_count,
+        }
+    }
+
+    pub fn operation_row_counts(&self) -> &[u64] {
+        match self {
+            GraphBulkMutationProgress::V1(v1) => &v1.operation_row_counts,
         }
     }
 }
