@@ -120,6 +120,80 @@ fn tenant_main_graph_id() -> GraphId {
 }
 
 #[test]
+fn execution_capabilities_refresh_rejects_stale_capture() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let graph = graph_principal(1);
+    let index = graph_principal(2);
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            logical_graph_name: "tenant.main".into(),
+            shard_id: ShardId::new(0),
+            graph_canister: graph,
+            index_canister: index,
+        },
+    ))
+    .expect("register shard");
+
+    let capture = store
+        .capture_shard_for_capability_refresh(admin, "tenant.main", ShardId::new(0))
+        .expect("capture");
+    store
+        .commit_shard_execution_capabilities(capture.clone(), true)
+        .expect("commit true");
+
+    // Tampering with the captured registered-at timestamp must be rejected.
+    let mut stale = capture.clone();
+    stale.prior_registered_at_ns = capture.prior_registered_at_ns + 1;
+    assert!(
+        store
+            .commit_shard_execution_capabilities(stale.clone(), false)
+            .is_err(),
+        "stale capture must not mutate the registry"
+    );
+
+    // The prior successful commit remains in place.
+    let entry = store
+        .resolve_shard(tenant_main_graph_id(), ShardId::new(0))
+        .expect("lookup");
+    assert!(entry.typed_seed_batch_v1);
+    assert_eq!(entry.graph_canister, graph);
+    assert_eq!(entry.index_canister, index);
+
+    // Clear is idempotent and affects only the capability bit.
+    store
+        .admin_clear_shard_execution_capabilities(admin, "tenant.main", ShardId::new(0))
+        .expect("clear");
+    let cleared = store
+        .resolve_shard(tenant_main_graph_id(), ShardId::new(0))
+        .expect("lookup after clear");
+    assert!(!cleared.typed_seed_batch_v1);
+    assert_eq!(cleared.graph_canister, graph);
+    assert_eq!(cleared.index_canister, index);
+
+    // Re-committing after clear works with a fresh capture.
+    let fresh = store
+        .capture_shard_for_capability_refresh(admin, "tenant.main", ShardId::new(0))
+        .expect("fresh capture");
+    assert!(
+        store
+            .commit_shard_execution_capabilities(fresh, true)
+            .expect("re-commit")
+    );
+    assert!(
+        store
+            .resolve_shard(tenant_main_graph_id(), ShardId::new(0))
+            .expect("lookup after re-commit")
+            .typed_seed_batch_v1
+    );
+}
+
+#[test]
 fn list_shards_for_graph_returns_matching_registrations() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
@@ -1662,6 +1736,129 @@ fn insert_mutation_record_with_shards(
     key
 }
 
+#[test]
+fn typed_recovery_lifecycle_and_scan() {
+    use crate::facade::stable::label_stats::{
+        RouterMutationPayloadV1, TypedSeedBulkOperationV1, TypedSeedBulkReplayV1,
+        TypedSeedBulkSharedHeaderV1, TypedSeedBulkTargetV1,
+    };
+    use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, SeedBindingsWire};
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let caller = graph_principal(1);
+    let client_key = "typed-recovery-group";
+
+    // Insert a pristine scalar reservation (routing lease active, empty shards, no completion).
+    let _key = insert_mutation_record(caller, client_key, 0, true);
+    let graph_canister = graph_principal(9);
+
+    // Build a valid typed replay payload with two ordered operations.
+    let replay = TypedSeedBulkReplayV1 {
+        total_ops: 2,
+        target: TypedSeedBulkTargetV1::new(ShardId::new(0), graph_canister),
+        shared: TypedSeedBulkSharedHeaderV1 {
+            element_id_encoding_key: [0u8; 16],
+            plan_blob: b"plan".to_vec(),
+            mode: GqlExecutionMode::Update,
+            indexed_properties: None,
+        },
+        operations: vec![
+            TypedSeedBulkOperationV1 {
+                params: vec![0u8; 8],
+                seed_bindings: SeedBindingsWire {
+                    entries: vec![],
+                    rows: vec![],
+                    complete_prefix_rows: true,
+                },
+            },
+            TypedSeedBulkOperationV1 {
+                params: vec![1u8; 8],
+                seed_bindings: SeedBindingsWire {
+                    entries: vec![],
+                    rows: vec![],
+                    complete_prefix_rows: true,
+                },
+            },
+        ],
+    };
+
+    // Transition succeeds only with the matching fingerprint and active lease.
+    store
+        .transition_to_typed_seed_bulk(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            b"fp",
+            Default::default(),
+            Default::default(),
+            replay.clone(),
+        )
+        .expect("transition to typed bulk");
+
+    // The record is now recoverable even though legacy shards() is empty.
+    let (recoverable, _, _) = store.scan_recoverable_mutations(None, 100);
+    assert!(
+        recoverable.iter().any(|k| k.client_key == client_key),
+        "typed bulk record must appear in recoverable scan"
+    );
+
+    // Wrong shard id is rejected for completion.
+    assert!(
+        store
+            .record_typed_bulk_target_completed(
+                caller,
+                tenant_main_graph_id(),
+                client_key,
+                ShardId::new(99),
+                7,
+            )
+            .is_err()
+    );
+
+    // Complete the typed target with a row count.
+    store
+        .record_typed_bulk_target_completed(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            ShardId::new(0),
+            7,
+        )
+        .expect("complete typed target");
+
+    // Advance projection; this compacts to CompletedBulk because completed is already true.
+    store
+        .record_typed_bulk_target_projection_advanced(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            ShardId::new(0),
+        )
+        .expect("advance typed projection");
+
+    // Terminal typed record is no longer recoverable and is compacted.
+    let (recoverable_after, _, _) = store.scan_recoverable_mutations(None, 100);
+    assert!(
+        !recoverable_after.iter().any(|k| k.client_key == client_key),
+        "terminal typed bulk record must not be recoverable"
+    );
+    let record = store
+        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .expect("record present");
+    assert_eq!(record.as_v1().completed_row_count, Some(7));
+    assert!(
+        matches!(record.payload(), RouterMutationPayloadV1::CompletedBulk { total_ops } if *total_ops == 2),
+        "completed typed bulk must compact to CompletedBulk {{ total_ops }}"
+    );
+}
+
+// ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only
 // reclaim terminal ones; the old "not routing" rule wrongly stranded committed-but-unprojected
 // federated mutations.

@@ -695,3 +695,140 @@ fn bench_seed_decode_typed_512() -> canbench_rs::BenchResult {
         black_box(decode_typed(&bytes));
     })
 }
+
+// -----------------------------------------------------------------------------
+// Plan 0111: production typed seed batch admission benchmark.
+// Measures Router-side classifier + typed request construction + outer encode
+// for the POSTED complete-row shape at N=1/32/512. The fixture uses pre-resolved
+// SeedBindingsWire values so the benchmark isolates the admission/encode path from
+// async Property Index lookup.
+// -----------------------------------------------------------------------------
+use gleaph_gql::types::EdgeDirection;
+use gleaph_gql_integration::typed_batch::{TypedBatchCandidate, TypedBatchCandidateOp};
+use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
+use gleaph_gql_planner::wire::encode_block_plans;
+use gleaph_graph_kernel::federation::ElementIdEncodingKey;
+use gleaph_graph_kernel::plan_exec::{
+    ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
+    ExecutePlanTypedOp,
+};
+use std::rc::Rc;
+
+fn posted_plan_blob() -> Vec<u8> {
+    let plan = PhysicalPlan::from_ops(vec![
+        PlanOp::NodeScan {
+            variable: Rc::from("u"),
+            label: Some("User".into()),
+            property_projection: None,
+        },
+        PlanOp::InsertVertex {
+            variable: Some(Rc::from("p")),
+            labels: vec!["Post".into()],
+            properties: vec![],
+        },
+        PlanOp::InsertEdge {
+            variable: None,
+            src: Rc::from("u"),
+            dst: Rc::from("p"),
+            direction: EdgeDirection::PointingRight,
+            labels: vec!["POSTED".into()],
+            properties: vec![],
+        },
+    ]);
+    encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan")
+}
+
+fn typed_candidate_from_seeds(seeds: &[SeedBindingsWire]) -> TypedBatchCandidate {
+    TypedBatchCandidate {
+        target_shard_id: ShardId::new(0),
+        element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
+        mutation_id: 1,
+        plan_blob: posted_plan_blob(),
+        operations: seeds
+            .iter()
+            .enumerate()
+            .map(|(i, seed)| TypedBatchCandidateOp {
+                params_blob: vec![i as u8; 8],
+                seed: seed.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn build_and_encode_typed_args(candidate: &TypedBatchCandidate) -> Vec<u8> {
+    let shared = ExecutePlanBatchTypedShared {
+        target_shard_id: candidate.target_shard_id,
+        element_id_encoding_key: candidate.element_id_encoding_key,
+        mutation_id: candidate.mutation_id,
+        plan_blob: candidate.plan_blob.clone(),
+        resolved_labels: Default::default(),
+        resolved_properties: Default::default(),
+        indexed_properties: None,
+    };
+    let args = ExecutePlanBatchTypedArgs {
+        shared,
+        operations: candidate
+            .operations
+            .iter()
+            .map(|op| ExecutePlanTypedOp {
+                params_blob: op.params_blob.clone(),
+                seed: op.seed.clone(),
+            })
+            .collect(),
+        batch_mode: ExecutePlanBatchMode::Dynamic,
+    };
+    candid::Encode!(&args).expect("encode typed batch args")
+}
+
+fn typed_admission_workload(n: usize) -> (TypedBatchCandidate, Vec<u8>) {
+    let seeds = posted_seeds(n);
+    let candidate = typed_candidate_from_seeds(&seeds);
+    let bytes = build_and_encode_typed_args(&candidate);
+    (candidate, bytes)
+}
+
+#[bench(raw)]
+fn bench_seed_typed_production_admission_1() -> canbench_rs::BenchResult {
+    let (candidate, _) = typed_admission_workload(1);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_typed_production_admission_1");
+        black_box(gleaph_gql_integration::typed_batch::classify_typed_batch_candidate(&candidate))
+            .expect("classify");
+        black_box(build_and_encode_typed_args(&candidate));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_typed_production_admission_32() -> canbench_rs::BenchResult {
+    let (candidate, _) = typed_admission_workload(32);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_typed_production_admission_32");
+        black_box(gleaph_gql_integration::typed_batch::classify_typed_batch_candidate(&candidate))
+            .expect("classify");
+        black_box(build_and_encode_typed_args(&candidate));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_typed_production_admission_512() -> canbench_rs::BenchResult {
+    let (candidate, _) = typed_admission_workload(512);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_typed_production_admission_512");
+        black_box(gleaph_gql_integration::typed_batch::classify_typed_batch_candidate(&candidate))
+            .expect("classify");
+        black_box(build_and_encode_typed_args(&candidate));
+    })
+}
+
+#[cfg(test)]
+mod typed_admission_tests {
+    use super::*;
+
+    #[test]
+    fn typed_admission_encoded_sizes_for_record() {
+        for n in [1usize, 32, 512] {
+            let (_, bytes) = typed_admission_workload(n);
+            println!("typed_admission N={n} bytes={}", bytes.len());
+        }
+    }
+}

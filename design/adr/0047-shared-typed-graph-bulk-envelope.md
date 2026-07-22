@@ -1,11 +1,11 @@
 # 0047. Shared typed Graph bulk execution envelope
 
 Date: 2026-07-22
-Status: Partially Implemented
+Status: Implemented
 
 Implementation boundary as of 2026-07-22: the Graph endpoint, shared wire, exhaustive admission
-classifier, and response-bound proof are implemented. Router capability activation and durable
-typed dispatch remain planned for Plan 0111.
+classifier, response-bound proof, Router capability activation, durable typed dispatch, and
+recovery are implemented in Plan 0111. End-to-end performance adoption is measured in Plan 0112.
 Last revised: 2026-07-22
 Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
 
@@ -384,8 +384,9 @@ sufficient, such as a shared seed relation.
 > `gleaph-gql-planner` in the dependency graph (a cycle would be required). The renamed
 > `gleaph-gql-integration` crate already depends on both planner and graph-kernel, so it owns the
 > `typed_batch` admission classifier. The Graph `execute_plan_update_batch_typed_v1` endpoint,
-> the shared `ExecutePlanBatchTypedArgs` wire types, and the `typed_batch` classifier were
-> implemented in Plan 0110. Capability advertisement and Router durable activation remain Plan 0111.
+> the shared `ExecutePlanBatchTypedArgs` wire types, the `typed_batch` classifier, Router
+> capability advertisement, durable typed dispatch, and recovery were implemented in Plans 0110
+> and 0111.
 
 
 ### Performance expectation

@@ -1,6 +1,6 @@
 # ADR 0044: Router bulk mutation key for wave-level saga coalescing
 
-Status: Partially Implemented
+Status: Implemented
 Date: 2026-07-19 15:12:46 UTC
 Last revised: 2026-07-22
 Anchor timestamp: 2026-07-22 02:53:05 UTC +0000
@@ -279,6 +279,14 @@ versioned bulk sub-records. This reduces the initial code churn but leaves the
 parent records vulnerable to future layout changes. Selected for rejection in
 favor of versioned record envelopes, because the parent records are exactly the
 objects whose semantics will evolve as bulk behavior matures.
+
+## Implementation notes
+
+- The ordered bulk group fingerprint (`bulk_group_fingerprint`) covers the plan blob, execution
+  mode, operation count, and every operation's params blob in ordinal order. It is used both when
+  reserving a new group and when matching a retry to an existing durable record.
+- Typed V1 recovery (`recover_typed_bulk_record`) redispatches the exact durable typed replay
+  payload without repeating Property Index lookup or consulting the current capability bit.
 
 ## Consequences
 

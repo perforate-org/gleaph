@@ -5027,7 +5027,7 @@ async fn recover_typed_bulk_record(
     key: &crate::facade::stable::label_stats::ClientMutationKey,
     record: &crate::facade::stable::label_stats::RouterMutationRecord,
 ) -> Result<(), RouterError> {
-    use crate::facade::stable::label_stats::{RouterMutationPayloadV1, TypedSeedBulkReplayV1};
+    use crate::facade::stable::label_stats::RouterMutationPayloadV1;
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
         ExecutePlanTypedOp,
@@ -5253,6 +5253,53 @@ mod tests {
             err.to_string()
                 .contains("test response exceeds the safe payload limit")
         );
+    }
+
+    #[test]
+    fn bulk_request_fingerprint_changes_with_later_item_count_order_plan_and_mode() {
+        use super::bulk_group_fingerprint;
+        let plan_a = b"plan-a".to_vec();
+        let plan_b = b"plan-b".to_vec();
+        let params = vec![b"p1".to_vec(), b"p2".to_vec()];
+        let fp_update_a = bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params);
+        let fp_query_a = bulk_group_fingerprint(&plan_a, GqlExecutionMode::Query, &params);
+        assert_ne!(
+            fp_update_a, fp_query_a,
+            "mode change must produce a different fingerprint"
+        );
+
+        let fp_plan_b = bulk_group_fingerprint(&plan_b, GqlExecutionMode::Update, &params);
+        assert_ne!(
+            fp_update_a, fp_plan_b,
+            "plan change must produce a different fingerprint"
+        );
+
+        let params_longer = vec![b"p1".to_vec(), b"p2".to_vec(), b"p3".to_vec()];
+        let fp_more = bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params_longer);
+        assert_ne!(
+            fp_update_a, fp_more,
+            "operation count change must produce a different fingerprint"
+        );
+
+        let params_reordered = vec![b"p2".to_vec(), b"p1".to_vec()];
+        let fp_reordered =
+            bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params_reordered);
+        assert_ne!(
+            fp_update_a, fp_reordered,
+            "param order change must produce a different fingerprint"
+        );
+
+        let params_later_changed = vec![b"p1".to_vec(), b"p2-changed".to_vec()];
+        let fp_later_changed =
+            bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params_later_changed);
+        assert_ne!(
+            fp_update_a, fp_later_changed,
+            "later-item change must produce a different fingerprint"
+        );
+
+        // Same inputs reproduce the same fingerprint.
+        let fp_same = bulk_group_fingerprint(&plan_a, GqlExecutionMode::Update, &params);
+        assert_eq!(fp_update_a, fp_same);
     }
 
     use crate::facade::stable::graph_catalog::lookup_graph_id;

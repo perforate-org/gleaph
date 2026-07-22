@@ -2407,6 +2407,12 @@ mod tests {
             "unexpected error: {err}"
         );
     }
+
+    #[test]
+    fn execution_capabilities_advertises_typed_seed_batch_v1() {
+        let caps = execution_capabilities();
+        assert!(caps.typed_seed_batch_v1);
+    }
 }
 
 #[cfg(test)]

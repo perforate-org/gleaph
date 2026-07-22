@@ -90,7 +90,7 @@ contracts must be distinguished.
 - checked candidate, product, encoded-payload, and instruction bounds fail closed without
   truncation.
 
-**ADR 0047 Graph contract (partially implemented):**
+**ADR 0047 Graph contract (implemented, performance adoption pending Plan 0112):**
 
 - Graph exposes `execute_plan_update_batch_typed_v1`, which accepts an eligible single-shard batch with a shared immutable
   group header and required ordered per-operation complete-row seeds (`SeedBindingsWire`);
@@ -107,9 +107,7 @@ contracts must be distinguished.
   typed-bulk, and terminal completed-bulk payload variants; the typed payload persists the exact
   ordered replay relation without a parallel blob representation, and completed records compact to
   `CompletedBulk { total_ops }` per ADR 0025 mechanism E;
-- Router activation remains planned: the typed path will be selected only from an admin-refreshed capability on the current shard-registry
-  V2 write shape after post-await target revalidation; ambiguous typed-call outcomes retain typed
-  durable replay under the same mutation id;
+- Router activation is implemented: the typed path is selected only when the durable shard-registry V2 entry records `typed_seed_batch_v1: true` from an admin-refreshed, post-await target-revalidated capability; ambiguous typed-call outcomes retain typed durable replay under the same mutation id and operation order;
 - initial Router installation or rollback to older Router Wasm requires fresh install/reset because
   there is no deployed stable state to migrate;
 - the end-to-end Router ingress saving must still meet the adoption gate.
