@@ -3,7 +3,7 @@
 Status: Partially Implemented
 Date: 2026-07-19 15:12:46 UTC
 Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 00:40:15 UTC +0000
+Anchor timestamp: 2026-07-22 02:53:05 UTC +0000
 
 ## Context
 
@@ -143,8 +143,10 @@ pub(crate) struct RouterMutationShardV1 {
     row_count: u64,
 }
 
-// TypedSeedBulkReplayV1 owns one target shard, its outcome, shared execution
-// fields, and the ordered per-operation params plus typed seeds. See ADR 0047.
+// TypedSeedBulkReplayV1 owns one target shard identity/outcome via a dedicated
+// `TypedSeedBulkTargetV1` (not `RouterMutationShardV1`), shared execution fields, and the
+// ordered per-operation params plus typed seeds. Top-level `resolved_labels` and
+// `resolved_properties` remain the sole durable authority. See ADR 0047.
 
 pub enum GraphMutationJournalEntry {
     V1(GraphMutationJournalEntryV1),

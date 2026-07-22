@@ -3,11 +3,12 @@
 //! This crate sits between portable GQL planning and Gleaph execution. It intentionally does not own
 //! storage, canister calls, or generic GQL syntax. Its public modules are narrowly scoped:
 //!
-//! - : translates Gleaph path-extension clauses (e.g. ) into planner
-//!   concepts consumed by Router and Graph planning;
-//! - : pure expression-shape classification for  consumed by Graph execution.
+//! - `path_extension::GLEAPH_PATH_EXTENSION_HANDLER` translates Gleaph path-extension clauses
+//!   (e.g. `GLEAPH COST`) into planner concepts consumed by Router and Graph planning;
+//! - `weight::GleaphWeightEdgeRef` and `weight::is_gleaph_weight_call` provide pure expression-shape
+//!   classification for `GLEAPH WEIGHT(...)` calls consumed by Graph execution.
 //!
-//!  and  remain portable and gain no Router/Graph/ICP concepts.
+//! `gleaph_gql` and `gleaph_gql_planner` remain portable and gain no Router/Graph/ICP concepts.
 
 pub mod path_extension;
 pub mod weight;

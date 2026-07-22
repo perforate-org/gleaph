@@ -1,9 +1,9 @@
 # 0047. Shared typed Graph bulk execution envelope
 
 Date: 2026-07-22
-Status: Proposed
+Status: Partially Implemented
 Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 01:07:32 UTC +0000
+Anchor timestamp: 2026-07-22 02:52:37 UTC +0000
 
 ## Context
 
@@ -248,17 +248,26 @@ pub enum RouterMutationPayloadV1 {
 
 pub struct TypedSeedBulkReplayV1 {
     pub total_ops: u32,
-    pub target_shard: RouterMutationShardV1,
+    pub target: TypedSeedBulkTargetV1,
     pub shared: TypedSeedBulkSharedHeaderV1,
     pub operations: Vec<TypedSeedBulkOperationV1>,
+}
+
+/// Outcome and identity of the single graph shard that owns every operation in a typed bulk
+/// group. This is a dedicated stable type (not `RouterMutationShardV1`) so that typed replay can
+/// never carry a legacy `seed_bindings_blob`.
+pub struct TypedSeedBulkTargetV1 {
+    pub shard_id: ShardId,
+    pub graph_canister: Principal,
+    pub completed: bool,
+    pub projection_advanced: bool,
+    pub row_count: u64,
 }
 
 pub struct TypedSeedBulkSharedHeaderV1 {
     pub element_id_encoding_key: [u8; 16],
     pub plan_blob: Vec<u8>,
     pub mode: GqlExecutionMode,
-    pub resolved_labels: Option<ResolvedLabelTable>,
-    pub resolved_properties: Option<ResolvedPropertyTable>,
     pub indexed_properties: Option<IndexedPropertyCatalog>,
 }
 
@@ -272,12 +281,15 @@ pub struct TypedSeedBulkOperationV1 {
 `resolved_properties` remain authoritative at the record top-level. During recovery, the Router
 copies `resolved_labels` and `resolved_properties` from the record top-level into the
 `ExecutePlanBatchTypedShared` shared header; `TypedSeedBulkReplayV1` intentionally does not
-duplicate them. `TypedSeedBulkReplayV1.target_shard` owns the sole target and its outcome; the remainder
-of `TypedSeedBulkReplayV1.shared` owns the shared plan/catalog/label/property data and `operations` owns the ordered params/seeds. The typed
-variant has no `seed_bindings_blob`, so the stable source of truth cannot represent both encodings.
-Scalar and legacy-bulk lifecycle shape is also exhaustive rather than a boolean plus an optional
-bulk record. The Router reconstructs `ExecutePlanBatchTypedArgs` directly from this payload,
-including the original execution mode in `shared.mode`.
+duplicate them. `TypedSeedBulkReplayV1.target` owns the sole target shard identity and its outcome; the
+remainder of `TypedSeedBulkReplayV1.shared` owns the shared plan/catalog data and `operations`
+owns the ordered params/seeds. Top-level `RouterMutationRecordV1.resolved_labels` and
+`resolved_properties` remain the only durable authority; the shared header does not duplicate
+them. The dedicated target type has no `seed_bindings_blob`, so the stable source of truth cannot
+represent both legacy-blob and typed-seed encodings. Scalar and legacy-bulk lifecycle shape is
+also exhaustive rather than a boolean plus an optional bulk record. The Router reconstructs
+`ExecutePlanBatchTypedArgs` directly from this payload, including the original execution mode in
+`shared.mode`.
 
 Typed V1 is single-shard, and `replay.operations.len() == total_ops`. The owning constructor and
 stable write boundary validate this invariant; general multi-shard typed replay is a later schema,
@@ -361,12 +373,12 @@ sufficient, such as a shared seed relation.
   operation and retains its final actual-response encode guard as defense in depth, not as the
   admission mechanism after mutations may already have committed. A plan without this proof uses
   the existing scalar path.
-> Ownership note:  continues to own portable wire types and payload
+> Ownership note: `gleaph-graph-kernel` continues to own portable wire types and payload
 > constants, but it cannot own physical-plan classification because it sits below
->  in the dependency graph (a cycle would be required). The renamed
->  crate already depends on both planner and graph-kernel, so it is the
-> future owner of the  admission classifier. This slice corrects the planned ownership
-> boundary; the classifier itself remains a Plan 0109 deliverable.
+> `gleaph-gql-planner` in the dependency graph (a cycle would be required). The renamed
+> `gleaph-gql-integration` crate already depends on both planner and graph-kernel, so it is the
+> future owner of the `typed_batch` admission classifier. This slice corrects the planned ownership
+> boundary; the classifier itself remains a Plan 0110 deliverable.
 
 
 ### Performance expectation

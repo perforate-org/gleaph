@@ -126,7 +126,7 @@ fn evict_expired_client_mutation_keys(
 /// short-circuits on `completed_row_count` (ADR 0025, mechanism E); `mutation_id`,
 /// `created_at_ns`, `request_fingerprint`, and `completed_row_count` remain for
 /// idempotent replay and TTL eviction.
-fn compact_completed_record(record: &mut RouterMutationRecord) {
+pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
     use crate::facade::stable::label_stats::RouterMutationPayloadV1;
     record.as_v1_mut().resolved_labels = None;
     record.as_v1_mut().resolved_properties = None;

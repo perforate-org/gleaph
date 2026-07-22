@@ -10,6 +10,8 @@
 mod backfill;
 mod catalogs;
 mod idempotency;
+#[cfg(test)]
+pub(crate) use idempotency::compact_completed_record;
 mod label_stats_projection;
 pub(crate) mod provisioning;
 mod registry;

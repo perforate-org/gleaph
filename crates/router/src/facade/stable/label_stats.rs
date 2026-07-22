@@ -2,6 +2,7 @@
 
 use crate::state::RouterError;
 use candid::{CandidType, Decode, Encode, Principal};
+use gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
@@ -280,11 +281,36 @@ pub struct TypedSeedBulkReplayV1 {
     /// Total number of operations in the bulk group. Must equal `operations.len()`.
     pub total_ops: u32,
     /// The single graph shard that owns every operation in this group.
-    pub target_shard: RouterMutationShardV1,
-    /// Plan, catalog, and resolved name tables shared by all operations.
+    pub target: TypedSeedBulkTargetV1,
+    /// Plan, catalog, and execution mode shared by all operations. Resolved label/property tables
+    /// are owned at the `RouterMutationRecordV1` top level, not duplicated here.
     pub shared: TypedSeedBulkSharedHeaderV1,
     /// Ordered per-operation parameters and typed seed bindings.
     pub operations: Vec<TypedSeedBulkOperationV1>,
+}
+
+/// Outcome and identity of the single graph shard that owns every operation in a typed bulk
+/// group. This is a dedicated stable type (not `RouterMutationShardV1`) so that typed replay can
+/// never carry a legacy `seed_bindings_blob`.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct TypedSeedBulkTargetV1 {
+    pub shard_id: ShardId,
+    pub graph_canister: Principal,
+    pub completed: bool,
+    pub projection_advanced: bool,
+    pub row_count: u64,
+}
+
+impl TypedSeedBulkTargetV1 {
+    pub fn new(shard_id: ShardId, graph_canister: Principal) -> Self {
+        Self {
+            shard_id,
+            graph_canister,
+            completed: false,
+            projection_advanced: false,
+            row_count: 0,
+        }
+    }
 }
 
 /// Shared header for a typed bulk group.
@@ -294,12 +320,8 @@ pub struct TypedSeedBulkSharedHeaderV1 {
     pub element_id_encoding_key: [u8; 16],
     /// Serialized physical plan executed by every operation in the group.
     pub plan_blob: Vec<u8>,
-    /// Execution mode for the group.
+    /// Execution mode for the group. Typed V1 is update-only.
     pub mode: GqlExecutionMode,
-    /// Router-resolved label names referenced by the physical plan.
-    pub resolved_labels: Option<ResolvedLabelTable>,
-    /// Router-resolved property names referenced by the physical plan.
-    pub resolved_properties: Option<ResolvedPropertyTable>,
     /// Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
     pub indexed_properties: Option<gleaph_graph_kernel::index::IndexedPropertyCatalog>,
 }
@@ -314,15 +336,22 @@ pub struct TypedSeedBulkOperationV1 {
 }
 
 #[cfg(any(test, feature = "pocket-ic-e2e"))]
-#[cfg(any(test, feature = "pocket-ic-e2e"))]
 #[allow(dead_code)]
 impl TypedSeedBulkReplayV1 {
     /// Validate the invariants required for a durable typed seed replay payload.
     ///
+    /// - `mode == Update`
     /// - `1 <= total_ops <= 1024`
     /// - `operations.len() == total_ops`
-    /// - each operation has at most 1,024 complete seed rows
+    /// - every operation has empty grouped `entries` and `complete_prefix_rows == true`
+    /// - every operation has at most 1,024 complete seed rows
+    /// - every `params` blob is at most `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`
     pub(crate) fn validate(&self) -> Result<(), RouterError> {
+        if self.shared.mode != GqlExecutionMode::Update {
+            return Err(RouterError::InvalidArgument(
+                "typed bulk V1 requires Update mode".into(),
+            ));
+        }
         if self.total_ops == 0 || self.total_ops > 1024 {
             return Err(RouterError::InvalidArgument(
                 "typed bulk total_ops must be 1..=1024".into(),
@@ -335,16 +364,24 @@ impl TypedSeedBulkReplayV1 {
             ));
         }
         for (i, op) in self.operations.iter().enumerate() {
-            let rows = op.seed_bindings.rows.len();
-            let entry_rows: usize = op
-                .seed_bindings
-                .entries
-                .iter()
-                .map(|e| e.local_vertex_ids.len())
-                .sum();
-            if rows > 1024 || entry_rows > 1024 {
+            if !op.seed_bindings.entries.is_empty() {
+                return Err(RouterError::InvalidArgument(format!(
+                    "typed bulk op {i} must not contain legacy grouped seed entries"
+                )));
+            }
+            if !op.seed_bindings.complete_prefix_rows {
+                return Err(RouterError::InvalidArgument(format!(
+                    "typed bulk op {i} requires complete_prefix_rows=true"
+                )));
+            }
+            if op.seed_bindings.rows.len() > 1024 {
                 return Err(RouterError::InvalidArgument(format!(
                     "typed bulk op {i} exceeds 1024 seed rows"
+                )));
+            }
+            if op.params.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+                return Err(RouterError::InvalidArgument(format!(
+                    "typed bulk op {i} params exceed safe payload bound"
                 )));
             }
         }
@@ -380,15 +417,29 @@ impl RouterMutationRecord {
         mutation_id: MutationId,
         created_at_ns: u64,
         request_fingerprint: Vec<u8>,
+        resolved_labels: Option<ResolvedLabelTable>,
+        resolved_properties: Option<ResolvedPropertyTable>,
         replay: TypedSeedBulkReplayV1,
     ) -> Result<Self, RouterError> {
         replay.validate()?;
-        let mut record = Self::new(mutation_id, created_at_ns, request_fingerprint);
-        record.as_v1_mut().payload = RouterMutationPayloadV1::TypedSeedBulk(Box::new(replay));
-        const TWO_MIB: usize = 2 * 1024 * 1024;
-        if record.to_bytes().len() > TWO_MIB {
+        if replay.target.completed
+            || replay.target.projection_advanced
+            || replay.target.row_count != 0
+        {
             return Err(RouterError::InvalidArgument(
-                "typed seed bulk record exceeds 2 MiB stable bound".into(),
+                "typed bulk V1 target must be pristine at admission".into(),
+            ));
+        }
+        let mut record = Self::new(mutation_id, created_at_ns, request_fingerprint);
+        {
+            let v1 = record.as_v1_mut();
+            v1.resolved_labels = resolved_labels;
+            v1.resolved_properties = resolved_properties;
+            v1.payload = RouterMutationPayloadV1::TypedSeedBulk(Box::new(replay));
+        }
+        if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err(RouterError::InvalidArgument(
+                "typed seed bulk record exceeds safe inter-canister payload bound".into(),
             ));
         }
         Ok(record)
@@ -453,6 +504,23 @@ impl RouterMutationRecord {
         }
     }
 
+    /// Return the typed bulk single target, if the payload is `TypedSeedBulk`.
+    pub fn typed_target(&self) -> Option<&TypedSeedBulkTargetV1> {
+        match self.payload() {
+            RouterMutationPayloadV1::TypedSeedBulk(replay) => Some(&replay.target),
+            _ => None,
+        }
+    }
+
+    /// Mutable access to the typed bulk single target, for lifecycle tests and recovery steps.
+    #[allow(dead_code)]
+    pub(crate) fn typed_target_mut(&mut self) -> Option<&mut TypedSeedBulkTargetV1> {
+        match self.payload_mut() {
+            RouterMutationPayloadV1::TypedSeedBulk(replay) => Some(&mut replay.target),
+            _ => None,
+        }
+    }
+
     /// `true` once the saga reaches a terminal phase. An irreversible `terminal_failure` takes
     /// priority (it forces [`Self::lifecycle_phase`] to `Failed`); otherwise terminality is the
     /// progress-derived `Completed`/`Failed`. Terminal records are the only ones eligible for TTL
@@ -505,24 +573,35 @@ impl RouterMutationRecord {
         if self.as_v1().routing_in_progress {
             return MutationLifecyclePhase::Routing;
         }
+        // Scalar/legacy payload: derive from the shard envelope.
         let shards = self.shards();
-        if shards.is_empty() {
-            // Routing was released without a durable dispatch envelope and no canonical
-            // write committed (e.g. a validation/planning failure that freed the
-            // reservation). The key is still re-reservable for a fresh attempt.
-            return MutationLifecyclePhase::Failed;
+        if !shards.is_empty() {
+            if shards.iter().any(|shard| !shard.completed) {
+                return MutationLifecyclePhase::CanonicalPending;
+            }
+            // Every shard's canonical write is durable from here on.
+            if shards.iter().all(|shard| shard.projection_advanced) {
+                return MutationLifecyclePhase::Completed;
+            }
+            if shards.iter().any(|shard| shard.projection_advanced) {
+                return MutationLifecyclePhase::ProjectionPending;
+            }
+            return MutationLifecyclePhase::CanonicalCommitted;
         }
-        if shards.iter().any(|shard| !shard.completed) {
-            return MutationLifecyclePhase::CanonicalPending;
+        // Typed payload: derive from the single dedicated target outcome.
+        if let Some(target) = self.typed_target() {
+            if !target.completed {
+                return MutationLifecyclePhase::CanonicalPending;
+            }
+            if target.projection_advanced {
+                return MutationLifecyclePhase::Completed;
+            }
+            return MutationLifecyclePhase::CanonicalCommitted;
         }
-        // Every shard's canonical write is durable from here on.
-        if shards.iter().all(|shard| shard.projection_advanced) {
-            return MutationLifecyclePhase::Completed;
-        }
-        if shards.iter().any(|shard| shard.projection_advanced) {
-            return MutationLifecyclePhase::ProjectionPending;
-        }
-        MutationLifecyclePhase::CanonicalCommitted
+        // Routing was released without a durable dispatch envelope and no canonical
+        // write committed (e.g. a validation/planning failure that freed the
+        // reservation). The key is still re-reservable for a fresh attempt.
+        MutationLifecyclePhase::Failed
     }
 }
 
@@ -605,7 +684,12 @@ impl RouterMutationShardV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_graph_kernel::plan_exec::SeedRowWire;
+    use crate::facade::store::compact_completed_record;
+    use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
+    use gleaph_graph_kernel::plan_exec::{
+        ResolvedLabelTable, ResolvedProperty, ResolvedPropertyTable, ResolvedVertexLabel,
+        SeedBindingEntry, SeedRowWire,
+    };
     use ic_stable_structures::Storable;
 
     #[test]
@@ -706,13 +790,18 @@ mod tests {
     }
 
     fn typed_seed_replay(total_ops: u32) -> TypedSeedBulkReplayV1 {
-        let target = RouterMutationShardV1::new(ShardId(0), Principal::anonymous(), None);
+        typed_seed_replay_with_rows(total_ops, vec![])
+    }
+
+    fn typed_seed_replay_with_rows(
+        total_ops: u32,
+        rows: Vec<SeedRowWire>,
+    ) -> TypedSeedBulkReplayV1 {
+        let target = TypedSeedBulkTargetV1::new(ShardId(0), Principal::anonymous());
         let shared = TypedSeedBulkSharedHeaderV1 {
             element_id_encoding_key: [0u8; 16],
             plan_blob: vec![1, 2, 3],
             mode: GqlExecutionMode::Update,
-            resolved_labels: None,
-            resolved_properties: None,
             indexed_properties: None,
         };
         let operations = (0..total_ops)
@@ -720,22 +809,48 @@ mod tests {
                 params: vec![i as u8],
                 seed_bindings: SeedBindingsWire {
                     entries: vec![],
-                    rows: vec![],
-                    complete_prefix_rows: false,
+                    rows: rows.clone(),
+                    complete_prefix_rows: true,
                 },
             })
             .collect();
         TypedSeedBulkReplayV1 {
             total_ops,
-            target_shard: target,
+            target,
             shared,
             operations,
         }
     }
 
+    fn sample_resolved_labels() -> ResolvedLabelTable {
+        ResolvedLabelTable {
+            vertex: vec![ResolvedVertexLabel {
+                name: "Person".into(),
+                id: VertexLabelId::from_raw(1),
+            }],
+            edge: vec![],
+        }
+    }
+
+    fn sample_resolved_properties() -> ResolvedPropertyTable {
+        ResolvedPropertyTable {
+            properties: vec![ResolvedProperty {
+                name: "name".into(),
+                id: PropertyId::from_raw(1),
+            }],
+        }
+    }
+
     fn typed_seed_bulk_record(total_ops: u32) -> RouterMutationRecord {
-        RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), typed_seed_replay(total_ops))
-            .expect("valid typed seed bulk record")
+        RouterMutationRecord::new_typed_seed_bulk(
+            1,
+            0,
+            Vec::new(),
+            Some(sample_resolved_labels()),
+            Some(sample_resolved_properties()),
+            typed_seed_replay(total_ops),
+        )
+        .expect("valid typed seed bulk record")
     }
 
     #[test]
@@ -757,14 +872,52 @@ mod tests {
 
     #[test]
     fn typed_seed_bulk_payload_round_trips() {
-        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
-        record.as_v1_mut().payload =
-            RouterMutationPayloadV1::TypedSeedBulk(Box::new(typed_seed_replay(3)));
+        let record = typed_seed_bulk_record(3);
         let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
         assert_eq!(decoded, record);
         assert!(decoded.is_bulk());
         assert_eq!(decoded.bulk_total_ops(), Some(3));
         assert_eq!(decoded.shards().len(), 0);
+        assert!(decoded.as_v1().resolved_labels.is_some());
+        assert!(decoded.as_v1().resolved_properties.is_some());
+        assert_eq!(
+            decoded.as_v1().resolved_labels.as_ref().unwrap().vertex[0].name,
+            "Person"
+        );
+    }
+
+    #[test]
+    fn typed_seed_bulk_lifecycle_stages() {
+        let mut record = typed_seed_bulk_record(1);
+        record.as_v1_mut().routing_in_progress = false;
+        assert_eq!(
+            record.lifecycle_phase(),
+            MutationLifecyclePhase::CanonicalPending
+        );
+
+        record.typed_target_mut().unwrap().completed = true;
+        assert_eq!(
+            record.lifecycle_phase(),
+            MutationLifecyclePhase::CanonicalCommitted
+        );
+
+        record.typed_target_mut().unwrap().projection_advanced = true;
+        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);
+
+        // A pinned row count overrides the payload-derived terminal signal after compaction.
+        record.as_v1_mut().completed_row_count = Some(7);
+        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);
+    }
+
+    #[test]
+    fn typed_payload_is_not_uncommitted_dispatch() {
+        let mut record = typed_seed_bulk_record(1);
+        record.as_v1_mut().routing_in_progress = false;
+        assert!(!record.is_uncommitted_dispatch());
+        assert_eq!(
+            record.lifecycle_phase(),
+            MutationLifecyclePhase::CanonicalPending
+        );
     }
 
     #[test]
@@ -779,13 +932,18 @@ mod tests {
     }
 
     #[test]
-    fn typed_payload_is_not_uncommitted_dispatch() {
-        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
+    fn completed_bulk_typed_seed_drops_replay_and_resolved_tables() {
+        let mut record = typed_seed_bulk_record(5);
         record.as_v1_mut().routing_in_progress = false;
-        record.as_v1_mut().payload =
-            RouterMutationPayloadV1::TypedSeedBulk(Box::new(typed_seed_replay(1)));
-        assert!(!record.is_uncommitted_dispatch());
-        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Failed);
+        record.as_v1_mut().completed_row_count = Some(5);
+        compact_completed_record(&mut record);
+        assert!(matches!(
+            record.payload(),
+            RouterMutationPayloadV1::CompletedBulk { total_ops: 5 }
+        ));
+        assert!(record.as_v1().resolved_labels.is_none());
+        assert!(record.as_v1().resolved_properties.is_none());
+        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);
     }
 
     #[test]
@@ -803,6 +961,55 @@ mod tests {
     }
 
     #[test]
+    fn typed_seed_bulk_validation_rejects_query_mode() {
+        let mut replay = typed_seed_replay(1);
+        replay.shared.mode = GqlExecutionMode::Query;
+        assert!(replay.validate().is_err());
+        assert!(
+            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn typed_seed_bulk_validation_rejects_grouped_entries() {
+        let mut replay = typed_seed_replay(1);
+        replay.operations[0]
+            .seed_bindings
+            .entries
+            .push(SeedBindingEntry {
+                variable: "x".into(),
+                local_vertex_ids: vec![1],
+                local_edge_postings: vec![],
+            });
+        assert!(replay.validate().is_err());
+        assert!(
+            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn typed_seed_bulk_validation_rejects_incomplete_prefix_rows() {
+        let mut replay = typed_seed_replay(1);
+        replay.operations[0].seed_bindings.complete_prefix_rows = false;
+        assert!(replay.validate().is_err());
+        assert!(
+            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn typed_seed_bulk_validation_accepts_zero_rows() {
+        let replay = typed_seed_replay(1);
+        assert!(replay.validate().is_ok());
+        assert!(
+            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay).is_ok()
+        );
+    }
+
+    #[test]
     fn typed_seed_bulk_validation_rejects_too_many_rows() {
         let mut replay = typed_seed_replay(1);
         replay.operations[0].seed_bindings.rows = (0..1025)
@@ -815,10 +1022,54 @@ mod tests {
     }
 
     #[test]
-    fn typed_seed_bulk_record_rejects_exceeding_2mib() {
+    fn typed_seed_bulk_validation_rejects_oversized_params() {
         let mut replay = typed_seed_replay(1);
-        // Fill params with enough bytes that the full record exceeds 2 MiB.
-        replay.operations[0].params = vec![0u8; 3 * 1024 * 1024];
-        assert!(RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), replay).is_err());
+        replay.operations[0].params = vec![0u8; MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES + 1];
+        assert!(replay.validate().is_err());
+        assert!(
+            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn typed_seed_bulk_record_rejects_non_pristine_target() {
+        let mut replay = typed_seed_replay(1);
+        replay.target.completed = true;
+        assert!(
+            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn typed_seed_bulk_record_rejects_exceeding_safe_payload_bound() {
+        let mut replay = typed_seed_replay_with_rows(
+            1024,
+            vec![SeedRowWire {
+                vertex_bindings: vec![],
+                float64_bindings: vec![],
+            }],
+        );
+        // Each params is within the per-operation limit, but the full record still exceeds the
+        // portable inter-canister payload bound because of the cumulative Candid overhead.
+        for op in replay.operations.iter_mut() {
+            op.params = vec![0u8; 3 * 1024];
+        }
+        assert!(
+            RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn typed_seed_bulk_target_has_no_blob_field() {
+        // The target type has no `seed_bindings_blob` accessor and cannot be constructed from a
+        // legacy shard envelope. This is a compile-time invariant; the test just exercises the
+        // dedicated constructor and field set.
+        let target = TypedSeedBulkTargetV1::new(ShardId(7), Principal::anonymous());
+        assert_eq!(target.shard_id, ShardId(7));
+        assert_eq!(target.graph_canister, Principal::anonymous());
+        assert!(!target.completed);
     }
 }
