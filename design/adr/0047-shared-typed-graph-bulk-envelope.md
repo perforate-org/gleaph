@@ -263,12 +263,15 @@ pub struct RouterTypedSeedShardV1 {
 ```
 
 `RouterMutationRecordV1.mutation_id`, `request_fingerprint`, `resolved_labels`, and
-`resolved_properties` remain authoritative. `TypedSeedBulkReplayV1.shard` owns the sole target and
-its outcome; the remainder of `TypedSeedBulkReplayV1` owns the shared plan/catalog data and ordered
-params/seeds. The typed variant has no `seed_bindings_blob`, so the stable source of truth cannot
-represent both encodings. Scalar and legacy-bulk lifecycle shape is also exhaustive rather than a
-boolean plus an optional bulk record. The Router reconstructs `ExecutePlanBatchTypedArgs` directly
-from this payload, including the original batch mode.
+`resolved_properties` remain authoritative at the record top-level. During recovery, the Router
+copies `resolved_labels` and `resolved_properties` from the record top-level into the
+`ExecutePlanBatchTypedShared` shared header; `TypedSeedBulkReplayV1` intentionally does not
+duplicate them. `TypedSeedBulkReplayV1.shard` owns the sole target and its outcome; the remainder
+of `TypedSeedBulkReplayV1` owns the shared plan/catalog data and ordered params/seeds. The typed
+variant has no `seed_bindings_blob`, so the stable source of truth cannot represent both encodings.
+Scalar and legacy-bulk lifecycle shape is also exhaustive rather than a boolean plus an optional
+bulk record. The Router reconstructs `ExecutePlanBatchTypedArgs` directly from this payload,
+including the original batch mode.
 
 Typed V1 is single-shard, and `replay.operations.len() == total_ops`. The owning constructor and
 stable write boundary validate this invariant; general multi-shard typed replay is a later schema,
