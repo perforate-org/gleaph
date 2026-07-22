@@ -559,9 +559,16 @@ impl RouterStore {
                 let key = entry.key().clone();
                 let record = entry.value();
                 scanned += 1;
+                let has_dispatch_envelope = !record.shards().is_empty()
+                    || matches!(
+                        record.payload(),
+                        crate::facade::stable::label_stats::RouterMutationPayloadV1::TypedSeedBulk(
+                            _
+                        )
+                    );
                 if !record.as_v1().routing_in_progress
                     && !record.is_terminal()
-                    && !record.shards().is_empty()
+                    && has_dispatch_envelope
                 {
                     recoverable.push(key.clone());
                 }
@@ -569,6 +576,82 @@ impl RouterStore {
             }
         });
         (recoverable, last_key, scanned)
+    }
+
+    /// Atomically transition a pristine scalar reservation to a durable typed seed bulk payload.
+    ///
+    /// Accepts only a record that:
+    /// - exists under the client key;
+    /// - matches the expected `mutation_id`;
+    /// - is still `routing_in_progress`;
+    /// - has an empty scalar shard envelope and no completed row count;
+    /// - has the same `request_fingerprint`.
+    ///
+    /// On acceptance, installs the typed replay payload and releases the routing lease. On any
+    /// mismatch, leaves the record unchanged and returns `Err`.
+    pub fn transition_to_typed_seed_bulk(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        request_fingerprint: &[u8],
+        resolved_labels: ResolvedLabelTable,
+        resolved_properties: ResolvedPropertyTable,
+        replay: crate::facade::stable::label_stats::TypedSeedBulkReplayV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
+        replay.validate()?;
+        if replay.target.completed
+            || replay.target.projection_advanced
+            || replay.target.row_count != 0
+        {
+            return Err(RouterError::InvalidArgument(
+                "typed bulk target must be pristine at transition".into(),
+            ));
+        }
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at typed bulk transition".into(),
+                ));
+            }
+            if v1.request_fingerprint != request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "request fingerprint mismatch at typed bulk transition".into(),
+                ));
+            }
+            if !v1.routing_in_progress {
+                return Err(RouterError::Conflict(
+                    "typed bulk transition requires an active routing reservation".into(),
+                ));
+            }
+            if v1.completed_row_count.is_some() {
+                return Err(RouterError::Conflict(
+                    "typed bulk transition refused: record already completed".into(),
+                ));
+            }
+            match v1.payload {
+                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty() => {}
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "typed bulk transition requires a pristine scalar reservation".into(),
+                    ));
+                }
+            }
+            v1.resolved_labels = Some(resolved_labels);
+            v1.resolved_properties = Some(resolved_properties);
+            v1.payload = RouterMutationPayloadV1::TypedSeedBulk(Box::new(replay));
+            v1.routing_in_progress = false;
+            v1.routing_lease_ns = None;
+            m.insert(key, record);
+            Ok(())
+        })
     }
 
     pub fn record_router_mutation_shards(
@@ -580,19 +663,95 @@ impl RouterStore {
         resolved_properties: ResolvedPropertyTable,
         shards: Vec<RouterMutationShardV1>,
     ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
         let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            if record.shards().is_empty() && record.as_v1().completed_row_count.is_none() {
-                record.as_v1_mut().resolved_labels = Some(resolved_labels);
-                record.as_v1_mut().resolved_properties = Some(resolved_properties);
-                record.as_v1_mut().routing_in_progress = false;
-                record.as_v1_mut().payload =
-                    crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar { shards };
-                m.insert(key, record);
+            // Only a pristine Scalar reservation may be replaced by the scalar shard envelope.
+            // TypedSeedBulk and CompletedBulk must never be overwritten by a legacy writer.
+            match &record.as_v1().payload {
+                RouterMutationPayloadV1::Scalar { shards }
+                    if shards.is_empty() && record.as_v1().completed_row_count.is_none() => {}
+                _ => return Ok(()),
             }
+            record.as_v1_mut().resolved_labels = Some(resolved_labels);
+            record.as_v1_mut().resolved_properties = Some(resolved_properties);
+            record.as_v1_mut().routing_in_progress = false;
+            record.as_v1_mut().payload = RouterMutationPayloadV1::Scalar { shards };
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
+    /// Mark the single typed bulk target as canonical-complete and store its row count.
+    ///
+    /// Idempotent: a terminal record is left unchanged. Rejects legacy/scalar payloads.
+    pub fn record_typed_bulk_target_completed(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        shard_id: ShardId,
+        row_count: u64,
+    ) -> Result<(), RouterError> {
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            if record.is_terminal() {
+                return Ok(());
+            }
+            let Some(target) = record.typed_target_mut() else {
+                return Err(RouterError::Internal(
+                    "typed bulk completion requires a TypedSeedBulk payload".into(),
+                ));
+            };
+            if target.shard_id != shard_id {
+                return Err(RouterError::ShardNotRegistered);
+            }
+            target.completed = true;
+            target.row_count = row_count;
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
+    /// Mark the single typed bulk target as projection-advanced and compact when complete.
+    ///
+    /// Idempotent: a terminal record is left unchanged. Rejects legacy/scalar payloads.
+    pub fn record_typed_bulk_target_projection_advanced(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        shard_id: ShardId,
+    ) -> Result<(), RouterError> {
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            if record.is_terminal() {
+                return Ok(());
+            }
+            let Some(target) = record.typed_target_mut() else {
+                return Err(RouterError::Internal(
+                    "typed bulk projection advancement requires a TypedSeedBulk payload".into(),
+                ));
+            };
+            if target.shard_id != shard_id {
+                return Err(RouterError::ShardNotRegistered);
+            }
+            target.projection_advanced = true;
+            let row_count = target.row_count;
+            if target.completed {
+                record.as_v1_mut().completed_row_count = Some(row_count);
+                compact_completed_record(&mut record);
+            }
+            m.insert(key, record);
             Ok(())
         })
     }
@@ -606,18 +765,22 @@ impl RouterStore {
         resolved_properties: ResolvedPropertyTable,
         row_count: u64,
     ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
         let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            if record.shards().is_empty() && record.as_v1().completed_row_count.is_none() {
-                record.as_v1_mut().resolved_labels = Some(resolved_labels);
-                record.as_v1_mut().resolved_properties = Some(resolved_properties);
-                record.as_v1_mut().completed_row_count = Some(row_count);
-                record.as_v1_mut().routing_in_progress = false;
-                m.insert(key, record);
+            match &record.as_v1().payload {
+                RouterMutationPayloadV1::Scalar { shards }
+                    if shards.is_empty() && record.as_v1().completed_row_count.is_none() => {}
+                _ => return Ok(()),
             }
+            record.as_v1_mut().resolved_labels = Some(resolved_labels);
+            record.as_v1_mut().resolved_properties = Some(resolved_properties);
+            record.as_v1_mut().completed_row_count = Some(row_count);
+            record.as_v1_mut().routing_in_progress = false;
+            m.insert(key, record);
             Ok(())
         })
     }

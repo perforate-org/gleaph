@@ -345,6 +345,26 @@ pub(crate) async fn admin_register_shard(args: AdminRegisterShardArgs) -> Result
         .await
 }
 
+pub(crate) async fn admin_refresh_shard_execution_capabilities(
+    logical_graph_name: String,
+    shard_id: ShardId,
+) -> Result<bool, RouterError> {
+    RouterStore::new()
+        .admin_refresh_shard_execution_capabilities(msg_caller(), &logical_graph_name, shard_id)
+        .await
+}
+
+pub(crate) fn admin_clear_shard_execution_capabilities(
+    logical_graph_name: String,
+    shard_id: ShardId,
+) -> Result<(), RouterError> {
+    RouterStore::new().admin_clear_shard_execution_capabilities(
+        msg_caller(),
+        &logical_graph_name,
+        shard_id,
+    )
+}
+
 pub(crate) async fn admin_unregister_shard(
     logical_graph_name: String,
     shard_id: ShardId,

@@ -216,6 +216,16 @@ impl ExecutePlanBatchTypedArgs {
     }
 }
 
+/// Graph canister execution capabilities advertised to the Router (ADR 0047).
+///
+/// This response is intentionally explicit: each capability is a named, versioned boolean
+/// so that Router activation remains fail-closed and future capabilities are added only when
+/// their semantics are known.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GraphExecutionCapabilities {
+    pub typed_seed_batch_v1: bool,
+}
+
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
 ///
 /// `claim_ordinal` is the claim's deterministic position within the mutation; combined with the
@@ -1398,5 +1408,34 @@ mod tests {
             batch_mode: ExecutePlanBatchMode::Fixed,
         };
         assert!(args.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod graph_execution_capabilities_tests {
+    use super::GraphExecutionCapabilities;
+    use candid::{Decode, Encode};
+
+    #[test]
+    fn roundtrip_encodes_typed_seed_batch_v1() {
+        let caps = GraphExecutionCapabilities {
+            typed_seed_batch_v1: true,
+        };
+        let bytes = Encode!(&caps).expect("encode capabilities");
+        let decoded: GraphExecutionCapabilities =
+            Decode!(&bytes, GraphExecutionCapabilities).expect("decode capabilities");
+        assert!(decoded.typed_seed_batch_v1);
+    }
+
+    #[test]
+    fn defaults_typed_seed_batch_v1_to_false() {
+        // Candid decodes missing fields via serde default.
+        let bytes = Encode!(&GraphExecutionCapabilities {
+            typed_seed_batch_v1: false,
+        })
+        .expect("encode capabilities");
+        let decoded: GraphExecutionCapabilities =
+            Decode!(&bytes, GraphExecutionCapabilities).expect("decode capabilities");
+        assert!(!decoded.typed_seed_batch_v1);
     }
 }

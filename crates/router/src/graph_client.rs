@@ -93,6 +93,13 @@ async fn call_graph_args<T, R: candid::CandidType>(
     Err(format!("graph {method} unavailable in native builds"))
 }
 
+/// Router → graph: read-only capability advertisement (ADR 0047).
+pub async fn execution_capabilities(
+    graph: Principal,
+) -> Result<gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities, String> {
+    call_graph_args(graph, "execution_capabilities", &()).await
+}
+
 pub async fn execute_plan_on_graph(
     graph: Principal,
     args: ExecutePlanArgs,
@@ -113,6 +120,16 @@ pub async fn execute_plan_batch_on_graph(
     }
     let method = "execute_plan_update_batch";
     call_graph_result(graph, method, args).await
+}
+
+/// Router → graph: typed shared bulk envelope with decoded seeds (ADR 0047).
+pub async fn execute_plan_batch_typed_v1_on_graph(
+    graph: Principal,
+    args: gleaph_graph_kernel::plan_exec::ExecutePlanBatchTypedArgs,
+) -> Result<ExecutePlanBatchResult, String> {
+    args.validate()
+        .map_err(|e| format!("typed batch V1 validation: {e}"))?;
+    call_graph_result(graph, "execute_plan_update_batch_typed_v1", args).await
 }
 
 pub async fn ack_label_stats_deltas_through(

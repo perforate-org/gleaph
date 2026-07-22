@@ -90,6 +90,12 @@ async fn execute_plan_update_batch_typed_v1(
     canister::handlers::execute_plan_update_batch_typed_v1(args).await
 }
 
+/// Router → graph: capability advertisement (ADR 0047).
+#[query(guard = "guard_router_canister")]
+fn execution_capabilities() -> gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {
+    canister::handlers::execution_capabilities()
+}
+
 #[query(guard = "guard_router_canister")]
 fn list_pending_label_stats_deltas(
     from_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq,

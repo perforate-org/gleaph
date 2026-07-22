@@ -344,6 +344,14 @@ export interface GraphBulkMutationProgressV1 {
   'operation_count' : number,
 }
 /**
+ * Graph canister execution capabilities advertised to the Router (ADR 0047).
+ *
+ * This response is intentionally explicit: each capability is a named, versioned boolean
+ * so that Router activation remains fail-closed and future capabilities are added only when
+ * their semantics are known.
+ */
+export interface GraphExecutionCapabilities { 'typed_seed_batch_v1' : boolean }
+/**
  * Arguments supplied by the registry (or installer) on first `init`.
  */
 export interface GraphInitArgs {
@@ -815,7 +823,6 @@ export interface _SERVICE {
    * Router → graph: operator-only physical stable-memory inventory.
    */
   'admin_stable_memory_stats' : ActorMethod<[], StableMemoryStats>,
-  'admin_take_batch_instr_log' : ActorMethod<[number, number], Array<string>>,
   'backfill_edge_property_postings' : ActorMethod<
     [EdgePropertyBackfillRequest],
     Result_3
@@ -845,6 +852,10 @@ export interface _SERVICE {
     [ExecutePlanBatchTypedArgs],
     Result_7
   >,
+  /**
+   * Router → graph: capability advertisement (ADR 0047).
+   */
+  'execution_capabilities' : ActorMethod<[], GraphExecutionCapabilities>,
   'finalize_bulk_ingest' : ActorMethod<[BulkIngestFinalizeArgs], Result_8>,
   'get_mutation_journal_entries' : ActorMethod<
     [GetMutationJournalEntriesArgs],

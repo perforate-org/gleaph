@@ -65,7 +65,7 @@ pub enum TypedBatchEligibility {
 const MAX_TYPED_BATCH_INSERT_EDGE_OPS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TypedBatchPlanBounds {
+pub(crate) struct TypedBatchPlanBounds {
     insert_edges_per_input_row: usize,
 }
 
@@ -386,6 +386,34 @@ pub fn classify_typed_batch_eligibility(operations: &[ExecutePlanArgs]) -> Typed
         plan_blob: first.plan_blob.clone(),
         operations: candidate_operations,
     })
+}
+
+/// Validate an already-constructed typed batch candidate.
+///
+/// This is the Router-side production entry point: complete-row seeds have already been resolved
+/// as [`SeedBindingsWire`], so the candidate carries them directly without per-operation Candid
+/// encoding. It reuses the same plan and response-bound rules as the legacy-args classifier.
+pub fn classify_typed_batch_candidate(candidate: &TypedBatchCandidate) -> Result<(), &'static str> {
+    let plan_bounds = validate_typed_batch_plan(&candidate.plan_blob)?;
+    for op in &candidate.operations {
+        if !op.seed.entries.is_empty() {
+            return Err("typed V1 requires empty grouped seed entries");
+        }
+        if !op.seed.complete_prefix_rows {
+            return Err("typed V1 requires complete_prefix_rows=true");
+        }
+        if op.seed.rows.len() > 1024 {
+            return Err("typed V1 supports at most 1024 seed rows per operation");
+        }
+        if op.params_blob.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("typed V1 params_blob exceeds the safe payload limit");
+        }
+    }
+    validate_typed_batch_response_bound(
+        candidate.operations.iter().map(|op| op.seed.rows.len()),
+        plan_bounds,
+    )?;
+    Ok(())
 }
 
 /// Validate that a Graph-ingress typed batch envelope is eligible for the V1 path.

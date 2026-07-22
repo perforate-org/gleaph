@@ -335,8 +335,6 @@ pub struct TypedSeedBulkOperationV1 {
     pub seed_bindings: SeedBindingsWire,
 }
 
-#[cfg(any(test, feature = "pocket-ic-e2e"))]
-#[allow(dead_code)]
 impl TypedSeedBulkReplayV1 {
     /// Validate the invariants required for a durable typed seed replay payload.
     ///

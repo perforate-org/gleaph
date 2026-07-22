@@ -56,6 +56,65 @@ pub(crate) fn register_test_graph(store: &RouterStore, admin: Principal, name: &
     assert_registry_invariants();
 }
 
+#[test]
+fn shard_capability_refresh_capture_and_commit_preserves_identity_and_other_fields() {
+    use crate::facade::store::registry::ShardCapabilityRefreshCapture;
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let graph = graph_principal(1);
+    let index = graph_principal(2);
+    let graph_id = tenant_main_graph_id();
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            logical_graph_name: "tenant.main".into(),
+            shard_id: ShardId::new(0),
+            graph_canister: graph,
+            index_canister: index,
+        },
+    ))
+    .expect("register shard");
+
+    let capture: ShardCapabilityRefreshCapture = store
+        .capture_shard_for_capability_refresh(admin, "tenant.main", ShardId::new(0))
+        .expect("capture");
+    assert_eq!(capture.key.graph_id, graph_id);
+    assert_eq!(capture.graph_canister, graph);
+
+    let committed = store
+        .commit_shard_execution_capabilities(capture.clone(), true)
+        .expect("commit");
+    assert!(committed);
+    let entry = store
+        .resolve_shard(graph_id, ShardId::new(0))
+        .expect("lookup");
+    assert!(entry.typed_seed_batch_v1);
+    assert_eq!(entry.graph_canister, graph);
+    assert_eq!(entry.index_canister, index);
+
+    let mut tampered_capture = capture.clone();
+    tampered_capture.prior_registered_at_ns = capture.prior_registered_at_ns + 1;
+    assert!(
+        store
+            .commit_shard_execution_capabilities(tampered_capture, true)
+            .is_err()
+    );
+
+    store
+        .admin_clear_shard_execution_capabilities(admin, "tenant.main", ShardId::new(0))
+        .expect("clear");
+    let entry = store
+        .resolve_shard(graph_id, ShardId::new(0))
+        .expect("lookup");
+    assert!(!entry.typed_seed_batch_v1);
+}
+
 fn tenant_main_graph_id() -> GraphId {
     lookup_graph_id("tenant.main").expect("tenant.main")
 }

@@ -258,6 +258,9 @@ export interface ExecutePlanBatchTypedShared {
      */
     element_id_encoding_key: Uint8Array;
 }
+export interface GraphExecutionCapabilities {
+    typed_seed_batch_v1: boolean;
+}
 export interface VertexEmbeddingIngestionArgs {
     local_vertex_id: number;
     spec: IndexedEmbeddingSpec;
@@ -690,7 +693,6 @@ export interface gleaph_graphInterface {
     admin_ingest_vertex_embedding_batch(arg0: Array<VertexEmbeddingIngestionArgs>): Promise<Result_1>;
     admin_set_vector_index_canister(arg0: Principal): Promise<Result_2>;
     admin_stable_memory_stats(): Promise<StableMemoryStats>;
-    admin_take_batch_instr_log(arg0: number, arg1: number): Promise<Array<string>>;
     backfill_edge_property_postings(arg0: EdgePropertyBackfillRequest): Promise<Result_3>;
     backfill_label_postings(arg0: PostingBackfillArgs): Promise<Result_4>;
     backfill_vertex_embeddings(arg0: VertexEmbeddingBackfillRequest): Promise<Result_5>;
@@ -699,6 +701,7 @@ export interface gleaph_graphInterface {
     execute_plan_update(arg0: ExecutePlanArgs): Promise<Result_6>;
     execute_plan_update_batch(arg0: ExecutePlanBatchArgs): Promise<Result_7>;
     execute_plan_update_batch_typed_v1(arg0: ExecutePlanBatchTypedArgs): Promise<Result_7>;
+    execution_capabilities(): Promise<GraphExecutionCapabilities>;
     finalize_bulk_ingest(arg0: BulkIngestFinalizeArgs): Promise<Result_8>;
     get_mutation_journal_entries(arg0: GetMutationJournalEntriesArgs): Promise<GetMutationJournalEntriesResult>;
     get_mutation_journal_entry(arg0: bigint): Promise<GraphMutationJournalEntryWire | null>;
@@ -736,10 +739,6 @@ export class Gleaph_graph implements gleaph_graphInterface {
         const result = await this.actor.admin_stable_memory_stats();
         return result;
     }
-    async admin_take_batch_instr_log(arg0: number, arg1: number): Promise<Array<string>> {
-        const result = await this.actor.admin_take_batch_instr_log(arg0, arg1);
-        return result;
-    }
     async backfill_edge_property_postings(arg0: EdgePropertyBackfillRequest): Promise<Result_3> {
         const result = await this.actor.backfill_edge_property_postings(to_candid_EdgePropertyBackfillRequest_n23(arg0));
         return from_candid_Result_3_n27(result);
@@ -771,6 +770,10 @@ export class Gleaph_graph implements gleaph_graphInterface {
     async execute_plan_update_batch_typed_v1(arg0: ExecutePlanBatchTypedArgs): Promise<Result_7> {
         const result = await this.actor.execute_plan_update_batch_typed_v1(to_candid_ExecutePlanBatchTypedArgs_n75(arg0));
         return from_candid_Result_7_n69(result);
+    }
+    async execution_capabilities(): Promise<GraphExecutionCapabilities> {
+        const result = await this.actor.execution_capabilities();
+        return result;
     }
     async finalize_bulk_ingest(arg0: BulkIngestFinalizeArgs): Promise<Result_8> {
         const result = await this.actor.finalize_bulk_ingest(arg0);

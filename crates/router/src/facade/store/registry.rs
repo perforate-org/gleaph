@@ -980,6 +980,7 @@ impl RouterStore {
             // registered shard starts with no vector target and unattached.
             vector_index_canister: None,
             vector_index_attached: false,
+            typed_seed_batch_v1: false,
         };
 
         commit_index_group_canister_assignment(graph_id, allocated_shard_id, args.index_canister)?;
@@ -1005,6 +1006,113 @@ impl RouterStore {
         .map_err(RouterError::Internal)?;
 
         Ok(())
+    }
+}
+
+/// Snapshot of a shard registry entry captured before the async Graph capability call,
+/// used so unit tests can manipulate registry state between capture and commit.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ShardCapabilityRefreshCapture {
+    pub key: GraphShardKey,
+    pub graph_canister: Principal,
+    pub prior_registered_at_ns: u64,
+}
+
+impl RouterStore {
+    /// Admin-only: refresh the execution-capability bit for one registered Graph shard.
+    ///
+    /// Queries the currently registered Graph principal, then re-reads the registry after the
+    /// await and commits the advertised bit only if the same `GraphShardKey` still maps to the same
+    /// principal. Preserves all other registry facts on success and leaves the record unchanged on
+    /// any error or target replacement.
+    pub async fn admin_refresh_shard_execution_capabilities(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        shard_id: ShardId,
+    ) -> Result<bool, RouterError> {
+        use crate::graph_client;
+
+        let capture =
+            self.capture_shard_for_capability_refresh(caller, logical_graph_name, shard_id)?;
+        let capabilities = graph_client::execution_capabilities(capture.graph_canister)
+            .await
+            .map_err(|error| {
+                RouterError::Internal(format!("capability refresh failed: {error}"))
+            })?;
+        self.commit_shard_execution_capabilities(capture, capabilities.typed_seed_batch_v1)
+    }
+
+    /// Capture stage: validate admin/graph/shard and snapshot the current entry identity.
+    pub(crate) fn capture_shard_for_capability_refresh(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        shard_id: ShardId,
+    ) -> Result<ShardCapabilityRefreshCapture, RouterError> {
+        auth::require_admin(&caller)?;
+        validate_metadata_name(logical_graph_name)?;
+        let graph_id = resolve_registered_graph_id(logical_graph_name)?;
+        let key = GraphShardKey::new(graph_id, shard_id);
+        let (graph_canister, prior) = ROUTER_SHARDS.with_borrow(|shards| {
+            let entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            Ok::<_, RouterError>((entry.graph_canister, entry.clone()))
+        })?;
+        Ok(ShardCapabilityRefreshCapture {
+            key,
+            graph_canister,
+            prior_registered_at_ns: prior.registered_at_ns,
+        })
+    }
+
+    /// Commit stage: apply the advertised capability bit only if the captured shard identity is
+    /// still current. This is intentionally a separate function so tests can drive ABA/race cases.
+    pub(crate) fn commit_shard_execution_capabilities(
+        &self,
+        capture: ShardCapabilityRefreshCapture,
+        typed_seed_batch_v1: bool,
+    ) -> Result<bool, RouterError> {
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut current = shards
+                .get(&capture.key)
+                .ok_or(RouterError::ShardNotRegistered)?;
+            if current.graph_canister != capture.graph_canister {
+                return Err(RouterError::Conflict(
+                    "graph canister changed during capability refresh; aborting update".into(),
+                ));
+            }
+            if current.registered_at_ns != capture.prior_registered_at_ns {
+                return Err(RouterError::Conflict(
+                    "shard registry entry was replaced during capability refresh; aborting update"
+                        .into(),
+                ));
+            }
+            current.typed_seed_batch_v1 = typed_seed_batch_v1;
+            shards.insert(capture.key, current);
+            Ok::<_, RouterError>(typed_seed_batch_v1)
+        })
+    }
+
+    /// Admin-only: synchronously clear the typed-seed-batch-v1 capability bit for one shard.
+    /// Affects only new-group admission; existing durable `TypedSeedBulk` records continue to
+    /// replay on the typed path.
+    pub fn admin_clear_shard_execution_capabilities(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+        shard_id: ShardId,
+    ) -> Result<(), RouterError> {
+        auth::require_admin(&caller)?;
+        validate_metadata_name(logical_graph_name)?;
+        let graph_id = resolve_registered_graph_id(logical_graph_name)?;
+        let key = GraphShardKey::new(graph_id, shard_id);
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            entry.typed_seed_batch_v1 = false;
+            shards.insert(key, entry);
+            Ok::<(), RouterError>(())
+        })?;
+        Self::verify_registry_invariants_after_commit()
     }
 
     pub async fn admin_unregister_shard(

@@ -102,6 +102,16 @@ pub fn post_upgrade() {
 pub fn admin_stable_memory_stats() -> gleaph_graph_kernel::stable_memory::StableMemoryStats {
     crate::facade::stable_memory_stats()
 }
+/// Router → graph: capability advertisement (ADR 0047).
+///
+/// The result is state-free and derived from the canister binary: the typed V1 endpoint is
+/// implemented in this build, so the capability is always `true`. Future capabilities may depend
+/// on stable feature flags when their semantics require it.
+pub fn execution_capabilities() -> gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {
+    gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {
+        typed_seed_batch_v1: true,
+    }
+}
 
 pub(crate) fn decode_gql_param_map(params: Vec<u8>) -> Result<BTreeMap<String, Value>, String> {
     #[cfg(all(feature = "canbench", target_family = "wasm"))]

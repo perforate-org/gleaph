@@ -16,6 +16,7 @@ pub(crate) const ROUTER_WORK_HEADROOM: u64 = 4_000_000_000;
 ///
 /// All async prefetch (journal, anchors) is already resolved; the executor only needs to run
 /// the Graph dispatch and post-processing phases.
+#[derive(Clone)]
 pub(crate) struct PreparedMutation {
     /// Whether the program contains DML.
     pub has_dml: bool,
@@ -62,6 +63,7 @@ pub(crate) struct PreparedMutation {
 }
 
 /// One input mutation inside a bulk group that shares a single plan and mutation id.
+#[derive(Clone)]
 pub(crate) struct BulkGroupItem {
     /// Encoded parameter blob for this item.
     pub params: Vec<u8>,
@@ -71,6 +73,7 @@ pub(crate) struct BulkGroupItem {
 
 /// A group of input mutations that share the same query plan and are dispatched under one
 /// `mutation_id` to each target Graph canister (ADR 0044).
+#[derive(Clone)]
 pub(crate) struct PreparedBulkGroup {
     /// Common prepared state, taken from the first item.
     pub base: PreparedMutation,

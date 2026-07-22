@@ -228,6 +228,12 @@ type GraphBulkMutationProgressV1 = record {
   completed_count : nat32;
   operation_count : nat32;
 };
+// Graph canister execution capabilities advertised to the Router (ADR 0047).
+//
+// This response is intentionally explicit: each capability is a named, versioned boolean
+// so that Router activation remains fail-closed and future capabilities are added only when
+// their semantics are known.
+type GraphExecutionCapabilities = record { typed_seed_batch_v1 : bool };
 // Arguments supplied by the registry (or installer) on first `init`.
 type GraphInitArgs = record {
   shard_id : opt nat32;
@@ -567,7 +573,6 @@ service : (GraphInitArgs) -> {
   admin_set_vector_index_canister : (principal) -> (Result_2);
   // Router → graph: operator-only physical stable-memory inventory.
   admin_stable_memory_stats : () -> (StableMemoryStats) query;
-  admin_take_batch_instr_log : (nat32, nat32) -> (vec text) query;
   backfill_edge_property_postings : (EdgePropertyBackfillRequest) -> (Result_3);
   backfill_label_postings : (PostingBackfillArgs) -> (Result_4);
   backfill_vertex_embeddings : (VertexEmbeddingBackfillRequest) -> (Result_5);
@@ -583,6 +588,8 @@ service : (GraphInitArgs) -> {
   execute_plan_update_batch_typed_v1 : (ExecutePlanBatchTypedArgs) -> (
       Result_7,
     );
+  // Router → graph: capability advertisement (ADR 0047).
+  execution_capabilities : () -> (GraphExecutionCapabilities) query;
   finalize_bulk_ingest : (BulkIngestFinalizeArgs) -> (Result_8);
   get_mutation_journal_entries : (GetMutationJournalEntriesArgs) -> (
       GetMutationJournalEntriesResult,

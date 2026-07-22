@@ -233,6 +233,22 @@ async fn admin_register_shard(args: types::AdminRegisterShardArgs) -> Result<(),
 }
 
 #[update]
+async fn admin_refresh_shard_execution_capabilities(
+    logical_graph_name: String,
+    shard_id: types::ShardId,
+) -> Result<bool, RouterError> {
+    canister::admin_refresh_shard_execution_capabilities(logical_graph_name, shard_id).await
+}
+
+#[update]
+fn admin_clear_shard_execution_capabilities(
+    logical_graph_name: String,
+    shard_id: types::ShardId,
+) -> Result<(), RouterError> {
+    canister::admin_clear_shard_execution_capabilities(logical_graph_name, shard_id)
+}
+
+#[update]
 async fn admin_unregister_shard(
     logical_graph_name: String,
     shard_id: types::ShardId,

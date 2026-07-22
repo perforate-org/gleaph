@@ -186,6 +186,7 @@ mod tests {
             index_attached: true,
             vector_index_canister: None,
             vector_index_attached: false,
+            typed_seed_batch_v1: false,
         }
     }
 
