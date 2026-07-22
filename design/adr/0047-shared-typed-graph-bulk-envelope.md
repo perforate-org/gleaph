@@ -3,7 +3,7 @@
 Date: 2026-07-22
 Status: Proposed
 Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 00:40:15 UTC +0000
+Anchor timestamp: 2026-07-22 01:07:32 UTC +0000
 
 ## Context
 
@@ -177,6 +177,12 @@ Notes:
 - Typed V1 admits only complete-row seeded groups with no resolved-search relation and with all
   federated/local uniqueness and constrained-property dispatch vectors empty. Other groups retain
   their existing semantics-safe path. The V1 wire therefore carries no dormant claim/search fields.
+- Typed V1 also requires a mutation plan whose result shape has a conservative encoded-response
+  bound: `rows_blob` is statically absent, and the execution shape has a finite per-operation bound
+  for `hot_forward_vertices`. One shared `gleaph-graph-kernel` eligibility/bound helper derives this
+  fact from the plan once per group and is used by both Router admission and Graph validation; the
+  generic GQL parser/planner does not gain a Gleaph transport flag. Plans without that proof retain
+  their existing semantics-safe path.
 
 ### Seed representation and invalid-state prevention
 
@@ -287,18 +293,21 @@ Typed V1 bounds are normative:
 
 - `1 <= total_ops <= 1024`;
 - each seed has at most 1,024 complete rows, preserving the existing complete-row bound;
-- each encoded `params_blob` and canonical encoded seed is at most 2 MiB;
+- each already-encoded `params_blob.len()` is at most 2 MiB;
 - Candid encoding of the reconstructed full `ExecutePlanBatchTypedArgs` is at most 2 MiB; and
 - Candid encoding of the complete `RouterMutationRecord::V1` typed payload is at
   most 2 MiB.
 
 The Router owning constructor checks every bound before the stable write. Graph independently checks
-operation count, seed row count, target shard, and full request bytes. If any typed bound fails, the
-Router selects a semantics-safe existing path before writing typed state; it never silently
-truncates or writes a record that cannot be dispatched. A group with distinct per-operation seeds
-must fall back to the existing sequential scalar path, because the legacy bulk record's one blob per
-shard cannot replay that group. The legacy batch path is eligible only when its existing replay
-contract is independently sufficient, such as a shared seed relation.
+operation count, seed row count, target shard, and full request bytes. The Router must not Candid-
+encode each seed to enforce an individual byte bound: that would recreate the per-item encoding cost
+this ADR exists to remove. Seed admission uses structural row/count bounds, and the one full typed
+request encoding is the sole encoded seed-size proof. If any typed bound fails, the Router selects a
+semantics-safe existing path before writing typed state; it never silently truncates or writes a
+record that cannot be dispatched. A group with distinct per-operation seeds must fall back to the
+existing sequential scalar path, because the legacy bulk record's one blob per shard cannot replay
+that group. The legacy batch path is eligible only when its existing replay contract is independently
+sufficient, such as a shared seed relation.
 
 ### Capability and rollout
 
@@ -307,19 +316,28 @@ contract is independently sufficient, such as a shared seed relation.
    it.
 2. **Capability advertisement and activation.** Graph exposes a read-only
    `execution_capabilities` query containing an exhaustive `TypedSeedBatchV1` capability. A
-   control-plane-admin Router refresh method calls that query and writes
-   `typed_seed_batch_v1: bool` into the redefined shard-registry V1 record. The
-   durable registry field is the data-plane source of truth; no heap cache or call rejection enables
-   the path.
+   control-plane-admin Router refresh update captures the target `GraphShardKey` and Graph canister
+   principal, calls that query, then re-reads the registry after the `await`. It writes
+   `typed_seed_batch_v1: true` only if the same registry key still names the same live Graph
+   principal; otherwise it returns an error without changing capability state. The field extends
+   `ShardRegistryEntry` and the current `ShardRegistryStableRecord::V2` write shape; the retained
+   decode-only V1 registry variant is not redefined. The durable registry field is the data-plane
+   source of truth; no heap cache or call rejection enables the path. Refresh failure does not
+   enable the capability, and an explicit guarded admin clear disables future typed admission.
 3. **Router cutover.** Once all target Graph canisters for a graph support the new method, the
    Router uses it for eligible homogeneous bulk groups.
 4. **Capability-disabled fallback.** Before durable admission, a false capability selects the
    existing scalar path for groups with distinct per-operation seeds. It may select the legacy batch
    path only when that path can replay the group exactly.
-5. **Incompatible V1 installation.** Before installing the Router implementation, stop the local or
+5. **Ambiguous typed-call outcome.** Once typed V1 replay is durable, a reject, bounded-wait unknown
+   outcome, decode failure, or callback trap never converts that record to scalar or legacy batch.
+   The Router leaves it `CanonicalPending` and retries the identical typed request under the same
+   `MutationId` and operation order after compatible Graph service is restored; Graph journal resume
+   remains the authority for the committed prefix. Clearing capability affects only new admission.
+6. **Incompatible V1 installation.** Before installing the Router implementation, stop the local or
    pre-production stack and fresh-install/reset Router stable state. The old and new V1 byte layouts
    are intentionally not mutually decodable; no migration or backward-decoder is provided.
-6. **Rollback boundary.** This pre-production decision does not provide data-preserving rollback to
+7. **Rollback boundary.** This pre-production decision does not provide data-preserving rollback to
    an older Router. Rolling the Router back requires another fresh install/reset. Before removing
    the Graph method, disable the capability and stop/reset any Router that can still replay typed
    records. Graph-first deployment still allows the new Graph method to be rolled out inertly.
@@ -336,6 +354,13 @@ contract is independently sufficient, such as a shared seed relation.
   first unattempted operation when the instruction budget is exhausted.
 - The encoded size probe is performed before the inter-canister call, so no call is issued with an
   oversized payload.
+- Before typed persistence, the Router calls the shared graph-kernel helper to prove a conservative
+  bound for the complete encoded `ExecutePlanBatchResult`: fixed per-item result overhead plus the
+  derived maximum `hot_forward_vertices` must fit under the same portable 2 MiB limit, and
+  `rows_blob` must be statically absent. Graph applies the same classifier before executing the first
+  operation and retains its final actual-response encode guard as defense in depth, not as the
+  admission mechanism after mutations may already have committed. A plan without this proof uses
+  the existing scalar path.
 
 ### Performance expectation
 
@@ -370,7 +395,8 @@ introduce scope not justified by the measured POSTED problem.
   per graph canister.
 - `RouterMutationRecord::V1` is redefined incompatibly with exhaustive `Scalar`, `LegacyBulk`, and
   `TypedSeedBulk` payload variants. No Router V2 or stable migration is introduced.
-- Typed V1 is deliberately single-shard, complete-row seeded, unconstrained, and search-free.
+- Typed V1 is deliberately single-shard, complete-row seeded, unconstrained, search-free, and
+  limited to plans with a statically bounded row-free response shape.
 - The stable shard registry gains an explicit admin-refreshed `typed_seed_batch_v1` capability.
 - Recovery no longer needs to repeat Property Index lookup for bulk groups that used the typed
   path.
@@ -381,6 +407,12 @@ introduce scope not justified by the measured POSTED problem.
 - End-to-end adoption is gated on measured Router ingress savings; if the gate fails, the typed
   method and typed V1 payload are not adopted.
 - The new surface must be covered by focused PocketIC Router→Graph tests before production release.
+
+Required validation includes: the shared response classifier accepting the measured POSTED shape
+and rejecting row-returning or unbounded shapes; capability refresh refusing a target replaced
+during its `await`; typed rejection/unknown-outcome recovery retaining the same durable request and
+mutation id; response-bound failure selecting scalar before typed persistence or any Graph call; and
+a canbench/Router instruction check proving admission does not perform one seed encode per item.
 
 ## Related documents
 

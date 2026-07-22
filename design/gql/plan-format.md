@@ -1,7 +1,7 @@
 # Physical plan format
 
 Last updated: 2026-07-22
-Anchor timestamp: 2026-07-22 00:40:15 UTC +0000
+Anchor timestamp: 2026-07-22 01:07:32 UTC +0000
 
 ## Purpose
 
@@ -96,6 +96,8 @@ contracts must be distinguished.
   group header and required ordered per-operation complete-row seeds (`SeedBindingsWire`);
 - V1 rejects resolved-search and constraint/uniqueness dispatch and uses the existing
   semantics-safe path for those groups;
+- V1 also rejects plans without a statically bounded row-free response shape; request admission
+  uses structural seed bounds and one full-request encode, never one Candid encode per seed;
 - the scalar `ExecutePlanArgs.seed_bindings_blob` path and the legacy blob batch method remain
   unchanged; scalar is the fallback for distinct-seed groups, while legacy batch is used only when
   its existing replay representation is sufficient;
@@ -103,8 +105,10 @@ contracts must be distinguished.
 - `RouterMutationRecord::V1` is redefined incompatibly with exhaustive scalar, legacy-bulk, and
   typed-bulk payload variants; the typed payload persists the exact ordered replay relation without a
   parallel blob representation;
-- the typed path is activated only from an admin-refreshed durable shard-registry capability, and
-  initial Router installation or rollback to older Router Wasm requires fresh install/reset because
+- the typed path is activated only from an admin-refreshed capability on the current shard-registry
+  V2 write shape after post-await target revalidation; ambiguous typed-call outcomes retain typed
+  durable replay under the same mutation id;
+- initial Router installation or rollback to older Router Wasm requires fresh install/reset because
   there is no deployed stable state to migrate;
 - the end-to-end Router ingress saving must still meet the adoption gate.
 
