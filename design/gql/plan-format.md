@@ -90,7 +90,7 @@ contracts must be distinguished.
 - checked candidate, product, encoded-payload, and instruction bounds fail closed without
   truncation.
 
-**ADR 0047 Graph contract (implemented, performance adoption rejected in Plan 0112):**
+**ADR 0047 Graph contract (implemented, current POSTED adoption rejected in Plan 0112):**
 
 - Graph exposes `execute_plan_update_batch_typed_v1`, which accepts an eligible single-shard batch with a shared immutable
   group header and required ordered per-operation complete-row seeds (`SeedBindingsWire`);
@@ -114,7 +114,8 @@ contracts must be distinguished.
 - Router activation is implemented: the typed path is selected only when the durable shard-registry V2 entry records `typed_seed_batch: V1` from an admin-refreshed, post-await target-revalidated capability; ambiguous typed-call outcomes retain typed durable replay under the same mutation id and operation order;
 - initial Router installation or rollback to older Router Wasm requires fresh install/reset because
   there is no deployed stable state to migrate;
-- the end-to-end Router ingress saving did not meet the adoption gate; the typed path is kept available but not activated for the production POSTED workload.
+- the current POSTED workload did not enter the typed path, so the adoption gate could not establish
+  transport effectiveness; the typed path is kept available but not activated for that workload.
 
 The physical plan remains the single source of predicate/join semantics. Gleaph-specific seed
 lowering must not add shard, canister, constraint, or Property Index concepts to the generic planner.

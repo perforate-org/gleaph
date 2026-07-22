@@ -1,11 +1,14 @@
 # 0047. Shared typed Graph bulk execution envelope
 
 Date: 2026-07-22
-Status: Implemented; adoption rejected
+Status: Implemented; adoption rejected for current POSTED workload; transport effectiveness unproven
 
 Implementation boundary as of 2026-07-22: the Graph endpoint, shared wire, exhaustive admission
 classifier, response-bound proof, Router capability activation, durable typed dispatch, and
-recovery are implemented in Plan 0111. End-to-end performance adoption was measured in Plan 0112 and the path was rejected.
+recovery are implemented in Plan 0111. Plan 0112 measured the current POSTED workload, but the
+typed path was not exercised because selective complete-row seeds trigger the existing sequential
+scalar fallback. Adoption was therefore rejected for that workload; transport effectiveness remains
+unproven and is deferred to Plan 0113.
 Last revised: 2026-07-22
 Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
 
@@ -22,9 +25,9 @@ threshold in the isolated transport benchmark.
 
 Plan 0112 later measured the same workload end-to-end on a fresh local network and found that the
 production POSTED path abandons the bulk group because of selective complete-row seeds. The typed
-path is therefore not exercised for the dominant POSTED items, and the end-to-end Router ingress
-gate is missed. The implementation is kept available for seed-invariant bulk groups, but it is not
-adopted for the current production workload.
+path is therefore not exercised for the dominant POSTED items, so the end-to-end Router ingress
+gate cannot establish typed transport effectiveness. Adoption is rejected for the current
+production workload; the implementation remains available for seed-invariant bulk groups.
 
 The existing boundaries are:
 
@@ -445,8 +448,9 @@ introduce scope not justified by the measured POSTED problem.
   batch method remains available only where its existing durable replay shape is sufficient.
 - Initial Router rollout and rollback to older Router Wasm require fresh install/reset because the
   V1 stable layout is intentionally incompatible and Gleaph has no deployed state to migrate.
-- End-to-end adoption is gated on measured Router ingress savings; if the gate fails, the typed
-  method and typed V1 payload are not adopted.
+- End-to-end adoption is gated on measured Router ingress savings. A workload that never enters the
+  typed method is an adoption failure for that workload, not evidence that the typed transport is
+  intrinsically slower.
 - The new surface must be covered by focused PocketIC Router→Graph tests before production release.
 
 Required validation includes: the shared response classifier accepting the measured POSTED shape
