@@ -465,3 +465,210 @@ fn bench_inline_edge_struct_schema_commit() -> canbench_rs::BenchResult {
             .expect("commit inline struct schema");
     })
 }
+
+// -----------------------------------------------------------------------------
+// Plan 0105: seed Candid transport benchmark-only probes.
+// Compare nested (per-item blob inside outer vector) versus typed (outer vector
+// of SeedBindingsWire) encoding/decoding for the POSTED complete-row seed shape.
+// -----------------------------------------------------------------------------
+
+use candid::{Decode, Encode};
+use gleaph_graph_kernel::plan_exec::{SeedBindingsWire, SeedRowWire, SeedVertexBinding};
+
+/// POSTED-shaped fixture: one variable, one row, one vertex binding, no float bindings,
+/// no required labels, complete_prefix_rows=true, distinct local vertex id per item.
+fn posted_seeds(count: usize) -> Vec<SeedBindingsWire> {
+    let mut out = Vec::with_capacity(count);
+    for local_vertex_id in 0..count as u32 {
+        out.push(SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![SeedVertexBinding {
+                    variable: "poster".to_string(),
+                    local_vertex_id,
+                    required_vertex_label_ids: Vec::new(),
+                }],
+                float64_bindings: Vec::new(),
+            }],
+            complete_prefix_rows: true,
+        });
+    }
+    out
+}
+
+fn encode_nested(seeds: &[SeedBindingsWire]) -> Vec<u8> {
+    let blobs: Vec<Option<Vec<u8>>> = seeds
+        .iter()
+        .map(|s| Some(Encode!(s).expect("encode seed")))
+        .collect();
+    Encode!(&blobs).expect("encode nested outer")
+}
+
+fn decode_nested(bytes: &[u8]) -> Vec<SeedBindingsWire> {
+    let blobs: Vec<Option<Vec<u8>>> =
+        Decode!(bytes, Vec<Option<Vec<u8>>>).expect("decode nested outer");
+    blobs
+        .into_iter()
+        .map(|b| Decode!(&b.unwrap(), SeedBindingsWire).expect("decode inner seed"))
+        .collect()
+}
+
+fn encode_typed(seeds: &[SeedBindingsWire]) -> Vec<u8> {
+    Encode!(&seeds.to_vec()).expect("encode typed outer")
+}
+
+fn decode_typed(bytes: &[u8]) -> Vec<SeedBindingsWire> {
+    Decode!(bytes, Vec<SeedBindingsWire>).expect("decode typed outer")
+}
+
+#[cfg(test)]
+mod seed_transport_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_nested_matches_fixture() {
+        for n in [1usize, 32, 512] {
+            let seeds = posted_seeds(n);
+            let bytes = encode_nested(&seeds);
+            let decoded = decode_nested(&bytes);
+            assert_eq!(decoded, seeds, "nested round-trip failed at N={n}");
+        }
+    }
+
+    #[test]
+    fn round_trip_typed_matches_fixture() {
+        for n in [1usize, 32, 512] {
+            let seeds = posted_seeds(n);
+            let bytes = encode_typed(&seeds);
+            let decoded = decode_typed(&bytes);
+            assert_eq!(decoded, seeds, "typed round-trip failed at N={n}");
+        }
+    }
+
+    #[test]
+    fn encoded_typed_not_larger_than_nested() {
+        for n in [1usize, 32, 512] {
+            let seeds = posted_seeds(n);
+            let nested = encode_nested(&seeds).len();
+            let typed = encode_typed(&seeds).len();
+            assert!(
+                typed <= nested,
+                "typed encoding larger than nested at N={n}: {typed} > {nested}"
+            );
+        }
+    }
+}
+
+#[bench(raw)]
+fn bench_seed_encode_nested_1() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(1);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_nested_1");
+        black_box(encode_nested(&seeds));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_encode_nested_32() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(32);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_nested_32");
+        black_box(encode_nested(&seeds));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_encode_nested_512() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(512);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_nested_512");
+        black_box(encode_nested(&seeds));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_encode_typed_1() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(1);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_typed_1");
+        black_box(encode_typed(&seeds));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_encode_typed_32() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(32);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_typed_32");
+        black_box(encode_typed(&seeds));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_encode_typed_512() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(512);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_typed_512");
+        black_box(encode_typed(&seeds));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_decode_nested_1() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(1);
+    let bytes = encode_nested(&seeds);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_decode_nested_1");
+        black_box(decode_nested(&bytes));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_decode_nested_32() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(32);
+    let bytes = encode_nested(&seeds);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_decode_nested_32");
+        black_box(decode_nested(&bytes));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_decode_nested_512() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(512);
+    let bytes = encode_nested(&seeds);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_decode_nested_512");
+        black_box(decode_nested(&bytes));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_decode_typed_1() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(1);
+    let bytes = encode_typed(&seeds);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_decode_typed_1");
+        black_box(decode_typed(&bytes));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_decode_typed_32() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(32);
+    let bytes = encode_typed(&seeds);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_decode_typed_32");
+        black_box(decode_typed(&bytes));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_decode_typed_512() -> canbench_rs::BenchResult {
+    let seeds = posted_seeds(512);
+    let bytes = encode_typed(&seeds);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_decode_typed_512");
+        black_box(decode_typed(&bytes));
+    })
+}

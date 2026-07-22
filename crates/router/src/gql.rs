@@ -1,3 +1,4 @@
+#![allow(clippy::default_constructed_unit_structs)]
 //! Router-side GQL parse, plan, index seed routing, and graph dispatch.
 
 use std::cell::RefCell;
@@ -657,6 +658,7 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
     shard_ids: &[ShardId],
+    #[cfg_attr(not(feature = "batch-instr-log"), allow(unused_variables))]
     metrics: &mut SeedResolutionMetrics,
 ) -> Result<SeedHits, String> {
     #[cfg(feature = "batch-instr-log")]
@@ -995,7 +997,8 @@ async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
             Ok(SeedHits::Vertices(merged.unwrap_or_default()))
         }
         _ => {
-            ctx.resolve_anchor_hits(index, anchor, ShardId::new(0), metrics).await
+            ctx.resolve_anchor_hits(index, anchor, ShardId::new(0), metrics)
+                .await
         }
     }
 }

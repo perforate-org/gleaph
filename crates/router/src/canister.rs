@@ -1178,6 +1178,7 @@ pub(crate) async fn admin_graph_stable_memory_stats(
 }
 
 /// Admin-only batch-instrumentation log proxy: one page per shard in the named graph.
+#[allow(dead_code)]
 pub(crate) async fn admin_graph_batch_instr_log(
     graph_name: String,
     offset: u32,
