@@ -548,6 +548,12 @@ fn test_typed_batch_trace() -> Result<String, RouterError> {
     canister::test_typed_batch_trace()
 }
 
+#[cfg(feature = "pocket-ic-e2e")]
+#[query]
+fn test_typed_batch_prepare_count() -> Result<u64, RouterError> {
+    canister::test_typed_batch_prepare_count()
+}
+
 /// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation into `Reclaiming` (admin), so the
 /// failure-injection suite can prove a same-`ClaimId` retry is fenced during a reclaim proof.
 #[cfg(feature = "pocket-ic-e2e")]

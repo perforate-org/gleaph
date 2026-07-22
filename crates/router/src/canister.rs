@@ -227,6 +227,12 @@ pub(crate) fn test_typed_batch_trace() -> Result<String, RouterError> {
     Ok(crate::test_fault::typed_batch_trace())
 }
 
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn test_typed_batch_prepare_count() -> Result<u64, RouterError> {
+    auth::require_admin(&msg_caller())?;
+    Ok(crate::test_fault::typed_batch_prepare_count())
+}
+
 /// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation into `Reclaiming` (admin-only), so the
 /// failure-injection suite can prove a same-`ClaimId` retry is fenced during a reclaim proof.
 #[cfg(feature = "pocket-ic-e2e")]

@@ -29,6 +29,7 @@ pub(crate) enum InjectedFault {
 thread_local! {
     static FAULT: Cell<InjectedFault> = const { Cell::new(InjectedFault::None) };
     static TYPED_BATCH_TRACE: RefCell<String> = const { RefCell::new(String::new()) };
+    static TYPED_PREPARE_COUNT: Cell<u64> = const { Cell::new(0) };
 }
 
 pub(crate) fn arm(fault: InjectedFault) {
@@ -41,6 +42,14 @@ pub(crate) fn record_typed_batch_trace(stage: impl Into<String>) {
 
 pub(crate) fn typed_batch_trace() -> String {
     TYPED_BATCH_TRACE.with_borrow(Clone::clone)
+}
+
+pub(crate) fn increment_typed_batch_prepare_count() {
+    TYPED_PREPARE_COUNT.with(|c| c.set(c.get() + 1));
+}
+
+pub(crate) fn typed_batch_prepare_count() -> u64 {
+    TYPED_PREPARE_COUNT.with(Cell::get)
 }
 
 /// Map a candid-friendly code to a fault (`0` clears). Unknown codes are rejected by the caller.

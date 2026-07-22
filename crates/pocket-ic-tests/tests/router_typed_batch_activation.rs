@@ -161,6 +161,21 @@ fn typed_batch_trace(env: &gleaph_pocket_ic_tests::FederationEnv) -> String {
         .expect("typed trace authorized")
 }
 
+fn typed_batch_prepare_count(env: &gleaph_pocket_ic_tests::FederationEnv) -> u64 {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "test_typed_batch_prepare_count",
+            Encode!(&()).expect("encode typed prepare count args"),
+        )
+        .expect("query typed prepare count");
+    Decode!(&bytes, Result<u64, RouterError>)
+        .expect("decode typed prepare count")
+        .expect("typed prepare count authorized")
+}
+
 #[test]
 fn typed_batch_activation_lifecycle_drives_capability_fallback_and_retry() {
     let env = install_single_shard_federation();
@@ -418,6 +433,11 @@ fn social_demo_posted_shape_uses_typed_batch_when_capable() {
         2,
         "social-demo POSTED shape must create two canonical posts"
     );
+    assert_eq!(
+        typed_batch_prepare_count(&env),
+        1,
+        "typed V1 path must enter typed prepare exactly once"
+    );
 }
 
 #[test]
@@ -454,4 +474,56 @@ fn typed_batch_early_capability_short_circuit_skips_typed_prepare() {
     execute_batch_as_admin(&env, posts);
     assert_eq!(count_posts(&env), 2, "fallback batch must create two posts");
     assert_eq!(typed_batch_trace(&env), "sequential-scalar-fallback");
+    assert_eq!(
+        typed_batch_prepare_count(&env),
+        0,
+        "early short-circuit must not enter typed prepare"
+    );
+}
+#[test]
+fn multi_shard_disabled_target_enters_typed_prepare_before_fallback() {
+    let env = gleaph_pocket_ic_tests::install_federation();
+
+    admin_intern_property(&env, "demo_graph");
+    admin_intern_property(&env, "demo_id");
+    admin_intern_property(&env, "user_id");
+    admin_intern_property(&env, "demo_edge_id");
+    admin_intern_property(&env, "demo_kind");
+    admin_intern_property(&env, "body");
+    admin_intern_property(&env, "created_at");
+    admin_intern_property(&env, "is_public");
+    admin_intern_vertex_label(&env, "User");
+    admin_intern_vertex_label(&env, "Post");
+    admin_intern_edge_label(&env, "POSTED");
+    create_vertex_property_index(
+        &env,
+        "social_user_user_id",
+        "User",
+        "user_id",
+        "social_typed_user_id_index",
+    );
+
+    gql_execute_idempotent_as_admin(&env, USER_ALICE, "social_insert_alice");
+    gql_execute_idempotent_as_admin(&env, USER_BOB, "social_insert_bob");
+
+    // With multiple live shards the target shard is not known before seed routing, so the
+    // early capability short-circuit cannot apply. The typed prepare is still entered and then
+    // rejected post-routing, after which the selective complete-row seed falls back to scalar.
+    let posts = social_posted_mutations(&["alice", "bob"], 1);
+    execute_batch_as_admin(&env, posts);
+    assert_eq!(
+        count_posts(&env),
+        2,
+        "multi-shard fallback must create two posts"
+    );
+    assert_eq!(
+        typed_batch_trace(&env),
+        "sequential-scalar-fallback",
+        "post-routing fallback must still succeed"
+    );
+    assert_eq!(
+        typed_batch_prepare_count(&env),
+        1,
+        "multi-shard disabled target must enter typed prepare before post-routing rejection"
+    );
 }

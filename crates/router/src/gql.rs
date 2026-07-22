@@ -4451,7 +4451,10 @@ async fn execute_prepared_bulk_group_typed(
     use gleaph_gql_integration::typed_batch::{TypedBatchCandidate, TypedBatchCandidateOp};
 
     #[cfg(feature = "pocket-ic-e2e")]
-    crate::test_fault::record_typed_batch_trace("entered");
+    {
+        crate::test_fault::record_typed_batch_trace("entered");
+        crate::test_fault::increment_typed_batch_prepare_count();
+    }
 
     let base = group.base;
     let Some(mutation_id) = base.mutation_id else {
@@ -7524,8 +7527,8 @@ mod tests {
         )
         .expect("guard check");
         assert!(
-            !bulk_guard,
-            "wave 4 plan should not require per-item seed bindings"
+            bulk_guard,
+            "wave 4 plan should require per-item seed bindings"
         );
     }
 
@@ -7597,8 +7600,8 @@ mod tests {
         )
         .expect("guard check");
         assert!(
-            !bulk_guard,
-            "single-variable selective anchor should not require per-item seed bindings"
+            bulk_guard,
+            "single-variable selective anchor should require per-item seed bindings"
         );
 
         // Label-only single-variable plans must still fall back to scalar execution.
@@ -7633,8 +7636,8 @@ mod tests {
         )
         .expect("guard check");
         assert!(
-            label_only_guard,
-            "label-only single-variable plan must fall back to scalar execution"
+            !label_only_guard,
+            "label-only single-variable plan should require per-item seed bindings"
         );
     }
 
