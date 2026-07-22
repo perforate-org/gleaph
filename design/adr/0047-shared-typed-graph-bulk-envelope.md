@@ -1,11 +1,11 @@
 # 0047. Shared typed Graph bulk execution envelope
 
 Date: 2026-07-22
-Status: Implemented
+Status: Implemented; adoption rejected
 
 Implementation boundary as of 2026-07-22: the Graph endpoint, shared wire, exhaustive admission
 classifier, response-bound proof, Router capability activation, durable typed dispatch, and
-recovery are implemented in Plan 0111. End-to-end performance adoption is measured in Plan 0112.
+recovery are implemented in Plan 0111. End-to-end performance adoption was measured in Plan 0112 and the path was rejected.
 Last revised: 2026-07-22
 Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
 
@@ -17,8 +17,14 @@ binding, distinct `local_vertex_id` per item), replacing the nested `Vec<Option<
 structure with an outer typed `Vec<SeedBindingsWire>` reduced Router encoding cost by approximately
 263K instructions per item at N=512 and 256K instructions per item at N=32. Typed decoding was
 also cheaper by about 289K instructions per item at N=512, and the encoded byte count dropped from
-75,791 to 8,836 bytes. Both per-item Router savings exceed the current 156,799-instruction adoption
-threshold.
+75,791 to 8,836 bytes. Both per-item Router savings exceeded the 156,799-instruction adoption
+threshold in the isolated transport benchmark.
+
+Plan 0112 later measured the same workload end-to-end on a fresh local network and found that the
+production POSTED path abandons the bulk group because of selective complete-row seeds. The typed
+path is therefore not exercised for the dominant POSTED items, and the end-to-end Router ingress
+gate is missed. The implementation is kept available for seed-invariant bulk groups, but it is not
+adopted for the current production workload.
 
 The existing boundaries are:
 
