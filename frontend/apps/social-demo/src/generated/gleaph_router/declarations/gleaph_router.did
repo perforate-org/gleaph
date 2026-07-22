@@ -601,10 +601,6 @@ type ShardRegistryEntry = record {
   // `index_attached`; a faithful proxy for graph-local vector readiness. Decodes as `false` for
   // pre-Slice-4 (V1) records.
   vector_index_attached : bool;
-  // `true` once the Router has durably verified that this exact registered Graph canister
-  // advertises `execution_capabilities.typed_seed_batch_v1` (ADR 0047). Decodes as `false`
-  // for pre-typed-batch (V1/V2) records; a fresh Router install/reset remains required.
-  typed_seed_batch_v1 : bool;
   shard_id : nat32;
   index_canister : principal;
   graph_canister : principal;
@@ -614,6 +610,10 @@ type ShardRegistryEntry = record {
   vector_index_canister : opt principal;
   // `false` while router awaits index `admin_attach_shard_canister`; excluded from dispatch/index fan-out.
   index_attached : bool;
+  // `true` once the Router has durably verified that this exact registered Graph canister
+  // advertises `execution_capabilities.typed_seed_batch` (ADR 0047). Decodes as `Unsupported`
+  // for pre-typed-batch (V1/V2) records; a fresh Router install/reset remains required.
+  typed_seed_batch : TypedSeedBatchCapability;
 };
 // Logical size of one named virtual stable-memory region owned by a canister.
 //
@@ -637,6 +637,7 @@ type StableMemoryStats = record {
   logical_total_pages : nat64;
   logical_total_bytes : nat64;
 };
+type TypedSeedBatchCapability = variant { V1; Unsupported };
 // Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3/4).
 type VectorActivationBlockReason = variant {
   // The global vector-dispatch activation flag is off (ADR 0031 Slice 4). An operator must flip

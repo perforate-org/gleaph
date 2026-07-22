@@ -59,6 +59,7 @@ pub use unique_effect::{
 };
 
 use crate::entry::GraphId;
+use crate::plan_exec::TypedSeedBatchCapability;
 
 use candid::{CandidType, Decode, Encode, Principal};
 use ic_stable_structures::storable::{Bound, Storable};
@@ -155,10 +156,10 @@ pub struct ShardRegistryEntry {
     #[serde(default)]
     pub vector_index_attached: bool,
     /// `true` once the Router has durably verified that this exact registered Graph canister
-    /// advertises `execution_capabilities.typed_seed_batch_v1` (ADR 0047). Decodes as `false`
+    /// advertises `execution_capabilities.typed_seed_batch` (ADR 0047). Decodes as `Unsupported`
     /// for pre-typed-batch (V1/V2) records; a fresh Router install/reset remains required.
     #[serde(default)]
-    pub typed_seed_batch_v1: bool,
+    pub typed_seed_batch: TypedSeedBatchCapability,
 }
 
 /// Pre-Slice-4 record shape, retained only to decode old `V1` stable bytes (ADR 0031 Slice 4).
@@ -205,7 +206,7 @@ impl Storable for ShardRegistryEntry {
                 index_attached: v1.index_attached,
                 vector_index_canister: None,
                 vector_index_attached: false,
-                typed_seed_batch_v1: false,
+                typed_seed_batch: TypedSeedBatchCapability::Unsupported,
             },
             ShardRegistryStableRecord::V2(v2) => v2,
         }
@@ -245,7 +246,7 @@ mod tests {
             index_attached: true,
             vector_index_canister: Some(Principal::management_canister()),
             vector_index_attached: true,
-            typed_seed_batch_v1: true,
+            typed_seed_batch: TypedSeedBatchCapability::V1,
         };
         let bytes = entry.to_bytes();
         assert_eq!(entry, ShardRegistryEntry::from_bytes(bytes));
@@ -270,6 +271,9 @@ mod tests {
         assert!(decoded.index_attached);
         assert_eq!(decoded.vector_index_canister, None);
         assert!(!decoded.vector_index_attached);
-        assert!(!decoded.typed_seed_batch_v1);
+        assert_eq!(
+            decoded.typed_seed_batch,
+            TypedSeedBatchCapability::Unsupported
+        );
     }
 }

@@ -980,7 +980,7 @@ impl RouterStore {
             // registered shard starts with no vector target and unattached.
             vector_index_canister: None,
             vector_index_attached: false,
-            typed_seed_batch_v1: false,
+            typed_seed_batch: gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::Unsupported,
         };
 
         commit_index_group_canister_assignment(graph_id, allocated_shard_id, args.index_canister)?;
@@ -1040,7 +1040,10 @@ impl RouterStore {
             .map_err(|error| {
                 RouterError::Internal(format!("capability refresh failed: {error}"))
             })?;
-        self.commit_shard_execution_capabilities(capture, capabilities.typed_seed_batch_v1)
+        self.commit_shard_execution_capabilities(capture, capabilities.typed_seed_batch)
+            .map(|capability| {
+                capability == gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+            })
     }
 
     /// Capture stage: validate admin/graph/shard and snapshot the current entry identity.
@@ -1070,8 +1073,8 @@ impl RouterStore {
     pub(crate) fn commit_shard_execution_capabilities(
         &self,
         capture: ShardCapabilityRefreshCapture,
-        typed_seed_batch_v1: bool,
-    ) -> Result<bool, RouterError> {
+        typed_seed_batch: gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability,
+    ) -> Result<gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability, RouterError> {
         ROUTER_SHARDS.with_borrow_mut(|shards| {
             let mut current = shards
                 .get(&capture.key)
@@ -1087,9 +1090,9 @@ impl RouterStore {
                         .into(),
                 ));
             }
-            current.typed_seed_batch_v1 = typed_seed_batch_v1;
+            current.typed_seed_batch = typed_seed_batch;
             shards.insert(capture.key, current);
-            Ok::<_, RouterError>(typed_seed_batch_v1)
+            Ok::<_, RouterError>(typed_seed_batch)
         })
     }
 
@@ -1108,7 +1111,8 @@ impl RouterStore {
         let key = GraphShardKey::new(graph_id, shard_id);
         ROUTER_SHARDS.with_borrow_mut(|shards| {
             let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
-            entry.typed_seed_batch_v1 = false;
+            entry.typed_seed_batch =
+                gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::Unsupported;
             shards.insert(key, entry);
             Ok::<(), RouterError>(())
         })?;

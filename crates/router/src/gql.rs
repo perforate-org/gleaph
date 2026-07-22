@@ -4402,7 +4402,7 @@ async fn execute_prepared_bulk_group_typed(
     }
     let dispatch = &base.dispatches[0];
     let shard = store.resolve_shard(graph_id, dispatch.shard_id)?;
-    if !shard.typed_seed_batch_v1 {
+    if shard.typed_seed_batch != gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1 {
         #[cfg(feature = "pocket-ic-e2e")]
         crate::test_fault::record_typed_batch_trace("capability-disabled");
         return Ok(None);
@@ -5423,7 +5423,7 @@ mod tests {
             index_attached: true,
             vector_index_canister: None,
             vector_index_attached: false,
-            typed_seed_batch_v1: false,
+            typed_seed_batch: gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::Unsupported,
         };
         let claim = |shard_id: ShardId, canister: Principal| LocalUniqueClaim {
             dispatch: UniqueClaimDispatch {

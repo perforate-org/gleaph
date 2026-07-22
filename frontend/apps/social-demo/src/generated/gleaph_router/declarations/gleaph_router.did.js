@@ -557,16 +557,20 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : IndexedPropertyCatalog,
     'Err' : RouterError,
   });
+  const TypedSeedBatchCapability = IDL.Variant({
+    'V1' : IDL.Null,
+    'Unsupported' : IDL.Null,
+  });
   const ShardRegistryEntry = IDL.Record({
     'graph_id' : IDL.Nat32,
     'registered_at_ns' : IDL.Nat64,
     'vector_index_attached' : IDL.Bool,
-    'typed_seed_batch_v1' : IDL.Bool,
     'shard_id' : IDL.Nat32,
     'index_canister' : IDL.Principal,
     'graph_canister' : IDL.Principal,
     'vector_index_canister' : IDL.Opt(IDL.Principal),
     'index_attached' : IDL.Bool,
+    'typed_seed_batch' : TypedSeedBatchCapability,
   });
   const Result_29 = IDL.Variant({
     'Ok' : IDL.Vec(ShardRegistryEntry),

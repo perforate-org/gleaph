@@ -218,12 +218,18 @@ impl ExecutePlanBatchTypedArgs {
 
 /// Graph canister execution capabilities advertised to the Router (ADR 0047).
 ///
-/// This response is intentionally explicit: each capability is a named, versioned boolean
-/// so that Router activation remains fail-closed and future capabilities are added only when
-/// their semantics are known.
+/// This response is intentionally explicit: each capability is a named, versioned value
+/// so that Router activation remains fail-closed and future revisions are representable.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct GraphExecutionCapabilities {
-    pub typed_seed_batch_v1: bool,
+    pub typed_seed_batch: TypedSeedBatchCapability,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize, Default)]
+pub enum TypedSeedBatchCapability {
+    #[default]
+    Unsupported,
+    V1,
 }
 
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
@@ -1424,29 +1430,32 @@ mod tests {
 
 #[cfg(test)]
 mod graph_execution_capabilities_tests {
-    use super::GraphExecutionCapabilities;
+    use super::{GraphExecutionCapabilities, TypedSeedBatchCapability};
     use candid::{Decode, Encode};
 
     #[test]
-    fn roundtrip_encodes_typed_seed_batch_v1() {
+    fn roundtrip_encodes_typed_seed_batch_capability() {
         let caps = GraphExecutionCapabilities {
-            typed_seed_batch_v1: true,
+            typed_seed_batch: TypedSeedBatchCapability::V1,
         };
         let bytes = Encode!(&caps).expect("encode capabilities");
         let decoded: GraphExecutionCapabilities =
             Decode!(&bytes, GraphExecutionCapabilities).expect("decode capabilities");
-        assert!(decoded.typed_seed_batch_v1);
+        assert_eq!(decoded.typed_seed_batch, TypedSeedBatchCapability::V1);
     }
 
     #[test]
-    fn defaults_typed_seed_batch_v1_to_false() {
+    fn encodes_unsupported_typed_seed_batch_capability() {
         // Candid decodes missing fields via serde default.
         let bytes = Encode!(&GraphExecutionCapabilities {
-            typed_seed_batch_v1: false,
+            typed_seed_batch: TypedSeedBatchCapability::Unsupported,
         })
         .expect("encode capabilities");
         let decoded: GraphExecutionCapabilities =
             Decode!(&bytes, GraphExecutionCapabilities).expect("decode capabilities");
-        assert!(!decoded.typed_seed_batch_v1);
+        assert_eq!(
+            decoded.typed_seed_batch,
+            TypedSeedBatchCapability::Unsupported
+        );
     }
 }

@@ -351,11 +351,12 @@ export interface GraphBulkMutationProgressV1 {
 /**
  * Graph canister execution capabilities advertised to the Router (ADR 0047).
  *
- * This response is intentionally explicit: each capability is a named, versioned boolean
- * so that Router activation remains fail-closed and future capabilities are added only when
- * their semantics are known.
+ * This response is intentionally explicit: each capability is a named, versioned value
+ * so that Router activation remains fail-closed and future revisions are representable.
  */
-export interface GraphExecutionCapabilities { 'typed_seed_batch_v1' : boolean }
+export interface GraphExecutionCapabilities {
+  'typed_seed_batch' : TypedSeedBatchCapability,
+}
 /**
  * Arguments supplied by the registry (or installer) on first `init`.
  */
@@ -639,6 +640,8 @@ export interface StableMemoryStats {
   'logical_total_pages' : bigint,
   'logical_total_bytes' : bigint,
 }
+export type TypedSeedBatchCapability = { 'V1' : null } |
+  { 'Unsupported' : null };
 /**
  * Evidence that a claim's `Acquire` is pinned: the matching effect's `EffectId` (so the Router can
  * ack *that* effect after Confirm — `claim_ordinal` and `effect_ordinal` are distinct concepts and

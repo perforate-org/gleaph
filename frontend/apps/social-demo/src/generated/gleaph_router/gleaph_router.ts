@@ -274,12 +274,6 @@ export interface ShardRegistryEntry {
      * pre-Slice-4 (V1) records.
      */
     vector_index_attached: boolean;
-    /**
-     * `true` once the Router has durably verified that this exact registered Graph canister
-     * advertises `execution_capabilities.typed_seed_batch_v1` (ADR 0047). Decodes as `false`
-     * for pre-typed-batch (V1/V2) records; a fresh Router install/reset remains required.
-     */
-    typed_seed_batch_v1: boolean;
     shard_id: number;
     index_canister: Principal;
     graph_canister: Principal;
@@ -293,6 +287,12 @@ export interface ShardRegistryEntry {
      * `false` while router awaits index `admin_attach_shard_canister`; excluded from dispatch/index fan-out.
      */
     index_attached: boolean;
+    /**
+     * `true` once the Router has durably verified that this exact registered Graph canister
+     * advertises `execution_capabilities.typed_seed_batch` (ADR 0047). Decodes as `Unsupported`
+     * for pre-typed-batch (V1/V2) records; a fresh Router install/reset remains required.
+     */
+    typed_seed_batch: TypedSeedBatchCapability;
 }
 export interface ClientMutationKey {
     graph_id: number;
@@ -1432,6 +1432,10 @@ export enum ProvisionableResourceKind {
     VectorIndex = "VectorIndex",
     GraphShard = "GraphShard"
 }
+export enum TypedSeedBatchCapability {
+    V1 = "V1",
+    Unsupported = "Unsupported"
+}
 export enum VectorActivationBlockReason {
     /**
      * The global vector-dispatch activation flag is off (ADR 0031 Slice 4). An operator must flip
@@ -1735,7 +1739,7 @@ export interface gleaph_routerInterface {
     vector_search(arg0: RouterVectorSearchRequest): Promise<Result_43>;
     whoami(): Promise<Principal>;
 }
-import type { AdminEdgeBackfillStepResult as _AdminEdgeBackfillStepResult, AdminLabelBackfillStepResult as _AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepResult as _AdminLabelStatsProjectionStepResult, AdminResetBackfillClaimArgs as _AdminResetBackfillClaimArgs, AdminSweepMutationKeysStepArgs as _AdminSweepMutationKeysStepArgs, AdminSweepMutationKeysStepResult as _AdminSweepMutationKeysStepResult, AdminVectorIndexBackfillStepResult as _AdminVectorIndexBackfillStepResult, BackfillKind as _BackfillKind, ClientMutationKey as _ClientMutationKey, EdgeBackfillShardStatus as _EdgeBackfillShardStatus, GqlExecuteIdempotentBatchArgs as _GqlExecuteIdempotentBatchArgs, GqlExecuteIdempotentBatchItem as _GqlExecuteIdempotentBatchItem, GqlExecuteIdempotentBatchResult as _GqlExecuteIdempotentBatchResult, GqlQueryResult as _GqlQueryResult, GraphRegistryEntry as _GraphRegistryEntry, GraphStableMemoryStats as _GraphStableMemoryStats, GraphStatus as _GraphStatus, IndexedPropertyCatalog as _IndexedPropertyCatalog, LabelBackfillShardStatus as _LabelBackfillShardStatus, MutationLifecyclePhase as _MutationLifecyclePhase, MutationStatus as _MutationStatus, MutationToken as _MutationToken, MutationTokenShard as _MutationTokenShard, ProvisionGraphArgs as _ProvisionGraphArgs, ProvisionGraphResponse as _ProvisionGraphResponse, ProvisionJobSummary as _ProvisionJobSummary, ProvisionableResource as _ProvisionableResource, ProvisionableResourceKind as _ProvisionableResourceKind, ProvisioningState as _ProvisioningState, ReadMode as _ReadMode, RegisterVectorIndexArgs as _RegisterVectorIndexArgs, Result as _Result, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_15 as _Result_15, Result_16 as _Result_16, Result_17 as _Result_17, Result_18 as _Result_18, Result_19 as _Result_19, Result_2 as _Result_2, Result_20 as _Result_20, Result_21 as _Result_21, Result_22 as _Result_22, Result_23 as _Result_23, Result_24 as _Result_24, Result_25 as _Result_25, Result_26 as _Result_26, Result_27 as _Result_27, Result_28 as _Result_28, Result_29 as _Result_29, Result_3 as _Result_3, Result_30 as _Result_30, Result_31 as _Result_31, Result_32 as _Result_32, Result_33 as _Result_33, Result_34 as _Result_34, Result_35 as _Result_35, Result_36 as _Result_36, Result_37 as _Result_37, Result_38 as _Result_38, Result_39 as _Result_39, Result_4 as _Result_4, Result_40 as _Result_40, Result_41 as _Result_41, Result_42 as _Result_42, Result_43 as _Result_43, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, RouterAckResponse as _RouterAckResponse, RouterError as _RouterError, SetVectorMaintenancePolicyArgs as _SetVectorMaintenancePolicyArgs, ShardRegistryEntry as _ShardRegistryEntry, VectorActivationBlockReason as _VectorActivationBlockReason, VectorCentroidCacheStatus as _VectorCentroidCacheStatus, VectorIndexActivationStateView as _VectorIndexActivationStateView, VectorIndexActivationStatus as _VectorIndexActivationStatus, VectorIndexError as _VectorIndexError, VectorIndexInfo as _VectorIndexInfo, VectorMaintenanceFailure as _VectorMaintenanceFailure, VectorMaintenancePolicy as _VectorMaintenancePolicy, VectorMaintenancePolicyView as _VectorMaintenancePolicyView, VectorMaintenanceRecommendation as _VectorMaintenanceRecommendation, VectorMaintenanceState as _VectorMaintenanceState, VectorMaintenanceStateView as _VectorMaintenanceStateView, VectorMaintenanceStatusView as _VectorMaintenanceStatusView, VectorMaintenanceStepOutcome as _VectorMaintenanceStepOutcome, VectorMaintenanceStepResult as _VectorMaintenanceStepResult, VectorMetric as _VectorMetric, VectorPartitionHealthStep as _VectorPartitionHealthStep, VectorPartitionHealthSummary as _VectorPartitionHealthSummary, VectorPartitionPageHealth as _VectorPartitionPageHealth, VectorRebuildPhase as _VectorRebuildPhase, VectorRebuildStatus as _VectorRebuildStatus, VectorSearchHit as _VectorSearchHit, VectorSearchResult as _VectorSearchResult, VectorSlabGlobalStats as _VectorSlabGlobalStats, VectorSlabScopeStats as _VectorSlabScopeStats, VectorSlabStats as _VectorSlabStats, VectorSlabStatsStep as _VectorSlabStatsStep, VectorSlabVersionStats as _VectorSlabVersionStats, VectorSubject as _VectorSubject, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome } from "./gleaph_router.did";
+import type { AdminEdgeBackfillStepResult as _AdminEdgeBackfillStepResult, AdminLabelBackfillStepResult as _AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepResult as _AdminLabelStatsProjectionStepResult, AdminResetBackfillClaimArgs as _AdminResetBackfillClaimArgs, AdminSweepMutationKeysStepArgs as _AdminSweepMutationKeysStepArgs, AdminSweepMutationKeysStepResult as _AdminSweepMutationKeysStepResult, AdminVectorIndexBackfillStepResult as _AdminVectorIndexBackfillStepResult, BackfillKind as _BackfillKind, ClientMutationKey as _ClientMutationKey, EdgeBackfillShardStatus as _EdgeBackfillShardStatus, GqlExecuteIdempotentBatchArgs as _GqlExecuteIdempotentBatchArgs, GqlExecuteIdempotentBatchItem as _GqlExecuteIdempotentBatchItem, GqlExecuteIdempotentBatchResult as _GqlExecuteIdempotentBatchResult, GqlQueryResult as _GqlQueryResult, GraphRegistryEntry as _GraphRegistryEntry, GraphStableMemoryStats as _GraphStableMemoryStats, GraphStatus as _GraphStatus, IndexedPropertyCatalog as _IndexedPropertyCatalog, LabelBackfillShardStatus as _LabelBackfillShardStatus, MutationLifecyclePhase as _MutationLifecyclePhase, MutationStatus as _MutationStatus, MutationToken as _MutationToken, MutationTokenShard as _MutationTokenShard, ProvisionGraphArgs as _ProvisionGraphArgs, ProvisionGraphResponse as _ProvisionGraphResponse, ProvisionJobSummary as _ProvisionJobSummary, ProvisionableResource as _ProvisionableResource, ProvisionableResourceKind as _ProvisionableResourceKind, ProvisioningState as _ProvisioningState, ReadMode as _ReadMode, RegisterVectorIndexArgs as _RegisterVectorIndexArgs, Result as _Result, Result_1 as _Result_1, Result_10 as _Result_10, Result_11 as _Result_11, Result_12 as _Result_12, Result_13 as _Result_13, Result_14 as _Result_14, Result_15 as _Result_15, Result_16 as _Result_16, Result_17 as _Result_17, Result_18 as _Result_18, Result_19 as _Result_19, Result_2 as _Result_2, Result_20 as _Result_20, Result_21 as _Result_21, Result_22 as _Result_22, Result_23 as _Result_23, Result_24 as _Result_24, Result_25 as _Result_25, Result_26 as _Result_26, Result_27 as _Result_27, Result_28 as _Result_28, Result_29 as _Result_29, Result_3 as _Result_3, Result_30 as _Result_30, Result_31 as _Result_31, Result_32 as _Result_32, Result_33 as _Result_33, Result_34 as _Result_34, Result_35 as _Result_35, Result_36 as _Result_36, Result_37 as _Result_37, Result_38 as _Result_38, Result_39 as _Result_39, Result_4 as _Result_4, Result_40 as _Result_40, Result_41 as _Result_41, Result_42 as _Result_42, Result_43 as _Result_43, Result_5 as _Result_5, Result_6 as _Result_6, Result_7 as _Result_7, Result_8 as _Result_8, Result_9 as _Result_9, RouterAckResponse as _RouterAckResponse, RouterError as _RouterError, SetVectorMaintenancePolicyArgs as _SetVectorMaintenancePolicyArgs, ShardRegistryEntry as _ShardRegistryEntry, TypedSeedBatchCapability as _TypedSeedBatchCapability, VectorActivationBlockReason as _VectorActivationBlockReason, VectorCentroidCacheStatus as _VectorCentroidCacheStatus, VectorIndexActivationStateView as _VectorIndexActivationStateView, VectorIndexActivationStatus as _VectorIndexActivationStatus, VectorIndexError as _VectorIndexError, VectorIndexInfo as _VectorIndexInfo, VectorMaintenanceFailure as _VectorMaintenanceFailure, VectorMaintenancePolicy as _VectorMaintenancePolicy, VectorMaintenancePolicyView as _VectorMaintenancePolicyView, VectorMaintenanceRecommendation as _VectorMaintenanceRecommendation, VectorMaintenanceState as _VectorMaintenanceState, VectorMaintenanceStateView as _VectorMaintenanceStateView, VectorMaintenanceStatusView as _VectorMaintenanceStatusView, VectorMaintenanceStepOutcome as _VectorMaintenanceStepOutcome, VectorMaintenanceStepResult as _VectorMaintenanceStepResult, VectorMetric as _VectorMetric, VectorPartitionHealthStep as _VectorPartitionHealthStep, VectorPartitionHealthSummary as _VectorPartitionHealthSummary, VectorPartitionPageHealth as _VectorPartitionPageHealth, VectorRebuildPhase as _VectorRebuildPhase, VectorRebuildStatus as _VectorRebuildStatus, VectorSearchHit as _VectorSearchHit, VectorSearchResult as _VectorSearchResult, VectorSlabGlobalStats as _VectorSlabGlobalStats, VectorSlabScopeStats as _VectorSlabScopeStats, VectorSlabStats as _VectorSlabStats, VectorSlabStatsStep as _VectorSlabStatsStep, VectorSlabVersionStats as _VectorSlabVersionStats, VectorSubject as _VectorSubject, VertexEmbeddingIngestionResult as _VertexEmbeddingIngestionResult, VertexEmbeddingProjectionOutcome as _VertexEmbeddingProjectionOutcome } from "./gleaph_router.did";
 export class Gleaph_router implements gleaph_routerInterface {
     constructor(private actor: ActorSubclass<_SERVICE>){}
     async admin_abort_vector_rebuild(arg0: string, arg1: number): Promise<Result> {
@@ -1988,11 +1992,11 @@ export class Gleaph_router implements gleaph_routerInterface {
     }
     async list_vector_indexes(arg0: string): Promise<Result_30> {
         const result = await this.actor.list_vector_indexes(arg0);
-        return from_candid_Result_30_n153(result);
+        return from_candid_Result_30_n155(result);
     }
     async list_vector_maintenance_policies(arg0: string): Promise<Result_31> {
         const result = await this.actor.list_vector_maintenance_policies(arg0);
-        return from_candid_Result_31_n162(result);
+        return from_candid_Result_31_n164(result);
     }
     async lookup_edge_label_id(arg0: string, arg1: string): Promise<Result_7> {
         const result = await this.actor.lookup_edge_label_id(arg0, arg1);
@@ -2000,11 +2004,11 @@ export class Gleaph_router implements gleaph_routerInterface {
     }
     async lookup_graph_id(arg0: string): Promise<Result_32> {
         const result = await this.actor.lookup_graph_id(arg0);
-        return from_candid_Result_32_n167(result);
+        return from_candid_Result_32_n169(result);
     }
     async lookup_property_id(arg0: string, arg1: string): Promise<Result_32> {
         const result = await this.actor.lookup_property_id(arg0, arg1);
-        return from_candid_Result_32_n167(result);
+        return from_candid_Result_32_n169(result);
     }
     async lookup_vertex_label_id(arg0: string, arg1: string): Promise<Result_7> {
         const result = await this.actor.lookup_vertex_label_id(arg0, arg1);
@@ -2012,11 +2016,11 @@ export class Gleaph_router implements gleaph_routerInterface {
     }
     async mutation_status(arg0: string, arg1: string): Promise<Result_33> {
         const result = await this.actor.mutation_status(arg0, arg1);
-        return from_candid_Result_33_n168(result);
+        return from_candid_Result_33_n170(result);
     }
     async my_role(): Promise<Result_34> {
         const result = await this.actor.my_role();
-        return from_candid_Result_34_n173(result);
+        return from_candid_Result_34_n175(result);
     }
     async prepared_drop(arg0: string): Promise<Result> {
         const result = await this.actor.prepared_drop(arg0);
@@ -2044,39 +2048,39 @@ export class Gleaph_router implements gleaph_routerInterface {
     }
     async prepared_register_batch(arg0: Array<[string, string]>): Promise<Array<Result>> {
         const result = await this.actor.prepared_register_batch(arg0);
-        return from_candid_vec_n175(result);
+        return from_candid_vec_n177(result);
     }
     async provision_graph(arg0: ProvisionGraphArgs): Promise<Result_35> {
-        const result = await this.actor.provision_graph(to_candid_ProvisionGraphArgs_n176(arg0));
-        return from_candid_Result_35_n183(result);
+        const result = await this.actor.provision_graph(to_candid_ProvisionGraphArgs_n178(arg0));
+        return from_candid_Result_35_n185(result);
     }
     async resolve_graph(arg0: string): Promise<Result_36> {
         const result = await this.actor.resolve_graph(arg0);
-        return from_candid_Result_36_n190(result);
+        return from_candid_Result_36_n192(result);
     }
     async resolve_shard(arg0: string, arg1: number): Promise<Result_37> {
         const result = await this.actor.resolve_shard(arg0, arg1);
-        return from_candid_Result_37_n198(result);
+        return from_candid_Result_37_n200(result);
     }
     async resolve_vector_index_target(arg0: string, arg1: number): Promise<Result_38> {
         const result = await this.actor.resolve_vector_index_target(arg0, arg1);
-        return from_candid_Result_38_n200(result);
+        return from_candid_Result_38_n202(result);
     }
     async reverse_edge_label_name(arg0: string, arg1: number): Promise<Result_34> {
         const result = await this.actor.reverse_edge_label_name(arg0, arg1);
-        return from_candid_Result_34_n173(result);
+        return from_candid_Result_34_n175(result);
     }
     async reverse_property_name(arg0: string, arg1: number): Promise<Result_34> {
         const result = await this.actor.reverse_property_name(arg0, arg1);
-        return from_candid_Result_34_n173(result);
+        return from_candid_Result_34_n175(result);
     }
     async reverse_vertex_label_name(arg0: string, arg1: number): Promise<Result_34> {
         const result = await this.actor.reverse_vertex_label_name(arg0, arg1);
-        return from_candid_Result_34_n173(result);
+        return from_candid_Result_34_n175(result);
     }
     async router_ack(arg0: RouterProvisionAck): Promise<Result_39> {
         const result = await this.actor.router_ack(arg0);
-        return from_candid_Result_39_n202(result);
+        return from_candid_Result_39_n204(result);
     }
     async vector_dispatch_activation_enabled(): Promise<boolean> {
         const result = await this.actor.vector_dispatch_activation_enabled();
@@ -2084,19 +2088,19 @@ export class Gleaph_router implements gleaph_routerInterface {
     }
     async vector_index_activation_status(arg0: string, arg1: number): Promise<Result_40> {
         const result = await this.actor.vector_index_activation_status(arg0, arg1);
-        return from_candid_Result_40_n204(result);
+        return from_candid_Result_40_n206(result);
     }
     async vector_maintenance_policy(arg0: string, arg1: number): Promise<Result_41> {
         const result = await this.actor.vector_maintenance_policy(arg0, arg1);
-        return from_candid_Result_41_n208(result);
+        return from_candid_Result_41_n210(result);
     }
     async vector_maintenance_status(arg0: string, arg1: number): Promise<Result_42> {
         const result = await this.actor.vector_maintenance_status(arg0, arg1);
-        return from_candid_Result_42_n211(result);
+        return from_candid_Result_42_n213(result);
     }
     async vector_search(arg0: RouterVectorSearchRequest): Promise<Result_43> {
         const result = await this.actor.vector_search(arg0);
-        return from_candid_Result_43_n219(result);
+        return from_candid_Result_43_n221(result);
     }
     async whoami(): Promise<Principal> {
         const result = await this.actor.whoami();
@@ -2118,17 +2122,17 @@ function from_candid_GqlExecuteIdempotentBatchResult_n133(value: _GqlExecuteIdem
 function from_candid_GqlQueryResult_n117(value: _GqlQueryResult): GqlQueryResult {
     return from_candid_record_n118(value);
 }
-function from_candid_GraphRegistryEntry_n192(value: _GraphRegistryEntry): GraphRegistryEntry {
-    return from_candid_record_n193(value);
+function from_candid_GraphRegistryEntry_n194(value: _GraphRegistryEntry): GraphRegistryEntry {
+    return from_candid_record_n195(value);
 }
-function from_candid_GraphStatus_n194(value: _GraphStatus): GraphStatus {
-    return from_candid_variant_n195(value);
+function from_candid_GraphStatus_n196(value: _GraphStatus): GraphStatus {
+    return from_candid_variant_n197(value);
 }
 function from_candid_MutationLifecyclePhase_n127(value: _MutationLifecyclePhase): MutationLifecyclePhase {
     return from_candid_variant_n128(value);
 }
-function from_candid_MutationStatus_n170(value: _MutationStatus): MutationStatus {
-    return from_candid_record_n171(value);
+function from_candid_MutationStatus_n172(value: _MutationStatus): MutationStatus {
+    return from_candid_record_n173(value);
 }
 function from_candid_MutationTokenShard_n123(value: _MutationTokenShard): MutationTokenShard {
     return from_candid_record_n124(value);
@@ -2136,14 +2140,14 @@ function from_candid_MutationTokenShard_n123(value: _MutationTokenShard): Mutati
 function from_candid_MutationToken_n120(value: _MutationToken): MutationToken {
     return from_candid_record_n121(value);
 }
-function from_candid_ProvisionGraphResponse_n185(value: _ProvisionGraphResponse): ProvisionGraphResponse {
-    return from_candid_variant_n186(value);
+function from_candid_ProvisionGraphResponse_n187(value: _ProvisionGraphResponse): ProvisionGraphResponse {
+    return from_candid_variant_n188(value);
 }
-function from_candid_ProvisionJobSummary_n188(value: _ProvisionJobSummary): ProvisionJobSummary {
-    return from_candid_record_n189(value);
+function from_candid_ProvisionJobSummary_n190(value: _ProvisionJobSummary): ProvisionJobSummary {
+    return from_candid_record_n191(value);
 }
-function from_candid_ProvisioningState_n196(value: _ProvisioningState): ProvisioningState {
-    return from_candid_variant_n197(value);
+function from_candid_ProvisioningState_n198(value: _ProvisioningState): ProvisioningState {
+    return from_candid_variant_n199(value);
 }
 function from_candid_Result_10_n33(value: _Result_10): Result_10 {
     return from_candid_variant_n34(value);
@@ -2211,50 +2215,50 @@ function from_candid_Result_29_n147(value: _Result_29): Result_29 {
 function from_candid_Result_2_n9(value: _Result_2): Result_2 {
     return from_candid_variant_n10(value);
 }
-function from_candid_Result_30_n153(value: _Result_30): Result_30 {
-    return from_candid_variant_n154(value);
+function from_candid_Result_30_n155(value: _Result_30): Result_30 {
+    return from_candid_variant_n156(value);
 }
-function from_candid_Result_31_n162(value: _Result_31): Result_31 {
-    return from_candid_variant_n163(value);
+function from_candid_Result_31_n164(value: _Result_31): Result_31 {
+    return from_candid_variant_n165(value);
 }
-function from_candid_Result_32_n167(value: _Result_32): Result_32 {
+function from_candid_Result_32_n169(value: _Result_32): Result_32 {
     return from_candid_variant_n30(value);
 }
-function from_candid_Result_33_n168(value: _Result_33): Result_33 {
-    return from_candid_variant_n169(value);
+function from_candid_Result_33_n170(value: _Result_33): Result_33 {
+    return from_candid_variant_n171(value);
 }
-function from_candid_Result_34_n173(value: _Result_34): Result_34 {
-    return from_candid_variant_n174(value);
+function from_candid_Result_34_n175(value: _Result_34): Result_34 {
+    return from_candid_variant_n176(value);
 }
-function from_candid_Result_35_n183(value: _Result_35): Result_35 {
-    return from_candid_variant_n184(value);
+function from_candid_Result_35_n185(value: _Result_35): Result_35 {
+    return from_candid_variant_n186(value);
 }
-function from_candid_Result_36_n190(value: _Result_36): Result_36 {
-    return from_candid_variant_n191(value);
+function from_candid_Result_36_n192(value: _Result_36): Result_36 {
+    return from_candid_variant_n193(value);
 }
-function from_candid_Result_37_n198(value: _Result_37): Result_37 {
-    return from_candid_variant_n199(value);
-}
-function from_candid_Result_38_n200(value: _Result_38): Result_38 {
+function from_candid_Result_37_n200(value: _Result_37): Result_37 {
     return from_candid_variant_n201(value);
 }
-function from_candid_Result_39_n202(value: _Result_39): Result_39 {
+function from_candid_Result_38_n202(value: _Result_38): Result_38 {
     return from_candid_variant_n203(value);
+}
+function from_candid_Result_39_n204(value: _Result_39): Result_39 {
+    return from_candid_variant_n205(value);
 }
 function from_candid_Result_3_n14(value: _Result_3): Result_3 {
     return from_candid_variant_n15(value);
 }
-function from_candid_Result_40_n204(value: _Result_40): Result_40 {
-    return from_candid_variant_n205(value);
+function from_candid_Result_40_n206(value: _Result_40): Result_40 {
+    return from_candid_variant_n207(value);
 }
-function from_candid_Result_41_n208(value: _Result_41): Result_41 {
-    return from_candid_variant_n209(value);
+function from_candid_Result_41_n210(value: _Result_41): Result_41 {
+    return from_candid_variant_n211(value);
 }
-function from_candid_Result_42_n211(value: _Result_42): Result_42 {
-    return from_candid_variant_n212(value);
+function from_candid_Result_42_n213(value: _Result_42): Result_42 {
+    return from_candid_variant_n214(value);
 }
-function from_candid_Result_43_n219(value: _Result_43): Result_43 {
-    return from_candid_variant_n220(value);
+function from_candid_Result_43_n221(value: _Result_43): Result_43 {
+    return from_candid_variant_n222(value);
 }
 function from_candid_Result_4_n16(value: _Result_4): Result_4 {
     return from_candid_variant_n17(value);
@@ -2283,38 +2287,41 @@ function from_candid_RouterError_n3(value: _RouterError): RouterError {
 function from_candid_ShardRegistryEntry_n150(value: _ShardRegistryEntry): ShardRegistryEntry {
     return from_candid_record_n151(value);
 }
+function from_candid_TypedSeedBatchCapability_n153(value: _TypedSeedBatchCapability): TypedSeedBatchCapability {
+    return from_candid_variant_n154(value);
+}
 function from_candid_VectorActivationBlockReason_n5(value: _VectorActivationBlockReason): VectorActivationBlockReason {
     return from_candid_variant_n6(value);
 }
-function from_candid_VectorIndexActivationStateView_n160(value: _VectorIndexActivationStateView): VectorIndexActivationStateView {
-    return from_candid_variant_n161(value);
+function from_candid_VectorIndexActivationStateView_n162(value: _VectorIndexActivationStateView): VectorIndexActivationStateView {
+    return from_candid_variant_n163(value);
 }
-function from_candid_VectorIndexActivationStatus_n206(value: _VectorIndexActivationStatus): VectorIndexActivationStatus {
-    return from_candid_record_n207(value);
+function from_candid_VectorIndexActivationStatus_n208(value: _VectorIndexActivationStatus): VectorIndexActivationStatus {
+    return from_candid_record_n209(value);
 }
 function from_candid_VectorIndexError_n81(value: _VectorIndexError): VectorIndexError {
     return from_candid_variant_n82(value);
 }
-function from_candid_VectorIndexInfo_n156(value: _VectorIndexInfo): VectorIndexInfo {
-    return from_candid_record_n157(value);
+function from_candid_VectorIndexInfo_n158(value: _VectorIndexInfo): VectorIndexInfo {
+    return from_candid_record_n159(value);
 }
 function from_candid_VectorMaintenanceFailure_n79(value: _VectorMaintenanceFailure): VectorMaintenanceFailure {
     return from_candid_record_n80(value);
 }
-function from_candid_VectorMaintenancePolicyView_n165(value: _VectorMaintenancePolicyView): VectorMaintenancePolicyView {
-    return from_candid_record_n166(value);
+function from_candid_VectorMaintenancePolicyView_n167(value: _VectorMaintenancePolicyView): VectorMaintenancePolicyView {
+    return from_candid_record_n168(value);
 }
 function from_candid_VectorMaintenanceRecommendation_n61(value: _VectorMaintenanceRecommendation): VectorMaintenanceRecommendation {
     return from_candid_variant_n62(value);
 }
-function from_candid_VectorMaintenanceStateView_n216(value: _VectorMaintenanceStateView): VectorMaintenanceStateView {
-    return from_candid_variant_n217(value);
+function from_candid_VectorMaintenanceStateView_n218(value: _VectorMaintenanceStateView): VectorMaintenanceStateView {
+    return from_candid_variant_n219(value);
 }
 function from_candid_VectorMaintenanceState_n76(value: _VectorMaintenanceState): VectorMaintenanceState {
     return from_candid_variant_n77(value);
 }
-function from_candid_VectorMaintenanceStatusView_n213(value: _VectorMaintenanceStatusView): VectorMaintenanceStatusView {
-    return from_candid_record_n214(value);
+function from_candid_VectorMaintenanceStatusView_n215(value: _VectorMaintenanceStatusView): VectorMaintenanceStatusView {
+    return from_candid_record_n216(value);
 }
 function from_candid_VectorMaintenanceStepOutcome_n85(value: _VectorMaintenanceStepOutcome): VectorMaintenanceStepOutcome {
     return from_candid_variant_n86(value);
@@ -2322,8 +2329,8 @@ function from_candid_VectorMaintenanceStepOutcome_n85(value: _VectorMaintenanceS
 function from_candid_VectorMaintenanceStepResult_n87(value: _VectorMaintenanceStepResult): VectorMaintenanceStepResult {
     return from_candid_variant_n88(value);
 }
-function from_candid_VectorMetric_n158(value: _VectorMetric): VectorMetric {
-    return from_candid_variant_n159(value);
+function from_candid_VectorMetric_n160(value: _VectorMetric): VectorMetric {
+    return from_candid_variant_n161(value);
 }
 function from_candid_VectorPartitionHealthStep_n98(value: _VectorPartitionHealthStep): VectorPartitionHealthStep {
     return from_candid_record_n99(value);
@@ -2334,11 +2341,11 @@ function from_candid_VectorRebuildPhase_n91(value: _VectorRebuildPhase): VectorR
 function from_candid_VectorRebuildStatus_n89(value: _VectorRebuildStatus): VectorRebuildStatus {
     return from_candid_record_n90(value);
 }
-function from_candid_VectorSearchHit_n224(value: _VectorSearchHit): VectorSearchHit {
-    return from_candid_record_n225(value);
+function from_candid_VectorSearchHit_n226(value: _VectorSearchHit): VectorSearchHit {
+    return from_candid_record_n227(value);
 }
-function from_candid_VectorSearchResult_n221(value: _VectorSearchResult): VectorSearchResult {
-    return from_candid_record_n222(value);
+function from_candid_VectorSearchResult_n223(value: _VectorSearchResult): VectorSearchResult {
+    return from_candid_record_n224(value);
 }
 function from_candid_VectorSlabScopeStats_n106(value: _VectorSlabScopeStats): VectorSlabScopeStats {
     return from_candid_record_n107(value);
@@ -2349,8 +2356,8 @@ function from_candid_VectorSlabStatsStep_n111(value: _VectorSlabStatsStep): Vect
 function from_candid_VectorSlabStats_n104(value: _VectorSlabStats): VectorSlabStats {
     return from_candid_record_n105(value);
 }
-function from_candid_VectorSubject_n226(value: _VectorSubject): VectorSubject {
-    return from_candid_variant_n227(value);
+function from_candid_VectorSubject_n228(value: _VectorSubject): VectorSubject {
+    return from_candid_variant_n229(value);
 }
 function from_candid_VertexEmbeddingIngestionResult_n18(value: _VertexEmbeddingIngestionResult): VertexEmbeddingIngestionResult {
     return from_candid_record_n19(value);
@@ -2376,16 +2383,16 @@ function from_candid_opt_n13(value: [] | [Uint8Array]): Uint8Array | null {
 function from_candid_opt_n152(value: [] | [Principal]): Principal | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n172(value: [] | [string]): string | null {
+function from_candid_opt_n174(value: [] | [string]): string | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n210(value: [] | [_VectorMaintenancePolicyView]): VectorMaintenancePolicyView | null {
-    return value.length === 0 ? null : from_candid_VectorMaintenancePolicyView_n165(value[0]);
+function from_candid_opt_n212(value: [] | [_VectorMaintenancePolicyView]): VectorMaintenancePolicyView | null {
+    return value.length === 0 ? null : from_candid_VectorMaintenancePolicyView_n167(value[0]);
 }
-function from_candid_opt_n215(value: [] | [_VectorMaintenanceStateView]): VectorMaintenanceStateView | null {
-    return value.length === 0 ? null : from_candid_VectorMaintenanceStateView_n216(value[0]);
+function from_candid_opt_n217(value: [] | [_VectorMaintenanceStateView]): VectorMaintenanceStateView | null {
+    return value.length === 0 ? null : from_candid_VectorMaintenanceStateView_n218(value[0]);
 }
-function from_candid_opt_n218(value: [] | [_VectorRebuildStatus]): VectorRebuildStatus | null {
+function from_candid_opt_n220(value: [] | [_VectorRebuildStatus]): VectorRebuildStatus | null {
     return value.length === 0 ? null : from_candid_VectorRebuildStatus_n89(value[0]);
 }
 function from_candid_opt_n69(value: [] | [_ClientMutationKey]): ClientMutationKey | null {
@@ -2527,36 +2534,36 @@ function from_candid_record_n151(value: {
     graph_id: number;
     registered_at_ns: bigint;
     vector_index_attached: boolean;
-    typed_seed_batch_v1: boolean;
     shard_id: number;
     index_canister: Principal;
     graph_canister: Principal;
     vector_index_canister: [] | [Principal];
     index_attached: boolean;
+    typed_seed_batch: _TypedSeedBatchCapability;
 }): {
     graph_id: number;
     registered_at_ns: bigint;
     vector_index_attached: boolean;
-    typed_seed_batch_v1: boolean;
     shard_id: number;
     index_canister: Principal;
     graph_canister: Principal;
     vector_index_canister?: Principal;
     index_attached: boolean;
+    typed_seed_batch: TypedSeedBatchCapability;
 } {
     return {
         graph_id: value.graph_id,
         registered_at_ns: value.registered_at_ns,
         vector_index_attached: value.vector_index_attached,
-        typed_seed_batch_v1: value.typed_seed_batch_v1,
         shard_id: value.shard_id,
         index_canister: value.index_canister,
         graph_canister: value.graph_canister,
         vector_index_canister: record_opt_to_undefined(from_candid_opt_n152(value.vector_index_canister)),
-        index_attached: value.index_attached
+        index_attached: value.index_attached,
+        typed_seed_batch: from_candid_TypedSeedBatchCapability_n153(value.typed_seed_batch)
     };
 }
-function from_candid_record_n157(value: {
+function from_candid_record_n159(value: {
     metric: _VectorMetric;
     dims: number;
     embedding_name_id: number;
@@ -2572,15 +2579,15 @@ function from_candid_record_n157(value: {
     activation_state: VectorIndexActivationStateView;
 } {
     return {
-        metric: from_candid_VectorMetric_n158(value.metric),
+        metric: from_candid_VectorMetric_n160(value.metric),
         dims: value.dims,
         embedding_name_id: value.embedding_name_id,
         target: record_opt_to_undefined(from_candid_opt_n152(value.target)),
         index_id: value.index_id,
-        activation_state: from_candid_VectorIndexActivationStateView_n160(value.activation_state)
+        activation_state: from_candid_VectorIndexActivationStateView_n162(value.activation_state)
     };
 }
-function from_candid_record_n166(value: {
+function from_candid_record_n168(value: {
     graph_id: number;
     target_nlist: [] | [number];
     rebuild_max_subjects: number;
@@ -2613,7 +2620,7 @@ function from_candid_record_n166(value: {
         policy: value.policy
     };
 }
-function from_candid_record_n171(value: {
+function from_candid_record_n173(value: {
     last_error: [] | [string];
     mutation_id: bigint;
     next_action: string;
@@ -2627,14 +2634,14 @@ function from_candid_record_n171(value: {
     target_shard?: number;
 } {
     return {
-        last_error: record_opt_to_undefined(from_candid_opt_n172(value.last_error)),
+        last_error: record_opt_to_undefined(from_candid_opt_n174(value.last_error)),
         mutation_id: value.mutation_id,
         next_action: value.next_action,
         phase: from_candid_MutationLifecyclePhase_n127(value.phase),
         target_shard: record_opt_to_undefined(from_candid_opt_n108(value.target_shard))
     };
 }
-function from_candid_record_n187(value: {
+function from_candid_record_n189(value: {
     intent_lock_count: number;
     job_view: _ProvisionJobSummary;
 }): {
@@ -2643,10 +2650,22 @@ function from_candid_record_n187(value: {
 } {
     return {
         intent_lock_count: value.intent_lock_count,
-        job_view: from_candid_ProvisionJobSummary_n188(value.job_view)
+        job_view: from_candid_ProvisionJobSummary_n190(value.job_view)
     };
 }
-function from_candid_record_n189(value: {
+function from_candid_record_n19(value: {
+    embedding_version: bigint;
+    projection_outcome: _VertexEmbeddingProjectionOutcome;
+}): {
+    embedding_version: bigint;
+    projection_outcome: VertexEmbeddingProjectionOutcome;
+} {
+    return {
+        embedding_version: value.embedding_version,
+        projection_outcome: from_candid_VertexEmbeddingProjectionOutcome_n20(value.projection_outcome)
+    };
+}
+function from_candid_record_n191(value: {
     request_id: string;
     active_resource_index: number;
     completed_effect_count: number;
@@ -2670,19 +2689,7 @@ function from_candid_record_n189(value: {
         deployment_id: value.deployment_id
     };
 }
-function from_candid_record_n19(value: {
-    embedding_version: bigint;
-    projection_outcome: _VertexEmbeddingProjectionOutcome;
-}): {
-    embedding_version: bigint;
-    projection_outcome: VertexEmbeddingProjectionOutcome;
-} {
-    return {
-        embedding_version: value.embedding_version,
-        projection_outcome: from_candid_VertexEmbeddingProjectionOutcome_n20(value.projection_outcome)
-    };
-}
-function from_candid_record_n193(value: {
+function from_candid_record_n195(value: {
     is_home: boolean;
     status: _GraphStatus;
     graph_id: number;
@@ -2707,18 +2714,18 @@ function from_candid_record_n193(value: {
 } {
     return {
         is_home: value.is_home,
-        status: from_candid_GraphStatus_n194(value.status),
+        status: from_candid_GraphStatus_n196(value.status),
         graph_id: value.graph_id,
         owner: value.owner,
         canister_id: value.canister_id,
         updated_at_ns: value.updated_at_ns,
-        provisioning_state: from_candid_ProvisioningState_n196(value.provisioning_state),
+        provisioning_state: from_candid_ProvisioningState_n198(value.provisioning_state),
         version: value.version,
         admins: value.admins,
         graph_name: value.graph_name
     };
 }
-function from_candid_record_n207(value: {
+function from_candid_record_n209(value: {
     blocked_reason: [] | [string];
     index_id: number;
     activation_state: _VectorIndexActivationStateView;
@@ -2728,12 +2735,12 @@ function from_candid_record_n207(value: {
     activation_state: VectorIndexActivationStateView;
 } {
     return {
-        blocked_reason: record_opt_to_undefined(from_candid_opt_n172(value.blocked_reason)),
+        blocked_reason: record_opt_to_undefined(from_candid_opt_n174(value.blocked_reason)),
         index_id: value.index_id,
-        activation_state: from_candid_VectorIndexActivationStateView_n160(value.activation_state)
+        activation_state: from_candid_VectorIndexActivationStateView_n162(value.activation_state)
     };
 }
-function from_candid_record_n214(value: {
+function from_candid_record_n216(value: {
     maintenance_state: [] | [_VectorMaintenanceStateView];
     target: [] | [Principal];
     blocked_reason: [] | [string];
@@ -2751,25 +2758,25 @@ function from_candid_record_n214(value: {
     rebuild_status?: VectorRebuildStatus;
 } {
     return {
-        maintenance_state: record_opt_to_undefined(from_candid_opt_n215(value.maintenance_state)),
+        maintenance_state: record_opt_to_undefined(from_candid_opt_n217(value.maintenance_state)),
         target: record_opt_to_undefined(from_candid_opt_n152(value.target)),
-        blocked_reason: record_opt_to_undefined(from_candid_opt_n172(value.blocked_reason)),
+        blocked_reason: record_opt_to_undefined(from_candid_opt_n174(value.blocked_reason)),
         index_id: value.index_id,
         policy_enabled: value.policy_enabled,
         dispatch_ready: value.dispatch_ready,
-        rebuild_status: record_opt_to_undefined(from_candid_opt_n218(value.rebuild_status))
+        rebuild_status: record_opt_to_undefined(from_candid_opt_n220(value.rebuild_status))
     };
 }
-function from_candid_record_n222(value: {
+function from_candid_record_n224(value: {
     hits: Array<_VectorSearchHit>;
 }): {
     hits: Array<VectorSearchHit>;
 } {
     return {
-        hits: from_candid_vec_n223(value.hits)
+        hits: from_candid_vec_n225(value.hits)
     };
 }
-function from_candid_record_n225(value: {
+function from_candid_record_n227(value: {
     subject: _VectorSubject;
     embedding_version: bigint;
     distance: number;
@@ -2781,7 +2788,7 @@ function from_candid_record_n225(value: {
     embedding_incarnation: bigint;
 } {
     return {
-        subject: from_candid_VectorSubject_n226(value.subject),
+        subject: from_candid_VectorSubject_n228(value.subject),
         embedding_version: value.embedding_version,
         distance: value.distance,
         embedding_incarnation: value.embedding_incarnation
@@ -3111,6 +3118,13 @@ function from_candid_variant_n15(value: {
     } : value;
 }
 function from_candid_variant_n154(value: {
+    V1: null;
+} | {
+    Unsupported: null;
+}): TypedSeedBatchCapability {
+    return "V1" in value ? TypedSeedBatchCapability.V1 : "Unsupported" in value ? TypedSeedBatchCapability.Unsupported : value;
+}
+function from_candid_variant_n156(value: {
     Ok: Array<_VectorIndexInfo>;
 } | {
     Err: _RouterError;
@@ -3123,20 +3137,20 @@ function from_candid_variant_n154(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_vec_n155(value.Ok)
+        Ok: from_candid_vec_n157(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n159(value: {
+function from_candid_variant_n161(value: {
     L2Squared: null;
 } | {
     Cosine: null;
 }): VectorMetric {
     return "L2Squared" in value ? VectorMetric.L2Squared : "Cosine" in value ? VectorMetric.Cosine : value;
 }
-function from_candid_variant_n161(value: {
+function from_candid_variant_n163(value: {
     DispatchBlocked: null;
 } | {
     DispatchEnabled: null;
@@ -3145,7 +3159,7 @@ function from_candid_variant_n161(value: {
 }): VectorIndexActivationStateView {
     return "DispatchBlocked" in value ? VectorIndexActivationStateView.DispatchBlocked : "DispatchEnabled" in value ? VectorIndexActivationStateView.DispatchEnabled : "Registered" in value ? VectorIndexActivationStateView.Registered : value;
 }
-function from_candid_variant_n163(value: {
+function from_candid_variant_n165(value: {
     Ok: Array<_VectorMaintenancePolicyView>;
 } | {
     Err: _RouterError;
@@ -3158,26 +3172,7 @@ function from_candid_variant_n163(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_vec_n164(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n169(value: {
-    Ok: _MutationStatus;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: MutationStatus;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_MutationStatus_n170(value.Ok)
+        Ok: from_candid_vec_n166(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
@@ -3202,7 +3197,26 @@ function from_candid_variant_n17(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n174(value: {
+function from_candid_variant_n171(value: {
+    Ok: _MutationStatus;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: MutationStatus;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_MutationStatus_n172(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n176(value: {
     Ok: string;
 } | {
     Err: _RouterError;
@@ -3221,7 +3235,7 @@ function from_candid_variant_n174(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n184(value: {
+function from_candid_variant_n186(value: {
     Ok: _ProvisionGraphResponse;
 } | {
     Err: _RouterError;
@@ -3234,13 +3248,13 @@ function from_candid_variant_n184(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_ProvisionGraphResponse_n185(value.Ok)
+        Ok: from_candid_ProvisionGraphResponse_n187(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n186(value: {
+function from_candid_variant_n188(value: {
     Replay: {
         intent_lock_count: number;
         job_view: _ProvisionJobSummary;
@@ -3274,16 +3288,16 @@ function from_candid_variant_n186(value: {
 } {
     return "Replay" in value ? {
         __kind__: "Replay",
-        Replay: from_candid_record_n187(value.Replay)
+        Replay: from_candid_record_n189(value.Replay)
     } : "Accepted" in value ? {
         __kind__: "Accepted",
-        Accepted: from_candid_record_n187(value.Accepted)
+        Accepted: from_candid_record_n189(value.Accepted)
     } : "Completed" in value ? {
         __kind__: "Completed",
         Completed: value.Completed
     } : value;
 }
-function from_candid_variant_n191(value: {
+function from_candid_variant_n193(value: {
     Ok: _GraphRegistryEntry;
 } | {
     Err: _RouterError;
@@ -3296,13 +3310,13 @@ function from_candid_variant_n191(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_GraphRegistryEntry_n192(value.Ok)
+        Ok: from_candid_GraphRegistryEntry_n194(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n195(value: {
+function from_candid_variant_n197(value: {
     Deleting: null;
 } | {
     Active: null;
@@ -3313,7 +3327,7 @@ function from_candid_variant_n195(value: {
 }): GraphStatus {
     return "Deleting" in value ? GraphStatus.Deleting : "Active" in value ? GraphStatus.Active : "ReadOnly" in value ? GraphStatus.ReadOnly : "Deprecated" in value ? GraphStatus.Deprecated : value;
 }
-function from_candid_variant_n197(value: {
+function from_candid_variant_n199(value: {
     Failed: {
         request_id: string;
         reason: string;
@@ -3350,25 +3364,6 @@ function from_candid_variant_n197(value: {
         Pending: value.Pending
     } : value;
 }
-function from_candid_variant_n199(value: {
-    Ok: _ShardRegistryEntry;
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: ShardRegistryEntry;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_ShardRegistryEntry_n150(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
 function from_candid_variant_n2(value: {
     Ok: null;
 } | {
@@ -3389,6 +3384,25 @@ function from_candid_variant_n2(value: {
     } : value;
 }
 function from_candid_variant_n201(value: {
+    Ok: _ShardRegistryEntry;
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: ShardRegistryEntry;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_ShardRegistryEntry_n150(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n203(value: {
     Ok: Principal;
 } | {
     Err: _RouterError;
@@ -3407,7 +3421,7 @@ function from_candid_variant_n201(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n203(value: {
+function from_candid_variant_n205(value: {
     Ok: _RouterAckResponse;
 } | {
     Err: _RouterError;
@@ -3426,7 +3440,7 @@ function from_candid_variant_n203(value: {
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n205(value: {
+function from_candid_variant_n207(value: {
     Ok: _VectorIndexActivationStatus;
 } | {
     Err: _RouterError;
@@ -3439,26 +3453,7 @@ function from_candid_variant_n205(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_VectorIndexActivationStatus_n206(value.Ok)
-    } : "Err" in value ? {
-        __kind__: "Err",
-        Err: from_candid_RouterError_n3(value.Err)
-    } : value;
-}
-function from_candid_variant_n209(value: {
-    Ok: [] | [_VectorMaintenancePolicyView];
-} | {
-    Err: _RouterError;
-}): {
-    __kind__: "Ok";
-    Ok: VectorMaintenancePolicyView | null;
-} | {
-    __kind__: "Err";
-    Err: RouterError;
-} {
-    return "Ok" in value ? {
-        __kind__: "Ok",
-        Ok: from_candid_opt_n210(value.Ok)
+        Ok: from_candid_VectorIndexActivationStatus_n208(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
@@ -3471,7 +3466,26 @@ function from_candid_variant_n21(value: {
 }): VertexEmbeddingProjectionOutcome {
     return "DeferredForRepair" in value ? VertexEmbeddingProjectionOutcome.DeferredForRepair : "Applied" in value ? VertexEmbeddingProjectionOutcome.Applied : value;
 }
-function from_candid_variant_n212(value: {
+function from_candid_variant_n211(value: {
+    Ok: [] | [_VectorMaintenancePolicyView];
+} | {
+    Err: _RouterError;
+}): {
+    __kind__: "Ok";
+    Ok: VectorMaintenancePolicyView | null;
+} | {
+    __kind__: "Err";
+    Err: RouterError;
+} {
+    return "Ok" in value ? {
+        __kind__: "Ok",
+        Ok: from_candid_opt_n212(value.Ok)
+    } : "Err" in value ? {
+        __kind__: "Err",
+        Err: from_candid_RouterError_n3(value.Err)
+    } : value;
+}
+function from_candid_variant_n214(value: {
     Ok: _VectorMaintenanceStatusView;
 } | {
     Err: _RouterError;
@@ -3484,13 +3498,13 @@ function from_candid_variant_n212(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_VectorMaintenanceStatusView_n213(value.Ok)
+        Ok: from_candid_VectorMaintenanceStatusView_n215(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n217(value: {
+function from_candid_variant_n219(value: {
     Scanning: {
         merged: _VectorPartitionPageHealth;
         cursor_present: boolean;
@@ -3525,7 +3539,7 @@ function from_candid_variant_n217(value: {
         Idle: value.Idle
     } : value;
 }
-function from_candid_variant_n220(value: {
+function from_candid_variant_n222(value: {
     Ok: _VectorSearchResult;
 } | {
     Err: _RouterError;
@@ -3538,13 +3552,13 @@ function from_candid_variant_n220(value: {
 } {
     return "Ok" in value ? {
         __kind__: "Ok",
-        Ok: from_candid_VectorSearchResult_n221(value.Ok)
+        Ok: from_candid_VectorSearchResult_n223(value.Ok)
     } : "Err" in value ? {
         __kind__: "Err",
         Err: from_candid_RouterError_n3(value.Err)
     } : value;
 }
-function from_candid_variant_n227(value: {
+function from_candid_variant_n229(value: {
     Vertex: {
         vertex_id: number;
         shard_id: number;
@@ -4351,17 +4365,17 @@ function from_candid_vec_n135(value: Array<_GqlQueryResult>): Array<GqlQueryResu
 function from_candid_vec_n149(value: Array<_ShardRegistryEntry>): Array<ShardRegistryEntry> {
     return value.map((x)=>from_candid_ShardRegistryEntry_n150(x));
 }
-function from_candid_vec_n155(value: Array<_VectorIndexInfo>): Array<VectorIndexInfo> {
-    return value.map((x)=>from_candid_VectorIndexInfo_n156(x));
+function from_candid_vec_n157(value: Array<_VectorIndexInfo>): Array<VectorIndexInfo> {
+    return value.map((x)=>from_candid_VectorIndexInfo_n158(x));
 }
-function from_candid_vec_n164(value: Array<_VectorMaintenancePolicyView>): Array<VectorMaintenancePolicyView> {
-    return value.map((x)=>from_candid_VectorMaintenancePolicyView_n165(x));
+function from_candid_vec_n166(value: Array<_VectorMaintenancePolicyView>): Array<VectorMaintenancePolicyView> {
+    return value.map((x)=>from_candid_VectorMaintenancePolicyView_n167(x));
 }
-function from_candid_vec_n175(value: Array<_Result>): Array<Result> {
+function from_candid_vec_n177(value: Array<_Result>): Array<Result> {
     return value.map((x)=>from_candid_Result_n1(x));
 }
-function from_candid_vec_n223(value: Array<_VectorSearchHit>): Array<VectorSearchHit> {
-    return value.map((x)=>from_candid_VectorSearchHit_n224(x));
+function from_candid_vec_n225(value: Array<_VectorSearchHit>): Array<VectorSearchHit> {
+    return value.map((x)=>from_candid_VectorSearchHit_n226(x));
 }
 function from_candid_vec_n24(value: Array<_Result_5>): Array<Result_5> {
     return value.map((x)=>from_candid_Result_5_n25(x));
@@ -4393,14 +4407,14 @@ function to_candid_MutationTokenShard_n141(value: MutationTokenShard): _Mutation
 function to_candid_MutationToken_n138(value: MutationToken): _MutationToken {
     return to_candid_record_n139(value);
 }
-function to_candid_ProvisionGraphArgs_n176(value: ProvisionGraphArgs): _ProvisionGraphArgs {
-    return to_candid_record_n177(value);
+function to_candid_ProvisionGraphArgs_n178(value: ProvisionGraphArgs): _ProvisionGraphArgs {
+    return to_candid_record_n179(value);
 }
-function to_candid_ProvisionableResourceKind_n181(value: ProvisionableResourceKind): _ProvisionableResourceKind {
-    return to_candid_variant_n182(value);
+function to_candid_ProvisionableResourceKind_n183(value: ProvisionableResourceKind): _ProvisionableResourceKind {
+    return to_candid_variant_n184(value);
 }
-function to_candid_ProvisionableResource_n179(value: ProvisionableResource): _ProvisionableResource {
-    return to_candid_record_n180(value);
+function to_candid_ProvisionableResource_n181(value: ProvisionableResource): _ProvisionableResource {
+    return to_candid_record_n182(value);
 }
 function to_candid_ProvisioningState_n46(value: ProvisioningState): _ProvisioningState {
     return to_candid_variant_n47(value);
@@ -4462,7 +4476,7 @@ function to_candid_record_n142(value: {
         shard_id: value.shard_id
     };
 }
-function to_candid_record_n177(value: {
+function to_candid_record_n179(value: {
     requested_resources: Array<ProvisionableResource>;
     request_fingerprint: string;
     release_id: string;
@@ -4478,7 +4492,7 @@ function to_candid_record_n177(value: {
     authorized_caller: Principal;
 } {
     return {
-        requested_resources: to_candid_vec_n178(value.requested_resources),
+        requested_resources: to_candid_vec_n180(value.requested_resources),
         request_fingerprint: value.request_fingerprint,
         release_id: value.release_id,
         graph_name: value.graph_name,
@@ -4486,7 +4500,7 @@ function to_candid_record_n177(value: {
         authorized_caller: value.authorized_caller
     };
 }
-function to_candid_record_n180(value: {
+function to_candid_record_n182(value: {
     kind: ProvisionableResourceKind;
     logical_resource_key: string;
 }): {
@@ -4494,7 +4508,7 @@ function to_candid_record_n180(value: {
     logical_resource_key: string;
 } {
     return {
-        kind: to_candid_ProvisionableResourceKind_n181(value.kind),
+        kind: to_candid_ProvisionableResourceKind_n183(value.kind),
         logical_resource_key: value.logical_resource_key
     };
 }
@@ -4645,7 +4659,7 @@ function to_candid_variant_n137(value: {
         AtLeast: to_candid_MutationToken_n138(value.AtLeast)
     } : value;
 }
-function to_candid_variant_n182(value: ProvisionableResourceKind): {
+function to_candid_variant_n184(value: ProvisionableResourceKind): {
     PropertyIndex: null;
 } | {
     VectorIndex: null;
@@ -4742,8 +4756,8 @@ function to_candid_variant_n55(value: BackfillKind): {
 function to_candid_vec_n140(value: Array<MutationTokenShard>): Array<_MutationTokenShard> {
     return value.map((x)=>to_candid_MutationTokenShard_n141(x));
 }
-function to_candid_vec_n178(value: Array<ProvisionableResource>): Array<_ProvisionableResource> {
-    return value.map((x)=>to_candid_ProvisionableResource_n179(x));
+function to_candid_vec_n180(value: Array<ProvisionableResource>): Array<_ProvisionableResource> {
+    return value.map((x)=>to_candid_ProvisionableResource_n181(x));
 }
 export interface CreateActorOptions {
     agent?: Agent;

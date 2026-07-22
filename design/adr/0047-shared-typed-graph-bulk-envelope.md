@@ -341,7 +341,7 @@ sufficient, such as a shared seed relation.
    `execution_capabilities` query containing an exhaustive `TypedSeedBatchV1` capability. A
    control-plane-admin Router refresh update captures the target `GraphShardKey` and Graph canister
    principal, calls that query, then re-reads the registry after the `await`. It writes
-   `typed_seed_batch_v1: true` only if the same registry key still names the same live Graph
+   `typed_seed_batch: V1` only if the same registry key still names the same live Graph
    principal; otherwise it returns an error without changing capability state. The field extends
    `ShardRegistryEntry` and the current `ShardRegistryStableRecord::V2` write shape; the retained
    decode-only V1 registry variant is not redefined. The durable registry field is the data-plane
@@ -431,7 +431,8 @@ introduce scope not justified by the measured POSTED problem.
   `TypedSeedBulk` payload variants. No Router V2 or stable migration is introduced.
 - Typed V1 is deliberately single-shard, complete-row seeded, unconstrained, search-free, and
   limited to plans with a statically bounded row-free response shape.
-- The stable shard registry gains an explicit admin-refreshed `typed_seed_batch_v1` capability.
+- The stable shard registry gains an explicit admin-refreshed `typed_seed_batch` capability with
+  `Unsupported` and `V1` states; `Unsupported` is the fail-closed default.
 - Recovery no longer needs to repeat Property Index lookup for bulk groups that used the typed
   path.
 - The legacy scalar method remains the semantics-safe fallback for distinct-seed groups. The legacy

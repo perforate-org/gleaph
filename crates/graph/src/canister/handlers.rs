@@ -109,7 +109,7 @@ pub fn admin_stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stable
 /// on stable feature flags when their semantics require it.
 pub fn execution_capabilities() -> gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {
     gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {
-        typed_seed_batch_v1: true,
+        typed_seed_batch: gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1,
     }
 }
 
@@ -2446,9 +2446,12 @@ mod tests {
     }
 
     #[test]
-    fn execution_capabilities_advertises_typed_seed_batch_v1() {
+    fn execution_capabilities_advertises_typed_seed_batch_capability() {
         let caps = execution_capabilities();
-        assert!(caps.typed_seed_batch_v1);
+        assert_eq!(
+            caps.typed_seed_batch,
+            gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+        );
     }
 }
 

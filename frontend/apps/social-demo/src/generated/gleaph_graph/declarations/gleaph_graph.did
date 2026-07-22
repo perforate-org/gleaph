@@ -233,10 +233,11 @@ type GraphBulkMutationProgressV1 = record {
 };
 // Graph canister execution capabilities advertised to the Router (ADR 0047).
 //
-// This response is intentionally explicit: each capability is a named, versioned boolean
-// so that Router activation remains fail-closed and future capabilities are added only when
-// their semantics are known.
-type GraphExecutionCapabilities = record { typed_seed_batch_v1 : bool };
+// This response is intentionally explicit: each capability is a named, versioned value
+// so that Router activation remains fail-closed and future revisions are representable.
+type GraphExecutionCapabilities = record {
+  typed_seed_batch : TypedSeedBatchCapability;
+};
 // Arguments supplied by the registry (or installer) on first `init`.
 type GraphInitArgs = record {
   shard_id : opt nat32;
@@ -448,6 +449,7 @@ type StableMemoryStats = record {
   logical_total_pages : nat64;
   logical_total_bytes : nat64;
 };
+type TypedSeedBatchCapability = variant { V1; Unsupported };
 // Evidence that a claim's `Acquire` is pinned: the matching effect's `EffectId` (so the Router can
 // ack *that* effect after Confirm — `claim_ordinal` and `effect_ordinal` are distinct concepts and
 // neither derives the other) plus the canonical `owner_element_id`.

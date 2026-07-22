@@ -111,7 +111,7 @@ contracts must be distinguished.
   ordered replay relation without a parallel blob representation, and completed records discard the
   heavy replay envelope while retaining bounded ordered row counts for exact typed-batch retry per
   ADR 0025 mechanism E;
-- Router activation is implemented: the typed path is selected only when the durable shard-registry V2 entry records `typed_seed_batch_v1: true` from an admin-refreshed, post-await target-revalidated capability; ambiguous typed-call outcomes retain typed durable replay under the same mutation id and operation order;
+- Router activation is implemented: the typed path is selected only when the durable shard-registry V2 entry records `typed_seed_batch: V1` from an admin-refreshed, post-await target-revalidated capability; ambiguous typed-call outcomes retain typed durable replay under the same mutation id and operation order;
 - initial Router installation or rollback to older Router Wasm requires fresh install/reset because
   there is no deployed stable state to migrate;
 - the end-to-end Router ingress saving must still meet the adoption gate.

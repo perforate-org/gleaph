@@ -88,13 +88,22 @@ fn shard_capability_refresh_capture_and_commit_preserves_identity_and_other_fiel
     assert_eq!(capture.graph_canister, graph);
 
     let committed = store
-        .commit_shard_execution_capabilities(capture.clone(), true)
+        .commit_shard_execution_capabilities(
+            capture.clone(),
+            gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1,
+        )
         .expect("commit");
-    assert!(committed);
+    assert_eq!(
+        committed,
+        gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+    );
     let entry = store
         .resolve_shard(graph_id, ShardId::new(0))
         .expect("lookup");
-    assert!(entry.typed_seed_batch_v1);
+    assert_eq!(
+        entry.typed_seed_batch,
+        gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+    );
     assert_eq!(entry.graph_canister, graph);
     assert_eq!(entry.index_canister, index);
 
@@ -102,7 +111,10 @@ fn shard_capability_refresh_capture_and_commit_preserves_identity_and_other_fiel
     tampered_capture.prior_registered_at_ns = capture.prior_registered_at_ns + 1;
     assert!(
         store
-            .commit_shard_execution_capabilities(tampered_capture, true)
+            .commit_shard_execution_capabilities(
+                tampered_capture,
+                gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+            )
             .is_err()
     );
 
@@ -112,7 +124,10 @@ fn shard_capability_refresh_capture_and_commit_preserves_identity_and_other_fiel
     let entry = store
         .resolve_shard(graph_id, ShardId::new(0))
         .expect("lookup");
-    assert!(!entry.typed_seed_batch_v1);
+    assert_eq!(
+        entry.typed_seed_batch,
+        gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::Unsupported
+    );
 }
 
 fn tenant_main_graph_id() -> GraphId {
@@ -144,7 +159,10 @@ fn execution_capabilities_refresh_rejects_stale_capture() {
         .capture_shard_for_capability_refresh(admin, "tenant.main", ShardId::new(0))
         .expect("capture");
     store
-        .commit_shard_execution_capabilities(capture.clone(), true)
+        .commit_shard_execution_capabilities(
+            capture.clone(),
+            gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1,
+        )
         .expect("commit true");
 
     // Tampering with the captured registered-at timestamp must be rejected.
@@ -152,7 +170,10 @@ fn execution_capabilities_refresh_rejects_stale_capture() {
     stale.prior_registered_at_ns = capture.prior_registered_at_ns + 1;
     assert!(
         store
-            .commit_shard_execution_capabilities(stale.clone(), false)
+            .commit_shard_execution_capabilities(
+                stale.clone(),
+                gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::Unsupported
+            )
             .is_err(),
         "stale capture must not mutate the registry"
     );
@@ -161,7 +182,10 @@ fn execution_capabilities_refresh_rejects_stale_capture() {
     let entry = store
         .resolve_shard(tenant_main_graph_id(), ShardId::new(0))
         .expect("lookup");
-    assert!(entry.typed_seed_batch_v1);
+    assert_eq!(
+        entry.typed_seed_batch,
+        gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+    );
     assert_eq!(entry.graph_canister, graph);
     assert_eq!(entry.index_canister, index);
 
@@ -172,7 +196,10 @@ fn execution_capabilities_refresh_rejects_stale_capture() {
     let cleared = store
         .resolve_shard(tenant_main_graph_id(), ShardId::new(0))
         .expect("lookup after clear");
-    assert!(!cleared.typed_seed_batch_v1);
+    assert_eq!(
+        cleared.typed_seed_batch,
+        gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::Unsupported
+    );
     assert_eq!(cleared.graph_canister, graph);
     assert_eq!(cleared.index_canister, index);
 
@@ -182,14 +209,19 @@ fn execution_capabilities_refresh_rejects_stale_capture() {
         .expect("fresh capture");
     assert!(
         store
-            .commit_shard_execution_capabilities(fresh, true)
+            .commit_shard_execution_capabilities(
+                fresh,
+                gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+            )
             .expect("re-commit")
+            == gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
     );
     assert!(
         store
             .resolve_shard(tenant_main_graph_id(), ShardId::new(0))
             .expect("lookup after re-commit")
-            .typed_seed_batch_v1
+            .typed_seed_batch
+            == gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
     );
 }
 

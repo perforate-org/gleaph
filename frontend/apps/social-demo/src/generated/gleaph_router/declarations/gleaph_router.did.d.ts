@@ -841,12 +841,6 @@ export interface ShardRegistryEntry {
    * pre-Slice-4 (V1) records.
    */
   'vector_index_attached' : boolean,
-  /**
-   * `true` once the Router has durably verified that this exact registered Graph canister
-   * advertises `execution_capabilities.typed_seed_batch_v1` (ADR 0047). Decodes as `false`
-   * for pre-typed-batch (V1/V2) records; a fresh Router install/reset remains required.
-   */
-  'typed_seed_batch_v1' : boolean,
   'shard_id' : number,
   'index_canister' : Principal,
   'graph_canister' : Principal,
@@ -860,6 +854,12 @@ export interface ShardRegistryEntry {
    * `false` while router awaits index `admin_attach_shard_canister`; excluded from dispatch/index fan-out.
    */
   'index_attached' : boolean,
+  /**
+   * `true` once the Router has durably verified that this exact registered Graph canister
+   * advertises `execution_capabilities.typed_seed_batch` (ADR 0047). Decodes as `Unsupported`
+   * for pre-typed-batch (V1/V2) records; a fresh Router install/reset remains required.
+   */
+  'typed_seed_batch' : TypedSeedBatchCapability,
 }
 /**
  * Logical size of one named virtual stable-memory region owned by a canister.
@@ -887,6 +887,8 @@ export interface StableMemoryStats {
   'logical_total_pages' : bigint,
   'logical_total_bytes' : bigint,
 }
+export type TypedSeedBatchCapability = { 'V1' : null } |
+  { 'Unsupported' : null };
 /**
  * Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3/4).
  */

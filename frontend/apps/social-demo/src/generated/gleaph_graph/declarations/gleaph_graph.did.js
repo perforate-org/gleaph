@@ -294,8 +294,12 @@ export const idlFactory = ({ IDL }) => {
     'shared' : ExecutePlanBatchTypedShared,
     'operations' : IDL.Vec(ExecutePlanTypedOp),
   });
+  const TypedSeedBatchCapability = IDL.Variant({
+    'V1' : IDL.Null,
+    'Unsupported' : IDL.Null,
+  });
   const GraphExecutionCapabilities = IDL.Record({
-    'typed_seed_batch_v1' : IDL.Bool,
+    'typed_seed_batch' : TypedSeedBatchCapability,
   });
   const BulkIngestFinalizeArgs = IDL.Record({
     'forward_vertices' : IDL.Vec(IDL.Nat32),
