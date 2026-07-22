@@ -22,6 +22,25 @@ pub type MutationId = u64;
 /// Shard-local label stats delta sequence. `0` is reserved; ids are never reused.
 pub type ShardEventSeq = u64;
 
+/// Maximum UTF-8 byte length of an error returned by the typed V1 batch endpoint.
+///
+/// Typed admission includes this bound in its worst-case response-size proof. Keep the truncation
+/// policy beside the public wire contract so the classifier and Graph response path cannot drift.
+pub const MAX_TYPED_BATCH_ERROR_BYTES: usize = 4 * 1024;
+
+/// Bound one typed-batch error without splitting a UTF-8 code point.
+pub fn bound_typed_batch_error(mut error: String) -> String {
+    if error.len() <= MAX_TYPED_BATCH_ERROR_BYTES {
+        return error;
+    }
+    let mut end = MAX_TYPED_BATCH_ERROR_BYTES;
+    while !error.is_char_boundary(end) {
+        end -= 1;
+    }
+    error.truncate(end);
+    error
+}
+
 /// Selects the IC call kind for a wired program/plan (must match the canister entrypoint).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum GqlExecutionMode {
@@ -826,6 +845,18 @@ mod tests {
         let decoded: ExecutePlanBatchResult =
             Decode!(&bytes, ExecutePlanBatchResult).expect("decode");
         assert_eq!(result, decoded);
+    }
+
+    #[test]
+    fn typed_batch_error_bound_is_utf8_safe_and_exact() {
+        let prefix = "x".repeat(MAX_TYPED_BATCH_ERROR_BYTES - 1);
+        let bounded = bound_typed_batch_error(format!("{prefix}étail"));
+        assert_eq!(bounded.len(), MAX_TYPED_BATCH_ERROR_BYTES - 1);
+        assert_eq!(bounded, prefix);
+        assert_eq!(
+            bound_typed_batch_error("short error".to_string()),
+            "short error"
+        );
     }
 
     #[test]

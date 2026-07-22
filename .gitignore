@@ -7,10 +7,7 @@ target/
 
 node_modules/
 .pnpm-store/
-.icp/cache/*
-!.icp/cache/artifacts/
-!.icp/cache/artifacts/*.did
-.icp/cache/artifacts/*
+.icp/cache/
 .icp/corepack-home/
 .icp/home/
 .icp/xdg-cache/

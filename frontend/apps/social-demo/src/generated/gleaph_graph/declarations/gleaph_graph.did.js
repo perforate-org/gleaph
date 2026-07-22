@@ -396,6 +396,11 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'admin_stable_memory_stats' : IDL.Func([], [StableMemoryStats], ['query']),
+    'admin_take_batch_instr_log' : IDL.Func(
+        [IDL.Nat32, IDL.Nat32],
+        [IDL.Vec(IDL.Text)],
+        ['query'],
+      ),
     'backfill_edge_property_postings' : IDL.Func(
         [EdgePropertyBackfillRequest],
         [Result_3],

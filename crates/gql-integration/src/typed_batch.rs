@@ -17,10 +17,12 @@
 //!
 //! Anything else keeps the existing scalar or legacy-batch path.
 
-use candid::Decode;
+use candid::{Decode, Encode};
 use gleaph_gql_planner::wire::decode_plan_bundle;
+use gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanBatchTypedArgs, GqlExecutionMode, SeedBindingsWire,
+    ExecutePlanArgs, ExecutePlanBatchResult, ExecutePlanBatchTypedArgs, ExecutePlanResult,
+    GqlExecutionMode, MAX_TYPED_BATCH_ERROR_BYTES, SeedBindingsWire,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 
@@ -62,6 +64,11 @@ pub enum TypedBatchEligibility {
 /// Graph→Router response size predictable.
 const MAX_TYPED_BATCH_INSERT_EDGE_OPS: usize = 64;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TypedBatchPlanBounds {
+    insert_edges_per_input_row: usize,
+}
+
 /// Validate the shared physical plan for the typed V1 path.
 ///
 /// Checks:
@@ -73,52 +80,144 @@ const MAX_TYPED_BATCH_INSERT_EDGE_OPS: usize = 64;
 ///
 /// This function is exported so the Graph canister can re-validate the plan before executing
 /// the typed endpoint, independent of any Router-side decision.
-pub fn validate_typed_batch_plan(plan_blob: &[u8]) -> Result<(), &'static str> {
+fn validate_typed_batch_plan(plan_blob: &[u8]) -> Result<TypedBatchPlanBounds, &'static str> {
     let (requires_write_path, plans) =
         decode_plan_bundle(plan_blob).map_err(|_| "typed V1 requires a decodable plan bundle")?;
     if !requires_write_path {
         return Err("typed V1 requires a write-path plan");
     }
+    if plans.is_empty() {
+        return Err("typed V1 requires at least one physical plan");
+    }
+    let mut insert_edges_per_input_row = 0usize;
     for plan in &plans {
-        if !plan.output.hydrates_all_row_bindings() {
-            return Err("typed V1 does not support plans that produce a rows_blob");
+        if !plan.output.columns.is_empty() {
+            return Err("typed V1 does not support plans with returned columns");
         }
         if !plan.is_single_anchor_threaded_bundle() {
             return Err("typed V1 requires a single-anchor threaded bundle");
         }
-        if count_insert_edge_ops(&plan.ops) > MAX_TYPED_BATCH_INSERT_EDGE_OPS {
+        let plan_insert_edges = count_row_preserving_insert_edges(&plan.ops)?;
+        insert_edges_per_input_row = insert_edges_per_input_row
+            .checked_add(plan_insert_edges)
+            .ok_or("typed V1 edge-insert bound overflow")?;
+        if insert_edges_per_input_row > MAX_TYPED_BATCH_INSERT_EDGE_OPS {
             return Err("typed V1 plan exceeds the allowed number of edge inserts");
         }
     }
-    Ok(())
+    Ok(TypedBatchPlanBounds {
+        insert_edges_per_input_row,
+    })
 }
 
-fn count_insert_edge_ops(ops: &[gleaph_gql_planner::plan::PlanOp]) -> usize {
+/// Count edge inserts while rejecting every operator that can expand or independently source rows.
+///
+/// This match is deliberately exhaustive: adding a planner operator forces an explicit typed V1
+/// decision instead of silently widening the response bound.
+fn count_row_preserving_insert_edges(
+    ops: &[gleaph_gql_planner::plan::PlanOp],
+) -> Result<usize, &'static str> {
     use gleaph_gql_planner::plan::PlanOp;
-    let mut count = 0;
-    for op in ops {
+    let mut count = 0usize;
+    for (index, op) in ops.iter().enumerate() {
         match op {
-            PlanOp::InsertEdge { .. } => count += 1,
-            PlanOp::HashJoin { left, right, .. } => {
-                count += count_insert_edge_ops(left);
-                count += count_insert_edge_ops(right);
+            PlanOp::NodeScan { .. }
+            | PlanOp::IndexScan { .. }
+            | PlanOp::EdgeIndexScan { .. }
+            | PlanOp::IndexIntersection { .. }
+                if index == 0 => {}
+            PlanOp::PropertyFilter { .. }
+            | PlanOp::Filter { .. }
+            | PlanOp::Let { .. }
+            | PlanOp::Project { .. }
+            | PlanOp::Sort { .. }
+            | PlanOp::Limit { .. }
+            | PlanOp::TopK { .. }
+            | PlanOp::Materialize { .. }
+            | PlanOp::InsertVertex { .. }
+            | PlanOp::SetProperties { .. }
+            | PlanOp::RemoveProperties { .. }
+            | PlanOp::DeleteVertex { .. }
+            | PlanOp::DetachDeleteVertex { .. }
+            | PlanOp::DeleteEdge { .. } => {}
+            PlanOp::InsertEdge { .. } => {
+                count = count
+                    .checked_add(1)
+                    .ok_or("typed V1 edge-insert bound overflow")?;
             }
-            PlanOp::CartesianProduct { left, right } => {
-                count += count_insert_edge_ops(left);
-                count += count_insert_edge_ops(right);
+            PlanOp::For { .. } | PlanOp::Aggregate { .. } => {
+                return Err("typed V1 does not support row-cardinality-changing operators");
             }
-            PlanOp::SetOperation { right, .. } => count += count_insert_edge_ops(&right.ops),
-            PlanOp::OptionalMatch { sub_plan } => count += count_insert_edge_ops(sub_plan),
-            PlanOp::InlineProcedureCall { sub_plan, .. } => {
-                count += count_insert_edge_ops(&sub_plan.ops)
+            PlanOp::NodeScan { .. }
+            | PlanOp::IndexScan { .. }
+            | PlanOp::EdgeIndexScan { .. }
+            | PlanOp::IndexIntersection { .. }
+            | PlanOp::EdgeBindEndpoints { .. }
+            | PlanOp::ConditionalIndexScan { .. }
+            | PlanOp::Expand { .. }
+            | PlanOp::ExpandFilter { .. }
+            | PlanOp::ShortestPath { .. }
+            | PlanOp::Search { .. }
+            | PlanOp::CallProcedure { .. }
+            | PlanOp::InlineProcedureCall { .. }
+            | PlanOp::UseGraph { .. }
+            | PlanOp::HashJoin { .. }
+            | PlanOp::CartesianProduct { .. }
+            | PlanOp::SetOperation { .. }
+            | PlanOp::OptionalMatch { .. }
+            | PlanOp::WorstCaseOptimalJoin { .. } => {
+                return Err("typed V1 plan contains an unsupported operator");
             }
-            PlanOp::UseGraph {
-                sub_plan: Some(sp), ..
-            } => count += count_insert_edge_ops(sp),
-            _ => {}
         }
     }
-    count
+    Ok(count)
+}
+
+fn validate_typed_batch_response_bound(
+    seed_row_counts: impl IntoIterator<Item = usize>,
+    plan_bounds: TypedBatchPlanBounds,
+) -> Result<(), &'static str> {
+    let mut max_hot_vertices_per_op = Vec::new();
+    let mut total_hot_vertices = 0usize;
+    for rows in seed_row_counts {
+        let max_hot_vertices = rows
+            .checked_mul(plan_bounds.insert_edges_per_input_row)
+            .ok_or("typed V1 response bound overflow")?;
+        total_hot_vertices = total_hot_vertices
+            .checked_add(max_hot_vertices)
+            .ok_or("typed V1 response bound overflow")?;
+        max_hot_vertices_per_op.push(max_hot_vertices);
+    }
+
+    // Avoid allocating a proof object that already exceeds the payload limit on raw nat32 bytes.
+    if total_hot_vertices
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or("typed V1 response bound overflow")?
+        > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+    {
+        return Err("typed V1 worst-case response exceeds the safe payload limit");
+    }
+
+    let mut results = Vec::with_capacity(max_hot_vertices_per_op.len() + 1);
+    for max_hot_vertices in max_hot_vertices_per_op {
+        results.push(Ok(ExecutePlanResult {
+            row_count: u64::MAX,
+            rows_blob: None,
+            hot_forward_vertices: vec![u32::MAX; max_hot_vertices],
+        }));
+    }
+    // Over-approximate partial failure by appending one maximum bounded error after all successful
+    // results. A real batch stops at its first error and therefore cannot contain this extra item.
+    results.push(Err("x".repeat(MAX_TYPED_BATCH_ERROR_BYTES)));
+    let proof = ExecutePlanBatchResult {
+        results,
+        next_index: Some(u32::MAX),
+    };
+    let encoded = Encode!(&proof).map_err(|_| "typed V1 response-bound encode failed")?;
+    if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        return Err("typed V1 worst-case response exceeds the safe payload limit");
+    }
+    Ok(())
 }
 
 /// Decide whether a sequence of `ExecutePlanArgs` can use the typed V1 bulk envelope.
@@ -180,9 +279,10 @@ pub fn classify_typed_batch_eligibility(operations: &[ExecutePlanArgs]) -> Typed
     }
 
     // Validate the shared physical plan shape.
-    if let Err(reason) = validate_typed_batch_plan(&first.plan_blob) {
-        return TypedBatchEligibility::Ineligible { reason };
-    }
+    let plan_bounds = match validate_typed_batch_plan(&first.plan_blob) {
+        Ok(bounds) => bounds,
+        Err(reason) => return TypedBatchEligibility::Ineligible { reason },
+    };
 
     // All catalogs and dispatch state must be identical and empty where forbidden.
     let indexed_properties = first.indexed_properties.clone();
@@ -272,6 +372,13 @@ pub fn classify_typed_batch_eligibility(operations: &[ExecutePlanArgs]) -> Typed
         });
     }
 
+    if let Err(reason) = validate_typed_batch_response_bound(
+        candidate_operations.iter().map(|op| op.seed.rows.len()),
+        plan_bounds,
+    ) {
+        return TypedBatchEligibility::Ineligible { reason };
+    }
+
     TypedBatchEligibility::Eligible(TypedBatchCandidate {
         target_shard_id,
         element_id_encoding_key,
@@ -292,7 +399,7 @@ pub fn validate_typed_batch_eligibility_for_graph(
     if args.operations.is_empty() {
         return Err("typed V1 requires at least one operation");
     }
-    validate_typed_batch_plan(&args.shared.plan_blob)?;
+    let plan_bounds = validate_typed_batch_plan(&args.shared.plan_blob)?;
     for op in &args.operations {
         if !op.seed.entries.is_empty() {
             return Err("typed V1 requires empty grouped seed entries");
@@ -308,6 +415,10 @@ pub fn validate_typed_batch_eligibility_for_graph(
             return Err("typed V1 params_blob exceeds the safe payload limit");
         }
     }
+    validate_typed_batch_response_bound(
+        args.operations.iter().map(|op| op.seed.rows.len()),
+        plan_bounds,
+    )?;
     Ok(())
 }
 
@@ -631,7 +742,39 @@ mod tests {
         op.plan_blob = write_plan_with_return();
         let result = classify_typed_batch_eligibility(&[op]);
         assert!(
-            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("rows_blob"))
+            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("returned columns"))
+        );
+    }
+
+    #[test]
+    fn row_expanding_for_plan_is_ineligible() {
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("u"),
+                label: Some("User".into()),
+                property_projection: None,
+            },
+            PlanOp::For {
+                variable: Rc::from("item"),
+                list: Expr::new(gleaph_gql::ast::ExprKind::ListLiteral(vec![
+                    Expr::int(1),
+                    Expr::int(2),
+                ])),
+                ordinality: None,
+                offset_keyword: false,
+            },
+            PlanOp::InsertVertex {
+                variable: Some(Rc::from("p")),
+                labels: vec!["Post".into()],
+                properties: vec![],
+            },
+        ]);
+        let blob = encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan");
+        let mut op = base_op();
+        op.plan_blob = blob;
+        let result = classify_typed_batch_eligibility(&[op]);
+        assert!(
+            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("row-cardinality-changing"))
         );
     }
 
@@ -677,7 +820,8 @@ mod tests {
     #[test]
     fn validate_typed_batch_plan_accepts_posted_plan() {
         let (blob, _) = posted_plan(true);
-        validate_typed_batch_plan(&blob).expect("posted plan should validate");
+        let bounds = validate_typed_batch_plan(&blob).expect("posted plan should validate");
+        assert_eq!(bounds.insert_edges_per_input_row, 1);
     }
 
     #[test]
@@ -703,5 +847,21 @@ mod tests {
         };
         let err = validate_typed_batch_eligibility_for_graph(&args).expect_err("empty ops");
         assert!(err.contains("at least one operation"));
+    }
+
+    #[test]
+    fn response_bound_accepts_measured_shape_and_rejects_unreturnable_shape() {
+        let bounds = TypedBatchPlanBounds {
+            insert_edges_per_input_row: 1,
+        };
+        validate_typed_batch_response_bound(std::iter::repeat_n(1, 512), bounds)
+            .expect("measured POSTED shape fits");
+
+        let oversized = TypedBatchPlanBounds {
+            insert_edges_per_input_row: MAX_TYPED_BATCH_INSERT_EDGE_OPS,
+        };
+        let err = validate_typed_batch_response_bound(std::iter::repeat_n(1024, 1024), oversized)
+            .expect_err("worst-case response must be rejected before allocation");
+        assert!(err.contains("worst-case response exceeds"));
     }
 }

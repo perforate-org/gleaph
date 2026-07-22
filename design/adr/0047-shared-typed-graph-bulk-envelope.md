@@ -1,9 +1,13 @@
 # 0047. Shared typed Graph bulk execution envelope
 
 Date: 2026-07-22
-Status: Graph endpoint and classifier implemented; Router activation deferred to Plan 0111
+Status: Partially Implemented
+
+Implementation boundary as of 2026-07-22: the Graph endpoint, shared wire, exhaustive admission
+classifier, and response-bound proof are implemented. Router capability activation and durable
+typed dispatch remain planned for Plan 0111.
 Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 03:41:20 UTC +0000
+Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
 
 ## Context
 
@@ -178,11 +182,11 @@ Notes:
   federated/local uniqueness and constrained-property dispatch vectors empty. Other groups retain
   their existing semantics-safe path. The V1 wire therefore carries no dormant claim/search fields.
 - Typed V1 also requires a mutation plan whose result shape has a conservative encoded-response
-  bound: `rows_blob` is statically absent, and the execution shape has a finite per-operation bound
-  for `hot_forward_vertices`. One shared `gleaph-graph-kernel` eligibility/bound helper derives this
-  fact from the plan once per group and is used by both Router admission and Graph validation; the
-  generic GQL parser/planner does not gain a Gleaph transport flag. Plans without that proof retain
-  their existing semantics-safe path.
+  bound: returned columns are absent, and the execution shape has a finite per-operation bound for
+  `hot_forward_vertices`. `gleaph-gql-integration::typed_batch` exhaustively classifies supported
+  row-preserving operators, derives that bound from the plan once per group, and is used by both
+  Router admission and Graph validation; `gleaph-graph-kernel` owns only the portable wire and byte
+  bounds. Plans without that proof retain their existing semantics-safe path.
 
 ### Seed representation and invalid-state prevention
 
@@ -366,13 +370,15 @@ sufficient, such as a shared seed relation.
   first unattempted operation when the instruction budget is exhausted.
 - The encoded size probe is performed before the inter-canister call, so no call is issued with an
   oversized payload.
-- Before typed persistence, the Router calls the shared graph-kernel helper to prove a conservative
+- Before typed persistence, the Router calls the shared `gleaph-gql-integration::typed_batch`
+  classifier to prove a conservative
   bound for the complete encoded `ExecutePlanBatchResult`: fixed per-item result overhead plus the
   derived maximum `hot_forward_vertices` must fit under the same portable 2 MiB limit, and
   `rows_blob` must be statically absent. Graph applies the same classifier before executing the first
-  operation and retains its final actual-response encode guard as defense in depth, not as the
-  admission mechanism after mutations may already have committed. A plan without this proof uses
-  the existing scalar path.
+  operation. The classifier includes at most one UTF-8-safe bounded item error because execution
+  stops at the first failure. Graph retains its final actual-response encode guard as defense in
+  depth, not as the admission mechanism after mutations may already have committed. A plan without
+  this proof uses the existing scalar path.
 > Ownership note: `gleaph-graph-kernel` continues to own portable wire types and payload
 > constants, but it cannot own physical-plan classification because it sits below
 > `gleaph-gql-planner` in the dependency graph (a cycle would be required). The renamed

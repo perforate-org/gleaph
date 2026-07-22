@@ -690,6 +690,7 @@ export interface gleaph_graphInterface {
     admin_ingest_vertex_embedding_batch(arg0: Array<VertexEmbeddingIngestionArgs>): Promise<Result_1>;
     admin_set_vector_index_canister(arg0: Principal): Promise<Result_2>;
     admin_stable_memory_stats(): Promise<StableMemoryStats>;
+    admin_take_batch_instr_log(arg0: number, arg1: number): Promise<Array<string>>;
     backfill_edge_property_postings(arg0: EdgePropertyBackfillRequest): Promise<Result_3>;
     backfill_label_postings(arg0: PostingBackfillArgs): Promise<Result_4>;
     backfill_vertex_embeddings(arg0: VertexEmbeddingBackfillRequest): Promise<Result_5>;
@@ -733,6 +734,10 @@ export class Gleaph_graph implements gleaph_graphInterface {
     }
     async admin_stable_memory_stats(): Promise<StableMemoryStats> {
         const result = await this.actor.admin_stable_memory_stats();
+        return result;
+    }
+    async admin_take_batch_instr_log(arg0: number, arg1: number): Promise<Array<string>> {
+        const result = await this.actor.admin_take_batch_instr_log(arg0, arg1);
         return result;
     }
     async backfill_edge_property_postings(arg0: EdgePropertyBackfillRequest): Promise<Result_3> {

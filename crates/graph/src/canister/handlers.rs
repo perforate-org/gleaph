@@ -24,7 +24,7 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
     ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode, MutationId, ResolvedSearchWire,
-    SeedBindingsWire, ShardEventSeq,
+    SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
 };
 
 use super::types::GraphInitArgs;
@@ -227,7 +227,7 @@ fn message_instruction_counter() -> u64 {
 
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
-    let result = execute_plan_impl(args, false, true, false, None, None)
+    let result = execute_plan_impl(PlanExecutionInput::legacy(args), false, true, false)
         .await?
         .0;
     ensure_execute_plan_result_payload(&result, "execute_plan_query")?;
@@ -236,7 +236,7 @@ pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResu
 
 pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Update, "execute_plan_update")?;
-    let result = execute_plan_impl(args, true, true, true, None, None)
+    let result = execute_plan_impl(PlanExecutionInput::legacy(args), true, true, true)
         .await?
         .0;
     ensure_execute_plan_result_payload(&result, "execute_plan_update")?;
@@ -252,44 +252,50 @@ pub async fn execute_plan_update_batch(
 pub async fn execute_plan_update_batch_typed_v1(
     args: ExecutePlanBatchTypedArgs,
 ) -> Result<ExecutePlanBatchResult, String> {
+    execute_plan_update_batch_typed_v1_impl(args)
+        .await
+        .map_err(bound_typed_batch_error)
+}
+
+async fn execute_plan_update_batch_typed_v1_impl(
+    args: ExecutePlanBatchTypedArgs,
+) -> Result<ExecutePlanBatchResult, String> {
     args.validate()
         .map_err(|e| format!("execute_plan_update_batch_typed_v1 validation: {e}"))?;
     gleaph_gql_integration::typed_batch::validate_typed_batch_eligibility_for_graph(&args)
         .map_err(|e| format!("execute_plan_update_batch_typed_v1 eligibility: {e}"))?;
-    let operations: Vec<ExecutePlanArgs> = args
-        .operations
-        .iter()
-        .map(|op| ExecutePlanArgs {
-            target_shard_id: args.shared.target_shard_id,
-            element_id_encoding_key: args.shared.element_id_encoding_key,
-            mutation_id: Some(args.shared.mutation_id),
-            plan_blob: args.shared.plan_blob.clone(),
-            params_blob: op.params_blob.clone(),
-            mode: GqlExecutionMode::Update,
-            seed_bindings_blob: None,
-            resolved_labels: args.shared.resolved_labels.clone(),
-            resolved_properties: args.shared.resolved_properties.clone(),
-            indexed_properties: args.shared.indexed_properties.clone(),
-            unique_claims: None,
-            constrained_properties: None,
-            local_unique_claims: None,
-            local_constrained_properties: None,
-            indexed_embeddings: None,
-            resolved_search_blob: None,
-        })
-        .collect();
-    let pre_decoded_seeds: Vec<Option<SeedBindingsWire>> = args
+    ensure_target_shard(args.shared.target_shard_id)?;
+    let operations: Vec<PlanExecutionInput> = args
         .operations
         .into_iter()
-        .map(|op| Some(op.seed))
+        .map(|op| {
+            PlanExecutionInput::typed(
+                ExecutePlanArgs {
+                    target_shard_id: args.shared.target_shard_id,
+                    element_id_encoding_key: args.shared.element_id_encoding_key,
+                    mutation_id: Some(args.shared.mutation_id),
+                    plan_blob: args.shared.plan_blob.clone(),
+                    params_blob: op.params_blob,
+                    mode: GqlExecutionMode::Update,
+                    seed_bindings_blob: None,
+                    resolved_labels: args.shared.resolved_labels.clone(),
+                    resolved_properties: args.shared.resolved_properties.clone(),
+                    indexed_properties: args.shared.indexed_properties.clone(),
+                    unique_claims: None,
+                    constrained_properties: None,
+                    local_unique_claims: None,
+                    local_constrained_properties: None,
+                    indexed_embeddings: None,
+                    resolved_search_blob: None,
+                },
+                op.seed,
+            )
+        })
         .collect();
-    let legacy = ExecutePlanBatchArgs {
-        operations,
-        mode: args.batch_mode,
-    };
     execute_plan_batch_internal(
-        legacy,
-        Some(pre_decoded_seeds),
+        operations,
+        args.batch_mode,
+        BatchResponseContract::TypedV1,
         "execute_plan_update_batch_typed_v1",
     )
     .await
@@ -410,14 +416,6 @@ async fn execute_plan_batch(
     args: ExecutePlanBatchArgs,
     entrypoint: &str,
 ) -> Result<ExecutePlanBatchResult, String> {
-    execute_plan_batch_internal(args, None, entrypoint).await
-}
-
-async fn execute_plan_batch_internal(
-    args: ExecutePlanBatchArgs,
-    pre_decoded_seeds: Option<Vec<Option<SeedBindingsWire>>>,
-    entrypoint: &str,
-) -> Result<ExecutePlanBatchResult, String> {
     if args.operations.is_empty() {
         return Err(format!("{entrypoint} requires at least one operation"));
     }
@@ -429,7 +427,72 @@ async fn execute_plan_batch_internal(
             gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
-    let total_ops = args.operations.len();
+    let mode = args.mode;
+    let operations = args
+        .operations
+        .into_iter()
+        .map(PlanExecutionInput::legacy)
+        .collect();
+    execute_plan_batch_internal(operations, mode, BatchResponseContract::Legacy, entrypoint).await
+}
+
+enum SeedBindingsInput {
+    Absent,
+    LegacyBlob(Vec<u8>),
+    Typed(SeedBindingsWire),
+}
+
+struct PlanExecutionInput {
+    args: ExecutePlanArgs,
+    seed_bindings: SeedBindingsInput,
+}
+
+impl PlanExecutionInput {
+    fn legacy(mut args: ExecutePlanArgs) -> Self {
+        let seed_bindings = match args.seed_bindings_blob.take() {
+            Some(blob) => SeedBindingsInput::LegacyBlob(blob),
+            None => SeedBindingsInput::Absent,
+        };
+        Self {
+            args,
+            seed_bindings,
+        }
+    }
+
+    fn typed(args: ExecutePlanArgs, seed: SeedBindingsWire) -> Self {
+        debug_assert!(args.seed_bindings_blob.is_none());
+        Self {
+            args,
+            seed_bindings: SeedBindingsInput::Typed(seed),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BatchResponseContract {
+    Legacy,
+    TypedV1,
+}
+
+impl BatchResponseContract {
+    fn error(self, error: String) -> String {
+        match self {
+            Self::Legacy => error,
+            Self::TypedV1 => bound_typed_batch_error(error),
+        }
+    }
+}
+
+async fn execute_plan_batch_internal(
+    operations: Vec<PlanExecutionInput>,
+    mode: ExecutePlanBatchMode,
+    response_contract: BatchResponseContract,
+    entrypoint: &str,
+) -> Result<ExecutePlanBatchResult, String> {
+    if operations.is_empty() {
+        return Err(format!("{entrypoint} requires at least one operation"));
+    }
+    let total_ops = operations.len();
     let mut results = Vec::with_capacity(total_ops);
     let mut next_index = None;
     let mut total_instr = 0u64;
@@ -438,7 +501,7 @@ async fn execute_plan_batch_internal(
     let mut errors = 0usize;
 
     // ADR 0044: a bulk group is one batch where every operation carries the same mutation_id.
-    let bulk_mutation_id = detect_bulk_mutation_id(&args.operations);
+    let bulk_mutation_id = detect_bulk_mutation_id(&operations);
     let is_bulk = bulk_mutation_id.is_some();
     let mut bulk_state = if let Some(mutation_id) = bulk_mutation_id {
         let store = GraphStore::new();
@@ -487,7 +550,7 @@ async fn execute_plan_batch_internal(
         None
     };
 
-    for (index, operation) in args.operations.into_iter().enumerate() {
+    for (index, operation) in operations.into_iter().enumerate() {
         // Bulk op that was already completed: emit a synthetic success and continue.
         if let Some(ref mut state) = bulk_state
             && index < state.start_index
@@ -505,7 +568,7 @@ async fn execute_plan_batch_internal(
         // remaining per-message budget is unlikely to cover it plus drain and
         // final bookkeeping. The Router will re-invoke the batch with the
         // continuation cursor (next_index) inside the same ingress call.
-        if args.mode == ExecutePlanBatchMode::Dynamic
+        if mode == ExecutePlanBatchMode::Dynamic
             && should_cutoff_batch(
                 before,
                 max_instr,
@@ -516,7 +579,7 @@ async fn execute_plan_batch_internal(
             next_index = Some(index as u32);
             log_batch_summary(
                 entrypoint,
-                args.mode,
+                mode,
                 index,
                 total_instr,
                 max_instr,
@@ -532,23 +595,15 @@ async fn execute_plan_batch_internal(
         } else {
             (true, true)
         };
-        let raw_result =
-            match ensure_execution_mode(operation.mode, GqlExecutionMode::Update, entrypoint) {
-                Ok(()) => {
-                    execute_plan_impl(
-                        operation,
-                        false,
-                        check_journal,
-                        write_journal,
-                        pre_decoded_seeds
-                            .as_ref()
-                            .and_then(|v| v.get(index).cloned().flatten()),
-                        None,
-                    )
-                    .await
-                }
-                Err(err) => Err(err),
-            };
+        let raw_result = match ensure_execution_mode(
+            operation.args.mode,
+            GqlExecutionMode::Update,
+            entrypoint,
+        ) {
+            Ok(()) => execute_plan_impl(operation, false, check_journal, write_journal).await,
+            Err(err) => Err(err),
+        }
+        .map_err(|error| response_contract.error(error));
         let after = current_instruction_counter();
         let cost = after.saturating_sub(before);
         total_instr += cost;
@@ -563,7 +618,7 @@ async fn execute_plan_batch_internal(
         }
         #[cfg(feature = "batch-instr-log")]
         if cost >= BATCH_INSTR_OP_THRESHOLD {
-            log_batch_op(entrypoint, args.mode, index, cost, &result_for_caller);
+            log_batch_op(entrypoint, mode, index, cost, &result_for_caller);
         }
 
         // Aggregate bulk mutation durable state for the operations that committed.
@@ -621,7 +676,7 @@ async fn execute_plan_batch_internal(
     if next_index.is_none() && bulk_state.is_none() {
         log_batch_summary(
             entrypoint,
-            args.mode,
+            mode,
             total_ops,
             total_instr,
             max_instr,
@@ -634,7 +689,7 @@ async fn execute_plan_batch_internal(
     } else if let Some(ref state) = bulk_state {
         log_batch_summary(
             entrypoint,
-            args.mode,
+            mode,
             state.completed_count as usize,
             total_instr,
             max_instr,
@@ -679,12 +734,15 @@ async fn execute_plan_batch_internal(
 }
 
 /// Detects a bulk mutation: all operations must share the same `mutation_id`.
-fn detect_bulk_mutation_id(operations: &[ExecutePlanArgs]) -> Option<MutationId> {
+fn detect_bulk_mutation_id(operations: &[PlanExecutionInput]) -> Option<MutationId> {
     if operations.is_empty() {
         return None;
     }
-    let first = operations.first()?.mutation_id?;
-    if operations.iter().all(|op| op.mutation_id == Some(first)) {
+    let first = operations.first()?.args.mutation_id?;
+    if operations
+        .iter()
+        .all(|op| op.args.mutation_id == Some(first))
+    {
         Some(first)
     } else {
         None
@@ -702,13 +760,26 @@ struct BulkState {
     hot_forward_vertices: Vec<gleaph_graph_kernel::federation::LocalVertexId>,
 }
 
+fn ensure_target_shard(
+    target_shard_id: gleaph_graph_kernel::federation::ShardId,
+) -> Result<(), String> {
+    let routing = GraphStore::new()
+        .federation_routing()
+        .ok_or("federation routing not configured")?;
+    if routing.shard_id != target_shard_id {
+        return Err(format!(
+            "target_shard_id {} does not match this graph shard {}",
+            target_shard_id, routing.shard_id
+        ));
+    }
+    Ok(())
+}
+
 async fn execute_plan_impl(
-    args: ExecutePlanArgs,
+    input: PlanExecutionInput,
     drain_outbox_after: bool,
     check_journal: bool,
     write_journal: bool,
-    pre_decoded_seed: Option<SeedBindingsWire>,
-    pre_decoded_search: Option<ResolvedSearchWire>,
 ) -> Result<
     (
         ExecutePlanResult,
@@ -718,16 +789,12 @@ async fn execute_plan_impl(
     String,
 > {
     let _phase_t0 = current_instruction_counter();
+    let PlanExecutionInput {
+        args,
+        seed_bindings,
+    } = input;
+    ensure_target_shard(args.target_shard_id)?;
     let store = GraphStore::new();
-    let routing = store
-        .federation_routing()
-        .ok_or("federation routing not configured")?;
-    if routing.shard_id != args.target_shard_id {
-        return Err(format!(
-            "target_shard_id {} does not match this graph shard {}",
-            args.target_shard_id, routing.shard_id
-        ));
-    }
     // ADR 0023 D1/D3: install the router-sourced indexed catalog for this
     // operation. The guard clears it on return, so the shard never persists
     // derived index state. Held until after plan execution and posting flush.
@@ -742,27 +809,19 @@ async fn execute_plan_impl(
         .indexed_embeddings
         .map(crate::index::vector_catalog_context::enter);
     let pmap = decode_gql_param_map(args.params_blob)?;
-    let seeds = match pre_decoded_seed {
-        Some(seed) => Some(seed),
-        None => match args.seed_bindings_blob {
-            Some(blob) => {
-                let wire: SeedBindingsWire = Decode!(&blob, SeedBindingsWire)
-                    .map_err(|e| format!("seed_bindings decode: {e}"))?;
-                Some(wire)
-            }
-            None => None,
-        },
+    let seeds = match seed_bindings {
+        SeedBindingsInput::Absent => None,
+        SeedBindingsInput::LegacyBlob(blob) => Some(
+            Decode!(&blob, SeedBindingsWire).map_err(|e| format!("seed_bindings decode: {e}"))?,
+        ),
+        SeedBindingsInput::Typed(seed) => Some(seed),
     };
-    let resolved_search = match pre_decoded_search {
-        Some(search) => Some(search),
-        None => match args.resolved_search_blob {
-            Some(blob) => {
-                let wire: ResolvedSearchWire = Decode!(&blob, ResolvedSearchWire)
-                    .map_err(|e| format!("resolved_search decode: {e}"))?;
-                Some(wire)
-            }
-            None => None,
-        },
+    let resolved_search = match args.resolved_search_blob {
+        Some(blob) => Some(
+            Decode!(&blob, ResolvedSearchWire)
+                .map_err(|e| format!("resolved_search decode: {e}"))?,
+        ),
+        None => None,
     };
     crate::facade::init_ic_gql_extensions();
     let cached_bundle = crate::index::plan_cache::decode_plan_bundle_cached(&args.plan_blob)
@@ -1949,8 +2008,13 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
     use gleaph_gql_planner::wire::encode_block_plans;
+    use gleaph_graph_kernel::entry::{EdgeInlineValueProfile, EdgeLabelId, VertexLabelId};
     use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ElementIdEncodingKey, ShardId};
-    use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
+    use gleaph_graph_kernel::plan_exec::{
+        ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
+        ExecutePlanTypedOp, ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
+        SeedBindingEntry, SeedBindingsWire, SeedRowWire, SeedVertexBinding,
+    };
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
     const TEST_ELEMENT_ID_ENCODING_KEY: [u8; 16] = ElementIdEncodingKey::host_test_fixture().0;
@@ -1988,6 +2052,86 @@ mod tests {
         GraphStore::new()
             .set_metadata(metadata)
             .expect("attach federation routing");
+    }
+
+    #[test]
+    fn typed_batch_rejects_wrong_target_before_creating_journal() {
+        attach_test_federation(TEST_SHARD_ID);
+        let mutation_id = 9_901_104;
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "u".into(),
+                label: Some("User".into()),
+                property_projection: None,
+            },
+            PlanOp::InsertVertex {
+                variable: Some("p".into()),
+                labels: vec!["Post".into()],
+                properties: Vec::new(),
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: "u".into(),
+                dst: "p".into(),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                labels: vec!["POSTED".into()],
+                properties: Vec::new(),
+            },
+        ]);
+        let args = ExecutePlanBatchTypedArgs {
+            shared: ExecutePlanBatchTypedShared {
+                target_shard_id: ShardId::new(1),
+                element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
+                mutation_id,
+                plan_blob: encode_block_plans(&[plan], true).expect("encode typed plan"),
+                resolved_labels: Some(ResolvedLabelTable {
+                    vertex: vec![
+                        ResolvedVertexLabel {
+                            name: "User".into(),
+                            id: VertexLabelId::from_raw(1),
+                        },
+                        ResolvedVertexLabel {
+                            name: "Post".into(),
+                            id: VertexLabelId::from_raw(2),
+                        },
+                    ],
+                    edge: vec![ResolvedEdgeLabel {
+                        name: "POSTED".into(),
+                        id: EdgeLabelId::from_raw(1),
+                        inline_value_profile: EdgeInlineValueProfile::no_inline_value(),
+                        inline_schema: None,
+                    }],
+                }),
+                resolved_properties: None,
+                indexed_properties: None,
+            },
+            operations: vec![ExecutePlanTypedOp {
+                params_blob: encode_gql_params_blob(vec![]).expect("encode params"),
+                seed: SeedBindingsWire {
+                    entries: Vec::new(),
+                    rows: vec![SeedRowWire {
+                        vertex_bindings: vec![SeedVertexBinding {
+                            variable: "u".into(),
+                            local_vertex_id: 0,
+                            required_vertex_label_ids: Vec::new(),
+                        }],
+                        float64_bindings: Vec::new(),
+                    }],
+                    complete_prefix_rows: true,
+                },
+            }],
+            batch_mode: ExecutePlanBatchMode::Dynamic,
+        };
+
+        let err = pollster::block_on(execute_plan_update_batch_typed_v1_impl(args))
+            .expect_err("wrong target shard must fail before dispatch");
+        assert!(err.contains("does not match this graph shard"), "{err}");
+        assert!(
+            GraphStore::new()
+                .mutation_journal_entry(mutation_id)
+                .is_none(),
+            "invalid target must not reserve a journal entry"
+        );
     }
 
     fn label_intersection_plan_with_seeds(

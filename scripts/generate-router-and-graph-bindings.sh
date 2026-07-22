@@ -42,15 +42,17 @@ extract_did() {
   local name="$1"
   local out_path="$2"
   local wasm="$ARTIFACT_DIR/$name"
-  if [[ ! -f "$wasm" ]]; then
-    log "Building $name to produce wasm artifact"
-    icp_cmd build "$name"
-  fi
+  # Always rebuild. Reusing an existing artifact can regenerate bindings from stale Wasm while
+  # `check-router-and-graph-candid.sh` correctly compares against a fresh build.
+  log "Building $name to produce a fresh wasm artifact"
+  icp_cmd build "$name"
   if [[ ! -f "$wasm" ]]; then
     log "ERROR: wasm artifact not found after build: $wasm"
     exit 1
   fi
-  candid-extractor "$wasm" > "$out_path"
+  # Normalize extractor whitespace before both committing the DID and deriving TypeScript docs.
+  # This keeps regenerated files compatible with `git diff --check`.
+  candid-extractor "$wasm" | sed -e 's/[[:space:]]*$//' > "$out_path"
 }
 
 generate_bindings() {
@@ -76,6 +78,9 @@ generate_bindings() {
   mv "$out_dir/${actor_name}.did.d.ts" "$out_dir/declarations/"
   mv "$out_dir/${actor_name}.did.js" "$out_dir/declarations/"
   cp "$did_path" "$out_dir/declarations/${actor_name}.did"
+  # bindgen preserves blank doc-comment padding as trailing spaces; strip it from every generated
+  # text artifact so a clean regeneration also passes `git diff --check`.
+  find "$out_dir" -type f -exec perl -pi -e 's/[ \t]+$//' {} +
 }
 
 mkdir -p "$ARTIFACT_DIR"

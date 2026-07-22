@@ -1,7 +1,7 @@
 # Physical plan format
 
 Last updated: 2026-07-22
-Anchor timestamp: 2026-07-22 01:07:32 UTC +0000
+Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
 
 ## Purpose
 
@@ -90,14 +90,15 @@ contracts must be distinguished.
 - checked candidate, product, encoded-payload, and instruction bounds fail closed without
   truncation.
 
-**ADR 0047 planned contract:**
+**ADR 0047 Graph contract (partially implemented):**
 
-- a new Router→Graph update method accepts an eligible single-shard batch with a shared immutable
+- Graph exposes `execute_plan_update_batch_typed_v1`, which accepts an eligible single-shard batch with a shared immutable
   group header and required ordered per-operation complete-row seeds (`SeedBindingsWire`);
 - V1 rejects resolved-search and constraint/uniqueness dispatch and uses the existing
   semantics-safe path for those groups;
-- V1 also rejects plans without a statically bounded row-free response shape; request admission
-  uses structural seed bounds and one full-request encode, never one Candid encode per seed;
+- V1 also rejects plans outside an exhaustive row-preserving DML allowlist or without a statically
+  bounded row-free response shape; request admission uses structural seed bounds, one full-request
+  encode, and a conservative complete-response proof, never one Candid encode per seed;
 - the scalar `ExecutePlanArgs.seed_bindings_blob` path and the legacy blob batch method remain
   unchanged; scalar is the fallback for distinct-seed groups, while legacy batch is used only when
   its existing replay representation is sufficient;
@@ -106,7 +107,7 @@ contracts must be distinguished.
   typed-bulk, and terminal completed-bulk payload variants; the typed payload persists the exact
   ordered replay relation without a parallel blob representation, and completed records compact to
   `CompletedBulk { total_ops }` per ADR 0025 mechanism E;
-- the typed path is activated only from an admin-refreshed capability on the current shard-registry
+- Router activation remains planned: the typed path will be selected only from an admin-refreshed capability on the current shard-registry
   V2 write shape after post-await target revalidation; ambiguous typed-call outcomes retain typed
   durable replay under the same mutation id;
 - initial Router installation or rollback to older Router Wasm requires fresh install/reset because

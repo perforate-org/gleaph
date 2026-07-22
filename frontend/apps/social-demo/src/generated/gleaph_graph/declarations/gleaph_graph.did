@@ -567,6 +567,7 @@ service : (GraphInitArgs) -> {
   admin_set_vector_index_canister : (principal) -> (Result_2);
   // Router → graph: operator-only physical stable-memory inventory.
   admin_stable_memory_stats : () -> (StableMemoryStats) query;
+  admin_take_batch_instr_log : (nat32, nat32) -> (vec text) query;
   backfill_edge_property_postings : (EdgePropertyBackfillRequest) -> (Result_3);
   backfill_label_postings : (PostingBackfillArgs) -> (Result_4);
   backfill_vertex_embeddings : (VertexEmbeddingBackfillRequest) -> (Result_5);

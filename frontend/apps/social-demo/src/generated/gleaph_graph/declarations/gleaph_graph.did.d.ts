@@ -815,6 +815,7 @@ export interface _SERVICE {
    * Router → graph: operator-only physical stable-memory inventory.
    */
   'admin_stable_memory_stats' : ActorMethod<[], StableMemoryStats>,
+  'admin_take_batch_instr_log' : ActorMethod<[number, number], Array<string>>,
   'backfill_edge_property_postings' : ActorMethod<
     [EdgePropertyBackfillRequest],
     Result_3

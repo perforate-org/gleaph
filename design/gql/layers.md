@@ -29,6 +29,7 @@ flowchart TB
 | `gleaph-gql-integration` | Gleaph-specific integration boundary between portable GQL planning and Gleaph execution. Public modules: `path_extension` (path-extension-to-planner policy) and `weight` (pure `GLEAPH.WEIGHT` expression-shape classification). Shared by Router and Graph. | IC principals, shard ids, canister calls, storage layout, generic GQL syntax, planner cost internals |
 | `gleaph-gql-ic` | Parameter encoding for canisters | Planner logic |
 | `gleaph-graph-kernel` | Wire types shared by router/graph/index | Full executor |
+| `gleaph-gql-integration::typed_batch` | Gleaph Router→Graph typed-batch plan admission and response-bound proof | Portable wire ownership or generic GQL planning |
 | `gleaph-graph` | Plan execution, storage, federation expand | GQL parse (except helpers) |
 | `gleaph-router` | RBAC, planning entry, dispatch | LARA mutation |
 
