@@ -117,8 +117,11 @@ contracts must be distinguished.
 - Plan 0113 observed a 71-item POSTED typed batch and measured approximately 115.5M fewer Router
   instructions/item than the capability-disabled legacy control. Plan 0114 quantified the remaining
   rejections (308 non-threaded plans, 2 non-selective seeds, and all indexed-embedding groups) and
-  decided not to expand the Typed V1 boundary. Groups with non-selective seeds, indexed-embedding
-  dispatch, or non-threaded plans continue to use the legacy fallback.
+  decided not to expand the Typed V1 boundary. Plan 0116 added an early capability short-circuit for
+  single-shard selective complete-row seeds on incapable targets, removing the typed-attempt group
+  prepare overhead on the legacy fallback path (0 instr/item on a fresh deploy versus the Plan 0115
+  82,129,243 instr/item fallback tax). Groups with non-selective seeds, indexed-embedding dispatch,
+  or non-threaded plans continue to use the legacy fallback.
 
 The physical plan remains the single source of predicate/join semantics. Gleaph-specific seed
 lowering must not add shard, canister, constraint, or Property Index concepts to the generic planner.

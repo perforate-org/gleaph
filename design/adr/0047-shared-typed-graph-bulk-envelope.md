@@ -11,7 +11,11 @@ recovery are implemented in Plan 0111. Plan 0112 lacked capability refresh befor
 exceeding the 156,799/item gate. Plan 0114 analyzed the remaining rejections and explicitly
 decided not to expand the boundary: non-threaded plans and indexed-embedding dispatch remain
 outside Typed V1 because they violate the single-anchor threaded-bundle response-bound proof or
-require a separate vector-search replay contract. Other groups continue to use the legacy fallback.
+require a separate vector-search replay contract. Plan 0116 added an early capability short-circuit
+for single-shard selective complete-row seeds on incapable shards, removing the typed-attempt group
+prepare overhead (0 instr/item on a fresh deploy versus the Plan 0115 82,129,243 instr/item fallback
+tax) while preserving post-routing typed rejection for multi-shard and non-early-known targets.
+Other groups continue to use the legacy fallback.
 Last revised: 2026-07-22
 Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
 
