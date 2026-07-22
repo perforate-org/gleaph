@@ -110,6 +110,19 @@ fn log_router_preflight(kind: &str, cost: u64) {
 fn log_router_preflight(_kind: &str, _cost: u64) {}
 
 #[cfg(feature = "batch-instr-log")]
+fn log_router_typed_batch_decision(decision: &str, reason: &str) {
+    crate::instr_log::push(format!(
+        "GLEAPH_ROUTER_TYPED_BATCH decision={} reason={}",
+        decision, reason
+    ));
+}
+
+#[cfg(not(feature = "batch-instr-log"))]
+#[allow(dead_code)]
+#[inline]
+fn log_router_typed_batch_decision(_decision: &str, _reason: &str) {}
+
+#[cfg(feature = "batch-instr-log")]
 struct PrepareInstrLogger {
     start: u64,
     last: u64,
@@ -4390,19 +4403,23 @@ async fn execute_prepared_bulk_group_typed(
 
     let base = group.base;
     let Some(mutation_id) = base.mutation_id else {
+        log_router_typed_batch_decision("rejected", "missing_mutation_id");
         return Ok(None);
     };
     let Some(key) = client_mutation_key else {
+        log_router_typed_batch_decision("rejected", "missing_client_mutation_key");
         return Ok(None);
     };
 
     // Single target, capability enabled, and no effect dispatches.
     if base.dispatches.len() != 1 {
+        log_router_typed_batch_decision("rejected", "multi_dispatch");
         return Ok(None);
     }
     let dispatch = &base.dispatches[0];
     let shard = store.resolve_shard(graph_id, dispatch.shard_id)?;
     if shard.typed_seed_batch != gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1 {
+        log_router_typed_batch_decision("rejected", "capability_disabled");
         #[cfg(feature = "pocket-ic-e2e")]
         crate::test_fault::record_typed_batch_trace("capability-disabled");
         return Ok(None);
@@ -4421,6 +4438,7 @@ async fn execute_prepared_bulk_group_typed(
             .as_ref()
             .is_some_and(|v| !v.is_empty())
     {
+        log_router_typed_batch_decision("rejected", "effect_claims");
         return Ok(None);
     }
 
@@ -4437,14 +4455,20 @@ async fn execute_prepared_bulk_group_typed(
     let complete_row_anchor_set =
         match SeedAnchorSet::from_plans(&base.plans, &base.pmap, store, &stats) {
             Ok(Some(set)) if set.is_selective_complete_row_seed() => set,
-            _ => return Ok(None),
+            _ => {
+                log_router_typed_batch_decision("rejected", "non_selective_seed");
+                return Ok(None);
+            }
         };
     let _ = complete_row_anchor_set;
     let index = match RouterIndexLookup::from_shards(graph_id, std::slice::from_ref(&shard))
         .map_err(RouterError::InvalidArgument)
     {
         Ok(ix) => ix,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            log_router_typed_batch_decision("rejected", "index_lookup_unavailable");
+            return Ok(None);
+        }
     };
 
     #[cfg_attr(
@@ -4497,6 +4521,7 @@ async fn execute_prepared_bulk_group_typed(
         ) {
             Ok(args) => args,
             Err(_error) => {
+                log_router_typed_batch_decision("rejected", &format!("request_rejected: {_error}"));
                 #[cfg(feature = "pocket-ic-e2e")]
                 crate::test_fault::record_typed_batch_trace(format!("request-rejected: {_error}"));
                 return Ok(None);
@@ -4504,6 +4529,10 @@ async fn execute_prepared_bulk_group_typed(
         };
     #[cfg(feature = "pocket-ic-e2e")]
     crate::test_fault::record_typed_batch_trace("validated");
+    log_router_typed_batch_decision(
+        "accepted",
+        &format!("ops={} shard={}", item_count, dispatch.shard_id.raw()),
+    );
 
     let group_fingerprint = bulk_group_fingerprint(
         &base.plan_blob,
