@@ -50,12 +50,12 @@ build_instrumented_router_wasm() {
     cargo build -p gleaph-router --features batch-instr-log \
       --target wasm32-unknown-unknown --release >&2
   local raw_wasm="$ROOT/target/wasm32-unknown-unknown/release/gleaph_router.wasm"
-  candid-extractor "$raw_wasm" > "$did"
-  ic-wasm "$raw_wasm" -o "$wasm" metadata candid:service -f "$did" -v public
-  if ! strings "$wasm" | grep -q 'GLEAPH_ROUTER_BATCH'; then
-    log "ERROR: instrumented Router artifact is missing GLEAPH_ROUTER_BATCH marker"
+  if ! grep -a -F -q 'GLEAPH_ROUTER_BATCH' "$raw_wasm"; then
+    log "ERROR: Router release was built without batch-instr-log"
     exit 1
   fi
+  candid-extractor "$raw_wasm" > "$did"
+  ic-wasm "$raw_wasm" -o "$wasm" metadata candid:service -f "$did" -v public
   log "Instrumented Router artifact ready: $wasm"
   printf '%s\n' "$wasm"
 }
@@ -459,6 +459,9 @@ main() {
       logical_graph_name = \"$GRAPH_NAME\";
     }
   )"
+  log "Refreshing Graph execution capabilities"
+  icp_call_expect_ok "Refreshing Graph execution capabilities" "" -e local gleaph-router admin_refresh_shard_execution_capabilities \
+    "(\"$GRAPH_NAME\", $SHARD_ID : nat32)"
   # Prime the property index for the lookup keys used by the social-demo seed
   # GQL. Without these, every MATCH by `user_id` or `demo_id` scans every vertex
   # of that label. This is a one-time DDL cost paid before seeding.
