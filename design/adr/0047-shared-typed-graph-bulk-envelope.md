@@ -8,8 +8,10 @@ classifier, response-bound proof, Router capability activation, durable typed di
 recovery are implemented in Plan 0111. Plan 0112 lacked capability refresh before seeding. Plan
 0113 corrected the order, observed an accepted 71-item typed batch, and measured approximately
 2.69M Router instructions/item versus 118.16M/item for the capability-disabled legacy control,
-exceeding the 156,799/item gate. Other groups still fall back because their seed shape or derived
-indexed-embedding dispatch is outside Typed V1.
+exceeding the 156,799/item gate. Plan 0114 analyzed the remaining rejections and explicitly
+decided not to expand the boundary: non-threaded plans and indexed-embedding dispatch remain
+outside Typed V1 because they violate the single-anchor threaded-bundle response-bound proof or
+require a separate vector-search replay contract. Other groups continue to use the legacy fallback.
 Last revised: 2026-07-22
 Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
 

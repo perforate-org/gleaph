@@ -115,8 +115,10 @@ contracts must be distinguished.
 - initial Router installation or rollback to older Router Wasm requires fresh install/reset because
   there is no deployed stable state to migrate;
 - Plan 0113 observed a 71-item POSTED typed batch and measured approximately 115.5M fewer Router
-  instructions/item than the capability-disabled legacy control. Groups with non-selective seeds,
-  indexed-embedding dispatch, or non-threaded plans continue to use the legacy fallback.
+  instructions/item than the capability-disabled legacy control. Plan 0114 quantified the remaining
+  rejections (308 non-threaded plans, 2 non-selective seeds, and all indexed-embedding groups) and
+  decided not to expand the Typed V1 boundary. Groups with non-selective seeds, indexed-embedding
+  dispatch, or non-threaded plans continue to use the legacy fallback.
 
 The physical plan remains the single source of predicate/join semantics. Gleaph-specific seed
 lowering must not add shard, canister, constraint, or Property Index concepts to the generic planner.
