@@ -24,10 +24,11 @@ also cheaper by about 289K instructions per item at N=512, and the encoded byte 
 threshold in the isolated transport benchmark.
 
 Plan 0112 later measured the same workload end-to-end on a fresh local network and found that the
-production POSTED path abandons the bulk group because of selective complete-row seeds. The typed
-path is therefore not exercised for the dominant POSTED items, so the end-to-end Router ingress
-gate cannot establish typed transport effectiveness. Adoption is rejected for the current
-production workload; the implementation remains available for seed-invariant bulk groups.
+production POSTED path emits typed-admission decisions but rejects them because the current typed V1
+contract does not support `indexed_embeddings`. No typed Graph call is therefore exercised for the
+dominant POSTED items, so the end-to-end Router ingress gate cannot establish typed transport
+effectiveness. Adoption is rejected for the current production workload; the implementation remains
+available for groups without derived embedding dispatch.
 
 The existing boundaries are:
 
