@@ -23,8 +23,8 @@ use gleaph_gql_planner::PhysicalPlan;
 
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
-    ExecutePlanResult, GqlExecutionMode, MutationId, ResolvedSearchWire, SeedBindingsWire,
-    ShardEventSeq,
+    ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode, MutationId, ResolvedSearchWire,
+    SeedBindingsWire, ShardEventSeq,
 };
 
 use super::types::GraphInitArgs;
@@ -243,6 +243,43 @@ pub async fn execute_plan_update_batch(
     args: ExecutePlanBatchArgs,
 ) -> Result<ExecutePlanBatchResult, String> {
     execute_plan_batch(args, "execute_plan_update_batch").await
+}
+
+pub async fn execute_plan_update_batch_typed_v1(
+    args: ExecutePlanBatchTypedArgs,
+) -> Result<ExecutePlanBatchResult, String> {
+    args.validate()
+        .map_err(|e| format!("execute_plan_update_batch_typed_v1 validation: {e}"))?;
+    let operations = args
+        .operations
+        .into_iter()
+        .map(|op| ExecutePlanArgs {
+            target_shard_id: args.shared.target_shard_id,
+            element_id_encoding_key: args.shared.element_id_encoding_key,
+            mutation_id: Some(args.shared.mutation_id),
+            plan_blob: args.shared.plan_blob.clone(),
+            params_blob: op.params_blob,
+            mode: GqlExecutionMode::Update,
+            seed_bindings_blob: Some(
+                Encode!(&op.seed)
+                    .expect("typed seed re-encode should always succeed for validated input"),
+            ),
+            resolved_labels: args.shared.resolved_labels.clone(),
+            resolved_properties: args.shared.resolved_properties.clone(),
+            indexed_properties: args.shared.indexed_properties.clone(),
+            unique_claims: None,
+            constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
+            indexed_embeddings: None,
+            resolved_search_blob: None,
+        })
+        .collect();
+    let legacy = ExecutePlanBatchArgs {
+        operations,
+        mode: args.batch_mode,
+    };
+    execute_plan_batch(legacy, "execute_plan_update_batch_typed_v1").await
 }
 
 #[cfg(feature = "batch-instr-log")]

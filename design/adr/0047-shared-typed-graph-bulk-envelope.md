@@ -3,7 +3,7 @@
 Date: 2026-07-22
 Status: Partially Implemented
 Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 02:52:37 UTC +0000
+Anchor timestamp: 2026-07-22 03:41:20 UTC +0000
 
 ## Context
 
@@ -376,9 +376,10 @@ sufficient, such as a shared seed relation.
 > Ownership note: `gleaph-graph-kernel` continues to own portable wire types and payload
 > constants, but it cannot own physical-plan classification because it sits below
 > `gleaph-gql-planner` in the dependency graph (a cycle would be required). The renamed
-> `gleaph-gql-integration` crate already depends on both planner and graph-kernel, so it is the
-> future owner of the `typed_batch` admission classifier. This slice corrects the planned ownership
-> boundary; the classifier itself remains a Plan 0110 deliverable.
+> `gleaph-gql-integration` crate already depends on both planner and graph-kernel, so it owns the
+> `typed_batch` admission classifier. The Graph `execute_plan_update_batch_typed_v1` endpoint,
+> the shared `ExecutePlanBatchTypedArgs` wire types, and the `typed_batch` classifier were
+> implemented in Plan 0110. Capability advertisement and Router durable activation remain Plan 0111.
 
 
 ### Performance expectation

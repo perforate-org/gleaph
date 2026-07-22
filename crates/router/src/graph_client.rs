@@ -115,6 +115,17 @@ pub async fn execute_plan_batch_on_graph(
     call_graph_result(graph, method, args).await
 }
 
+pub async fn execute_plan_typed_batch_on_graph(
+    graph: Principal,
+    args: gleaph_graph_kernel::plan_exec::ExecutePlanBatchTypedArgs,
+) -> Result<ExecutePlanBatchResult, String> {
+    if args.operations.is_empty() {
+        return Err("typed graph batch requires at least one operation".to_string());
+    }
+    let method = "execute_plan_update_batch_typed_v1";
+    call_graph_result(graph, method, args).await
+}
+
 pub async fn ack_label_stats_deltas_through(
     graph: Principal,
     through_seq: ShardEventSeq,

@@ -6,8 +6,10 @@
 //! - **Update** programs use update on the router and `execute_*_update` on graph (DML and
 //!   posting maintenance). A composite query must not invoke an update method.
 
-use candid::CandidType;
+use candid::{CandidType, Encode};
 use serde::{Deserialize, Serialize};
+
+use crate::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 
 use crate::entry::{
     ConstraintNameId, EdgeInlineValueProfile, EdgeLabelId, PropertyId, VertexLabelId,
@@ -107,6 +109,92 @@ pub struct ExecutePlanBatchResult {
     pub results: Vec<Result<ExecutePlanResult, String>>,
     /// Index of the first operation not attempted, when Dynamic mode hit the Graph budget.
     pub next_index: Option<u32>,
+}
+
+/// Router → graph: shared typed bulk execution envelope (ADR 0047).
+///
+/// This is the production transport for homogeneous groups where every operation has the same
+/// target shard and shares immutable plan/catalog context. Per-operation data is reduced to the
+/// params blob and the already-decoded complete-row seed relation.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ExecutePlanBatchTypedArgs {
+    pub shared: ExecutePlanBatchTypedShared,
+    pub operations: Vec<ExecutePlanTypedOp>,
+    pub batch_mode: ExecutePlanBatchMode,
+}
+
+/// Immutable context shared by every operation in a typed bulk group.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ExecutePlanBatchTypedShared {
+    pub target_shard_id: ShardId,
+    /// Per-graph key for ELEMENT_ID/path id encoding.
+    pub element_id_encoding_key: [u8; 16],
+    /// Router-issued idempotency key for the whole bulk group.
+    pub mutation_id: MutationId,
+    pub plan_blob: Vec<u8>,
+    /// Router-resolved label names referenced by the physical plan.
+    pub resolved_labels: Option<ResolvedLabelTable>,
+    /// Router-resolved property names referenced by the physical plan.
+    pub resolved_properties: Option<ResolvedPropertyTable>,
+    /// Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
+    pub indexed_properties: Option<crate::index::IndexedPropertyCatalog>,
+}
+
+/// One typed bulk operation with an already-decoded complete-row seed.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ExecutePlanTypedOp {
+    /// Per-operation GQL parameter map, already encoded.
+    pub params_blob: Vec<u8>,
+    /// Required complete-row seed relation. Zero matches use an empty `rows` vector.
+    pub seed: SeedBindingsWire,
+}
+
+impl ExecutePlanBatchTypedArgs {
+    /// Structural validation shared by Router admission and Graph entry.
+    ///
+    /// Checks cardinality, complete-row shape, per-operation bounds, and the encoded request size.
+    /// It does not re-encode individual seeds; the one full-request encode is the only byte proof.
+    pub fn validate(&self) -> Result<(), String> {
+        const MAX_OPS: usize = 1024;
+        const MAX_ROWS_PER_SEED: usize = 1024;
+        let ops = self.operations.len();
+        if ops == 0 || ops > MAX_OPS {
+            return Err(format!(
+                "typed batch V1 requires 1..={MAX_OPS} operations, got {ops}"
+            ));
+        }
+        for (i, op) in self.operations.iter().enumerate() {
+            if !op.seed.entries.is_empty() {
+                return Err(format!(
+                    "typed batch V1 op {i} contains grouped seed entries"
+                ));
+            }
+            if !op.seed.complete_prefix_rows {
+                return Err(format!(
+                    "typed batch V1 op {i} requires complete_prefix_rows=true"
+                ));
+            }
+            if op.seed.rows.len() > MAX_ROWS_PER_SEED {
+                return Err(format!(
+                    "typed batch V1 op {i} exceeds {MAX_ROWS_PER_SEED} seed rows"
+                ));
+            }
+            if op.params_blob.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+                return Err(format!(
+                    "typed batch V1 op {i} params exceed safe payload bound"
+                ));
+            }
+        }
+        let encoded =
+            Encode!(self).map_err(|e| format!("typed batch V1 request encode failed: {e}"))?;
+        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err(format!(
+                "typed batch V1 request exceeds the safe payload limit of {}",
+                MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
@@ -1197,5 +1285,87 @@ mod tests {
             Some(ResolvedInlineSchema::Scalar { property_id })
             if property_id == PropertyId::from_raw(42)
         ));
+    }
+    #[test]
+    fn execute_plan_batch_typed_args_roundtrip_and_validation() {
+        let args = ExecutePlanBatchTypedArgs {
+            shared: ExecutePlanBatchTypedShared {
+                target_shard_id: ShardId(1),
+                element_id_encoding_key: [0u8; 16],
+                mutation_id: 42,
+                plan_blob: vec![1, 2, 3],
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+            },
+            operations: vec![ExecutePlanTypedOp {
+                params_blob: vec![7, 8, 9],
+                seed: SeedBindingsWire {
+                    entries: vec![],
+                    rows: vec![],
+                    complete_prefix_rows: true,
+                },
+            }],
+            batch_mode: ExecutePlanBatchMode::Dynamic,
+        };
+        args.validate().expect("valid typed args");
+        let bytes = Encode!(&args).expect("encode");
+        let decoded: ExecutePlanBatchTypedArgs =
+            Decode!(&bytes, ExecutePlanBatchTypedArgs).expect("decode");
+        assert_eq!(args, decoded);
+    }
+
+    #[test]
+    fn execute_plan_batch_typed_args_rejects_grouped_entries() {
+        let args = ExecutePlanBatchTypedArgs {
+            shared: ExecutePlanBatchTypedShared {
+                target_shard_id: ShardId(1),
+                element_id_encoding_key: [0u8; 16],
+                mutation_id: 42,
+                plan_blob: vec![1, 2, 3],
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+            },
+            operations: vec![ExecutePlanTypedOp {
+                params_blob: vec![],
+                seed: SeedBindingsWire {
+                    entries: vec![SeedBindingEntry {
+                        variable: "x".into(),
+                        local_vertex_ids: vec![1],
+                        local_edge_postings: vec![],
+                    }],
+                    rows: vec![],
+                    complete_prefix_rows: true,
+                },
+            }],
+            batch_mode: ExecutePlanBatchMode::Fixed,
+        };
+        assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn execute_plan_batch_typed_args_rejects_incomplete_prefix_rows() {
+        let args = ExecutePlanBatchTypedArgs {
+            shared: ExecutePlanBatchTypedShared {
+                target_shard_id: ShardId(1),
+                element_id_encoding_key: [0u8; 16],
+                mutation_id: 42,
+                plan_blob: vec![1, 2, 3],
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+            },
+            operations: vec![ExecutePlanTypedOp {
+                params_blob: vec![],
+                seed: SeedBindingsWire {
+                    entries: vec![],
+                    rows: vec![],
+                    complete_prefix_rows: false,
+                },
+            }],
+            batch_mode: ExecutePlanBatchMode::Fixed,
+        };
+        assert!(args.validate().is_err());
     }
 }

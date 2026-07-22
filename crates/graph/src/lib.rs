@@ -82,6 +82,14 @@ async fn execute_plan_update_batch(
     canister::handlers::execute_plan_update_batch(args).await
 }
 
+/// Router → graph: typed shared bulk envelope with decoded seeds (ADR 0047).
+#[update(guard = "guard_router_canister")]
+async fn execute_plan_update_batch_typed_v1(
+    args: gleaph_graph_kernel::plan_exec::ExecutePlanBatchTypedArgs,
+) -> Result<gleaph_graph_kernel::plan_exec::ExecutePlanBatchResult, String> {
+    canister::handlers::execute_plan_update_batch_typed_v1(args).await
+}
+
 #[query(guard = "guard_router_canister")]
 fn list_pending_label_stats_deltas(
     from_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq,

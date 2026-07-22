@@ -103,11 +103,21 @@ const GRAPH_INITIAL_EDGE_CAPACITY: u64 = 1 << 12;
 /// Initial inline-payload byte capacity for each labeled orientation (grows as needed).
 const GRAPH_INITIAL_PAYLOAD_BYTES: u64 = 1 << 16;
 /// Default policy for regions not listed in `GRAPH_MEMORY_MANAGER_POLICIES`.
-#[cfg(any(feature = "canbench_uniform_4", feature = "canbench_standard_manager",))]
+#[cfg(all(
+    any(feature = "canbench_uniform_4", feature = "canbench_standard_manager"),
+    not(any(
+        feature = "canbench_uniform_8",
+        feature = "canbench_uniform_16",
+        feature = "canbench_uniform_32",
+    )),
+))]
 const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 4;
-#[cfg(feature = "canbench_uniform_8")]
+#[cfg(all(
+    feature = "canbench_uniform_8",
+    not(any(feature = "canbench_uniform_16", feature = "canbench_uniform_32")),
+))]
 const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 8;
-#[cfg(feature = "canbench_uniform_16")]
+#[cfg(all(feature = "canbench_uniform_16", not(feature = "canbench_uniform_32")))]
 const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 16;
 #[cfg(feature = "canbench_uniform_32")]
 const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 32;

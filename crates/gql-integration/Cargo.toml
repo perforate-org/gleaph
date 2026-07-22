@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+candid.workspace = true
 gleaph-gql = { workspace = true, features = ["f128", "f256"] }
 gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
 gleaph-graph-kernel.workspace = true
