@@ -16,7 +16,7 @@ type BulkIngestFinalizeResult = record {
   instructions_used : nat64;
 };
 // Immutable identity of one uniqueness claim produced by a mutation.
-//
+// 
 // `ClaimId` carries **no element id**: the identity computed at Try (before the canonical element
 // exists) is therefore byte-identical to the one stamped on the graph shard's `Acquire` receipt,
 // so Try-time and commit-time identities always match (ADR 0030 §"Canonical owner and staged
@@ -30,7 +30,7 @@ type ClaimId = record {
 };
 // One constrained `(vertex_label, property)` dispatched to the shard so a delete/remove can pin a
 // `Release` for the freed value (ADR 0030 slice 5b).
-//
+// 
 // The ids are Router-interned and match the shard's stored vertex labels/property ids verbatim
 // (the Router is the sole interner; it ships `ResolvedLabelTable`/`ResolvedPropertyTable` and the
 // shard persists those same ids), so the shard matches a deleted vertex's labels/properties with
@@ -152,7 +152,7 @@ type ExecutePlanArgs = record {
   seed_bindings_blob : opt blob;
 };
 // A bounded group of independent plan executions sent in one Router → Graph call.
-//
+// 
 // Each item retains its own mutation identity and execution payload. The Graph executes items
 // independently; this type is a transport aggregation only and does not make the group atomic.
 type ExecutePlanBatchArgs = record {
@@ -168,7 +168,7 @@ type ExecutePlanBatchResult = record {
   results : vec Result_6;
 };
 // Router → graph: shared typed bulk execution envelope (ADR 0047).
-//
+// 
 // This is the production transport for homogeneous groups where every operation has the same
 // target shard and shares immutable plan/catalog context. Per-operation data is reduced to the
 // params blob and the already-decoded complete-row seed relation.
@@ -232,7 +232,7 @@ type GraphBulkMutationProgressV1 = record {
 type GraphInitArgs = record {
   shard_id : opt nat32;
   // Index canister for install-time federation wiring.
-  //
+  // 
   // Canister init cannot perform inter-canister calls, so deployments pass this after the
   // Router registry has been configured.
   index_canister : opt principal;
@@ -267,7 +267,7 @@ type IndexedEdgeMembership = record {
 // Router-sourced snapshot of which embedding names are indexed (mirrors `IndexedPropertyCatalog`).
 type IndexedEmbeddingCatalog = record { embeddings : vec IndexedEmbeddingSpec };
 // One indexed embedding definition supplied ephemerally by the Router (Slice 3).
-//
+// 
 // Slice 2 defines the type only; the graph never persists an indexed-embedding registry. A
 // dispatch with no installed catalog skips vector sync entirely (production), while tests inject
 // a catalog via the embedding catalog context.
@@ -280,7 +280,7 @@ type IndexedEmbeddingSpec = record {
   index_id : nat32;
 };
 // Router-sourced snapshot of which properties are indexed (ADR 0023 D1/D3).
-//
+// 
 // The router (definitions SSOT) supplies this per operation so the graph shard
 // never persists derived index state. It is consulted ephemerally (set at the
 // start of an operation, cleared at the end) and is therefore immune to the
@@ -308,7 +308,7 @@ type LocalEdgePosting = record {
   owner_vertex_id : nat32;
 };
 // Graph-local mutation journal state (ADR 0015).
-//
+// 
 // This is a *shard-local* idempotency outcome, not a cross-canister status. `Completed`
 // here means the shard-local canonical mutation outcome is durable and replayable; it
 // does **not** imply that derived projections (graph-index postings, Router label stats)
@@ -338,12 +338,12 @@ type ResolvedEdgeLabel = record {
   inline_schema : opt ResolvedInlineSchema;
 };
 // Router-derived resolved schema for the named inline edge property of one concrete label.
-//
+// 
 // Replaces the ambiguous `Option<PropertyId>` parallel wire state with one explicit enum:
 // - `None`: this label has no named inline property.
 // - `Scalar { property_id }`: one fixed-width scalar inline property.
 // - `Struct { property_id, fields }`: one fixed-size inline STRUCT, declaration-ordered.
-//
+// 
 // Graph receives this as a plan-scoped projection and must not persist or infer it.
 type ResolvedInlineSchema = variant {
   struct : record {
@@ -353,7 +353,7 @@ type ResolvedInlineSchema = variant {
   scalar : record { property_id : nat32 };
 };
 // Physical field descriptor for one fixed-size inline edge STRUCT slot.
-//
+// 
 // Router derives this from the canonical declaration order; Graph receives it as a plan-scoped
 // projection and must not persist or infer it. Each descriptor carries only the data Graph needs
 // to validate and decode the payload slice: field name, byte offset, and exact scalar profile.
@@ -418,7 +418,7 @@ type SeedVertexBinding = record {
   required_vertex_label_ids : vec nat16;
 };
 // Logical size of one named virtual stable-memory region owned by a canister.
-//
+// 
 // This excludes `MemoryManager` bucket rounding and is therefore not the
 // canister's physical stable-memory allocation.
 type StableMemoryRegionStats = record {
@@ -453,7 +453,7 @@ type UniqueAcquireProof = record {
   acquire : opt UniqueAcquireEvidence;
 };
 // One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
-//
+// 
 // `claim_ordinal` is the claim's deterministic position within the mutation; combined with the
 // envelope's `mutation_id` it yields the immutable `ClaimId` the Router reserved. `encoded_value`
 // is the canonical key the Router already validated and reserved, carried verbatim so the shard's
@@ -467,7 +467,7 @@ type UniqueClaimDispatch = record {
 // a (possibly different) mutation previously held.
 type UniqueEffectOp = variant { Release; Acquire };
 // One pinned unique-effect receipt.
-//
+// 
 // Matching rules (ADR 0030): an `Acquire` is matched by **`claim_id`** (so an old acked-but-unpruned
 // `Acquire` for a prior claim on the same value is never mistaken for newer commit evidence); a
 // `Release` is matched by **`owner_element_id`** (the producing mutation differs from the original
@@ -486,7 +486,7 @@ type UniqueEffectReceipt = record {
   constraint_id : nat16;
 };
 // Encoding of a stored vertex embedding.
-//
+// 
 // Only fixed-dimension `F32` is supported in the first slice. New variants (`F16`, `I8`) must
 // update every exhaustive `match` on this enum, which is the intended compile-time gate before
 // an `UnsupportedEncoding`-style runtime branch is introduced.
@@ -495,7 +495,7 @@ type VectorEncoding = variant {
   F32;
 };
 // Physical index structure for a derived vector index.
-//
+// 
 // Slice 2 standardizes on `IvfFlat` operated in its degenerate form (`nlist = 1`,
 // `partition_id = 0`, no centroids). There is intentionally no separate `Flat` kind: the
 // baseline exact scan landed in Slice 4+ is `IvfFlat` with one partition.
@@ -518,7 +518,7 @@ type VertexEmbeddingBackfillRequest = record {
   catalog : IndexedEmbeddingCatalog;
 };
 // Router → graph shard: one bounded canonical vertex-embedding ingestion request.
-//
+// 
 // The Router resolves the opaque graph-scoped vertex id and the embedding definition before
 // dispatching; the graph shard only sees the local vertex id and the authoritative
 // [`IndexedEmbeddingSpec`]. The canonical byte encoding happens inside the graph-owned write
@@ -529,7 +529,7 @@ type VertexEmbeddingIngestionArgs = record {
   values : vec float32;
 };
 // Result of [`VertexEmbeddingIngestionArgs`].
-//
+// 
 // `embedding_version` is the canonical `StoredEmbedding.version` after the write. The
 // `projection_outcome` distinguishes a fully applied derived projection from a durable deferred
 // repair so callers do not blindly retry a canonical write that has already committed.

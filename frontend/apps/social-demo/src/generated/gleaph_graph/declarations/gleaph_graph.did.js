@@ -52,6 +52,23 @@ export const idlFactory = ({ IDL }) => {
   });
   const Result_1 = IDL.Variant({ 'Ok' : IDL.Vec(Result), 'Err' : IDL.Text });
   const Result_2 = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : IDL.Text });
+  const StableMemoryRegionStats = IDL.Record({
+    'slack_pages' : IDL.Nat64,
+    'logical_pages' : IDL.Nat64,
+    'logical_bytes' : IDL.Nat64,
+    'name' : IDL.Text,
+    'allocated_pages' : IDL.Nat64,
+    'memory_id' : IDL.Nat8,
+    'bucket_pages' : IDL.Nat16,
+  });
+  const StableMemoryStats = IDL.Record({
+    'regions' : IDL.Vec(StableMemoryRegionStats),
+    'bucket_pages' : IDL.Nat16,
+    'estimated_allocated_pages' : IDL.Nat64,
+    'estimated_allocated_bytes' : IDL.Nat64,
+    'logical_total_pages' : IDL.Nat64,
+    'logical_total_bytes' : IDL.Nat64,
+  });
   const EdgePostingBackfillArgs = IDL.Record({
     'max_entries' : IDL.Nat32,
     'after_key' : IDL.Opt(IDL.Vec(IDL.Nat8)),
@@ -231,6 +248,52 @@ export const idlFactory = ({ IDL }) => {
     'Ok' : ExecutePlanBatchResult,
     'Err' : IDL.Text,
   });
+  const ExecutePlanBatchTypedShared = IDL.Record({
+    'mutation_id' : IDL.Nat64,
+    'indexed_properties' : IDL.Opt(IndexedPropertyCatalog),
+    'plan_blob' : IDL.Vec(IDL.Nat8),
+    'resolved_labels' : IDL.Opt(ResolvedLabelTable),
+    'target_shard_id' : IDL.Nat32,
+    'resolved_properties' : IDL.Opt(ResolvedPropertyTable),
+    'element_id_encoding_key' : IDL.Vec(IDL.Nat8),
+  });
+  const SeedFloat64Binding = IDL.Record({
+    'value' : IDL.Float64,
+    'variable' : IDL.Text,
+  });
+  const SeedVertexBinding = IDL.Record({
+    'local_vertex_id' : IDL.Nat32,
+    'variable' : IDL.Text,
+    'required_vertex_label_ids' : IDL.Vec(IDL.Nat16),
+  });
+  const SeedRowWire = IDL.Record({
+    'float64_bindings' : IDL.Vec(SeedFloat64Binding),
+    'vertex_bindings' : IDL.Vec(SeedVertexBinding),
+  });
+  const LocalEdgePosting = IDL.Record({
+    'label_id' : IDL.Nat16,
+    'slot_index' : IDL.Nat32,
+    'owner_vertex_id' : IDL.Nat32,
+  });
+  const SeedBindingEntry = IDL.Record({
+    'variable' : IDL.Text,
+    'local_edge_postings' : IDL.Vec(LocalEdgePosting),
+    'local_vertex_ids' : IDL.Vec(IDL.Nat32),
+  });
+  const SeedBindingsWire = IDL.Record({
+    'rows' : IDL.Vec(SeedRowWire),
+    'entries' : IDL.Vec(SeedBindingEntry),
+    'complete_prefix_rows' : IDL.Bool,
+  });
+  const ExecutePlanTypedOp = IDL.Record({
+    'seed' : SeedBindingsWire,
+    'params_blob' : IDL.Vec(IDL.Nat8),
+  });
+  const ExecutePlanBatchTypedArgs = IDL.Record({
+    'batch_mode' : ExecutePlanBatchMode,
+    'shared' : ExecutePlanBatchTypedShared,
+    'operations' : IDL.Vec(ExecutePlanTypedOp),
+  });
   const BulkIngestFinalizeArgs = IDL.Record({
     'forward_vertices' : IDL.Vec(IDL.Nat32),
     'target_shard_id' : IDL.Nat32,
@@ -252,17 +315,29 @@ export const idlFactory = ({ IDL }) => {
   const GetMutationJournalEntriesArgs = IDL.Record({
     'mutation_ids' : IDL.Vec(IDL.Nat64),
   });
+  const GraphBulkMutationProgressV1 = IDL.Record({
+    'completed_count' : IDL.Nat32,
+    'operation_count' : IDL.Nat32,
+  });
+  const GraphBulkMutationProgress = IDL.Variant({
+    'V1' : GraphBulkMutationProgressV1,
+  });
   const MutationJournalState = IDL.Variant({
     'Completed' : IDL.Null,
     'Incomplete' : IDL.Null,
   });
-  const GraphMutationJournalEntryWire = IDL.Record({
+  const GraphMutationJournalEntryWireV1 = IDL.Record({
     'mutation_id' : IDL.Nat64,
     'emitted_delta_last_seq' : IDL.Opt(IDL.Nat64),
+    'next_index' : IDL.Opt(IDL.Nat32),
+    'bulk_progress' : IDL.Opt(GraphBulkMutationProgress),
     'row_count' : IDL.Nat64,
     'emitted_delta_first_seq' : IDL.Opt(IDL.Nat64),
     'state' : MutationJournalState,
     'hot_forward_vertices' : IDL.Vec(IDL.Nat32),
+  });
+  const GraphMutationJournalEntryWire = IDL.Variant({
+    'V1' : GraphMutationJournalEntryWireV1,
   });
   const GetMutationJournalEntriesResult = IDL.Record({
     'next' : IDL.Opt(IDL.Nat64),
@@ -301,7 +376,7 @@ export const idlFactory = ({ IDL }) => {
     'encoded_value' : IDL.Vec(IDL.Nat8),
     'constraint_id' : IDL.Nat16,
   });
-  
+
   return IDL.Service({
     'ack_label_stats_deltas_through' : IDL.Func([IDL.Nat64], [], []),
     'ack_unique_effects' : IDL.Func([IDL.Vec(EffectId)], [], []),
@@ -320,6 +395,7 @@ export const idlFactory = ({ IDL }) => {
         [Result_2],
         [],
       ),
+    'admin_stable_memory_stats' : IDL.Func([], [StableMemoryStats], ['query']),
     'backfill_edge_property_postings' : IDL.Func(
         [EdgePropertyBackfillRequest],
         [Result_3],
@@ -344,6 +420,11 @@ export const idlFactory = ({ IDL }) => {
     'execute_plan_update' : IDL.Func([ExecutePlanArgs], [Result_6], []),
     'execute_plan_update_batch' : IDL.Func(
         [ExecutePlanBatchArgs],
+        [Result_7],
+        [],
+      ),
+    'execute_plan_update_batch_typed_v1' : IDL.Func(
+        [ExecutePlanBatchTypedArgs],
         [Result_7],
         [],
       ),
@@ -398,6 +479,6 @@ export const init = ({ IDL }) => {
     'router_canister' : IDL.Opt(IDL.Principal),
     'logical_graph_name' : IDL.Opt(IDL.Text),
   });
-  
+
   return [GraphInitArgs];
 };

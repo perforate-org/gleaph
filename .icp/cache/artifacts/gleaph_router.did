@@ -147,7 +147,7 @@ type EdgeBackfillShardStatus = record {
   after_key : opt blob;
 };
 // Cursor-based idempotent mutation execution.
-//
+// 
 // `instruction_budget` bounds the work done in a single ingress update call. When the Router
 // exhausts this budget it returns `next_index`, allowing the caller to continue with another
 // call. There is no separate `max_items` field: the budget is the only pagination signal.
@@ -169,7 +169,7 @@ type GqlExecuteIdempotentBatchResult = record {
   results : vec GqlQueryResult;
 };
 // Router read-path result: merged row count and optional materialized rows.
-//
+// 
 // `phase` is populated only for idempotent mutations, where Router tracks a federated
 // saga; it is `None` for read queries and for non-idempotent escape-hatch writes that
 // carry no tracked mutation record (ADR 0029).
@@ -222,7 +222,7 @@ type IndexedEdgeMembership = record {
   direction_tag : nat8;
 };
 // Router-sourced snapshot of which properties are indexed (ADR 0023 D1/D3).
-//
+// 
 // The router (definitions SSOT) supplies this per operation so the graph shard
 // never persists derived index state. It is consulted ephemerally (set at the
 // start of an operation, cleared at the end) and is therefore immune to the
@@ -239,7 +239,7 @@ type LabelBackfillShardStatus = record {
   next_vertex_id : nat32;
 };
 // Federated mutation lifecycle phase (ADR 0029).
-//
+// 
 // Router owns the transitions; this is the wire projection a client receives for an
 // idempotent mutation. It is deliberately distinct from [`MutationJournalState`], which
 // only attests a *shard-local* replayable outcome and never describes cross-canister
@@ -259,7 +259,7 @@ type MutationLifecyclePhase = variant {
   CanonicalPending;
 };
 // Operator/SDK-facing status of a federated mutation (ADR 0029 Phase 4).
-//
+// 
 // Pull-based observability for the autonomous recovery driver: a caller polls this to learn
 // whether a saga converged, which shard is outstanding, and what (if any) explicit action
 // is required. It deliberately carries no read-your-writes token — the token is issued with
@@ -276,7 +276,7 @@ type MutationStatus = record {
   target_shard : opt nat32;
 };
 // Read-your-writes token for a federated mutation (ADR 0029 §5, Phase 2).
-//
+// 
 // Issued with an idempotent DML result. It names the mutation and the per-shard
 // projection watermarks a later read must reach to observe this mutation's effects.
 // It is deliberately **not** a global snapshot timestamp: graph-index freshness is
@@ -342,10 +342,10 @@ type ProvisioningState = variant {
   Pending : record { request_id : text };
 };
 // Read freshness contract a caller selects per read (ADR 0029 §5, Phase 3).
-//
+// 
 // This lives at the Gleaph integration boundary, not in the generic GQL crates:
 // it is keyed by Gleaph-specific projection watermarks (`MutationToken`).
-//
+// 
 // - [`ReadMode::Eventual`] is non-blocking and may observe documented projection lag
 // (count-only under-count, posting lag). It is the default and matches the
 // historical `gql_query` behavior.
@@ -468,16 +468,16 @@ type Result_7 = variant { Ok : vec Result_6; Err : RouterError };
 type Result_8 = variant { Ok : nat16; Err : RouterError };
 type Result_9 = variant { Ok : nat32; Err : RouterError };
 // Response returned by the Router canister `router_ack` callback.
-//
+// 
 // A successful response denotes that the Router catalog is durably in `Completed` for this
 // request and version. The ack cannot be lost: subsequent `router_ack` calls with the same
 // `(request_id, deployment_id, accepted_registry_version)` return the same response, while
 // a different version returns `AckConflict { stored }`.
-//
+// 
 // `completed` is implied `true` on the Router side: the callback only succeeds after the
 // Router has durably committed the ack version. The Provision canister receives this value
 // back and uses `accepted_registry_version` as the authoritative registry watermark.
-//
+// 
 // Protocol invariant: registry versions start at 1; version 0 is reserved as "unset" and
 // must not appear in ack payloads. The Router rejects any ack with
 // `accepted_registry_version == 0` as `InvalidState`.
@@ -620,7 +620,7 @@ type ShardRegistryEntry = record {
   index_attached : bool;
 };
 // Logical size of one named virtual stable-memory region owned by a canister.
-//
+// 
 // This excludes `MemoryManager` bucket rounding and is therefore not the
 // canister's physical stable-memory allocation.
 type StableMemoryRegionStats = record {
@@ -652,13 +652,13 @@ type VectorActivationBlockReason = variant {
   ShardsNotVectorAttached;
   // No delete-spanning monotonic incarnation/epoch fence exists yet, so the canonical-wins
   // repair reconcile can still lose to a "reverse-orphan" re-insert race. Dispatch stays off.
-  //
+  // 
   // Retained for wire stability; superseded in Slice 4, where the fence is implemented
   // (graph-owned `embedding_incarnation`) and dispatch is gated by the two reasons below.
   MissingEmbeddingIncarnationFence;
 };
 // Bounded status of the heap centroid cache (ADR 0031 Slice 9).
-//
+// 
 // Per-query hit/miss counts are intentionally **not** reported: `vector_search` is a `#[query]` and
 // IC query execution is non-committing, so a query cannot truthfully maintain cache counters. Only
 // the durable heap facts maintained by the update warmup/clear paths are reported.
@@ -685,7 +685,7 @@ type VectorIndexActivationStatus = record {
   activation_state : VectorIndexActivationStateView;
 };
 // Vector-index canister mutation/sync/admin/search failure.
-//
+// 
 // Single error type for the canister: mutation endpoints return it over the wire; admin endpoints
 // map it to a `String` at the canister boundary (mirroring `graph-index`).
 type VectorIndexError = variant {
@@ -771,7 +771,7 @@ type VectorIndexInfo = record {
   activation_state : VectorIndexActivationStateView;
 };
 // Bounded failure detail persisted in [`VectorMaintenanceState::Failed`] (ADR 0031 Slice 10).
-//
+// 
 // `message` is truncated by the canister so the persisted maintenance-state size never depends on a
 // downstream error string (mirrors the Slice 7/8 rebuild-state byte-cap discipline).
 type VectorMaintenanceFailure = record {
@@ -782,7 +782,7 @@ type VectorMaintenanceFailure = record {
 };
 // Caller-supplied thresholds for [`recommend_partition_maintenance`]-style maintenance decisions
 // (ADR 0031 Slice 9). Not persisted in Slice 9.
-//
+// 
 // Two thresholds per signal so the three-state [`VectorMaintenanceRecommendation`] is well defined:
 // crossing `required_*` is `RebuildRequired`, crossing only `recommended_*` is `RebuildRecommended`.
 // Both ratios are basis points (1 bp = 1/10000). The recommendation function rejects a policy where
@@ -824,12 +824,12 @@ type VectorMaintenanceRecommendation = variant {
   Healthy;
 };
 // Vector-canister-owned maintenance execution state for one index (ADR 0031 Slice 10).
-//
+// 
 // Only the **scan** phase is tracked here; once a rebuild starts, `VECTOR_REBUILD_STATE` is the
 // source of truth for the rebuild/cleanup phases and this returns to `Idle`. Persisted in
 // `VECTOR_MAINTENANCE_STATE` and **survives upgrade** (it holds mid-orchestration scan progress); it
 // is cleared only on canister init/reset, never on upgrade (unlike the heap centroid cache).
-//
+// 
 // `exhausted` is an explicit phase flag, **not** encoded via `cursor == None`: `cursor = None,
 // exhausted = false` means "(re)start the scan from the lower bound", while `exhausted = true` means
 // "scan complete; recommend only after generation validation". `merged` carries the scoped
@@ -928,14 +928,14 @@ type VectorMetric = variant {
 // One bounded page-meta health scan step for `admin_vector_partition_health_step` (ADR 0031
 // Slice 9). IC-safe incremental scan scoped to one `(index_id, active index version)`, mirroring
 // [`VectorSlabStatsStep`].
-//
+// 
 // **Merge contract.** `partial`'s counters (`page_count`/`total_rows`/`physical_live_rows`/
 // `tombstoned_rows`) are *additive* across steps; `index_id`/`index_version` are repeated (take any
 // step's value). Callers repeat until `exhausted` and sum the counters.
-//
+// 
 // `cursor` is opaque `PageKey` bytes scoped to this `(index_id, index_version)`; pass it back
 // verbatim. It is `None` exactly when `exhausted`.
-//
+// 
 // **No snapshot isolation.** This is a bounded best-effort scan, not a point-in-time snapshot:
 // concurrent `VECTOR_PAGE_META` writes between steps are not isolated (a page inserted before the
 // cursor is missed, a counted-then-deleted page lingers in the merge). Run during a quiescent window
@@ -949,7 +949,7 @@ type VectorPartitionHealthStep = record {
   partial : VectorPartitionPageHealth;
 };
 // Bounded, head-only partition-health summary for an `ivf_flat` index (ADR 0031 Slice 8).
-//
+// 
 // O(`nlist`) over the active version's `PartitionHead` rows (no page scan, bounded by `MAX_NLIST`).
 // Reports integer-only raw counts; callers derive `avg_live_rows = live_rows / nlist` and the skew
 // ratio `max_partition_live_rows / avg_live_rows` themselves. This summary stays intentionally
@@ -970,12 +970,12 @@ type VectorPartitionHealthSummary = record {
 };
 // Bounded page-meta tombstone accounting for one `(index_id, active index version)` (ADR 0031
 // Slice 9).
-//
+// 
 // Derived from the `VECTOR_PAGE_META` directory only (no row-byte read, no `VECTOR_SUBJECT_TO_ID`
 // read), it complements the head-only [`VectorPartitionHealthSummary`] (which owns the skew
 // signal) with the tombstone signal the head cannot see. Integer-only; callers derive the tombstone
 // ratio as `tombstoned_rows / total_rows`.
-//
+// 
 // `physical_live_rows` is `VectorPageMeta.live_count` (physical non-tombstone rows); it is **not**
 // subject-freshness and can exceed the searchable count because the search freshness check skips
 // stale/meta-drift rows (mirrors [`VectorSlabScopeStats::physical_live_row_count`]).
@@ -1009,7 +1009,7 @@ type VectorRebuildPhase = variant {
   Training;
 };
 // Bounded scalar snapshot of a rebuild's progress (ADR 0031 Slice 7).
-//
+// 
 // The response is O(1): it never carries candidate centroid bytes or any per-subject collection,
 // so a status query stays within a fixed reply budget regardless of index size.
 type VectorRebuildStatus = record {
@@ -1049,7 +1049,7 @@ type VectorSlabGlobalStats = record {
   // Approximate leaked/dead bytes:
   // `occupied_tail_bytes - slab_header_len - referenced_page_bytes_global`, saturating at zero.
   // Conservative; grows as cleanup deletes page meta without rewinding the slab tail.
-  //
+  // 
   // **Meaningful only in a whole-slab result** (the unbounded `admin_vector_slab_stats`, or a
   // client-merged set of [`VectorSlabStatsStep`]s). It is always `0` inside a per-step
   // [`VectorSlabStatsStep::partial`], because a single bounded step has not yet observed every
@@ -1063,7 +1063,7 @@ type VectorSlabGlobalStats = record {
   referenced_page_bytes_global : nat64;
 };
 // Logical counters aggregated over the queried scope for [`VectorSlabStats`].
-//
+// 
 // When `index_id` is `Some(id)` these cover only `id`; when `None` they aggregate every index.
 type VectorSlabScopeStats = record {
   // Physical non-tombstone rows (`VectorPageMeta.live_count`) within the scope. **Not**
@@ -1082,12 +1082,12 @@ type VectorSlabScopeStats = record {
   index_id : opt nat32;
 };
 // Derived, admin-only slab-space observability for the ADR 0032 vector slab page store.
-//
+// 
 // **Maintenance observation, not search truth.** Computed purely from `VECTOR_PAGE_META` plus the
 // slab header; it never reads row bytes or `VECTOR_SUBJECT_TO_ID`, and never feeds search,
 // mutation, rebuild, or freshness decisions. Dead-space figures are approximate and intentionally
 // conservative.
-//
+// 
 // `slab` holds whole-slab physical facts that are always global (the `VECTOR_ROW_SLAB` region is a
 // single allocation domain shared by every index/version), even when a query scopes the logical
 // counters to one `index_id`. `scope` and `versions` carry the logical counters for the queried
@@ -1101,11 +1101,11 @@ type VectorSlabStats = record {
   versions : vec VectorSlabVersionStats;
 };
 // One bounded page-meta scan step for the cursor/budgeted `admin_vector_slab_stats_step` query.
-//
+// 
 // IC-safe incremental variant of [`VectorSlabStats`]: each call scans at most a budgeted number of
 // `VECTOR_PAGE_META` entries, then returns a `cursor` to resume from. Callers repeat until
 // `exhausted` is `true` and merge the partials client-side.
-//
+// 
 // **Merge contract.** `partial` is *additive* across steps, with these exceptions:
 // - `partial.slab.slab_size_bytes` and `partial.slab.occupied_tail_bytes` are repeated physical
 // snapshots, not sums; take any step's value (the last is freshest).
@@ -1115,13 +1115,13 @@ type VectorSlabStats = record {
 // saturating at zero.
 // - `partial.slab.referenced_page_bytes_global`, `partial.scope`, and `partial.versions` are summed
 // (versions by `(index_id, index_version)` key).
-//
+// 
 // `partial.slab.referenced_page_bytes_global` accumulates the span of *every* page observed in the
 // step, even pages outside a `Some(index_id)` filter, because `VECTOR_ROW_SLAB` is one global
 // allocation domain. `partial.scope`/`partial.versions` only count pages within the scope.
-//
+// 
 // `cursor` is opaque `PageKey` bytes; pass it back verbatim. It is `None` exactly when `exhausted`.
-//
+// 
 // **No snapshot isolation.** This is a bounded *best-effort* scan, not a point-in-time snapshot. The
 // cursor is only a `PageKey`, so concurrent `VECTOR_PAGE_META` writes between steps are not isolated:
 // a page inserted *before* the cursor is missed, a page already counted then deleted still lingers in
@@ -1155,7 +1155,7 @@ type VectorSlabVersionStats = record {
   index_id : nat32;
 };
 // What a stored vector refers to.
-//
+// 
 // Slice 2 supports only graph vertices. `shard_id` is carried inside the subject so the
 // subject-map key is `(index_id, subject)` with no separate `shard_id` field; the canister
 // validates `shard_id` against the caller's attached shard. `VectorSubject::Edge` is deferred.
@@ -1164,7 +1164,7 @@ type VectorSubject = variant {
   Vertex : record { vertex_id : nat32; shard_id : nat32 };
 };
 // Result of [`VertexEmbeddingIngestionArgs`].
-//
+// 
 // `embedding_version` is the canonical `StoredEmbedding.version` after the write. The
 // `projection_outcome` distinguishes a fully applied derived projection from a durable deferred
 // repair so callers do not blindly retry a canonical write that has already committed.
@@ -1324,13 +1324,13 @@ service : (RouterInitArgs) -> {
   // Update-path GQL entrypoint for non-DML escape hatches; DML requires `gql_execute_idempotent`.
   gql_execute : (text, blob) -> (Result_25);
   // Idempotent GQL update. Reuse `client_mutation_key` only for retries of the same mutation.
-  //
+  // 
   // Returns the richer [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) so
   // clients can read the ADR 0029 federated mutation lifecycle `phase`, distinguishing a
   // durable canonical commit from full cross-canister projection convergence.
   gql_execute_idempotent : (text, blob, text) -> (Result_26);
   // Execute cursor-based idempotent mutations until the Router instruction budget is reached.
-  //
+  // 
   // Mutations are prepared and executed sequentially within one ingress. A returned `next_index`
   // is the only continuation signal; retrying the same cursor is safe because every item retains
   // its original client mutation key.
@@ -1338,7 +1338,7 @@ service : (RouterInitArgs) -> {
   // Read-only GQL: composite query (calls index + graph query endpoints).
   gql_query : (text, blob) -> (Result_26) composite_query;
   // Read-only GQL with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
-  //
+  // 
   // `Eventual` matches [`gql_query`]; `AtLeast(token)` enforces a retryable read-your-writes
   // barrier against the token's per-shard watermarks; `Canonical` is deferred and rejected.
   gql_query_with_consistency : (text, blob, ReadMode) -> (

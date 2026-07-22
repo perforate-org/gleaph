@@ -18,12 +18,11 @@ use gleaph_graph_kernel::index::{
     ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchTypedArgs,
-    ExecutePlanBatchTypedShared, ExecutePlanResult, GetMutationJournalEntriesArgs,
-    GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire, MutationId,
-    MutationJournalState, MutationToken, MutationTokenShard, ReadMode, ResolvedLabelTable,
-    ResolvedPropertyTable, ResolvedSearchWire, SeedBindingsWire, SeedRowWire, SeedVertexBinding,
-    ShardEventSeq, UniqueClaimDispatch,
+    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanResult,
+    GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire,
+    MutationId, MutationJournalState, MutationToken, MutationTokenShard, ReadMode,
+    ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire, SeedBindingsWire, SeedRowWire,
+    SeedVertexBinding, ShardEventSeq, UniqueClaimDispatch,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 use ic_cdk::api::msg_caller;
@@ -193,9 +192,9 @@ use crate::federation::{
 };
 use crate::graph_client::{
     ack_label_stats_deltas_through, ack_unique_effects, execute_plan_batch_on_graph,
-    execute_plan_on_graph, execute_plan_typed_batch_on_graph, get_mutation_journal_entries,
-    get_mutation_journal_entry, index_pending_min_mutation_id, list_pending_label_stats_deltas,
-    read_unique_effect_proof, read_unique_release_effects,
+    execute_plan_on_graph, get_mutation_journal_entries, get_mutation_journal_entry,
+    index_pending_min_mutation_id, list_pending_label_stats_deltas, read_unique_effect_proof,
+    read_unique_release_effects,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -3707,27 +3706,6 @@ async fn execute_prepared_bulk_group(
                 }
             }
 
-            // ADR 0047: try the typed V1 envelope for single-shard homogeneous groups.
-            if group_len == 1
-                && matches!(
-                    gleaph_gql_integration::typed_batch::classify_typed_batch_eligibility(
-                        &operations
-                    ),
-                    gleaph_gql_integration::typed_batch::TypedBatchEligibility::Eligible(_)
-                )
-            {
-                return run_typed_bulk_group(
-                    group_graph,
-                    &group[0],
-                    item_count,
-                    &item_params,
-                    &complete_row_seeds,
-                    &dispatch_global_index,
-                    &build_execute_args,
-                )
-                .await;
-            }
-
             // Chunk dynamically by payload size / instruction budget.
             let mut start = 0usize;
             while start < operations.len() {
@@ -4014,71 +3992,6 @@ async fn execute_prepared_bulk_group(
     Ok(results)
 }
 
-/// Run a single-shard complete-row bulk group through the typed V1 Graph endpoint.
-async fn run_typed_bulk_group(
-    group_graph: candid::Principal,
-    dispatch: &crate::federation::ShardDispatch,
-    item_count: usize,
-    item_params: &[(
-        Vec<u8>,
-        std::collections::BTreeMap<String, gleaph_gql::Value>,
-    )],
-    complete_row_seeds: &[Vec<Option<Vec<u8>>>],
-    dispatch_global_index: &std::collections::BTreeMap<(candid::Principal, ShardId), usize>,
-    build_execute_args: &impl Fn(
-        &crate::federation::ShardDispatch,
-        &[u8],
-        Option<Vec<u8>>,
-    ) -> gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
-) -> Result<(candid::Principal, Vec<ItemDispatchResult>), RouterError> {
-    use candid::Decode;
-    use gleaph_graph_kernel::plan_exec::ExecutePlanTypedOp;
-
-    let global_index = dispatch_global_index
-        .get(&(group_graph, dispatch.shard_id))
-        .copied()
-        .expect("dispatch must exist in base.dispatches");
-    let mut typed_ops = Vec::with_capacity(item_count);
-    for (item_index, (params_blob, _)) in item_params.iter().enumerate() {
-        let seed_blob = complete_row_seeds[item_index][global_index]
-            .clone()
-            .expect("complete-row seed must be present for typed path");
-        let seed: SeedBindingsWire = Decode!(&seed_blob, SeedBindingsWire)
-            .map_err(|e| RouterError::InvalidArgument(format!("typed seed decode: {e}")))?;
-        typed_ops.push(ExecutePlanTypedOp {
-            params_blob: params_blob.clone(),
-            seed,
-        });
-    }
-
-    // Shared fields come from a legacy ExecutePlanArgs for the first item; the classifier proved
-    // homogeneity across the group.
-    let first_legacy = build_execute_args(dispatch, &item_params[0].0, None);
-    let args = ExecutePlanBatchTypedArgs {
-        shared: ExecutePlanBatchTypedShared {
-            target_shard_id: dispatch.shard_id,
-            element_id_encoding_key: first_legacy.element_id_encoding_key,
-            mutation_id: first_legacy.mutation_id.unwrap_or(0),
-            plan_blob: first_legacy.plan_blob,
-            resolved_labels: first_legacy.resolved_labels,
-            resolved_properties: first_legacy.resolved_properties,
-            indexed_properties: first_legacy.indexed_properties,
-        },
-        operations: typed_ops,
-        batch_mode: ExecutePlanBatchMode::Dynamic,
-    };
-    let batch = execute_plan_typed_batch_on_graph(group_graph, args)
-        .await
-        .map_err(RouterError::InvalidArgument)?;
-    let mut results = Vec::with_capacity(batch.results.len());
-    for (item_index, result) in batch.results.into_iter().enumerate() {
-        if item_index >= item_count {
-            break;
-        }
-        results.push((0usize, item_index, result));
-    }
-    Ok((group_graph, results))
-}
 /// Chunk a bulk batch by the safe inter-canister payload size. All operations share the same
 /// plan blob; the dominant variable is the params blob per item. We keep full canister groups
 /// together when possible and split only when the encoded batch would exceed the safe limit.

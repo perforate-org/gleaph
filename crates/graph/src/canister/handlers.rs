@@ -227,14 +227,18 @@ fn message_instruction_counter() -> u64 {
 
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
-    let result = execute_plan_impl(args, false, true, false).await?.0;
+    let result = execute_plan_impl(args, false, true, false, None, None)
+        .await?
+        .0;
     ensure_execute_plan_result_payload(&result, "execute_plan_query")?;
     Ok(result)
 }
 
 pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Update, "execute_plan_update")?;
-    let result = execute_plan_impl(args, true, true, true).await?.0;
+    let result = execute_plan_impl(args, true, true, true, None, None)
+        .await?
+        .0;
     ensure_execute_plan_result_payload(&result, "execute_plan_update")?;
     Ok(result)
 }
@@ -250,20 +254,19 @@ pub async fn execute_plan_update_batch_typed_v1(
 ) -> Result<ExecutePlanBatchResult, String> {
     args.validate()
         .map_err(|e| format!("execute_plan_update_batch_typed_v1 validation: {e}"))?;
-    let operations = args
+    gleaph_gql_integration::typed_batch::validate_typed_batch_eligibility_for_graph(&args)
+        .map_err(|e| format!("execute_plan_update_batch_typed_v1 eligibility: {e}"))?;
+    let operations: Vec<ExecutePlanArgs> = args
         .operations
-        .into_iter()
+        .iter()
         .map(|op| ExecutePlanArgs {
             target_shard_id: args.shared.target_shard_id,
             element_id_encoding_key: args.shared.element_id_encoding_key,
             mutation_id: Some(args.shared.mutation_id),
             plan_blob: args.shared.plan_blob.clone(),
-            params_blob: op.params_blob,
+            params_blob: op.params_blob.clone(),
             mode: GqlExecutionMode::Update,
-            seed_bindings_blob: Some(
-                Encode!(&op.seed)
-                    .expect("typed seed re-encode should always succeed for validated input"),
-            ),
+            seed_bindings_blob: None,
             resolved_labels: args.shared.resolved_labels.clone(),
             resolved_properties: args.shared.resolved_properties.clone(),
             indexed_properties: args.shared.indexed_properties.clone(),
@@ -275,11 +278,21 @@ pub async fn execute_plan_update_batch_typed_v1(
             resolved_search_blob: None,
         })
         .collect();
+    let pre_decoded_seeds: Vec<Option<SeedBindingsWire>> = args
+        .operations
+        .into_iter()
+        .map(|op| Some(op.seed))
+        .collect();
     let legacy = ExecutePlanBatchArgs {
         operations,
         mode: args.batch_mode,
     };
-    execute_plan_batch(legacy, "execute_plan_update_batch_typed_v1").await
+    execute_plan_batch_internal(
+        legacy,
+        Some(pre_decoded_seeds),
+        "execute_plan_update_batch_typed_v1",
+    )
+    .await
 }
 
 #[cfg(feature = "batch-instr-log")]
@@ -395,6 +408,14 @@ fn log_batch_phase(_entrypoint: &str, _phase: &str, _cost: u64) {}
 
 async fn execute_plan_batch(
     args: ExecutePlanBatchArgs,
+    entrypoint: &str,
+) -> Result<ExecutePlanBatchResult, String> {
+    execute_plan_batch_internal(args, None, entrypoint).await
+}
+
+async fn execute_plan_batch_internal(
+    args: ExecutePlanBatchArgs,
+    pre_decoded_seeds: Option<Vec<Option<SeedBindingsWire>>>,
     entrypoint: &str,
 ) -> Result<ExecutePlanBatchResult, String> {
     if args.operations.is_empty() {
@@ -513,7 +534,19 @@ async fn execute_plan_batch(
         };
         let raw_result =
             match ensure_execution_mode(operation.mode, GqlExecutionMode::Update, entrypoint) {
-                Ok(()) => execute_plan_impl(operation, false, check_journal, write_journal).await,
+                Ok(()) => {
+                    execute_plan_impl(
+                        operation,
+                        false,
+                        check_journal,
+                        write_journal,
+                        pre_decoded_seeds
+                            .as_ref()
+                            .and_then(|v| v.get(index).cloned().flatten()),
+                        None,
+                    )
+                    .await
+                }
                 Err(err) => Err(err),
             };
         let after = current_instruction_counter();
@@ -674,6 +707,8 @@ async fn execute_plan_impl(
     drain_outbox_after: bool,
     check_journal: bool,
     write_journal: bool,
+    pre_decoded_seed: Option<SeedBindingsWire>,
+    pre_decoded_search: Option<ResolvedSearchWire>,
 ) -> Result<
     (
         ExecutePlanResult,
@@ -707,21 +742,27 @@ async fn execute_plan_impl(
         .indexed_embeddings
         .map(crate::index::vector_catalog_context::enter);
     let pmap = decode_gql_param_map(args.params_blob)?;
-    let seeds = match args.seed_bindings_blob {
-        Some(blob) => {
-            let wire: SeedBindingsWire = Decode!(&blob, SeedBindingsWire)
-                .map_err(|e| format!("seed_bindings decode: {e}"))?;
-            Some(wire)
-        }
-        None => None,
+    let seeds = match pre_decoded_seed {
+        Some(seed) => Some(seed),
+        None => match args.seed_bindings_blob {
+            Some(blob) => {
+                let wire: SeedBindingsWire = Decode!(&blob, SeedBindingsWire)
+                    .map_err(|e| format!("seed_bindings decode: {e}"))?;
+                Some(wire)
+            }
+            None => None,
+        },
     };
-    let resolved_search = match args.resolved_search_blob {
-        Some(blob) => {
-            let wire: ResolvedSearchWire = Decode!(&blob, ResolvedSearchWire)
-                .map_err(|e| format!("resolved_search decode: {e}"))?;
-            Some(wire)
-        }
-        None => None,
+    let resolved_search = match pre_decoded_search {
+        Some(search) => Some(search),
+        None => match args.resolved_search_blob {
+            Some(blob) => {
+                let wire: ResolvedSearchWire = Decode!(&blob, ResolvedSearchWire)
+                    .map_err(|e| format!("resolved_search decode: {e}"))?;
+                Some(wire)
+            }
+            None => None,
+        },
     };
     crate::facade::init_ic_gql_extensions();
     let cached_bundle = crate::index::plan_cache::decode_plan_bundle_cached(&args.plan_blob)

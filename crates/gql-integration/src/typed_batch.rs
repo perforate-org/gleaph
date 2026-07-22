@@ -12,12 +12,16 @@
 //! - a required complete-row seed relation with no legacy grouped `entries`;
 //! - no resolved-search relation;
 //! - no uniqueness, constrained, local-unique, or indexed-embedding dispatch state;
-//! - a result shape with no `rows_blob` and a bounded `hot_forward_vertices` count.
+//! - a physical plan that requires the write path, produces no `rows_blob`, and is a single-anchor
+//!   threaded bundle so the number of hot-forward vertices is bounded by the plan structure.
 //!
 //! Anything else keeps the existing scalar or legacy-batch path.
 
 use candid::Decode;
-use gleaph_graph_kernel::plan_exec::{ExecutePlanArgs, GqlExecutionMode, SeedBindingsWire};
+use gleaph_gql_planner::wire::decode_plan_bundle;
+use gleaph_graph_kernel::plan_exec::{
+    ExecutePlanArgs, ExecutePlanBatchTypedArgs, GqlExecutionMode, SeedBindingsWire,
+};
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 
 /// A homogeneous group of operations that may use the typed V1 bulk envelope.
@@ -49,6 +53,72 @@ pub enum TypedBatchEligibility {
     Eligible(TypedBatchCandidate),
     /// Group must use the existing scalar or legacy batch path.
     Ineligible { reason: &'static str },
+}
+
+/// Maximum number of [`PlanOp::InsertEdge`] operators allowed in a typed V1 plan.
+///
+/// A single-anchor threaded bundle already bounds existing-state reads; this cap additionally
+/// bounds the distinct source variables that can become hot-forward vertices, keeping the
+/// Graph→Router response size predictable.
+const MAX_TYPED_BATCH_INSERT_EDGE_OPS: usize = 64;
+
+/// Validate the shared physical plan for the typed V1 path.
+///
+/// Checks:
+/// - the blob is a decodable plan bundle;
+/// - the bundle requires the write path;
+/// - the final output produces no `rows_blob` (no explicit RETURN columns in update mode);
+/// - the plan is a single-anchor threaded bundle, so all graph reads come from the seeded anchor;
+/// - the number of `InsertEdge` operators is bounded.
+///
+/// This function is exported so the Graph canister can re-validate the plan before executing
+/// the typed endpoint, independent of any Router-side decision.
+pub fn validate_typed_batch_plan(plan_blob: &[u8]) -> Result<(), &'static str> {
+    let (requires_write_path, plans) =
+        decode_plan_bundle(plan_blob).map_err(|_| "typed V1 requires a decodable plan bundle")?;
+    if !requires_write_path {
+        return Err("typed V1 requires a write-path plan");
+    }
+    for plan in &plans {
+        if !plan.output.hydrates_all_row_bindings() {
+            return Err("typed V1 does not support plans that produce a rows_blob");
+        }
+        if !plan.is_single_anchor_threaded_bundle() {
+            return Err("typed V1 requires a single-anchor threaded bundle");
+        }
+        if count_insert_edge_ops(&plan.ops) > MAX_TYPED_BATCH_INSERT_EDGE_OPS {
+            return Err("typed V1 plan exceeds the allowed number of edge inserts");
+        }
+    }
+    Ok(())
+}
+
+fn count_insert_edge_ops(ops: &[gleaph_gql_planner::plan::PlanOp]) -> usize {
+    use gleaph_gql_planner::plan::PlanOp;
+    let mut count = 0;
+    for op in ops {
+        match op {
+            PlanOp::InsertEdge { .. } => count += 1,
+            PlanOp::HashJoin { left, right, .. } => {
+                count += count_insert_edge_ops(left);
+                count += count_insert_edge_ops(right);
+            }
+            PlanOp::CartesianProduct { left, right } => {
+                count += count_insert_edge_ops(left);
+                count += count_insert_edge_ops(right);
+            }
+            PlanOp::SetOperation { right, .. } => count += count_insert_edge_ops(&right.ops),
+            PlanOp::OptionalMatch { sub_plan } => count += count_insert_edge_ops(sub_plan),
+            PlanOp::InlineProcedureCall { sub_plan, .. } => {
+                count += count_insert_edge_ops(&sub_plan.ops)
+            }
+            PlanOp::UseGraph {
+                sub_plan: Some(sp), ..
+            } => count += count_insert_edge_ops(sp),
+            _ => {}
+        }
+    }
+    count
 }
 
 /// Decide whether a sequence of `ExecutePlanArgs` can use the typed V1 bulk envelope.
@@ -100,6 +170,18 @@ pub fn classify_typed_batch_eligibility(operations: &[ExecutePlanArgs]) -> Typed
         return TypedBatchEligibility::Ineligible {
             reason: "typed V1 requires a shared mutation_id",
         };
+    }
+
+    // All operations must share the same plan blob; the typed envelope carries exactly one plan.
+    if operations.iter().any(|op| op.plan_blob != first.plan_blob) {
+        return TypedBatchEligibility::Ineligible {
+            reason: "typed V1 requires a shared plan_blob",
+        };
+    }
+
+    // Validate the shared physical plan shape.
+    if let Err(reason) = validate_typed_batch_plan(&first.plan_blob) {
+        return TypedBatchEligibility::Ineligible { reason };
     }
 
     // All catalogs and dispatch state must be identical and empty where forbidden.
@@ -199,6 +281,36 @@ pub fn classify_typed_batch_eligibility(operations: &[ExecutePlanArgs]) -> Typed
     })
 }
 
+/// Validate that a Graph-ingress typed batch envelope is eligible for the V1 path.
+///
+/// This is the Graph-side mirror of `classify_typed_batch_eligibility`: it re-checks the
+/// structural constraints that the Graph can verify without trusting the Router. It returns
+/// `Ok(())` only when the plan and every operation satisfy the typed V1 contract.
+pub fn validate_typed_batch_eligibility_for_graph(
+    args: &ExecutePlanBatchTypedArgs,
+) -> Result<(), &'static str> {
+    if args.operations.is_empty() {
+        return Err("typed V1 requires at least one operation");
+    }
+    validate_typed_batch_plan(&args.shared.plan_blob)?;
+    for op in &args.operations {
+        if !op.seed.entries.is_empty() {
+            return Err("typed V1 requires empty grouped seed entries");
+        }
+        if !op.seed.complete_prefix_rows {
+            return Err("typed V1 requires complete_prefix_rows=true");
+        }
+        if op.seed.rows.len() > 1024 {
+            return Err("typed V1 supports at most 1024 seed rows per operation");
+        }
+        if op.params_blob.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        {
+            return Err("typed V1 params_blob exceeds the safe payload limit");
+        }
+    }
+    Ok(())
+}
+
 fn is_empty_optional_slice<T>(v: Option<&Vec<T>>) -> bool {
     v.is_none_or(|x| x.is_empty())
 }
@@ -207,19 +319,99 @@ fn is_empty_optional_slice<T>(v: Option<&Vec<T>>) -> bool {
 mod tests {
     use super::*;
     use candid::Encode;
+    use gleaph_gql::ast::Expr;
+    use gleaph_gql_planner::plan::ProjectColumn;
+    use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
+    use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_graph_kernel::entry::ConstraintNameId;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanArgs, GqlExecutionMode, SeedBindingEntry, SeedBindingsWire, SeedRowWire,
-        UniqueClaimDispatch,
+        ExecutePlanArgs, SeedBindingEntry, SeedBindingsWire, SeedRowWire, UniqueClaimDispatch,
     };
+    use std::rc::Rc;
+
+    fn posted_plan(requires_write_path: bool) -> (Vec<u8>, PhysicalPlan) {
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("u"),
+                label: Some("User".into()),
+                property_projection: None,
+            },
+            PlanOp::InsertVertex {
+                variable: Some(Rc::from("p")),
+                labels: vec!["Post".into()],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: Rc::from("u"),
+                dst: Rc::from("p"),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                labels: vec!["POSTED".into()],
+                properties: vec![],
+            },
+        ]);
+        let blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
+            .expect("encode plan");
+        (blob, plan)
+    }
+
+    fn query_plan() -> Vec<u8> {
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("n"),
+                label: Some("User".into()),
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::var("n"),
+                    alias: Some(Rc::from("n")),
+                }],
+                distinct: false,
+            },
+        ]);
+        encode_block_plans(std::slice::from_ref(&plan), false).expect("encode plan")
+    }
+
+    fn write_plan_with_return() -> Vec<u8> {
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("u"),
+                label: Some("User".into()),
+                property_projection: None,
+            },
+            PlanOp::InsertVertex {
+                variable: Some(Rc::from("p")),
+                labels: vec!["Post".into()],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: Rc::from("u"),
+                dst: Rc::from("p"),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                labels: vec!["POSTED".into()],
+                properties: vec![],
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::var("p"),
+                    alias: Some(Rc::from("p")),
+                }],
+                distinct: false,
+            },
+        ]);
+        encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan")
+    }
 
     fn base_op() -> ExecutePlanArgs {
+        let (plan_blob, _) = posted_plan(true);
         ExecutePlanArgs {
             target_shard_id: ShardId(1),
             element_id_encoding_key: [0u8; 16],
             mutation_id: Some(7),
-            plan_blob: vec![1, 2, 3],
+            plan_blob,
             params_blob: vec![4, 5],
             mode: GqlExecutionMode::Update,
             seed_bindings_blob: Some(
@@ -374,14 +566,105 @@ mod tests {
 
     #[test]
     fn mismatched_plan_blob_is_ineligible() {
-        let op1 = base_op();
+        let (plan_blob_a, _) = posted_plan(true);
+        let plan_b = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("u"),
+                label: Some("User".into()),
+                property_projection: None,
+            },
+            PlanOp::InsertVertex {
+                variable: Some(Rc::from("p")),
+                labels: vec!["Comment".into()],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: Rc::from("u"),
+                dst: Rc::from("p"),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                labels: vec!["POSTED".into()],
+                properties: vec![],
+            },
+        ]);
+        let plan_blob_b =
+            encode_block_plans(std::slice::from_ref(&plan_b), true).expect("encode plan");
+        assert_ne!(plan_blob_a, plan_blob_b);
+
+        let mut op1 = base_op();
+        op1.plan_blob = plan_blob_a;
         let mut op2 = base_op();
-        op2.plan_blob = vec![9, 9, 9];
+        op2.plan_blob = plan_blob_b;
         let result = classify_typed_batch_eligibility(&[op1, op2]);
-        // plan_blob is not explicitly compared in the classifier currently; we rely on the fact
-        // that a real Router group always shares the same plan. This test documents the gap and
-        // will fail if we add an explicit check later.
-        assert!(matches!(result, TypedBatchEligibility::Eligible(_)));
+        assert!(
+            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("shared plan_blob"))
+        );
+    }
+
+    #[test]
+    fn non_write_path_plan_is_ineligible() {
+        let (write_plan_blob, _) = posted_plan(true);
+        let (read_plan_blob, _) = posted_plan(false);
+        assert_ne!(write_plan_blob, read_plan_blob);
+
+        let mut op = base_op();
+        op.plan_blob = read_plan_blob;
+        let result = classify_typed_batch_eligibility(&[op]);
+        assert!(
+            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("write-path"))
+        );
+    }
+
+    #[test]
+    fn query_only_plan_is_ineligible() {
+        let mut op = base_op();
+        op.plan_blob = query_plan();
+        let result = classify_typed_batch_eligibility(&[op]);
+        assert!(
+            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("write-path"))
+        );
+    }
+
+    #[test]
+    fn plan_that_produces_rows_blob_is_ineligible() {
+        let mut op = base_op();
+        op.plan_blob = write_plan_with_return();
+        let result = classify_typed_batch_eligibility(&[op]);
+        assert!(
+            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("rows_blob"))
+        );
+    }
+
+    #[test]
+    fn non_single_anchor_threaded_bundle_is_ineligible() {
+        // Two existing-state reads after the anchor break the single-anchor-threaded contract.
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("u"),
+                label: Some("User".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: Rc::from("x"),
+                label: Some("Group".into()),
+                property_projection: None,
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: Rc::from("u"),
+                dst: Rc::from("x"),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                labels: vec!["MEMBER".into()],
+                properties: vec![],
+            },
+        ]);
+        let blob = encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan");
+        let mut op = base_op();
+        op.plan_blob = blob;
+        let result = classify_typed_batch_eligibility(&[op]);
+        assert!(
+            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("single-anchor threaded bundle"))
+        );
     }
 
     #[test]
@@ -389,5 +672,36 @@ mod tests {
         let op = base_op();
         let result = classify_typed_batch_eligibility(&[op]);
         assert!(matches!(result, TypedBatchEligibility::Eligible(_)));
+    }
+
+    #[test]
+    fn validate_typed_batch_plan_accepts_posted_plan() {
+        let (blob, _) = posted_plan(true);
+        validate_typed_batch_plan(&blob).expect("posted plan should validate");
+    }
+
+    #[test]
+    fn validate_typed_batch_plan_rejects_malformed_blob() {
+        let err = validate_typed_batch_plan(&[1, 2, 3]).expect_err("invalid blob");
+        assert!(err.contains("decodable"));
+    }
+
+    #[test]
+    fn validate_typed_batch_eligibility_for_graph_rejects_empty_operations() {
+        let args = ExecutePlanBatchTypedArgs {
+            shared: gleaph_graph_kernel::plan_exec::ExecutePlanBatchTypedShared {
+                target_shard_id: ShardId(1),
+                element_id_encoding_key: [0u8; 16],
+                mutation_id: 1,
+                plan_blob: posted_plan(true).0,
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+            },
+            operations: vec![],
+            batch_mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
+        };
+        let err = validate_typed_batch_eligibility_for_graph(&args).expect_err("empty ops");
+        assert!(err.contains("at least one operation"));
     }
 }

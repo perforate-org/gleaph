@@ -35,7 +35,7 @@ export interface BulkIngestFinalizeResult {
 }
 /**
  * Immutable identity of one uniqueness claim produced by a mutation.
- * 
+ *
  * `ClaimId` carries **no element id**: the identity computed at Try (before the canonical element
  * exists) is therefore byte-identical to the one stamped on the graph shard's `Acquire` receipt,
  * so Try-time and commit-time identities always match (ADR 0030 §"Canonical owner and staged
@@ -53,7 +53,7 @@ export interface ClaimId {
 /**
  * One constrained `(vertex_label, property)` dispatched to the shard so a delete/remove can pin a
  * `Release` for the freed value (ADR 0030 slice 5b).
- * 
+ *
  * The ids are Router-interned and match the shard's stored vertex labels/property ids verbatim
  * (the Router is the sole interner; it ships `ResolvedLabelTable`/`ResolvedPropertyTable` and the
  * shard persists those same ids), so the shard matches a deleted vertex's labels/properties with
@@ -219,7 +219,7 @@ export interface ExecutePlanArgs {
 }
 /**
  * A bounded group of independent plan executions sent in one Router → Graph call.
- * 
+ *
  * Each item retains its own mutation identity and execution payload. The Graph executes items
  * independently; this type is a transport aggregation only and does not make the group atomic.
  */
@@ -240,6 +240,45 @@ export interface ExecutePlanBatchResult {
   'next_index' : [] | [number],
   'results' : Array<Result_6>,
 }
+/**
+ * Router → graph: shared typed bulk execution envelope (ADR 0047).
+ *
+ * This is the production transport for homogeneous groups where every operation has the same
+ * target shard and shares immutable plan/catalog context. Per-operation data is reduced to the
+ * params blob and the already-decoded complete-row seed relation.
+ */
+export interface ExecutePlanBatchTypedArgs {
+  'batch_mode' : ExecutePlanBatchMode,
+  'shared' : ExecutePlanBatchTypedShared,
+  'operations' : Array<ExecutePlanTypedOp>,
+}
+/**
+ * Immutable context shared by every operation in a typed bulk group.
+ */
+export interface ExecutePlanBatchTypedShared {
+  /**
+   * Router-issued idempotency key for the whole bulk group.
+   */
+  'mutation_id' : bigint,
+  /**
+   * Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
+   */
+  'indexed_properties' : [] | [IndexedPropertyCatalog],
+  'plan_blob' : Uint8Array,
+  /**
+   * Router-resolved label names referenced by the physical plan.
+   */
+  'resolved_labels' : [] | [ResolvedLabelTable],
+  'target_shard_id' : number,
+  /**
+   * Router-resolved property names referenced by the physical plan.
+   */
+  'resolved_properties' : [] | [ResolvedPropertyTable],
+  /**
+   * Per-graph key for ELEMENT_ID/path id encoding.
+   */
+  'element_id_encoding_key' : Uint8Array,
+}
 export interface ExecutePlanResult {
   /**
    * Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
@@ -250,6 +289,19 @@ export interface ExecutePlanResult {
    * Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
    */
   'hot_forward_vertices' : Uint32Array,
+}
+/**
+ * One typed bulk operation with an already-decoded complete-row seed.
+ */
+export interface ExecutePlanTypedOp {
+  /**
+   * Required complete-row seed relation. Zero matches use an empty `rows` vector.
+   */
+  'seed' : SeedBindingsWire,
+  /**
+   * Per-operation GQL parameter map, already encoded.
+   */
+  'params_blob' : Uint8Array,
 }
 /**
  * Router → graph: read a batch of mutation journal entries in one call.
@@ -284,13 +336,21 @@ export type GqlExecutionMode = {
     'Query' : null
   };
 /**
+ * Versioned bulk mutation progress metadata stored in a Graph journal entry (ADR 0044).
+ */
+export type GraphBulkMutationProgress = { 'V1' : GraphBulkMutationProgressV1 };
+export interface GraphBulkMutationProgressV1 {
+  'completed_count' : number,
+  'operation_count' : number,
+}
+/**
  * Arguments supplied by the registry (or installer) on first `init`.
  */
 export interface GraphInitArgs {
   'shard_id' : [] | [number],
   /**
    * Index canister for install-time federation wiring.
-   * 
+   *
    * Canister init cannot perform inter-canister calls, so deployments pass this after the
    * Router registry has been configured.
    */
@@ -302,11 +362,23 @@ export interface GraphInitArgs {
   'logical_graph_name' : [] | [string],
 }
 /**
- * Graph shard mutation idempotency journal entry (ADR 0015).
+ * Versioned graph shard mutation idempotency journal entry (ADR 0015, ADR 0044).
  */
-export interface GraphMutationJournalEntryWire {
+export type GraphMutationJournalEntryWire = {
+    'V1' : GraphMutationJournalEntryWireV1
+  };
+export interface GraphMutationJournalEntryWireV1 {
   'mutation_id' : bigint,
   'emitted_delta_last_seq' : [] | [bigint],
+  /**
+   * Bulk operation cursor: for a bulk mutation, points at the next unexecuted
+   * operation index. For a single mutation it is `None`.
+   */
+  'next_index' : [] | [number],
+  /**
+   * Bulk-specific progress metadata; present only when `next_index` is used.
+   */
+  'bulk_progress' : [] | [GraphBulkMutationProgress],
   'row_count' : bigint,
   'emitted_delta_first_seq' : [] | [bigint],
   'state' : MutationJournalState,
@@ -331,7 +403,7 @@ export interface IndexedEmbeddingCatalog {
 }
 /**
  * One indexed embedding definition supplied ephemerally by the Router (Slice 3).
- * 
+ *
  * Slice 2 defines the type only; the graph never persists an indexed-embedding registry. A
  * dispatch with no installed catalog skips vector sync entirely (production), while tests inject
  * a catalog via the embedding catalog context.
@@ -346,7 +418,7 @@ export interface IndexedEmbeddingSpec {
 }
 /**
  * Router-sourced snapshot of which properties are indexed (ADR 0023 D1/D3).
- * 
+ *
  * The router (definitions SSOT) supplies this per operation so the graph shard
  * never persists derived index state. It is consulted ephemerally (set at the
  * start of an operation, cleared at the end) and is therefore immune to the
@@ -373,8 +445,16 @@ export interface LabelStatsDeltaEventWire {
   'label_stats_delta' : LabelStatsDelta,
 }
 /**
+ * Shard-local edge identity for router seed bindings (ADR 0009 phase D).
+ */
+export interface LocalEdgePosting {
+  'label_id' : number,
+  'slot_index' : number,
+  'owner_vertex_id' : number,
+}
+/**
  * Graph-local mutation journal state (ADR 0015).
- * 
+ *
  * This is a *shard-local* idempotency outcome, not a cross-canister status. `Completed`
  * here means the shard-local canonical mutation outcome is durable and replayable; it
  * does **not** imply that derived projections (graph-index postings, Router label stats)
@@ -415,12 +495,12 @@ export interface ResolvedEdgeLabel {
 }
 /**
  * Router-derived resolved schema for the named inline edge property of one concrete label.
- * 
+ *
  * Replaces the ambiguous `Option<PropertyId>` parallel wire state with one explicit enum:
  * - `None`: this label has no named inline property.
  * - `Scalar { property_id }`: one fixed-width scalar inline property.
  * - `Struct { property_id, fields }`: one fixed-size inline STRUCT, declaration-ordered.
- * 
+ *
  * Graph receives this as a plan-scoped projection and must not persist or infer it.
  */
 export type ResolvedInlineSchema = {
@@ -432,7 +512,7 @@ export type ResolvedInlineSchema = {
   { 'scalar' : { 'property_id' : number } };
 /**
  * Physical field descriptor for one fixed-size inline edge STRUCT slot.
- * 
+ *
  * Router derives this from the canonical declaration order; Graph receives it as a plan-scoped
  * projection and must not persist or infer it. Each descriptor carries only the data Graph needs
  * to validate and decode the payload slice: field name, byte offset, and exact scalar profile.
@@ -470,6 +550,83 @@ export type Result_7 = { 'Ok' : ExecutePlanBatchResult } |
 export type Result_8 = { 'Ok' : BulkIngestFinalizeResult } |
   { 'Err' : string };
 /**
+ * Router → graph seed bindings for a single variable on the target shard.
+ */
+export interface SeedBindingEntry {
+  'variable' : string,
+  'local_edge_postings' : Array<LocalEdgePosting>,
+  'local_vertex_ids' : Uint32Array,
+}
+/**
+ * Router → graph seed bindings. `entries` is the legacy grouped-anchor path; `rows` is the
+ * row-shaped path introduced for GQL `SEARCH` lowering. Both may be present; a plan that uses row
+ * seeds has already had its leading anchor stripped, so the graph executor consumes only `rows`.
+ */
+export interface SeedBindingsWire {
+  'rows' : Array<SeedRowWire>,
+  'entries' : Array<SeedBindingEntry>,
+  /**
+   * When true, `rows` are complete for the entire read prefix and the Graph executor may skip
+   * the whole prefix rather than only the leading index-anchor ops. Introduced for ADR 0046
+   * Phase 1 multi-variable seed relations; `false` preserves the legacy `SEARCH`/single-variable
+   * semantics. Missing field decodes as `false` for stable blobs encoded before this addition.
+   */
+  'complete_prefix_rows' : boolean,
+}
+/**
+ * One scalar binding inside a row-shaped seed. Used to carry a `SEARCH ... SCORE/DISTANCE AS alias`
+ * value alongside its matched vertex binding without requiring a second grouped seed entry.
+ */
+export interface SeedFloat64Binding { 'value' : number, 'variable' : string }
+/**
+ * One complete seed row produced by Router-side vector-search lowering. Each hit becomes one row
+ * carrying the matched vertex and the score/distance alias. Row-shaped seeds are processed
+ * independently; a row is skipped if any of its required vertex bindings is missing, tombstoned, or
+ * fails the required label check.
+ */
+export interface SeedRowWire {
+  'float64_bindings' : Array<SeedFloat64Binding>,
+  'vertex_bindings' : Array<SeedVertexBinding>,
+}
+/**
+ * One vertex binding inside a row-shaped seed, with optional label constraints enforced during
+ * hydration. Carrying the label ids on the seed row lets the Router express a leading
+ * `NodeScan(variable, label = Some(...))` without leaking label-name resolution into the graph
+ * canister. Label ids are stored as raw `u16` because Candid does not subtype through the
+ * `VertexLabelId` newtype inside a vector.
+ */
+export interface SeedVertexBinding {
+  'local_vertex_id' : number,
+  'variable' : string,
+  'required_vertex_label_ids' : Uint16Array,
+}
+/**
+ * Logical size of one named virtual stable-memory region owned by a canister.
+ *
+ * This excludes `MemoryManager` bucket rounding and is therefore not the
+ * canister's physical stable-memory allocation.
+ */
+export interface StableMemoryRegionStats {
+  'slack_pages' : bigint,
+  'logical_pages' : bigint,
+  'logical_bytes' : bigint,
+  'name' : string,
+  'allocated_pages' : bigint,
+  'memory_id' : number,
+  'bucket_pages' : number,
+}
+/**
+ * Stable-memory inventory for one canister.
+ */
+export interface StableMemoryStats {
+  'regions' : Array<StableMemoryRegionStats>,
+  'bucket_pages' : number,
+  'estimated_allocated_pages' : bigint,
+  'estimated_allocated_bytes' : bigint,
+  'logical_total_pages' : bigint,
+  'logical_total_bytes' : bigint,
+}
+/**
  * Evidence that a claim's `Acquire` is pinned: the matching effect's `EffectId` (so the Router can
  * ack *that* effect after Confirm — `claim_ordinal` and `effect_ordinal` are distinct concepts and
  * neither derives the other) plus the canonical `owner_element_id`.
@@ -488,7 +645,7 @@ export interface UniqueAcquireProof {
 }
 /**
  * One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
- * 
+ *
  * `claim_ordinal` is the claim's deterministic position within the mutation; combined with the
  * envelope's `mutation_id` it yields the immutable `ClaimId` the Router reserved. `encoded_value`
  * is the canonical key the Router already validated and reserved, carried verbatim so the shard's
@@ -507,7 +664,7 @@ export type UniqueEffectOp = { 'Release' : null } |
   { 'Acquire' : null };
 /**
  * One pinned unique-effect receipt.
- * 
+ *
  * Matching rules (ADR 0030): an `Acquire` is matched by **`claim_id`** (so an old acked-but-unpruned
  * `Acquire` for a prior claim on the same value is never mistaken for newer commit evidence); a
  * `Release` is matched by **`owner_element_id`** (the producing mutation differs from the original
@@ -532,7 +689,7 @@ export interface UniqueEffectReceipt {
 }
 /**
  * Encoding of a stored vertex embedding.
- * 
+ *
  * Only fixed-dimension `F32` is supported in the first slice. New variants (`F16`, `I8`) must
  * update every exhaustive `match` on this enum, which is the intended compile-time gate before
  * an `UnsupportedEncoding`-style runtime branch is introduced.
@@ -545,7 +702,7 @@ export type VectorEncoding = {
   };
 /**
  * Physical index structure for a derived vector index.
- * 
+ *
  * Slice 2 standardizes on `IvfFlat` operated in its degenerate form (`nlist = 1`,
  * `partition_id = 0`, no centroids). There is intentionally no separate `Flat` kind: the
  * baseline exact scan landed in Slice 4+ is `IvfFlat` with one partition.
@@ -582,7 +739,7 @@ export interface VertexEmbeddingBackfillRequest {
 }
 /**
  * Router → graph shard: one bounded canonical vertex-embedding ingestion request.
- * 
+ *
  * The Router resolves the opaque graph-scoped vertex id and the embedding definition before
  * dispatching; the graph shard only sees the local vertex id and the authoritative
  * [`IndexedEmbeddingSpec`]. The canonical byte encoding happens inside the graph-owned write
@@ -595,7 +752,7 @@ export interface VertexEmbeddingIngestionArgs {
 }
 /**
  * Result of [`VertexEmbeddingIngestionArgs`].
- * 
+ *
  * `embedding_version` is the canonical `StoredEmbedding.version` after the write. The
  * `projection_outcome` distinguishes a fully applied derived projection from a durable deferred
  * repair so callers do not blindly retry a canonical write that has already committed.
@@ -654,6 +811,10 @@ export interface _SERVICE {
    * first step of the Router-driven vector attach handshake.
    */
   'admin_set_vector_index_canister' : ActorMethod<[Principal], Result_2>,
+  /**
+   * Router → graph: operator-only physical stable-memory inventory.
+   */
+  'admin_stable_memory_stats' : ActorMethod<[], StableMemoryStats>,
   'backfill_edge_property_postings' : ActorMethod<
     [EdgePropertyBackfillRequest],
     Result_3
@@ -676,6 +837,13 @@ export interface _SERVICE {
    */
   'execute_plan_update' : ActorMethod<[ExecutePlanArgs], Result_6>,
   'execute_plan_update_batch' : ActorMethod<[ExecutePlanBatchArgs], Result_7>,
+  /**
+   * Router → graph: typed shared bulk envelope with decoded seeds (ADR 0047).
+   */
+  'execute_plan_update_batch_typed_v1' : ActorMethod<
+    [ExecutePlanBatchTypedArgs],
+    Result_7
+  >,
   'finalize_bulk_ingest' : ActorMethod<[BulkIngestFinalizeArgs], Result_8>,
   'get_mutation_journal_entries' : ActorMethod<
     [GetMutationJournalEntriesArgs],

@@ -1,7 +1,7 @@
 # 0047. Shared typed Graph bulk execution envelope
 
 Date: 2026-07-22
-Status: Partially Implemented
+Status: Graph endpoint and classifier implemented; Router activation deferred to Plan 0111
 Last revised: 2026-07-22
 Anchor timestamp: 2026-07-22 03:41:20 UTC +0000
 
