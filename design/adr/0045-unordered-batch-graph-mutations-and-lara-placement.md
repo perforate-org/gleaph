@@ -1,9 +1,9 @@
 # 0045. Unordered batch graph mutations and LARA placement planning
 
 Date: 2026-07-19
-Status: Proposed
-Last revised: 2026-07-19
-Anchor timestamp: 2026-07-19 22:12:12 UTC +0000
+Status: Partially Implemented
+Last revised: 2026-07-22
+Anchor timestamp: 2026-07-22 22:23:31 UTC +0000
 
 ## Context
 
@@ -509,8 +509,17 @@ count, log occupancy/debt, maintenance work, encoded bytes, and callback count.
 
 ## Implementation sequence
 
-1. Add read-only placement structures and canbench baselines without changing
-   behavior.
+1. **Implemented.** Read-only placement structures and canbench baselines are in
+   `crates/graph/src/facade/batch_placement.rs`. The module expands directed,
+   undirected, and self-loop logical edges into ordinal-tagged physical intents,
+   groups them by `(orientation, PMA leaf segment, owner vertex, storage label,
+   inline width)`, reads existing LARA bucket/slab/overflow-log occupancy through
+   `ic-stable-lara::labeled::LabelBucketPlacementInfo`, and projects the minimum
+   required edge/payload capacity using checked arithmetic. No canonical write,
+   wire change, or public API is introduced. The baseline planner fails closed for
+   a PMA leaf containing multiple non-zero payload widths; width-specific payload
+   byte projection remains a later slice rather than being approximated by a
+   single slot count.
 2. Add one-orientation slab and edge/payload overflow-log batch primitives with
    plan/reserve/commit and failure-atomic tests.
 3. Add pending-aware leaf/window planning, dynamic one-shot expansion, and
@@ -533,15 +542,17 @@ invariants and failure-atomic boundaries are covered.
 
 ## Design document impact
 
-- `design/storage/lara.md`: link this planned batch mutation contract without
-  describing it as implemented.
-- `design/storage/lara-dgap-contract.md`: when implementation begins, document
-  pending-aware leaf placement and the unchanged maintenance-only compaction
-  boundary.
-- `design/storage/labeled-edge-inline-values.md`: when implemented, document
-  payload slab/log batch placement and mirrored update behavior.
-- `design/storage/bulk-ingest-finalize.md`: distinguish planned direct batch
-  placement from the existing post-ingest maintenance/finalize hook.
+- `design/adr/0045-unordered-batch-graph-mutations-and-lara-placement.md`:
+  status updated to Partially Implemented; stage 1 read-only planning is
+  implemented.
+- `design/storage/lara.md`: link the read-only planning contract and note that
+  direct slab/log batch writes, rebalance, and relocation remain planned.
+- `design/storage/lara-dgap-contract.md`: pending-aware leaf placement remains
+  planned; maintenance-only compaction boundary is unchanged.
+- `design/storage/labeled-edge-inline-values.md`: payload slab/log batch
+  placement and mirrored update behavior remain planned.
+- `design/storage/bulk-ingest-finalize.md`: planned direct batch placement is
+  distinct from the existing post-ingest maintenance/finalize hook.
 - ADR 0026: reverse remains derived and co-committed; no change to the canonical
   source of truth.
 - ADR 0029/0041/0042/0044: specialized chunks reuse shard-local atomicity,

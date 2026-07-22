@@ -199,7 +199,7 @@ Use this when reviewing LARA PRs:
 
 - [lara-dgap-contract.md](./lara-dgap-contract.md) — DGAP mapping and labeled gap detail
 - [adr/0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — labeled physical migration
-- [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **planned** unordered slab/log batch placement, pending-aware rebalance, and dynamic leaf expansion
+- [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented** (intent expansion, ownership grouping, projected capacity); direct slab/log batch writes, pending-aware rebalance, and dynamic leaf expansion remain planned
 - [lara-labeled-migration-tests.md](./lara-labeled-migration-tests.md) — phase test gates (A–E)
 - `crates/ic-stable-lara/README.md` — crate entry point
 - `reference/DGAP/dgap/src/graph.h` — reference implementation

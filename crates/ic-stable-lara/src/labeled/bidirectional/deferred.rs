@@ -883,6 +883,57 @@ where
         &self.reverse
     }
 
+    /// Read-only placement metadata for an existing forward label bucket.
+    ///
+    /// See [`crate::labeled::graph::LabelBucketPlacementInfo`].
+    pub fn read_forward_bucket_placement_info(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<
+        Option<crate::labeled::graph::LabelBucketPlacementInfo>,
+        DeferredBidirectionalLabeledError,
+    > {
+        self.forward
+            .read_label_bucket_placement_info(src, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Read-only placement metadata for an existing reverse label bucket.
+    pub fn read_reverse_bucket_placement_info(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<
+        Option<crate::labeled::graph::LabelBucketPlacementInfo>,
+        DeferredBidirectionalLabeledError,
+    > {
+        self.reverse
+            .read_label_bucket_placement_info(src, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+    /// Read-only aggregate placement metadata for every bucket on one forward PMA leaf.
+    pub fn read_forward_leaf_placement_stats(
+        &self,
+        leaf: u32,
+    ) -> Result<crate::labeled::graph::LeafBucketPlacementStats, DeferredBidirectionalLabeledError>
+    {
+        self.forward
+            .read_leaf_placement_stats(leaf)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Read-only aggregate placement metadata for every bucket on one reverse PMA leaf.
+    pub fn read_reverse_leaf_placement_stats(
+        &self,
+        leaf: u32,
+    ) -> Result<crate::labeled::graph::LeafBucketPlacementStats, DeferredBidirectionalLabeledError>
+    {
+        self.reverse
+            .read_leaf_placement_stats(leaf)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Returns the validated deferred maintenance configuration.
     pub fn config(&self) -> DeferredConfig {
         self.config

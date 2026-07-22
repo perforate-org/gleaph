@@ -19,7 +19,7 @@ impl GraphStore {
             .map_err(|_| GraphStoreError::InvalidEdgeInlineValueWidth(inline_value_bytes.len()))
     }
 
-    pub(super) fn validate_catalog_edge_label(
+    pub(crate) fn validate_catalog_edge_label(
         label: Option<EdgeLabelId>,
     ) -> Result<(), GraphStoreError> {
         if let Some(id) = label

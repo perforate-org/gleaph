@@ -175,6 +175,14 @@ impl<M: Memory> EdgeAliasIndex<M> {
         ))
     }
 
+    pub fn len(&self) -> u64 {
+        self.aliases.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.aliases.is_empty()
+    }
+
     pub fn move_alias_key(
         &mut self,
         alias_vertex_id: VertexId,

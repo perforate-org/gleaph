@@ -2,6 +2,7 @@
 //!
 //! Run from `crates/graph`: `canbench` (see `canbench.yml`).
 
+mod batch_placement;
 #[cfg(feature = "canbench_large")]
 mod capacity;
 #[cfg(feature = "canbench_large")]

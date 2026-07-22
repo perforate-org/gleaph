@@ -9,6 +9,8 @@ pub(crate) mod stable;
 mod store;
 mod store_edge_insert;
 
+mod batch_placement;
+
 pub mod mutation_executor;
 
 pub use stable::property_catalog::PropertyCatalogError;
@@ -24,6 +26,15 @@ pub(crate) use store::vertex_hidden_by_pending_purge;
 pub use store::{
     BulkIngestFinalizeReport, BulkIngestFinalizeSpec, EdgeHandle, GraphStore, GraphStoreError,
     canonical_undirected_owner, catalog_edge_label_from_wire,
+};
+
+#[expect(
+    unused_imports,
+    reason = "batch placement types are re-exported for canbench and test callers"
+)]
+pub(crate) use batch_placement::{
+    BatchEdgeInput, BatchEdgeIntent, BatchEdgeIntentRole, BatchPlacementError, BatchPlacementGroup,
+    BatchPlacementKey, BatchPlacementSummary,
 };
 
 pub(crate) use stable::ensure_graph_initialized;

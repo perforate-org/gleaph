@@ -698,6 +698,13 @@ pub struct LabelStatsDeltaLog<M: Memory> {
 }
 
 impl<M: Memory> LabelStatsDeltaLog<M> {
+    pub fn len(&self) -> u64 {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
     pub fn init(memory: M) -> Self {
         Self {
             map: StableBTreeMap::init(memory),

@@ -14,12 +14,60 @@ use crate::{
 use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 
 use super::error::LabeledOperationError;
 use super::{
     BUCKET_LOOKUP_CACHE_ENTRIES, BULK_BUCKET_SEARCH_MIN_DEGREE, BucketLookupCache, BucketSearch,
     LEAF_VERTEX_EDGE_SEGMENT_DENSITY, LabeledLaraGraph,
 };
+
+/// Read-only placement metadata aggregated for every bucket on one leaf.
+///
+/// Returned by [`LabeledLaraGraph::read_leaf_placement_stats`]. This is a stable-
+/// store observation over the bucket descriptor span of every vertex in the leaf.
+/// Default-label bypass rows contribute edge occupancy but no payload width. It is intended for ADR 0045 read-only
+/// batch placement planning: an accurate leaf projection must include resident
+/// rows from buckets that are not directly targeted by the pending batch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeafBucketPlacementStats {
+    /// Number of vertices on this leaf that are in bucket mode.
+    pub bucket_mode_vertices: u32,
+    /// Sum of edge-slab slots reserved by all buckets on this leaf.
+    pub total_stored_edge_slots: u64,
+    /// Sum of edge overflow-log entries across all buckets on this leaf.
+    pub total_edge_overflow_log_slots: u64,
+    /// Sum of inline-value slab slots across all buckets on this leaf.
+    pub total_inline_value_slab_slots: u64,
+    /// Sum of inline-value overflow-log entries across all buckets on this leaf.
+    pub total_payload_overflow_log_slots: u64,
+    /// Non-zero payload widths present on this leaf.
+    pub payload_widths: BTreeSet<u16>,
+}
+
+/// Read-only placement metadata for one existing label bucket.
+///
+/// Returned by [`LabeledLaraGraph::read_label_bucket_placement_info`]. All counts
+/// are exact stable-store observations; no ephemeral plan state is included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LabelBucketPlacementInfo {
+    /// Logical live edges currently visible in this bucket.
+    pub degree: u32,
+    /// Edge-slab slots reserved for this bucket (may exceed [`Self::degree`]).
+    pub stored_edge_slots: u32,
+    /// Edge overflow log head, or `-1` when all edges are on the slab.
+    pub edge_overflow_log_head: i32,
+    /// Number of edges stored in the per-bucket overflow log chain.
+    pub edge_overflow_log_len: u32,
+    /// Physical byte width per inline value slot (`0` = no payload).
+    pub inline_value_byte_width: u16,
+    /// Inline-value slab slots reserved for this bucket.
+    pub inline_value_slab_slots: u32,
+    /// Payload overflow log head, or `-1` when all values are on the slab.
+    pub payload_overflow_log_head: i32,
+    /// Number of values stored in the per-bucket payload overflow log chain.
+    pub payload_overflow_log_len: u32,
+}
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -514,6 +562,137 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
 
+    /// Read-only aggregate placement metadata for every bucket on one PMA leaf.
+    ///
+    /// Iterates the bucket descriptors of all non-default-label vertices in `leaf`
+    /// and sums their exact resident edge/payload slab and overflow-log slots. This
+    /// includes buckets that are not directly targeted by a pending batch, which is
+    /// required for ADR 0045 leaf-level projected geometry.
+    ///
+    /// Returns an error if leaf index arithmetic overflows.
+    pub fn read_leaf_placement_stats(
+        &self,
+        leaf: u32,
+    ) -> Result<LeafBucketPlacementStats, LabeledOperationError> {
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        let start_vid = leaf
+            .checked_mul(seg)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let end_vid = start_vid
+            .checked_add(seg)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .min(self.vertices.len());
+        let mut stats = LeafBucketPlacementStats {
+            bucket_mode_vertices: 0,
+            total_stored_edge_slots: 0,
+            total_edge_overflow_log_slots: 0,
+            total_inline_value_slab_slots: 0,
+            total_payload_overflow_log_slots: 0,
+            payload_widths: BTreeSet::new(),
+        };
+        for vid_u in start_vid..end_vid {
+            let vid = VertexId::from(vid_u);
+            self.ensure_vertex(vid)?;
+            let vertex = self.vertices.get(vid);
+            if vertex.is_default_edge_labeled() {
+                // Default-label bypass rows still occupy the shared edge PMA
+                // span/log for this leaf.  They have no label buckets or
+                // payload domain, but omitting their edge occupancy would make
+                // a labeled batch under-project leaf geometry.
+                stats.total_stored_edge_slots = stats
+                    .total_stored_edge_slots
+                    .checked_add(u64::from(vertex.stored_slots))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if vertex.log_head() >= 0 {
+                    let log_len = self.edges.overflow_log_chain_len(leaf, vertex.log_head());
+                    stats.total_edge_overflow_log_slots = stats
+                        .total_edge_overflow_log_slots
+                        .checked_add(u64::from(log_len))
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                }
+                continue;
+            }
+            stats.bucket_mode_vertices = stats
+                .bucket_mode_vertices
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let buckets = self.read_vertex_label_buckets(&vertex)?;
+            for bucket in buckets {
+                stats.total_stored_edge_slots = stats
+                    .total_stored_edge_slots
+                    .checked_add(u64::from(bucket.stored_slots))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                stats.total_inline_value_slab_slots = stats
+                    .total_inline_value_slab_slots
+                    .checked_add(u64::from(bucket.inline_value_slab_slots()))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                if bucket.inline_value_byte_width() > 0 {
+                    stats
+                        .payload_widths
+                        .insert(bucket.inline_value_byte_width());
+                }
+                if bucket.overflow_log_head() >= 0 {
+                    let log_len = self
+                        .edges
+                        .overflow_log_chain_len(leaf, bucket.overflow_log_head());
+                    stats.total_edge_overflow_log_slots = stats
+                        .total_edge_overflow_log_slots
+                        .checked_add(u64::from(log_len))
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                }
+                if bucket.inline_value_log_head() >= 0 {
+                    stats.total_payload_overflow_log_slots = stats
+                        .total_payload_overflow_log_slots
+                        .checked_add(u64::from(bucket.inline_value_log_len()))
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                }
+            }
+        }
+        Ok(stats)
+    }
+
+    /// Read-only placement metadata for one existing label bucket.
+    ///
+    /// Returns `Ok(None)` when the vertex uses the default-label bypass or has no
+    /// bucket for `label_id`. Returns an error if the vertex is out of range. The
+    /// counts include slab residents and overflow-log residents separately so that
+    /// a batch planner can project the minimum required post-batch capacity without
+    /// mutating state.
+    pub fn read_label_bucket_placement_info(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<Option<LabelBucketPlacementInfo>, LabeledOperationError> {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(None);
+        }
+        match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { bucket, .. } => {
+                let header = self.edges.header();
+                let leaf = Self::leaf_index_for_vid(src, header.segment_size);
+                let edge_overflow_log_len = if bucket.overflow_log_head() >= 0 {
+                    self.edges
+                        .overflow_log_chain_len(leaf, bucket.overflow_log_head())
+                } else {
+                    0
+                };
+                Ok(Some(LabelBucketPlacementInfo {
+                    degree: bucket.degree,
+                    stored_edge_slots: bucket.stored_slots,
+                    edge_overflow_log_head: bucket.overflow_log_head(),
+                    edge_overflow_log_len,
+                    inline_value_byte_width: bucket.inline_value_byte_width(),
+                    inline_value_slab_slots: bucket.inline_value_slab_slots(),
+                    payload_overflow_log_head: bucket.inline_value_log_head(),
+                    payload_overflow_log_len: bucket.inline_value_log_len() as u32,
+                }))
+            }
+            BucketSearch::Missing { .. } => Ok(None),
+        }
+    }
     pub(super) fn vertex_label_buckets_have_overflow(
         &self,
         vertex: &LabeledVertex,

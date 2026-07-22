@@ -146,6 +146,7 @@ pub use graph::{
     LabeledEdgeInlineValueBatchScratch, LabeledLaraGraph, LabeledOperationError,
     LabeledOutEdgesIter, LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch, OutEdgeOrder,
 };
+pub use graph::{LabelBucketPlacementInfo, LeafBucketPlacementStats};
 pub use record::{
     LabelBucket, LabeledVertex, LabeledVertexFieldError, MAX_VERTEX_LABEL_BUCKET_SLACK,
     MAX_VERTEX_LABEL_BUCKETS,
