@@ -557,6 +557,29 @@ mod seed_transport_tests {
             );
         }
     }
+
+    #[test]
+    fn round_trip_empty_domain_seed() {
+        let empty = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: Vec::new(),
+            complete_prefix_rows: true,
+        };
+        let nested = encode_nested(std::slice::from_ref(&empty));
+        let typed = encode_typed(std::slice::from_ref(&empty));
+        assert_eq!(decode_nested(&nested), vec![empty.clone()]);
+        assert_eq!(decode_typed(&typed), vec![empty.clone()]);
+    }
+
+    #[test]
+    fn encoded_byte_sizes_for_record() {
+        for n in [1usize, 32, 512] {
+            let seeds = posted_seeds(n);
+            let nested = encode_nested(&seeds).len();
+            let typed = encode_typed(&seeds).len();
+            println!("seed_transport N={n} nested_bytes={nested} typed_bytes={typed}");
+        }
+    }
 }
 
 #[bench(raw)]

@@ -232,7 +232,7 @@ pub async fn admin_stable_memory_stats(
 }
 
 /// Forward a batch-instrumentation log page from the Graph shard to the Router.
-#[allow(dead_code)]
+#[cfg_attr(feature = "canbench", allow(dead_code))]
 pub async fn admin_take_batch_instr_log(
     graph: Principal,
     offset: u32,

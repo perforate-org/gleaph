@@ -1,4 +1,3 @@
-#![allow(clippy::default_constructed_unit_structs)]
 //! Router-side GQL parse, plan, index seed routing, and graph dispatch.
 
 use std::cell::RefCell;
@@ -740,6 +739,10 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     let first = if let Some(ctx) = preflight {
         resolve_anchor_hits_for_shards(ctx, index, &anchors[0], shard_ids, metrics).await?
     } else {
+        #[cfg_attr(
+            not(feature = "batch-instr-log"),
+            allow(clippy::default_constructed_unit_structs)
+        )]
         let mut _lookup_metrics = SeedResolutionMetrics::default();
         lookup_anchor_hits(index, &anchors[0], shard_ids, &mut _lookup_metrics).await?
     };
@@ -756,6 +759,10 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
                 let hits = if let Some(ctx) = preflight {
                     resolve_anchor_hits_for_shards(ctx, index, anchor, shard_ids, metrics).await?
                 } else {
+                    #[cfg_attr(
+                        not(feature = "batch-instr-log"),
+                        allow(clippy::default_constructed_unit_structs)
+                    )]
                     let mut _lookup_metrics = SeedResolutionMetrics::default();
                     lookup_anchor_hits(index, anchor, shard_ids, &mut _lookup_metrics).await?
                 };
@@ -1007,6 +1014,10 @@ async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
 ) -> Result<SeedHits, String> {
+    #[cfg_attr(
+        not(feature = "batch-instr-log"),
+        allow(clippy::default_constructed_unit_structs)
+    )]
     let mut _metrics = SeedResolutionMetrics::default();
     lookup_anchor_hits(index, anchor, &[], &mut _metrics).await
 }
@@ -2464,6 +2475,10 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         let shard_ids: Vec<_> = shards.iter().map(|entry| entry.shard_id).collect();
         let routings = match seed_anchors {
             Some(set) => {
+                #[cfg_attr(
+                    not(feature = "batch-instr-log"),
+                    allow(clippy::default_constructed_unit_structs)
+                )]
                 let mut _scalar_seed_metrics = SeedResolutionMetrics::default();
                 let hits = match resolve_seed_hits_from_anchors(
                     index,
@@ -3587,6 +3602,10 @@ async fn execute_prepared_bulk_group(
 
     // Pre-resolve complete-row seed blobs before spawning async blocks. The index lookup
     // futures are not Send, so we cannot await them inside the BoxFuture dispatched below.
+    #[cfg_attr(
+        not(feature = "batch-instr-log"),
+        allow(clippy::default_constructed_unit_structs)
+    )]
     let mut seed_resolution_acc = SeedResolutionMetrics::default();
 
     let complete_row_seeds: Vec<Vec<Option<Vec<u8>>>> = if let Some(ref index) = complete_row_index
@@ -5700,6 +5719,10 @@ mod tests {
         assert_eq!(set.anchors().len(), 2);
 
         let fake = compound_seed_fake_index();
+        #[cfg_attr(
+            not(feature = "batch-instr-log"),
+            allow(clippy::default_constructed_unit_structs)
+        )]
         let mut _test_metrics = super::SeedResolutionMetrics::default();
         let hits = futures::executor::block_on(super::resolve_seed_hits_from_anchors(
             &fake,
