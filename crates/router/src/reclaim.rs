@@ -307,7 +307,7 @@ pub(crate) async fn run_reclaim_pass(
 mod tests {
     use super::*;
     use crate::facade::stable::label_stats::{
-        ClientMutationKey, RouterMutationRecord, RouterMutationShard,
+        ClientMutationKey, RouterMutationRecord, RouterMutationShardV1,
     };
     use crate::facade::stable::reservation_catalog;
     use crate::facade::stable::{ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_UNIQUE_RESERVATIONS};
@@ -339,9 +339,12 @@ mod tests {
     fn insert_envelope_record(key: &ClientMutationKey, mid: u64, completed_shard: bool) {
         let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
         record.as_v1_mut().routing_in_progress = false;
-        let mut shard = RouterMutationShard::new(ShardId::new(0), Principal::anonymous(), None);
+        let mut shard = RouterMutationShardV1::new(ShardId::new(0), Principal::anonymous(), None);
         shard.set_completed(completed_shard);
-        record.as_v1_mut().shards = vec![shard];
+        record.as_v1_mut().payload =
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
+                shards: vec![shard],
+            };
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             m.insert(key.clone(), record);
         });

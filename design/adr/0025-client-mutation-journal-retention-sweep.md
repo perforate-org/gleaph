@@ -36,9 +36,11 @@ a zero-shard completion — the resolved label/property tables and the `Vec<Rout
 fan-out are never read again: replay short-circuits on `completed_row_count`
 (`run_gql_dml` returns at the `router_mutation_completed_row_count` check before touching
 the heavy fields). At that point `record_router_mutation_shard_projection_advanced` pins
-the final `completed_row_count` and drops `resolved_labels`, `resolved_properties`, and
-`shards`. The record shrinks to `{ mutation_id, created_at_ns, request_fingerprint,
-completed_row_count }`, which is all replay and TTL eviction need.
+the final `completed_row_count` and drops `resolved_labels`, `resolved_properties`, and any
+shard/plan/seed replay. Scalar terminal records stay `Scalar { shards: [] }`; active bulk payloads
+(both `LegacyBulk` and `TypedSeedBulk`) compact to `CompletedBulk { total_ops }`. The record shrinks
+to `{ mutation_id, created_at_ns, request_fingerprint, completed_row_count, payload }` with the
+smallest possible payload variant, which is all replay and TTL eviction need.
 
 ### B — amortized GC on the write path (bound count, automatic)
 

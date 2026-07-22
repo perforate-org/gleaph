@@ -1,7 +1,7 @@
 //! Mutation idempotency and client mutation journal.
 
 use super::super::stable::label_stats::{
-    ClientMutationKey, MutationReservationIndexEntry, RouterMutationRecord, RouterMutationShard,
+    ClientMutationKey, MutationReservationIndexEntry, RouterMutationRecord, RouterMutationShardV1,
 };
 use super::super::stable::{
     ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER, ROUTER_MUTATION_RESERVATION_INDEX,
@@ -127,9 +127,24 @@ fn evict_expired_client_mutation_keys(
 /// `created_at_ns`, `request_fingerprint`, and `completed_row_count` remain for
 /// idempotent replay and TTL eviction.
 fn compact_completed_record(record: &mut RouterMutationRecord) {
+    use crate::facade::stable::label_stats::RouterMutationPayloadV1;
     record.as_v1_mut().resolved_labels = None;
     record.as_v1_mut().resolved_properties = None;
-    record.as_v1_mut().shards = Vec::new();
+    // ADR 0025 mechanism E: scalar terminal representation stays `Scalar {{ shards: [] }}`,
+    // while active bulk payloads compact to `CompletedBulk {{ total_ops }}`.
+    match record.payload().clone() {
+        RouterMutationPayloadV1::Scalar { .. } => {
+            record.payload_mut().scalar_clear_shards();
+        }
+        RouterMutationPayloadV1::LegacyBulk { total_ops, .. } => {
+            *record.payload_mut() = RouterMutationPayloadV1::CompletedBulk { total_ops };
+        }
+        RouterMutationPayloadV1::TypedSeedBulk(ref replay) => {
+            let total_ops = replay.total_ops;
+            *record.payload_mut() = RouterMutationPayloadV1::CompletedBulk { total_ops };
+        }
+        RouterMutationPayloadV1::CompletedBulk { .. } => {}
+    }
 }
 
 impl RouterStore {
@@ -215,7 +230,7 @@ impl RouterStore {
                     routing_owner: true,
                 });
             }
-            if record.as_v1().shards.is_empty() && record.as_v1().completed_row_count.is_none() {
+            if record.shards().is_empty() && record.as_v1().completed_row_count.is_none() {
                 record.as_v1_mut().routing_in_progress = true;
                 record.as_v1_mut().routing_lease_ns = Some(now);
                 let mutation_id = record.as_v1().mutation_id;
@@ -546,7 +561,7 @@ impl RouterStore {
                 scanned += 1;
                 if !record.as_v1().routing_in_progress
                     && !record.is_terminal()
-                    && !record.as_v1().shards.is_empty()
+                    && !record.shards().is_empty()
                 {
                     recoverable.push(key.clone());
                 }
@@ -563,18 +578,19 @@ impl RouterStore {
         client_key: &str,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
-        shards: Vec<RouterMutationShard>,
+        shards: Vec<RouterMutationShardV1>,
     ) -> Result<(), RouterError> {
         let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            if record.as_v1().shards.is_empty() && record.as_v1().completed_row_count.is_none() {
+            if record.shards().is_empty() && record.as_v1().completed_row_count.is_none() {
                 record.as_v1_mut().resolved_labels = Some(resolved_labels);
                 record.as_v1_mut().resolved_properties = Some(resolved_properties);
                 record.as_v1_mut().routing_in_progress = false;
-                record.as_v1_mut().shards = shards;
+                record.as_v1_mut().payload =
+                    crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar { shards };
                 m.insert(key, record);
             }
             Ok(())
@@ -595,7 +611,7 @@ impl RouterStore {
             let mut record = m
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            if record.as_v1().shards.is_empty() && record.as_v1().completed_row_count.is_none() {
+            if record.shards().is_empty() && record.as_v1().completed_row_count.is_none() {
                 record.as_v1_mut().resolved_labels = Some(resolved_labels);
                 record.as_v1_mut().resolved_properties = Some(resolved_properties);
                 record.as_v1_mut().completed_row_count = Some(row_count);
@@ -636,15 +652,16 @@ impl RouterStore {
             let mut record = m
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            if record.as_v1().shards.is_empty() && record.as_v1().completed_row_count.is_some() {
+            if record.shards().is_empty() && record.as_v1().completed_row_count.is_some() {
                 // A concurrent/replayed path may have compacted this mutation after the caller's
                 // pre-dispatch check. Graph mutation idempotency has already made it terminal;
                 // there is no shard envelope left to update.
                 return Ok(());
             }
-            let shard = record
-                .as_v1_mut()
-                .shards
+            let shards = record.shards_mut().ok_or(RouterError::Internal(
+                "mutation payload has no shard envelope".into(),
+            ))?;
+            let shard = shards
                 .iter_mut()
                 .find(|shard| shard.shard_id() == shard_id)
                 .ok_or(RouterError::ShardNotRegistered)?;
@@ -668,12 +685,13 @@ impl RouterStore {
             let mut record = m
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
-            if record.as_v1().shards.is_empty() && record.as_v1().completed_row_count.is_some() {
+            if record.shards().is_empty() && record.as_v1().completed_row_count.is_some() {
                 return Ok(());
             }
-            let shard = record
-                .as_v1_mut()
-                .shards
+            let shards = record.shards_mut().ok_or(RouterError::Internal(
+                "mutation payload has no shard envelope".into(),
+            ))?;
+            let shard = shards
                 .iter_mut()
                 .find(|shard| shard.shard_id() == shard_id)
                 .ok_or(RouterError::ShardNotRegistered)?;
@@ -682,14 +700,12 @@ impl RouterStore {
             // pin the final row count and drop the heavy fields (ADR 0025, mechanism E).
             // Subsequent replays short-circuit on completed_row_count and never read them.
             if record
-                .as_v1()
-                .shards
+                .shards()
                 .iter()
                 .all(|shard| shard.completed() && shard.projection_advanced())
             {
                 let total = record
-                    .as_v1()
-                    .shards
+                    .shards()
                     .iter()
                     .fold(0u64, |total, shard| total.saturating_add(shard.row_count()));
                 record.as_v1_mut().completed_row_count = Some(total);
@@ -723,17 +739,20 @@ impl RouterStore {
         let highest = shards.iter().map(|shard| shard.shard_id).max();
         let mut record = RouterMutationRecord::new(mutation_id, ic_time_ns(), Vec::new());
         record.as_v1_mut().routing_in_progress = false;
-        record.as_v1_mut().shards = shards
-            .iter()
-            .map(|shard| {
-                let mut entry =
-                    RouterMutationShard::new(shard.shard_id, shard.graph_canister, None);
-                entry.set_completed(true);
-                entry.set_row_count(row_count);
-                entry.set_projection_advanced(Some(shard.shard_id) != highest);
-                entry
-            })
-            .collect();
+        record.as_v1_mut().payload =
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
+                shards: shards
+                    .iter()
+                    .map(|shard| {
+                        let mut entry =
+                            RouterMutationShardV1::new(shard.shard_id, shard.graph_canister, None);
+                        entry.set_completed(true);
+                        entry.set_row_count(row_count);
+                        entry.set_projection_advanced(Some(shard.shard_id) != highest);
+                        entry
+                    })
+                    .collect(),
+            };
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key, record));
         Ok(())
     }
@@ -748,10 +767,9 @@ impl RouterStore {
         if let Some(row_count) = record.as_v1().completed_row_count {
             return Some(row_count);
         }
-        if record.as_v1().shards.is_empty()
+        if record.shards().is_empty()
             || record
-                .as_v1()
-                .shards
+                .shards()
                 .iter()
                 .any(|shard| !shard.completed() || !shard.projection_advanced())
         {
@@ -759,8 +777,7 @@ impl RouterStore {
         }
         Some(
             record
-                .as_v1()
-                .shards
+                .shards()
                 .iter()
                 .fold(0u64, |total, shard| total.saturating_add(shard.row_count())),
         )

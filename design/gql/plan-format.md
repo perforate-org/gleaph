@@ -102,9 +102,10 @@ contracts must be distinguished.
   unchanged; scalar is the fallback for distinct-seed groups, while legacy batch is used only when
   its existing replay representation is sufficient;
 - the new method reuses `ExecutePlanBatchResult` (ordered per-item results and `next_index`);
-- `RouterMutationRecord::V1` is redefined incompatibly with exhaustive scalar, legacy-bulk, and
-  typed-bulk payload variants; the typed payload persists the exact ordered replay relation without a
-  parallel blob representation;
+- `RouterMutationRecord::V1` is redefined incompatibly with exhaustive scalar, legacy-bulk,
+  typed-bulk, and terminal completed-bulk payload variants; the typed payload persists the exact
+  ordered replay relation without a parallel blob representation, and completed records compact to
+  `CompletedBulk { total_ops }` per ADR 0025 mechanism E;
 - the typed path is activated only from an admin-refreshed capability on the current shard-registry
   V2 write shape after post-await target revalidation; ambiguous typed-call outcomes retain typed
   durable replay under the same mutation id;

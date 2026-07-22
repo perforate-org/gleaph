@@ -89,10 +89,12 @@ coalescing happened.
 This ADR originally defined V1 stable records sufficient for homogeneous bulk groups where every
 operation shares the same seed relation. Because Gleaph has no deployed Router stable state to
 preserve, ADR 0047 redefines `RouterMutationRecord::V1` incompatibly with exhaustive `Scalar`,
-`LegacyBulk`, and `TypedSeedBulk` payload variants. The typed payload persists the exact ordered per-operation relation before
-the first Graph await and cannot coexist with a legacy seed blob. No Router V2 or stable migration
-is introduced. Initial installation and rollback to older Router Wasm require fresh install/reset.
-See ADR 0047 for the schema, bounds, capability activation, and reset procedure.
+`LegacyBulk`, `TypedSeedBulk`, and terminal `CompletedBulk` payload variants. The typed payload persists the exact ordered per-operation relation before
+the first Graph await and cannot coexist with a legacy seed blob. `CompletedBulk` compacts away all
+heavy replay state once every shard outcome and projection converges, satisfying the existing
+ADR 0025 mechanism-E contract. No Router V2 or stable migration is introduced. Initial installation
+and rollback to older Router Wasm require fresh install/reset. See ADR 0047 for the schema, bounds,
+capability activation, and reset procedure.
 
 The following is the proposed replacement shape. Retaining the `V1` tag names the first launch
 schema; it does not promise decode compatibility with the superseded, never-deployed V1 bytes.
@@ -126,7 +128,10 @@ pub enum RouterMutationPayloadV1 {
         total_ops: u32,
         shards: Vec<RouterMutationShardV1>,
     },
-    TypedSeedBulk(TypedSeedBulkReplayV1),
+    TypedSeedBulk(Box<TypedSeedBulkReplayV1>),
+    CompletedBulk {
+        total_ops: u32,
+    },
 }
 
 pub(crate) struct RouterMutationShardV1 {

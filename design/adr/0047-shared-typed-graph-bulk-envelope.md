@@ -240,31 +240,31 @@ pub enum RouterMutationPayloadV1 {
         total_ops: u32,
         shards: Vec<RouterMutationShardV1>,
     },
-    TypedSeedBulk(TypedSeedBulkReplayV1),
+    TypedSeedBulk(Box<TypedSeedBulkReplayV1>),
+    CompletedBulk {
+        total_ops: u32,
+    },
 }
 
 pub struct TypedSeedBulkReplayV1 {
-    pub shard: RouterTypedSeedShardV1,
     pub total_ops: u32,
-    pub batch_mode: ExecutePlanBatchMode,
+    pub target_shard: RouterMutationShardV1,
+    pub shared: TypedSeedBulkSharedHeaderV1,
+    pub operations: Vec<TypedSeedBulkOperationV1>,
+}
+
+pub struct TypedSeedBulkSharedHeaderV1 {
     pub element_id_encoding_key: [u8; 16],
     pub plan_blob: Vec<u8>,
+    pub mode: GqlExecutionMode,
+    pub resolved_labels: Option<ResolvedLabelTable>,
+    pub resolved_properties: Option<ResolvedPropertyTable>,
     pub indexed_properties: Option<IndexedPropertyCatalog>,
-    pub indexed_embeddings: Option<IndexedEmbeddingCatalog>,
-    pub operations: Vec<TypedSeedBulkReplayOpV1>,
 }
 
-pub struct TypedSeedBulkReplayOpV1 {
-    pub params_blob: Vec<u8>,
-    pub seed: SeedBindingsWire,
-}
-
-pub struct RouterTypedSeedShardV1 {
-    pub shard_id: ShardId,
-    pub graph_canister: Principal,
-    pub completed: bool,
-    pub projection_advanced: bool,
-    pub row_count: u64,
+pub struct TypedSeedBulkOperationV1 {
+    pub params: Vec<u8>,
+    pub seed_bindings: SeedBindingsWire,
 }
 ```
 
@@ -272,12 +272,12 @@ pub struct RouterTypedSeedShardV1 {
 `resolved_properties` remain authoritative at the record top-level. During recovery, the Router
 copies `resolved_labels` and `resolved_properties` from the record top-level into the
 `ExecutePlanBatchTypedShared` shared header; `TypedSeedBulkReplayV1` intentionally does not
-duplicate them. `TypedSeedBulkReplayV1.shard` owns the sole target and its outcome; the remainder
-of `TypedSeedBulkReplayV1` owns the shared plan/catalog data and ordered params/seeds. The typed
+duplicate them. `TypedSeedBulkReplayV1.target_shard` owns the sole target and its outcome; the remainder
+of `TypedSeedBulkReplayV1.shared` owns the shared plan/catalog/label/property data and `operations` owns the ordered params/seeds. The typed
 variant has no `seed_bindings_blob`, so the stable source of truth cannot represent both encodings.
 Scalar and legacy-bulk lifecycle shape is also exhaustive rather than a boolean plus an optional
 bulk record. The Router reconstructs `ExecutePlanBatchTypedArgs` directly from this payload,
-including the original batch mode.
+including the original execution mode in `shared.mode`.
 
 Typed V1 is single-shard, and `replay.operations.len() == total_ops`. The owning constructor and
 stable write boundary validate this invariant; general multi-shard typed replay is a later schema,

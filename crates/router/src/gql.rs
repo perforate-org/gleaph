@@ -4,7 +4,6 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use crate::types::RouterMutationRecord;
 use candid::{Encode, Principal};
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
@@ -174,7 +173,7 @@ use std::collections::{HashMap, HashSet};
 use crate::execution_path::check_adhoc_execution_path;
 #[cfg(target_family = "wasm")]
 use crate::facade::stable::label_stats::ClientMutationKey;
-use crate::facade::stable::label_stats::RouterMutationShard;
+use crate::facade::stable::label_stats::RouterMutationShardV1;
 use crate::facade::stable::reservation_catalog::ConfirmOutcome;
 use crate::facade::store::RouterStore;
 use crate::facade::store::uniqueness::{
@@ -2261,8 +2260,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         // Replays and retries carry an existing record and still run reconciliation.
         if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
             let targets: Vec<(Principal, MutationId)> = record
-                .as_v1()
-                .shards
+                .shards()
                 .iter()
                 .filter(|shard| shard.completed() && !shard.projection_advanced())
                 .map(|shard| (shard.graph_canister(), record.as_v1().mutation_id))
@@ -2444,11 +2442,10 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
 
     _instr_logger.mark("claims");
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
-        && !record.as_v1().shards.is_empty()
+        && !record.shards().is_empty()
     {
         record
-            .as_v1()
-            .shards
+            .shards()
             .iter()
             .map(|shard| ShardDispatch {
                 shard_id: shard.shard_id(),
@@ -2624,7 +2621,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         let envelope_shards = dispatches
             .iter()
             .map(|dispatch| {
-                RouterMutationShard::new(
+                RouterMutationShardV1::new(
                     dispatch.shard_id,
                     dispatch.graph_canister,
                     dispatch.seed_bindings_blob.clone(),
@@ -2639,18 +2636,17 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
             resolved_properties.clone(),
             envelope_shards,
         )?;
-        if let Some(RouterMutationRecord::V1(v1)) =
-            store.router_mutation_record(caller, graph_id, key)
-        {
-            if let Some(saved_resolved_labels) = v1.resolved_labels {
+        if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
+            let v1 = record.as_v1();
+            if let Some(saved_resolved_labels) = v1.resolved_labels.clone() {
                 resolved_labels = saved_resolved_labels;
             }
-            if let Some(saved_resolved_properties) = v1.resolved_properties {
+            if let Some(saved_resolved_properties) = v1.resolved_properties.clone() {
                 resolved_properties = saved_resolved_properties;
             }
-            dispatches = v1
-                .shards
-                .into_iter()
+            dispatches = record
+                .shards()
+                .iter()
                 .map(|shard| ShardDispatch {
                     shard_id: shard.shard_id(),
                     graph_canister: shard.graph_canister(),
@@ -4389,8 +4385,7 @@ async fn reconcile_router_mutation_projection(
         return Ok(());
     };
     for shard in record
-        .as_v1()
-        .shards
+        .shards()
         .iter()
         .filter(|shard| shard.completed() && !shard.projection_advanced())
     {
@@ -4533,7 +4528,7 @@ pub(crate) async fn recover_mutation_record(
         return Ok(());
     }
     let mutation_id = record.as_v1().mutation_id;
-    for shard in &record.as_v1().shards {
+    for shard in record.shards() {
         if shard.completed() && shard.projection_advanced() {
             continue;
         }
@@ -5455,7 +5450,7 @@ mod tests {
             request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update)
         );
         assert!(!record.as_v1().routing_in_progress);
-        assert!(record.as_v1().shards.is_empty());
+        assert!(record.shards().is_empty());
         assert!(record.as_v1().completed_row_count.is_none());
 
         let retry = store
@@ -5528,7 +5523,7 @@ mod tests {
             .expect("mutation record");
         assert_eq!(record.as_v1().completed_row_count, Some(0));
         assert!(!record.as_v1().routing_in_progress);
-        assert!(record.as_v1().shards.is_empty());
+        assert!(record.shards().is_empty());
 
         let rows = futures::executor::block_on(dispatch_with_fake_index(
             &store,
@@ -5573,13 +5568,10 @@ mod tests {
         assert_eq!(record.as_v1().mutation_id, 1);
         assert!(!record.as_v1().routing_in_progress);
         assert!(record.as_v1().completed_row_count.is_none());
-        assert_eq!(record.as_v1().shards.len(), 1);
-        assert_eq!(record.as_v1().shards[0].shard_id(), ShardId::new(0));
-        assert_eq!(
-            record.as_v1().shards[0].graph_canister(),
-            graph_principal(1)
-        );
-        assert!(!record.as_v1().shards[0].completed());
+        assert_eq!(record.shards().len(), 1);
+        assert_eq!(record.shards()[0].shard_id(), ShardId::new(0));
+        assert_eq!(record.shards()[0].graph_canister(), graph_principal(1));
+        assert!(!record.shards()[0].completed());
 
         let resolved = record
             .as_v1()
@@ -5590,7 +5582,7 @@ mod tests {
         assert_eq!(resolved.vertex[0].name, "Person");
         assert_eq!(resolved.vertex[0].id.raw(), 1);
 
-        let seed_blob = record.as_v1().shards[0]
+        let seed_blob = record.shards()[0]
             .seed_bindings_blob()
             .as_ref()
             .expect("seed bindings");
@@ -6156,7 +6148,7 @@ mod tests {
     #[test]
     fn single_shard_gate_rejects_constrained_multishard_dispatch_without_reservation_residue() {
         use crate::facade::stable::constraint_name_catalog::lookup_constraint_name_id;
-        use crate::facade::stable::label_stats::RouterMutationShard;
+        use crate::facade::stable::label_stats::RouterMutationShardV1;
         use crate::facade::stable::reservation_catalog::{self, ProofShard, ReservationClaim};
         use crate::facade::store::ClientMutationReservation;
         use gleaph_gql::ast::{Expr, ExprKind};
@@ -6219,8 +6211,8 @@ mod tests {
                 resolved_labels,
                 resolved_properties,
                 vec![
-                    RouterMutationShard::new(ShardId::new(0), graph_principal(1), None),
-                    RouterMutationShard::new(ShardId::new(1), graph_principal(4), None),
+                    RouterMutationShardV1::new(ShardId::new(0), graph_principal(1), None),
+                    RouterMutationShardV1::new(ShardId::new(1), graph_principal(4), None),
                 ],
             )
             .expect("record 2-shard envelope");

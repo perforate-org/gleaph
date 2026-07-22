@@ -47,14 +47,12 @@ impl MutationStatus {
     pub fn from_record(record: &RouterMutationRecord) -> Self {
         let phase = record.lifecycle_phase();
         let target_shard = record
-            .as_v1()
-            .shards
+            .shards()
             .iter()
             .find(|shard| !shard.completed())
             .or_else(|| {
                 record
-                    .as_v1()
-                    .shards
+                    .shards()
                     .iter()
                     .find(|shard| !shard.projection_advanced())
             })
@@ -802,19 +800,20 @@ impl Storable for RouterProvisioningRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::stable::label_stats::RouterMutationShard;
+    use crate::facade::stable::label_stats::RouterMutationShardV1;
 
-    fn shard(id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShard {
-        let mut shard = RouterMutationShard::new(ShardId::new(id), Principal::anonymous(), None);
+    fn shard(id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShardV1 {
+        let mut shard = RouterMutationShardV1::new(ShardId::new(id), Principal::anonymous(), None);
         shard.set_completed(completed);
         shard.set_projection_advanced(projection_advanced);
         shard
     }
 
-    fn record_with(shards: Vec<RouterMutationShard>) -> RouterMutationRecord {
+    fn record_with(shards: Vec<RouterMutationShardV1>) -> RouterMutationRecord {
         let mut record = RouterMutationRecord::new(7, 0, Vec::new());
         record.as_v1_mut().routing_in_progress = false;
-        record.as_v1_mut().shards = shards;
+        record.as_v1_mut().payload =
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar { shards };
         record
     }
 

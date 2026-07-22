@@ -1,5 +1,5 @@
 use super::super::stable::label_stats::{
-    ClientMutationKey, LabelStats, RouterMutationRecord, RouterMutationShard,
+    ClientMutationKey, LabelStats, RouterMutationRecord, RouterMutationShardV1,
 };
 use super::*;
 use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
@@ -1445,7 +1445,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
             "client-key-1",
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
-            vec![RouterMutationShard::new(
+            vec![RouterMutationShardV1::new(
                 ShardId::new(0),
                 graph_principal(1),
                 None,
@@ -1579,8 +1579,8 @@ fn mutation_journal_len() -> u64 {
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.len())
 }
 
-fn shard_with(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShard {
-    let mut shard = RouterMutationShard::new(ShardId::new(shard_id), graph_principal(9), None);
+fn shard_with(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShardV1 {
+    let mut shard = RouterMutationShardV1::new(ShardId::new(shard_id), graph_principal(9), None);
     shard.set_completed(completed);
     shard.set_projection_advanced(projection_advanced);
     shard
@@ -1590,12 +1590,13 @@ fn insert_mutation_record_with_shards(
     caller: Principal,
     client_key: &str,
     created_at_ns: u64,
-    shards: Vec<RouterMutationShard>,
+    shards: Vec<RouterMutationShardV1>,
 ) -> ClientMutationKey {
     let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.into());
     let mut record = RouterMutationRecord::new(1, created_at_ns, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
-    record.as_v1_mut().shards = shards;
+    record.as_v1_mut().payload =
+        crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar { shards };
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         m.insert(key.clone(), record);
     });
@@ -2153,7 +2154,7 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
             "client-key-1",
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
-            vec![RouterMutationShard::new(
+            vec![RouterMutationShardV1::new(
                 ShardId::new(0),
                 graph_principal(1),
                 None,
@@ -2238,8 +2239,8 @@ fn router_mutation_journal_tracks_shard_completion() {
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
             vec![
-                RouterMutationShard::new(ShardId::new(0), graph_principal(1), Some(vec![1])),
-                RouterMutationShard::new(ShardId::new(1), graph_principal(2), None),
+                RouterMutationShardV1::new(ShardId::new(0), graph_principal(1), Some(vec![1])),
+                RouterMutationShardV1::new(ShardId::new(1), graph_principal(2), None),
             ],
         )
         .expect("record shards");
@@ -2306,7 +2307,7 @@ fn router_mutation_journal_tracks_shard_completion() {
         .expect("record");
     assert_eq!(compacted.as_v1().completed_row_count, Some(5));
     assert!(
-        compacted.as_v1().shards.is_empty(),
+        compacted.shards().is_empty(),
         "shard fan-out must be dropped"
     );
     assert!(
@@ -2381,7 +2382,7 @@ fn router_mutation_journal_records_zero_shard_completion() {
         .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
         .expect("record");
     assert_eq!(record.as_v1().completed_row_count, Some(0));
-    assert!(record.as_v1().shards.is_empty());
+    assert!(record.shards().is_empty());
     assert_eq!(
         store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         Some(0)

@@ -198,8 +198,7 @@ committed view must use the visibility rules in the next section.
   next action. Read-your-writes convergence is observed through `AtLeast(token)` reads (§5) and this
   query; the timer never returns results to a client.
 
-Schema: `RouterMutationRecord` gains `routing_lease_ns: Option<u64>` and `last_error: Option<String>`
-(both Candid `opt`, so old region-7 records decode as `None` with no migration).
+Schema: `RouterMutationRecord` is now `RouterMutationRecord::V1` with an exhaustive `RouterMutationPayloadV1` (`Scalar`, `LegacyBulk`, `TypedSeedBulk`, `CompletedBulk`). Gleaph has no deployed Router mutation state, so the incompatible V1 replacement requires a fresh install/reset; no migration decoder is retained for the never-deployed prior `shards`/`is_bulk`/`bulk_state` shape. The `routing_lease_ns: Option<u64>` and `last_error: Option<String>` additions remain Candid `opt`, so any still-existing pre-Phase-4 records decode as `None` with no migration.
 
 ### 5. Make read consistency explicit
 

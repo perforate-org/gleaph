@@ -1,10 +1,12 @@
 //! Router-owned label stats aggregates and client mutation records (ADR 0015).
 
+use crate::state::RouterError;
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
-    MutationId, MutationLifecyclePhase, ResolvedLabelTable, ResolvedPropertyTable,
+    GqlExecutionMode, MutationId, MutationLifecyclePhase, ResolvedLabelTable,
+    ResolvedPropertyTable, SeedBindingsWire,
 };
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
@@ -220,7 +222,7 @@ pub struct RouterMutationRecordV1 {
     pub resolved_properties: Option<ResolvedPropertyTable>,
     pub completed_row_count: Option<u64>,
     pub routing_in_progress: bool,
-    pub shards: Vec<RouterMutationShard>,
+    pub payload: RouterMutationPayloadV1,
     /// Wall-clock time the current routing lease was acquired (ADR 0029 Phase 4). Set
     /// whenever `routing_in_progress` is flipped to `true`; lets a retry reclaim a routing
     /// reservation whose owner trapped before persisting the dispatch envelope. `None` for
@@ -240,25 +242,114 @@ pub struct RouterMutationRecordV1 {
     /// dispatch for this mutation can still arrive and commit after the proof's absence read.
     #[serde(default)]
     pub terminal_failure: Option<String>,
-    /// True when this record represents a bulk group of operations sharing the same plan
-    /// and dispatched under a single mutation id (ADR 0044).
-    #[serde(default)]
-    pub is_bulk: bool,
-    /// Bulk-specific state; present only when `is_bulk` is true.
-    #[serde(default)]
-    pub bulk_state: Option<RouterBulkMutationState>,
 }
 
-/// Versioned bulk mutation state attached to a Router saga record (ADR 0044).
+/// Exhaustive payload for a V1 Router mutation saga. Exactly one variant is active at a time;
+/// no parallel `shards`/`is_bulk`/`bulk_state` combination exists.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub enum RouterBulkMutationState {
-    V1(RouterBulkMutationStateV1),
+pub enum RouterMutationPayloadV1 {
+    /// Single-operation or multi-shard DML with one legacy seed blob per shard.
+    Scalar { shards: Vec<RouterMutationShardV1> },
+    /// Homogeneous bulk group replay where one legacy seed blob per shard is sufficient.
+    LegacyBulk {
+        total_ops: u32,
+        shards: Vec<RouterMutationShardV1>,
+    },
+    /// Ordered per-operation typed seed replay for a single target shard. Dormant in this slice:
+    /// no production path constructs or dispatches it; it exists only so the later typed transport
+    /// slices can persist durable replay state without a blob-plus-typed dual authority.
+    TypedSeedBulk(Box<TypedSeedBulkReplayV1>),
+    /// Terminal compacted form for both legacy and typed bulk. Carries no shard, plan, catalog,
+    /// params, seed, or resolved-table replay state because top-level `completed_row_count` is
+    /// authoritative and replay already short-circuits.
+    CompletedBulk { total_ops: u32 },
+}
+
+/// Durable typed seed replay state for one bulk group (ADR 0047).
+impl RouterMutationPayloadV1 {
+    /// Clear the shard vector of a `Scalar` payload. No-op for other variants.
+    pub(crate) fn scalar_clear_shards(&mut self) {
+        if let RouterMutationPayloadV1::Scalar { shards } = self {
+            shards.clear();
+        }
+    }
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct RouterBulkMutationStateV1 {
-    /// Total number of operations in the bulk group.
+pub struct TypedSeedBulkReplayV1 {
+    /// Total number of operations in the bulk group. Must equal `operations.len()`.
     pub total_ops: u32,
+    /// The single graph shard that owns every operation in this group.
+    pub target_shard: RouterMutationShardV1,
+    /// Plan, catalog, and resolved name tables shared by all operations.
+    pub shared: TypedSeedBulkSharedHeaderV1,
+    /// Ordered per-operation parameters and typed seed bindings.
+    pub operations: Vec<TypedSeedBulkOperationV1>,
+}
+
+/// Shared header for a typed bulk group.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct TypedSeedBulkSharedHeaderV1 {
+    /// Per-graph key for ELEMENT_ID/path id encoding.
+    pub element_id_encoding_key: [u8; 16],
+    /// Serialized physical plan executed by every operation in the group.
+    pub plan_blob: Vec<u8>,
+    /// Execution mode for the group.
+    pub mode: GqlExecutionMode,
+    /// Router-resolved label names referenced by the physical plan.
+    pub resolved_labels: Option<ResolvedLabelTable>,
+    /// Router-resolved property names referenced by the physical plan.
+    pub resolved_properties: Option<ResolvedPropertyTable>,
+    /// Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
+    pub indexed_properties: Option<gleaph_graph_kernel::index::IndexedPropertyCatalog>,
+}
+
+/// One typed bulk operation with decoded seed bindings.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct TypedSeedBulkOperationV1 {
+    /// Candid-encoded per-operation parameters.
+    pub params: Vec<u8>,
+    /// Router-resolved seed bindings for this operation.
+    pub seed_bindings: SeedBindingsWire,
+}
+
+#[cfg(any(test, feature = "pocket-ic-e2e"))]
+#[cfg(any(test, feature = "pocket-ic-e2e"))]
+#[allow(dead_code)]
+impl TypedSeedBulkReplayV1 {
+    /// Validate the invariants required for a durable typed seed replay payload.
+    ///
+    /// - `1 <= total_ops <= 1024`
+    /// - `operations.len() == total_ops`
+    /// - each operation has at most 1,024 complete seed rows
+    pub(crate) fn validate(&self) -> Result<(), RouterError> {
+        if self.total_ops == 0 || self.total_ops > 1024 {
+            return Err(RouterError::InvalidArgument(
+                "typed bulk total_ops must be 1..=1024".into(),
+            ));
+        }
+        let expected = self.total_ops as usize;
+        if self.operations.len() != expected {
+            return Err(RouterError::InvalidArgument(
+                "typed bulk operation count must equal total_ops".into(),
+            ));
+        }
+        for (i, op) in self.operations.iter().enumerate() {
+            let rows = op.seed_bindings.rows.len();
+            let entry_rows: usize = op
+                .seed_bindings
+                .entries
+                .iter()
+                .map(|e| e.local_vertex_ids.len())
+                .sum();
+            if rows > 1024 || entry_rows > 1024 {
+                return Err(RouterError::InvalidArgument(format!(
+                    "typed bulk op {i} exceeds 1024 seed rows"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl RouterMutationRecord {
@@ -271,13 +362,36 @@ impl RouterMutationRecord {
             resolved_properties: None,
             completed_row_count: None,
             routing_in_progress: true,
-            shards: Vec::new(),
+            payload: RouterMutationPayloadV1::Scalar { shards: Vec::new() },
             routing_lease_ns: Some(created_at_ns),
             last_error: None,
             terminal_failure: None,
-            is_bulk: false,
-            bulk_state: None,
         })
+    }
+
+    /// Create a non-terminal typed seed bulk saga record with bounded replay state.
+    ///
+    /// The payload is validated and the encoded stable record is checked against the 2 MiB
+    /// portable IC payload bound. No per-seed Candid encode is performed for the size check:
+    /// the single full-record encode is the only serialization.
+    #[cfg(any(test, feature = "pocket-ic-e2e"))]
+    #[allow(dead_code)]
+    pub(crate) fn new_typed_seed_bulk(
+        mutation_id: MutationId,
+        created_at_ns: u64,
+        request_fingerprint: Vec<u8>,
+        replay: TypedSeedBulkReplayV1,
+    ) -> Result<Self, RouterError> {
+        replay.validate()?;
+        let mut record = Self::new(mutation_id, created_at_ns, request_fingerprint);
+        record.as_v1_mut().payload = RouterMutationPayloadV1::TypedSeedBulk(Box::new(replay));
+        const TWO_MIB: usize = 2 * 1024 * 1024;
+        if record.to_bytes().len() > TWO_MIB {
+            return Err(RouterError::InvalidArgument(
+                "typed seed bulk record exceeds 2 MiB stable bound".into(),
+            ));
+        }
+        Ok(record)
     }
 
     pub(crate) fn as_v1(&self) -> &RouterMutationRecordV1 {
@@ -289,6 +403,53 @@ impl RouterMutationRecord {
     pub(crate) fn as_v1_mut(&mut self) -> &mut RouterMutationRecordV1 {
         match self {
             RouterMutationRecord::V1(v1) => v1,
+        }
+    }
+
+    /// Return a reference to the active payload variant.
+    pub fn payload(&self) -> &RouterMutationPayloadV1 {
+        &self.as_v1().payload
+    }
+
+    pub(crate) fn payload_mut(&mut self) -> &mut RouterMutationPayloadV1 {
+        &mut self.as_v1_mut().payload
+    }
+
+    /// Return the scalar/legacy shard slice, or an empty slice for non-shard payloads.
+    pub fn shards(&self) -> &[RouterMutationShardV1] {
+        match &self.as_v1().payload {
+            RouterMutationPayloadV1::Scalar { shards }
+            | RouterMutationPayloadV1::LegacyBulk { shards, .. } => shards,
+            _ => &[],
+        }
+    }
+
+    pub(crate) fn shards_mut(&mut self) -> Option<&mut Vec<RouterMutationShardV1>> {
+        match self.payload_mut() {
+            RouterMutationPayloadV1::Scalar { shards }
+            | RouterMutationPayloadV1::LegacyBulk { shards, .. } => Some(shards),
+            _ => None,
+        }
+    }
+
+    /// `true` if the record is a bulk group (legacy, typed, or completed), as distinct from a
+    /// scalar saga.
+    pub fn is_bulk(&self) -> bool {
+        matches!(
+            self.payload(),
+            RouterMutationPayloadV1::LegacyBulk { .. }
+                | RouterMutationPayloadV1::TypedSeedBulk(_)
+                | RouterMutationPayloadV1::CompletedBulk { .. }
+        )
+    }
+
+    /// Total operation count for bulk payloads; `None` for scalar.
+    pub fn bulk_total_ops(&self) -> Option<u32> {
+        match self.payload() {
+            RouterMutationPayloadV1::LegacyBulk { total_ops, .. } => Some(*total_ops),
+            RouterMutationPayloadV1::TypedSeedBulk(replay) => Some(replay.total_ops),
+            RouterMutationPayloadV1::CompletedBulk { total_ops } => Some(*total_ops),
+            _ => None,
         }
     }
 
@@ -314,31 +475,25 @@ impl RouterMutationRecord {
     /// `terminal_failure` by the reclaim reconciler (ADR 0030 slice 6): a durable dispatch envelope
     /// exists, **no** shard's canonical write has committed, routing is released, and it is not
     /// already terminal-failed.
-    ///
-    /// Try runs *after* the dispatch envelope is recorded, so a reservation-holding record always
-    /// has `shards` populated — the reachable predicate is "envelope present **and** no completed
-    /// canonical shard", not `shards.is_empty()`. The proof's other half (every `proof_scope` shard
-    /// reachable and reporting the `Acquire` absent) is the caller's responsibility; this is only the
-    /// record-side gate. Any other state (`Routing`, a completed canonical shard) must `hold`.
     pub fn is_uncommitted_dispatch(&self) -> bool {
         self.as_v1().terminal_failure.is_none()
             && !self.as_v1().routing_in_progress
-            && !self.as_v1().shards.is_empty()
-            && self.as_v1().shards.iter().all(|shard| !shard.completed())
+            && match &self.as_v1().payload {
+                RouterMutationPayloadV1::Scalar { shards }
+                | RouterMutationPayloadV1::LegacyBulk { shards, .. } => {
+                    !shards.is_empty() && shards.iter().all(|shard| !shard.completed)
+                }
+                _ => false,
+            }
     }
 
     /// Derive the ADR 0029 federated mutation lifecycle phase from the existing saga
     /// progress fields. This is a pure projection of the record's state, not a separate
     /// stored field, so the per-shard `completed`/`projection_advanced` flags and
     /// `completed_row_count` remain the single source of truth.
-    ///
-    /// The contract this enforces: the record never reports [`MutationLifecyclePhase::Completed`]
-    /// while a required canonical shard outcome or a required projection watermark is still
-    /// outstanding.
     pub fn lifecycle_phase(&self) -> MutationLifecyclePhase {
         // An irreversible terminal failure (ADR 0030 slice 6) is authoritative over the
-        // progress-derived phase: a reclaim-cancelled mutation reports `Failed` even though it still
-        // carries a dispatch envelope (its canonical write never committed).
+        // progress-derived phase.
         if self.as_v1().terminal_failure.is_some() {
             return MutationLifecyclePhase::Failed;
         }
@@ -350,71 +505,44 @@ impl RouterMutationRecord {
         if self.as_v1().routing_in_progress {
             return MutationLifecyclePhase::Routing;
         }
-        if self.as_v1().shards.is_empty() {
+        let shards = self.shards();
+        if shards.is_empty() {
             // Routing was released without a durable dispatch envelope and no canonical
             // write committed (e.g. a validation/planning failure that freed the
             // reservation). The key is still re-reservable for a fresh attempt.
             return MutationLifecyclePhase::Failed;
         }
-        if self.as_v1().shards.iter().any(|shard| !shard.completed()) {
+        if shards.iter().any(|shard| !shard.completed) {
             return MutationLifecyclePhase::CanonicalPending;
         }
         // Every shard's canonical write is durable from here on.
-        if self
-            .as_v1()
-            .shards
-            .iter()
-            .all(|shard| shard.projection_advanced())
-        {
+        if shards.iter().all(|shard| shard.projection_advanced) {
             return MutationLifecyclePhase::Completed;
         }
-        if self
-            .as_v1()
-            .shards
-            .iter()
-            .any(|shard| shard.projection_advanced())
-        {
+        if shards.iter().any(|shard| shard.projection_advanced) {
             return MutationLifecyclePhase::ProjectionPending;
         }
         MutationLifecyclePhase::CanonicalCommitted
     }
 }
 
-/// Stable-memory wire envelope for [`RouterMutationRecord`].
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-enum RouterMutationStableRecord {
-    V1(RouterMutationRecord),
-}
-
 impl Storable for RouterMutationRecord {
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(
-            Encode!(&RouterMutationStableRecord::V1(self.clone()))
-                .expect("encode RouterMutationRecord"),
-        )
+        Cow::Owned(Encode!(self).expect("encode RouterMutationRecord"))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&RouterMutationStableRecord::V1(self)).expect("encode RouterMutationRecord")
+        Encode!(&self).expect("encode RouterMutationRecord")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        match Decode!(bytes.as_ref(), RouterMutationStableRecord)
-            .expect("decode RouterMutationRecord")
-        {
-            RouterMutationStableRecord::V1(v1) => v1,
-        }
+        Decode!(bytes.as_ref(), Self).expect("decode RouterMutationRecord")
     }
 }
 
-/// Versioned Router mutation shard outcome (ADR 0044).
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum RouterMutationShard {
-    V1(RouterMutationShardV1),
-}
-
+/// Router mutation shard outcome (ADR 0044).
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RouterMutationShardV1 {
     pub shard_id: ShardId,
@@ -425,70 +553,59 @@ pub struct RouterMutationShardV1 {
     pub row_count: u64,
 }
 
-impl RouterMutationShard {
+impl RouterMutationShardV1 {
     pub fn new(
         shard_id: ShardId,
         graph_canister: Principal,
         seed_bindings_blob: Option<Vec<u8>>,
     ) -> Self {
-        Self::V1(RouterMutationShardV1 {
+        Self {
             shard_id,
             graph_canister,
             seed_bindings_blob,
             completed: false,
             projection_advanced: false,
             row_count: 0,
-        })
-    }
-
-    fn as_v1(&self) -> &RouterMutationShardV1 {
-        match self {
-            RouterMutationShard::V1(v1) => v1,
         }
     }
 
-    fn as_v1_mut(&mut self) -> &mut RouterMutationShardV1 {
-        match self {
-            RouterMutationShard::V1(v1) => v1,
-        }
-    }
-
-    // Field accessors delegating to the active variant.
+    // Field accessors.
     pub fn shard_id(&self) -> ShardId {
-        self.as_v1().shard_id
+        self.shard_id
     }
     pub fn graph_canister(&self) -> Principal {
-        self.as_v1().graph_canister
+        self.graph_canister
     }
     pub fn seed_bindings_blob(&self) -> &Option<Vec<u8>> {
-        &self.as_v1().seed_bindings_blob
+        &self.seed_bindings_blob
     }
     pub fn completed(&self) -> bool {
-        self.as_v1().completed
+        self.completed
     }
     pub fn projection_advanced(&self) -> bool {
-        self.as_v1().projection_advanced
+        self.projection_advanced
     }
     pub fn row_count(&self) -> u64 {
-        self.as_v1().row_count
+        self.row_count
     }
     pub fn set_completed(&mut self, completed: bool) {
-        self.as_v1_mut().completed = completed;
+        self.completed = completed;
     }
     pub fn set_projection_advanced(&mut self, advanced: bool) {
-        self.as_v1_mut().projection_advanced = advanced;
+        self.projection_advanced = advanced;
     }
     pub fn set_row_count(&mut self, row_count: u64) {
-        self.as_v1_mut().row_count = row_count;
+        self.row_count = row_count;
     }
     pub fn set_seed_bindings_blob(&mut self, blob: Option<Vec<u8>>) {
-        self.as_v1_mut().seed_bindings_blob = blob;
+        self.seed_bindings_blob = blob;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_graph_kernel::plan_exec::SeedRowWire;
     use ic_stable_structures::Storable;
 
     #[test]
@@ -500,17 +617,17 @@ mod tests {
         assert!(decoded.as_v1().routing_in_progress);
     }
 
-    fn shard(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShard {
-        let mut s = RouterMutationShard::new(ShardId(shard_id), Principal::anonymous(), None);
+    fn shard(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShardV1 {
+        let mut s = RouterMutationShardV1::new(ShardId(shard_id), Principal::anonymous(), None);
         s.set_completed(completed);
         s.set_projection_advanced(projection_advanced);
         s
     }
 
-    fn record_with_shards(shards: Vec<RouterMutationShard>) -> RouterMutationRecord {
+    fn record_with_shards(shards: Vec<RouterMutationShardV1>) -> RouterMutationRecord {
         let mut record = RouterMutationRecord::new(1, 0, Vec::new());
         record.as_v1_mut().routing_in_progress = false;
-        record.as_v1_mut().shards = shards;
+        record.as_v1_mut().payload = RouterMutationPayloadV1::Scalar { shards };
         record
     }
 
@@ -583,8 +700,125 @@ mod tests {
                 record.lifecycle_phase(),
                 MutationLifecyclePhase::Completed,
                 "incomplete saga must not report Completed: {:?}",
-                record.as_v1().shards
+                record.shards()
             );
         }
+    }
+
+    fn typed_seed_replay(total_ops: u32) -> TypedSeedBulkReplayV1 {
+        let target = RouterMutationShardV1::new(ShardId(0), Principal::anonymous(), None);
+        let shared = TypedSeedBulkSharedHeaderV1 {
+            element_id_encoding_key: [0u8; 16],
+            plan_blob: vec![1, 2, 3],
+            mode: GqlExecutionMode::Update,
+            resolved_labels: None,
+            resolved_properties: None,
+            indexed_properties: None,
+        };
+        let operations = (0..total_ops)
+            .map(|i| TypedSeedBulkOperationV1 {
+                params: vec![i as u8],
+                seed_bindings: SeedBindingsWire {
+                    entries: vec![],
+                    rows: vec![],
+                    complete_prefix_rows: false,
+                },
+            })
+            .collect();
+        TypedSeedBulkReplayV1 {
+            total_ops,
+            target_shard: target,
+            shared,
+            operations,
+        }
+    }
+
+    fn typed_seed_bulk_record(total_ops: u32) -> RouterMutationRecord {
+        RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), typed_seed_replay(total_ops))
+            .expect("valid typed seed bulk record")
+    }
+
+    #[test]
+    fn legacy_bulk_payload_round_trips() {
+        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
+        record.as_v1_mut().payload = RouterMutationPayloadV1::LegacyBulk {
+            total_ops: 2,
+            shards: vec![RouterMutationShardV1::new(
+                ShardId(0),
+                Principal::anonymous(),
+                None,
+            )],
+        };
+        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
+        assert_eq!(decoded, record);
+        assert!(decoded.is_bulk());
+        assert_eq!(decoded.bulk_total_ops(), Some(2));
+    }
+
+    #[test]
+    fn typed_seed_bulk_payload_round_trips() {
+        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
+        record.as_v1_mut().payload =
+            RouterMutationPayloadV1::TypedSeedBulk(Box::new(typed_seed_replay(3)));
+        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
+        assert_eq!(decoded, record);
+        assert!(decoded.is_bulk());
+        assert_eq!(decoded.bulk_total_ops(), Some(3));
+        assert_eq!(decoded.shards().len(), 0);
+    }
+
+    #[test]
+    fn completed_bulk_is_terminal() {
+        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
+        record.as_v1_mut().routing_in_progress = false;
+        record.as_v1_mut().completed_row_count = Some(7);
+        record.as_v1_mut().payload = RouterMutationPayloadV1::CompletedBulk { total_ops: 7 };
+        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Completed);
+        assert!(record.is_bulk());
+        assert!(!record.is_uncommitted_dispatch());
+    }
+
+    #[test]
+    fn typed_payload_is_not_uncommitted_dispatch() {
+        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
+        record.as_v1_mut().routing_in_progress = false;
+        record.as_v1_mut().payload =
+            RouterMutationPayloadV1::TypedSeedBulk(Box::new(typed_seed_replay(1)));
+        assert!(!record.is_uncommitted_dispatch());
+        assert_eq!(record.lifecycle_phase(), MutationLifecyclePhase::Failed);
+    }
+
+    #[test]
+    fn typed_seed_bulk_validation_rejects_zero_ops() {
+        let mut replay = typed_seed_replay(1);
+        replay.total_ops = 0;
+        assert!(replay.validate().is_err());
+    }
+
+    #[test]
+    fn typed_seed_bulk_validation_rejects_ops_count_mismatch() {
+        let mut replay = typed_seed_replay(2);
+        replay.operations.pop();
+        assert!(replay.validate().is_err());
+    }
+
+    #[test]
+    fn typed_seed_bulk_validation_rejects_too_many_rows() {
+        let mut replay = typed_seed_replay(1);
+        replay.operations[0].seed_bindings.rows = (0..1025)
+            .map(|_| SeedRowWire {
+                vertex_bindings: vec![],
+                float64_bindings: vec![],
+            })
+            .collect();
+        assert!(replay.validate().is_err());
+    }
+
+    #[test]
+    fn typed_seed_bulk_record_rejects_exceeding_2mib() {
+        let mut replay = typed_seed_replay(1);
+        // Fill params with enough bytes that the full record exceeds 2 MiB.
+        replay.operations[0].params = vec![0u8; 3 * 1024 * 1024];
+        assert!(RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), replay).is_err());
     }
 }
