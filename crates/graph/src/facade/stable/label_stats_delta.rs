@@ -10,6 +10,9 @@ use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
 use std::ops::Bound as StdBound;
 
+#[cfg(feature = "canbench")]
+use canbench_rs::bench_scope as canbench_scope;
+
 /// Versioned graph-local mutation journal entry (ADR 0015, ADR 0044).
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub enum GraphMutationJournalEntry {
@@ -172,7 +175,12 @@ impl Storable for GraphMutationJournalEntry {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode GraphMutationJournalEntry")
+        #[cfg(feature = "canbench")]
+        let _scope = canbench_scope("journal_entry_encode");
+        let bytes = Encode!(&self).expect("encode GraphMutationJournalEntry");
+        #[cfg(feature = "canbench")]
+        drop(_scope);
+        bytes
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
@@ -194,6 +202,10 @@ impl From<StoredLabelStatsDeltaEvent> for LabelStatsDeltaEventWire {
         value.0
     }
 }
+#[cfg(feature = "canbench")]
+pub(crate) fn bench_encode_label_stats_event(event: LabelStatsDeltaEventWire) -> Vec<u8> {
+    StoredLabelStatsDeltaEvent::from(event).into_bytes()
+}
 
 impl Storable for StoredLabelStatsDeltaEvent {
     const BOUND: Bound = Bound::Unbounded;
@@ -203,7 +215,12 @@ impl Storable for StoredLabelStatsDeltaEvent {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self.0).expect("encode LabelStatsDeltaEventWire")
+        #[cfg(feature = "canbench")]
+        let _scope = canbench_scope("label_stats_delta_event_encode");
+        let bytes = Encode!(&self.0).expect("encode LabelStatsDeltaEventWire");
+        #[cfg(feature = "canbench")]
+        drop(_scope);
+        bytes
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
@@ -324,6 +341,8 @@ impl<M: Memory> GraphMutationJournal<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_graph_kernel::entry::VertexLabelId;
+    use gleaph_graph_kernel::plan_exec::LabelStatsDelta;
     use ic_stable_structures::VectorMemory;
 
     const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
@@ -432,5 +451,34 @@ mod tests {
         for id in 1..=5u64 {
             assert!(j.get(id).is_none());
         }
+    }
+
+    #[test]
+    fn encoded_byte_lengths_are_printed() {
+        let scalar_completed =
+            GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+        let edge_completed =
+            GraphMutationJournalEntry::completed(2, 3, Some(4), Some(5), vec![7u32, 42u32], 0);
+        let mut bulk =
+            GraphMutationJournalEntry::completed(3, 10, Some(6), Some(9), vec![100u32], 0);
+        bulk.set_next_index(Some(2));
+        bulk.set_bulk_progress(Some(GraphBulkMutationProgress::new(4, 2, vec![1, 3, 5, 7])));
+        let label_event = LabelStatsDeltaEventWire {
+            mutation_id: 1,
+            shard_event_seq: 1,
+            label_stats_delta: LabelStatsDelta {
+                vertex: vec![(VertexLabelId::from_raw(1), 1)],
+                edge: vec![],
+            },
+        };
+        eprintln!(
+            "encoded byte lengths: scalar_journal={} edge_journal={} bulk_journal={} label_delta_event={}",
+            scalar_completed.into_bytes().len(),
+            edge_completed.into_bytes().len(),
+            bulk.into_bytes().len(),
+            StoredLabelStatsDeltaEvent::from(label_event)
+                .into_bytes()
+                .len(),
+        );
     }
 }

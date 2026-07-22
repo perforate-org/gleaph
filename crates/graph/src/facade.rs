@@ -4,7 +4,7 @@ pub(crate) mod derived_state;
 mod ic_budget;
 mod ic_gql_extensions;
 pub(crate) mod maintenance_timer;
-mod stable;
+pub(crate) mod stable;
 
 mod store;
 mod store_edge_insert;

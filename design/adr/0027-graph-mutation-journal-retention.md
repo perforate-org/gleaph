@@ -3,7 +3,7 @@
 Date: 2026-06-21
 Status: implemented
 Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 20:57:56 UTC +0000
+Anchor timestamp: 2026-07-22 21:22:08 UTC +0000
 
 ## Context
 
@@ -121,3 +121,20 @@ replay.
 - ADR 0024 — mutation journal completion vs deferred index flush (`Completed` semantics).
 - ADR 0025 — client-mutation idempotency journal retention/compaction/GC (router twin; TTL source).
 - `design/storage/stable-memory-inventory.md` — region 39 retention note.
+
+---
+
+## Addendum: cost attribution (Plan 0119, 2026-07-22)
+
+Non-invasive encode probes show that the journal entry encode cost
+(`journal_entry_encode`) dominates the commit path:
+
+- ~182 K instructions to encode a 150-byte scalar completed entry.
+- `journal_map_insert` total ~187 K, leaving only ~5–8 K for fresh-key
+  `StableBTreeMap` I/O.
+- Overwriting an existing journal key is much more expensive (~257 K residual),
+  but canonical writes use fresh `mutation_id`s.
+
+A fixed-length manual layout for `GraphMutationJournalEntry` is therefore the
+selected follow-up (Plan 0120). This addendum does not change the retention
+window, GC design, or replay semantics recorded above.

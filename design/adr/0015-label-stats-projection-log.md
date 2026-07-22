@@ -2,8 +2,8 @@
 
 Date: 2026-06-15  
 Status: implemented  
-Last revised: 2026-06-15
-Anchor timestamp: 2026-06-15 10:38:29 UTC +0000
+Last revised: 2026-07-22
+Anchor timestamp: 2026-07-22 21:22:08 UTC +0000
 
 ## Context
 
@@ -425,3 +425,20 @@ the index converges asynchronously. ADR 0024 therefore decouples mutation-journa
 completion from synchronous flush success — a single-statement DML mutation is recorded
 `Completed` even when its index flush was deferred, so the entry is no longer wedged
 `Incomplete` forever. See `design/adr/0024-mutation-journal-completion-vs-index-flush.md`.
+
+---
+
+## Addendum: cost attribution (Plan 0119, 2026-07-22)
+
+Non-invasive encode probes show that the label-stats delta event encode cost
+(`label_stats_delta_event_encode`) dominates the append path:
+
+- ~101 K instructions to encode a 76-byte event.
+- `label_stats_delta_log_insert` total ~116 K, leaving only ~15 K for
+  `StableBTreeMap` I/O and sequence allocation.
+- The fixed Candid overhead, not byte length or stable-page I/O, is the
+  dominant cost.
+
+A fixed-length manual layout for `StoredLabelStatsDeltaEvent` is therefore the
+selected follow-up (Plan 0120). This addendum does not change the projection
+semantics, retention, or ack boundary recorded above.

@@ -3653,3 +3653,91 @@ fn bench_inline_scalar_set_payload_fixed_edges() -> canbench_rs::BenchResult {
         black_box(i)
     })
 }
+
+// --- Plan 0119: journal and label-delta encode probes ---
+
+#[cfg(feature = "canbench")]
+use crate::facade::stable::label_stats_delta::{
+    GraphMutationJournal, GraphMutationJournalEntry, bench_encode_label_stats_event,
+};
+#[cfg(feature = "canbench")]
+use gleaph_graph_kernel::entry::VertexLabelId;
+#[cfg(feature = "canbench")]
+#[cfg(feature = "canbench")]
+use gleaph_graph_kernel::plan_exec::{
+    GraphBulkMutationProgress, LabelStatsDelta, LabelStatsDeltaEventWire,
+};
+#[cfg(feature = "canbench")]
+use ic_stable_structures::{Storable, VectorMemory};
+
+/// Encode cost of a completed scalar vertex journal entry (empty hot-forward, no bulk cursor).
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_graph_journal_entry_encode_scalar_vertex() -> canbench_rs::BenchResult {
+    let entry = GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+    canbench_rs::bench_fn(|| {
+        black_box(entry.clone().into_bytes());
+    })
+}
+
+/// Encode cost of a completed edge journal entry with hot-forward vertices and delta seqs.
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_graph_journal_entry_encode_edge() -> canbench_rs::BenchResult {
+    let entry = GraphMutationJournalEntry::completed(2, 3, Some(4), Some(5), vec![7u32, 42u32], 0);
+    canbench_rs::bench_fn(|| {
+        black_box(entry.clone().into_bytes());
+    })
+}
+
+/// Encode cost of a bulk-progress journal entry with next_index and per-operation row counts.
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_graph_journal_entry_encode_bulk_progress() -> canbench_rs::BenchResult {
+    let mut entry = GraphMutationJournalEntry::completed(3, 10, Some(6), Some(9), vec![100u32], 0);
+    entry.set_next_index(Some(2));
+    entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(4, 2, vec![1, 3, 5, 7])));
+    canbench_rs::bench_fn(|| {
+        black_box(entry.clone().into_bytes());
+    })
+}
+
+/// Encode cost of a label-stats delta event for a single vertex label.
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_graph_label_stats_delta_event_encode_vertex() -> canbench_rs::BenchResult {
+    let event = LabelStatsDeltaEventWire {
+        mutation_id: 1,
+        shard_event_seq: 1,
+        label_stats_delta: LabelStatsDelta {
+            vertex: vec![(VertexLabelId::from_raw(1), 1)],
+            edge: vec![],
+        },
+    };
+    canbench_rs::bench_fn(|| {
+        black_box(bench_encode_label_stats_event(event.clone()));
+    })
+}
+
+/// StableBTreeMap insert cost for a brand-new mutation-id key in an empty journal.
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_graph_journal_stable_insert_fresh_key() -> canbench_rs::BenchResult {
+    let mut journal = GraphMutationJournal::init(VectorMemory::default());
+    let entry = GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+    canbench_rs::bench_fn(|| {
+        journal.insert(black_box(entry.clone()));
+    })
+}
+
+/// StableBTreeMap overwrite cost for an existing mutation-id key.
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_graph_journal_stable_insert_reused_key() -> canbench_rs::BenchResult {
+    let mut journal = GraphMutationJournal::init(VectorMemory::default());
+    let entry = GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+    journal.insert(entry.clone());
+    canbench_rs::bench_fn(|| {
+        journal.insert(black_box(entry.clone()));
+    })
+}
