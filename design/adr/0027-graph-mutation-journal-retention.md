@@ -57,9 +57,9 @@ replay.
    `recorded_at_ns: Option<u64>`, stamped on both `Incomplete` and `Completed`
    writes (persisted `Incomplete` entries are also dedup markers, so they are
    age-bounded too — never leaked, never dropped within the replay window).
-   `None` decodes from pre-ADR-0027 Candid bytes (the field is `#[serde(default)]`
-   and omitted on legacy values), so the change is backward-compatible with no
-   layout-version bump (region 39 stays `Canonical` / `RebuildPath::None`).
+   The current fixed-length layout writes the timestamp slot on every persisted
+   entry. Pre-0120 Candid bytes are intentionally discarded at the fresh-install
+   boundary; no legacy decoder or in-place migration is supported.
 
 2. **Retention = `GRAPH_MUTATION_JOURNAL_RETENTION_NS` = 9 days.** A
    one-directional lower-bound coupling to the router's 7-day
