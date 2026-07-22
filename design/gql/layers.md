@@ -26,7 +26,7 @@ flowchart TB
 |-------|----------------|------------------|
 | `gleaph-gql` | Parser, validator, `program_modification`, standard types | IC principals, shard ids, canister calls |
 | `gleaph-gql-planner` | `build_*_plan`, `PhysicalPlan`, optimizations | GraphStore, federation, stable memory |
-| `gleaph-gql-extension-integration` | Gleaph-specific path-extension planning and pure `GLEAPH.WEIGHT` shape helpers; shared by Router and Graph | IC principals, shard ids, canister calls, storage layout |
+| `gleaph-gql-integration` | Gleaph-specific integration boundary between portable GQL planning and Gleaph execution. Public modules: `path_extension` (path-extension-to-planner policy) and `weight` (pure `GLEAPH.WEIGHT` expression-shape classification). Shared by Router and Graph. | IC principals, shard ids, canister calls, storage layout, generic GQL syntax, planner cost internals |
 | `gleaph-gql-ic` | Parameter encoding for canisters | Planner logic |
 | `gleaph-graph-kernel` | Wire types shared by router/graph/index | Full executor |
 | `gleaph-graph` | Plan execution, storage, federation expand | GQL parse (except helpers) |

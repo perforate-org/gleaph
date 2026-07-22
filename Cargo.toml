@@ -2,7 +2,7 @@
 members = [
     "crates/auth",
     "crates/gql",
-    "crates/gql-extension-integration",
+    "crates/gql-integration",
     "crates/gql-ic",
     "crates/gql-keywords",
     "crates/gql-macros",
@@ -34,7 +34,7 @@ license = "MIT or Apache-2.0"
 gleaph-auth = { path = "crates/auth" }
 gleaph-cdk = { path = "sdk/canister/rust" }
 gleaph-gql = { path = "crates/gql" }
-gleaph-gql-extension-integration = { path = "crates/gql-extension-integration" }
+gleaph-gql-integration = { path = "crates/gql-integration" }
 gleaph-gql-keywords = { path = "crates/gql-keywords" }
 gleaph-gql-ic = { path = "crates/gql-ic" }
 gleaph-gql-planner = { path = "crates/gql-planner" }

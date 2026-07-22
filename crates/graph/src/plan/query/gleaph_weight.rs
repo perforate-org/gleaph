@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gleaph_gql::ast::{Expr, ExprKind, LetBinding};
 use gleaph_gql::types::LabelExpr;
-pub(crate) use gleaph_gql_extension_integration::{
+pub(crate) use gleaph_gql_integration::weight::{
     GleaphWeightEdgeRef, gleaph_weight_arg_edge_var, gleaph_weight_edge_ref,
     gleaph_weight_single_arg, is_gleaph_weight_call,
 };

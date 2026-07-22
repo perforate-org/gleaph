@@ -361,6 +361,13 @@ sufficient, such as a shared seed relation.
   operation and retains its final actual-response encode guard as defense in depth, not as the
   admission mechanism after mutations may already have committed. A plan without this proof uses
   the existing scalar path.
+> Ownership note:  continues to own portable wire types and payload
+> constants, but it cannot own physical-plan classification because it sits below
+>  in the dependency graph (a cycle would be required). The renamed
+>  crate already depends on both planner and graph-kernel, so it is the
+> future owner of the  admission classifier. This slice corrects the planned ownership
+> boundary; the classifier itself remains a Plan 0109 deliverable.
+
 
 ### Performance expectation
 

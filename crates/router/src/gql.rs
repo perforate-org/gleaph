@@ -565,7 +565,7 @@ pub(crate) fn build_router_block_plan(
         schema,
         PlanBuildOptions {
             stats: Some(stats),
-            path_extensions: &gleaph_gql_extension_integration::GLEAPH_PATH_EXTENSION_HANDLER,
+            path_extensions: &gleaph_gql_integration::path_extension::GLEAPH_PATH_EXTENSION_HANDLER,
         },
     )
     .map_err(|e| RouterError::InvalidArgument(e.to_string()))

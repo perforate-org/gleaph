@@ -39,7 +39,7 @@ sql-compat = ["gleaph-gql/sql-compat", "gleaph-gql-planner/sql-compat"]
 cypher = [
     "gleaph-gql/cypher",
     "gleaph-gql-planner/cypher",
-    "gleaph-gql-extension-integration/cypher",
+    "gleaph-gql-integration/cypher",
 ]
 # Test-only canister methods for PocketIC multi-canister E2E (not enabled in release benches).
 pocket-ic-e2e = []
@@ -57,7 +57,7 @@ gleaph-gql-ic.workspace = true
 gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
 gleaph-graph-prepared.workspace = true
 gleaph-graph-kernel.workspace = true
-gleaph-gql-extension-integration.workspace = true
+gleaph-gql-integration.workspace = true
 half.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true

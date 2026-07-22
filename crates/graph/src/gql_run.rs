@@ -28,7 +28,7 @@ use gleaph_graph_kernel::plan_exec::{
 use gleaph_graph_prepared::PreparedQueryRecord;
 use ic_stable_lara::VertexId;
 
-use gleaph_gql_extension_integration::GLEAPH_PATH_EXTENSION_HANDLER;
+use gleaph_gql_integration::path_extension::GLEAPH_PATH_EXTENSION_HANDLER;
 use std::collections::BTreeMap;
 
 #[cfg(target_family = "wasm")]

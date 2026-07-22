@@ -21,7 +21,7 @@ use super::context::QueryExprEvaluator;
 use crate::facade::FederationRouting;
 use crate::index::federation_routing;
 use crate::index::lookup::PropertyIndexLookup;
-use gleaph_gql_extension_integration::GLEAPH_PATH_EXTENSION_HANDLER;
+use gleaph_gql_integration::path_extension::GLEAPH_PATH_EXTENSION_HANDLER;
 
 pub use super::super::error::PlanQueryError;
 pub use super::super::row::PlanRow;

@@ -1,15 +1,14 @@
-//! Gleaph-specific integration between generic GQL parsing/planning and Graph/Router execution.
+//! Gleaph-specific path-extension planning integration.
 //!
-//! This crate intentionally lives between `gleaph-gql-planner` and the execution crates so that
-//! both the Router (which plans ingress queries) and the Graph shard (which replans or validates)
-//! can share the same path-extension classification without leaking Gleaph semantics into the
-//! generic GQL crates.
+//! Translates generic GQL path-pattern extension clauses (e.g. `GLEAPH.COST`) into planner
+//! concepts consumed by both Router and Graph planning.
 
+use crate::weight::{gleaph_weight_arg_edge_var, gleaph_weight_single_arg, is_gleaph_weight_call};
 use gleaph_gql::ast::{Expr, ExprKind, ObjectName, ValueType};
 use gleaph_gql_planner::{
     PathPatternExtensionContext, PathPatternExtensionHandler, PlannerError, ShortestPathCost,
 };
-use gleaph_graph_kernel::gql_dialect::{COST, GLEAPH_COST, GLEAPH_WEIGHT};
+use gleaph_graph_kernel::gql_dialect::{COST, GLEAPH_COST};
 
 /// Gleaph-specific interpretation of generic path-pattern extension clauses.
 pub struct GleaphPathExtensionHandler;
@@ -387,59 +386,6 @@ fn validate_cost_expr_shape(expr: &Expr) -> Result<(), PlannerError> {
     try_for_each_immediate_child_expr(expr, validate_cost_expr_shape)
 }
 
-/// How [`GLEAPH.WEIGHT`] names an edge in an expression.
-#[derive(Clone, Debug, PartialEq)]
-pub enum GleaphWeightEdgeRef {
-    /// Single-hop expand or shortest-path relax step.
-    SingletonVar(String),
-    /// Indexed element of a variable-length edge group (`e[-1]`, `e[0]`, …).
-    /// Reachable only through the cypher list-index expression.
-    #[cfg(feature = "cypher")]
-    GroupElement { group_var: String, index: Box<Expr> },
-}
-
-/// True when `name` is an unqualified `GLEAPH.WEIGHT` function reference.
-pub fn is_gleaph_weight_call(name: &ObjectName, distinct: bool) -> bool {
-    !distinct && GLEAPH_WEIGHT.matches_ascii_case_insensitive(&name.parts)
-}
-
-/// Returns the single argument of a `GLEAPH.WEIGHT` call, if exactly one is present.
-pub fn gleaph_weight_single_arg(args: &[Expr]) -> Option<&Expr> {
-    if args.len() == 1 {
-        Some(&args[0])
-    } else {
-        None
-    }
-}
-
-/// Resolves the edge variable referenced by a `GLEAPH.WEIGHT` argument expression.
-pub fn gleaph_weight_edge_ref(expr: &Expr) -> Option<GleaphWeightEdgeRef> {
-    match &expr.kind {
-        ExprKind::Paren(inner) => gleaph_weight_edge_ref(inner),
-        ExprKind::Variable(v) => Some(GleaphWeightEdgeRef::SingletonVar(v.clone())),
-        #[cfg(feature = "cypher")]
-        ExprKind::ListIndex { list, index } => {
-            let ExprKind::Variable(v) = &list.kind else {
-                return None;
-            };
-            Some(GleaphWeightEdgeRef::GroupElement {
-                group_var: v.clone(),
-                index: index.clone(),
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Returns the edge variable name referenced by a `GLEAPH.WEIGHT` argument, if any.
-pub fn gleaph_weight_arg_edge_var(expr: &Expr) -> Option<String> {
-    match gleaph_weight_edge_ref(expr)? {
-        GleaphWeightEdgeRef::SingletonVar(v) => Some(v),
-        #[cfg(feature = "cypher")]
-        GleaphWeightEdgeRef::GroupElement { group_var, .. } => Some(group_var),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,8 +396,8 @@ mod tests {
     use gleaph_gql::token::Span;
     use gleaph_gql::types::EdgeDirection;
     use gleaph_gql::types::LabelExpr;
-    use gleaph_gql_planner::SingleEdgePathInfo;
     use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
+    use gleaph_gql_planner::{PathPatternExtensionHandler, SingleEdgePathInfo};
 
     fn gleaph_cost_extension() -> ObjectName {
         ObjectName::qualified(vec!["GLEAPH".into(), "COST".into()])
@@ -609,32 +555,5 @@ mod tests {
             plan_cost(expr),
             ShortestPathCost::EdgeCostExpr { edge_var, .. } if &*edge_var == "e"
         ));
-    }
-
-    #[test]
-    fn is_gleaph_weight_call_recognizes_weight() {
-        let name = ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]);
-        assert!(is_gleaph_weight_call(&name, false));
-        assert!(!is_gleaph_weight_call(&name, true));
-    }
-
-    #[cfg(feature = "cypher")]
-    #[test]
-    fn gleaph_weight_edge_ref_recognizes_group_element() {
-        use gleaph_gql::value::Value;
-        let list = Expr::var("e");
-        let index = Expr::new(ExprKind::Literal(Value::Int64(-1)));
-        let expr = Expr::new(ExprKind::ListIndex {
-            list: Box::new(list),
-            index: Box::new(index),
-        });
-        assert!(
-            matches!(
-                gleaph_weight_edge_ref(&expr),
-                Some(GleaphWeightEdgeRef::GroupElement { group_var, .. })
-                if group_var == "e"
-            ),
-            "expected e[-1] to resolve to group element edge ref"
-        );
     }
 }
