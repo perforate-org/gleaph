@@ -9,11 +9,14 @@ use crate::gql_run::{
 };
 use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
+#[cfg(target_family = "wasm")]
 use crate::index::repair_journal::drain_outbox_once;
 #[cfg(not(target_family = "wasm"))]
 use crate::index::router::verify_shard_attachment;
+#[cfg(target_family = "wasm")]
 use crate::index::vector_ic::IcVectorIndexClient;
 use crate::index::vector_lookup::VectorIndexLookup;
+#[cfg(target_family = "wasm")]
 use crate::plan::PlanQueryError;
 use crate::plan_wire_guard::ensure_federated_seeds_for_index_anchors;
 use candid::{Decode, Encode};
@@ -128,6 +131,7 @@ fn wasm_index_client_holder() -> Option<IcPropertyIndexClient> {
         })
 }
 
+#[cfg(target_family = "wasm")]
 fn wasm_vector_index_client() -> Option<IcVectorIndexClient> {
     GraphStore::new()
         .federation_routing()
@@ -136,16 +140,23 @@ fn wasm_vector_index_client() -> Option<IcVectorIndexClient> {
 }
 
 async fn sync_drain_derived_index_outbox() -> Result<(), String> {
-    let Some(index) = wasm_index_client_holder() else {
-        return Ok(());
-    };
-    let vector = wasm_vector_index_client();
-    let ix = &index as &dyn PropertyIndexLookup;
-    let vx = vector.as_ref().map(|c| c as &dyn VectorIndexLookup);
-    match drain_outbox_once(ix, vx).await {
-        Ok(()) => Ok(()),
-        Err(PlanQueryError::IndexFlushDeferred { .. }) => Ok(()),
-        Err(other) => Err(other.to_string()),
+    #[cfg(target_family = "wasm")]
+    {
+        let Some(index) = wasm_index_client_holder() else {
+            return Ok(());
+        };
+        let vector = wasm_vector_index_client();
+        let ix = &index as &dyn PropertyIndexLookup;
+        let vx = vector.as_ref().map(|c| c as &dyn VectorIndexLookup);
+        match drain_outbox_once(ix, vx).await {
+            Ok(()) => Ok(()),
+            Err(PlanQueryError::IndexFlushDeferred { .. }) => Ok(()),
+            Err(other) => Err(other.to_string()),
+        }
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        Ok(())
     }
 }
 
@@ -237,7 +248,7 @@ fn message_instruction_counter() -> u64 {
 
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
-    let result = execute_plan_impl(PlanExecutionInput::legacy(args), false, true, false)
+    let result = execute_plan_impl(PlanExecutionInput::legacy(args), false, true, false, false)
         .await?
         .0;
     ensure_execute_plan_result_payload(&result, "execute_plan_query")?;
@@ -246,7 +257,7 @@ pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResu
 
 pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Update, "execute_plan_update")?;
-    let result = execute_plan_impl(PlanExecutionInput::legacy(args), true, true, true)
+    let result = execute_plan_impl(PlanExecutionInput::legacy(args), true, true, false, true)
         .await?
         .0;
     ensure_execute_plan_result_payload(&result, "execute_plan_update")?;
@@ -634,17 +645,26 @@ async fn execute_plan_batch_internal(
             break;
         }
 
-        let (check_journal, write_journal) = if is_bulk {
-            (false, false)
+        let (check_journal, write_incomplete_journal, write_complete_journal) = if is_bulk {
+            (false, false, false)
         } else {
-            (true, true)
+            (true, true, true)
         };
         let raw_result = match ensure_execution_mode(
             operation.args.mode,
             GqlExecutionMode::Update,
             entrypoint,
         ) {
-            Ok(()) => execute_plan_impl(operation, false, check_journal, write_journal).await,
+            Ok(()) => {
+                execute_plan_impl(
+                    operation,
+                    false,
+                    check_journal,
+                    write_incomplete_journal,
+                    write_complete_journal,
+                )
+                .await
+            }
             Err(err) => Err(err),
         }
         .map_err(|error| response_contract.error(error));
@@ -826,7 +846,8 @@ async fn execute_plan_impl(
     input: PlanExecutionInput,
     drain_outbox_after: bool,
     check_journal: bool,
-    write_journal: bool,
+    write_incomplete_journal: bool,
+    write_complete_journal: bool,
 ) -> Result<
     (
         ExecutePlanResult,
@@ -918,12 +939,12 @@ async fn execute_plan_impl(
             local_unique_claims: args.local_unique_claims.unwrap_or_default(),
             local_constrained_properties: args.local_constrained_properties.unwrap_or_default(),
             resolved_search,
-            write_journal,
+            write_journal: write_incomplete_journal,
         },
         seeds,
         args.mutation_id,
         check_journal,
-        write_journal,
+        write_complete_journal,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -2229,6 +2250,68 @@ mod tests {
         (plan_blob, seed_blob, local_vid)
     }
 
+    /// ADR 0044 scalar handler contract: `execute_plan_update` (single-message update) must omit
+    /// the intermediate incomplete journal and keep only the completed journal. Replaying the
+    /// same mutation id must therefore not re-execute the mutation.
+    #[test]
+    fn execute_plan_update_scalar_writes_only_completed_journal() {
+        attach_test_federation(TEST_SHARD_ID);
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec!["HandlerScalarVertex".into()],
+            properties: vec![],
+        }]);
+        let plan_blob = encode_block_plans(&[plan], true).expect("encode mutation plan");
+        let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
+        let args = ExecutePlanArgs {
+            target_shard_id: TEST_SHARD_ID,
+            element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
+            mutation_id: Some(55),
+            plan_blob,
+            params_blob,
+            mode: GqlExecutionMode::Update,
+            seed_bindings_blob: None,
+            resolved_labels: None,
+            resolved_properties: None,
+            indexed_properties: None,
+            unique_claims: None,
+            constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
+            indexed_embeddings: None,
+            resolved_search_blob: None,
+        };
+
+        let first = pollster::block_on(execute_plan_update(args.clone())).expect("first update");
+        let journal = GraphStore::new()
+            .mutation_journal_entry(55)
+            .expect("completed journal");
+        assert!(
+            journal.is_completed(),
+            "scalar handler must write only a completed journal"
+        );
+        let initial_vertex_count = GraphStore::new().vertex_count();
+        assert!(
+            initial_vertex_count > 0.into(),
+            "mutation must create a vertex (got {})",
+            initial_vertex_count
+        );
+
+        let second = pollster::block_on(execute_plan_update(args)).expect("replay update");
+        assert_eq!(
+            second.row_count, first.row_count,
+            "replay must return the same row count"
+        );
+        let final_vertex_count = GraphStore::new().vertex_count();
+        assert!(
+            final_vertex_count >= initial_vertex_count,
+            "completed-journal replay must not remove vertices"
+        );
+        assert!(
+            !(final_vertex_count > initial_vertex_count),
+            "completed-journal replay must not re-execute the mutation"
+        );
+    }
     #[test]
     fn execute_plan_query_seed_bindings_skip_label_intersection() {
         attach_test_federation(TEST_SHARD_ID);

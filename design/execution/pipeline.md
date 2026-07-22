@@ -1,6 +1,6 @@
 # Execution pipeline
 
-Last updated: 2026-07-21
+Last updated: 2026-07-23
 Anchor timestamp: 2026-07-21 01:42:34 UTC +0000
 
 ## Purpose
@@ -28,6 +28,13 @@ not to later graph expansion or join cardinality.
 |-----|------|
 | `execute_plan_query_bindings` | `crates/graph/src/plan/query/executor.rs` |
 | Canister | `execute_plan_query` / `execute_plan_update` handlers |
+
+The canister handlers separate the intermediate incomplete journal write from the
+final completed journal write. Scalar single-message updates (`execute_plan_update`)
+keep only the completed journal entry because the whole message is atomic and there
+is no resumable boundary before completion. Batch updates (`execute_plan_update_batch`)
+and non-bulk operations inside a batch still write the incomplete journal so the
+Router can resume or replay per-operation progress across calls.
 
 Flow:
 

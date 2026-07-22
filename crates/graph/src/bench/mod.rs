@@ -2270,13 +2270,19 @@ fn bench_graph_delete_detached_vertex() -> canbench_rs::BenchResult {
 /// Run a single-DML wire plan through the canonical mutation segment with no index delivery.
 fn run_canonical_segment(store: GraphStore, plan: &PhysicalPlan) {
     let blob = encode_block_plans(std::slice::from_ref(plan), true).expect("encode mutation plan");
+    // Scalar single-message execution is atomic; the intermediate incomplete journal is redundant,
+    // so only the completed journal is kept as durable replay state.
+    let execution = GqlExecutionContext {
+        write_journal: false,
+        ..GqlExecutionContext::default()
+    };
     pollster::block_on(run_wire_plan_last_read_row_count(
         store,
         &blob,
         &params(),
         GqlCanisterExecutionMode::Update,
         None,
-        GqlExecutionContext::default(),
+        execution,
         None,
         Some(1),
     ))

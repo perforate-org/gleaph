@@ -2,7 +2,7 @@
 
 Status: Implemented
 Date: 2026-07-19 15:12:46 UTC
-Last revised: 2026-07-22
+Last revised: 2026-07-23
 Anchor timestamp: 2026-07-22 02:53:05 UTC +0000
 
 ## Context
@@ -305,6 +305,12 @@ objects whose semantics will evolve as bulk behavior matures.
   owner is introduced.
 - The public Candid API and per-mutation result ordering are unchanged.
 - Single-mutation callers continue to use one `MutationId` per mutation.
+- For scalar single-message execution, the Graph canonical segment omits the
+  intermediate incomplete journal write and only persists the completed journal
+  entry. ICP message execution is atomic, so there is no resumable boundary
+  between the canonical write and completion; the completed record is sufficient
+  for idempotent replay. Bulk execution and non-bulk batch operations retain the
+  incomplete journal so the Router can resume or replay per-operation progress.
 - Stable value types are versioned, protecting future canister upgrades.
 - Selective single-variable and multi-variable anchored groups use the ADR 0046 complete-row
   seed path; unsupported shapes fall back to the sequential path.

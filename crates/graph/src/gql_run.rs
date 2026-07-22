@@ -28,6 +28,8 @@ use gleaph_graph_kernel::plan_exec::{
 use gleaph_graph_prepared::PreparedQueryRecord;
 use ic_stable_lara::VertexId;
 
+#[cfg(feature = "canbench")]
+use canbench_rs::bench_scope as canbench_scope;
 use gleaph_gql_integration::path_extension::GLEAPH_PATH_EXTENSION_HANDLER;
 use std::collections::BTreeMap;
 
@@ -58,6 +60,24 @@ fn log_wire_phase(_entrypoint: &str, _phase: &str, _cost: u64) {}
 #[cfg(not(feature = "batch-instr-log"))]
 #[inline]
 fn log_wire_phase(_entrypoint: &str, _phase: &str, _cost: u64) {}
+
+/// Opens a canbench scope when the `canbench` feature is enabled; no-op otherwise.
+macro_rules! bench_scope {
+    ($name:expr, $var:ident) => {
+        #[cfg(feature = "canbench")]
+        let $var = canbench_scope($name);
+        #[cfg(not(feature = "canbench"))]
+        let $var = ();
+    };
+}
+
+/// Explicitly closes a canbench scope; no-op when `canbench` is disabled.
+macro_rules! bench_scope_end {
+    ($var:ident) => {
+        #[cfg(feature = "canbench")]
+        drop($var);
+    };
+}
 
 pub fn kernel_execution_mode(mode: KernelGqlExecutionMode) -> GqlCanisterExecutionMode {
     match mode {
@@ -1109,6 +1129,7 @@ async fn apply_canonical_mutation_segment(
         preflight_local_unique_claims(store, &local_unique_claims)?;
     }
     let _phase_t0 = current_instruction_counter();
+    bench_scope!("canonical_mutation_tail", _scope_mutation_tail);
     let mutation =
         match execute_mutation_tail_async(store, mutation_ops, seed_rows, parameters, execution)
             .await
@@ -1116,6 +1137,7 @@ async fn apply_canonical_mutation_segment(
             Ok(mutation) => mutation,
             Err(error) => trap_wire_mutation_failure(error),
         };
+    bench_scope_end!(_scope_mutation_tail);
     let _phase_t1 = current_instruction_counter();
     log_wire_phase(
         "apply_canonical_mutation_segment",
@@ -1125,6 +1147,10 @@ async fn apply_canonical_mutation_segment(
     // ADR 0030 slice 5: pin the cross-shard uniqueness `Acquire` receipts for the element created
     // in this segment. This runs inside the same no-`await` canonical section as the write above, so
     // the receipts commit (or roll back on trap) atomically with the canonical mutation.
+    bench_scope!(
+        "canonical_uniqueness_bookkeeping",
+        _scope_unique_bookkeeping
+    );
     if !unique_claims.is_empty() {
         emit_unique_acquires(
             store,
@@ -1160,11 +1186,13 @@ async fn apply_canonical_mutation_segment(
             );
         }
     }
+    bench_scope_end!(_scope_unique_bookkeeping);
     let has_delta = !mutation.label_stats_delta.vertex.is_empty()
         || !mutation.label_stats_delta.edge.is_empty();
     if let Some(mutation_id) = mutation_id
         && has_delta
     {
+        bench_scope!("canonical_label_stats_delta_append", _scope_label_stats);
         let event = store
             .commit_append_label_stats_delta(mutation_id, mutation.label_stats_delta.clone())
             .map_err(GqlRunError::Plan)?;
@@ -1173,15 +1201,21 @@ async fn apply_canonical_mutation_segment(
             emitted_delta_last_seq,
             event.shard_event_seq,
         );
+        bench_scope_end!(_scope_label_stats);
     }
     if let Some(mutation_id) = mutation_id
         && write_journal
     {
+        bench_scope!(
+            "canonical_incomplete_journal_write",
+            _scope_incomplete_journal
+        );
         store.commit_record_incomplete_mutation_journal(
             mutation_id,
             *emitted_delta_first_seq,
             *emitted_delta_last_seq,
         );
+        bench_scope_end!(_scope_incomplete_journal);
     }
     let _phase_t2 = current_instruction_counter();
     log_wire_phase(
@@ -1276,6 +1310,7 @@ async fn run_wire_plans_inner(
             // ADR 0046 Phase 1: when the router supplied complete rows for the entire read prefix,
             // skip the read phase entirely and use the seed rows as mutation inputs.
             let _phase_r0 = current_instruction_counter();
+            bench_scope!("canonical_read_phase_seed_rows", _scope_read_phase);
             let router_seed = (skip_index && !seed_rows.is_empty())
                 .then(|| (std::mem::take(&mut seed_rows), true));
             let mutation_seed_rows = read_phase_seed_rows(
@@ -1288,6 +1323,7 @@ async fn run_wire_plans_inner(
                 complete_prefix_rows,
             )
             .await?;
+            bench_scope_end!(_scope_read_phase);
             let _phase_r1 = current_instruction_counter();
             log_wire_phase(
                 "run_wire_plans_inner",
@@ -1484,6 +1520,7 @@ pub async fn run_wire_plans_last_read_row_count(
         _phase_t1.saturating_sub(_phase_t0),
     );
     if let Some(mutation_id) = mutation_id {
+        bench_scope!("canonical_outbox_persist", _scope_outbox_persist);
         persist_pending_to_outbox(&store, mutation_id);
     }
     let _phase_t2 = current_instruction_counter();
@@ -1494,6 +1531,7 @@ pub async fn run_wire_plans_last_read_row_count(
     );
     let run = run_result?;
     if write_journal && let Some(mutation_id) = mutation_id {
+        bench_scope!("canonical_journal_commit", _scope_journal_commit);
         store.commit_record_completed_mutation_journal(
             mutation_id,
             run.last_read_row_count as u64,
@@ -1509,6 +1547,7 @@ pub async fn run_wire_plans_last_read_row_count(
         _phase_t3.saturating_sub(_phase_t2),
     );
     let rows_blob = if mode == GqlCanisterExecutionMode::CompositeQuery {
+        bench_scope!("canonical_result_encode", _scope_result_encode);
         let materialized =
             PlanQueryResult::try_from_plan_rows(&store, &element_id_key, &run.last_read_plan_rows)?;
         let wire = crate::plan::ic_wire_from_plan_query_result(&materialized)
@@ -1556,8 +1595,10 @@ pub async fn run_wire_plan_last_read_row_count(
     seeds: Option<SeedBindingsWire>,
     mutation_id: Option<MutationId>,
 ) -> Result<WirePlanRunResult, GqlRunError> {
+    bench_scope!("canonical_plan_decode", _scope_plan_decode);
     let cached_bundle = crate::index::plan_cache::decode_plan_bundle_cached(plan_blob)
         .map_err(|e| GqlRunError::Plan(e.to_string()))?;
+    bench_scope_end!(_scope_plan_decode);
     run_wire_plans_last_read_row_count(
         store,
         &cached_bundle.plans,
@@ -1653,6 +1694,68 @@ mod tests {
             labels: vec![label.into()],
             properties: vec![],
         }])
+    }
+
+    /// ADR 0044 scalar replay: a completed scalar journal entry lets a second call with the same
+    /// mutation id return the previously committed row count without re-executing the mutation.
+    /// The incomplete journal is omitted for single-message scalar execution, but the complete
+    /// journal remains the durable idempotency record.
+    #[test]
+    fn scalar_completed_journal_replay_returns_count_without_re_executing() {
+        let store = GraphStore::new();
+        let plan = insert_vertex_plan("ReplayTestVertex");
+        let blob = encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan");
+        let params = BTreeMap::new();
+        let mut execution = GqlExecutionContext::default();
+        execution.write_journal = false;
+
+        let first = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            None,
+            execution.clone(),
+            None,
+            Some(42),
+        ))
+        .expect("first scalar mutation");
+        assert!(
+            store.mutation_journal_entry(42).is_some(),
+            "completed journal must be written"
+        );
+        let journal = store.mutation_journal_entry(42).unwrap();
+        assert!(
+            journal.is_completed(),
+            "scalar journal must be marked complete"
+        );
+        let initial_vertex_count = GraphStore::new().vertex_count();
+        assert!(
+            initial_vertex_count > 0.into(),
+            "mutation must create at least one vertex"
+        );
+
+        let second = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            None,
+            execution,
+            None,
+            Some(42),
+        ))
+        .expect("replay from completed journal");
+        assert_eq!(
+            second.row_count, first.row_count,
+            "replay must return the same row count"
+        );
+        // The vertex count must remain unchanged, proving the mutation was not re-executed.
+        assert_eq!(
+            GraphStore::new().vertex_count(),
+            initial_vertex_count,
+            "completed-journal replay must not re-execute the mutation"
+        );
     }
 
     fn local_claim(constraint: u16, value: &[u8]) -> UniqueClaimDispatch {
