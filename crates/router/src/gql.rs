@@ -2894,13 +2894,8 @@ pub(crate) async fn execute_bulk_group(
         None => return Ok(None),
     };
 
-    // Bulk grouping requires a per-item seed binding surface (index anchors, remote
-    // seeds, etc.) because the dispatch envelope built from the first item would be wrong for
-    // the rest.  Pure inserts have no seed bindings; fall back to the normal sequential path
-    // otherwise.
-    if plan_requires_per_item_seed_bindings(&plans, &base_pmap, graph_id, &RouterStore::new())? {
-        return Ok(None);
-    }
+    let store = RouterStore::new();
+    let stats = graph_stats_for(graph_id);
 
     let mut extra_items = Vec::with_capacity(items.len() - 1);
     for item in &items[1..] {
@@ -2915,14 +2910,29 @@ pub(crate) async fn execute_bulk_group(
     // ADR 0047: durable ordered replay requires a fingerprint over every item's params in order.
     // Reserve the group mutation id before preparation so the same ordered group aliases correctly
     // on retry.
-    let stats = graph_stats_for(graph_id);
     let group_params: Vec<Vec<u8>> = std::iter::once(first.params.clone())
         .chain(extra_items.iter().map(|item| item.params.clone()))
         .collect();
     let group_fingerprint = bulk_group_fingerprint(&plan_blob, mode, &group_params);
-    let store = RouterStore::new();
     let group_reservation =
         store.reserve_mutation_id_for_client_key(caller, graph_id, group_key, group_fingerprint)?;
+
+    // Early-known target shard: for graphs with exactly one live shard, the target is knowable
+    // before routing or seed resolution. If that shard does not advertise the typed V1 capability,
+    // we avoid the typed attempt entirely. Selective complete-row seeds already short-circuited
+    // above, so this path only affects seed-invariant groups that will use the legacy batch path.
+    let early_target_shard =
+        bulk_group_early_target_shard(graph_id, &plan_blob, &plans, &base_pmap, &store)?;
+    let mut early_typed_not_advertised = false;
+    if let Some(shard_id) = early_target_shard {
+        let shard = store.resolve_shard(graph_id, shard_id)?;
+        if shard.typed_seed_batch != gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1 {
+            log_router_typed_batch_decision("rejected", "capability_not_advertised");
+            #[cfg(feature = "pocket-ic-e2e")]
+            crate::test_fault::record_typed_batch_trace("capability-not-advertised");
+            early_typed_not_advertised = true;
+        }
+    }
 
     // A compacted typed record retains ordered per-operation cardinalities so an idempotent retry
     // reproduces the original batch result rather than repeating the aggregate for every item.
@@ -2959,6 +2969,25 @@ pub(crate) async fn execute_bulk_group(
             out.push(attach_mutation_token(gql_result, token.clone()));
         }
         return Ok(Some(out));
+    }
+
+    // Selective complete-row seeds require per-item routing and cannot use the legacy batch
+    // envelope. For a single-shard graph whose only target does not advertise the typed V1
+    // capability, skip the expensive shared group prepare and let the caller execute each item
+    // sequentially through its own scalar idempotency record. This check runs after durable
+    // record lookup so an existing typed replay record is redispatched rather than ignored.
+    if plan_requires_per_item_seed_bindings(&plans, &base_pmap, graph_id, &store)?
+        && let Some(shard_id) =
+            bulk_group_early_target_shard(graph_id, &plan_blob, &plans, &base_pmap, &store)?
+    {
+        let shard = store.resolve_shard(graph_id, shard_id)?;
+        if shard.typed_seed_batch != gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1 {
+            log_router_typed_batch_decision("rejected", "capability_not_advertised");
+            store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
+            #[cfg(feature = "pocket-ic-e2e")]
+            crate::test_fault::record_typed_batch_trace("sequential-scalar-fallback");
+            return Ok(None);
+        }
     }
 
     let prepared = prepare_single_mutation(
@@ -3028,15 +3057,19 @@ pub(crate) async fn execute_bulk_group(
     }
 
     // Try the typed V1 path first; it returns None if capability or eligibility is not met.
-    if let Some(typed_results) = execute_prepared_bulk_group_typed(
-        group.clone(),
-        &store,
-        caller,
-        graph_id,
-        Some(group_key),
-        preflight,
-    )
-    .await?
+    // If the target shard was already known to lack the capability before preparation, skip the
+    // typed attempt entirely so an incapable seed-invariant group goes straight to the legacy
+    // batch path without paying the typed admission cost.
+    if !early_typed_not_advertised
+        && let Some(typed_results) = execute_prepared_bulk_group_typed(
+            group.clone(),
+            &store,
+            caller,
+            graph_id,
+            Some(group_key),
+            preflight,
+        )
+        .await?
     {
         return Ok(Some(typed_results));
     }
@@ -3117,10 +3150,29 @@ fn plan_requires_per_item_seed_bindings(
             // ADR 0046 Phase 1: complete-row seeds (single- or multi-variable selective
             // equality/index anchors) are resolved per item inside the bulk path, so grouping
             // remains allowed. Unsupported seeded plans fall back to the sequential path.
-            Some(set) => !set.is_selective_complete_row_seed(),
+            Some(set) => set.is_selective_complete_row_seed(),
             None => false,
         },
     )
+}
+
+/// Returns the target shard for a bulk group when it can be resolved without seed routing.
+/// Currently this is true only for single-shard graphs, where every dispatch must target the
+/// sole live shard. Multi-shard graphs or plans whose target depends on selective anchors
+/// return `None` and keep the normal post-routing capability check.
+fn bulk_group_early_target_shard(
+    graph_id: GraphId,
+    _plan_blob: &[u8],
+    _plans: &[PhysicalPlan],
+    _pmap: &BTreeMap<String, gleaph_gql::Value>,
+    store: &RouterStore,
+) -> Result<Option<ShardId>, RouterError> {
+    let live_shards = store.list_live_shards_for_graph_id(graph_id)?;
+    if live_shards.len() == 1 {
+        Ok(Some(live_shards[0].shard_id))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Plan a simple single-graph DML query for the bulk-group path (ADR 0044).
@@ -4419,9 +4471,9 @@ async fn execute_prepared_bulk_group_typed(
     let dispatch = &base.dispatches[0];
     let shard = store.resolve_shard(graph_id, dispatch.shard_id)?;
     if shard.typed_seed_batch != gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1 {
-        log_router_typed_batch_decision("rejected", "capability_disabled");
+        log_router_typed_batch_decision("rejected", "capability_not_advertised");
         #[cfg(feature = "pocket-ic-e2e")]
-        crate::test_fault::record_typed_batch_trace("capability-disabled");
+        crate::test_fault::record_typed_batch_trace("capability-not-advertised");
         return Ok(None);
     }
     if base.unique_claims.as_ref().is_some_and(|v| !v.is_empty())

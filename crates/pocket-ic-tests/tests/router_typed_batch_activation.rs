@@ -316,3 +316,142 @@ fn typed_batch_activation_lifecycle_drives_capability_fallback_and_retry() {
     );
     assert_eq!(typed_batch_trace(&env), "sequential-scalar-fallback");
 }
+
+const SOCIAL_POSTED_GQL: &str = "\
+MATCH (a:User {user_id: $a_user_id, demo_graph: 'social'}) RETURN a \
+NEXT \
+INSERT (a)-[:POSTED {demo_edge_id: $edge_id, demo_kind: $demo_kind}]->(b:Post {demo_id: $b_demo_id, demo_graph: 'social', body: $b_body, created_at: $b_created_at, is_public: $b_is_public})";
+
+fn social_posted_params(user_id: &str, edge_id: &str, demo_id: i64, body: &str) -> Vec<u8> {
+    params_blob(vec![
+        ("$a_user_id", Value::Text(user_id.to_string())),
+        ("$edge_id", Value::Text(edge_id.to_string())),
+        ("$demo_kind", Value::Text("posted".to_string())),
+        ("$b_demo_id", Value::Int64(demo_id)),
+        ("$b_body", Value::Text(body.to_string())),
+        (
+            "$b_created_at",
+            Value::Text("2026-07-22T00:00:00Z".to_string()),
+        ),
+        ("$b_is_public", Value::Bool(true)),
+    ])
+}
+
+fn social_posted_mutations(
+    user_ids: &[&str],
+    start_demo_id: i32,
+) -> Vec<GqlExecuteIdempotentBatchItem> {
+    user_ids
+        .iter()
+        .enumerate()
+        .map(|(i, user_id)| GqlExecuteIdempotentBatchItem {
+            gql_query: SOCIAL_POSTED_GQL.to_string(),
+            mutation_key: format!("social-typed-post-{}-{}", user_id, start_demo_id + i as i32),
+            params: social_posted_params(
+                user_id,
+                &format!("social-edge-{}", start_demo_id + i as i32),
+                (start_demo_id + i as i32) as i64,
+                "A social-demo post body for typed batch eligibility.",
+            ),
+        })
+        .collect()
+}
+
+#[test]
+fn social_demo_posted_shape_uses_typed_batch_when_capable() {
+    let env = install_single_shard_federation();
+
+    admin_intern_property(&env, "demo_graph");
+    admin_intern_property(&env, "demo_id");
+    admin_intern_property(&env, "user_id");
+    admin_intern_property(&env, "demo_edge_id");
+    admin_intern_property(&env, "demo_kind");
+    admin_intern_property(&env, "body");
+    admin_intern_property(&env, "created_at");
+    admin_intern_property(&env, "is_public");
+    admin_intern_vertex_label(&env, "User");
+    admin_intern_vertex_label(&env, "Post");
+    admin_intern_edge_label(&env, "POSTED");
+    create_vertex_property_index(
+        &env,
+        "social_user_user_id",
+        "User",
+        "user_id",
+        "social_typed_user_id_index",
+    );
+    create_vertex_property_index(
+        &env,
+        "social_post_demo_id",
+        "Post",
+        "demo_id",
+        "social_typed_post_demo_id_index",
+    );
+
+    gql_execute_idempotent_as_admin(&env, USER_ALICE, "social_insert_alice");
+    gql_execute_idempotent_as_admin(&env, USER_BOB, "social_insert_bob");
+    gql_execute_idempotent_as_admin(&env, USER_CAROL, "social_insert_carol");
+
+    assert!(
+        refresh_capability(&env),
+        "refresh must commit the Graph-advertised capability"
+    );
+
+    let posts = social_posted_mutations(&["alice", "bob"], 1);
+    let results = execute_batch_as_admin(&env, posts);
+    assert_eq!(
+        results.len(),
+        2,
+        "social-demo POSTED batch must return two results"
+    );
+    assert_eq!(
+        results.iter().map(|r| r.row_count).collect::<Vec<_>>(),
+        vec![0, 0],
+        "POSTED update transport reports no materialized result rows"
+    );
+    assert_eq!(
+        typed_batch_trace(&env),
+        "persisted",
+        "social-demo POSTED shape must be admitted to typed V1"
+    );
+    assert_eq!(
+        count_posts(&env),
+        2,
+        "social-demo POSTED shape must create two canonical posts"
+    );
+}
+
+#[test]
+fn typed_batch_early_capability_short_circuit_skips_typed_prepare() {
+    let env = install_single_shard_federation();
+
+    admin_intern_property(&env, "demo_graph");
+    admin_intern_property(&env, "demo_id");
+    admin_intern_property(&env, "user_id");
+    admin_intern_property(&env, "demo_edge_id");
+    admin_intern_property(&env, "demo_kind");
+    admin_intern_property(&env, "body");
+    admin_intern_property(&env, "created_at");
+    admin_intern_property(&env, "is_public");
+    admin_intern_vertex_label(&env, "User");
+    admin_intern_vertex_label(&env, "Post");
+    admin_intern_edge_label(&env, "POSTED");
+    create_vertex_property_index(
+        &env,
+        "social_user_user_id",
+        "User",
+        "user_id",
+        "social_typed_user_id_index",
+    );
+
+    gql_execute_idempotent_as_admin(&env, USER_ALICE, "social_insert_alice");
+    gql_execute_idempotent_as_admin(&env, USER_BOB, "social_insert_bob");
+    gql_execute_idempotent_as_admin(&env, USER_CAROL, "social_insert_carol");
+
+    // Capability remains at default (disabled); a single-shard POSTED batch is a
+    // selective complete-row seed and should short-circuit to sequential scalar execution
+    // without entering the shared typed-attempt group prepare.
+    let posts = social_posted_mutations(&["alice", "bob"], 1);
+    execute_batch_as_admin(&env, posts);
+    assert_eq!(count_posts(&env), 2, "fallback batch must create two posts");
+    assert_eq!(typed_batch_trace(&env), "sequential-scalar-fallback");
+}
