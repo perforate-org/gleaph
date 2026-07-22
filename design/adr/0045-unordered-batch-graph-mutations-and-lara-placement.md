@@ -3,7 +3,7 @@
 Date: 2026-07-19
 Status: Partially Implemented
 Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 22:23:31 UTC +0000
+Anchor timestamp: 2026-07-22 23:53:58 UTC +0000
 
 ## Context
 
@@ -86,6 +86,19 @@ cannot write one contiguous run, and may write a large known batch to the
 overflow log only to fold it back into the slab during repeated rebalances.
 
 ## Decision
+
+Implementation status as of 2026-07-22 23:53:58 UTC +0000:
+
+- Plan 0121 read-only placement planning is implemented.
+- Plan 0122 one-orientation batch commit is partially implemented: the
+  internal `OneOrientationBatchPlan` / `reserve_one_orientation_batch` /
+  `commit_one_orientation_batch` boundary exists in `ic-stable-lara`, and
+  reserve performs all fallible validation and capacity reservation before any
+  canonical write.  Supported geometries are existing buckets whose run fits
+  the current slab window with payload span growth at the occupied tail.
+- New bucket creation, overflow-log batch appends, rebalance/relocation,
+  dynamic leaf expansion, GraphStore orchestration wiring, and scalar-vs-batch
+  benchmarks remain planned for later slices.
 
 ### 1. Add an explicit unordered batch mutation mode
 

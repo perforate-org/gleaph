@@ -769,11 +769,11 @@ fn read_existing_bucket_placement(
     })
 }
 
-fn segment_size() -> u32 {
+pub(crate) fn segment_size() -> u32 {
     GRAPH.with_borrow(|graph| graph.forward().edges().header().segment_size.max(1))
 }
 
-fn leaf_index_for_vertex(vid: VertexId, segment_size: u32) -> u32 {
+pub(crate) fn leaf_index_for_vertex(vid: VertexId, segment_size: u32) -> u32 {
     u32::from(vid) / segment_size.max(1)
 }
 

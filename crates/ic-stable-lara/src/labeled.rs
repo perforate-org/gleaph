@@ -90,6 +90,7 @@ pub(crate) mod deferred;
     reason = "labeled graph contains maintenance and diagnostics entry points"
 )]
 pub(crate) mod graph;
+pub use graph::batch_write;
 /// ADR 0022 Stage 2b prototype (evidence-only; not wired into the graph).
 #[cfg(any(test, feature = "canbench"))]
 pub(crate) mod hub_tree_prototype;

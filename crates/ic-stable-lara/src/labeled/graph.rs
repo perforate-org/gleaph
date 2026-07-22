@@ -51,6 +51,9 @@ mod compact;
 pub(crate) use compact::force_next_compact_vertex_edge_span_step_error;
 #[cfg(test)]
 pub(crate) use values::force_next_payload_compaction_error;
+pub mod batch_write;
+#[cfg(test)]
+mod batch_write_test;
 mod error;
 mod init;
 mod insert;
