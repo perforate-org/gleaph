@@ -135,6 +135,30 @@ Non-invasive encode probes show that the journal entry encode cost
 - Overwriting an existing journal key is much more expensive (~257 K residual),
   but canonical writes use fresh `mutation_id`s.
 
-A fixed-length manual layout for `GraphMutationJournalEntry` is therefore the
-selected follow-up (Plan 0120). This addendum does not change the retention
-window, GC design, or replay semantics recorded above.
+## Addendum: fixed-length manual layout (Plan 0120, 2026-07-23)
+
+`GraphMutationJournalEntry` now uses a versioned, fixed-length primary record
+plus an optional appendix instead of Candid encoding:
+
+- Primary: version (1), `mutation_id` (8), `state` (1), `row_count` (8), validity
+  bitmap (1), fixed slots for `emitted_delta_first_seq` (8), `emitted_delta_last_seq`
+  (8), `recorded_at_ns` (8), and `next_index` (4), appendix flags (1), appendix
+  length (4). The bitmap marks which optional slots are live.
+- Appendix: `hot_forward_vertices` (`count` + `count * u32`) and/or bulk progress
+  (`operation_count`, `completed_count`, `row_count_len`, `row_count_len * u64`).
+- Encode-time bounds assertions fail closed for `hot_forward_vertices` and bulk
+  progress row counts.
+- `Storable::BOUND` remains `Unbounded`. A `Bounded` experiment with a large
+  `max_size` regressed `StableBTreeMap` fresh-key inserts, so bounds enforcement
+  stays at encode time.
+
+Measured impact vs. the Plan 0119 Candid baseline:
+
+- `journal_entry_encode`: ~182 K → ~0.6 K instructions.
+- `journal_map_insert`: ~187 K → ~7–9 K instructions (fresh key).
+- `canonical_segment_insert_vertex` total: ~65% reduction.
+- `canonical_segment_insert_edge` total: ~43% reduction.
+- `canonical_segment_insert_bundle_4` total: ~53% reduction.
+- `canonical_segment_insert_bundle_16` total: ~23% reduction (~278 K absolute).
+
+No retention window, GC design, or replay semantics changed.

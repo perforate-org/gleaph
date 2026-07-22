@@ -439,6 +439,27 @@ Non-invasive encode probes show that the label-stats delta event encode cost
 - The fixed Candid overhead, not byte length or stable-page I/O, is the
   dominant cost.
 
-A fixed-length manual layout for `StoredLabelStatsDeltaEvent` is therefore the
-selected follow-up (Plan 0120). This addendum does not change the projection
-semantics, retention, or ack boundary recorded above.
+## Addendum: fixed-length manual layout (Plan 0120, 2026-07-23)
+
+`StoredLabelStatsDeltaEvent` now uses a versioned, fixed-length primary record
+plus a variable-length appendix instead of Candid encoding:
+
+- Primary: version (1), `mutation_id` (8), `shard_event_seq` (8), appendix length (4).
+- Appendix: vertex label deltas (`count` + `count * (u16 + i64)`) followed by edge
+  label deltas in the same shape.
+- Encode-time bounds assertions fail closed if either kind exceeds
+  `MAX_LABEL_DELTAS_PER_KIND`.
+- `Storable::BOUND` remains `Unbounded`. A `Bounded` experiment with a large
+  `max_size` regressed `StableBTreeMap` fresh-key inserts, so bounds enforcement
+  stays at encode time.
+
+Measured impact vs. the Plan 0119 Candid baseline:
+
+- `label_stats_delta_event_encode`: ~100 K → ~1 K instructions.
+- `label_stats_delta_log_insert`: ~116 K → ~16 K instructions.
+- `canonical_segment_insert_vertex` total: ~65% reduction.
+- `canonical_segment_insert_edge` total: ~43% reduction.
+- `canonical_segment_insert_bundle_4` total: ~53% reduction.
+- `canonical_segment_insert_bundle_16` total: ~23% reduction (~278 K absolute).
+
+No projection semantics, retention, ack boundary, or Router behavior changed.

@@ -1,10 +1,10 @@
 //! Stable label stats delta log and graph mutation journal (ADR 0015).
 
-use candid::{Decode, Encode};
+use gleaph_graph_kernel::entry::{EdgeLabelId, VertexLabelId};
 use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
-    GraphBulkMutationProgress, GraphMutationJournalEntryWire, LabelStatsDeltaEventWire, MutationId,
-    MutationJournalState, ShardEventSeq,
+    GraphBulkMutationProgress, GraphBulkMutationProgressV1, GraphMutationJournalEntryWire,
+    LabelStatsDeltaEventWire, MutationId, MutationJournalState, ShardEventSeq,
 };
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
@@ -167,24 +167,335 @@ impl GraphMutationJournalEntry {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Manual fixed-length stable layouts (Plan 0120)
+// -----------------------------------------------------------------------------
+
+const JOURNAL_LAYOUT_VERSION: u8 = 1;
+const LABEL_DELTA_LAYOUT_VERSION: u8 = 1;
+
+// Sensible production bounds. They are fail-closed: encoding panics if exceeded.
+const MAX_HOT_FORWARD_VERTICES: u32 = 4096;
+const MAX_BULK_OPERATION_COUNT: u32 = 4096;
+const MAX_BULK_ROW_COUNTS: u32 = 4096;
+const MAX_LABEL_DELTAS_PER_KIND: u32 = 256;
+
+// Primary record sizes.
+// Journal primary is fixed regardless of which Option fields are set: a validity
+// bitmap records which of the optional fixed-width slots are live.
+const JOURNAL_PRIMARY_SIZE: usize = 52;
+const LABEL_DELTA_PRIMARY_SIZE: usize = 21;
+
+// Validity bitmap bits inside the journal primary header.
+const VALID_FIRST_SEQ: u8 = 0x01;
+const VALID_LAST_SEQ: u8 = 0x02;
+const VALID_RECORDED_AT: u8 = 0x04;
+const VALID_NEXT_INDEX: u8 = 0x08;
+
+// Appendix flags for journal entries.
+const APPENDIX_HOT_FORWARD: u8 = 0x01;
+const APPENDIX_BULK_PROGRESS: u8 = 0x02;
+
+fn encode_u8(buf: &mut Vec<u8>, val: u8) {
+    buf.push(val);
+}
+
+fn encode_u16_le(buf: &mut Vec<u8>, val: u16) {
+    buf.extend_from_slice(&val.to_le_bytes());
+}
+
+fn encode_u32_le(buf: &mut Vec<u8>, val: u32) {
+    buf.extend_from_slice(&val.to_le_bytes());
+}
+
+fn encode_u64_le(buf: &mut Vec<u8>, val: u64) {
+    buf.extend_from_slice(&val.to_le_bytes());
+}
+
+fn encode_i64_le(buf: &mut Vec<u8>, val: i64) {
+    buf.extend_from_slice(&val.to_le_bytes());
+}
+
+fn decode_u8(bytes: &[u8], offset: &mut usize) -> u8 {
+    let val = bytes[*offset];
+    *offset += 1;
+    val
+}
+
+fn decode_u16_le(bytes: &[u8], offset: &mut usize) -> u16 {
+    let val = u16::from_le_bytes([bytes[*offset], bytes[*offset + 1]]);
+    *offset += 2;
+    val
+}
+
+fn decode_u32_le(bytes: &[u8], offset: &mut usize) -> u32 {
+    let val = u32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    *offset += 4;
+    val
+}
+
+fn decode_u64_le(bytes: &[u8], offset: &mut usize) -> u64 {
+    let val = u64::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    *offset += 8;
+    val
+}
+
+fn decode_i64_le(bytes: &[u8], offset: &mut usize) -> i64 {
+    decode_u64_le(bytes, offset) as i64
+}
+
+fn encode_mutation_journal_state(buf: &mut Vec<u8>, state: MutationJournalState) {
+    let tag = match state {
+        MutationJournalState::Incomplete => 0u8,
+        MutationJournalState::Completed => 1u8,
+    };
+    encode_u8(buf, tag);
+}
+
+fn decode_mutation_journal_state(bytes: &[u8], offset: &mut usize) -> MutationJournalState {
+    match decode_u8(bytes, offset) {
+        0 => MutationJournalState::Incomplete,
+        1 => MutationJournalState::Completed,
+        tag => panic!("unknown MutationJournalState tag {}", tag),
+    }
+}
+
+fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(JOURNAL_PRIMARY_SIZE);
+
+    encode_u8(&mut buf, JOURNAL_LAYOUT_VERSION);
+    encode_u64_le(&mut buf, v1.mutation_id);
+    encode_mutation_journal_state(&mut buf, v1.state);
+    encode_u64_le(&mut buf, v1.row_count);
+
+    let mut validity: u8 = 0;
+    if v1.emitted_delta_first_seq.is_some() {
+        validity |= VALID_FIRST_SEQ;
+    }
+    if v1.emitted_delta_last_seq.is_some() {
+        validity |= VALID_LAST_SEQ;
+    }
+    if v1.recorded_at_ns.is_some() {
+        validity |= VALID_RECORDED_AT;
+    }
+    if v1.next_index.is_some() {
+        validity |= VALID_NEXT_INDEX;
+    }
+    encode_u8(&mut buf, validity);
+
+    encode_u64_le(&mut buf, v1.emitted_delta_first_seq.unwrap_or(0));
+    encode_u64_le(&mut buf, v1.emitted_delta_last_seq.unwrap_or(0));
+    encode_u64_le(&mut buf, v1.recorded_at_ns.unwrap_or(0));
+    encode_u32_le(&mut buf, v1.next_index.unwrap_or(0));
+
+    let mut flags: u8 = 0;
+    if !v1.hot_forward_vertices.is_empty() {
+        flags |= APPENDIX_HOT_FORWARD;
+    }
+    if v1.bulk_progress.is_some() {
+        flags |= APPENDIX_BULK_PROGRESS;
+    }
+    encode_u8(&mut buf, flags);
+
+    // Compute and reserve appendix length slot.
+    let appendix_len_offset = buf.len();
+    encode_u32_le(&mut buf, 0); // placeholder
+
+    let appendix_start = buf.len();
+
+    if !v1.hot_forward_vertices.is_empty() {
+        let count = v1.hot_forward_vertices.len() as u32;
+        assert!(
+            count <= MAX_HOT_FORWARD_VERTICES,
+            "hot_forward_vertices {} exceeds bound {}",
+            count,
+            MAX_HOT_FORWARD_VERTICES
+        );
+        encode_u32_le(&mut buf, count);
+        for &vid in &v1.hot_forward_vertices {
+            encode_u32_le(&mut buf, vid);
+        }
+    }
+
+    if let Some(GraphBulkMutationProgress::V1(progress)) = &v1.bulk_progress {
+        assert!(
+            progress.operation_count <= MAX_BULK_OPERATION_COUNT,
+            "bulk operation_count {} exceeds bound {}",
+            progress.operation_count,
+            MAX_BULK_OPERATION_COUNT
+        );
+        let row_count_len = progress.operation_row_counts.len() as u32;
+        assert!(
+            row_count_len <= progress.operation_count && row_count_len <= MAX_BULK_ROW_COUNTS,
+            "bulk operation_row_counts length {} exceeds bounds",
+            row_count_len
+        );
+        encode_u32_le(&mut buf, progress.operation_count);
+        encode_u32_le(&mut buf, progress.completed_count);
+        encode_u32_le(&mut buf, row_count_len);
+        for &rc in &progress.operation_row_counts {
+            encode_u64_le(&mut buf, rc);
+        }
+    }
+
+    let appendix_len = (buf.len() - appendix_start) as u32;
+    buf[appendix_len_offset..appendix_len_offset + 4].copy_from_slice(&appendix_len.to_le_bytes());
+
+    buf
+}
+
+fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
+    assert!(
+        bytes.len() >= JOURNAL_PRIMARY_SIZE,
+        "journal entry truncated: {} bytes",
+        bytes.len()
+    );
+    let mut offset = 0usize;
+
+    let version = decode_u8(bytes, &mut offset);
+    assert_eq!(
+        version, JOURNAL_LAYOUT_VERSION,
+        "unknown journal layout version {}",
+        version
+    );
+
+    let mutation_id = decode_u64_le(bytes, &mut offset);
+    let state = decode_mutation_journal_state(bytes, &mut offset);
+    let row_count = decode_u64_le(bytes, &mut offset);
+    let validity = decode_u8(bytes, &mut offset);
+    let emitted_delta_first_seq = if validity & VALID_FIRST_SEQ != 0 {
+        Some(decode_u64_le(bytes, &mut offset))
+    } else {
+        decode_u64_le(bytes, &mut offset);
+        None
+    };
+    let emitted_delta_last_seq = if validity & VALID_LAST_SEQ != 0 {
+        Some(decode_u64_le(bytes, &mut offset))
+    } else {
+        decode_u64_le(bytes, &mut offset);
+        None
+    };
+    let recorded_at_ns = if validity & VALID_RECORDED_AT != 0 {
+        Some(decode_u64_le(bytes, &mut offset))
+    } else {
+        decode_u64_le(bytes, &mut offset);
+        None
+    };
+    let next_index = if validity & VALID_NEXT_INDEX != 0 {
+        Some(decode_u32_le(bytes, &mut offset))
+    } else {
+        decode_u32_le(bytes, &mut offset);
+        None
+    };
+
+    let flags = decode_u8(bytes, &mut offset);
+    let appendix_len = decode_u32_le(bytes, &mut offset) as usize;
+
+    let expected_len = JOURNAL_PRIMARY_SIZE + appendix_len;
+    assert_eq!(
+        bytes.len(),
+        expected_len,
+        "journal entry length mismatch: got {} expected {}",
+        bytes.len(),
+        expected_len
+    );
+
+    let appendix_end = JOURNAL_PRIMARY_SIZE + appendix_len;
+    let mut hot_forward_vertices = Vec::new();
+    let mut bulk_progress = None;
+
+    let mut appendix_offset = JOURNAL_PRIMARY_SIZE;
+    if flags & APPENDIX_HOT_FORWARD != 0 {
+        let count = decode_u32_le(bytes, &mut appendix_offset) as usize;
+        assert!(
+            appendix_offset + count * 4 <= appendix_end,
+            "hot_forward appendix overflow"
+        );
+        hot_forward_vertices.reserve(count);
+        for _ in 0..count {
+            hot_forward_vertices.push(decode_u32_le(bytes, &mut appendix_offset));
+        }
+    }
+
+    if flags & APPENDIX_BULK_PROGRESS != 0 {
+        let operation_count = decode_u32_le(bytes, &mut appendix_offset);
+        let completed_count = decode_u32_le(bytes, &mut appendix_offset);
+        let row_count_len = decode_u32_le(bytes, &mut appendix_offset);
+        assert!(
+            appendix_offset + (row_count_len as usize) * 8 <= appendix_end,
+            "bulk_progress appendix overflow"
+        );
+        let mut operation_row_counts = Vec::with_capacity(row_count_len as usize);
+        for _ in 0..row_count_len {
+            operation_row_counts.push(decode_u64_le(bytes, &mut appendix_offset));
+        }
+        bulk_progress = Some(GraphBulkMutationProgress::V1(GraphBulkMutationProgressV1 {
+            operation_count,
+            completed_count,
+            operation_row_counts,
+        }));
+    }
+
+    assert_eq!(
+        appendix_offset, appendix_end,
+        "journal appendix did not consume exactly {} bytes",
+        appendix_len
+    );
+
+    GraphMutationJournalEntryV1 {
+        mutation_id,
+        state,
+        row_count,
+        emitted_delta_first_seq,
+        emitted_delta_last_seq,
+        hot_forward_vertices,
+        recorded_at_ns,
+        next_index,
+        bulk_progress,
+    }
+}
+
+const JOURNAL_MAX_APPENDIX: u32 = {
+    let hot_forward = 4 + MAX_HOT_FORWARD_VERTICES * 4;
+    let bulk = 4 + 4 + 4 + MAX_BULK_ROW_COUNTS * 8;
+    hot_forward + bulk
+};
+
 impl Storable for GraphMutationJournalEntry {
+    // Deliberately Unbounded: the manual layout already enforces encode-time bounds.
+    // Bounded values make StableBTreeMap fresh-key insert regression because the
+    // allocated node grows with max_size (see Plan 0120 measurements).
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode GraphMutationJournalEntry"))
+        Cow::Owned(encode_journal_v1(self.as_v1()))
     }
 
     fn into_bytes(self) -> Vec<u8> {
         #[cfg(feature = "canbench")]
         let _scope = canbench_scope("journal_entry_encode");
-        let bytes = Encode!(&self).expect("encode GraphMutationJournalEntry");
+        let bytes = encode_journal_v1(self.as_v1());
         #[cfg(feature = "canbench")]
         drop(_scope);
         bytes
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode GraphMutationJournalEntry")
+        Self::V1(decode_journal_v1(bytes.as_ref()))
     }
 }
 
@@ -202,32 +513,150 @@ impl From<StoredLabelStatsDeltaEvent> for LabelStatsDeltaEventWire {
         value.0
     }
 }
+
 #[cfg(feature = "canbench")]
 pub(crate) fn bench_encode_label_stats_event(event: LabelStatsDeltaEventWire) -> Vec<u8> {
     StoredLabelStatsDeltaEvent::from(event).into_bytes()
 }
 
+fn encode_label_stats_delta_event(event: &LabelStatsDeltaEventWire) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(LABEL_DELTA_PRIMARY_SIZE);
+
+    encode_u8(&mut buf, LABEL_DELTA_LAYOUT_VERSION);
+    encode_u64_le(&mut buf, event.mutation_id);
+    encode_u64_le(&mut buf, event.shard_event_seq);
+
+    let appendix_len_offset = buf.len();
+    encode_u32_le(&mut buf, 0); // placeholder
+
+    let appendix_start = buf.len();
+
+    let vertex = &event.label_stats_delta.vertex;
+    let vertex_count = vertex.len() as u32;
+    assert!(
+        vertex_count <= MAX_LABEL_DELTAS_PER_KIND,
+        "vertex label deltas {} exceeds bound {}",
+        vertex_count,
+        MAX_LABEL_DELTAS_PER_KIND
+    );
+    encode_u32_le(&mut buf, vertex_count);
+    for &(label, delta) in vertex {
+        encode_u16_le(&mut buf, label.raw());
+        encode_i64_le(&mut buf, delta);
+    }
+
+    let edge = &event.label_stats_delta.edge;
+    let edge_count = edge.len() as u32;
+    assert!(
+        edge_count <= MAX_LABEL_DELTAS_PER_KIND,
+        "edge label deltas {} exceeds bound {}",
+        edge_count,
+        MAX_LABEL_DELTAS_PER_KIND
+    );
+    encode_u32_le(&mut buf, edge_count);
+    for &(label, delta) in edge {
+        encode_u16_le(&mut buf, label.raw());
+        encode_i64_le(&mut buf, delta);
+    }
+
+    let appendix_len = (buf.len() - appendix_start) as u32;
+    buf[appendix_len_offset..appendix_len_offset + 4].copy_from_slice(&appendix_len.to_le_bytes());
+
+    buf
+}
+
+fn decode_label_stats_delta_event(bytes: &[u8]) -> LabelStatsDeltaEventWire {
+    assert!(
+        bytes.len() >= LABEL_DELTA_PRIMARY_SIZE,
+        "label delta event truncated: {} bytes",
+        bytes.len()
+    );
+    let mut offset = 0usize;
+
+    let version = decode_u8(bytes, &mut offset);
+    assert_eq!(
+        version, LABEL_DELTA_LAYOUT_VERSION,
+        "unknown label delta layout version {}",
+        version
+    );
+
+    let mutation_id = decode_u64_le(bytes, &mut offset);
+    let shard_event_seq = decode_u64_le(bytes, &mut offset);
+    let appendix_len = decode_u32_le(bytes, &mut offset) as usize;
+
+    let expected_len = LABEL_DELTA_PRIMARY_SIZE + appendix_len;
+    assert_eq!(
+        bytes.len(),
+        expected_len,
+        "label delta event length mismatch: got {} expected {}",
+        bytes.len(),
+        expected_len
+    );
+
+    let appendix_end = LABEL_DELTA_PRIMARY_SIZE + appendix_len;
+
+    let vertex_count = decode_u32_le(bytes, &mut offset) as usize;
+    assert!(
+        offset + vertex_count * 10 <= appendix_end,
+        "vertex label delta appendix overflow"
+    );
+    let mut vertex = Vec::with_capacity(vertex_count);
+    for _ in 0..vertex_count {
+        let label = VertexLabelId::from_raw(decode_u16_le(bytes, &mut offset));
+        let delta = decode_i64_le(bytes, &mut offset);
+        vertex.push((label, delta));
+    }
+
+    let edge_count = decode_u32_le(bytes, &mut offset) as usize;
+    assert!(
+        offset + edge_count * 10 <= appendix_end,
+        "edge label delta appendix overflow"
+    );
+    let mut edge = Vec::with_capacity(edge_count);
+    for _ in 0..edge_count {
+        let label = EdgeLabelId::from_raw(decode_u16_le(bytes, &mut offset));
+        let delta = decode_i64_le(bytes, &mut offset);
+        edge.push((label, delta));
+    }
+
+    assert_eq!(
+        offset, appendix_end,
+        "label delta appendix did not consume exactly {} bytes",
+        appendix_len
+    );
+
+    LabelStatsDeltaEventWire {
+        mutation_id,
+        shard_event_seq,
+        label_stats_delta: gleaph_graph_kernel::plan_exec::LabelStatsDelta { vertex, edge },
+    }
+}
+
+const LABEL_DELTA_MAX_APPENDIX: u32 = {
+    let kind = 4 + MAX_LABEL_DELTAS_PER_KIND * 10;
+    kind * 2
+};
+
 impl Storable for StoredLabelStatsDeltaEvent {
+    // Deliberately Unbounded: the manual layout already enforces encode-time bounds.
+    // Bounded values make StableBTreeMap fresh-key insert regress for the same node-size reason.
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(&self.0).expect("encode LabelStatsDeltaEventWire"))
+        Cow::Owned(encode_label_stats_delta_event(&self.0))
     }
 
     fn into_bytes(self) -> Vec<u8> {
         #[cfg(feature = "canbench")]
         let _scope = canbench_scope("label_stats_delta_event_encode");
-        let bytes = Encode!(&self.0).expect("encode LabelStatsDeltaEventWire");
+        let bytes = encode_label_stats_delta_event(&self.0);
         #[cfg(feature = "canbench")]
         drop(_scope);
         bytes
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self(
-            Decode!(bytes.as_ref(), LabelStatsDeltaEventWire)
-                .expect("decode LabelStatsDeltaEventWire"),
-        )
+        Self(decode_label_stats_delta_event(bytes.as_ref()))
     }
 }
 
@@ -480,5 +909,142 @@ mod tests {
                 .into_bytes()
                 .len(),
         );
+    }
+
+    #[test]
+    fn roundtrip_journal_scalar_completed() {
+        let original = GraphMutationJournalEntry::completed(42, 7, None, None, Vec::new(), 12345);
+        let bytes = original.clone().into_bytes();
+        let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn roundtrip_journal_scalar_incomplete() {
+        let original = GraphMutationJournalEntry::incomplete(99, Some(1), Some(2), 99999);
+        let bytes = original.clone().into_bytes();
+        let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn roundtrip_journal_edge_with_hot_forward() {
+        let original = GraphMutationJournalEntry::completed(
+            7,
+            3,
+            Some(10),
+            Some(20),
+            vec![1u32, 2, 3, 4],
+            5555,
+        );
+        let bytes = original.clone().into_bytes();
+        let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn roundtrip_journal_bulk_with_progress() {
+        let mut original =
+            GraphMutationJournalEntry::completed(3, 10, Some(6), Some(9), vec![100u32], 0);
+        original.set_next_index(Some(2));
+        original.set_bulk_progress(Some(GraphBulkMutationProgress::new(4, 2, vec![1, 3, 5, 7])));
+        let bytes = original.clone().into_bytes();
+        let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn roundtrip_label_delta_empty() {
+        let original = LabelStatsDeltaEventWire {
+            mutation_id: 1,
+            shard_event_seq: 2,
+            label_stats_delta: LabelStatsDelta {
+                vertex: vec![],
+                edge: vec![],
+            },
+        };
+        let bytes = StoredLabelStatsDeltaEvent::from(original.clone()).into_bytes();
+        let decoded: LabelStatsDeltaEventWire =
+            StoredLabelStatsDeltaEvent::from_bytes(Cow::Owned(bytes)).into();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn roundtrip_label_delta_multi() {
+        let original = LabelStatsDeltaEventWire {
+            mutation_id: 7,
+            shard_event_seq: 99,
+            label_stats_delta: LabelStatsDelta {
+                vertex: vec![
+                    (VertexLabelId::from_raw(1), 5),
+                    (VertexLabelId::from_raw(2), -3),
+                ],
+                edge: vec![(EdgeLabelId::from_raw(10), 1)],
+            },
+        };
+        let bytes = StoredLabelStatsDeltaEvent::from(original.clone()).into_bytes();
+        let decoded: LabelStatsDeltaEventWire =
+            StoredLabelStatsDeltaEvent::from_bytes(Cow::Owned(bytes)).into();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown journal layout version")]
+    fn malformed_journal_unknown_version() {
+        let bytes = vec![99u8; JOURNAL_PRIMARY_SIZE];
+        GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+    }
+
+    #[test]
+    #[should_panic(expected = "journal entry truncated")]
+    fn malformed_journal_truncated() {
+        GraphMutationJournalEntry::from_bytes(Cow::Owned(vec![JOURNAL_LAYOUT_VERSION; 3]));
+    }
+
+    #[test]
+    #[should_panic(expected = "journal entry length mismatch")]
+    fn malformed_journal_length_mismatch() {
+        let mut bytes =
+            GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0).into_bytes();
+        bytes.push(0);
+        GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown label delta layout version")]
+    fn malformed_label_delta_unknown_version() {
+        let bytes = vec![99u8; LABEL_DELTA_PRIMARY_SIZE];
+        StoredLabelStatsDeltaEvent::from_bytes(Cow::Owned(bytes));
+    }
+
+    #[test]
+    #[should_panic(expected = "label delta event truncated")]
+    fn malformed_label_delta_truncated() {
+        StoredLabelStatsDeltaEvent::from_bytes(Cow::Owned(vec![LABEL_DELTA_LAYOUT_VERSION; 3]));
+    }
+
+    #[test]
+    #[should_panic(expected = "hot_forward_vertices")]
+    fn bound_enforced_hot_forward_overflow() {
+        let mut entry = GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+        entry.set_hot_forward_vertices(vec![0u32; (MAX_HOT_FORWARD_VERTICES + 1) as usize]);
+        let _ = entry.into_bytes();
+    }
+
+    #[test]
+    #[should_panic(expected = "vertex label deltas")]
+    fn bound_enforced_label_vertex_overflow() {
+        let event = LabelStatsDeltaEventWire {
+            mutation_id: 1,
+            shard_event_seq: 1,
+            label_stats_delta: LabelStatsDelta {
+                vertex: vec![
+                    (VertexLabelId::from_raw(1), 1);
+                    (MAX_LABEL_DELTAS_PER_KIND + 1) as usize
+                ],
+                edge: vec![],
+            },
+        };
+        let _ = StoredLabelStatsDeltaEvent::from(event).into_bytes();
     }
 }
