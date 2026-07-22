@@ -459,9 +459,13 @@ main() {
       logical_graph_name = \"$GRAPH_NAME\";
     }
   )"
-  log "Refreshing Graph execution capabilities"
-  icp_call_expect_ok "Refreshing Graph execution capabilities" "" -e local gleaph-router admin_refresh_shard_execution_capabilities \
-    "(\"$GRAPH_NAME\", $SHARD_ID : nat32)"
+  if [[ "${GLEAPH_DEMO_SKIP_CAPABILITY_REFRESH:-0}" == "1" ]]; then
+    log "Skipping Graph execution capability refresh (GLEAPH_DEMO_SKIP_CAPABILITY_REFRESH=1)"
+  else
+    log "Refreshing Graph execution capabilities"
+    icp_call_expect_ok "Refreshing Graph execution capabilities" "" -e local gleaph-router admin_refresh_shard_execution_capabilities \
+      "(\"$GRAPH_NAME\", $SHARD_ID : nat32)"
+  fi
   # Prime the property index for the lookup keys used by the social-demo seed
   # GQL. Without these, every MATCH by `user_id` or `demo_id` scans every vertex
   # of that label. This is a one-time DDL cost paid before seeding.
