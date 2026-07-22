@@ -2,8 +2,8 @@
 
 Date: 2026-06-21
 Status: implemented
-Last revised: 2026-06-21
-Anchor timestamp: 2026-06-21 01:14:12 UTC +0000
+Last revised: 2026-07-22
+Anchor timestamp: 2026-07-22 20:57:56 UTC +0000
 
 ## Context
 
@@ -72,7 +72,10 @@ replay.
 3. **Amortized write-path GC** (ADR 0025 mechanism B, mirrored). Each
    completed-journal write — the per-mutation growth source — funds one bounded
    step that scans `MUTATION_JOURNAL_GC_BUDGET` (2) entries from a heap-only
-   round-robin cursor and evicts those older than retention. The cursor is
+   round-robin cursor and evicts those older than retention. The sweep is skipped
+   while the journal length stays below a heap-only minimum threshold
+   (`MUTATION_JOURNAL_GC_MIN_LEN`), avoiding the large fixed cost of a stable
+   B-tree range cursor for the common case of a short journal; the cursor is
    ephemeral (`thread_local`): resetting to the start on upgrade just restarts the
    lap, and region 39 is the stable source of truth.
 
@@ -98,11 +101,15 @@ replay.
 
 ## Consequences
 
-- Region 39 is now bounded by the replay TTL working set, like the router journal
+- Region 39 is bounded by the replay TTL working set, like the router journal
   (region 7) under ADR 0025.
 - Retention is coupled to the router TTL by contract; if `CLIENT_MUTATION_KEY_TTL_NS`
   ever grows past `GRAPH_MUTATION_JOURNAL_RETENTION_NS - margin`, the graph
   constant must grow too. Both ADR 0025 and this ADR call out the relationship.
+- The amortized sweep is conditionally skipped while the journal is short, so
+  the fixed per-write sweep cost is avoided in the common case without changing
+  the long-term growth bound. Once the journal exceeds the heap-only threshold,
+  the normal round-robin sweep resumes.
 - No admin sweep endpoint is added; the amortized write-path step keeps pace with
   growth without a timer. An operator-driven paginated sweep (mirroring
   `admin_sweep_expired_client_mutation_keys`) remains a possible future addition

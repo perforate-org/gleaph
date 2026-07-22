@@ -263,7 +263,6 @@ impl<M: Memory> GraphMutationJournal<M> {
         }
     }
 
-    #[cfg(feature = "pocket-ic-e2e")]
     pub fn len(&self) -> u64 {
         self.map.len()
     }

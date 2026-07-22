@@ -30,18 +30,18 @@ benches:
   bench_graph_canonical_segment_insert_bundle_16:
     total:
       calls: 1
-      instructions: 1421837
+      instructions: 1175219
       heap_increase: 1
       stable_memory_increase: 28
     scopes:
       canonical_journal_commit:
         calls: 1
-        instructions: 442882
+        instructions: 190471
         heap_increase: 0
         stable_memory_increase: 0
       canonical_label_stats_delta_append:
         calls: 1
-        instructions: 121978
+        instructions: 128471
         heap_increase: 0
         stable_memory_increase: 12
       canonical_mutation_tail:
@@ -66,7 +66,7 @@ benches:
         stable_memory_increase: 0
       canonical_segment_insert_bundle_16:
         calls: 1
-        instructions: 1418214
+        instructions: 1173152
         heap_increase: 1
         stable_memory_increase: 28
       canonical_uniqueness_bookkeeping:
@@ -74,21 +74,46 @@ benches:
         instructions: 376
         heap_increase: 0
         stable_memory_increase: 0
+      journal_entry_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      journal_map_insert:
+        calls: 1
+        instructions: 185506
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_event_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_log_insert:
+        calls: 1
+        instructions: 112685
+        heap_increase: 0
+        stable_memory_increase: 8
+      label_stats_delta_seq_alloc:
+        calls: 1
+        instructions: 9195
+        heap_increase: 0
+        stable_memory_increase: 4
   bench_graph_canonical_segment_insert_bundle_4:
     total:
       calls: 1
-      instructions: 759645
-      heap_increase: 1
+      instructions: 514020
+      heap_increase: 0
       stable_memory_increase: 28
     scopes:
       canonical_journal_commit:
         calls: 1
-        instructions: 440664
-        heap_increase: 1
+        instructions: 188972
+        heap_increase: 0
         stable_memory_increase: 0
       canonical_label_stats_delta_append:
         calls: 1
-        instructions: 121932
+        instructions: 128566
         heap_increase: 0
         stable_memory_increase: 12
       canonical_mutation_tail:
@@ -113,29 +138,54 @@ benches:
         stable_memory_increase: 0
       canonical_segment_insert_bundle_4:
         calls: 1
-        instructions: 755933
-        heap_increase: 1
+        instructions: 511864
+        heap_increase: 0
         stable_memory_increase: 28
       canonical_uniqueness_bookkeeping:
         calls: 1
         instructions: 376
         heap_increase: 0
         stable_memory_increase: 0
+      journal_entry_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      journal_map_insert:
+        calls: 1
+        instructions: 183997
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_event_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_log_insert:
+        calls: 1
+        instructions: 112830
+        heap_increase: 0
+        stable_memory_increase: 8
+      label_stats_delta_seq_alloc:
+        calls: 1
+        instructions: 9143
+        heap_increase: 0
+        stable_memory_increase: 4
   bench_graph_canonical_segment_insert_edge:
     total:
       calls: 1
-      instructions: 883138
-      heap_increase: 1
+      instructions: 637514
+      heap_increase: 0
       stable_memory_increase: 44
     scopes:
       canonical_journal_commit:
         calls: 1
-        instructions: 440727
-        heap_increase: 1
+        instructions: 189156
+        heap_increase: 0
         stable_memory_increase: 0
       canonical_label_stats_delta_append:
         calls: 1
-        instructions: 123228
+        instructions: 129599
         heap_increase: 0
         stable_memory_increase: 12
       canonical_mutation_tail:
@@ -160,29 +210,54 @@ benches:
         stable_memory_increase: 0
       canonical_segment_insert_edge:
         calls: 1
-        instructions: 879426
-        heap_increase: 1
+        instructions: 635358
+        heap_increase: 0
         stable_memory_increase: 44
       canonical_uniqueness_bookkeeping:
         calls: 1
         instructions: 376
         heap_increase: 0
         stable_memory_increase: 0
+      journal_entry_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      journal_map_insert:
+        calls: 1
+        instructions: 184181
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_event_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_log_insert:
+        calls: 1
+        instructions: 113528
+        heap_increase: 0
+        stable_memory_increase: 8
+      label_stats_delta_seq_alloc:
+        calls: 1
+        instructions: 9195
+        heap_increase: 0
+        stable_memory_increase: 4
   bench_graph_canonical_segment_insert_vertex:
     total:
       calls: 1
-      instructions: 660675
+      instructions: 413980
       heap_increase: 0
       stable_memory_increase: 28
     scopes:
       canonical_journal_commit:
         calls: 1
-        instructions: 440264
+        instructions: 189143
         heap_increase: 0
         stable_memory_increase: 0
       canonical_label_stats_delta_append:
         calls: 1
-        instructions: 123654
+        instructions: 128631
         heap_increase: 0
         stable_memory_increase: 12
       canonical_mutation_tail:
@@ -207,7 +282,7 @@ benches:
         stable_memory_increase: 0
       canonical_segment_insert_vertex:
         calls: 1
-        instructions: 656963
+        instructions: 411824
         heap_increase: 0
         stable_memory_increase: 28
       canonical_uniqueness_bookkeeping:
@@ -215,21 +290,46 @@ benches:
         instructions: 376
         heap_increase: 0
         stable_memory_increase: 0
+      journal_entry_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      journal_map_insert:
+        calls: 1
+        instructions: 184168
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_event_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_log_insert:
+        calls: 1
+        instructions: 112887
+        heap_increase: 0
+        stable_memory_increase: 8
+      label_stats_delta_seq_alloc:
+        calls: 1
+        instructions: 9143
+        heap_increase: 0
+        stable_memory_increase: 4
   bench_graph_canonical_segment_insert_vertex_with_property:
     total:
       calls: 1
-      instructions: 683624
+      instructions: 438609
       heap_increase: 0
       stable_memory_increase: 92
     scopes:
       canonical_journal_commit:
         calls: 1
-        instructions: 440120
+        instructions: 189173
         heap_increase: 0
         stable_memory_increase: 0
       canonical_label_stats_delta_append:
         calls: 1
-        instructions: 122071
+        instructions: 128574
         heap_increase: 0
         stable_memory_increase: 12
       canonical_mutation_tail:
@@ -254,7 +354,7 @@ benches:
         stable_memory_increase: 0
       canonical_segment_insert_vertex_with_property:
         calls: 1
-        instructions: 679912
+        instructions: 436453
         heap_increase: 0
         stable_memory_increase: 92
       canonical_uniqueness_bookkeeping:
@@ -262,6 +362,31 @@ benches:
         instructions: 376
         heap_increase: 0
         stable_memory_increase: 0
+      journal_entry_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      journal_map_insert:
+        calls: 1
+        instructions: 184198
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_event_build:
+        calls: 1
+        instructions: 342
+        heap_increase: 0
+        stable_memory_increase: 0
+      label_stats_delta_log_insert:
+        calls: 1
+        instructions: 112783
+        heap_increase: 0
+        stable_memory_increase: 8
+      label_stats_delta_seq_alloc:
+        calls: 1
+        instructions: 9195
+        heap_increase: 0
+        stable_memory_increase: 4
   bench_graph_delete_detached_vertex:
     total:
       calls: 1

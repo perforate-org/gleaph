@@ -10,6 +10,9 @@ use gleaph_graph_kernel::plan_exec::{
 };
 use std::cell::RefCell;
 
+#[cfg(feature = "canbench")]
+use canbench_rs::bench_scope as canbench_scope;
+
 /// Retention window for completed/incomplete mutation journal entries (ADR 0027). A
 /// `mutation_id` can only be replayed by the router while the router's client-key
 /// idempotency record lives — at most `CLIENT_MUTATION_KEY_TTL_NS` (7 days, ADR 0025)
@@ -24,6 +27,13 @@ const GRAPH_MUTATION_JOURNAL_RETENTION_NS: u64 = 9 * 24 * 60 * 60 * 1_000_000_00
 /// (ADR 0025 mechanism B, mirrored). Each completed mutation evicts up to this many
 /// expired entries, keeping eviction in pace with the sole growth source (new mutations).
 const MUTATION_JOURNAL_GC_BUDGET: usize = 2;
+
+/// Minimum journal length before the amortized retention sweep runs. The sweep has a
+/// large fixed cost (stable B-tree range cursor setup), so it is skipped while the journal
+/// is short. Once the length reaches this threshold the sweep resumes at the normal
+/// amortized rate, keeping long-term growth bounded. The threshold is heap-only state and
+/// does not affect the stable layout.
+const MUTATION_JOURNAL_GC_MIN_LEN: u64 = 16;
 
 thread_local! {
     /// Ephemeral round-robin cursor for amortized journal GC (ADR 0027). Heap-only on
@@ -122,19 +132,39 @@ impl GraphStore {
         emitted_delta_last_seq: Option<ShardEventSeq>,
         hot_forward_vertices: Vec<LocalVertexId>,
     ) {
+        #[cfg(feature = "canbench")]
+        let _scope_entry = canbench_scope("journal_entry_build");
+        let entry = GraphMutationJournalEntry::completed(
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+            now_ns,
+        );
+        #[cfg(feature = "canbench")]
+        drop(_scope_entry);
+        #[cfg(feature = "canbench")]
+        let _scope_insert = canbench_scope("journal_map_insert");
         GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| {
-            m.insert(GraphMutationJournalEntry::completed(
-                mutation_id,
-                row_count,
-                emitted_delta_first_seq,
-                emitted_delta_last_seq,
-                hot_forward_vertices,
-                now_ns,
-            ));
+            m.insert(entry);
         });
+        #[cfg(feature = "canbench")]
+        drop(_scope_insert);
         // Amortized retention sweep: the completed-journal write is the per-mutation
-        // growth source, so each one funds one bounded eviction step (ADR 0027).
-        self.gc_mutation_journal_at(now_ns);
+        // growth source, so each one funds one bounded eviction step (ADR 0027). To
+        // avoid paying the large fixed sweep cost while the journal is short, the sweep
+        // is skipped until the stable journal length reaches a heap-only threshold.
+        // Above the threshold the normal amortized rate resumes, so long-term growth
+        // remains bounded.
+        let journal_len = GRAPH_MUTATION_JOURNAL.with_borrow(|m| m.len());
+        if journal_len >= MUTATION_JOURNAL_GC_MIN_LEN {
+            #[cfg(feature = "canbench")]
+            let _scope_gc = canbench_scope("journal_gc_sweep");
+            self.gc_mutation_journal_at(now_ns);
+            #[cfg(feature = "canbench")]
+            drop(_scope_gc);
+        }
     }
 
     /// Record a bulk mutation journal entry with an operation cursor and progress metadata
@@ -233,6 +263,8 @@ impl GraphStore {
         mutation_id: MutationId,
         label_stats_delta: LabelStatsDelta,
     ) -> Result<LabelStatsDeltaEventWire, String> {
+        #[cfg(feature = "canbench")]
+        let _scope_seq = canbench_scope("label_stats_delta_seq_alloc");
         let shard_event_seq = LABEL_STATS_DELTA_SEQ.with_borrow_mut(|seq| {
             let current = *seq.get();
             let next = current
@@ -244,14 +276,24 @@ impl GraphStore {
             seq.set(next);
             Ok::<ShardEventSeq, String>(next)
         })?;
+        #[cfg(feature = "canbench")]
+        drop(_scope_seq);
+        #[cfg(feature = "canbench")]
+        let _scope_event = canbench_scope("label_stats_delta_event_build");
         let event = LabelStatsDeltaEventWire {
             mutation_id,
             shard_event_seq,
             label_stats_delta,
         };
+        #[cfg(feature = "canbench")]
+        drop(_scope_event);
+        #[cfg(feature = "canbench")]
+        let _scope_log = canbench_scope("label_stats_delta_log_insert");
         LABEL_STATS_DELTA_LOG.with_borrow_mut(|log| {
             log.insert(event.clone());
         });
+        #[cfg(feature = "canbench")]
+        drop(_scope_log);
         Ok(event)
     }
 
