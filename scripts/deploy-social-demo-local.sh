@@ -39,6 +39,27 @@ icp_cmd() {
     icp "$@"
 }
 
+build_instrumented_router_wasm() {
+  local wasm="${GLEAPH_DEMO_ROUTER_WASM:-$ROOT/.icp/cache/artifacts/gleaph-router-batch-instr.wasm}"
+  local did="${wasm%.wasm}.did"
+  log "Building Router with batch-instr-log explicitly (icp recipe feature forwarding is not relied upon)"
+  env \
+    HOME="$ICP_CLI_HOME" \
+    RUSTUP_HOME="$RUSTUP_HOME" \
+    CARGO_HOME="$CARGO_HOME" \
+    cargo build -p gleaph-router --features batch-instr-log \
+      --target wasm32-unknown-unknown --release >&2
+  local raw_wasm="$ROOT/target/wasm32-unknown-unknown/release/gleaph_router.wasm"
+  candid-extractor "$raw_wasm" > "$did"
+  ic-wasm "$raw_wasm" -o "$wasm" metadata candid:service -f "$did" -v public
+  if ! strings "$wasm" | grep -q 'GLEAPH_ROUTER_BATCH'; then
+    log "ERROR: instrumented Router artifact is missing GLEAPH_ROUTER_BATCH marker"
+    exit 1
+  fi
+  log "Instrumented Router artifact ready: $wasm"
+  printf '%s\n' "$wasm"
+}
+
 ensure_local_network() {
   log "Checking local IC network"
   if icp_cmd network status local --json >/dev/null 2>&1; then
@@ -366,7 +387,11 @@ main() {
   ICP_DEPLOYER_IDENTITY="$deployer_id"
 
   log "Building all canisters"
-  icp_cmd build
+  # The managed recipe's progress renderer can terminate early in non-interactive shells;
+  # debug mode keeps the build operation attached and reports the actual completion result.
+  icp_cmd build --debug
+  local router_wasm
+  router_wasm="$(build_instrumented_router_wasm)"
 
   # The Gateway canister must be created before graph registration so its principal is known when
   # adding graph admins. It is installed after Router, Index, Graph, and Vector are registered/wired
@@ -380,7 +405,7 @@ main() {
   frontend_id="$(ensure_canister social-demo)"
 
   log "Installing gleaph-router"
-  icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-router --args "(
+  icp_cmd canister install -e local -y --mode "$INSTALL_MODE" --wasm "$router_wasm" gleaph-router --args "(
     record {
       issuing_principal = principal \"$admin\";
       initial_admins = vec {};
