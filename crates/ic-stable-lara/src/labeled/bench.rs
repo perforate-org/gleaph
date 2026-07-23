@@ -8,6 +8,7 @@ use crate::labeled::hub_tree_prototype::{HubBucketTree, HubTargetTree};
 use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLaraGraph,
     LabeledPayloadValueBatchScratch, LabeledVertex, OutEdgeOrder,
+    batch_write::{OneOrientationBatchEdge, OneOrientationBatchPlan, OneOrientationBucketRun},
     graph::{LabeledLaraGraph, VertexEdgeSpanCompactOneStep},
 };
 use crate::{
@@ -174,6 +175,65 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         BucketLabelKey::from_raw(1),
     )
     .expect("graph")
+}
+
+/// Existing-bucket edge-only expansion fixture. Setup is intentionally outside
+/// the measured closure: the bucket slab and its per-leaf overflow log are
+/// filled first, then one batch folds the log into an expanded slab window.
+#[bench(raw)]
+fn bench_labeled_batch_edge_only_expansion_existing_bucket() -> canbench_rs::BenchResult {
+    let graph = bench_graph(256);
+    for _ in 0..2 {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    }
+    let label = BucketLabelKey::from_raw(2);
+    graph
+        .insert_edge(VertexId::from(0), label, BenchEdge(1))
+        .expect("create labeled bucket");
+    let leaf = u32::from(VertexId::from(0)) / graph.edges().header().segment_size.max(1);
+    let log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+    let entries: Vec<(i32, BenchEdge)> = (0..log_capacity)
+        .map(|i| {
+            (
+                if i == 0 { -1 } else { (i as i32) - 1 },
+                BenchEdge(100 + i as u32),
+            )
+        })
+        .collect();
+    graph
+        .edges()
+        .write_overflow_log_entries(leaf, 0, &entries)
+        .expect("fill edge overflow log");
+    let plan = OneOrientationBatchPlan {
+        runs: vec![OneOrientationBucketRun {
+            owner_vertex_id: VertexId::from(0),
+            label_id: label,
+            inline_value_width: 0,
+            edges: vec![
+                OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(1),
+                    label_id: label,
+                    edge: BenchEdge(200),
+                },
+                OneOrientationBatchEdge {
+                    logical_ordinal: 1,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(1),
+                    label_id: label,
+                    edge: BenchEdge(201),
+                },
+            ],
+        }],
+    };
+    bench_fn(|| {
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("edge-only expansion reservation");
+        reservation.rollback(&graph);
+        black_box(1u32);
+    })
 }
 
 fn payload_bench_graph(
