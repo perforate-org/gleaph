@@ -1,7 +1,7 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission and pure leaf-blob construction started in Plan 0141; publication/runtime lookup, mutation invalidation, and alias replacement remain deferred)
+Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, and owner-facing failure-atomic publication wired in Plan 0141; automatic rebuild scheduling, runtime lookup, mutation invalidation, and alias replacement remain deferred)
 Last revised: 2026-07-23
 Anchor timestamp: 2026-07-23 14:13:50 UTC +0000
 

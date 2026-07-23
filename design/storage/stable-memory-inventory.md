@@ -182,8 +182,8 @@ deferred, so canonical adjacency and `EDGE_ALIASES` paths are unchanged.
 
 | MemoryId | Symbol | Role | Class | Rebuild |
 | --- | --- | --- | --- | --- |
-| 47 | `MATE_LEAF_LOCATORS` | Dense five-byte `(orientation, leaf)` locator rows | derived | Plan 0141 admission/build is read-only; publication/runtime rebuild remains deferred |
-| 48 | `MATE_BLOBS` | Versioned sampled-checkpoint or packed counterpart-slot arrays for indexed leaves | derived | Plan 0141 pure builder is read-only; publication/runtime rebuild remains deferred |
+| 47 | `MATE_LEAF_LOCATORS` | Dense five-byte `(orientation, leaf)` locator rows | derived | Plan 0141 admission/build and owner-facing failure-atomic publication boundary; automatic rebuild/runtime consumption remains deferred |
+| 48 | `MATE_BLOBS` | Versioned sampled-checkpoint or packed counterpart-slot arrays for indexed leaves | derived | Plan 0141 pure builder and owner-facing publication boundary; automatic rebuild/runtime consumption remains deferred |
 | 49 | `MATE_FREE_SPANS` | Retired mate-blob byte ranges | maintenance | Allocator validation |
 | 50 | `MATE_FREE_SPAN_BY_START` | Coalescing index for mate-blob free ranges | maintenance | Paired `FreeSpanStore` validation |
 

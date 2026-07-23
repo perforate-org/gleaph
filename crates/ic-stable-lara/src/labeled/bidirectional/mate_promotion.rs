@@ -106,6 +106,7 @@ pub(crate) enum MateBlobBuildError {
     SlotDoesNotFit,
     Codec(EncodeError),
     LengthMismatch,
+    AdmissionSizeMismatch,
 }
 
 /// The only mode-selection result exposed by the admission boundary.
@@ -185,7 +186,8 @@ fn evaluate_group(
                     | MateBlobBuildError::DuplicateSelectedBucket
                     | MateBlobBuildError::CanonicalMismatch
                     | MateBlobBuildError::Codec(_)
-                    | MateBlobBuildError::LengthMismatch => {
+                    | MateBlobBuildError::LengthMismatch
+                    | MateBlobBuildError::AdmissionSizeMismatch => {
                         MatePromotionRejectReason::CodecRejected
                     }
                 })?;
@@ -359,6 +361,34 @@ pub(crate) fn build_promoted_blob(
     decision: &MateLeafPromotionDecision,
     rows: &[MatePromotionRows],
 ) -> Result<(MateBlob, Vec<u8>), MateBlobBuildError> {
+    let result = build_promoted_blob_unchecked(decision, rows)?;
+    let MateLeafPromotionDecision::Promote {
+        encoded_blob_bytes,
+        total_promotion_bytes,
+        ..
+    } = decision
+    else {
+        unreachable!("unchecked builder accepts Promote only");
+    };
+    let encoded_len =
+        u64::try_from(result.1.len()).map_err(|_| MateBlobBuildError::LengthMismatch)?;
+    let config = match decision {
+        MateLeafPromotionDecision::Promote { config, .. } => config,
+        MateLeafPromotionDecision::ScanOnly { .. } => unreachable!(),
+    };
+    let expected_total = encoded_len
+        .checked_add(config.leaf_shared_overhead_bytes)
+        .ok_or(MateBlobBuildError::LengthMismatch)?;
+    if *encoded_blob_bytes != encoded_len || *total_promotion_bytes != expected_total {
+        return Err(MateBlobBuildError::AdmissionSizeMismatch);
+    }
+    Ok(result)
+}
+
+fn build_promoted_blob_unchecked(
+    decision: &MateLeafPromotionDecision,
+    rows: &[MatePromotionRows],
+) -> Result<(MateBlob, Vec<u8>), MateBlobBuildError> {
     let MateLeafPromotionDecision::Promote {
         mode, bucket_ids, ..
     } = decision
@@ -425,6 +455,25 @@ pub(crate) fn build_promoted_blob(
         return Err(MateBlobBuildError::LengthMismatch);
     }
     Ok((blob, bytes))
+}
+
+#[cfg(test)]
+pub(crate) fn test_finalize_decision_sizes(
+    decision: &mut MateLeafPromotionDecision,
+    rows: &[MatePromotionRows],
+) {
+    let (_, bytes) = build_promoted_blob_unchecked(decision, rows).expect("valid test decision");
+    let encoded = u64::try_from(bytes.len()).expect("test blob length");
+    if let MateLeafPromotionDecision::Promote {
+        config,
+        encoded_blob_bytes,
+        total_promotion_bytes,
+        ..
+    } = decision
+    {
+        *encoded_blob_bytes = encoded;
+        *total_promotion_bytes = encoded + config.leaf_shared_overhead_bytes;
+    }
 }
 
 #[cfg(test)]
@@ -723,6 +772,43 @@ mod tests {
         let (blob, bytes) = build_promoted_blob(&decision, &[rows]).expect("build");
         assert_eq!(blob.buckets[0].mapping, vec![10, 11, 20, 21, 30, 31]);
         assert_eq!(MateBlob::decode(&bytes).expect("decode"), blob);
+    }
+
+    #[test]
+    fn builder_rejects_forged_admission_sizes() {
+        let candidate = candidate(16, 1, 3);
+        let mut decision = decide_leaf_promotion(std::slice::from_ref(&candidate), config());
+        let rows = MatePromotionRows {
+            inputs: candidate.inputs,
+            source_slots: vec![10, 20, 30],
+            mate_slots: vec![11, 21, 31],
+        };
+        test_finalize_decision_sizes(&mut decision, std::slice::from_ref(&rows));
+        if let MateLeafPromotionDecision::Promote {
+            encoded_blob_bytes, ..
+        } = &mut decision
+        {
+            *encoded_blob_bytes += 1;
+        } else {
+            panic!("expected promotion");
+        }
+        assert_eq!(
+            build_promoted_blob(&decision, std::slice::from_ref(&rows)),
+            Err(MateBlobBuildError::AdmissionSizeMismatch)
+        );
+        if let MateLeafPromotionDecision::Promote {
+            encoded_blob_bytes,
+            total_promotion_bytes,
+            ..
+        } = &mut decision
+        {
+            *encoded_blob_bytes -= 1;
+            *total_promotion_bytes += 1;
+        }
+        assert_eq!(
+            build_promoted_blob(&decision, std::slice::from_ref(&rows)),
+            Err(MateBlobBuildError::AdmissionSizeMismatch)
+        );
     }
 
     #[test]

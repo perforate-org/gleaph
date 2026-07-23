@@ -163,7 +163,8 @@ before opening the shared `(orientation, leaf)` locator namespace.  Mate initial
 remain typed through `MateStorageInitError`; callers therefore distinguish geometry, partial-layout,
 row-count, and stable-memory failures without parsing display strings.  The two mate data regions
 Plan 0141 adds bounded, read-only promotion admission and pure Sampled/Packed leaf-blob construction.
-The two mate data regions remain derived and publication/runtime lookup remain deferred, so canonical
+The two mate data regions remain derived; the owner-facing failure-atomic publication boundary is
+implemented, while automatic rebuild scheduling and runtime lookup remain deferred, so canonical
 adjacency and `EDGE_ALIASES` paths are unchanged.
 Owner construction preflights the four-region composite and compares its fresh/reopen state with
 the LARA sentinel regions before opening either orientation, so mixed fresh/reopen or partial mate
@@ -192,7 +193,7 @@ the dormant LARA-owned locator/blob/free-span storage foundation with fresh/reop
 validation and publication-before-retirement ordering. Plan 0140 hardens the opt-in Graph facade
 ScanOnly bridge: it resolves exact canonical handles through LARA rank/select without reading or
 mutating `EDGE_ALIASES`; ordinary callers still use the alias compatibility path. Promotion,
-published blob reads, and alias removal remain planned.
+automatic rebuild scheduling, published blob reads, and alias removal remain planned.
 
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half

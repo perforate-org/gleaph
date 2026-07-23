@@ -33,6 +33,29 @@ use ic_stable_vec_deque::{
 };
 use std::{borrow::Cow, fmt};
 
+/// Failure returned by the owner-facing mate leaf rebuild boundary.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum MateLeafRebuildError {
+    /// Canonical rows or the promotion decision could not produce a valid blob.
+    Build(MateBlobBuildError),
+    /// The shared mate storage could not begin, publish, or clear the rebuild.
+    Storage(MateStorageInitError),
+    /// A ScanOnly transition was supplied with rows that must not be published.
+    RowsForScanOnly,
+}
+
+impl fmt::Display for MateLeafRebuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Build(error) => write!(f, "mate leaf build failed: {error:?}"),
+            Self::Storage(error) => write!(f, "mate storage rebuild failed: {error}"),
+            Self::RowsForScanOnly => write!(f, "ScanOnly mate rebuild cannot receive rows"),
+        }
+    }
+}
+
+impl std::error::Error for MateLeafRebuildError {}
+
 /// Maintenance report for a deferred bidirectional labeled graph.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BidirectionalMaintenanceReport {
@@ -1280,6 +1303,19 @@ where
         self.mate.abort_rebuild(token)
     }
 
+    /// Aborts an already-open token when an empty plan resolves to ScanOnly.
+    ///
+    /// This is the explicit empty-plan path: it restores the token's captured Published or
+    /// ScanOnly state and never leaves the locator in `Rebuilding`.
+    pub(crate) fn abort_empty_mate_leaf_rebuild(
+        &self,
+        token: MateRebuildToken,
+    ) -> Result<(), MateLeafRebuildError> {
+        self.mate
+            .abort_rebuild(token)
+            .map_err(MateLeafRebuildError::Storage)
+    }
+
     /// Publishes a previously built and validated leaf blob through the affine token boundary.
     pub(crate) fn publish_mate_leaf_rebuild(
         &self,
@@ -1292,6 +1328,56 @@ where
     /// Applies an explicit ScanOnly transition for a leaf with no admitted buckets.
     pub(crate) fn clear_mate_leaf_published(&self, row: u64) -> Result<(), MateStorageInitError> {
         self.mate.clear_published(row)
+    }
+
+    /// Rebuilds and publishes one orientation/leaf blob through the owner boundary.
+    ///
+    /// The blob is fully built and validated before a rebuild token is opened.  A `ScanOnly`
+    /// decision never opens a token and instead clears an existing published blob; supplying
+    /// rows for that decision is rejected before storage mutation.  Storage owns rollback after
+    /// the token is opened, so callers cannot accidentally expose a partially built blob.
+    pub(crate) fn rebuild_mate_leaf(
+        &self,
+        orientation: Orientation,
+        leaf: u32,
+        decision: &MateLeafPromotionDecision,
+        rows: &[MatePromotionRows],
+    ) -> Result<(), MateLeafRebuildError> {
+        let segment_count = u64::from(self.forward.segment_count());
+        if u64::from(leaf) >= segment_count {
+            return Err(MateLeafRebuildError::Storage(
+                MateStorageInitError::RowOutOfRange,
+            ));
+        }
+        let row =
+            match orientation {
+                Orientation::Forward => u64::from(leaf),
+                Orientation::Reverse => segment_count.checked_add(u64::from(leaf)).ok_or(
+                    MateLeafRebuildError::Storage(MateStorageInitError::RowCountOverflow),
+                )?,
+            };
+        match decision {
+            MateLeafPromotionDecision::ScanOnly { .. } => {
+                if !rows.is_empty() {
+                    return Err(MateLeafRebuildError::RowsForScanOnly);
+                }
+                self.mate
+                    .clear_published(row)
+                    .map_err(MateLeafRebuildError::Storage)
+            }
+            MateLeafPromotionDecision::Promote { .. } => {
+                let (encoded, _) = self
+                    .build_mate_leaf_blob(orientation, leaf, decision, rows)
+                    .map_err(MateLeafRebuildError::Build)?;
+                let token = self
+                    .mate
+                    .begin_rebuild(row)
+                    .map_err(MateLeafRebuildError::Storage)?;
+                self.mate
+                    .publish_rebuild(token, &encoded)
+                    .map_err(MateLeafRebuildError::Storage)
+            }
+        }
     }
 
     /// Returns the validated deferred maintenance configuration.
@@ -3218,6 +3304,7 @@ mod tests {
     use crate::labeled::bidirectional::mate_blob_prototype::{MateBlob, Mode};
     use crate::labeled::bidirectional::mate_promotion::{
         MateLeafPromotionConfig, MatePromotionInputs, MatePromotionMode,
+        test_finalize_decision_sizes,
     };
     use crate::labeled::bidirectional::mate_storage::MateLocatorState;
     use crate::{
@@ -3280,6 +3367,123 @@ mod tests {
         let expected_rows = u64::from(graph.forward.segment_count()) * 2;
         assert!(expected_rows > 2);
         assert_eq!(graph.mate.test_locator_row_count(), expected_rows);
+    }
+
+    #[test]
+    fn rebuild_mate_leaf_publishes_then_explicitly_clears_scan_only() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(21);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(source, target, label, TestEdge(1), TestEdge(0))
+                .unwrap();
+        }
+        let mut source_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .unwrap();
+        let mut mate_slots = Vec::new();
+        graph
+            .reverse()
+            .for_each_live_edge_slot_for_label(target, label, |slot, _| mate_slots.push(slot))
+            .unwrap();
+        let rows = MatePromotionRows {
+            inputs: MatePromotionInputs {
+                owner_vertex_id: source,
+                bucket_label_key: label,
+                live_entries: 2,
+                source_scan_rows: 2,
+                counterpart_scan_rows: 2,
+                sampled_stride: 0,
+                packed_width_bytes: 4,
+                min_scan_rows: 1,
+            },
+            source_slots,
+            mate_slots,
+        };
+        let mut decision = MateLeafPromotionDecision::Promote {
+            mode: MatePromotionMode::Packed { width_bytes: 4 },
+            config: MateLeafPromotionConfig {
+                leaf_shared_overhead_bytes: 8,
+                max_encoded_blob_bytes: u64::MAX,
+                max_total_promotion_bytes: u64::MAX,
+                max_bytes_per_entry: 1 << 20,
+            },
+            bucket_ids: vec![(source, label)],
+            encoded_blob_bytes: 0,
+            total_promotion_bytes: 0,
+        };
+        test_finalize_decision_sizes(&mut decision, std::slice::from_ref(&rows));
+        graph
+            .rebuild_mate_leaf(
+                Orientation::Forward,
+                0,
+                &decision,
+                std::slice::from_ref(&rows),
+            )
+            .expect("publish canonical leaf");
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+
+        let mut malformed = rows.clone();
+        malformed.mate_slots.pop();
+        assert_eq!(
+            graph.rebuild_mate_leaf(
+                Orientation::Forward,
+                0,
+                &decision,
+                std::slice::from_ref(&malformed)
+            ),
+            Err(MateLeafRebuildError::Build(
+                MateBlobBuildError::CanonicalMismatch
+            ))
+        );
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+
+        let scan_only = MateLeafPromotionDecision::ScanOnly {
+            reason: super::super::mate_promotion::MatePromotionRejectReason::NoEligibleBuckets,
+        };
+        assert_eq!(
+            graph.rebuild_mate_leaf(
+                Orientation::Forward,
+                0,
+                &scan_only,
+                std::slice::from_ref(&rows)
+            ),
+            Err(MateLeafRebuildError::RowsForScanOnly)
+        );
+        graph
+            .rebuild_mate_leaf(Orientation::Forward, 0, &scan_only, &[])
+            .expect("clear published leaf");
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        let token = graph
+            .begin_mate_leaf_rebuild(0)
+            .expect("open empty-plan token");
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Rebuilding
+        );
+        graph
+            .abort_empty_mate_leaf_rebuild(token)
+            .expect("abort empty-plan token");
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
     }
 
     #[test]
@@ -5206,7 +5410,7 @@ mod tests {
             source_slots: source_slots.clone(),
             mate_slots: mate_slots.clone(),
         };
-        let decision = MateLeafPromotionDecision::Promote {
+        let mut decision = MateLeafPromotionDecision::Promote {
             mode: MatePromotionMode::Packed { width_bytes: 4 },
             config: MateLeafPromotionConfig {
                 leaf_shared_overhead_bytes: 8,
@@ -5218,6 +5422,7 @@ mod tests {
             encoded_blob_bytes: 0,
             total_promotion_bytes: 0,
         };
+        test_finalize_decision_sizes(&mut decision, std::slice::from_ref(&rows));
         let (built_bytes, _) = graph
             .build_mate_leaf_blob(
                 Orientation::Forward,
@@ -5236,6 +5441,14 @@ mod tests {
         else {
             unreachable!("test decision is promote");
         };
+        let (encoded_blob_bytes, total_promotion_bytes) = match &decision {
+            MateLeafPromotionDecision::Promote {
+                encoded_blob_bytes,
+                total_promotion_bytes,
+                ..
+            } => (*encoded_blob_bytes, *total_promotion_bytes),
+            MateLeafPromotionDecision::ScanOnly { .. } => unreachable!(),
+        };
         let limited = MateLeafPromotionDecision::Promote {
             mode,
             config: MateLeafPromotionConfig {
@@ -5243,8 +5456,8 @@ mod tests {
                 ..config
             },
             bucket_ids,
-            encoded_blob_bytes: 0,
-            total_promotion_bytes: 0,
+            encoded_blob_bytes,
+            total_promotion_bytes,
         };
         assert_eq!(
             graph.build_mate_leaf_blob(
@@ -5340,7 +5553,7 @@ mod tests {
             source_slots: expected_source_slots.clone(),
             mate_slots: expected_mate_slots.clone(),
         };
-        let decision = MateLeafPromotionDecision::Promote {
+        let mut decision = MateLeafPromotionDecision::Promote {
             mode: MatePromotionMode::Packed { width_bytes: 4 },
             config: MateLeafPromotionConfig {
                 leaf_shared_overhead_bytes: 8,
@@ -5352,6 +5565,7 @@ mod tests {
             encoded_blob_bytes: 0,
             total_promotion_bytes: 0,
         };
+        test_finalize_decision_sizes(&mut decision, std::slice::from_ref(&rows));
         let (bytes, _) = graph
             .build_mate_leaf_blob(Orientation::Reverse, 0, &decision, &[rows])
             .expect("reverse canonical pair mapping");
@@ -5444,7 +5658,7 @@ mod tests {
                 mate_slots: self_slots.clone(),
             },
         ];
-        let decision = MateLeafPromotionDecision::Promote {
+        let mut decision = MateLeafPromotionDecision::Promote {
             mode: MatePromotionMode::Packed { width_bytes: 4 },
             config: MateLeafPromotionConfig {
                 leaf_shared_overhead_bytes: 8,
@@ -5456,6 +5670,7 @@ mod tests {
             encoded_blob_bytes: 0,
             total_promotion_bytes: 0,
         };
+        test_finalize_decision_sizes(&mut decision, &rows);
         let (bytes, _) = graph
             .build_mate_leaf_blob(Orientation::Forward, 0, &decision, &rows)
             .expect("undirected canonical pair mapping");
