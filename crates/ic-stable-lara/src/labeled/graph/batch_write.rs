@@ -31,15 +31,18 @@
 //! Empty plans are rejected by `reserve_one_orientation_batch`; the batch
 //! boundary does not define a no-op success path.
 //!
-//! The initial slice supports only existing buckets whose run fits the current
-//! slab window with payload span growth at the occupied tail.  New buckets,
-//! overflow-log appends, rebalance, relocation, and dynamic expansion are
-//! deferred.
+//! The current slice supports existing buckets through one of three paths:
+//! - direct slab append when the bucket's window has room;
+//! - per-leaf overflow-log append when the slab is full but the log has room;
+//! - one in-place PMA leaf expansion when neither slab nor log can absorb the
+//!   projected geometry.  Relocation to a brand-new physical block, new-bucket
+//!   creation, default/unlabeled promotion, and maintenance compaction remain
+//!   unsupported and fall back to the scalar path.
 
 use crate::{
     VertexId,
     labeled::{bucket_label_key::BucketLabelKey, slot_index::checked_add_slot_index},
-    traits::CsrEdge,
+    traits::{CsrEdge, CsrEdgeTombstone},
 };
 use ic_stable_structures::Memory;
 
@@ -113,6 +116,9 @@ where
     graph_marker: usize,
     edge_capacity_before: u64,
     payload_tail_before: u64,
+    /// Cumulative in-place leaf expansions reserved for this batch; consumed on
+    /// rollback to restore the free-span store shape.
+    leaf_expansions: std::collections::BTreeMap<u32, LeafExpansionState>,
 }
 
 impl<E> std::fmt::Debug for BatchReservation<E>
@@ -231,6 +237,28 @@ enum RunDestination {
         /// Index of the first reserved payload log entry, if payload-bearing.
         payload_log_start_idx: Option<u32>,
     },
+    /// Expand the pinned PMA leaf block in place and write the run into the new slab
+    /// space after folding any existing overflow log entries.
+    ExpandedSlab {
+        /// PMA leaf whose block is expanded.
+        leaf: u32,
+        /// Leaf block length before expansion.
+        old_leaf_len: u64,
+        /// Leaf block length after expansion.
+        new_leaf_len: u64,
+        /// Edge-slab slots that already exist in the bucket (including any folded log).
+        existing_bucket_slots: u32,
+        /// Edge overflow-log entries that must be folded into the slab before writing.
+        edge_log_len: u32,
+        /// Payload slab slots already resident (including any folded payload log).
+        existing_payload_slots: u32,
+        /// Payload overflow-log entries that must be folded before writing.
+        payload_log_len: u32,
+        /// Byte offset in the payload slab where the bucket's expanded value span starts.
+        payload_byte_offset: Option<u64>,
+        /// Number of payload bytes reserved for the pending batch edges.
+        payload_byte_count: u64,
+    },
 }
 
 /// Intermediate preflight record for one run before any mutation.
@@ -246,6 +274,30 @@ enum PayloadAllocationKind {
         had_bytes: u64,
         new_bytes: u64,
     },
+}
+
+/// Per-leaf expansion state aggregated during preflight.
+///
+/// Multiple runs in the same pinned PMA leaf share one in-place expansion.  The
+/// first run that needs expansion computes the initial target; later runs may
+/// grow the same block further.  The consumed free-span prefix is recorded so
+/// reserve rollback can restore it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LeafExpansionState {
+    leaf: u32,
+    /// Leaf block length before any expansion in this batch.
+    old_leaf_len: u64,
+    /// Current reserved leaf block length.
+    new_leaf_len: u64,
+    /// Cumulative edge-slab slots (folded log entries + pending edges) that
+    /// must fit inside the expanded leaf block.
+    required_extra: u64,
+    /// Free spans consumed by the cumulative expansion, recorded so rollback
+    /// can restore them. Kept in allocation order; restore in reverse order.
+    taken_free_spans: Vec<crate::lara::edge::free_span::FreeSpan>,
+    /// Segment-total delta published during reserve so commit-time vertex-span
+    /// checks observe the expanded leaf geometry. Restored on rollback.
+    leaf_total_delta: i64,
 }
 
 struct PreflightRun {
@@ -309,17 +361,21 @@ where
         // Overflow-log runs share per-leaf segment capacity.  We maintain virtual
         // cursors so that multiple runs targeting the same leaf reserve disjoint
         // log ranges and the aggregate capacity check sees the whole batch.
+        // Expanded-slab runs similarly share per-leaf physical block growth.
         let mut preflight = Vec::with_capacity(plan.runs.len());
         let mut max_edge_end_slot: u64 = 0;
         let mut edge_log_leaf_cursors: std::collections::BTreeMap<u32, u32> =
             std::collections::BTreeMap::new();
         let mut payload_log_leaf_cursors: std::collections::BTreeMap<u32, u32> =
             std::collections::BTreeMap::new();
+        let mut leaf_expansion_cursors: std::collections::BTreeMap<u32, LeafExpansionState> =
+            std::collections::BTreeMap::new();
         for run in &plan.runs {
             let p = self.preflight_run(
                 run,
                 &mut edge_log_leaf_cursors,
                 &mut payload_log_leaf_cursors,
+                &mut leaf_expansion_cursors,
             )?;
             if let RunDestination::Slab {
                 edge_start_slot, ..
@@ -331,17 +387,119 @@ where
             preflight.push(p);
         }
 
+        // Phase 2.25: reserve the cumulative in-place leaf expansion for every
+        // leaf that needs it. Doing this once per leaf after all runs have been
+        // projected avoids fragmenting the free span store with incremental
+        // per-run expansions.
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        for (leaf, state) in leaf_expansion_cursors.iter_mut() {
+            if state.new_leaf_len <= state.old_leaf_len {
+                continue;
+            }
+            let start_vid = (*leaf).saturating_mul(seg);
+            let (leaf_start, _) = match self.labeled_leaf_physical_range(VertexId::from(start_vid))
+            {
+                Some(range) => range,
+                None => {
+                    Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                    return Err(OneOrientationBatchError::UnsupportedGeometry(
+                        "expanded-slab batch requires a pinned PMA leaf block".into(),
+                    ));
+                }
+            };
+            let mut grown = match self.try_expand_labeled_leaf_in_place(
+                leaf_start,
+                state.old_leaf_len,
+                state.new_leaf_len,
+            ) {
+                Ok(grown) => grown,
+                Err(err) => {
+                    Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                    return Err(OneOrientationBatchError::from(err));
+                }
+            };
+            if !grown {
+                let leaf_end = match leaf_start.checked_add(state.old_leaf_len) {
+                    Some(end) => end,
+                    None => {
+                        Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                        return Err(OneOrientationBatchError::SlabCapacityExceeded);
+                    }
+                };
+                if leaf_end == header.elem_capacity {
+                    if let Err(err) = self.edges.set_elem_capacity(state.new_leaf_len) {
+                        Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                        return Err(storage_resize_error(err));
+                    }
+                    grown = true;
+                }
+            }
+            if !grown {
+                Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                return Err(OneOrientationBatchError::LogCapacityExceeded);
+            }
+            let delta = state.new_leaf_len - state.old_leaf_len;
+            let adjacent_start = match leaf_start.checked_add(state.old_leaf_len) {
+                Some(start) => start,
+                None => {
+                    Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                    return Err(OneOrientationBatchError::SlabCapacityExceeded);
+                }
+            };
+            state
+                .taken_free_spans
+                .push(crate::lara::edge::free_span::FreeSpan {
+                    start_slot: adjacent_start,
+                    len: delta,
+                });
+            // A pinned leaf created by older setup paths can have a physical
+            // span while its segment `total` is still zero. In that case the
+            // first publication must establish the full leaf length, not only
+            // the incremental growth; otherwise readers expose a block shorter
+            // than the physical expansion and rebalance rejects valid spans.
+            let prior_total = self
+                .leaf_segment_counts_for_vid(VertexId::from(start_vid))
+                .total;
+            let published_delta = if prior_total == 0 {
+                state.new_leaf_len
+            } else {
+                delta
+            };
+            let delta_i64 = match i64::try_from(published_delta) {
+                Ok(delta) => delta,
+                Err(_) => {
+                    Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                    return Err(OneOrientationBatchError::SlabCapacityExceeded);
+                }
+            };
+            if let Err(err) =
+                self.edges
+                    .bump_vertex_segment_counts(VertexId::from(start_vid), 0, delta_i64)
+            {
+                Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                return Err(OneOrientationBatchError::from(
+                    LabeledOperationError::Store(err),
+                ));
+            }
+            state.leaf_total_delta = delta_i64;
+        }
+
         // Phase 2.5: prove that the total result counts fit in the public u32 fields.
-        Self::check_total_result_counts_fit_u32(&preflight)?;
+        if let Err(err) = Self::check_total_result_counts_fit_u32(&preflight) {
+            Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+            return Err(err);
+        }
 
         // Phase 3: mutate allocator state for slab-bound runs only.  Overflow-log
         // runs reserve only ephemeral log capacity checked in preflight; they do not
         // touch the edge-store logical capacity or payload occupied tail before commit.
         let edge_capacity_before = self.edges.header().elem_capacity;
-        if max_edge_end_slot > edge_capacity_before {
-            self.edges
-                .set_elem_capacity(max_edge_end_slot)
-                .map_err(storage_resize_error)?;
+        if max_edge_end_slot > edge_capacity_before
+            && let Err(err) = self.edges.set_elem_capacity(max_edge_end_slot)
+        {
+            Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+            return Err(storage_resize_error(err));
         }
 
         let payload_tail_before = self.values.header().slab_occupied_tail;
@@ -358,6 +516,10 @@ where
                             PayloadAllocationKind::New { byte_len } => {
                                 let actual_offset =
                                     self.values.append_byte_span(byte_len).map_err(|e| {
+                                        Self::rollback_leaf_expansions(
+                                            self,
+                                            &leaf_expansion_cursors,
+                                        );
                                         self.rollback_payload_tail(payload_tail_before);
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
@@ -373,11 +535,16 @@ where
                                     .values
                                     .grow_byte_span_in_place(offset, had_bytes, new_bytes)
                                     .map_err(|e| {
+                                        Self::rollback_leaf_expansions(
+                                            self,
+                                            &leaf_expansion_cursors,
+                                        );
                                         self.rollback_payload_tail(payload_tail_before);
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
                                     })?;
                                 if !grown {
+                                    Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
                                     self.rollback_payload_tail(payload_tail_before);
                                     self.rollback_edge_capacity(edge_capacity_before);
                                     return Err(OneOrientationBatchError::UnsupportedGeometry(
@@ -396,6 +563,62 @@ where
                     // Overflow-log runs do not allocate payload slab bytes; payload bytes
                     // are written directly into the payload overflow log at commit time.
                     allocated_payload_offsets.push(None);
+                }
+                RunDestination::ExpandedSlab { .. } => {
+                    // Expanded-slab runs allocate any required payload slab bytes at
+                    // reserve time, just like clean-slab runs, so rollback can retire
+                    // the span if the batch aborts.
+                    if let Some(allocation) = p.payload_allocation {
+                        match allocation {
+                            PayloadAllocationKind::Existing { offset } => {
+                                allocated_payload_offsets.push(Some((offset, 0)));
+                            }
+                            PayloadAllocationKind::New { byte_len } => {
+                                let actual_offset =
+                                    self.values.append_byte_span(byte_len).map_err(|e| {
+                                        Self::rollback_leaf_expansions(
+                                            self,
+                                            &leaf_expansion_cursors,
+                                        );
+                                        self.rollback_payload_tail(payload_tail_before);
+                                        self.rollback_edge_capacity(edge_capacity_before);
+                                        storage_resize_error(e)
+                                    })?;
+                                allocated_payload_offsets.push(Some((actual_offset, byte_len)));
+                            }
+                            PayloadAllocationKind::GrowInPlace {
+                                offset,
+                                had_bytes,
+                                new_bytes,
+                            } => {
+                                let grown = self
+                                    .values
+                                    .grow_byte_span_in_place(offset, had_bytes, new_bytes)
+                                    .map_err(|e| {
+                                        Self::rollback_leaf_expansions(
+                                            self,
+                                            &leaf_expansion_cursors,
+                                        );
+                                        self.rollback_payload_tail(payload_tail_before);
+                                        self.rollback_edge_capacity(edge_capacity_before);
+                                        storage_resize_error(e)
+                                    })?;
+                                if !grown {
+                                    Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                                    self.rollback_payload_tail(payload_tail_before);
+                                    self.rollback_edge_capacity(edge_capacity_before);
+                                    return Err(OneOrientationBatchError::UnsupportedGeometry(
+                                        "payload span is not at occupied tail and cannot grow in place"
+                                            .into(),
+                                    ));
+                                }
+                                allocated_payload_offsets
+                                    .push(Some((offset, new_bytes - had_bytes)));
+                            }
+                        }
+                    } else {
+                        allocated_payload_offsets.push(None);
+                    }
                 }
             }
         }
@@ -442,6 +665,40 @@ where
                         edge_log_start_idx,
                         payload_log_start_idx,
                     },
+                    RunDestination::ExpandedSlab {
+                        leaf,
+                        old_leaf_len,
+                        new_leaf_len,
+                        existing_bucket_slots,
+                        edge_log_len,
+                        existing_payload_slots,
+                        payload_log_len,
+                        ..
+                    } => {
+                        let payload_byte_offset = if p.inline_value_width > 0 {
+                            let (actual_offset, _allocated_len) = allocated.expect(
+                                "payload-bearing expanded-slab run must have an allocated offset",
+                            );
+                            Some(actual_offset)
+                        } else {
+                            debug_assert!(
+                                allocated.is_none(),
+                                "edge-only expanded-slab run must have no payload allocation"
+                            );
+                            None
+                        };
+                        RunDestination::ExpandedSlab {
+                            leaf,
+                            old_leaf_len,
+                            new_leaf_len,
+                            existing_bucket_slots,
+                            edge_log_len,
+                            existing_payload_slots,
+                            payload_log_len,
+                            payload_byte_offset,
+                            payload_byte_count: p.payload_byte_count,
+                        }
+                    }
                 };
                 BatchReservationRun {
                     bucket_slot: p.bucket_slot,
@@ -464,6 +721,7 @@ where
             graph_marker: self.instance_marker(),
             edge_capacity_before,
             payload_tail_before,
+            leaf_expansions: leaf_expansion_cursors,
         })
     }
 
@@ -565,11 +823,39 @@ where
         &self.edges as *const _ as usize
     }
 
+    /// Restore free-span prefixes consumed by in-place leaf expansions.
+    ///
+    /// Called during reserve rollback and token consumption.  Each recorded
+    /// `FreeSpan` was removed from the free-span store by
+    /// `try_expand_labeled_leaf_in_place`; putting it back coalesces with the
+    /// adjacent successor if present.
+    fn rollback_leaf_expansions(
+        &self,
+        expansions: &std::collections::BTreeMap<u32, LeafExpansionState>,
+    ) {
+        for state in expansions.values() {
+            for span in state.taken_free_spans.iter().rev() {
+                self.edges
+                    .free_span_store()
+                    .restore_allocated_prefix(*span)
+                    .expect("reserve rollback must restore free-span store consistency");
+            }
+            if state.leaf_total_delta != 0 {
+                let seg = self.edges.header().segment_size.max(1);
+                let start_vid = state.leaf.saturating_mul(seg);
+                self.edges
+                    .bump_vertex_segment_counts(start_vid.into(), 0, -state.leaf_total_delta)
+                    .expect("reserve rollback must restore segment total");
+            }
+        }
+    }
+
     fn preflight_run(
         &self,
         run: &OneOrientationBucketRun<E>,
         edge_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
         payload_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
+        leaf_expansion_cursors: &mut std::collections::BTreeMap<u32, LeafExpansionState>,
     ) -> Result<PreflightRun, OneOrientationBatchError> {
         self.ensure_vertex(run.owner_vertex_id)
             .map_err(OneOrientationBatchError::from)?;
@@ -611,6 +897,7 @@ where
                 bucket,
                 edge_log_leaf_cursors,
                 payload_log_leaf_cursors,
+                leaf_expansion_cursors,
             );
         }
 
@@ -699,6 +986,7 @@ where
         bucket: super::LabelBucket,
         edge_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
         payload_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
+        leaf_expansion_cursors: &mut std::collections::BTreeMap<u32, LeafExpansionState>,
     ) -> Result<PreflightRun, OneOrientationBatchError> {
         self.ensure_vertex(run.owner_vertex_id)
             .map_err(OneOrientationBatchError::from)?;
@@ -717,7 +1005,7 @@ where
             .checked_add(edge_slot_count)
             .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
         if edge_log_end_idx > edge_log_capacity {
-            return Err(OneOrientationBatchError::LogCapacityExceeded);
+            return self.preflight_expanded_run(run, bucket_slot, bucket, leaf_expansion_cursors);
         }
         edge_log_leaf_cursors.insert(leaf, edge_log_end_idx);
 
@@ -773,11 +1061,207 @@ where
             },
         })
     }
+
+    /// Preflight an existing-bucket run that does not fit the clean slab window
+    /// or the per-leaf overflow log by expanding the pinned PMA leaf block in
+    /// place.  The initial slice is intentionally narrow:
+    ///
+    /// - edge-only (`inline_value_width == 0`);
+    /// - one expanded run per PMA leaf per batch;
+    /// - the leaf block must already be pinned.
+    ///
+    /// Payload-bearing expansion, multiple expanded runs in the same leaf, and
+    /// relocation to a new physical block remain unsupported and fall back to
+    /// the scalar path.
+    fn preflight_expanded_run(
+        &self,
+        run: &OneOrientationBucketRun<E>,
+        bucket_slot: u64,
+        bucket: super::LabelBucket,
+        leaf_expansion_cursors: &mut std::collections::BTreeMap<u32, LeafExpansionState>,
+    ) -> Result<PreflightRun, OneOrientationBatchError> {
+        let header = self.edges.header();
+        let leaf = Self::leaf_index_for_vid(run.owner_vertex_id, header.segment_size);
+        let (_leaf_start, current_leaf_len) =
+            match self.labeled_leaf_physical_range(run.owner_vertex_id) {
+                Some(range) => range,
+                None => {
+                    return Err(OneOrientationBatchError::UnsupportedGeometry(
+                        "expanded-slab batch requires a pinned PMA leaf block".into(),
+                    ));
+                }
+            };
+        let edge_slot_count = u32::try_from(run.edges.len())
+            .map_err(|_| OneOrientationBatchError::SlabCapacityExceeded)?;
+        let edge_log_len = if bucket.overflow_log_head() >= 0 {
+            self.edges
+                .overflow_log_chain_len(leaf, bucket.overflow_log_head())
+        } else {
+            0
+        };
+
+        // Validate payload-bearing edges and project the payload slab space that
+        // will hold the existing slab values, any folded payload log entries, and
+        // the pending batch values after the leaf expansion.
+        let mut payload_byte_count: u64 = 0;
+        let mut payload_allocation: Option<PayloadAllocationKind> = None;
+        let existing_payload_slots = bucket.inline_value_slab_slots();
+        let payload_log_len = if run.inline_value_width > 0 {
+            let width = usize::from(run.inline_value_width);
+            for e in &run.edges {
+                let actual = e.edge.edge_inline_value_bytes().len();
+                if actual != width {
+                    return Err(OneOrientationBatchError::PayloadLengthMismatch {
+                        logical_ordinal: e.logical_ordinal,
+                        expected_width: run.inline_value_width,
+                        actual_length: actual,
+                    });
+                }
+            }
+            payload_byte_count = u64::from(edge_slot_count)
+                .checked_mul(u64::from(run.inline_value_width))
+                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+            let log_len = if bucket.inline_value_log_head() >= 0 {
+                self.values
+                    .payload_log_chain_asc_indices(
+                        self.payload_log_leaf(run.owner_vertex_id),
+                        bucket.inline_value_log_head(),
+                    )
+                    .len() as u32
+            } else {
+                0
+            };
+            let total_payload_slots = u64::from(existing_payload_slots)
+                .checked_add(u64::from(log_len))
+                .and_then(|s| s.checked_add(u64::from(edge_slot_count)))
+                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+            let total_payload_bytes = total_payload_slots
+                .checked_mul(u64::from(run.inline_value_width))
+                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+            let had_bytes = u64::from(existing_payload_slots)
+                .checked_mul(u64::from(run.inline_value_width))
+                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+            let offset = bucket.inline_value_offset();
+            let tail = self.values.header().slab_occupied_tail;
+            let span_ends_at_tail = offset.checked_add(had_bytes).is_some_and(|end| end == tail);
+
+            if had_bytes == 0 {
+                payload_allocation = Some(PayloadAllocationKind::New {
+                    byte_len: total_payload_bytes,
+                });
+            } else if span_ends_at_tail {
+                payload_allocation = Some(PayloadAllocationKind::GrowInPlace {
+                    offset,
+                    had_bytes,
+                    new_bytes: total_payload_bytes,
+                });
+            } else {
+                return Err(OneOrientationBatchError::UnsupportedGeometry(
+                    "payload span is not at occupied tail and cannot grow in place".into(),
+                ));
+            }
+            log_len
+        } else {
+            0
+        };
+
+        // Aggregate per-leaf expansion state. Multiple runs in the same pinned PMA
+        // leaf share one cumulative in-place expansion; later runs grow the same
+        // reserved block further.
+        let extra = u64::from(edge_slot_count)
+            .checked_add(u64::from(edge_log_len))
+            .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+        let state = leaf_expansion_cursors
+            .entry(leaf)
+            .or_insert(LeafExpansionState {
+                leaf,
+                old_leaf_len: current_leaf_len,
+                new_leaf_len: current_leaf_len,
+                required_extra: 0,
+                taken_free_spans: Vec::new(),
+                leaf_total_delta: 0,
+            });
+        state.required_extra = state
+            .required_extra
+            .checked_add(extra)
+            .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+        let seg = header.segment_size.max(1);
+        let block_len = super::leaf_pin::labeled_leaf_physical_block_len(seg);
+        let geometric_slack = state.required_extra.div_ceil(8).max(u64::from(seg));
+        let target_len = state
+            .old_leaf_len
+            .checked_add(state.required_extra)
+            .and_then(|s| s.checked_add(geometric_slack))
+            .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+        let target_len = target_len
+            .div_ceil(block_len)
+            .saturating_mul(block_len)
+            .max(block_len);
+        // The geometric estimate above accounts for this run's log fold and
+        // pending edges, but the leaf may contain other buckets whose resident
+        // spans also constrain the preferred vertex. Ensure the projected leaf
+        // can satisfy the same minimum used by rebalance_vertex_edge_span.
+        let vertex = self.vertices.get(run.owner_vertex_id);
+        let buckets = self
+            .read_vertex_label_buckets(&vertex)
+            .map_err(OneOrientationBatchError::from)?;
+        let resident_slots = buckets.iter().try_fold(0u32, |sum, b| {
+            sum.checked_add(b.stored_slots.max(b.degree))
+                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)
+        })?;
+        let min_required = resident_slots
+            .checked_add(
+                edge_log_len
+                    .checked_add(edge_slot_count)
+                    .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?,
+            )
+            .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+        let max_in_leaf = self
+            .labeled_vertex_stored_slots_max_in_leaf(run.owner_vertex_id)
+            .map_err(OneOrientationBatchError::from)? as u64;
+        let projected_max = max_in_leaf
+            .checked_add(state.new_leaf_len.saturating_sub(state.old_leaf_len))
+            .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+        if u64::from(min_required) > projected_max {
+            let deficit = u64::from(min_required) - projected_max;
+            let required_len = state
+                .new_leaf_len
+                .checked_add(deficit)
+                .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
+            state.new_leaf_len = state.new_leaf_len.max(required_len);
+        }
+        // Do not expand the leaf block here. All runs in the same leaf are
+        // aggregated first; the actual free-span reservation happens once per
+        // leaf after the entire preflight pass.
+        state.new_leaf_len = state.new_leaf_len.max(target_len);
+
+        Ok(PreflightRun {
+            owner_vertex_id: run.owner_vertex_id,
+            label_id: run.label_id,
+            bucket_slot,
+            bucket,
+            edge_slot_count,
+            inline_value_width: run.inline_value_width,
+            payload_byte_count,
+            payload_allocation,
+            destination: RunDestination::ExpandedSlab {
+                leaf,
+                old_leaf_len: state.old_leaf_len,
+                new_leaf_len: state.new_leaf_len,
+                existing_bucket_slots: bucket.stored_slots,
+                edge_log_len,
+                existing_payload_slots,
+                payload_log_len,
+                payload_byte_offset: None,
+                payload_byte_count,
+            },
+        })
+    }
 }
 
 impl<E> BatchReservation<E>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
 {
     /// Commit the reserved batch.
     ///
@@ -846,14 +1330,21 @@ where
                 bucket_slot, res.bucket_slot,
                 "bucket slot changed between reserve and commit"
             );
+            // Expanded-slab runs rebalance the vertex span, so the bucket's
+            // physical start is intentionally allowed to change between reserve
+            // and commit.  Validate every other fingerprint field.
+            let mut current_fingerprint = BucketFingerprint::from_bucket(
+                res.bucket_fingerprint.owner_vertex_id,
+                res.bucket_fingerprint.label_id,
+                &bucket,
+                &vertex,
+            );
+            if matches!(res.destination, RunDestination::ExpandedSlab { .. }) {
+                current_fingerprint.inline_value_offset =
+                    res.bucket_fingerprint.inline_value_offset;
+            }
             assert_eq!(
-                BucketFingerprint::from_bucket(
-                    res.bucket_fingerprint.owner_vertex_id,
-                    res.bucket_fingerprint.label_id,
-                    &bucket,
-                    &vertex
-                ),
-                res.bucket_fingerprint,
+                current_fingerprint, res.bucket_fingerprint,
                 "bucket occupancy changed between reserve and commit"
             );
 
@@ -875,6 +1366,17 @@ where
                     }
                 }
                 RunDestination::OverflowLog { .. } => {}
+                RunDestination::ExpandedSlab { edge_log_len, .. } => {
+                    let _updated_degree = bucket
+                        .degree
+                        .checked_add(res.edge_slot_count)
+                        .expect("reserve guaranteed expanded degree overflow safety");
+                    let _updated_stored_slots = bucket
+                        .stored_slots
+                        .checked_add(*edge_log_len)
+                        .and_then(|x| x.checked_add(res.edge_slot_count))
+                        .expect("reserve guaranteed expanded stored_slots overflow safety");
+                }
             }
         }
 
@@ -1013,11 +1515,48 @@ where
                             .expect("reserve guaranteed payload slot count");
                     }
                 }
+                RunDestination::ExpandedSlab {
+                    leaf,
+                    old_leaf_len,
+                    new_leaf_len,
+                    existing_bucket_slots,
+                    edge_log_len,
+                    existing_payload_slots,
+                    payload_log_len,
+                    payload_byte_offset,
+                    payload_byte_count,
+                    ..
+                } => {
+                    let (edge_written, payload_written) = Self::commit_expanded_slab_run::<M>(
+                        graph,
+                        run,
+                        res,
+                        *leaf,
+                        *old_leaf_len,
+                        *new_leaf_len,
+                        *existing_bucket_slots,
+                        *edge_log_len,
+                        *existing_payload_slots,
+                        *payload_log_len,
+                        *payload_byte_offset,
+                        *payload_byte_count,
+                    );
+                    edge_slots_written = edge_slots_written
+                        .checked_add(edge_written)
+                        .expect("reserve guaranteed expanded edge slot count");
+                    payload_slots_written = payload_slots_written
+                        .checked_add(payload_written)
+                        .expect("reserve guaranteed expanded payload slot count");
+                }
             }
         }
 
-        // Second pass: publish all bucket metadata and segment counts.
+        // Second pass: publish all bucket metadata and segment counts for paths
+        // that did not already publish them during the first pass.
         for res in &self.runs {
+            if matches!(res.destination, RunDestination::ExpandedSlab { .. }) {
+                continue;
+            }
             let vertex = graph.vertices.get(res.bucket_fingerprint.owner_vertex_id);
             let (bucket_slot, bucket) = match graph
                 .find_bucket(
@@ -1085,6 +1624,7 @@ where
                             .expect("reserve guaranteed payload log state");
                     }
                 }
+                RunDestination::ExpandedSlab { .. } => unreachable!(),
             }
             graph
                 .buckets
@@ -1104,7 +1644,8 @@ where
         // Publish any vertex span growth caused by growing the last bucket on a
         // vertex.  For non-last buckets the end slot stays within the existing
         // vertex span, so the vertex row is unchanged.  Overflow-log runs do not
-        // change the vertex slab span.
+        // change the vertex slab span.  Expanded-slab runs already updated the
+        // vertex span through rebalance.
         let mut vertex_stored_slot_ends: std::collections::BTreeMap<VertexId, u64> =
             std::collections::BTreeMap::new();
         for res in &self.runs {
@@ -1134,7 +1675,7 @@ where
             .edges
             .header()
             .num_edges
-            .checked_add(edge_slots_written)
+            .checked_add(total_edge_slots)
             .expect("reserve guaranteed num_edges overflow safety");
         graph.edges.set_num_edges(next_num_edges);
 
@@ -1150,6 +1691,231 @@ where
         }
     }
 
+    /// Commit one expanded-slab run.
+    ///
+    /// Commit one expanded-slab run after its owning vertex has already been
+    /// rebalanced and the leaf block growth has been reserved.  Folds any
+    /// existing overflow-log entries into the slab, writes the pending batch
+    /// edges and payload values, and updates the bucket metadata.  Returns the
+    /// number of physical edge slab slots and payload slab slots written.
+    fn commit_expanded_slab_run<M: Memory>(
+        graph: &LabeledLaraGraph<E, M>,
+        run: &OneOrientationBucketRun<E>,
+        res: &BatchReservationRun,
+        leaf: u32,
+        old_leaf_len: u64,
+        new_leaf_len: u64,
+        existing_bucket_slots: u32,
+        edge_log_len: u32,
+        existing_payload_slots: u32,
+        payload_log_len: u32,
+        payload_byte_offset: Option<u64>,
+        payload_byte_count: u64,
+    ) -> (u64, u64) {
+        let owner = res.bucket_fingerprint.owner_vertex_id;
+        let vertex = graph.vertices.get(owner);
+        let bucket_index =
+            LabeledLaraGraph::<E, M>::labeled_bucket_descriptor_index(&vertex, res.bucket_slot)
+                .expect("reserve found this bucket");
+        let extra = edge_log_len + res.edge_slot_count;
+        graph
+            .rebalance_vertex_edge_span(owner, Some(bucket_index), extra, false)
+            .expect("reserve guaranteed rebalance room in expanded leaf");
+
+        // Re-read the vertex and bucket after rebalance.
+        let vertex = graph.vertices.get(owner);
+        let (new_bucket_slot, new_bucket) = match graph
+            .find_bucket(owner, &vertex, res.bucket_fingerprint.label_id)
+            .expect("reserve found this bucket")
+        {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            BucketSearch::Missing { .. } => {
+                panic!("bucket disappeared between reserve and commit")
+            }
+        };
+        let edge_start = new_bucket.edge_start();
+
+        // Fold existing edge overflow-log entries into the slab after the existing prefix.
+        if edge_log_len > 0 {
+            let chain = graph
+                .edges
+                .overflow_log_chain_asc_indices(leaf, new_bucket.overflow_log_head());
+            for (offset, log_idx) in chain.into_iter().enumerate() {
+                let (_, edge) = graph.edges.read_overflow_log_entry(leaf, log_idx);
+                let out_slot = checked_add_slot_index(
+                    edge_start,
+                    u64::from(existing_bucket_slots)
+                        .checked_add(offset as u64)
+                        .expect("reserve guaranteed folded log offset"),
+                )
+                .expect("reserve guaranteed slab slot addressable");
+                graph
+                    .edges
+                    .write_slot(out_slot, edge)
+                    .expect("reserve guaranteed slab capacity");
+            }
+        }
+
+        // Write pending batch edges into the slab after the folded log.
+        let pending_start = checked_add_slot_index(
+            edge_start,
+            u64::from(existing_bucket_slots)
+                .checked_add(u64::from(edge_log_len))
+                .expect("reserve guaranteed pending start offset"),
+        )
+        .expect("reserve guaranteed pending start addressable");
+        let mut edge_bytes = Vec::with_capacity(run.edges.len() * E::BYTES);
+        for e in &run.edges {
+            let mut buf = vec![0u8; E::BYTES];
+            e.edge.write_to(&mut buf);
+            edge_bytes.extend_from_slice(&buf);
+        }
+        graph
+            .edges
+            .write_slots_contiguous(pending_start, &edge_bytes)
+            .expect("reserve guaranteed slab capacity");
+
+        // Update bucket edge metadata: stored_slots now covers prefix + folded log + pending.
+        let updated_stored = existing_bucket_slots
+            .checked_add(edge_log_len)
+            .and_then(|x| x.checked_add(res.edge_slot_count))
+            .expect("reserve guaranteed stored_slots overflow safety");
+        let updated_degree = new_bucket
+            .degree
+            .checked_add(res.edge_slot_count)
+            .expect("reserve guaranteed degree overflow safety");
+        let mut updated_bucket = new_bucket
+            .with_stored_slots(updated_stored)
+            .with_degree_field(updated_degree)
+            .with_overflow_log_head(-1);
+
+        // Fold and append payload values when present.
+        let mut payload_slots_written: u64 = 0;
+        if res.inline_value_width > 0 {
+            let width = u64::from(res.inline_value_width);
+            let new_payload_offset =
+                payload_byte_offset.expect("reserve guaranteed payload byte offset");
+
+            // Fold existing payload overflow-log entries into the slab.
+            if payload_log_len > 0 {
+                let payload_leaf = graph.payload_log_leaf(owner);
+                let chain = graph.values.payload_log_chain_asc_indices(
+                    payload_leaf,
+                    new_bucket.inline_value_log_head(),
+                );
+                for (offset, log_idx) in chain.into_iter().enumerate() {
+                    let mut buf = vec![0u8; usize::from(res.inline_value_width)];
+                    graph
+                        .values
+                        .read_payload_log_entry(
+                            payload_leaf,
+                            log_idx,
+                            res.inline_value_width,
+                            &mut buf,
+                        )
+                        .expect("reserve guaranteed payload log readability");
+                    let out_offset = new_payload_offset
+                        .checked_add(
+                            u64::from(existing_payload_slots)
+                                .checked_add(offset as u64)
+                                .expect("reserve guaranteed folded payload slot offset")
+                                .checked_mul(width)
+                                .expect("reserve guaranteed folded payload byte offset"),
+                        )
+                        .expect("reserve guaranteed folded payload offset");
+                    graph
+                        .values
+                        .write_bytes(out_offset, &buf)
+                        .expect("reserve guaranteed payload slab capacity");
+                }
+            }
+
+            // Write pending batch payload values after the folded log.
+            let pending_payload_bytes: Vec<u8> = run
+                .edges
+                .iter()
+                .flat_map(|e| e.edge.edge_inline_value_bytes().iter().copied())
+                .collect();
+            assert_eq!(
+                pending_payload_bytes.len() as u64,
+                payload_byte_count,
+                "reserve payload byte count must match actual payload bytes"
+            );
+            let pending_payload_offset = new_payload_offset
+                .checked_add(
+                    u64::from(existing_payload_slots)
+                        .checked_add(u64::from(payload_log_len))
+                        .expect("reserve guaranteed pending payload slot offset")
+                        .checked_mul(width)
+                        .expect("reserve guaranteed pending payload byte offset"),
+                )
+                .expect("reserve guaranteed pending payload offset");
+            graph
+                .values
+                .write_bytes(pending_payload_offset, &pending_payload_bytes)
+                .expect("reserve guaranteed payload slab capacity");
+
+            let total_payload_slots = u64::from(existing_payload_slots)
+                .checked_add(u64::from(payload_log_len))
+                .and_then(|s| s.checked_add(u64::from(res.edge_slot_count)))
+                .expect("reserve guaranteed payload slot count");
+            updated_bucket = updated_bucket
+                .with_inline_value_slab_slots(total_payload_slots as u32)
+                .with_inline_value_log_head(-1);
+            if existing_payload_slots == 0 {
+                updated_bucket = updated_bucket.with_inline_value_offset(new_payload_offset);
+            }
+            payload_slots_written = u64::from(payload_log_len)
+                .checked_add(u64::from(res.edge_slot_count))
+                .expect("reserve guaranteed payload slot count");
+
+            let total_payload_bytes = total_payload_slots
+                .checked_mul(width)
+                .expect("reserve guaranteed payload byte count");
+            let had_bytes = u64::from(existing_payload_slots)
+                .checked_mul(width)
+                .expect("reserve guaranteed existing payload byte count");
+            let alloc_delta = total_payload_bytes - had_bytes;
+            if alloc_delta > 0 {
+                let vertex = graph.vertices.get(owner);
+                let new_alloc = vertex
+                    .inline_value_allocated_bytes()
+                    .checked_add(alloc_delta)
+                    .expect("reserve guaranteed vertex payload allocated bytes overflow safety");
+                graph
+                    .vertices
+                    .set(owner, &vertex.with_inline_value_allocated_bytes(new_alloc));
+            }
+        }
+
+        graph
+            .buckets
+            .write_label_bucket_slot(new_bucket_slot, updated_bucket)
+            .expect("reserve guaranteed bucket writability");
+
+        // Publish the leaf block growth in the segment counts.
+        let d_total = i64::try_from(new_leaf_len)
+            .expect("reserve guaranteed leaf len fits in i64")
+            .checked_sub(
+                i64::try_from(old_leaf_len).expect("reserve guaranteed leaf len fits in i64"),
+            )
+            .expect("reserve guaranteed leaf total delta");
+        graph
+            .edges
+            .bump_vertex_segment_counts(owner, 0, d_total)
+            .expect("reserve guaranteed segment count overflow safety");
+
+        let edge_slots_written = u64::from(edge_log_len)
+            .checked_add(u64::from(res.edge_slot_count))
+            .expect("reserve guaranteed expanded slot count");
+        (edge_slots_written, payload_slots_written)
+    }
+}
+
+impl<E> BatchReservation<E>
+where
+    E: CsrEdge,
+{
     /// Roll back the capacity and payload reservations made by this reservation.
     ///
     /// This consumes the token and restores the edge-store logical capacity
@@ -1165,6 +1931,7 @@ where
             graph.instance_marker(),
             "reservation was produced by a different graph instance"
         );
+        graph.rollback_leaf_expansions(&self.leaf_expansions);
         graph.rollback_edge_capacity(self.edge_capacity_before);
         graph.rollback_payload_tail(self.payload_tail_before);
     }
@@ -1185,7 +1952,7 @@ pub struct OneOrientationBatchResult {
 
 impl<E, M> LabeledLaraGraph<E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     /// Convenience: reserve and commit a one-orientation batch in one call.
@@ -1510,16 +2277,24 @@ mod tests {
     #[test]
     fn reserve_rejects_log_capacity_exceeded() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
-        graph.push_vertex(LabeledVertex::default()).unwrap();
-        graph.push_vertex(LabeledVertex::default()).unwrap();
+        // Push enough vertices to cover two PMA leaves (segment_size = 32).
+        for _ in 0..34 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
 
-        // Create a bucket and fill its slab window.
         let label = BucketLabelKey::directed_from_index(1);
+        // Create a bucket at vertex 0 and fill its slab window.
         for i in 1..=3u32 {
             graph
                 .insert_edge(VertexId::from(0), label, GraphTestEdge { target: i })
                 .unwrap();
         }
+        // Pin a second leaf after leaf 0 so leaf 0 is not at the allocation tail
+        // and cannot expand via tail growth.  This keeps the test on the
+        // no-admission path.
+        graph
+            .insert_edge(VertexId::from(32), label, GraphTestEdge { target: 1 })
+            .unwrap();
 
         // Fill the per-leaf edge overflow log to capacity (170 entries).
         let header = graph.edges().header();
