@@ -28,27 +28,73 @@ pub(crate) enum MateLocatorState {
     Published { blob_offset: u64 },
 }
 
+/// Errors raised while creating, reopening, or mutating mate storage.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum MateStorageInitError {
+pub enum MateStorageInitError {
+    /// Forward and reverse PMA geometry cannot share one locator namespace.
+    GeometryMismatch {
+        /// Forward orientation segment size.
+        forward_segment_size: u32,
+        /// Reverse orientation segment size.
+        reverse_segment_size: u32,
+        /// Forward orientation segment count.
+        forward_segment_count: u32,
+        /// Reverse orientation segment count.
+        reverse_segment_count: u32,
+    },
+    /// The computed shared locator row count overflowed.
+    RowCountOverflow,
+    /// LARA and mate regions disagree on fresh versus reopen state.
+    OwnerLayoutMismatch,
+    /// Exactly some, but not all, regions contain data.
     PartialLayout,
+    /// Locator header or row area is invalid.
     InvalidLocatorLayout,
+    /// Blob header or byte area is invalid.
     InvalidBlobLayout,
+    /// The persisted layout version is unsupported.
     IncompatibleVersion(u8),
-    RowCountMismatch { expected: u64, actual: u64 },
+    /// Persisted locator rows differ from the owner geometry.
+    RowCountMismatch {
+        /// Expected row count.
+        expected: u64,
+        /// Persisted row count.
+        actual: u64,
+    },
+    /// Stable memory growth failed.
     Grow(GrowFailed),
+    /// Free-span regions are invalid.
     FreeSpan,
+    /// A referenced blob is invalid.
     InvalidBlob,
+    /// A locator row is outside the persisted range.
     RowOutOfRange,
+    /// A published locator offset does not fit the locator encoding.
     LocatorValueOverflow,
+    /// A blob length does not fit the blob encoding.
     BlobLengthOverflow,
+    /// A free-span operation failed.
     FreeSpanError,
+    /// A rebuild is already active for the row.
     RebuildAlreadyActive,
+    /// A rebuild token does not match the persisted row state.
     RebuildStateMismatch,
 }
 
 impl fmt::Display for MateStorageInitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::GeometryMismatch {
+                forward_segment_size,
+                reverse_segment_size,
+                forward_segment_count,
+                reverse_segment_count,
+            } => write!(
+                f,
+                "mate geometry mismatch: forward size/count={forward_segment_size}/{forward_segment_count}, reverse size/count={reverse_segment_size}/{reverse_segment_count}"
+            ),
+            Self::RowCountOverflow => write!(f, "mate locator row count overflow"),
+            Self::OwnerLayoutMismatch => write!(f, "owner LARA/mate layout state mismatch"),
             Self::PartialLayout => write!(f, "partial mate storage layout"),
             Self::InvalidLocatorLayout => write!(f, "invalid mate locator layout"),
             Self::InvalidBlobLayout => write!(f, "invalid mate blob layout"),
@@ -435,6 +481,27 @@ pub(crate) struct MateRebuildToken {
 }
 
 impl<M: Memory> MateStorage<M> {
+    /// Returns the persisted locator row count without mutating any region.
+    pub(crate) fn preflight_locator_rows(memory: &M) -> Result<Option<u64>, MateStorageInitError> {
+        if memory.size() == 0 {
+            return Ok(None);
+        }
+        if memory.size() * WASM_PAGE_BYTES < HEADER_BYTES {
+            return Err(MateStorageInitError::InvalidLocatorLayout);
+        }
+        let mut header = [0u8; HEADER_BYTES as usize];
+        memory.read(0, &mut header);
+        if header[..3] != LOCATOR_MAGIC {
+            return Err(MateStorageInitError::InvalidLocatorLayout);
+        }
+        if header[3] != LAYOUT_VERSION {
+            return Err(MateStorageInitError::IncompatibleVersion(header[3]));
+        }
+        Ok(Some(u64::from_be_bytes(
+            header[4..12].try_into().expect("locator row count"),
+        )))
+    }
+
     fn validate_references(&self) -> Result<(), MateStorageInitError> {
         for row in 0..self.locators.row_count.get() {
             if let MateLocatorState::Published { blob_offset: start } =
@@ -525,9 +592,13 @@ impl<M: Memory> MateStorage<M> {
         self.locators.get_state(row)
     }
 
+    pub(crate) fn locator_row_count(&self) -> u64 {
+        self.locators.row_count.get()
+    }
+
     #[cfg(test)]
     pub(crate) fn test_locator_row_count(&self) -> u64 {
-        self.locators.row_count.get()
+        self.locator_row_count()
     }
 
     #[cfg(test)]

@@ -158,6 +158,16 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 
 ## Bidirectional mate contract (accepted; four-region ownership wired, runtime dormant)
 
+The bidirectional owner rejects forward/reverse PMA segment-size or segment-count mismatches
+before opening the shared `(orientation, leaf)` locator namespace.  Mate initialization errors
+remain typed through `MateStorageInitError`; callers therefore distinguish geometry, partial-layout,
+row-count, and stable-memory failures without parsing display strings.  The two mate data regions
+remain derived but have no rebuild path until the runtime rebuild slice is implemented.
+Owner construction preflights the four-region composite and compares its fresh/reopen state with
+the LARA sentinel regions before opening either orientation, so mixed fresh/reopen or partial mate
+state cannot leave a newly opened canonical adjacency owner behind. This check runs only during
+owner construction; normal edge mutation and query paths do not rescan the composite.
+
 [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) places physical
 entry-to-entry pairing in bidirectional LARA rather than a Graph facade B-tree.
 Adjacency order and equal-neighbor occurrence rank remain authoritative. Small

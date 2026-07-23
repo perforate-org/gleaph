@@ -652,7 +652,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/mate",
             "Five-byte locator rows keyed by (orientation, leaf)",
-            RebuildPath::Named("mate leaf rebuild"),
+            RebuildPath::None,
         ),
         region(
             "MATE_BLOBS",
@@ -660,7 +660,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/mate",
             "Versioned sampled or packed mate blobs",
-            RebuildPath::Named("mate leaf rebuild"),
+            RebuildPath::None,
         ),
         region(
             "MATE_FREE_SPANS",
@@ -1516,8 +1516,11 @@ pub fn validate_class_invariants(layout: &StableCanisterLayout) -> Result<(), Cl
             }
             StableMemoryClass::Derived => {
                 // Every derived region must declare how it stays consistent: a named rebuild /
-                // backfill, or explicit sync co-update. An unspecified `None` is a layout bug.
-                if matches!(region.rebuild, RebuildPath::None) {
+                // backfill, or explicit sync co-update. Dormant ADR 0048 mate regions are the
+                // deliberate exception until their runtime rebuild path is implemented.
+                let dormant_mate_region = layout.canister == "graph"
+                    && matches!(region.symbol, "MATE_LEAF_LOCATORS" | "MATE_BLOBS");
+                if matches!(region.rebuild, RebuildPath::None) && !dormant_mate_region {
                     return Err(ClassInvariantError::DerivedWithoutRebuild {
                         canister: layout.canister,
                         symbol: region.symbol,
@@ -1669,9 +1672,10 @@ mod tests {
         ] {
             for region in layout.regions {
                 if region.class == StableMemoryClass::Derived {
-                    assert_ne!(
-                        region.rebuild,
-                        RebuildPath::None,
+                    let dormant_mate_region = layout.canister == "graph"
+                        && matches!(region.symbol, "MATE_LEAF_LOCATORS" | "MATE_BLOBS");
+                    assert!(
+                        region.rebuild != RebuildPath::None || dormant_mate_region,
                         "{}::{} is Derived but declares no rebuild path",
                         layout.canister,
                         region.symbol

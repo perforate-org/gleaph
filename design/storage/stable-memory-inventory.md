@@ -182,8 +182,8 @@ deferred, so canonical adjacency and `EDGE_ALIASES` paths are unchanged.
 
 | MemoryId | Symbol | Role | Class | Rebuild |
 | --- | --- | --- | --- | --- |
-| 47 | `MATE_LEAF_LOCATORS` | Dense five-byte `(orientation, leaf)` locator rows | derived | Rank/select fallback; rebuild affected leaves |
-| 48 | `MATE_BLOBS` | Versioned sampled-checkpoint or packed counterpart-slot arrays for indexed leaves | derived | Rebuild from adjacency pair rank |
+| 47 | `MATE_LEAF_LOCATORS` | Dense five-byte `(orientation, leaf)` locator rows | derived | None until mate runtime rebuild is implemented |
+| 48 | `MATE_BLOBS` | Versioned sampled-checkpoint or packed counterpart-slot arrays for indexed leaves | derived | None until mate runtime rebuild is implemented |
 | 49 | `MATE_FREE_SPANS` | Retired mate-blob byte ranges | maintenance | Allocator validation |
 | 50 | `MATE_FREE_SPAN_BY_START` | Coalescing index for mate-blob free ranges | maintenance | Paired `FreeSpanStore` validation |
 

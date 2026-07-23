@@ -5,7 +5,7 @@
 //! [`Self::for_each_undirected_edges`], and the matching `*_iter` helpers.
 
 use super::mate_storage::MateStorage;
-pub use super::mate_storage::MateStorageMemories;
+pub use super::mate_storage::{MateStorageInitError, MateStorageMemories};
 use crate::{
     VertexCount, VertexId,
     labeled::{
@@ -444,7 +444,7 @@ pub enum DeferredBidirectionalLabeledError {
     /// Stable memory grow or format initialization failed.
     Grow(crate::GrowFailed),
     /// Mate storage could not be initialized or grown.
-    Mate(String),
+    Mate(MateStorageInitError),
     /// Maintenance queue could not grow.
     MaintenanceQueue(QueueGrowFailed),
     /// Maintenance queue could not be reopened.
@@ -506,7 +506,7 @@ impl std::error::Error for DeferredBidirectionalLabeledError {
             Self::Forward(err) | Self::Reverse(err) => Some(err),
             Self::ForwardInit(err) | Self::ReverseInit(err) => Some(err),
             Self::Grow(err) => Some(err),
-            Self::Mate(_) => None,
+            Self::Mate(err) => Some(err),
             Self::MaintenanceQueue(err) => Some(err),
             Self::MaintenanceQueueInit(err) => Some(err),
             Self::MaintenanceDirtyInit(err) => Some(err),
@@ -678,6 +678,43 @@ where
         let config = config
             .validate()
             .map_err(DeferredBidirectionalLabeledError::InvalidConfig)?;
+        let mate_rows = Self::preflight_owner_state(
+            &[
+                forward_vertices.size(),
+                forward_buckets.size(),
+                forward_bucket_free_spans.size(),
+                forward_bucket_free_span_by_start.size(),
+                forward_edge_counts.size(),
+                forward_edges.size(),
+                forward_edge_log.size(),
+                forward_edge_span_meta.size(),
+                forward_edge_free_spans.size(),
+                forward_edge_free_span_by_start.size(),
+                forward_inline_value_slab.size(),
+                forward_payload_free_spans.size(),
+                forward_payload_free_span_by_start.size(),
+                forward_payload_log.size(),
+            ],
+            &[
+                reverse_vertices.size(),
+                reverse_buckets.size(),
+                reverse_bucket_free_spans.size(),
+                reverse_bucket_free_span_by_start.size(),
+                reverse_edge_counts.size(),
+                reverse_edges.size(),
+                reverse_edge_log.size(),
+                reverse_edge_span_meta.size(),
+                reverse_edge_free_spans.size(),
+                reverse_edge_free_span_by_start.size(),
+                reverse_inline_value_slab.size(),
+                reverse_payload_free_spans.size(),
+                reverse_payload_free_span_by_start.size(),
+                reverse_payload_log.size(),
+            ],
+            forward_payload_blobs.size(),
+            reverse_payload_blobs.size(),
+            &mate_memories,
+        )?;
         let forward = LabeledLaraGraph::new(
             forward_vertices,
             forward_buckets,
@@ -716,9 +753,6 @@ where
             capacities,
             default_label,
         )?;
-        let mate_rows = u64::from(forward.segment_count()).checked_mul(2).ok_or(
-            DeferredBidirectionalLabeledError::Mate("mate locator row count overflow".into()),
-        )?;
         let mate = MateStorage::init(
             mate_memories.locator,
             mate_memories.blobs,
@@ -726,7 +760,9 @@ where
             mate_memories.free_span_by_start,
             mate_rows,
         )
-        .map_err(|err| DeferredBidirectionalLabeledError::Mate(err.to_string()))?;
+        .map_err(DeferredBidirectionalLabeledError::Mate)?;
+        Self::validate_mate_geometry(&forward, &reverse)?;
+        Self::validate_mate_row_count(&mate, Self::mate_row_count(&forward)?)?;
         let maintenance = BidirectionalMaintenanceQueue::new(maintenance_queue, dirty_work_items)?;
         Ok(Self {
             forward,
@@ -859,6 +895,43 @@ where
         let config = config
             .validate()
             .map_err(DeferredBidirectionalLabeledError::InvalidConfig)?;
+        let mate_rows = Self::preflight_owner_state(
+            &[
+                forward_vertices.size(),
+                forward_buckets.size(),
+                forward_bucket_free_spans.size(),
+                forward_bucket_free_span_by_start.size(),
+                forward_edge_counts.size(),
+                forward_edges.size(),
+                forward_edge_log.size(),
+                forward_edge_span_meta.size(),
+                forward_edge_free_spans.size(),
+                forward_edge_free_span_by_start.size(),
+                forward_inline_value_slab.size(),
+                forward_payload_free_spans.size(),
+                forward_payload_free_span_by_start.size(),
+                forward_payload_log.size(),
+            ],
+            &[
+                reverse_vertices.size(),
+                reverse_buckets.size(),
+                reverse_bucket_free_spans.size(),
+                reverse_bucket_free_span_by_start.size(),
+                reverse_edge_counts.size(),
+                reverse_edges.size(),
+                reverse_edge_log.size(),
+                reverse_edge_span_meta.size(),
+                reverse_edge_free_spans.size(),
+                reverse_edge_free_span_by_start.size(),
+                reverse_inline_value_slab.size(),
+                reverse_payload_free_spans.size(),
+                reverse_payload_free_span_by_start.size(),
+                reverse_payload_log.size(),
+            ],
+            forward_payload_blobs.size(),
+            reverse_payload_blobs.size(),
+            &mate_memories,
+        )?;
         let forward = LabeledLaraGraph::init(
             forward_vertices,
             forward_buckets,
@@ -899,9 +972,6 @@ where
             default_label,
         )
         .map_err(DeferredBidirectionalLabeledError::ReverseInit)?;
-        let mate_rows = u64::from(forward.segment_count()).checked_mul(2).ok_or(
-            DeferredBidirectionalLabeledError::Mate("mate locator row count overflow".into()),
-        )?;
         let mate = MateStorage::init(
             mate_memories.locator,
             mate_memories.blobs,
@@ -909,7 +979,9 @@ where
             mate_memories.free_span_by_start,
             mate_rows,
         )
-        .map_err(|err| DeferredBidirectionalLabeledError::Mate(err.to_string()))?;
+        .map_err(DeferredBidirectionalLabeledError::Mate)?;
+        Self::validate_mate_geometry(&forward, &reverse)?;
+        Self::validate_mate_row_count(&mate, Self::mate_row_count(&forward)?)?;
         let maintenance = BidirectionalMaintenanceQueue::init(maintenance_queue, dirty_work_items)?;
         Ok(Self {
             forward,
@@ -918,6 +990,109 @@ where
             maintenance,
             config,
         })
+    }
+
+    fn validate_mate_geometry(
+        forward: &LabeledLaraGraph<E, M>,
+        reverse: &LabeledLaraGraph<E, M>,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        Self::validate_mate_geometry_values(
+            forward.segment_size(),
+            reverse.segment_size(),
+            forward.segment_count(),
+            reverse.segment_count(),
+        )
+    }
+
+    fn validate_mate_geometry_values(
+        forward_segment_size: u32,
+        reverse_segment_size: u32,
+        forward_segment_count: u32,
+        reverse_segment_count: u32,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        if forward_segment_size != reverse_segment_size
+            || forward_segment_count != reverse_segment_count
+        {
+            return Err(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::GeometryMismatch {
+                    forward_segment_size,
+                    reverse_segment_size,
+                    forward_segment_count,
+                    reverse_segment_count,
+                },
+            ));
+        }
+        Ok(())
+    }
+
+    fn preflight_owner_state(
+        forward_lara_sizes: &[u64],
+        reverse_lara_sizes: &[u64],
+        forward_payload_blobs_size: u64,
+        reverse_payload_blobs_size: u64,
+        memories: &MateStorageMemories<M>,
+    ) -> Result<u64, DeferredBidirectionalLabeledError> {
+        let sizes = [
+            memories.locator.size(),
+            memories.blobs.size(),
+            memories.free_spans.size(),
+            memories.free_span_by_start.size(),
+        ];
+        let any = sizes.iter().any(|size| *size != 0);
+        let all = sizes.iter().all(|size| *size != 0);
+        if any && !all {
+            return Err(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::PartialLayout,
+            ));
+        }
+        let forward_any = forward_lara_sizes.iter().any(|size| *size != 0);
+        let forward_all = forward_lara_sizes.iter().all(|size| *size != 0);
+        let reverse_any = reverse_lara_sizes.iter().any(|size| *size != 0);
+        let reverse_all = reverse_lara_sizes.iter().all(|size| *size != 0);
+        if forward_any != forward_all || reverse_any != reverse_all {
+            return Err(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::OwnerLayoutMismatch,
+            ));
+        }
+        if forward_any != reverse_any || forward_any != any {
+            return Err(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::OwnerLayoutMismatch,
+            ));
+        }
+        if !forward_any && (forward_payload_blobs_size != 0 || reverse_payload_blobs_size != 0) {
+            return Err(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::OwnerLayoutMismatch,
+            ));
+        }
+        if !any {
+            return Ok(2);
+        }
+        MateStorage::preflight_locator_rows(&memories.locator)
+            .map_err(DeferredBidirectionalLabeledError::Mate)?
+            .ok_or(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::InvalidLocatorLayout,
+            ))
+    }
+
+    fn validate_mate_row_count(
+        mate: &MateStorage<M>,
+        expected: u64,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let actual = mate.locator_row_count();
+        if actual != expected {
+            return Err(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::RowCountMismatch { expected, actual },
+            ));
+        }
+        Ok(())
+    }
+
+    fn mate_row_count(
+        graph: &LabeledLaraGraph<E, M>,
+    ) -> Result<u64, DeferredBidirectionalLabeledError> {
+        u64::from(graph.segment_count()).checked_mul(2).ok_or(
+            DeferredBidirectionalLabeledError::Mate(MateStorageInitError::RowCountOverflow),
+        )
     }
 
     /// Returns the forward out-adjacency orientation.
@@ -1054,7 +1229,7 @@ where
             });
         }
         self.ensure_mate_rows_for_vertex_count(forward_count.0.checked_add(1).ok_or(
-            DeferredBidirectionalLabeledError::Mate("mate locator row count overflow".into()),
+            DeferredBidirectionalLabeledError::Mate(MateStorageInitError::RowCountOverflow),
         )?)?;
         self.forward
             .push_vertex(crate::labeled::record::LabeledVertex::default())
@@ -2220,7 +2395,7 @@ where
         let _ = self.vertex_count_checked()?;
         self.ensure_mate_rows_for_vertex_count(
             self.forward.vertex_count().0.checked_add(1).ok_or(
-                DeferredBidirectionalLabeledError::Mate("mate locator row count overflow".into()),
+                DeferredBidirectionalLabeledError::Mate(MateStorageInitError::RowCountOverflow),
             )?,
         )?;
         self.forward
@@ -2238,6 +2413,7 @@ where
         &self,
         vertex_count: u32,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
+        Self::validate_mate_geometry(&self.forward, &self.reverse)?;
         let segment_size = self.forward.segment_size().max(1);
         let leaves = crate::lara::edge::segment_tree_leaf_count(
             VertexCount::from(vertex_count),
@@ -2247,11 +2423,11 @@ where
             u64::from(leaves)
                 .checked_mul(2)
                 .ok_or(DeferredBidirectionalLabeledError::Mate(
-                    "mate locator row count overflow".into(),
+                    MateStorageInitError::RowCountOverflow,
                 ))?;
         self.mate
             .ensure_locator_rows(rows)
-            .map_err(|err| DeferredBidirectionalLabeledError::Mate(err.to_string()))
+            .map_err(DeferredBidirectionalLabeledError::Mate)
     }
 
     /// Reads the forward vertex row for `vid`.
@@ -2962,6 +3138,108 @@ mod tests {
         let expected_rows = u64::from(graph.forward.segment_count()) * 2;
         assert!(expected_rows > 2);
         assert_eq!(graph.mate.test_locator_row_count(), expected_rows);
+    }
+
+    #[test]
+    fn mate_geometry_rejects_segment_size_or_count_mismatch() {
+        let size_error = DeferredBidirectionalLabeledLaraGraph::<TestEdge, VectorMemory>::
+            validate_mate_geometry_values(128, 64, 1, 1)
+            .expect_err("different segment sizes must not share locator rows");
+        assert!(matches!(
+            size_error,
+            DeferredBidirectionalLabeledError::Mate(MateStorageInitError::GeometryMismatch {
+                forward_segment_size: 128,
+                reverse_segment_size: 64,
+                forward_segment_count: 1,
+                reverse_segment_count: 1,
+            })
+        ));
+
+        let count_error = DeferredBidirectionalLabeledLaraGraph::<TestEdge, VectorMemory>::
+            validate_mate_geometry_values(128, 128, 1, 2)
+            .expect_err("different segment counts must not share locator rows");
+        assert!(matches!(
+            count_error,
+            DeferredBidirectionalLabeledError::Mate(MateStorageInitError::GeometryMismatch {
+                forward_segment_size: 128,
+                reverse_segment_size: 128,
+                forward_segment_count: 1,
+                reverse_segment_count: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn mate_owner_preflight_rejects_partial_bundle_before_lara_open() {
+        let locator = vector_memory();
+        locator.grow(1);
+        let memories =
+            MateStorageMemories::new(locator, vector_memory(), vector_memory(), vector_memory());
+        assert!(matches!(
+            DeferredBidirectionalLabeledLaraGraph::<TestEdge, VectorMemory>::preflight_owner_state(
+                &[0; 14], &[0; 14], 0, 0, &memories
+            ),
+            Err(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::PartialLayout
+            ))
+        ));
+    }
+
+    #[test]
+    fn mate_owner_preflight_rejects_lara_mate_fresh_reopen_mixing() {
+        let memories = MateStorageMemories::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+        );
+        assert!(matches!(
+            DeferredBidirectionalLabeledLaraGraph::<TestEdge, VectorMemory>::preflight_owner_state(
+                &[1; 14], &[1; 14], 0, 0, &memories
+            ),
+            Err(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::OwnerLayoutMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn mate_owner_preflight_rejects_partial_lara_regions() {
+        let memories = MateStorageMemories::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+        );
+        let mut lara = [1u64; 14];
+        lara[7] = 0;
+        assert!(matches!(
+            DeferredBidirectionalLabeledLaraGraph::<TestEdge, VectorMemory>::preflight_owner_state(
+                &lara, &[1; 14], 0, 0, &memories
+            ),
+            Err(DeferredBidirectionalLabeledError::Mate(
+                MateStorageInitError::OwnerLayoutMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn mate_owner_preflight_allows_reopen_without_payload_blobs() {
+        let locator = vector_memory();
+        let blobs = vector_memory();
+        let free_spans = vector_memory();
+        let free_span_by_start = vector_memory();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 2)
+            .expect("mate storage");
+        let (locator, blobs, free_spans, free_span_by_start) = storage.into_memories();
+        let memories = MateStorageMemories::new(locator, blobs, free_spans, free_span_by_start);
+        assert_eq!(
+            DeferredBidirectionalLabeledLaraGraph::<TestEdge, VectorMemory>::preflight_owner_state(
+                &[1; 14], &[1; 14], 0, 0, &memories
+            )
+            .expect("reopen with empty optional blobs"),
+            2
+        );
     }
 
     fn sized_graph(

@@ -8,6 +8,6 @@ pub(crate) mod mate_storage;
 pub use deferred::{
     BidirectionalMaintenanceReport as LabeledBidirectionalMaintenanceReport,
     DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver,
-    EdgeSlotMoveObserver, MateStorageMemories, Orientation, ScalarInsertPair,
+    EdgeSlotMoveObserver, MateStorageInitError, MateStorageMemories, Orientation, ScalarInsertPair,
 };
 pub use mate::{MateLookupError, PhysicalEdgeRef};
