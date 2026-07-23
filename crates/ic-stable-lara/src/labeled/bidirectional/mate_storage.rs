@@ -520,18 +520,24 @@ impl<M: Memory> MateStorage<M> {
         token: MateRebuildToken,
         encoded_blob: &[u8],
     ) -> Result<(), MateStorageInitError> {
-        MateBlob::decode(encoded_blob).map_err(|_| MateStorageInitError::InvalidBlob)?;
+        if MateBlob::decode(encoded_blob).is_err() {
+            self.restore_rebuild_token(token)?;
+            return Err(MateStorageInitError::InvalidBlob);
+        }
         if !matches!(
             self.locators.get_state(token.row)?,
             MateLocatorState::Rebuilding
         ) {
             return Err(MateStorageInitError::RebuildStateMismatch);
         }
-        let allocation = match self.blobs.allocate(
-            &self.free_spans,
-            u64::try_from(encoded_blob.len())
-                .map_err(|_| MateStorageInitError::BlobLengthOverflow)?,
-        ) {
+        let encoded_len = match u64::try_from(encoded_blob.len()) {
+            Ok(encoded_len) => encoded_len,
+            Err(_) => {
+                self.restore_rebuild_token(token)?;
+                return Err(MateStorageInitError::BlobLengthOverflow);
+            }
+        };
+        let allocation = match self.blobs.allocate(&self.free_spans, encoded_len) {
             Ok(allocation) => allocation,
             Err(error) => {
                 self.restore_rebuild_token(token)?;
@@ -697,6 +703,30 @@ mod tests {
             }
         );
         assert_eq!(storage.blobs.tail(), tail);
+    }
+
+    #[test]
+    fn invalid_rebuild_blob_restores_previous_published_locator() {
+        let [locator, blobs, free_spans, free_span_by_start] = memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let first = blob();
+        storage.replace(0, &first).expect("initial publish");
+        let old_start = storage
+            .published_blob_offset(0)
+            .expect("locator")
+            .expect("published");
+        let token = storage.begin_rebuild(0).expect("begin rebuild");
+        assert_eq!(
+            storage.publish_rebuild(token, b"invalid-mate-blob"),
+            Err(MateStorageInitError::InvalidBlob)
+        );
+        assert_eq!(
+            storage.locator_state(0).expect("state"),
+            MateLocatorState::Published {
+                blob_offset: old_start
+            }
+        );
     }
 
     #[test]
