@@ -592,6 +592,10 @@ count, log occupancy/debt, maintenance work, encoded bytes, and callback count.
 3. Add pending-aware leaf/window planning, dynamic one-shot expansion, and
    existing-log fold. **Implemented for edge-only existing-bucket runs in Plan
    0125; payload-bearing expansion and relocation remain deferred.**
+   Expansion-success evidence remains owned by LARA; GraphStore exposes only
+   internal admission classification and reserve-all rollback behavior. It
+   must not publish or fabricate PMA leaf, overflow-log cursor, or bucket-head
+   metadata for tests.
 4. Add bidirectional directed and two-forward-half undirected orchestration plus
    ordinal-based physical-location results and the ADR 0048 mate boundary.
 5. Add GraphStore edge insertion with initial inline values, properties, label
