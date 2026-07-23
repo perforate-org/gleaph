@@ -1776,6 +1776,12 @@ fn bidirectional_bench_graph()
         rvffsbs,
         rvlog,
         rvblobs,
+        crate::labeled::MateStorageMemories::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+        ),
         vector_memory(),
         vector_memory(),
         crate::labeled::InitialCapacities::uniform(1 << 20),

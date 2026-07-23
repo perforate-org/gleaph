@@ -10,7 +10,8 @@ use super::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
-    labeled::InitialCapacities, lara::maintenance::DeferredConfig,
+    labeled::{InitialCapacities, MateStorageMemories},
+    lara::maintenance::DeferredConfig,
 };
 use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::memory_manager::MemoryId;
@@ -94,6 +95,12 @@ const VERTEX_EMBEDDING_INCARNATIONS: MemoryId = MemoryId::new(45);
 // --- Durable derived-index outbox (0088) (1 memory) ---
 const DERIVED_INDEX_OUTBOX: MemoryId = MemoryId::new(46);
 
+// --- ADR 0048 shared bidirectional mate storage (4 memories) ---
+const MATE_LEAF_LOCATORS: MemoryId = MemoryId::new(47);
+const MATE_BLOBS: MemoryId = MemoryId::new(48);
+const MATE_FREE_SPANS: MemoryId = MemoryId::new(49);
+const MATE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(50);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial label-bucket descriptor capacity for each labeled orientation (grows as needed).
@@ -170,6 +177,10 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (VERTEX_EMBEDDINGS, 32),
     (VERTEX_EMBEDDING_INCARNATIONS, 8),
     (DERIVED_INDEX_OUTBOX, 16),
+    (MATE_LEAF_LOCATORS, 8),
+    (MATE_BLOBS, 16),
+    (MATE_FREE_SPANS, 8),
+    (MATE_FREE_SPAN_BY_START, 8),
 ];
 #[cfg(any(
     feature = "canbench_uniform_4",
@@ -256,6 +267,12 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_PAYLOAD_FREE_SPAN_BY_START)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_PAYLOAD_LOG)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_PAYLOAD_BLOBS)),
+        MateStorageMemories::new(
+            MEMORY_MANAGER.with(|m| m.borrow().get(MATE_LEAF_LOCATORS)),
+            MEMORY_MANAGER.with(|m| m.borrow().get(MATE_BLOBS)),
+            MEMORY_MANAGER.with(|m| m.borrow().get(MATE_FREE_SPANS)),
+            MEMORY_MANAGER.with(|m| m.borrow().get(MATE_FREE_SPAN_BY_START)),
+        ),
         MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
         MEMORY_MANAGER.with(|m| m.borrow().get(DIRTY_WORK_ITEMS)),
         InitialCapacities {
@@ -372,6 +389,10 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
             VERTEX_EMBEDDING_INCARNATIONS,
         ),
         ("derived_index_outbox", 46, DERIVED_INDEX_OUTBOX),
+        ("mate_leaf_locators", 47, MATE_LEAF_LOCATORS),
+        ("mate_blobs", 48, MATE_BLOBS),
+        ("mate_free_spans", 49, MATE_FREE_SPANS),
+        ("mate_free_span_by_start", 50, MATE_FREE_SPAN_BY_START),
     ];
 
     let regions: Vec<_> = REGIONS
@@ -498,7 +519,7 @@ mod tests {
     fn stable_memory_stats_covers_every_graph_region() {
         let stats = stable_memory_stats();
 
-        assert_eq!(stats.regions.len(), 47);
+        assert_eq!(stats.regions.len(), 51);
         assert_eq!(
             stats.logical_total_pages,
             stats
@@ -557,7 +578,7 @@ mod tests {
         );
         assert_eq!(
             stats.regions.last().map(|region| region.memory_id),
-            Some(46)
+            Some(50)
         );
     }
 }

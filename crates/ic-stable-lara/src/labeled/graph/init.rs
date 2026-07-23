@@ -27,6 +27,14 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    pub(crate) fn segment_count(&self) -> u32 {
+        self.edges.header().segment_count
+    }
+
+    pub(crate) fn segment_size(&self) -> u32 {
+        self.edges.header().segment_size
+    }
+
     pub(super) fn edge_matches_label_lookup(candidate: &E, needle: &E) -> bool
     where
         E: PartialEq,

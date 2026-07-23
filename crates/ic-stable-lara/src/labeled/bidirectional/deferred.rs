@@ -4,6 +4,8 @@
 //! (bucket MSB), not edge-inline-value flags. Use [`Self::for_each_directed_out_edges`],
 //! [`Self::for_each_undirected_edges`], and the matching `*_iter` helpers.
 
+use super::mate_storage::MateStorage;
+pub use super::mate_storage::MateStorageMemories;
 use crate::{
     VertexCount, VertexId,
     labeled::{
@@ -441,6 +443,8 @@ pub enum DeferredBidirectionalLabeledError {
     ReverseInit(InitError),
     /// Stable memory grow or format initialization failed.
     Grow(crate::GrowFailed),
+    /// Mate storage could not be initialized or grown.
+    Mate(String),
     /// Maintenance queue could not grow.
     MaintenanceQueue(QueueGrowFailed),
     /// Maintenance queue could not be reopened.
@@ -475,6 +479,7 @@ impl fmt::Display for DeferredBidirectionalLabeledError {
             Self::ForwardInit(err) => write!(f, "forward init failed: {err}"),
             Self::ReverseInit(err) => write!(f, "reverse init failed: {err}"),
             Self::Grow(err) => write!(f, "format / grow: {err}"),
+            Self::Mate(err) => write!(f, "mate storage failed: {err}"),
             Self::MaintenanceQueue(err) => write!(f, "maintenance queue failed: {err}"),
             Self::MaintenanceQueueInit(err) => write!(f, "maintenance queue init failed: {err}"),
             Self::MaintenanceDirtyInit(err) => {
@@ -501,6 +506,7 @@ impl std::error::Error for DeferredBidirectionalLabeledError {
             Self::Forward(err) | Self::Reverse(err) => Some(err),
             Self::ForwardInit(err) | Self::ReverseInit(err) => Some(err),
             Self::Grow(err) => Some(err),
+            Self::Mate(_) => None,
             Self::MaintenanceQueue(err) => Some(err),
             Self::MaintenanceQueueInit(err) => Some(err),
             Self::MaintenanceDirtyInit(err) => Some(err),
@@ -525,6 +531,7 @@ where
 {
     forward: LabeledLaraGraph<E, M>,
     reverse: LabeledLaraGraph<E, M>,
+    mate: MateStorage<M>,
     maintenance: BidirectionalMaintenanceQueue<M>,
     config: DeferredConfig,
 }
@@ -582,6 +589,7 @@ where
         reverse_payload_free_span_by_start: M,
         reverse_payload_log: M,
         reverse_payload_blobs: M,
+        mate_memories: MateStorageMemories<M>,
         maintenance_queue: M,
         dirty_work_items: M,
         capacities: InitialCapacities,
@@ -618,6 +626,7 @@ where
             reverse_payload_free_span_by_start,
             reverse_payload_log,
             reverse_payload_blobs,
+            mate_memories,
             maintenance_queue,
             dirty_work_items,
             capacities,
@@ -659,6 +668,7 @@ where
         reverse_payload_free_span_by_start: M,
         reverse_payload_log: M,
         reverse_payload_blobs: M,
+        mate_memories: MateStorageMemories<M>,
         maintenance_queue: M,
         dirty_work_items: M,
         capacities: InitialCapacities,
@@ -706,10 +716,22 @@ where
             capacities,
             default_label,
         )?;
+        let mate_rows = u64::from(forward.segment_count()).checked_mul(2).ok_or(
+            DeferredBidirectionalLabeledError::Mate("mate locator row count overflow".into()),
+        )?;
+        let mate = MateStorage::init(
+            mate_memories.locator,
+            mate_memories.blobs,
+            mate_memories.free_spans,
+            mate_memories.free_span_by_start,
+            mate_rows,
+        )
+        .map_err(|err| DeferredBidirectionalLabeledError::Mate(err.to_string()))?;
         let maintenance = BidirectionalMaintenanceQueue::new(maintenance_queue, dirty_work_items)?;
         Ok(Self {
             forward,
             reverse,
+            mate,
             maintenance,
             config,
         })
@@ -748,6 +770,7 @@ where
         reverse_payload_free_span_by_start: M,
         reverse_payload_log: M,
         reverse_payload_blobs: M,
+        mate_memories: MateStorageMemories<M>,
         maintenance_queue: M,
         dirty_work_items: M,
         capacities: InitialCapacities,
@@ -784,6 +807,7 @@ where
             reverse_payload_free_span_by_start,
             reverse_payload_log,
             reverse_payload_blobs,
+            mate_memories,
             maintenance_queue,
             dirty_work_items,
             capacities,
@@ -825,6 +849,7 @@ where
         reverse_payload_free_span_by_start: M,
         reverse_payload_log: M,
         reverse_payload_blobs: M,
+        mate_memories: MateStorageMemories<M>,
         maintenance_queue: M,
         dirty_work_items: M,
         capacities: InitialCapacities,
@@ -874,10 +899,22 @@ where
             default_label,
         )
         .map_err(DeferredBidirectionalLabeledError::ReverseInit)?;
+        let mate_rows = u64::from(forward.segment_count()).checked_mul(2).ok_or(
+            DeferredBidirectionalLabeledError::Mate("mate locator row count overflow".into()),
+        )?;
+        let mate = MateStorage::init(
+            mate_memories.locator,
+            mate_memories.blobs,
+            mate_memories.free_spans,
+            mate_memories.free_span_by_start,
+            mate_rows,
+        )
+        .map_err(|err| DeferredBidirectionalLabeledError::Mate(err.to_string()))?;
         let maintenance = BidirectionalMaintenanceQueue::init(maintenance_queue, dirty_work_items)?;
         Ok(Self {
             forward,
             reverse,
+            mate,
             maintenance,
             config,
         })
@@ -1016,6 +1053,9 @@ where
                 reverse: reverse_count,
             });
         }
+        self.ensure_mate_rows_for_vertex_count(forward_count.0.checked_add(1).ok_or(
+            DeferredBidirectionalLabeledError::Mate("mate locator row count overflow".into()),
+        )?)?;
         self.forward
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
@@ -2178,6 +2218,11 @@ where
         row: crate::labeled::record::LabeledVertex,
     ) -> Result<VertexId, DeferredBidirectionalLabeledError> {
         let _ = self.vertex_count_checked()?;
+        self.ensure_mate_rows_for_vertex_count(
+            self.forward.vertex_count().0.checked_add(1).ok_or(
+                DeferredBidirectionalLabeledError::Mate("mate locator row count overflow".into()),
+            )?,
+        )?;
         self.forward
             .push_vertex(row)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
@@ -2187,6 +2232,26 @@ where
         Ok(VertexId::from(
             self.forward.vertex_count().0.saturating_sub(1),
         ))
+    }
+
+    fn ensure_mate_rows_for_vertex_count(
+        &self,
+        vertex_count: u32,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let segment_size = self.forward.segment_size().max(1);
+        let leaves = crate::lara::edge::segment_tree_leaf_count(
+            VertexCount::from(vertex_count),
+            segment_size,
+        );
+        let rows =
+            u64::from(leaves)
+                .checked_mul(2)
+                .ok_or(DeferredBidirectionalLabeledError::Mate(
+                    "mate locator row count overflow".into(),
+                ))?;
+        self.mate
+            .ensure_locator_rows(rows)
+            .map_err(|err| DeferredBidirectionalLabeledError::Mate(err.to_string()))
     }
 
     /// Reads the forward vertex row for `vid`.
@@ -2836,6 +2901,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::labeled::bidirectional::mate_storage::MateLocatorState;
     use crate::{
         labeled::PhysicalEdgeRef,
         test_support::{labeled_lara_memories, vector_memory},
@@ -2875,6 +2941,27 @@ mod tests {
 
     fn graph() -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
         sized_graph(128)
+    }
+
+    #[test]
+    fn mate_locator_rows_share_storage_without_orientation_collision_and_grow_with_leaves() {
+        let graph = graph();
+        assert_eq!(graph.mate.test_locator_row_count(), 2);
+        graph.mate.test_publish_rebuilding(0).expect("forward row");
+        assert_eq!(
+            graph.mate.locator_state(0).expect("forward state"),
+            MateLocatorState::Rebuilding
+        );
+        assert_eq!(
+            graph.mate.locator_state(1).expect("reverse state"),
+            MateLocatorState::ScanOnly
+        );
+        for _ in 0..64 {
+            graph.push_vertex().expect("vertex growth");
+        }
+        let expected_rows = u64::from(graph.forward.segment_count()) * 2;
+        assert!(expected_rows > 2);
+        assert_eq!(graph.mate.test_locator_row_count(), expected_rows);
     }
 
     fn sized_graph(
@@ -2945,6 +3032,12 @@ mod tests {
             rvffsbs,
             rvlog,
             rvblobs,
+            MateStorageMemories::new(
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+            ),
             vector_memory(),
             vector_memory(),
             crate::labeled::InitialCapacities::uniform(elem_capacity),
@@ -3633,6 +3726,12 @@ mod tests {
             rvffsbs,
             rvlog,
             rvblobs,
+            MateStorageMemories::new(
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+            ),
             vector_memory(),
             vector_memory(),
             crate::labeled::InitialCapacities::uniform(128),
@@ -4145,6 +4244,12 @@ mod tests {
             rvffsbs,
             rvlog,
             rvblobs,
+            MateStorageMemories::new(
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+                vector_memory(),
+            ),
             vector_memory(),
             vector_memory(),
             crate::labeled::InitialCapacities::uniform(256),

@@ -243,7 +243,7 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–46), 47 regions. Baseline: ADR 0007 §2 / ADR 0008.
+/// Graph canister — LARA bundle (0–31) + facade (32–50), 51 regions. Baseline: ADR 0007 §2 / ADR 0008.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
@@ -643,6 +643,39 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "federated index delivery",
             "Durable FIFO of derived property, label, and vector-index operations awaiting delivery",
+            RebuildPath::None,
+        ),
+        // ADR 0048 Plan 0139 shared bidirectional mate storage.
+        region(
+            "MATE_LEAF_LOCATORS",
+            47,
+            StableMemoryClass::Derived,
+            "lara/mate",
+            "Five-byte locator rows keyed by (orientation, leaf)",
+            RebuildPath::Named("mate leaf rebuild"),
+        ),
+        region(
+            "MATE_BLOBS",
+            48,
+            StableMemoryClass::Derived,
+            "lara/mate",
+            "Versioned sampled or packed mate blobs",
+            RebuildPath::Named("mate leaf rebuild"),
+        ),
+        region(
+            "MATE_FREE_SPANS",
+            49,
+            StableMemoryClass::Maintenance,
+            "lara/mate",
+            "Retired mate blob free spans",
+            RebuildPath::None,
+        ),
+        region(
+            "MATE_FREE_SPAN_BY_START",
+            50,
+            StableMemoryClass::Maintenance,
+            "lara/mate",
+            "Mate blob free-span coalescing index",
             RebuildPath::None,
         ),
     ],
@@ -1538,8 +1571,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 47);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(46));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 51);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(50));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
@@ -1566,6 +1599,7 @@ mod tests {
             GRAPH_STABLE_LAYOUT.regions[46].symbol,
             "DERIVED_INDEX_OUTBOX"
         );
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[47].symbol, "MATE_LEAF_LOCATORS");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,
             StableMemoryClass::Derived

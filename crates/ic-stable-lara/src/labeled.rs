@@ -135,7 +135,7 @@ pub(crate) mod traits;
 pub use bidirectional::{
     DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver,
     EdgeSlotMoveObserver, LabeledBidirectionalMaintenanceReport, MateLookupError,
-    Orientation as LabeledOrientation, PhysicalEdgeRef, ScalarInsertPair,
+    MateStorageMemories, Orientation as LabeledOrientation, PhysicalEdgeRef, ScalarInsertPair,
 };
 pub use bucket_label_key::{
     BUCKET_LABEL_DIRECTED_BIT, BUCKET_LABEL_INDEX_MASK, BucketDirectedness, BucketLabelKey,

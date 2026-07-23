@@ -156,7 +156,7 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 
 ---
 
-## Bidirectional mate contract (accepted; dormant storage foundation implemented)
+## Bidirectional mate contract (accepted; four-region ownership wired, runtime dormant)
 
 [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) places physical
 entry-to-entry pairing in bidirectional LARA rather than a Graph facade B-tree.

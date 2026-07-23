@@ -1,9 +1,9 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; dormant persistent storage foundation implemented in Plan 0136; promotion and alias replacement planned)
+Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; promotion and alias replacement planned)
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 10:38:22 UTC +0000
+Anchor timestamp: 2026-07-23 12:25:05 UTC +0000
 
 ## Context
 
@@ -522,11 +522,10 @@ Implementation adds four logical regions owned by bidirectional LARA:
 3. `MATE_FREE_SPANS` — retired blob byte ranges; and
 4. `MATE_FREE_SPAN_BY_START` — coalescing index.
 
-`EDGE_ALIASES` is removed, for a net increase of three Graph stable regions. Exact `MemoryId`
-assignment belongs to the implementation patch together with the typed layout registry and
-inventory update. Forward and reverse locator rows share one store because the bidirectional
-wrapper owns their joint invariant; two independent collections must not be initialized on one
-`MemoryId`.
+`EDGE_ALIASES` is removed, for a net increase of three Graph stable regions. The development
+implementation assigns the four regions to Graph `MemoryId`s 47–50. Forward and reverse locator
+rows share one store because the bidirectional wrapper owns their joint invariant; the row key is
+`2 * leaf_index + orientation_bit`, and no two collections are initialized on one `MemoryId`.
 
 There is no in-place migration from `EDGE_ALIASES`. Implementation lands at a fresh-install
 boundary and development stable data is recreated. Production adoption remains gated by ADR 0039.

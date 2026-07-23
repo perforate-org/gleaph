@@ -8,7 +8,7 @@ use super::mate_blob_prototype::MateBlob;
 use crate::lara::edge::free_span::FreeSpanStore;
 use crate::{CompositeInit, GrowFailed, classify_composite_init, safe_write};
 use ic_stable_structures::Memory;
-use std::fmt;
+use std::{cell::Cell, fmt};
 
 const LOCATOR_MAGIC: [u8; 3] = *b"MLC";
 const BLOB_MAGIC: [u8; 3] = *b"MBB";
@@ -78,7 +78,7 @@ impl std::error::Error for MateStorageInitError {}
 
 pub(crate) struct MateLocatorStore<M: Memory> {
     memory: M,
-    row_count: u64,
+    row_count: Cell<u64>,
 }
 
 impl<M: Memory> MateLocatorStore<M> {
@@ -90,7 +90,10 @@ impl<M: Memory> MateLocatorStore<M> {
                     .ok_or(MateStorageInitError::InvalidLocatorLayout)?,
             )
             .ok_or(MateStorageInitError::InvalidLocatorLayout)?;
-        let store = Self { memory, row_count };
+        let store = Self {
+            memory,
+            row_count: Cell::new(row_count),
+        };
         store.grow(bytes)?;
         let mut header = [0u8; HEADER_BYTES as usize];
         header[..3].copy_from_slice(&LOCATOR_MAGIC);
@@ -134,8 +137,31 @@ impl<M: Memory> MateLocatorStore<M> {
         }
         Ok(Self {
             memory,
-            row_count: actual,
+            row_count: Cell::new(actual),
         })
+    }
+
+    fn grow_rows(&self, new_row_count: u64) -> Result<(), MateStorageInitError> {
+        let current = self.row_count.get();
+        if new_row_count <= current {
+            return Ok(());
+        }
+        let bytes = HEADER_BYTES
+            .checked_add(
+                new_row_count
+                    .checked_mul(LOCATOR_ROW_BYTES)
+                    .ok_or(MateStorageInitError::InvalidLocatorLayout)?,
+            )
+            .ok_or(MateStorageInitError::InvalidLocatorLayout)?;
+        self.grow(bytes)?;
+        safe_write(
+            &self.memory,
+            LOCATOR_ROW_COUNT_OFFSET,
+            &new_row_count.to_be_bytes(),
+        )
+        .map_err(MateStorageInitError::Grow)?;
+        self.row_count.set(new_row_count);
+        Ok(())
     }
 
     fn grow(&self, bytes: u64) -> Result<(), MateStorageInitError> {
@@ -153,7 +179,7 @@ impl<M: Memory> MateLocatorStore<M> {
     }
 
     fn row_offset(&self, row: u64) -> Result<u64, MateStorageInitError> {
-        if row >= self.row_count {
+        if row >= self.row_count.get() {
             return Err(MateStorageInitError::RowOutOfRange);
         }
         HEADER_BYTES
@@ -377,6 +403,30 @@ pub(crate) struct MateStorage<M: Memory> {
     free_spans: FreeSpanStore<M>,
 }
 
+/// Caller-assigned stable regions owned jointly by both LARA orientations.
+pub struct MateStorageMemories<M: Memory> {
+    /// Fixed-row locator memory shared by both orientations.
+    pub locator: M,
+    /// Versioned mate blob byte memory.
+    pub blobs: M,
+    /// Retired blob free-span records.
+    pub free_spans: M,
+    /// Free-span coalescing index keyed by start offset.
+    pub free_span_by_start: M,
+}
+
+impl<M: Memory> MateStorageMemories<M> {
+    /// Creates a caller-assigned shared mate storage bundle.
+    pub fn new(locator: M, blobs: M, free_spans: M, free_span_by_start: M) -> Self {
+        Self {
+            locator,
+            blobs,
+            free_spans,
+            free_span_by_start,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MateRebuildToken {
     row: u64,
@@ -386,7 +436,7 @@ pub(crate) struct MateRebuildToken {
 
 impl<M: Memory> MateStorage<M> {
     fn validate_references(&self) -> Result<(), MateStorageInitError> {
-        for row in 0..self.locators.row_count {
+        for row in 0..self.locators.row_count.get() {
             if let MateLocatorState::Published { blob_offset: start } =
                 self.locators.get_state(row)?
             {
@@ -467,8 +517,22 @@ impl<M: Memory> MateStorage<M> {
         self.locators.published_offset(row)
     }
 
+    pub(crate) fn ensure_locator_rows(&self, row_count: u64) -> Result<(), MateStorageInitError> {
+        self.locators.grow_rows(row_count)
+    }
+
     pub(crate) fn locator_state(&self, row: u64) -> Result<MateLocatorState, MateStorageInitError> {
         self.locators.get_state(row)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_locator_row_count(&self) -> u64 {
+        self.locators.row_count.get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_publish_rebuilding(&self, row: u64) -> Result<(), MateStorageInitError> {
+        self.locators.publish_rebuilding(row)
     }
 
     pub(crate) fn begin_rebuild(&self, row: u64) -> Result<MateRebuildToken, MateStorageInitError> {
