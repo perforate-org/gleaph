@@ -2,8 +2,8 @@
 
 Date: 2026-06-21
 Status: implemented
-Last revised: 2026-06-21
-Anchor timestamp: 2026-06-21 00:11:30 UTC +0000
+Last revised: 2026-07-23
+Anchor timestamp: 2026-07-23 01:02:26 UTC +0000
 
 ## Context
 
@@ -83,6 +83,18 @@ checked by `check_reverse_adjacency` is always restored regardless.
 - The repair touches only diverged keys, so it preserves unrelated reverse slots, their
   aliases, and all edge properties; no cascade invalidation.
 - No new stable region, timer, or endpoint is added; the GC/repair surface stays internal.
+
+## Accepted successor direction
+
+[ADR 0048](0048-adaptive-lara-mate-index.md) accepts removal of the facade
+`EDGE_ALIASES` B-tree in favor of pair-rank resolution plus adaptive packed mate
+acceleration owned by bidirectional LARA. That design is not implemented yet, so
+the decision and code above remain the current repair contract.
+
+When ADR 0048 is implemented, differential repair must stop using first-match
+parallel-edge association. It must restore the common occurrence order for each
+`(source, target, label)` pair key, obtain exact physical slots from LARA, and
+rebuild or invalidate the affected mate leaf blobs before returning success.
 
 ## Tests
 

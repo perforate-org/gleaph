@@ -1,7 +1,7 @@
 # Labeled edge inline value storage
 
-Last updated: 2026-07-16
-Anchor timestamp: 2026-07-16 22:21:38 UTC +0000
+Last updated: 2026-07-23
+Anchor timestamp: 2026-07-23 01:02:26 UTC +0000
 
 ## Overview
 
@@ -202,9 +202,11 @@ inline scalar encoding, and sidecar property validation (reserved property ids a
 `Value::to_binary_bytes()` encodability) happen before the first adjacency record is created or before
 existing sidecar properties are removed. Invalid input therefore cannot leave a partially initialized
 edge, a stale payload, or a torn sidecar record.
-- **Mirrored update.** `GraphStore::update_edge_inline_value_at_handle` and the edge-profile commit already
-own forward/reverse and undirected-alias synchronization; mutation packing reuses that commit so every
-physical mirror of the logical edge reflects the same payload bytes.
+- **Mirrored update.** `GraphStore::update_edge_inline_value_at_handle` and the edge-profile commit
+  currently synchronize forward/reverse and undirected aliases. ADR 0048 replaces that lookup with
+  bidirectional LARA `mate_of`, so updates address the exact parallel-edge mate; an undirected
+  self-loop has one physical entry and is updated once. Until ADR 0048 is implemented, the existing
+  facade alias path remains active.
 - **Absence not represented.** `REMOVE e.inline_property` is rejected. There is no null/presence
 bitmap in this slice, so the inline property is required on insertion and cannot be deleted.
 

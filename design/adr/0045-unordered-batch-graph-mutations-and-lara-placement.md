@@ -2,8 +2,8 @@
 
 Date: 2026-07-19
 Status: Partially Implemented
-Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 23:53:58 UTC +0000
+Last revised: 2026-07-23
+Anchor timestamp: 2026-07-23 01:02:26 UTC +0000
 
 ## Context
 
@@ -49,7 +49,7 @@ derived-state event overhead while preserving:
 
 1. Directed forward/reverse and undirected two-forward-half consistency.
 2. Exact association between logical edges, physical halves, inline values,
-   canonical sidecars, and aliases, including parallel edges.
+   canonical sidecars, and mate locations, including parallel edges.
 3. Shard-local failure atomicity and idempotent retry.
 4. Existing visible ordering and slot identity for pre-existing edges.
 5. The maintenance-only ownership of slot-renumbering compaction.
@@ -67,8 +67,9 @@ The existing ownership boundaries remain suitable:
 
 - Router owns ingress, authorization, label/property resolution, shard routing,
   message-size chunking, uniqueness coordination, and mutation lifecycle.
-- Graph owns logical vertex/edge mutation, canonical edge identity, aliases,
-  sidecars, label deltas, and derived-index outbox records.
+- Graph owns logical vertex/edge mutation, canonical sidecars, label deltas, and
+  derived-index outbox records. Bidirectional LARA owns physical pair ordering,
+  returned slot locations, and the adaptive mate index defined by ADR 0048.
 - LARA owns vertex rows, adjacency halves, labeled buckets, edge/payload
   slab/log placement, PMA density, rebalance, relocation, and stable allocation.
 - graph-index remains a derived property-index owner and is not pulled into the
@@ -87,7 +88,7 @@ overflow log only to fold it back into the slab during repeated rebalances.
 
 ## Decision
 
-Implementation status as of 2026-07-23 06:40:00 UTC +0000:
+Implementation status as of 2026-07-23 01:02:26 UTC +0000:
 
 - Plan 0121 read-only placement planning is implemented.
 - Plan 0122 one-orientation batch commit is partially implemented: the
@@ -103,13 +104,16 @@ Implementation status as of 2026-07-23 06:40:00 UTC +0000:
 - New bucket creation, overflow-log batch appends, rebalance/relocation,
   dynamic leaf expansion, GraphStore orchestration wiring, and scalar-vs-batch
   benchmarks remain planned for later slices.
+- ADR 0048's mate index and returned-slot orchestration are accepted target
+  design but not implemented. The current scalar facade still uses
+  `EDGE_ALIASES` and post-insert scans until that migration lands.
 
 ### 1. Add an explicit unordered batch mutation mode
 
 The new path is opt-in. It does not change ordinary GQL insertion ordering.
 Clients submit each logical edge once in a size-bounded logical chunk. They do
-not send forward/reverse rows, undirected aliases, LARA bucket keys, log policy,
-or placement instructions.
+not send forward/reverse rows, undirected mate records, LARA bucket keys, log
+policy, or placement instructions.
 
 The semantic contract is:
 
@@ -161,10 +165,12 @@ intents:
 | undirected `u -- v`, `u != v` | forward `(u, v)` plus forward `(v, u)` |
 | undirected self-loop `u -- u` | one canonical forward `(u, u)` |
 
-Each intent carries the logical ordinal and canonical/alias role. Returned LARA
+Each intent carries the logical ordinal and canonical/mate role. Returned LARA
 locations are joined by ordinal, never by a post-insert "first matching
 neighbor/payload" search. This gives parallel edges an exact forward/reverse or
-canonical/alias association.
+canonical/mate association. The two projections may be unordered only after one
+common order per pair key is chosen; independent projection ordering violates
+the pair-rank invariant in ADR 0048.
 
 ### 4. Plan placement by allocation domain, then write by bucket run
 
@@ -292,7 +298,7 @@ The commit order is:
    destinations.
 4. Write pending batch rows and payloads.
 5. Publish bucket ranges, counts, heads, vertex bases, and leaf totals.
-6. Publish Graph aliases/sidecars and durable derived-state events.
+6. Publish LARA mate acceleration, Graph sidecars, and durable derived-state events.
 7. Retire old physical spans and release folded log segments only after all live
    pointers have moved.
 
@@ -308,7 +314,7 @@ not post-insert scalar updates. Existing-edge inline updates use a LARA batch
 update API that:
 
 1. Canonicalizes all handles and validates exact label-schema widths.
-2. Resolves every directed mirror or undirected forward alias before writing.
+2. Resolves every directed mirror or undirected forward mate before writing.
 3. Groups targets by orientation/leaf/bucket/slot.
 4. Coalesces contiguous slot runs and updates all physical copies in one
    no-await commit.
@@ -320,7 +326,7 @@ reads old values, writes canonical sidecars, and records the net old-to-final
 property-index changes in the durable outbox. Intermediate duplicate updates are
 not emitted to graph-index.
 
-Canonical LARA rows, inline mirrors, GraphStore sidecars, aliases, label deltas,
+Canonical LARA rows, inline mirrors, GraphStore sidecars, mate metadata, label deltas,
 and durable derived-state events belong to the same shard-local no-await commit.
 Remote graph-index draining remains asynchronous under ADR 0023/0024. An index
 outbox failure cannot be converted into a successful canonical batch without a
@@ -371,10 +377,10 @@ The implementation must make these conditions directly testable:
 1. Every committed logical directed edge has exactly its required forward and
    reverse halves; every committed undirected edge has the required one or two
    forward halves.
-2. Every half, payload, alias, and sidecar is joined by logical ordinal or an
+2. Every half, payload, mate location, and sidecar is joined by logical ordinal or an
    exact planned handle, never by ambiguous first-match lookup.
 3. No validation or reservation failure leaves a bucket, bypass promotion,
-   vertex row, edge half, payload, property, alias, or derived event visible.
+   vertex row, edge half, payload, property, mate locator, or derived event visible.
 4. No recoverable allocation or encoding failure remains after the first
    canonical commit write.
 5. Planned edge and payload capacity includes all preserved slab rows, all
@@ -412,7 +418,7 @@ by retrying the same chunk identity and reading the durable Graph receipt.
 ### Keep scalar LARA insertion under the existing Graph batch endpoint
 
 Minimal change, but retains repeated lookup, allocation, log, rebalance,
-maintenance, alias-search, property, and event costs. It does not address the
+maintenance, mate-resolution, property, and event costs. It does not address the
 demonstrated architectural limitation. Rejected as the final design; retained as
 fallback for unsupported or too-small groups.
 
@@ -455,7 +461,7 @@ Positive:
 
 - Known unordered batches can turn repeated random stable-memory mutations into
   a bounded number of planned contiguous writes and metadata commits.
-- Directed, reverse, undirected, inline-value, alias, property, and index-event
+- Directed, reverse, undirected, inline-value, mate, property, and index-event
   consistency remain enforced by their existing owners.
 - Large batches avoid unnecessary log staging and repeated fixed-step leaf
   growth.
@@ -467,7 +473,7 @@ Costs and trade-offs:
 - Planning needs temporary heap proportional to one bounded chunk and sorting or
   grouping by physical ownership keys.
 - Failure-atomic reserve/commit work must cover edge slab, edge log, payload
-  slab/log/blob storage, free spans, vertex columns, aliases, sidecars, journals,
+  slab/log/blob storage, free spans, vertex columns, mate metadata, sidecars, journals,
   and durable derived events.
 - Combined new-vertex/new-edge chunks require projected geometry before vertex
   rows become visible.
@@ -483,7 +489,7 @@ At minimum, tests must cover:
 - Directed fan-out and fan-in where forward/reverse plans have different leaf
   pressure.
 - Undirected endpoints in the same/different leaves and undirected self-loops.
-- Parallel edges with exact forward/reverse and canonical/alias mapping.
+- Parallel edges with exact forward/reverse and canonical/mate mapping.
 - New and existing buckets; exact slab fit; one-slot spill; empty/partial/full
   overflow logs; multi-block projected expansion.
 - A batch too large for one fixed-factor growth but accepted by one dynamic
@@ -542,7 +548,7 @@ count, log occupancy/debt, maintenance work, encoded bytes, and callback count.
 3. Add pending-aware leaf/window planning, dynamic one-shot expansion, and
    existing-log fold.
 4. Add bidirectional directed and two-forward-half undirected orchestration plus
-   ordinal-based handle/alias results.
+   ordinal-based physical-location results and the ADR 0048 mate boundary.
 5. Add GraphStore edge insertion with initial inline values, properties, label
    deltas, and durable derived events.
 6. Add existing inline-value and vertex/edge property batch updates.
@@ -590,6 +596,8 @@ invariants and failure-atomic boundaries are covered.
 - [ADR 0041](0041-router-graph-batch-mutation-dispatch.md): Router-to-Graph batch dispatch.
 - [ADR 0042](0042-router-dynamic-instruction-budget-batching.md): dynamic continuation.
 - [ADR 0044](0044-router-bulk-mutation-key.md): durable bulk mutation grouping.
+- [ADR 0048](0048-adaptive-lara-mate-index.md): physical pair rank, returned slots,
+  and adaptive LARA mate acceleration replacing facade aliases.
 - [LARA storage contract](../storage/lara.md).
 - [LARA/DGAP alignment](../storage/lara-dgap-contract.md).
 - [Bulk ingest finalize](../storage/bulk-ingest-finalize.md).

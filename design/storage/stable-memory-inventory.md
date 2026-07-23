@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-07-16
+Last updated: 2026-07-23
 Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46 = 47 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations + Plan 0088 durable derived-index outbox storage; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline value schema record + ADR 0035 Slice 1 provisioning-request catalog + Slice 5 Router outbound accept_envelope send (ROUTER_PROVISION_CONFIG durable binding) + Slice 6 owner-identity-bound intent lock release on Completed and four-branch invocation-owned rollback on send failure (only if current operation inserted the record and it is still AwaitingAck) (no new regions) (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 49 regions, 0–48; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 12 regions, 0–11)
-Anchor timestamp: 2026-07-16 21:21:47 UTC +0000
+Anchor timestamp: 2026-07-23 01:02:26 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 Planned production compatibility and migration policy: [ADR 0039](../adr/0039-production-stable-memory-evolution-and-upgrade-safety.md).
@@ -64,8 +64,8 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 
 | Derived store | Canonical source | Update path | Rebuild / backfill |
 |---------------|------------------|-------------|-------------------|
-| LARA reverse orientation | Forward edges + payloads | Co-updated on edge insert/delete | **Implemented:** `check_reverse_adjacency` + `rebuild_reverse_adjacency` (`facade/derived_state/reverse_adjacency.rs`). The rebuild is a **differential** per-diverged-key reconcile (ADR 0026), not a full clear-and-rebuild — a full rebuild would reassign reverse slot indices, cascade-invalidating `EDGE_ALIASES` keys + reverse payload sidecars. |
-| Edge aliases | Forward/reverse adjacency in `GRAPH` | Sync: `commit_insert_edge_alias` on edge insert | **Implemented:** `check_edge_aliases` + `rebuild_edge_aliases` (`facade/derived_state/edge_alias.rs`) |
+| LARA reverse orientation | Forward edges + payloads | Co-updated on edge insert/delete | **Implemented:** `check_reverse_adjacency` + `rebuild_reverse_adjacency` (`facade/derived_state/reverse_adjacency.rs`). The rebuild is a **differential** per-diverged-key reconcile (ADR 0026), not a full clear-and-rebuild — a full rebuild currently reassigns reverse slot indices and cascade-invalidates `EDGE_ALIASES`; ADR 0048 plans exact pair-rank repair inside LARA. |
+| Edge aliases | Forward/reverse adjacency in `GRAPH` | Sync: `commit_insert_edge_alias` on edge insert | **Implemented current state:** `check_edge_aliases` + `rebuild_edge_aliases` (`facade/derived_state/edge_alias.rs`). **Accepted replacement, not implemented:** ADR 0048 removes this region after adaptive LARA mate resolution lands. |
 | Edge property postings (graph-index) | `EDGE_PROPERTIES` (registered props) | DML + `edge_pending` flush | **Implemented:** `backfill_edge_property_postings` + router `admin_edge_backfill_step` ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md); retired shard-local `EDGE_EQUALITY_POSTINGS` 2026-06-12) |
 | Vertex property postings (graph-index) | Vertex properties (indexable) | DML + `pending.rs` flush | **Implemented:** `backfill_vertex_property_postings` + router `admin_vertex_property_backfill_step` |
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
@@ -169,6 +169,25 @@ existing stable memory.
 | 30 | `MAINTENANCE_QUEUE` | Deferred PMA work queue | maintenance | Internal LARA drain |
 | 31 | `DIRTY_WORK_ITEMS` | Dirty work tracking | maintenance | Internal LARA drain |
 
+### Planned adaptive mate bundle (ADR 0048; excluded from current counts)
+
+ADR 0048 accepts four bidirectional-LARA-owned logical regions and removal of
+facade `EDGE_ALIASES`. Exact `MemoryId` assignment is deferred to implementation,
+so the current 47-region Graph count and tables above/below remain authoritative.
+
+| Planned symbol | Role | Class | Rebuild |
+| --- | --- | --- | --- |
+| `MATE_LEAF_LOCATORS` | Dense five-byte `(orientation, leaf)` locator rows | derived | Rank/select fallback; rebuild affected leaves |
+| `MATE_BLOBS` | Versioned packed counterpart-slot arrays for indexed leaves | derived | Rebuild from adjacency pair rank |
+| `MATE_FREE_SPANS` | Retired mate-blob byte ranges | maintenance | Allocator validation |
+| `MATE_FREE_SPAN_BY_START` | Coalescing index for mate-blob free ranges | maintenance | Paired `FreeSpanStore` validation |
+
+This is a net increase of three regions after `EDGE_ALIASES` is removed. The
+locator uses a dedicated fixed-row store modeled on LARA vertex/count/span
+columns, not `StableVec`, and does not enlarge existing vertex, bucket, count,
+or span rows. The mate `FreeSpanStore` reuses the existing implementation and
+algorithm in a separate address space; it never shares edge or payload spans.
+
 Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consult PMA maintenance stores ([lara.md](./lara.md)).
 
 ---
@@ -182,7 +201,7 @@ Repacked 2026-06-11. **Removed:** property name catalog, `VERTEX_LOGICAL_IDS`, f
 | 32 | `VERTEX_LABEL_SETS` | `VERTEX_LABELS` | `init_vertex_label_store` | canonical | labels | — |
 | 33 | `VERTEX_PROPERTIES` | `VERTEX_PROPERTIES` | `init_vertex_property_store` | canonical | properties | — |
 | 34 | `EDGE_PROPERTIES` | `EDGE_PROPERTIES` | `init_edge_property_store` | canonical | properties | — |
-| 35 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | `check_edge_aliases` / `rebuild_edge_aliases` |
+| 35 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | Current: `check_edge_aliases` / `rebuild_edge_aliases`; planned removal by ADR 0048 |
 | 36 | `GRAPH_METADATA` | `METADATA` | `init_metadata` | canonical | federation metadata | — |
 | 37 | `LABEL_STATS_DELTA_SEQ` | `LABEL_STATS_DELTA_SEQ` | `init_label_stats_delta_seq` | telemetry | label stats projection | Monotonic seq allocator |
 | 38 | `LABEL_STATS_DELTA_LOG` | `LABEL_STATS_DELTA_LOG` | `init_label_stats_delta_log` | telemetry | label stats projection | Delta replay to router. Value is a versioned fixed-length primary + variable appendix (`StoredLabelStatsDeltaEvent`), not Candid; bounds are enforced at encode time. See ADR 0015 Plan 0120 addendum. |
@@ -422,6 +441,7 @@ secondary index and is commit-synced with Region 1 (`PROVISION_JOB_BY_REQUEST`).
 
 - [Refactoring roadmap](../architecture/refactoring-roadmap.md) — phased plan; Phase 0 exit criteria
 - [LARA and graph facade](./lara-and-facade.md) — layering; defers byte layout to this inventory
+- [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) — accepted adaptive mate-index layout; implementation planned
 - [Property index](../index/property-index.md) — posting model and router seed routing
 - [Label index](../index/label-index.md) — label postings and backfill orchestration
 - [ADR 0004: Label index](../adr/0004-label-index.md)

@@ -155,6 +155,29 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 
 ---
 
+## Bidirectional mate contract (accepted, implementation planned)
+
+[ADR 0048](../adr/0048-adaptive-lara-mate-index.md) places physical
+entry-to-entry pairing in bidirectional LARA rather than a Graph facade B-tree.
+Adjacency order and equal-neighbor occurrence rank remain authoritative. Small
+or cold buckets resolve a mate by rank/select; selected PMA leaves may use a
+packed, derived mate blob. Ordinary adjacency scans do not read this metadata.
+
+The only fixed addition is a dedicated five-byte locator row per orientation
+and leaf. It uses a custom fixed-row column modeled on `VertexStore`, rather
+than enlarging `LabelBucket`, `LabeledVertex`, `SegmentEdgeCounts`, or
+`SegmentSpanMeta`. Variable mate blobs use their own byte address space and a
+mate-specific instance of the existing `FreeSpanStore` implementation; edge,
+payload, and mate free ranges are never mixed.
+
+Insertion returns exact physical locations by logical ordinal. Slot-preserving
+rebalance requires no mate repair. Slot-renumbering compaction rebuilds affected
+packed leaf blobs at the LARA boundary that publishes slot moves. This contract
+is accepted but not yet implemented; the current Graph facade still uses
+`EDGE_ALIASES`.
+
+---
+
 ## What is IC-specific (substrate only)
 
 These are **implementation choices for Gleaph on canisters**, not part of the LARA algorithm definition:
@@ -200,6 +223,7 @@ Use this when reviewing LARA PRs:
 - [lara-dgap-contract.md](./lara-dgap-contract.md) — DGAP mapping and labeled gap detail
 - [adr/0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — labeled physical migration
 - [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented**; one-orientation batch commit implemented (`plan/reserve/commit` boundary, opaque graph-bound reservation, payload allocation with tail rollback, pre-write fingerprint/geometry validation, success and adversarial tests); new buckets, overflow-log batch writes, rebalance/relocation, dynamic expansion, and GraphStore orchestration remain planned
+- [adr/0048-adaptive-lara-mate-index.md](../adr/0048-adaptive-lara-mate-index.md) — accepted physical-pairing and adaptive mate-index design; implementation planned
 - [lara-labeled-migration-tests.md](./lara-labeled-migration-tests.md) — phase test gates (A–E)
 - `crates/ic-stable-lara/README.md` — crate entry point
 - `reference/DGAP/dgap/src/graph.h` — reference implementation

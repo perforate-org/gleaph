@@ -1,8 +1,8 @@
 # Gleaph Refactoring Roadmap
 
-Last updated: 2026-06-15 UTC  
+Last updated: 2026-07-23 UTC
 Status: In progress (Phases 0–8 complete; Phase 9 ongoing; Federation deferred)  
-Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
+Anchor timestamp: 2026-07-23 01:02:26 UTC +0000
 
 ## Purpose
 
@@ -331,6 +331,11 @@ Goal: make derived state safe to optimize, rebuild, and validate.
 **Status: Complete (2026-06-10).**
 
 **Progress:** Edge equality postings and edge aliases have consistency checks + full rebuild from canonical state (`facade/derived_state/`). Label postings backfill was already implemented (`label_backfill.rs`). Sync vs backfill lag documented in [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
+
+This remains the implemented state. [ADR 0048](../adr/0048-adaptive-lara-mate-index.md)
+accepts a planned successor in which bidirectional LARA pair-rank resolution and
+adaptive packed mate blobs replace the facade edge-alias store; the Phase 5
+rebuild contract remains required until that implementation lands.
 
 Deliverables:
 

@@ -79,9 +79,10 @@ Last revised: YYYY-MM-DD
 | [0042](0042-router-dynamic-instruction-budget-batching.md) | Router instruction-budget mutation batching API | implemented |
 | [0043](0043-per-memory-bucket-size-memory-manager.md) | Per-memory bucket sizing for the stable-memory manager | proposed |
 | [0044](0044-router-bulk-mutation-key.md) | Router bulk mutation key for wave-level saga coalescing | partially implemented |
-| [0045](0045-unordered-batch-graph-mutations-and-lara-placement.md) | Unordered batch graph mutations and LARA placement planning | proposed |
+| [0045](0045-unordered-batch-graph-mutations-and-lara-placement.md) | Unordered batch graph mutations and LARA placement planning | partially implemented |
 | [0046](0046-multi-variable-candidate-seed-relations.md) | Multi-variable candidate seed relations with canonical Graph revalidation | proposed |
 | [0047](0047-shared-typed-graph-bulk-envelope.md) | Shared typed Graph bulk execution envelope | proposed |
+| [0048](0048-adaptive-lara-mate-index.md) | Adaptive LARA mate index replaces Graph edge aliases | accepted (implementation planned) |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 
