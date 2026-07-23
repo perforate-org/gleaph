@@ -34,6 +34,8 @@ pub(crate) enum BatchEdgeInsertResult {
     Committed {
         /// Per-orientation write results, in the order they were committed.
         results: Vec<OneOrientationBatchResult>,
+        /// True when at least one orientation used pending-aware leaf expansion.
+        used_expansion: bool,
     },
     Unsupported {
         /// Human-readable reason the clean-slab path could not be used.
@@ -45,7 +47,7 @@ impl BatchEdgeInsertResult {
     /// Total edge slab slots written across all committed orientations.
     pub(crate) fn total_edge_slots(&self) -> Option<u64> {
         match self {
-            Self::Committed { results } => Some(
+            Self::Committed { results, .. } => Some(
                 results
                     .iter()
                     .map(|r| u64::from(r.edge_slots_written))
@@ -58,7 +60,7 @@ impl BatchEdgeInsertResult {
     /// Total payload slab slots written across all committed orientations.
     pub(crate) fn total_payload_slots(&self) -> Option<u64> {
         match self {
-            Self::Committed { results } => Some(
+            Self::Committed { results, .. } => Some(
                 results
                     .iter()
                     .map(|r| u64::from(r.payload_slots_written))
@@ -66,6 +68,16 @@ impl BatchEdgeInsertResult {
             ),
             Self::Unsupported { .. } => None,
         }
+    }
+
+    pub(crate) fn used_expansion(&self) -> bool {
+        matches!(
+            self,
+            Self::Committed {
+                used_expansion: true,
+                ..
+            }
+        )
     }
 }
 
@@ -157,6 +169,9 @@ impl GraphStore {
         }
 
         // All reservations succeeded: commit each orientation.
+        let used_expansion = reservations
+            .iter()
+            .any(|(_, reservation)| reservation.uses_expansion());
         let mut results = Vec::with_capacity(reservations.len());
         for (orientation, reservation) in reservations {
             let result = self.with_graph_mut(|graph| {
@@ -169,7 +184,10 @@ impl GraphStore {
             results.push(result);
         }
 
-        Ok(BatchEdgeInsertResult::Committed { results })
+        Ok(BatchEdgeInsertResult::Committed {
+            results,
+            used_expansion,
+        })
     }
 
     /// Convert physical intents into per-orientation batch write plans.
@@ -399,6 +417,7 @@ mod tests {
         );
         assert_eq!(result.total_edge_slots(), Some(2));
         assert_eq!(result.total_payload_slots(), Some(2));
+        assert!(!result.used_expansion());
 
         let label_raw = storage_label_for(Some(label), true);
         assert_eq!(count_labeled_dir_edges(&store, source, label_raw, true), 1);
@@ -512,6 +531,7 @@ mod tests {
         assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
         assert_eq!(result.total_edge_slots(), Some(4));
         assert_eq!(result.total_payload_slots(), Some(0));
+        assert!(!result.used_expansion());
 
         let label_raw = storage_label_for(Some(label), true);
         assert_eq!(count_labeled_dir_edges(&store, s0, label_raw, true), 1);
