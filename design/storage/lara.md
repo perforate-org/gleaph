@@ -196,8 +196,10 @@ overhead and are not divided by edge count. A candidate must retain positive hea
 justified. No runtime promotion, blob store, or alias replacement is implemented by this slice.
 
 Plan 0135 validates an isolated, test-only serialized layout at the bidirectional LARA boundary:
-the prototype uses a 24-byte versioned header, 20 bytes per indexed-bucket directory entry, and
-the existing Sampled/Packed mapping formulas. It performs checked offset/length validation and
+the prototype uses a 24-byte versioned header, 20 bytes per indexed-bucket directory entry
+(including the canonical owner vertex and `BucketLabelKey` identity), and the existing
+Sampled/Packed mapping formulas. Mode and width are per-bucket so a leaf may mix modes. It performs
+checked offset/length validation and
 round-trip/corruption tests for all planned modes, but does not allocate stable memory or publish a
 locator. Locator rows, free-span/rebuild reserve, node overhead, and MemoryManager extent rounding
 remain outside the serialized blob and outside any per-edge claim. Runtime promotion and alias

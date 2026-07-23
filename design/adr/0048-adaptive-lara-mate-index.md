@@ -449,13 +449,15 @@ blob terms concrete without exposing a runtime API. Its fixed-endian prototype l
 | Component | Size |
 | --- | ---: |
 | versioned header | 24 bytes |
-| indexed-bucket directory entry | 20 bytes per bucket |
+| indexed-bucket directory entry (`owner_vertex_id` + `BucketLabelKey` identity) | 20 bytes per bucket |
 | Sampled mapping | `16 * ceil(n / K)` bytes per bucket (two halves, two `u32` fields) |
 | Packed mapping | `2 * width * n` bytes per bucket |
 
-The header declares the directory, mapping, and total lengths. Directory entries are strictly
-ordered and point to contiguous mapping ranges; decode checks every range, count, mode, width, and
-the absence of trailing bytes. Free-span records, rebuild reserve, locator rows, and substrate
+The header declares the directory, mapping, and total lengths. Mode, stride/width, and entry count
+are per-directory-entry fields because a leaf may mix modes by bucket; no synthetic bucket-id table
+is introduced. Directory entries carry the canonical `(owner_vertex_id, BucketLabelKey)` identity,
+are strictly ordered, and point to contiguous mapping ranges. Decode checks every range, count,
+mode, width, reserved flag, and the absence of trailing bytes. Free-span records, rebuild reserve, locator rows, and substrate
 allocation are intentionally not serialized by this test-only codec and remain separate terms in
 the Plan 0134 gate. Round-trip and corruption tests cover all requested strides and widths,
 single-bucket and multi-bucket leaves. This is evidence for a later stable-layout design, not

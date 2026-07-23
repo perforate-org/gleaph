@@ -62,7 +62,8 @@ impl Mode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Bucket {
-    pub bucket_id: u32,
+    pub owner_vertex_id: u32,
+    pub bucket_label_key: u16,
     pub entries: u32,
     pub mode: Mode,
     pub mapping: Vec<u8>,
@@ -76,7 +77,8 @@ impl Bucket {
             .map_err(EncodeError::from)?;
         if self.entries == 0 || self.mapping.len() != expected {
             return Err(EncodeError::MappingLengthMismatch {
-                bucket_id: self.bucket_id,
+                owner_vertex_id: self.owner_vertex_id,
+                bucket_label_key: self.bucket_label_key,
                 expected,
                 actual: self.mapping.len(),
             });
@@ -95,10 +97,13 @@ pub(crate) enum EncodeError {
     EmptyBlob,
     BucketsNotStrictlyIncreasing,
     MappingLengthMismatch {
-        bucket_id: u32,
+        owner_vertex_id: u32,
+        bucket_label_key: u16,
         expected: usize,
         actual: usize,
     },
+    UnsupportedSampleStride(u8),
+    UnsupportedPackedWidth(u8),
     ArithmeticOverflow,
     TooLarge,
 }
@@ -107,9 +112,8 @@ impl From<DecodeError> for EncodeError {
     fn from(error: DecodeError) -> Self {
         match error {
             DecodeError::ArithmeticOverflow => Self::ArithmeticOverflow,
-            DecodeError::UnsupportedSampleStride(_)
-            | DecodeError::UnsupportedPackedWidth(_)
-            | DecodeError::UnsupportedMode(_) => Self::ArithmeticOverflow,
+            DecodeError::UnsupportedSampleStride(value) => Self::UnsupportedSampleStride(value),
+            DecodeError::UnsupportedPackedWidth(value) => Self::UnsupportedPackedWidth(value),
             _ => Self::ArithmeticOverflow,
         }
     }
@@ -120,6 +124,7 @@ pub(crate) enum DecodeError {
     Truncated,
     BadMagic,
     UnsupportedVersion(u8),
+    UnsupportedFlags(u8),
     InvalidHeaderLength(u16),
     EmptyBlob,
     DirectoryLengthMismatch,
@@ -165,14 +170,16 @@ impl MateBlob {
         let mut mapping_bytes = 0usize;
         let mut previous_id = None;
         for bucket in &self.buckets {
-            if previous_id.is_some_and(|previous| bucket.bucket_id <= previous) {
+            if previous_id.is_some_and(|previous| {
+                (bucket.owner_vertex_id, bucket.bucket_label_key) <= previous
+            }) {
                 return Err(EncodeError::BucketsNotStrictlyIncreasing);
             }
             bucket.validate()?;
             mapping_bytes = mapping_bytes
                 .checked_add(bucket.mapping.len())
                 .ok_or(EncodeError::ArithmeticOverflow)?;
-            previous_id = Some(bucket.bucket_id);
+            previous_id = Some((bucket.owner_vertex_id, bucket.bucket_label_key));
         }
         let total_bytes = HEADER_BYTES
             .checked_add(directory_bytes)
@@ -198,10 +205,10 @@ impl MateBlob {
             .ok_or(EncodeError::ArithmeticOverflow)?;
         for bucket in &self.buckets {
             let (mode, parameter) = bucket.mode.encode();
-            out.extend_from_slice(&bucket.bucket_id.to_be_bytes());
+            out.extend_from_slice(&bucket.owner_vertex_id.to_be_bytes());
+            out.extend_from_slice(&bucket.bucket_label_key.to_be_bytes());
             out.push(mode);
             out.push(parameter);
-            out.extend_from_slice(&0u16.to_be_bytes());
             out.extend_from_slice(&bucket.entries.to_be_bytes());
             out.extend_from_slice(
                 &u32::try_from(mapping_offset)
@@ -239,7 +246,10 @@ impl MateBlob {
         if version != VERSION {
             return Err(DecodeError::UnsupportedVersion(version));
         }
-        let _flags = read::<1>(bytes, &mut offset)?[0];
+        let flags = read::<1>(bytes, &mut offset)?[0];
+        if flags != 0 {
+            return Err(DecodeError::UnsupportedFlags(flags));
+        }
         let header_len = read_u16(bytes, &mut offset)?;
         if header_len != HEADER_BYTES as u16 {
             return Err(DecodeError::InvalidHeaderLength(header_len));
@@ -282,16 +292,16 @@ impl MateBlob {
         let mut previous_id = None;
         let mut expected_offset = mapping_start;
         for _ in 0..bucket_count {
-            let bucket_id = read_u32(bytes, &mut offset)?;
+            let owner_vertex_id = read_u32(bytes, &mut offset)?;
+            let bucket_label_key = read_u16(bytes, &mut offset)?;
             let mode = read::<1>(bytes, &mut offset)?[0];
             let parameter = read::<1>(bytes, &mut offset)?[0];
-            let _reserved = read_u16(bytes, &mut offset)?;
             let entry_count = read_u32(bytes, &mut offset)?;
             let mapping_offset = usize::try_from(read_u32(bytes, &mut offset)?)
                 .map_err(|_| DecodeError::ArithmeticOverflow)?;
             let mapping_length = usize::try_from(read_u32(bytes, &mut offset)?)
                 .map_err(|_| DecodeError::ArithmeticOverflow)?;
-            if previous_id.is_some_and(|previous| bucket_id <= previous) {
+            if previous_id.is_some_and(|previous| (owner_vertex_id, bucket_label_key) <= previous) {
                 return Err(DecodeError::BucketOrder);
             }
             let mode = Mode::decode(mode, parameter)?;
@@ -311,9 +321,16 @@ impl MateBlob {
             if end > mapping_end {
                 return Err(DecodeError::MappingLengthMismatch);
             }
-            entries.push((bucket_id, entry_count, mode, mapping_offset, mapping_length));
+            entries.push((
+                owner_vertex_id,
+                bucket_label_key,
+                entry_count,
+                mode,
+                mapping_offset,
+                mapping_length,
+            ));
             expected_offset = end;
-            previous_id = Some(bucket_id);
+            previous_id = Some((owner_vertex_id, bucket_label_key));
         }
         if offset != mapping_start || expected_offset != mapping_end {
             return Err(DecodeError::MappingLengthMismatch);
@@ -321,8 +338,16 @@ impl MateBlob {
         let buckets = entries
             .into_iter()
             .map(
-                |(bucket_id, entry_count, mode, mapping_offset, mapping_length)| Bucket {
-                    bucket_id,
+                |(
+                    owner_vertex_id,
+                    bucket_label_key,
+                    entry_count,
+                    mode,
+                    mapping_offset,
+                    mapping_length,
+                )| Bucket {
+                    owner_vertex_id,
+                    bucket_label_key,
                     entries: entry_count,
                     mode,
                     mapping: bytes[mapping_offset..mapping_offset + mapping_length].to_vec(),
@@ -333,10 +358,11 @@ impl MateBlob {
     }
 }
 
-fn bucket(bucket_id: u32, entries: u32, mode: Mode) -> Bucket {
+fn bucket(owner_vertex_id: u32, bucket_label_key: u16, entries: u32, mode: Mode) -> Bucket {
     let length = mode.mapping_bytes(entries).expect("fixture mapping length");
     Bucket {
-        bucket_id,
+        owner_vertex_id,
+        bucket_label_key,
         entries,
         mode,
         mapping: (0..length).map(|index| (index % 251) as u8).collect(),
@@ -347,14 +373,14 @@ fn bucket(bucket_id: u32, entries: u32, mode: Mode) -> Bucket {
 fn all_modes_round_trip_and_reopen() {
     for stride in [16, 32, 64] {
         let blob = MateBlob {
-            buckets: vec![bucket(2, 128, Mode::Sampled { stride })],
+            buckets: vec![bucket(2, 7, 128, Mode::Sampled { stride })],
         };
         let bytes = blob.encode().expect("encode sampled");
         assert_eq!(MateBlob::decode(&bytes).expect("decode sampled"), blob);
     }
     for width_bytes in 1..=4 {
         let blob = MateBlob {
-            buckets: vec![bucket(2, 128, Mode::Packed { width_bytes })],
+            buckets: vec![bucket(2, 7, 128, Mode::Packed { width_bytes })],
         };
         let bytes = blob.encode().expect("encode packed");
         assert_eq!(MateBlob::decode(&bytes).expect("decode packed"), blob);
@@ -365,8 +391,8 @@ fn all_modes_round_trip_and_reopen() {
 fn multi_bucket_directory_amortizes_shared_layout() {
     let blob = MateBlob {
         buckets: vec![
-            bucket(2, 8, Mode::Sampled { stride: 16 }),
-            bucket(7, 32, Mode::Packed { width_bytes: 2 }),
+            bucket(2, 7, 8, Mode::Sampled { stride: 16 }),
+            bucket(2, 9, 32, Mode::Packed { width_bytes: 2 }),
         ],
     };
     let bytes = blob.encode().expect("encode multi-bucket");
@@ -380,7 +406,7 @@ fn multi_bucket_directory_amortizes_shared_layout() {
 #[test]
 fn corruption_is_rejected_before_a_result_is_returned() {
     let blob = MateBlob {
-        buckets: vec![bucket(2, 32, Mode::Packed { width_bytes: 1 })],
+        buckets: vec![bucket(2, 7, 32, Mode::Packed { width_bytes: 1 })],
     };
     let bytes = blob.encode().expect("encode");
 
@@ -412,7 +438,7 @@ fn corruption_is_rejected_before_a_result_is_returned() {
 #[test]
 fn malformed_shapes_and_trailing_bytes_are_rejected() {
     let blob = MateBlob {
-        buckets: vec![bucket(2, 1, Mode::Packed { width_bytes: 1 })],
+        buckets: vec![bucket(2, 7, 1, Mode::Packed { width_bytes: 1 })],
     };
     let mut bytes = blob.encode().expect("encode");
     bytes.push(0);
@@ -430,14 +456,49 @@ fn malformed_shapes_and_trailing_bytes_are_rejected() {
         MateBlob::decode(&bytes),
         Err(DecodeError::DirectoryLengthMismatch)
     );
+
+    let mut bytes = blob.encode().expect("encode");
+    bytes[5] = 1;
+    assert_eq!(
+        MateBlob::decode(&bytes),
+        Err(DecodeError::UnsupportedFlags(1))
+    );
+
+    let mut bytes = blob.encode().expect("encode");
+    bytes[6] = 0;
+    bytes[7] = 23;
+    assert_eq!(
+        MateBlob::decode(&bytes),
+        Err(DecodeError::InvalidHeaderLength(23))
+    );
+
+    for (mode, parameter, expected) in [
+        (3, 1, DecodeError::UnsupportedMode(3)),
+        (1, 8, DecodeError::UnsupportedSampleStride(8)),
+        (2, 5, DecodeError::UnsupportedPackedWidth(5)),
+    ] {
+        let mut bytes = blob.encode().expect("encode");
+        bytes[30] = mode;
+        bytes[31] = parameter;
+        assert_eq!(MateBlob::decode(&bytes), Err(expected));
+    }
+
+    let mut bytes = blob.encode().expect("encode");
+    bytes[32..36].copy_from_slice(&0u32.to_be_bytes());
+    assert_eq!(MateBlob::decode(&bytes), Err(DecodeError::EmptyBucket));
+
+    assert_eq!(
+        (MateBlob { buckets: vec![] }).encode(),
+        Err(EncodeError::EmptyBlob)
+    );
 }
 
 #[test]
 fn encoding_rejects_duplicate_or_unsorted_buckets_and_wrong_mapping_length() {
     let duplicate = MateBlob {
         buckets: vec![
-            bucket(2, 1, Mode::Packed { width_bytes: 1 }),
-            bucket(2, 1, Mode::Packed { width_bytes: 1 }),
+            bucket(2, 7, 1, Mode::Packed { width_bytes: 1 }),
+            bucket(2, 7, 1, Mode::Packed { width_bytes: 1 }),
         ],
     };
     assert_eq!(
@@ -445,7 +506,7 @@ fn encoding_rejects_duplicate_or_unsorted_buckets_and_wrong_mapping_length() {
         Err(EncodeError::BucketsNotStrictlyIncreasing)
     );
 
-    let mut malformed = bucket(2, 1, Mode::Packed { width_bytes: 1 });
+    let mut malformed = bucket(2, 7, 1, Mode::Packed { width_bytes: 1 });
     malformed.mapping.pop();
     assert!(matches!(
         (MateBlob {
