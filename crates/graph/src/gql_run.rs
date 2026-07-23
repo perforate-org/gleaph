@@ -1706,8 +1706,10 @@ mod tests {
         let plan = insert_vertex_plan("ReplayTestVertex");
         let blob = encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan");
         let params = BTreeMap::new();
-        let mut execution = GqlExecutionContext::default();
-        execution.write_journal = false;
+        let execution = GqlExecutionContext {
+            write_journal: false,
+            ..GqlExecutionContext::default()
+        };
 
         let first = pollster::block_on(run_wire_plan_last_read_row_count(
             store,

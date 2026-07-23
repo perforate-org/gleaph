@@ -4900,17 +4900,26 @@ mod tests {
             .forward()
             .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
             .unwrap();
-        let source_slot = source_slots[1];
-        let source_ref = PhysicalEdgeRef {
-            orientation: Orientation::Forward,
-            owner_vertex_id: source,
-            label_id: label,
-            slot_index: source_slot,
-        };
-        let mate = graph.mate_of(source_ref).unwrap();
-        assert_eq!(mate.orientation, Orientation::Reverse);
-        assert_eq!(mate.owner_vertex_id, target);
-        assert_eq!(graph.canonical_handle(mate).unwrap(), source_ref);
+        let mut reverse_slots = Vec::new();
+        graph
+            .reverse()
+            .for_each_live_edge_slot_for_label(target, label, |slot, _| reverse_slots.push(slot))
+            .unwrap();
+        assert_eq!(source_slots.len(), 3);
+        assert_eq!(reverse_slots.len(), 3);
+        for (rank, source_slot) in source_slots.into_iter().enumerate() {
+            let source_ref = PhysicalEdgeRef {
+                orientation: Orientation::Forward,
+                owner_vertex_id: source,
+                label_id: label,
+                slot_index: source_slot,
+            };
+            let mate = graph.mate_of(source_ref).unwrap();
+            assert_eq!(mate.orientation, Orientation::Reverse);
+            assert_eq!(mate.owner_vertex_id, target);
+            assert_eq!(mate.slot_index, reverse_slots[rank]);
+            assert_eq!(graph.canonical_handle(mate).unwrap(), source_ref);
+        }
     }
 
     #[test]
@@ -5131,5 +5140,107 @@ mod tests {
             graph.mate_of(invalid),
             Err(crate::labeled::MateLookupError::InvalidOrientation(_))
         ));
+    }
+
+    #[test]
+    fn scan_only_mate_fails_closed_when_counterpart_count_is_inconsistent() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(14);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    source,
+                    target,
+                    label,
+                    TestEdge(u32::from(target)),
+                    TestEdge(u32::from(source)),
+                )
+                .unwrap();
+        }
+        let mut source_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .unwrap();
+        let source_slot = source_slots[0];
+        graph
+            .forward()
+            .remove_edge_at_slot(source, label, source_slot)
+            .unwrap();
+        let mut remaining_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, _| remaining_slots.push(slot))
+            .unwrap();
+        let remaining_slot = remaining_slots[0];
+        let source_ref = PhysicalEdgeRef {
+            orientation: Orientation::Forward,
+            owner_vertex_id: source,
+            label_id: label,
+            slot_index: remaining_slot,
+        };
+        assert!(matches!(
+            graph.mate_of(source_ref),
+            Err(crate::labeled::MateLookupError::InconsistentRelation {
+                source: observed,
+                source_count: 1,
+                counterpart_count: 2,
+                ..
+            }) if observed == source_ref
+        ));
+    }
+
+    #[test]
+    fn scan_only_mate_uses_adjacency_while_locator_is_rebuilding() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(15);
+        graph
+            .insert_directed_edge(
+                source,
+                target,
+                label,
+                TestEdge(u32::from(target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        let mut source_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .unwrap();
+        let source_slot = source_slots[0];
+        let source_ref = PhysicalEdgeRef {
+            orientation: Orientation::Forward,
+            owner_vertex_id: source,
+            label_id: label,
+            slot_index: source_slot,
+        };
+        assert_eq!(
+            graph.mate_of(source_ref).unwrap().orientation,
+            Orientation::Reverse
+        );
+        graph.mate.test_publish_rebuilding(0).unwrap();
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Rebuilding
+        );
+        assert_eq!(
+            graph.mate_of(source_ref).unwrap().orientation,
+            Orientation::Reverse
+        );
     }
 }

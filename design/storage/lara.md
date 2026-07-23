@@ -187,8 +187,10 @@ aggregate-only insertion does not materialize them. Slot-preserving
 rebalance requires no mate repair. Slot-renumbering compaction rebuilds affected
 sampled/packed leaf blobs at the LARA boundary that publishes slot moves. Plan 0136 implements
 the dormant LARA-owned locator/blob/free-span storage foundation with fresh/reopen/partial-layout
-validation and publication-before-retirement ordering. It is not wired into graph construction
-or lookup; the current Graph facade still uses `EDGE_ALIASES`.
+validation and publication-before-retirement ordering. Plan 0140 hardens the opt-in Graph facade
+ScanOnly bridge: it resolves exact canonical handles through LARA rank/select without reading or
+mutating `EDGE_ALIASES`; ordinary callers still use the alias compatibility path. Promotion,
+published blob reads, and alias removal remain planned.
 
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half

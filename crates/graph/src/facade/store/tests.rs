@@ -1,4 +1,4 @@
-use super::helpers::{edge_storage_label, lara_label};
+use super::helpers::{edge_alias_slot_key, edge_storage_label, lara_label};
 use super::*;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
@@ -977,6 +977,139 @@ fn inserts_vertices_and_edges_through_facade() {
             && edge.edge_slot_index.raw() == undirected.slot_index
             && store.edge_is_undirected(target, edge).unwrap()
     }));
+}
+
+#[test]
+fn scan_only_canonical_lookup_uses_lara_without_changing_aliases() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label_id = crate::test_labels::edge_label_id_for_name("ScanOnlyCanonicalBoundary");
+    let handle = store
+        .insert_directed_edge(source, target, Some(label_id))
+        .expect("directed edge");
+    let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
+    let reverse = store
+        .find_first_reverse_handle_descending(target, wire_label, |edge| {
+            edge.neighbor_vid() == source
+        })
+        .expect("reverse scan")
+        .expect("reverse half");
+    let reverse_alias_slot = edge_alias_slot_key(reverse.slot_index, true);
+    let forward_alias_slot = edge_alias_slot_key(handle.slot_index, false);
+    let original_alias = super::super::stable::EDGE_ALIASES.with_borrow(|aliases| {
+        aliases
+            .get(
+                reverse.owner_vertex_id,
+                reverse.label_id.raw(),
+                reverse_alias_slot,
+            )
+            .expect("reverse alias")
+    });
+    let original_forward_alias = super::super::stable::EDGE_ALIASES.with_borrow(|aliases| {
+        aliases.get(
+            handle.owner_vertex_id,
+            handle.label_id.raw(),
+            forward_alias_slot,
+        )
+    });
+    let snapshot_aliases = || {
+        super::super::stable::EDGE_ALIASES.with_borrow(|aliases| {
+            let mut rows = Vec::new();
+            aliases.for_each(|key, value| {
+                rows.push((
+                    u32::from(key.alias_vertex_id()),
+                    key.label_id(),
+                    key.alias_slot_key(),
+                    u32::from(value.canonical_vertex_id()),
+                    value.canonical_slot_index(),
+                ));
+            });
+            rows.sort_unstable();
+            rows
+        })
+    };
+    let original_snapshot = snapshot_aliases();
+
+    // Deliberately poison both compatibility mappings. A ScanOnly implementation that reads
+    // EDGE_ALIASES would return this impossible target instead of the LARA-derived handle.
+    super::super::stable::EDGE_ALIASES.with_borrow_mut(|aliases| {
+        aliases.insert(
+            handle.owner_vertex_id,
+            handle.label_id.raw(),
+            forward_alias_slot,
+            target,
+            u32::MAX,
+        );
+        aliases.insert(
+            reverse.owner_vertex_id,
+            reverse.label_id.raw(),
+            reverse_alias_slot,
+            target,
+            u32::MAX,
+        );
+    });
+    let mut poisoned_snapshot = original_snapshot.clone();
+    for row in &mut poisoned_snapshot {
+        if row.0 == u32::from(handle.owner_vertex_id)
+            && row.1 == handle.label_id.raw()
+            && row.2 == forward_alias_slot
+        {
+            row.3 = u32::from(target);
+            row.4 = u32::MAX;
+        }
+        if row.0 == u32::from(reverse.owner_vertex_id)
+            && row.1 == reverse.label_id.raw()
+            && row.2 == reverse_alias_slot
+        {
+            row.3 = u32::from(target);
+            row.4 = u32::MAX;
+        }
+    }
+    if original_forward_alias.is_none() {
+        poisoned_snapshot.push((
+            u32::from(handle.owner_vertex_id),
+            handle.label_id.raw(),
+            forward_alias_slot,
+            u32::from(target),
+            u32::MAX,
+        ));
+    }
+    poisoned_snapshot.sort_unstable();
+    assert_ne!(poisoned_snapshot, original_snapshot);
+    let scan_from_forward =
+        store.scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward);
+    let scan_from_reverse =
+        store.scan_only_canonical_edge_handle(reverse, LabeledOrientation::Reverse);
+    assert_eq!(snapshot_aliases(), poisoned_snapshot);
+    super::super::stable::EDGE_ALIASES.with_borrow_mut(|aliases| {
+        if let Some(original) = original_forward_alias {
+            aliases.insert(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                forward_alias_slot,
+                original.canonical_vertex_id(),
+                original.canonical_slot_index(),
+            );
+        } else {
+            aliases.remove(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                forward_alias_slot,
+            );
+        }
+        aliases.insert(
+            reverse.owner_vertex_id,
+            reverse.label_id.raw(),
+            reverse_alias_slot,
+            original_alias.canonical_vertex_id(),
+            original_alias.canonical_slot_index(),
+        );
+    });
+
+    assert_eq!(scan_from_forward.expect("forward ScanOnly lookup"), handle);
+    assert_eq!(scan_from_reverse.expect("reverse ScanOnly lookup"), handle);
+    assert_eq!(snapshot_aliases(), original_snapshot);
 }
 
 #[test]

@@ -79,7 +79,10 @@ Remove the Graph facade `EDGE_ALIASES` stable B-tree, its check/rebuild surface,
 repair hooks after the LARA mate APIs are implemented. Do not replace it with two B-trees.
 
 The facade retains canonicalization as an abstraction but delegates physical mate resolution to
-LARA. Orientation must be explicit because `EdgeHandle` alone cannot distinguish a directed
+LARA. Plan 0140 implements and tests this as an opt-in `scan_only_canonical_edge_handle` bridge;
+ordinary callers retain the `EDGE_ALIASES` compatibility path until promotion and adoption are
+approved. Rebuilding or unpublished locator rows do not participate in this bridge, so adjacency
+remains the fallback source of truth. Orientation must be explicit because `EdgeHandle` alone cannot distinguish a directed
 reverse entry from a forward entry:
 
 ```rust
