@@ -306,10 +306,21 @@ where
         Self::validate_plan_invariants(plan)?;
 
         // Phase 2: mutation-free preflight of every run.
+        // Overflow-log runs share per-leaf segment capacity.  We maintain virtual
+        // cursors so that multiple runs targeting the same leaf reserve disjoint
+        // log ranges and the aggregate capacity check sees the whole batch.
         let mut preflight = Vec::with_capacity(plan.runs.len());
         let mut max_edge_end_slot: u64 = 0;
+        let mut edge_log_leaf_cursors: std::collections::BTreeMap<u32, u32> =
+            std::collections::BTreeMap::new();
+        let mut payload_log_leaf_cursors: std::collections::BTreeMap<u32, u32> =
+            std::collections::BTreeMap::new();
         for run in &plan.runs {
-            let p = self.preflight_run(run)?;
+            let p = self.preflight_run(
+                run,
+                &mut edge_log_leaf_cursors,
+                &mut payload_log_leaf_cursors,
+            )?;
             if let RunDestination::Slab {
                 edge_start_slot, ..
             } = p.destination
@@ -557,6 +568,8 @@ where
     fn preflight_run(
         &self,
         run: &OneOrientationBucketRun<E>,
+        edge_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
+        payload_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
     ) -> Result<PreflightRun, OneOrientationBatchError> {
         self.ensure_vertex(run.owner_vertex_id)
             .map_err(OneOrientationBatchError::from)?;
@@ -592,7 +605,13 @@ where
             .bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)
             .map_err(OneOrientationBatchError::from)?;
         if edge_end_slot > successor_start {
-            return self.preflight_overflow_log_run(run, bucket_slot, bucket);
+            return self.preflight_overflow_log_run(
+                run,
+                bucket_slot,
+                bucket,
+                edge_log_leaf_cursors,
+                payload_log_leaf_cursors,
+            );
         }
 
         // Verify every payload-bearing edge matches the declared width.  This
@@ -678,26 +697,29 @@ where
         run: &OneOrientationBucketRun<E>,
         bucket_slot: u64,
         bucket: super::LabelBucket,
+        edge_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
+        payload_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
     ) -> Result<PreflightRun, OneOrientationBatchError> {
         self.ensure_vertex(run.owner_vertex_id)
             .map_err(OneOrientationBatchError::from)?;
         let edge_slot_count = u32::try_from(run.edges.len())
             .map_err(|_| OneOrientationBatchError::LogCapacityExceeded)?;
 
-        // Edge overflow log capacity check.
+        // Edge overflow log capacity check against the virtual leaf cursor.
         let header = self.edges.header();
         let leaf = Self::leaf_index_for_vid(run.owner_vertex_id, header.segment_size);
-        let needed_i32 = i32::try_from(edge_slot_count)
+        let _needed_i32 = i32::try_from(edge_slot_count)
             .map_err(|_| OneOrientationBatchError::LogCapacityExceeded)?;
-        let (current_edge_idx, edge_log_capacity) = self.edges.read_overflow_log_state(leaf);
-        if current_edge_idx < 0
-            || current_edge_idx
-                .checked_add(needed_i32)
-                .map(|end| end > edge_log_capacity as i32)
-                .unwrap_or(true)
-        {
+        let (raw_edge_idx, edge_log_capacity) = self.edges.read_overflow_log_state(leaf);
+        let base_edge_idx = raw_edge_idx.max(0) as u32;
+        let edge_log_start_idx = *edge_log_leaf_cursors.entry(leaf).or_insert(base_edge_idx);
+        let edge_log_end_idx = edge_log_start_idx
+            .checked_add(edge_slot_count)
+            .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
+        if edge_log_end_idx > edge_log_capacity {
             return Err(OneOrientationBatchError::LogCapacityExceeded);
         }
+        edge_log_leaf_cursors.insert(leaf, edge_log_end_idx);
 
         // Verify every payload-bearing edge matches the declared width and check
         // payload overflow log capacity.
@@ -720,17 +742,20 @@ where
                 .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
 
             let payload_leaf = self.payload_log_leaf(run.owner_vertex_id);
-            let (current_payload_idx, payload_log_capacity) =
+            let (raw_payload_idx, payload_log_capacity) =
                 self.values.read_payload_log_state(payload_leaf);
-            if current_payload_idx < 0
-                || current_payload_idx
-                    .checked_add(needed_i32)
-                    .map(|end| end > payload_log_capacity as i32)
-                    .unwrap_or(true)
-            {
+            let base_payload_idx = raw_payload_idx.max(0) as u32;
+            let payload_log_start_idx_virtual = *payload_log_leaf_cursors
+                .entry(payload_leaf)
+                .or_insert(base_payload_idx);
+            let payload_log_end_idx = payload_log_start_idx_virtual
+                .checked_add(edge_slot_count)
+                .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
+            if payload_log_end_idx > payload_log_capacity {
                 return Err(OneOrientationBatchError::LogCapacityExceeded);
             }
-            payload_log_start_idx = Some(current_payload_idx as u32);
+            payload_log_leaf_cursors.insert(payload_leaf, payload_log_end_idx);
+            payload_log_start_idx = Some(payload_log_start_idx_virtual);
         }
 
         Ok(PreflightRun {
@@ -743,7 +768,7 @@ where
             payload_byte_count,
             payload_allocation: None,
             destination: RunDestination::OverflowLog {
-                edge_log_start_idx: current_edge_idx as u32,
+                edge_log_start_idx,
                 payload_log_start_idx,
             },
         })

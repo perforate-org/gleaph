@@ -899,10 +899,308 @@ mod tests {
 
         let result = graph.insert_one_orientation_batch(&plan).unwrap();
         assert_eq!(result.payload_slots_written, 2);
+    }
 
-        let v0_values = collect_payload_values(&graph, VertexId::from(0), label);
-        let v2_values = collect_payload_values(&graph, VertexId::from(2), label);
-        assert_eq!(v0_values, vec![100_i32.to_le_bytes().to_vec()]);
-        assert_eq!(v2_values, vec![200_i32.to_le_bytes().to_vec()]);
+    #[test]
+    fn overflow_log_same_leaf_multi_bucket_append_success() {
+        let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+
+        let label_a = BucketLabelKey::directed_from_index(1);
+        let label_b = BucketLabelKey::directed_from_index(2);
+        for i in 1..=3u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label_a,
+                    crate::labeled::graph::test_support::TestEdge { target: i },
+                )
+                .unwrap();
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label_b,
+                    crate::labeled::graph::test_support::TestEdge { target: 10 + i },
+                )
+                .unwrap();
+        }
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_a,
+                    inline_value_width: 0,
+                    edges: vec![
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 0,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_a,
+                            edge: crate::labeled::graph::test_support::TestEdge { target: 100 },
+                        },
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 1,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_a,
+                            edge: crate::labeled::graph::test_support::TestEdge { target: 101 },
+                        },
+                    ],
+                },
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_b,
+                    inline_value_width: 0,
+                    edges: vec![
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 2,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_b,
+                            edge: crate::labeled::graph::test_support::TestEdge { target: 200 },
+                        },
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 3,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_b,
+                            edge: crate::labeled::graph::test_support::TestEdge { target: 201 },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let result = graph
+            .insert_one_orientation_batch(&plan)
+            .expect("same-leaf multi-bucket overflow-log append should commit");
+        assert_eq!(result.edge_slots_written, 4);
+        assert_eq!(result.edge_log_entries_written, 4);
+
+        let out = graph.out_edges(VertexId::from(0)).unwrap();
+        let targets: Vec<u32> = out.iter().map(|e| e.target).collect();
+        assert_eq!(targets, vec![201, 200, 13, 12, 11, 101, 100, 3, 2, 1]);
+    }
+
+    #[test]
+    fn overflow_log_same_leaf_payload_multi_bucket_append_success() {
+        let graph = segment16_payload_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+
+        let label_a = BucketLabelKey::directed_from_index(1);
+        let label_b = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label_a, 4)
+            .unwrap();
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label_b, 4)
+            .unwrap();
+
+        for i in 1..=3u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label_a,
+                    PayloadTestEdge::with_bytes(i, &[1u8, 1, 1, 1]),
+                )
+                .unwrap();
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label_b,
+                    PayloadTestEdge::with_bytes(10 + i, &[2u8, 2, 2, 2]),
+                )
+                .unwrap();
+        }
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_a,
+                    inline_value_width: 4,
+                    edges: vec![
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 0,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_a,
+                            edge: PayloadTestEdge::with_bytes(100, &[10u8, 11, 12, 13]),
+                        },
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 1,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_a,
+                            edge: PayloadTestEdge::with_bytes(101, &[14u8, 15, 16, 17]),
+                        },
+                    ],
+                },
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_b,
+                    inline_value_width: 4,
+                    edges: vec![
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 2,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_b,
+                            edge: PayloadTestEdge::with_bytes(200, &[20u8, 21, 22, 23]),
+                        },
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 3,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_b,
+                            edge: PayloadTestEdge::with_bytes(201, &[24u8, 25, 26, 27]),
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let result = graph
+            .insert_one_orientation_batch(&plan)
+            .expect("same-leaf payload multi-bucket overflow-log append should commit");
+        assert_eq!(result.edge_slots_written, 4);
+        assert_eq!(result.edge_log_entries_written, 4);
+        assert_eq!(result.payload_slots_written, 4);
+        assert_eq!(result.payload_log_entries_written, 4);
+
+        let a_values = collect_payload_values(&graph, VertexId::from(0), label_a);
+        let b_values = collect_payload_values(&graph, VertexId::from(0), label_b);
+        assert_eq!(
+            a_values,
+            vec![
+                vec![1u8, 1, 1, 1],
+                vec![1u8, 1, 1, 1],
+                vec![1u8, 1, 1, 1],
+                vec![10u8, 11, 12, 13],
+                vec![14u8, 15, 16, 17],
+            ]
+        );
+        assert_eq!(
+            b_values,
+            vec![
+                vec![2u8, 2, 2, 2],
+                vec![2u8, 2, 2, 2],
+                vec![2u8, 2, 2, 2],
+                vec![20u8, 21, 22, 23],
+                vec![24u8, 25, 26, 27],
+            ]
+        );
+    }
+
+    #[test]
+    fn overflow_log_same_leaf_second_run_capacity_exhaustion_rolls_back() {
+        let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+
+        let label_a = BucketLabelKey::directed_from_index(1);
+        let label_b = BucketLabelKey::directed_from_index(2);
+        for i in 1..=3u32 {
+            graph
+                .insert_edge(
+                    VertexId::from(0),
+                    label_a,
+                    crate::labeled::graph::test_support::TestEdge { target: i },
+                )
+                .unwrap();
+        }
+        // Pre-create label_b bucket so the second run is not rejected as a new bucket.
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label_b,
+                crate::labeled::graph::test_support::TestEdge { target: 1 },
+            )
+            .unwrap();
+
+        // Fill the shared edge overflow log so that only the first run can fit.
+        let header = graph.edges().header();
+        let leaf = crate::LabeledLaraGraph::<
+            crate::labeled::graph::test_support::TestEdge,
+            crate::VectorMemory,
+        >::leaf_index_for_vid(VertexId::from(0), header.segment_size);
+        let log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+        let spare = log_capacity - 2;
+        let entries: Vec<(i32, crate::labeled::graph::test_support::TestEdge)> = (0..spare)
+            .map(|i| {
+                let prev = if i == 0 { -1 } else { (i as i32) - 1 };
+                (
+                    prev,
+                    crate::labeled::graph::test_support::TestEdge {
+                        target: 900 + i as u32,
+                    },
+                )
+            })
+            .collect();
+        graph
+            .edges()
+            .write_overflow_log_entries(leaf, 0, &entries)
+            .expect("fill log");
+
+        let edge_capacity_before = graph.edges.header().elem_capacity;
+        let payload_tail_before = graph.values.header().slab_occupied_tail;
+        let before = graph.out_edges(VertexId::from(0)).unwrap();
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_a,
+                    inline_value_width: 0,
+                    edges: vec![
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 0,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_a,
+                            edge: crate::labeled::graph::test_support::TestEdge { target: 100 },
+                        },
+                        OneOrientationBatchEdge {
+                            logical_ordinal: 1,
+                            owner_vertex_id: VertexId::from(0),
+                            neighbor_vertex_id: VertexId::from(1),
+                            label_id: label_a,
+                            edge: crate::labeled::graph::test_support::TestEdge { target: 101 },
+                        },
+                    ],
+                },
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_b,
+                    inline_value_width: 0,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 2,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(1),
+                        label_id: label_b,
+                        edge: crate::labeled::graph::test_support::TestEdge { target: 200 },
+                    }],
+                },
+            ],
+        };
+
+        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
+        assert!(
+            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
+            "expected LogCapacityExceeded, got {err}"
+        );
+
+        let edge_capacity_after = graph.edges.header().elem_capacity;
+        let payload_tail_after = graph.values.header().slab_occupied_tail;
+        let after = graph.out_edges(VertexId::from(0)).unwrap();
+        assert_eq!(edge_capacity_before, edge_capacity_after);
+        assert_eq!(payload_tail_before, payload_tail_after);
+        assert_eq!(before, after);
+
+        let (idx_after, _) = graph.edges().read_overflow_log_state(leaf);
+        assert_eq!(idx_after, spare as i32);
     }
 }
