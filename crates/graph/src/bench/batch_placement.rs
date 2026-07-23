@@ -286,6 +286,18 @@ fn bench_clean_slab_directed_128_width_0() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
+fn bench_clean_slab_directed_128_width_0_with_locations() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_128_directed_edges(0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("clean_slab_directed_128_w0_with_locations");
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_locations(&input)
+            .expect("batch");
+        assert!(result.total_edge_slots().is_some());
+    })
+}
+
+#[bench(raw)]
 fn bench_scalar_directed_128_width_0() -> canbench_rs::BenchResult {
     let (store, label, input) = setup_128_directed_edges(0);
     canbench_rs::bench_fn(|| {
@@ -305,6 +317,18 @@ fn bench_clean_slab_directed_128_width_8() -> canbench_rs::BenchResult {
         let _scope = canbench_rs::bench_scope("clean_slab_directed_128_w8");
         let result = store
             .try_insert_batch_edges_clean_slab(&input)
+            .expect("batch");
+        assert!(result.total_edge_slots().is_some());
+    })
+}
+
+#[bench(raw)]
+fn bench_clean_slab_directed_128_width_8_with_locations() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_128_directed_edges(8);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("clean_slab_directed_128_w8_with_locations");
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_locations(&input)
             .expect("batch");
         assert!(result.total_edge_slots().is_some());
     })

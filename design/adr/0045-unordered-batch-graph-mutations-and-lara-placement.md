@@ -158,9 +158,10 @@ Implementation status as of 2026-07-23 07:12:03 UTC +0000:
   wire integration remain planned for later slices.
 - ADR 0048's persistent mate index is still planned. Plan 0129 implements only
   the internal returned-slot boundary: LARA owns exact physical locations and
-  GraphStore joins them by ordinal without a post-insert adjacency scan. The
-  current scalar facade still uses `EDGE_ALIASES` until the later mate-index
-  migration lands.
+  GraphStore joins them by ordinal without a post-insert adjacency scan. Plan
+  0130 makes location capture an explicit internal mode; the normal aggregate-
+  only path does not materialize locations. The current scalar facade still
+  uses `EDGE_ALIASES` until the later mate-index migration lands.
 
 ### 1. Add an explicit unordered batch mutation mode
 
@@ -612,7 +613,9 @@ count, log occupancy/debt, maintenance work, encoded bytes, and callback count.
 4. **Partially implemented.** Plans 0123–0128 provide bidirectional directed
    and two-forward-half undirected orchestration. Plan 0129 now returns exact
    internal slab/overflow-log edge and payload locations from LARA and joins
-   them by logical ordinal in GraphStore, including self-loop cardinality.
+   them by logical ordinal in GraphStore, including self-loop cardinality. Plan
+   0130 makes aggregate-only output the normal path and retains location
+   materialization as an explicit capture path.
    Persistent mate indexing and public result exposure remain planned.
 5. Add GraphStore edge insertion with initial inline values, properties, label
    deltas, and durable derived events.

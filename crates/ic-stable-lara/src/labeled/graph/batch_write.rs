@@ -1366,6 +1366,23 @@ where
     /// a canister message, such a panic traps and rolls back the entire message, so
     /// no partial canonical state is published.
     pub fn commit<M: Memory>(self, graph: &LabeledLaraGraph<E, M>) -> OneOrientationBatchResult {
+        self.commit_with_location_mode(graph, BatchLocationMode::AggregateOnly)
+    }
+
+    /// Commit while retaining exact physical locations for every edge.
+    pub fn commit_with_locations<M: Memory>(
+        self,
+        graph: &LabeledLaraGraph<E, M>,
+    ) -> OneOrientationBatchResult {
+        self.commit_with_location_mode(graph, BatchLocationMode::Capture)
+    }
+
+    /// Commit with explicit control over physical-location materialization.
+    pub fn commit_with_location_mode<M: Memory>(
+        self,
+        graph: &LabeledLaraGraph<E, M>,
+        location_mode: BatchLocationMode,
+    ) -> OneOrientationBatchResult {
         assert_eq!(
             self.plan.runs.len(),
             self.runs.len(),
@@ -1486,7 +1503,9 @@ where
         let mut edge_log_entries_written: u64 = 0;
         let mut payload_slots_written: u64 = 0;
         let mut payload_log_entries_written: u64 = 0;
-        let mut locations = Vec::with_capacity(self.plan.runs.iter().map(|r| r.edges.len()).sum());
+        let mut locations = location_mode
+            .captures()
+            .then(|| Vec::with_capacity(self.plan.runs.iter().map(|r| r.edges.len()).sum()));
         for (run, res) in self.plan.runs.iter().zip(self.runs.iter()) {
             match &res.destination {
                 RunDestination::Slab {
@@ -1506,26 +1525,32 @@ where
                         .expect("reserve guaranteed edge slab capacity");
 
                     let payload_width = u64::from(res.inline_value_width);
-                    locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
-                        OneOrientationBatchLocation {
-                            logical_ordinal: edge.logical_ordinal,
-                            owner_vertex_id: edge.owner_vertex_id,
-                            location: OneOrientationPhysicalLocation::Slab {
-                                edge_slot: edge_start_slot
-                                    .checked_add(offset as u64)
-                                    .expect("reserve guaranteed edge location"),
-                                payload_byte_offset: payload_byte_offset.as_ref().map(|start| {
-                                    start
-                                        .checked_add(
-                                            (offset as u64)
-                                                .checked_mul(payload_width)
-                                                .expect("reserve guaranteed payload location"),
-                                        )
-                                        .expect("reserve guaranteed payload location")
-                                }),
-                            },
-                        }
-                    }));
+                    if let Some(locations) = locations.as_mut() {
+                        locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
+                            OneOrientationBatchLocation {
+                                logical_ordinal: edge.logical_ordinal,
+                                owner_vertex_id: edge.owner_vertex_id,
+                                location: OneOrientationPhysicalLocation::Slab {
+                                    edge_slot: edge_start_slot
+                                        .checked_add(offset as u64)
+                                        .expect("reserve guaranteed edge location"),
+                                    payload_byte_offset: payload_byte_offset.as_ref().map(
+                                        |start| {
+                                            start
+                                                .checked_add(
+                                                    (offset as u64)
+                                                        .checked_mul(payload_width)
+                                                        .expect(
+                                                            "reserve guaranteed payload location",
+                                                        ),
+                                                )
+                                                .expect("reserve guaranteed payload location")
+                                        },
+                                    ),
+                                },
+                            }
+                        }));
+                    }
 
                     if res.inline_value_width > 0 {
                         let payload_offset = payload_byte_offset.expect(
@@ -1602,23 +1627,25 @@ where
                     } else {
                         None
                     };
-                    locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
-                        OneOrientationBatchLocation {
-                            logical_ordinal: edge.logical_ordinal,
-                            owner_vertex_id: edge.owner_vertex_id,
-                            location: OneOrientationPhysicalLocation::OverflowLog {
-                                leaf,
-                                edge_entry_idx: edge_log_start_idx
-                                    .checked_add(offset as u32)
-                                    .expect("reserve guaranteed edge log location"),
-                                payload_entry_idx: payload_start.map(|start| {
-                                    start
+                    if let Some(locations) = locations.as_mut() {
+                        locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
+                            OneOrientationBatchLocation {
+                                logical_ordinal: edge.logical_ordinal,
+                                owner_vertex_id: edge.owner_vertex_id,
+                                location: OneOrientationPhysicalLocation::OverflowLog {
+                                    leaf,
+                                    edge_entry_idx: edge_log_start_idx
                                         .checked_add(offset as u32)
-                                        .expect("reserve guaranteed payload log location")
-                                }),
-                            },
-                        }
-                    }));
+                                        .expect("reserve guaranteed edge log location"),
+                                    payload_entry_idx: payload_start.map(|start| {
+                                        start
+                                            .checked_add(offset as u32)
+                                            .expect("reserve guaranteed payload log location")
+                                    }),
+                                },
+                            }
+                        }));
+                    }
                     edge_log_entries_written = edge_log_entries_written
                         .checked_add(u64::from(res.edge_slot_count))
                         .expect("reserve guaranteed edge log slot count");
@@ -1682,8 +1709,11 @@ where
                             *payload_log_len,
                             *payload_byte_offset,
                             *payload_byte_count,
+                            location_mode,
                         );
-                    locations.extend(run_locations);
+                    if let Some(locations) = locations.as_mut() {
+                        locations.extend(run_locations);
+                    }
                     edge_slots_written = edge_slots_written
                         .checked_add(edge_written)
                         .expect("reserve guaranteed expanded edge slot count");
@@ -1855,6 +1885,7 @@ where
         payload_log_len: u32,
         payload_byte_offset: Option<u64>,
         payload_byte_count: u64,
+        location_mode: BatchLocationMode,
     ) -> (u64, u64, Vec<OneOrientationBatchLocation>) {
         let owner = res.bucket_fingerprint.owner_vertex_id;
         let vertex = graph.vertices.get(owner);
@@ -1931,29 +1962,32 @@ where
                 )
                 .expect("reserve guaranteed pending payload offset")
         });
-        let locations = run
-            .edges
-            .iter()
-            .enumerate()
-            .map(|(offset, edge)| OneOrientationBatchLocation {
-                logical_ordinal: edge.logical_ordinal,
-                owner_vertex_id: edge.owner_vertex_id,
-                location: OneOrientationPhysicalLocation::Slab {
-                    edge_slot: pending_start
-                        .checked_add(offset as u64)
-                        .expect("reserve guaranteed edge location"),
-                    payload_byte_offset: pending_payload_start.map(|start| {
-                        start
-                            .checked_add(
-                                (offset as u64)
-                                    .checked_mul(payload_width)
-                                    .expect("reserve guaranteed payload location"),
-                            )
-                            .expect("reserve guaranteed payload location")
-                    }),
-                },
-            })
-            .collect::<Vec<_>>();
+        let locations = if location_mode.captures() {
+            run.edges
+                .iter()
+                .enumerate()
+                .map(|(offset, edge)| OneOrientationBatchLocation {
+                    logical_ordinal: edge.logical_ordinal,
+                    owner_vertex_id: edge.owner_vertex_id,
+                    location: OneOrientationPhysicalLocation::Slab {
+                        edge_slot: pending_start
+                            .checked_add(offset as u64)
+                            .expect("reserve guaranteed edge location"),
+                        payload_byte_offset: pending_payload_start.map(|start| {
+                            start
+                                .checked_add(
+                                    (offset as u64)
+                                        .checked_mul(payload_width)
+                                        .expect("reserve guaranteed payload location"),
+                                )
+                                .expect("reserve guaranteed payload location")
+                        }),
+                    },
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
 
         // Update bucket edge metadata: stored_slots now covers prefix + folded log + pending.
         let updated_stored = existing_bucket_slots
@@ -2128,8 +2162,25 @@ pub struct OneOrientationBatchResult {
     pub payload_slots_written: u32,
     /// Number of payload overflow-log entries written.
     pub payload_log_entries_written: u32,
-    /// Exact physical location for every edge in the committed plan.
-    pub locations: Vec<OneOrientationBatchLocation>,
+    /// Exact physical locations when capture was requested. Aggregate-only
+    /// commits leave this as `None` and do not allocate a location vector.
+    pub locations: Option<Vec<OneOrientationBatchLocation>>,
+}
+
+/// Controls whether a batch commit materializes exact physical locations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchLocationMode {
+    /// Return aggregate counters only; no location vector is allocated.
+    AggregateOnly,
+    /// Return one exact physical location for every committed edge.
+    Capture,
+}
+
+impl BatchLocationMode {
+    /// Return whether this mode requests exact physical locations.
+    pub fn captures(self) -> bool {
+        matches!(self, Self::Capture)
+    }
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -2148,6 +2199,15 @@ where
     ) -> Result<OneOrientationBatchResult, OneOrientationBatchError> {
         let reservation = self.reserve_one_orientation_batch(plan)?;
         Ok(reservation.commit::<M>(self))
+    }
+
+    /// Convenience variant that returns exact physical locations.
+    pub fn insert_one_orientation_batch_with_locations(
+        &self,
+        plan: &OneOrientationBatchPlan<E>,
+    ) -> Result<OneOrientationBatchResult, OneOrientationBatchError> {
+        let reservation = self.reserve_one_orientation_batch(plan)?;
+        Ok(reservation.commit_with_locations::<M>(self))
     }
 }
 

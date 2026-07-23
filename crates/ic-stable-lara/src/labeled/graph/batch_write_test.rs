@@ -490,6 +490,7 @@ mod tests {
         let result = graph.insert_one_orientation_batch(&plan).unwrap();
         assert_eq!(result.edge_slots_written, 1);
         assert_eq!(result.payload_slots_written, 0);
+        assert!(result.locations.is_none());
 
         let _buckets = graph
             .read_vertex_label_buckets(&graph.vertices.get(VertexId::from(0)))
@@ -1636,7 +1637,7 @@ mod tests {
         let reservation = graph
             .reserve_one_orientation_batch(&plan)
             .expect("payload expanded-slab batch should reserve after rollback");
-        let result = reservation.commit(&graph);
+        let result = reservation.commit_with_locations(&graph);
         assert_eq!(result.edge_log_entries_written, 0);
         assert_eq!(result.payload_log_entries_written, 0);
         assert_eq!(
@@ -1644,7 +1645,11 @@ mod tests {
             (payload_log_capacity + 1) as u32
         );
         assert!(matches!(
-            result.locations.as_slice(),
+            result
+                .locations
+                .as_ref()
+                .expect("capture mode returns locations")
+                .as_slice(),
             [OneOrientationBatchLocation {
                 location: OneOrientationPhysicalLocation::Slab {
                     payload_byte_offset: Some(_),

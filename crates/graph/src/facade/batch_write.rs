@@ -9,8 +9,9 @@
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::batch_write::{
-    BatchReservation, OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchPlan,
-    OneOrientationBatchResult, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+    BatchLocationMode, BatchReservation, OneOrientationBatchEdge, OneOrientationBatchError,
+    OneOrientationBatchPlan, OneOrientationBatchResult, OneOrientationBucketRun,
+    OneOrientationPhysicalLocation,
 };
 use ic_stable_lara::{CsrEdge, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
@@ -38,7 +39,7 @@ pub(crate) enum BatchEdgeInsertResult {
         /// Aggregate payload slab slots written across all orientations.
         payload_slots_written: u64,
         /// Paired physical locations keyed by the logical input ordinal.
-        locations: Vec<BatchEdgePhysicalLocation>,
+        locations: Option<Vec<BatchEdgePhysicalLocation>>,
         /// True when at least one orientation used pending-aware leaf expansion.
         used_expansion: bool,
     },
@@ -177,6 +178,26 @@ impl GraphStore {
         &self,
         edges: &[super::batch_placement::BatchEdgeInput],
     ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
+        self.try_insert_batch_edges_clean_slab_with_mode(edges, BatchLocationMode::AggregateOnly)
+    }
+
+    /// Attempt the same batch write while retaining exact physical locations.
+    ///
+    /// This is reserved for the future mate-index path. Ordinary batch writes
+    /// should use [`Self::try_insert_batch_edges_clean_slab`] so they do not pay
+    /// location materialization or ordinal join costs.
+    pub(crate) fn try_insert_batch_edges_clean_slab_with_locations(
+        &self,
+        edges: &[super::batch_placement::BatchEdgeInput],
+    ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
+        self.try_insert_batch_edges_clean_slab_with_mode(edges, BatchLocationMode::Capture)
+    }
+
+    fn try_insert_batch_edges_clean_slab_with_mode(
+        &self,
+        edges: &[super::batch_placement::BatchEdgeInput],
+        location_mode: BatchLocationMode,
+    ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
         if edges.is_empty() {
             return Ok(BatchEdgeInsertResult::Unsupported {
                 reason: "empty batch is not admitted to the clean-slab path".into(),
@@ -214,7 +235,7 @@ impl GraphStore {
                     LabeledOrientation::Forward => graph.forward(),
                     LabeledOrientation::Reverse => graph.reverse(),
                 };
-                reservation.commit(labeled)
+                reservation.commit_with_location_mode(labeled, location_mode)
             });
             results.push((orientation, result));
         }
@@ -227,8 +248,10 @@ impl GraphStore {
             .iter()
             .map(|(_, result)| u64::from(result.payload_slots_written))
             .sum();
-        let locations = join_physical_locations(edges, &intents, &results)
-            .expect("committed batch must publish one complete location per intent");
+        let locations = location_mode.captures().then(|| {
+            join_physical_locations(edges, &intents, &results)
+                .expect("committed batch must publish one complete location per intent")
+        });
 
         Ok(BatchEdgeInsertResult::Committed {
             edge_slots_written,
@@ -366,7 +389,11 @@ fn join_physical_locations(
     }
     let mut by_key = RapidHashMap::with_capacity(intents.len());
     for (orientation, result) in results {
-        for location in &result.locations {
+        for location in result
+            .locations
+            .as_ref()
+            .expect("location join requires capture mode")
+        {
             let role = intent_by_key
                 .get(&(
                     location.logical_ordinal,
@@ -558,14 +585,14 @@ mod tests {
 
         let edges = vec![input(source, target, Some(label), true, payload.clone())];
         let result = store
-            .try_insert_batch_edges_clean_slab(&edges)
+            .try_insert_batch_edges_clean_slab_with_locations(&edges)
             .expect("plan/encode ok");
         let locations = match &result {
             BatchEdgeInsertResult::Committed { locations, .. } => locations,
             other => panic!("expected committed batch, got {other:?}"),
         };
         assert!(matches!(
-            locations.as_slice(),
+            locations.as_ref().expect("capture locations").as_slice(),
             [BatchEdgePhysicalLocation::Directed {
                 forward: OneOrientationPhysicalLocation::Slab {
                     payload_byte_offset: Some(_),
@@ -612,14 +639,14 @@ mod tests {
 
         let edges = vec![input(a, b, Some(label), false, payload.clone())];
         let result = store
-            .try_insert_batch_edges_clean_slab(&edges)
+            .try_insert_batch_edges_clean_slab_with_locations(&edges)
             .expect("plan/encode ok");
         assert!(matches!(
             &result,
             BatchEdgeInsertResult::Committed {
                 locations,
                 ..
-            } if matches!(locations.as_slice(), [BatchEdgePhysicalLocation::Undirected { .. }])
+            } if matches!(locations.as_ref().expect("capture locations").as_slice(), [BatchEdgePhysicalLocation::Undirected { .. }])
         ));
         assert_eq!(result.total_edge_slots(), Some(2));
         assert_eq!(result.total_payload_slots(), Some(2));
@@ -658,14 +685,14 @@ mod tests {
 
         let edges = vec![input(a, a, Some(label), false, payload.clone())];
         let result = store
-            .try_insert_batch_edges_clean_slab(&edges)
+            .try_insert_batch_edges_clean_slab_with_locations(&edges)
             .expect("plan/encode ok");
         assert!(matches!(
             &result,
             BatchEdgeInsertResult::Committed {
                 locations,
                 ..
-            } if matches!(locations.as_slice(), [BatchEdgePhysicalLocation::UndirectedSelfLoop { .. }])
+            } if matches!(locations.as_ref().expect("capture locations").as_slice(), [BatchEdgePhysicalLocation::UndirectedSelfLoop { .. }])
         ));
         assert_eq!(result.total_edge_slots(), Some(1));
         assert_eq!(result.total_payload_slots(), Some(1));
@@ -704,6 +731,13 @@ mod tests {
             .try_insert_batch_edges_clean_slab(&edges)
             .expect("plan/encode ok");
         assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
+        assert!(matches!(
+            &result,
+            BatchEdgeInsertResult::Committed {
+                locations: None,
+                ..
+            }
+        ));
         assert_eq!(result.total_edge_slots(), Some(4));
         assert_eq!(result.total_payload_slots(), Some(0));
         assert!(!result.used_expansion());
@@ -1056,7 +1090,7 @@ mod tests {
 
         let edges = vec![input(source, target, Some(label), true, vec![])];
         let result = store
-            .try_insert_batch_edges_clean_slab(&edges)
+            .try_insert_batch_edges_clean_slab_with_locations(&edges)
             .expect("plan/encode ok");
         assert!(
             matches!(
@@ -1064,7 +1098,7 @@ mod tests {
                 BatchEdgeInsertResult::Committed {
                     locations,
                     ..
-                } if locations.iter().all(|location| match location {
+                } if locations.as_ref().expect("capture locations").iter().all(|location| match location {
                     BatchEdgePhysicalLocation::Directed { forward, reverse, .. } => {
                         matches!(forward, OneOrientationPhysicalLocation::OverflowLog { .. })
                             && matches!(reverse, OneOrientationPhysicalLocation::OverflowLog { .. })
@@ -1116,7 +1150,7 @@ mod tests {
             edge_log_entries_written: 0,
             payload_slots_written: 0,
             payload_log_entries_written: 0,
-            locations: vec![location],
+            locations: Some(vec![location]),
         };
         assert!(matches!(
             join_physical_locations(
@@ -1136,7 +1170,7 @@ mod tests {
                 &[(
                     LabeledOrientation::Forward,
                     OneOrientationBatchResult {
-                        locations: vec![location, location],
+                        locations: Some(vec![location, location]),
                         ..result
                     }
                 )],

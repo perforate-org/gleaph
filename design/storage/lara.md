@@ -172,7 +172,8 @@ than enlarging `LabelBucket`, `LabeledVertex`, `SegmentEdgeCounts`, or
 mate-specific instance of the existing `FreeSpanStore` implementation; edge,
 payload, and mate free ranges are never mixed.
 
-Insertion returns exact physical locations by logical ordinal. Slot-preserving
+Location capture returns exact physical locations by logical ordinal only when explicitly requested;
+aggregate-only insertion does not materialize them. Slot-preserving
 rebalance requires no mate repair. Slot-renumbering compaction rebuilds affected
 sampled/packed leaf blobs at the LARA boundary that publishes slot moves. This contract
 is accepted but not yet implemented; the current Graph facade still uses

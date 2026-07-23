@@ -134,8 +134,10 @@ logical-ordinal plan before publishing it.
 
 ### 3. Return exact slots from insertion
 
-Plan 0129 implements the internal batch path's physical-location return for every logical ordinal;
-scalar return integration and persistent mate-index consumption remain planned.
+Plan 0129 implements the internal batch path's physical-location return for every logical ordinal.
+Plan 0130 makes that return opt-in: ordinary batch writes use aggregate-only results, while
+capture mode remains available for the future mate-index consumer. Scalar return integration and
+persistent mate-index consumption remain planned.
 GraphStore must not scan for the most recently matching neighbor or payload after insertion.
 
 The internal result distinguishes one-entry and two-entry cases:
