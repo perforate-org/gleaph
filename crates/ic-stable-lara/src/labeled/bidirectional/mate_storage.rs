@@ -21,6 +21,13 @@ const LOCATOR_MAX_VALUE: u64 = (1 << 40) - 1;
 
 const WASM_PAGE_BYTES: u64 = 65_536;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MateLocatorState {
+    ScanOnly,
+    Rebuilding,
+    Published { blob_offset: u64 },
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum MateStorageInitError {
     PartialLayout,
@@ -153,16 +160,30 @@ impl<M: Memory> MateLocatorStore<M> {
             .ok_or(MateStorageInitError::RowOutOfRange)
     }
 
-    fn get(&self, row: u64) -> Result<Option<u64>, MateStorageInitError> {
+    fn get_state(&self, row: u64) -> Result<MateLocatorState, MateStorageInitError> {
         let offset = self.row_offset(row)?;
         let mut bytes = [0u8; LOCATOR_ROW_BYTES as usize];
         self.memory.read(offset, &mut bytes);
         let value = u64::from_be_bytes([0, 0, 0, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]]);
         Ok(match value {
-            0 => None,
-            1 => None,
-            encoded => Some(encoded - 2),
+            0 => MateLocatorState::ScanOnly,
+            1 => MateLocatorState::Rebuilding,
+            encoded => MateLocatorState::Published {
+                blob_offset: encoded - 2,
+            },
         })
+    }
+
+    fn get(&self, row: u64) -> Result<Option<u64>, MateStorageInitError> {
+        Ok(match self.get_state(row)? {
+            MateLocatorState::Published { blob_offset } => Some(blob_offset),
+            MateLocatorState::ScanOnly | MateLocatorState::Rebuilding => None,
+        })
+    }
+
+    fn publish_rebuilding(&self, row: u64) -> Result<(), MateStorageInitError> {
+        let offset = self.row_offset(row)?;
+        safe_write(&self.memory, offset, &[0, 0, 0, 0, 1]).map_err(MateStorageInitError::Grow)
     }
 
     fn publish(&self, row: u64, blob_offset: u64) -> Result<(), MateStorageInitError> {
@@ -350,7 +371,9 @@ pub(crate) struct MateStorage<M: Memory> {
 impl<M: Memory> MateStorage<M> {
     fn validate_references(&self) -> Result<(), MateStorageInitError> {
         for row in 0..self.locators.row_count {
-            if let Some(start) = self.locators.get(row)? {
+            if let MateLocatorState::Published { blob_offset: start } =
+                self.locators.get_state(row)?
+            {
                 let bytes = self.blobs.read(start)?;
                 MateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
             }
@@ -425,6 +448,14 @@ impl<M: Memory> MateStorage<M> {
         self.locators.get(row)
     }
 
+    pub(crate) fn locator_state(&self, row: u64) -> Result<MateLocatorState, MateStorageInitError> {
+        self.locators.get_state(row)
+    }
+
+    pub(crate) fn mark_rebuilding(&self, row: u64) -> Result<(), MateStorageInitError> {
+        self.locators.publish_rebuilding(row)
+    }
+
     pub(crate) fn into_memories(self) -> (M, M, M, M) {
         let (free_spans, free_span_by_start) = self.free_spans.into_memories();
         (
@@ -495,6 +526,29 @@ mod tests {
         let reopened = MateStorage::init(memories.0, memories.1, memories.2, memories.3, 4)
             .expect("reopen storage");
         assert!(reopened.locator(0).expect("locator").is_some());
+    }
+
+    #[test]
+    fn locator_tagged_states_round_trip_and_rebuilding_skips_blob_reads() {
+        let [locator, blobs, free_spans, free_span_by_start] = memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        assert_eq!(
+            storage.locator_state(0).expect("state"),
+            MateLocatorState::ScanOnly
+        );
+        storage.mark_rebuilding(0).expect("rebuilding");
+        assert_eq!(
+            storage.locator_state(0).expect("state"),
+            MateLocatorState::Rebuilding
+        );
+        let memories = storage.into_memories();
+        let reopened = MateStorage::init(memories.0, memories.1, memories.2, memories.3, 4)
+            .expect("reopen rebuilding storage");
+        assert_eq!(
+            reopened.locator_state(0).expect("state"),
+            MateLocatorState::Rebuilding
+        );
     }
 
     #[test]
