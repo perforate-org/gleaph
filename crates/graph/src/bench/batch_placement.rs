@@ -5,7 +5,7 @@
 //! remain zero. Setup (vertex creation, edge seeding, and input vector
 //! construction) is outside the measured closure.
 
-use crate::facade::{BatchEdgeInput, GraphStore, stable_memory_stats};
+use crate::facade::{BatchEdgeInput, GraphStore};
 use canbench_rs::bench;
 use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile, EdgeLabelId};
 use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
@@ -395,36 +395,5 @@ fn bench_edge_mate_post_insert_rediscovery() -> canbench_rs::BenchResult {
                 .find_reverse_alias_for_canonical(handle, target, source)
                 .expect("reverse rediscovery"),
         );
-    })
-}
-
-fn run_edge_footprint_fixture(edge_count: usize) {
-    let store = GraphStore::new();
-    let source = store.insert_vertex().expect("source");
-    let targets: Vec<_> = (0..edge_count)
-        .map(|_| store.insert_vertex().expect("target"))
-        .collect();
-    let label = label_id("BenchEdgeAliasFootprint");
-    for target in targets {
-        store
-            .insert_directed_edge(source, target, Some(label))
-            .expect("edge");
-    }
-    black_box(stable_memory_stats().logical_total_bytes);
-}
-
-#[bench(raw)]
-fn bench_edge_alias_footprint_128_edges() -> canbench_rs::BenchResult {
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("edge_alias_footprint_128_edges");
-        run_edge_footprint_fixture(128);
-    })
-}
-
-#[bench(raw)]
-fn bench_edge_alias_footprint_1024_edges() -> canbench_rs::BenchResult {
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("edge_alias_footprint_1024_edges");
-        run_edge_footprint_fixture(1024);
     })
 }
