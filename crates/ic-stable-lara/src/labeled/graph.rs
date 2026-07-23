@@ -67,6 +67,7 @@ mod values;
 
 pub use bucket::{LabelBucketPlacementInfo, LeafBucketPlacementStats};
 pub use error::{InitError, LabeledOperationError, OutEdgeOrder};
+pub use insert::{ScalarInsertLocation, ScalarInsertStorage};
 pub use iter::LabeledOutEdgesIter;
 pub use iter::LabeledSpanIter;
 pub use iter::{

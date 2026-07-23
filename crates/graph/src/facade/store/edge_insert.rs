@@ -74,7 +74,7 @@ impl GraphStore {
         } else {
             build_edge_to_with_inline_value_bytes(source_vertex_id, inline_value_bytes)
         };
-        self.with_graph_mut(|graph| {
+        let locations = self.with_graph_mut(|graph| {
             if inline_value_width != 0 {
                 graph.ensure_directed_edge_inline_value_width(
                     source_vertex_id,
@@ -83,25 +83,39 @@ impl GraphStore {
                     inline_value_width,
                 )?;
             }
-            graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)
+            graph.insert_directed_edge_with_locations(
+                source_vertex_id,
+                target_vertex_id,
+                label,
+                forward,
+                reverse,
+            )
         })?;
-        let canonical = self
-            .find_first_forward_handle_descending(source_vertex_id, label, |edge| {
+        let canonical = if let Some(location) = locations.forward {
+            EdgeHandle::at_slot(source_vertex_id, label, location.logical_slot)
+        } else {
+            self.find_first_forward_handle_descending(source_vertex_id, label, |edge| {
                 edge_matches_local_neighbor(edge, target_vertex_id, inline_value_bytes)
             })?
             .ok_or(GraphStoreError::EdgeNotFound {
                 owner_vertex_id: source_vertex_id,
                 label_id: label,
                 slot_index: u32::MAX,
-            })?;
-        self.commit_directed_edge_insert(EdgeInsertSpec {
-            source_vertex_id,
-            target_vertex_id,
-            catalog_label,
-            undirected: false,
-            inline_value_bytes,
-            canonical,
-        })?;
+            })?
+        };
+        self.commit_directed_edge_insert(
+            EdgeInsertSpec {
+                source_vertex_id,
+                target_vertex_id,
+                catalog_label,
+                undirected: false,
+                inline_value_bytes,
+                canonical,
+            },
+            locations.reverse.map(|location| {
+                EdgeHandle::at_slot(target_vertex_id, label, location.logical_slot)
+            }),
+        )?;
         Ok(canonical)
     }
 
@@ -135,7 +149,7 @@ impl GraphStore {
         let inline_value_width = Self::edge_inline_value_width_u16(inline_value_bytes)?;
         let edge_ab = build_edge_to_with_inline_value_bytes(endpoint_b, inline_value_bytes);
         let edge_ba = build_edge_to_with_inline_value_bytes(endpoint_a, inline_value_bytes);
-        self.with_graph_mut(|graph| {
+        let locations = self.with_graph_mut(|graph| {
             if inline_value_width != 0 {
                 graph.ensure_undirected_edge_inline_value_width(
                     endpoint_a,
@@ -144,7 +158,9 @@ impl GraphStore {
                     inline_value_width,
                 )?;
             }
-            graph.insert_undirected_deferred(endpoint_a, endpoint_b, label, edge_ab, edge_ba)
+            graph.insert_undirected_deferred_with_locations(
+                endpoint_a, endpoint_b, label, edge_ab, edge_ba,
+            )
         })?;
         let owner_vertex_id = canonical_undirected_owner(endpoint_a, endpoint_b);
         let target = if owner_vertex_id == endpoint_a {
@@ -152,22 +168,44 @@ impl GraphStore {
         } else {
             endpoint_a
         };
-        let canonical = self
-            .find_first_forward_handle_descending(owner_vertex_id, label, |edge| {
+        let canonical_location = if owner_vertex_id == endpoint_a {
+            locations.forward
+        } else {
+            locations.reverse
+        };
+        let canonical = if let Some(location) = canonical_location {
+            EdgeHandle::at_slot(owner_vertex_id, label, location.logical_slot)
+        } else {
+            self.find_first_forward_handle_descending(owner_vertex_id, label, |edge| {
                 edge_matches_local_neighbor(edge, target, inline_value_bytes)
             })?
             .ok_or(GraphStoreError::EdgeNotFound {
                 owner_vertex_id,
                 label_id: label,
                 slot_index: u32::MAX,
-            })?;
+            })?
+        };
         let alias_vertex_id = if owner_vertex_id == endpoint_a {
             endpoint_b
         } else {
             endpoint_a
         };
-        let alias = self
-            .find_first_forward_handle_descending(alias_vertex_id, label, |edge| {
+        let alias_location = if alias_vertex_id == endpoint_a {
+            locations.forward
+        } else {
+            locations.reverse
+        };
+        let alias = if let Some(location) = alias_location {
+            Some(EdgeInsertSpec {
+                source_vertex_id: alias_vertex_id,
+                target_vertex_id: owner_vertex_id,
+                catalog_label,
+                undirected: true,
+                inline_value_bytes,
+                canonical: EdgeHandle::at_slot(alias_vertex_id, label, location.logical_slot),
+            })
+        } else {
+            self.find_first_forward_handle_descending(alias_vertex_id, label, |edge| {
                 if inline_value_bytes.is_empty() {
                     edge.neighbor_vid() == owner_vertex_id
                 } else {
@@ -181,7 +219,8 @@ impl GraphStore {
                 undirected: true,
                 inline_value_bytes,
                 canonical: alias_handle,
-            });
+            })
+        };
         self.commit_undirected_edge_insert(
             EdgeInsertSpec {
                 source_vertex_id: owner_vertex_id,

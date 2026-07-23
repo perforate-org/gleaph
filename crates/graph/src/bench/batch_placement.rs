@@ -8,7 +8,7 @@
 use crate::facade::{BatchEdgeInput, GraphStore};
 use canbench_rs::bench;
 use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile, EdgeLabelId};
-use ic_stable_lara::VertexId;
+use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
 use std::hint::black_box;
 
 const LABEL_NAMES: [&str; 4] = [
@@ -349,5 +349,51 @@ fn bench_scalar_directed_128_width_8() -> canbench_rs::BenchResult {
                 )
                 .expect("scalar insert");
         }
+    })
+}
+
+fn setup_mate_lookup_fixture() -> (GraphStore, crate::facade::EdgeHandle, VertexId, VertexId) {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label = label_id("BenchScanOnlyMate");
+    let handle = store
+        .insert_directed_edge(source, target, Some(label))
+        .expect("edge");
+    (store, handle, source, target)
+}
+
+#[bench(raw)]
+fn bench_edge_mate_alias_lookup() -> canbench_rs::BenchResult {
+    let (store, handle, _source, _target) = setup_mate_lookup_fixture();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("edge_mate_alias_lookup");
+        black_box(store.canonical_edge_handle(handle));
+    })
+}
+
+#[bench(raw)]
+fn bench_edge_mate_scan_only_rank_lookup() -> canbench_rs::BenchResult {
+    let (store, handle, _source, _target) = setup_mate_lookup_fixture();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("edge_mate_scan_only_rank_lookup");
+        black_box(
+            store
+                .scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward)
+                .expect("scan-only canonical handle"),
+        );
+    })
+}
+
+#[bench(raw)]
+fn bench_edge_mate_post_insert_rediscovery() -> canbench_rs::BenchResult {
+    let (store, handle, source, target) = setup_mate_lookup_fixture();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("edge_mate_post_insert_rediscovery");
+        black_box(
+            store
+                .find_reverse_alias_for_canonical(handle, target, source)
+                .expect("reverse rediscovery"),
+        );
     })
 }

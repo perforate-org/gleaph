@@ -12,7 +12,7 @@ pub(crate) enum DeleteTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InsertLocation {
     Slab(u32),
-    Log,
+    Log { log_index: u32, logical_slot: u32 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +38,13 @@ impl From<EdgeHeaderV1> for EdgeLayout {
 
 impl InsertLocation {
     pub(crate) fn inserted_into_log(self) -> bool {
-        matches!(self, Self::Log)
+        matches!(self, Self::Log { .. })
+    }
+
+    pub(crate) fn logical_slot(self) -> u32 {
+        match self {
+            Self::Slab(slot) => slot,
+            Self::Log { logical_slot, .. } => logical_slot,
+        }
     }
 }

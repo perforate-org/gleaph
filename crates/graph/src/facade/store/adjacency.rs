@@ -22,12 +22,18 @@ impl GraphStore {
     pub(super) fn commit_directed_edge_insert(
         &self,
         spec: EdgeInsertSpec<'_>,
+        exact_alias: Option<EdgeHandle>,
     ) -> Result<(), GraphStoreError> {
-        if let Some(alias) = self.find_reverse_alias_for_canonical(
-            spec.canonical,
-            spec.target_vertex_id,
-            spec.source_vertex_id,
-        )? {
+        let alias = if let Some(alias) = exact_alias {
+            Some(alias)
+        } else {
+            self.find_reverse_alias_for_canonical(
+                spec.canonical,
+                spec.target_vertex_id,
+                spec.source_vertex_id,
+            )?
+        };
+        if let Some(alias) = alias {
             self.insert_edge_alias(alias, spec.canonical, true);
         }
         self.journal_and_maintain_edge_insert(spec)

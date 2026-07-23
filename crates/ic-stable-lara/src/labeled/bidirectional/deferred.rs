@@ -12,7 +12,7 @@ use crate::{
         graph::batch_write::BatchReservation,
         graph::{
             EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph, LabeledOperationError,
-            OutEdgeOrder,
+            OutEdgeOrder, ScalarInsertLocation,
         },
     },
     lara::maintenance::{
@@ -36,6 +36,15 @@ pub struct BidirectionalMaintenanceReport {
     pub instructions_used: u64,
     /// Whether [`MaintenanceBudget::max_instructions`] stopped the run early.
     pub instruction_budget_exhausted: bool,
+}
+
+/// Exact scalar insertion locations for the two directed orientations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScalarInsertPair {
+    /// Location in the forward/source row.
+    pub forward: Option<ScalarInsertLocation>,
+    /// Location in the reverse/target row.
+    pub reverse: Option<ScalarInsertLocation>,
 }
 
 /// Observer for edge slot relocations produced by labeled row compaction.
@@ -1115,6 +1124,19 @@ where
         forward_edge: E,
         reverse_edge: E,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.insert_directed_edge_with_locations(src, dst, label_id, forward_edge, reverse_edge)
+            .map(|_| ())
+    }
+
+    /// Inserts one directed edge and returns the exact locations captured by both writes.
+    pub fn insert_directed_edge_with_locations(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        forward_edge: E,
+        reverse_edge: E,
+    ) -> Result<ScalarInsertPair, DeferredBidirectionalLabeledError> {
         // Storage-owned capacity preparation: before any canonical edge write, make
         // sure both orientations have room for a new label bucket.  This keeps
         // ordinary writes writable when deferred leaf maintenance has not yet drained.
@@ -1134,11 +1156,21 @@ where
                 .reverse
                 .payload_compaction_needed(u64::from(reverse_edge.edge_inline_value_byte_width()))
                 .map_err(DeferredBidirectionalLabeledError::Reverse)?;
-        self.forward
-            .insert_edge_skip_leaf_cascade_deferred_payload(src, label_id, forward_edge)
+        let forward_location = self
+            .forward
+            .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+                src,
+                label_id,
+                forward_edge,
+            )
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        self.reverse
-            .insert_edge_skip_leaf_cascade_deferred_payload(dst, label_id, reverse_edge)
+        let reverse_location = self
+            .reverse
+            .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+                dst,
+                label_id,
+                reverse_edge,
+            )
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         if forward_payload_compaction_needed {
             self.mark_compact_payload_slab(Orientation::Forward)?;
@@ -1152,7 +1184,10 @@ where
         if self.reverse.labeled_leaf_segment_is_dense(dst) {
             self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Reverse, dst)?;
         }
-        Ok(())
+        Ok(ScalarInsertPair {
+            forward: forward_location,
+            reverse: reverse_location,
+        })
     }
 
     /// Visits forward outgoing edges for one label without materializing the bucket row.
@@ -2660,6 +2695,19 @@ where
         edge_uv: E,
         edge_vu: E,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.insert_undirected_deferred_with_locations(u, v, label_id, edge_uv, edge_vu)
+            .map(|_| ())
+    }
+
+    /// Inserts both undirected endpoint rows and returns their exact locations.
+    pub fn insert_undirected_deferred_with_locations(
+        &self,
+        u: VertexId,
+        v: VertexId,
+        label_id: BucketLabelKey,
+        edge_uv: E,
+        edge_vu: E,
+    ) -> Result<ScalarInsertPair, DeferredBidirectionalLabeledError> {
         debug_assert!(
             label_id.is_undirected(),
             "insert_undirected_deferred requires an undirected bucket label"
@@ -2682,14 +2730,21 @@ where
                 .forward
                 .payload_compaction_needed(u64::from(edge_vu.edge_inline_value_byte_width()))
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        self.forward
-            .insert_edge_skip_leaf_cascade_deferred_payload(u, label_id, edge_uv)
+        let forward_location = self
+            .forward
+            .insert_edge_skip_leaf_cascade_deferred_payload_with_location(u, label_id, edge_uv)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        if u != v {
-            self.forward
-                .insert_edge_skip_leaf_cascade_deferred_payload(v, label_id, edge_vu)
-                .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        }
+        let reverse_location = if u != v {
+            Some(
+                self.forward
+                    .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+                        v, label_id, edge_vu,
+                    )
+                    .map_err(DeferredBidirectionalLabeledError::Forward)?,
+            )
+        } else {
+            None
+        };
         if u_payload_compaction_needed || (u != v && v_payload_compaction_needed) {
             self.mark_compact_payload_slab(Orientation::Forward)?;
         }
@@ -2699,7 +2754,10 @@ where
         if u != v && self.forward.labeled_leaf_segment_is_dense(v) {
             self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, v)?;
         }
-        Ok(())
+        Ok(ScalarInsertPair {
+            forward: forward_location,
+            reverse: reverse_location.flatten(),
+        })
     }
 
     /// Visits undirected outgoing edges at `vertex_id` (forward store, undirected buckets only).
@@ -2779,6 +2837,7 @@ where
 mod tests {
     use super::*;
     use crate::{
+        labeled::PhysicalEdgeRef,
         test_support::{labeled_lara_memories, vector_memory},
         traits::{CsrEdge, CsrEdgeTombstone},
     };
@@ -4426,5 +4485,216 @@ mod tests {
             graph.in_edges_for_label(target_dst, road).unwrap().len(),
             100
         );
+    }
+
+    #[test]
+    fn scan_only_mate_resolves_parallel_directed_edges_and_canonical_handle() {
+        let graph = valued_bidirectional_graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(7);
+        graph
+            .ensure_directed_edge_inline_value_width(source, target, label, 1)
+            .unwrap();
+        for value in 1..=3u8 {
+            graph
+                .insert_directed_edge(
+                    source,
+                    target,
+                    label,
+                    PayloadTestEdge::with_bytes(u32::from(target), &[value]),
+                    PayloadTestEdge::with_bytes(u32::from(source), &[value]),
+                )
+                .unwrap();
+        }
+        graph.forward().compact_vertex_edge_span(source, 0).unwrap();
+        graph.reverse().compact_vertex_edge_span(target, 0).unwrap();
+        let mut source_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .unwrap();
+        let source_slot = source_slots[1];
+        let source_ref = PhysicalEdgeRef {
+            orientation: Orientation::Forward,
+            owner_vertex_id: source,
+            label_id: label,
+            slot_index: source_slot,
+        };
+        let mate = graph.mate_of(source_ref).unwrap();
+        assert_eq!(mate.orientation, Orientation::Reverse);
+        assert_eq!(mate.owner_vertex_id, target);
+        assert_eq!(graph.canonical_handle(mate).unwrap(), source_ref);
+    }
+
+    #[test]
+    fn scalar_insert_returns_exact_forward_and_reverse_locations() {
+        let graph = graph();
+        graph.push_vertex().unwrap();
+        graph.push_vertex().unwrap();
+        let label = BucketLabelKey::directed_from_index(11);
+        let locations = graph
+            .insert_directed_edge_with_locations(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        let forward = locations.forward.expect("named forward bucket location");
+        let reverse = locations.reverse.expect("named reverse bucket location");
+        let mut forward_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(VertexId::from(0), label, |slot, edge| {
+                forward_slots.push((slot, edge.neighbor_vid()));
+            })
+            .unwrap();
+        let mut reverse_slots = Vec::new();
+        graph
+            .reverse()
+            .for_each_live_edge_slot_for_label(VertexId::from(1), label, |slot, edge| {
+                reverse_slots.push((slot, edge.neighbor_vid()));
+            })
+            .unwrap();
+        assert_eq!(
+            forward_slots,
+            vec![(forward.logical_slot, VertexId::from(1))]
+        );
+        assert_eq!(
+            reverse_slots,
+            vec![(reverse.logical_slot, VertexId::from(0))]
+        );
+    }
+
+    #[test]
+    fn scalar_undirected_location_pair_preserves_owner_and_self_loop_shape() {
+        let graph = graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::undirected_from_index(12);
+        let pair = graph
+            .insert_undirected_deferred_with_locations(
+                VertexId::from(0),
+                VertexId::from(2),
+                label,
+                TestEdge(2),
+                TestEdge(0),
+            )
+            .unwrap();
+        assert!(pair.forward.is_some());
+        assert!(pair.reverse.is_some());
+
+        let self_pair = graph
+            .insert_undirected_deferred_with_locations(
+                VertexId::from(1),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(1),
+            )
+            .unwrap();
+        assert!(self_pair.forward.is_some());
+        assert!(self_pair.reverse.is_none());
+    }
+
+    #[test]
+    fn scan_only_mate_resolves_undirected_pairs_and_self_loops() {
+        let graph = graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let low = VertexId::from(0);
+        let high = VertexId::from(1);
+        let label = BucketLabelKey::undirected_from_index(9);
+        graph
+            .insert_undirected_deferred(
+                low,
+                high,
+                label,
+                TestEdge(u32::from(high)),
+                TestEdge(u32::from(low)),
+            )
+            .unwrap();
+        let mut low_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(low, label, |slot, _| low_slots.push(slot))
+            .unwrap();
+        let low_slot = low_slots[0];
+        let low_ref = PhysicalEdgeRef {
+            orientation: Orientation::Forward,
+            owner_vertex_id: low,
+            label_id: label,
+            slot_index: low_slot,
+        };
+        let high_ref = graph.mate_of(low_ref).unwrap();
+        assert_eq!(high_ref.owner_vertex_id, high);
+        assert_eq!(graph.canonical_handle(low_ref).unwrap(), high_ref);
+
+        let self_loop = VertexId::from(2);
+        graph
+            .insert_undirected_deferred(
+                self_loop,
+                self_loop,
+                label,
+                TestEdge(u32::from(self_loop)),
+                TestEdge(u32::from(self_loop)),
+            )
+            .unwrap();
+        let mut self_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(self_loop, label, |slot, _| self_slots.push(slot))
+            .unwrap();
+        let self_slot = self_slots[0];
+        let self_ref = PhysicalEdgeRef {
+            orientation: Orientation::Forward,
+            owner_vertex_id: self_loop,
+            label_id: label,
+            slot_index: self_slot,
+        };
+        assert_eq!(graph.mate_of(self_ref).unwrap(), self_ref);
+    }
+
+    #[test]
+    fn scan_only_mate_fails_closed_for_missing_source_and_invalid_orientation() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::undirected_from_index(11);
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        let missing = PhysicalEdgeRef {
+            orientation: Orientation::Forward,
+            owner_vertex_id: VertexId::from(0),
+            label_id: label,
+            slot_index: u32::MAX,
+        };
+        assert!(matches!(
+            graph.mate_of(missing),
+            Err(crate::labeled::MateLookupError::SourceNotFound(_))
+        ));
+        let invalid = PhysicalEdgeRef {
+            orientation: Orientation::Reverse,
+            ..missing
+        };
+        assert!(matches!(
+            graph.mate_of(invalid),
+            Err(crate::labeled::MateLookupError::InvalidOrientation(_))
+        ));
     }
 }

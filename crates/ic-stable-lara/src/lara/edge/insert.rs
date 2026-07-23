@@ -23,6 +23,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let v = vertices.get_in_range(vid)?;
         let v_ord = u32::from(vid);
         let log_owner = vertices.log_leaf_vertex(vid);
+
         // Tombstone rows may still hold slab/log material while incremental
         // `DeleteVertex` maintenance runs; only fully evacuated rows reject reads.
         if V::record_is_vertex_tombstone(&v) && v.stored_degree() == 0 && v.log_head() < 0 {
@@ -155,6 +156,23 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         let log_owner = vertices.log_leaf_vertex(vid);
 
+        // Capture the logical row position before the write.  For log-backed rows the
+        // physical log entry index and the logical slot are different: tombstones and the
+        // slab prefix determine the latter.  Returning both from the storage write boundary
+        // lets higher layers build an exact handle without scanning the row again.
+        let slab_count = self
+            .on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?
+            .min(v.stored_degree());
+        let log_len = if v.log_head() >= 0 {
+            let leaf = leaf_segment(log_owner, edge_layout.segment_size);
+            self.overflow_log_chain_len(leaf, v.log_head())
+        } else {
+            0
+        };
+        let logical_log_slot = slab_count
+            .checked_add(log_len)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+
         let _next_degree = v
             .degree()
             .checked_add(1)
@@ -183,7 +201,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             vertices.set(vid, &grown);
             InsertLocation::Slab(v.stored_degree())
         } else {
-            self.insert_into_log_with_layout(
+            let log_index = self.insert_into_log_with_layout(
                 &edge_layout,
                 vertices,
                 vid,
@@ -192,7 +210,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 _next_degree,
                 edge,
             )?;
-            InsertLocation::Log
+            InsertLocation::Log {
+                log_index,
+                logical_slot: logical_log_slot,
+            }
         };
         self.set_num_edges(next_num_edges);
         self.bump_counts_leaf_with_layout(&edge_layout, log_owner, 1, 0)?;

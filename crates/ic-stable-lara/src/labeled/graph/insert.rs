@@ -29,6 +29,24 @@ use ic_stable_structures::Memory;
 use super::error::LabeledOperationError;
 use super::{BucketSearch, LabeledLaraGraph};
 
+/// Exact logical location produced by a successful scalar write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScalarInsertLocation {
+    /// Logical slot within the owning label row.
+    pub logical_slot: u32,
+    /// Physical storage class selected by the insert.
+    pub storage: ScalarInsertStorage,
+}
+
+/// Physical storage class for an exact scalar insertion location.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScalarInsertStorage {
+    /// The edge was written to the bucket's slab span.
+    Slab,
+    /// The edge was written to the owning leaf's overflow log.
+    OverflowLog,
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -106,13 +124,27 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        self.insert_edge_skip_leaf_cascade_with_location(src, label_id, edge)
+            .map(|_| ())
+    }
+
+    pub(crate) fn insert_edge_skip_leaf_cascade_with_location(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        edge: E,
+    ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         self.ensure_vertex(src)?;
         let mut vertex = self.vertices.get(src);
         let edge_inline_value_width = edge.edge_inline_value_byte_width();
         let has_edge_inline_value = edge_inline_value_width != 0;
         if vertex.is_default_edge_labeled() {
             if !has_edge_inline_value && label_id == self.bypass_storage_label_for(&vertex) {
-                return self.insert_homogeneous_bypass_edge(src, label_id, edge);
+                self.insert_homogeneous_bypass_edge(src, label_id, edge)?;
+                return Ok(None);
             }
             if has_edge_inline_value {
                 return Err(LabeledOperationError::PayloadByteWidthMismatch {
@@ -127,7 +159,8 @@ where
             && self.may_use_homogeneous_bypass(src)
             && !has_edge_inline_value
         {
-            return self.insert_homogeneous_bypass(src, label_id, edge);
+            self.insert_homogeneous_bypass(src, label_id, edge)?;
+            return Ok(None);
         }
 
         if edge_inline_value_width != 0
@@ -187,6 +220,7 @@ where
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 debug_assert!(write_slot < successor_start);
                 self.edges.write_slot(write_slot, attempt_edge.clone())?;
+                let logical_slot = bucket.stored_slots;
                 let bucket = bucket.grow_packed_slab_by_one();
                 let bucket = self.write_edge_inline_value_after_insert(
                     src,
@@ -204,7 +238,10 @@ where
                 self.edges
                     .bump_vertex_segment_counts(src, 1, 0)
                     .map_err(LabeledOperationError::from)?;
-                return Ok(());
+                return Ok(Some(ScalarInsertLocation {
+                    logical_slot,
+                    storage: ScalarInsertStorage::Slab,
+                }));
             }
             let access = LabelEdgeSpanAccess::with_bucket(
                 &self.buckets,
@@ -217,7 +254,12 @@ where
                 .edges
                 .insert_edge(&access, VertexId::from(0), attempt_edge.clone())
             {
-                Ok(InsertLocation::Slab(_)) if !has_edge_inline_value => return Ok(()),
+                Ok(InsertLocation::Slab(written_slot)) if !has_edge_inline_value => {
+                    return Ok(Some(ScalarInsertLocation {
+                        logical_slot: written_slot,
+                        storage: ScalarInsertStorage::Slab,
+                    }));
+                }
                 Ok(InsertLocation::Slab(written_slot)) => {
                     bucket = self
                         .buckets
@@ -239,10 +281,18 @@ where
                         &attempt_edge,
                     )?;
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
-                    return Ok(());
+                    return Ok(Some(ScalarInsertLocation {
+                        logical_slot: written_slot,
+                        storage: ScalarInsertStorage::Slab,
+                    }));
                 }
-                Ok(InsertLocation::Log) if !has_edge_inline_value => return Ok(()),
-                Ok(InsertLocation::Log) => {
+                Ok(InsertLocation::Log { logical_slot, .. }) if !has_edge_inline_value => {
+                    return Ok(Some(ScalarInsertLocation {
+                        logical_slot,
+                        storage: ScalarInsertStorage::OverflowLog,
+                    }));
+                }
+                Ok(InsertLocation::Log { logical_slot, .. }) => {
                     bucket = self
                         .buckets
                         .read_label_bucket_slot(bucket_slot)
@@ -259,7 +309,10 @@ where
                         &attempt_edge,
                     )?;
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
-                    return Ok(());
+                    return Ok(Some(ScalarInsertLocation {
+                        logical_slot,
+                        storage: ScalarInsertStorage::OverflowLog,
+                    }));
                 }
                 Err(LaraOperationError::SegmentLogFull) => {
                     let vertex = self.vertices.get(src);
@@ -267,7 +320,8 @@ where
                         && !has_edge_inline_value
                         && label_id == self.bypass_storage_label_for(&vertex)
                     {
-                        return self.insert_homogeneous_bypass_edge(src, label_id, attempt_edge);
+                        self.insert_homogeneous_bypass_edge(src, label_id, attempt_edge)?;
+                        return Ok(None);
                     }
                     self.rebalance_edge_log_leaf_for_labeled(src, true, true)?;
                     let vertex = self.vertices.get(src);
@@ -340,8 +394,21 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        self.insert_edge_skip_leaf_cascade_deferred_payload_with_location(src, label_id, edge)
+            .map(|_| ())
+    }
+
+    pub(crate) fn insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        edge: E,
+    ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         let was_deferred = self.payload_compaction_deferred.replace(true);
-        let result = self.insert_edge_skip_leaf_cascade(src, label_id, edge);
+        let result = self.insert_edge_skip_leaf_cascade_with_location(src, label_id, edge);
         self.payload_compaction_deferred.set(was_deferred);
         result
     }

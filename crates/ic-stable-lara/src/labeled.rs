@@ -134,7 +134,8 @@ pub(crate) mod traits;
 
 pub use bidirectional::{
     DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver,
-    EdgeSlotMoveObserver, LabeledBidirectionalMaintenanceReport, Orientation as LabeledOrientation,
+    EdgeSlotMoveObserver, LabeledBidirectionalMaintenanceReport, MateLookupError,
+    Orientation as LabeledOrientation, PhysicalEdgeRef, ScalarInsertPair,
 };
 pub use bucket_label_key::{
     BUCKET_LABEL_DIRECTED_BIT, BUCKET_LABEL_INDEX_MASK, BucketDirectedness, BucketLabelKey,
@@ -148,6 +149,7 @@ pub use graph::{
     LabeledOutEdgesIter, LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch, OutEdgeOrder,
 };
 pub use graph::{LabelBucketPlacementInfo, LeafBucketPlacementStats};
+pub use graph::{ScalarInsertLocation, ScalarInsertStorage};
 pub use record::{
     LabelBucket, LabeledVertex, LabeledVertexFieldError, MAX_VERTEX_LABEL_BUCKET_SLACK,
     MAX_VERTEX_LABEL_BUCKETS,

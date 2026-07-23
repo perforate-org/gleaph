@@ -1375,6 +1375,50 @@ where
         self.read_out_edge_slots_for_label_with_replay(src, label_id, slots, order, None, visit)
     }
 
+    /// Visits live edges for one label together with their exact local slot.
+    ///
+    /// This is intentionally a storage-facing scan primitive: the slot comes
+    /// from the requested range rather than from `E::with_slot_index`, whose
+    /// implementation is optional for generic CSR edge types.
+    pub fn for_each_live_edge_slot_for_label<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(u32, E),
+    {
+        let Some(info) = self.read_label_bucket_placement_info(src, label_id)? else {
+            return Ok(());
+        };
+        let logical_slots = info
+            .stored_edge_slots
+            .checked_add(info.edge_overflow_log_len)
+            .ok_or(LabeledOperationError::from(
+                LaraOperationError::CollectAllocationOverflow,
+            ))?;
+        if logical_slots == 0 {
+            return Ok(());
+        }
+
+        // Resolve the bucket once and let the storage-owned topology reader walk the
+        // slab/log representation in one pass.  The previous implementation called the
+        // single-slot reader once per logical slot, rebuilding the bucket/log view for every
+        // row.  The callback receives the same logical slot indices, but all bucket reads and
+        // overflow-chain reconstruction are now amortized over the complete row.
+        let slots: Vec<u32> = (0..logical_slots).collect();
+        self.read_out_edge_slots_for_label_with_replay_and_slot(
+            src,
+            label_id,
+            &slots,
+            OutEdgeOrder::Ascending,
+            None,
+            visit,
+        )
+    }
+
     /// Like [`Self::read_out_edge_slots_for_label`], but may reuse hybrid overflow replay cached
     /// on the payload phase-1 scratch to avoid rebuilding the overflow log chain.
     pub fn read_out_edge_slots_for_label_with_replay<Visit>(
@@ -1389,6 +1433,29 @@ where
     where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
+    {
+        self.read_out_edge_slots_for_label_with_replay_and_slot(
+            src,
+            label_id,
+            slots,
+            order,
+            replay,
+            |_, edge| visit(edge),
+        )
+    }
+
+    fn read_out_edge_slots_for_label_with_replay_and_slot<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        replay: Option<&HybridOverflowEdgeReplay>,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(u32, E),
     {
         if slots.is_empty() {
             return Ok(());
@@ -1414,7 +1481,7 @@ where
             loaded.sort_unstable_by_key(|(slot, _)| *slot);
             for slot in visit_order {
                 if let Ok(idx) = loaded.binary_search_by_key(&slot, |(s, _)| *s) {
-                    visit(loaded[idx].1.clone());
+                    visit(slot, loaded[idx].1.clone());
                 }
             }
             return Ok(());
@@ -1471,7 +1538,7 @@ where
                 label_id,
                 overflow_chain.as_deref(),
             )? {
-                visit(edge);
+                visit(slot_index, edge);
             }
         }
         Ok(())
@@ -1487,7 +1554,7 @@ where
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
-        Visit: FnMut(E),
+        Visit: FnMut(u32, E),
     {
         let log_table = (!replay.log_table.is_empty()).then_some(replay.log_table.as_slice());
         for &slot_index in visit_order {
@@ -1505,7 +1572,7 @@ where
                 if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                     continue;
                 }
-                visit(edge);
+                visit(slot_index, edge);
                 continue;
             }
             let Some(log_slot) = slot_index.checked_sub(replay.slab_slots) else {
@@ -1522,7 +1589,7 @@ where
             if edge.is_tombstone_edge() {
                 continue;
             }
-            visit(edge);
+            visit(slot_index, edge);
         }
         Ok(())
     }

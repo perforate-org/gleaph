@@ -3,7 +3,9 @@
 use super::super::stable::{EDGE_ALIASES, GRAPH};
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId, traits::CsrEdge,
+    BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
+    labeled::{LabeledOrientation, MateLookupError, PhysicalEdgeRef},
+    traits::CsrEdge,
 };
 
 use super::GraphStore;
@@ -139,6 +141,33 @@ impl GraphStore {
             return reverse;
         }
         self.canonical_edge_handle(handle)
+    }
+
+    /// Resolves a canonical handle through bidirectional LARA's persistence-free
+    /// rank/select path.  The alias map remains the authoritative compatibility
+    /// path for existing callers; this helper is intentionally opt-in for the
+    /// ScanOnly comparison and future consumer wiring.
+    pub(crate) fn scan_only_canonical_edge_handle(
+        &self,
+        handle: EdgeHandle,
+        orientation: LabeledOrientation,
+    ) -> Result<EdgeHandle, MateLookupError> {
+        GRAPH
+            .with_borrow(|graph| {
+                graph.canonical_handle(PhysicalEdgeRef {
+                    orientation,
+                    owner_vertex_id: handle.owner_vertex_id,
+                    label_id: handle.label_id,
+                    slot_index: handle.slot_index,
+                })
+            })
+            .map(|canonical| {
+                EdgeHandle::at_slot(
+                    canonical.owner_vertex_id,
+                    canonical.label_id,
+                    canonical.slot_index,
+                )
+            })
     }
 
     pub(super) fn remove_reverse_edge_for_canonical_directed(

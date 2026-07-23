@@ -383,7 +383,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         v: V,
         next_degree: u32,
         edge: E,
-    ) -> Result<(), LaraOperationError>
+    ) -> Result<u32, LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
@@ -420,7 +420,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .try_grow_packed_slab_by_one()
             .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
         vertices.set(vid, &grown);
-        Ok(())
+        Ok(idx as u32)
     }
 
     pub(crate) fn log_is_full_with_segment_size(&self, vid: VertexId, segment_size: u32) -> bool {
