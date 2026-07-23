@@ -21,6 +21,21 @@ const LOCATOR_MAX_VALUE: u64 = (1 << 40) - 1;
 
 const WASM_PAGE_BYTES: u64 = 65_536;
 
+#[cfg(test)]
+thread_local! {
+    static PUBLISHED_BLOB_READS: Cell<u32> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_published_blob_read_count() {
+    PUBLISHED_BLOB_READS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn published_blob_read_count() -> u32 {
+    PUBLISHED_BLOB_READS.with(Cell::get)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MateLocatorState {
     ScanOnly,
@@ -596,6 +611,26 @@ impl<M: Memory> MateStorage<M> {
         self.locators.published_offset(row)
     }
 
+    /// Reads one bucket from a currently published blob.  Locator state is checked before any
+    /// blob bytes are touched; ScanOnly and Rebuilding therefore never read unpublished data.
+    pub(crate) fn published_bucket(
+        &self,
+        row: u64,
+        owner_vertex_id: u32,
+        bucket_label_key: u16,
+    ) -> Result<Option<super::mate_blob_prototype::Bucket>, MateStorageInitError> {
+        let Some(offset) = self.locators.published_offset(row)? else {
+            return Ok(None);
+        };
+        #[cfg(test)]
+        PUBLISHED_BLOB_READS.with(|count| count.set(count.get().saturating_add(1)));
+        let bytes = self.blobs.read(offset)?;
+        let blob = MateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
+        Ok(blob.buckets.into_iter().find(|bucket| {
+            bucket.owner_vertex_id == owner_vertex_id && bucket.bucket_label_key == bucket_label_key
+        }))
+    }
+
     pub(crate) fn ensure_locator_rows(&self, row_count: u64) -> Result<(), MateStorageInitError> {
         self.locators.grow_rows(row_count)
     }
@@ -652,6 +687,60 @@ impl<M: Memory> MateStorage<M> {
     #[cfg(test)]
     pub(crate) fn test_publish_rebuilding(&self, row: u64) -> Result<(), MateStorageInitError> {
         self.locators.publish_rebuilding(row)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_swap_locator_rows(
+        &self,
+        first: u64,
+        second: u64,
+    ) -> Result<(), MateStorageInitError> {
+        let first_offset = self.locators.row_offset(first)?;
+        let second_offset = self.locators.row_offset(second)?;
+        let mut first_bytes = [0u8; LOCATOR_ROW_BYTES as usize];
+        let mut second_bytes = [0u8; LOCATOR_ROW_BYTES as usize];
+        self.locators.memory.read(first_offset, &mut first_bytes);
+        self.locators.memory.read(second_offset, &mut second_bytes);
+        safe_write(&self.locators.memory, first_offset, &second_bytes)
+            .map_err(MateStorageInitError::Grow)?;
+        safe_write(&self.locators.memory, second_offset, &first_bytes)
+            .map_err(MateStorageInitError::Grow)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_corrupt_published_blob(
+        &self,
+        row: u64,
+        relative_offset: u64,
+    ) -> Result<(), MateStorageInitError> {
+        let Some(start) = self.locators.published_offset(row)? else {
+            return Err(MateStorageInitError::InvalidBlob);
+        };
+        let offset = HEADER_BYTES
+            .checked_add(start)
+            .and_then(|value| value.checked_add(relative_offset))
+            .ok_or(MateStorageInitError::InvalidBlob)?;
+        let mut byte = [0u8; 1];
+        self.blobs.memory.read(offset, &mut byte);
+        byte[0] ^= 0x01;
+        safe_write(&self.blobs.memory, offset, &byte).map_err(MateStorageInitError::Grow)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_write_published_blob_byte(
+        &self,
+        row: u64,
+        relative_offset: u64,
+        value: u8,
+    ) -> Result<(), MateStorageInitError> {
+        let Some(start) = self.locators.published_offset(row)? else {
+            return Err(MateStorageInitError::InvalidBlob);
+        };
+        let offset = HEADER_BYTES
+            .checked_add(start)
+            .and_then(|value| value.checked_add(relative_offset))
+            .ok_or(MateStorageInitError::InvalidBlob)?;
+        safe_write(&self.blobs.memory, offset, &[value]).map_err(MateStorageInitError::Grow)
     }
 
     pub(crate) fn begin_rebuild(&self, row: u64) -> Result<MateRebuildToken, MateStorageInitError> {

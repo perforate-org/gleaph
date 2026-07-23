@@ -170,6 +170,25 @@ impl GraphStore {
             })
     }
 
+    /// Internal comparison bridge for the dormant ADR 0048 Published mate primitive.  Existing
+    /// callers intentionally remain on `EDGE_ALIASES` until the separate adoption gate.
+    pub(crate) fn published_mate_canonical_edge_handle(
+        &self,
+        handle: EdgeHandle,
+        orientation: LabeledOrientation,
+    ) -> Result<EdgeHandle, MateLookupError> {
+        GRAPH
+            .with_borrow(|graph| {
+                graph.published_canonical_handle(PhysicalEdgeRef {
+                    orientation,
+                    owner_vertex_id: handle.owner_vertex_id,
+                    label_id: handle.label_id,
+                    slot_index: handle.slot_index,
+                })
+            })
+            .map(|mate| EdgeHandle::at_slot(mate.owner_vertex_id, mate.label_id, mate.slot_index))
+    }
+
     pub(super) fn remove_reverse_edge_for_canonical_directed(
         &self,
         row_vertex_id: VertexId,

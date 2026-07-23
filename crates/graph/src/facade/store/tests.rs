@@ -1081,6 +1081,12 @@ fn scan_only_canonical_lookup_uses_lara_without_changing_aliases() {
         store.scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward);
     let scan_from_reverse =
         store.scan_only_canonical_edge_handle(reverse, LabeledOrientation::Reverse);
+    // The facade remains on the dormant bridge while the locator is ScanOnly; Published-path
+    // behavior is covered at the owning LARA boundary.
+    let dormant_bridge_from_forward =
+        store.published_mate_canonical_edge_handle(handle, LabeledOrientation::Forward);
+    let dormant_bridge_from_reverse =
+        store.published_mate_canonical_edge_handle(reverse, LabeledOrientation::Reverse);
     assert_eq!(snapshot_aliases(), poisoned_snapshot);
     super::super::stable::EDGE_ALIASES.with_borrow_mut(|aliases| {
         if let Some(original) = original_forward_alias {
@@ -1109,6 +1115,14 @@ fn scan_only_canonical_lookup_uses_lara_without_changing_aliases() {
 
     assert_eq!(scan_from_forward.expect("forward ScanOnly lookup"), handle);
     assert_eq!(scan_from_reverse.expect("reverse ScanOnly lookup"), handle);
+    assert_eq!(
+        dormant_bridge_from_forward.expect("forward dormant bridge"),
+        handle
+    );
+    assert_eq!(
+        dormant_bridge_from_reverse.expect("reverse dormant bridge"),
+        handle
+    );
     assert_eq!(snapshot_aliases(), original_snapshot);
 }
 

@@ -1,9 +1,9 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; runtime lookup, adoption measurement, and alias replacement remain deferred)
+Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; the validated Published Sampled/Packed runtime primitive is implemented but dormant; ordinary-caller activation, adoption measurement, and alias replacement remain deferred)
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 19:55:43 UTC +0000
+Anchor timestamp: 2026-07-23 21:25:19 UTC +0000
 
 ## Context
 
@@ -177,7 +177,9 @@ scheduling one deduplicated `(orientation, leaf)` maintenance item. Compaction i
 processing an eligible row so failure or a later slot rewrite cannot expose stale data; failed
 compaction work is requeued for retry. ScanOnly rows do not create unnecessary work; rebuild
 failures leave the row non-Published and the item retryable. Runtime
-published-blob lookup, adoption measurement, and alias replacement remain deferred.
+ The validated Published Sampled/Packed lookup primitive is implemented but dormant: it checks blob
+ results against canonical rank/select and falls back exactly once on malformed or stale data.
+ Ordinary-caller activation, adoption measurement, and alias replacement remain deferred.
 
 The bidirectional owner is also the mutation boundary: `forward()` and `reverse()` remain public
 read accessors, while single-orientation canonical mutation methods are crate-private. GraphStore,
@@ -216,7 +218,8 @@ ScanOnly:
   no mate array; exact rank/select scan
 
 Sampled:
-  a checkpoint every K pair entries; scan at most K - 1 matching entries around it
+  a checkpoint every K pair entries; checkpoint rows resolve directly and non-checkpoint rows use
+  canonical fallback in the current runtime primitive
 
 Packed:
   a counterpart slot for every indexed entry
@@ -229,12 +232,11 @@ its position in the checkpoint array:
 checkpoint = (source_slot, mate_slot)
 ```
 
-Given a physical source handle, lookup binary-searches the source checkpoints, scans forward to
-establish the exact pair rank, then scans the mate bucket to resolve the counterpart. There are at
-most `K - 1` matching pair entries between checkpoints; unrelated entries interleaved in the
-bucket may add physical-row reads. This is exact for parallel edges while bounding the pair-rank
-work introduced by sampled mode. `K = 32` or `64` is an initial benchmark candidate, not a stable
-wire contract.
+Given a physical source handle, the current runtime primitive resolves a source handle directly
+only when its rank is represented by a checkpoint; all other Sampled requests use canonical
+fallback because the current wire form stores no intermediate pair lanes. A future format change
+may add bounded local scanning, but that is outside this slice. `K = 32` or `64` is an initial
+benchmark candidate, not a stable wire contract.
 
 `Packed` mode stores only the counterpart `slot_index` for every indexed entry. Counterpart owner,
 label, orientation, and directedness derive from the source entry, its target, and its bucket. Slot
@@ -491,11 +493,12 @@ promotion or alias removal.
 
 - `ScanOnly`: scan the source bucket to compute equal-neighbor rank and the target bucket to select
   that rank. Approximate edge-row traffic is `4 * (source_slots + target_slots)` bytes.
-- `Sampled`: read the locator, blob directory, and nearest checkpoint, then scan at most `K - 1`
-  matching pair entries on each side, plus any unrelated physical rows interleaved in the two
-  buckets.
-- `Packed`: read the five-byte locator, blob header/directory, one packed word, and candidate
-  adjacency row. A heap directory cache may reduce this after validation.
+- `Published`: read the locator and addressed blob directory. Packed rows are searched by encoded
+  source slot and checked against the live counterpart row and relation counts. Sampled checkpoints
+  are used when the requested rank is represented; non-checkpoint requests use the canonical
+  fallback because the current Sampled wire form stores no intermediate pair lanes.
+  Malformed or stale data is rejected before one canonical fallback, and no blob-derived handle is
+  exposed.
 - Ordinary adjacency traversal reads no mate metadata.
 
 Two 32-entry buckets imply about 256 edge bytes of full scan traffic; a sampled `K=32` lookup is
