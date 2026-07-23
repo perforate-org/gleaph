@@ -2,6 +2,8 @@
 
 pub(crate) mod deferred;
 mod mate;
+#[cfg(test)]
+mod mate_blob_prototype;
 
 pub use deferred::{
     BidirectionalMaintenanceReport as LabeledBidirectionalMaintenanceReport,

@@ -195,6 +195,14 @@ overhead and are not divided by edge count. A candidate must retain positive hea
 18-byte alias raw payload after all measured shared terms before a persistent-layout prototype is
 justified. No runtime promotion, blob store, or alias replacement is implemented by this slice.
 
+Plan 0135 validates an isolated, test-only serialized layout at the bidirectional LARA boundary:
+the prototype uses a 24-byte versioned header, 20 bytes per indexed-bucket directory entry, and
+the existing Sampled/Packed mapping formulas. It performs checked offset/length validation and
+round-trip/corruption tests for all planned modes, but does not allocate stable memory or publish a
+locator. Locator rows, free-span/rebuild reserve, node overhead, and MemoryManager extent rounding
+remain outside the serialized blob and outside any per-edge claim. Runtime promotion and alias
+replacement remain disabled pending a separate adoption decision.
+
 ---
 
 ## What is IC-specific (substrate only)

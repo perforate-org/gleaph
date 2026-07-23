@@ -441,6 +441,26 @@ The zero-shared-overhead table above is therefore a reproducible lower bound, no
 decision; a follow-up storage prototype is justified only when measured shared terms leave a
 positive budget for the target workload.
 
+### Isolated serialized layout prototype (Plan 0135)
+
+The test-only `ic-stable-lara::labeled::bidirectional::mate_blob_prototype` now makes the shared
+blob terms concrete without exposing a runtime API. Its fixed-endian prototype layout is:
+
+| Component | Size |
+| --- | ---: |
+| versioned header | 24 bytes |
+| indexed-bucket directory entry | 20 bytes per bucket |
+| Sampled mapping | `16 * ceil(n / K)` bytes per bucket (two halves, two `u32` fields) |
+| Packed mapping | `2 * width * n` bytes per bucket |
+
+The header declares the directory, mapping, and total lengths. Directory entries are strictly
+ordered and point to contiguous mapping ranges; decode checks every range, count, mode, width, and
+the absence of trailing bytes. Free-span records, rebuild reserve, locator rows, and substrate
+allocation are intentionally not serialized by this test-only codec and remain separate terms in
+the Plan 0134 gate. Round-trip and corruption tests cover all requested strides and widths,
+single-bucket and multi-bucket leaves. This is evidence for a later stable-layout design, not
+runtime promotion or alias removal.
+
 ### Reads
 
 - `ScanOnly`: scan the source bucket to compute equal-neighbor rank and the target bucket to select
