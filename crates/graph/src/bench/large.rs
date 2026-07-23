@@ -26,6 +26,7 @@ const VECTOR_PASS_XLARGE: u32 = 512;
 const VECTOR_SCAN_XXLARGE: u32 = 16_384;
 const VECTOR_PASS_XXLARGE: u32 = 2_048;
 const VECTOR_EDGES_PER_HUB: u32 = 32;
+const EXPAND_SKEW_NOISE_XL: u32 = 49_000;
 
 fn lit_i64(value: i64) -> Expr {
     Expr::new(ExprKind::Literal(Value::Int64(value)))
@@ -590,6 +591,16 @@ fn bench_graph_large_expand_inline_value_skewed_50k_a_1k_b() -> canbench_rs::Ben
         EXPAND_SKEW_NOISE_XL,
         EXPAND_HUB_OUT_XL,
         "large_expand_inline_value_skewed_50k_a_1k_b",
+    )
+}
+
+/// 49_000 noise + 1_000 target-label edges (50_000 incident); expand target label only.
+#[bench(raw)]
+fn bench_graph_large_expand_skewed_noise_50k_a_1k_b() -> canbench_rs::BenchResult {
+    super::bench_expand_skewed_noise(
+        EXPAND_SKEW_NOISE_XL,
+        super::EXPAND_HUB_OUT_XL,
+        "large_expand_skewed_noise_50k_a_1k_b",
     )
 }
 

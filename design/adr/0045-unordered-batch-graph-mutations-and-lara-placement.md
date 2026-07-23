@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 04:15:46 UTC +0000
+Anchor timestamp: 2026-07-23 08:50:57 UTC +0000
 
 ## Context
 
@@ -88,7 +88,7 @@ overflow log only to fold it back into the slab during repeated rebalances.
 
 ## Decision
 
-Implementation status as of 2026-07-23 03:44:36 UTC +0000:
+Implementation status as of 2026-07-23 07:12:03 UTC +0000:
 
 - Plan 0121 read-only placement planning is implemented.
 - Plan 0122 one-orientation batch commit is implemented in `ic-stable-lara`:
@@ -109,8 +109,10 @@ Implementation status as of 2026-07-23 03:44:36 UTC +0000:
   canonical state is published at that boundary; direct library callers without
   such a transaction boundary do not receive the same atomicity guarantee.
   Supported geometries are existing buckets whose run fits the current planned
-  slab window (including the first bucket's vertex quota), with payload span
-  growth at the occupied tail.
+  slab window (including the first bucket's vertex quota), plus pinned-leaf
+  expansion when the edge/payload logs are full. Fixed-width payload spans may
+  be reused or grown at the occupied tail; non-tail relocation remains
+  unsupported.
 - Plan 0123 GraphStore clean-slab orchestration is implemented: `GraphStore::
   try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   existing read-only planner, reserves every orientation before committing any
@@ -146,11 +148,19 @@ Implementation status as of 2026-07-23 03:44:36 UTC +0000:
   unsupported geometry.  Focused unit tests cover successful edge/payload log
   append, log capacity exhaustion, multi-run and multi-orientation rollback,
   read-back order, and unchanged canonical/allocator state after rejection.
-- New bucket creation, rebalance/relocation, dynamic leaf expansion, and full
-  public wire integration remain planned for later slices.
-- ADR 0048's mate index and returned-slot orchestration are accepted target
-  design but not implemented. The current scalar facade still uses
-  `EDGE_ALIASES` and post-insert scans until that migration lands.
+- Plan 0125 pending-aware one-shot leaf expansion is implemented for existing
+  edge-only buckets. Plan 0128 extends it to fixed, uniform non-zero payload
+  widths: reserve projects and allocates the coupled payload span, commit folds
+  edge/payload logs and writes aligned slab values, and rollback restores the
+  payload tail/free-list and edge allocator state. Payload read-back and full
+  canbench coverage are included; malformed edge/payload log lengths reject
+  before allocation. New bucket creation, non-tail relocation, and full public
+  wire integration remain planned for later slices.
+- ADR 0048's persistent mate index is still planned. Plan 0129 implements only
+  the internal returned-slot boundary: LARA owns exact physical locations and
+  GraphStore joins them by ordinal without a post-insert adjacency scan. The
+  current scalar facade still uses `EDGE_ALIASES` until the later mate-index
+  migration lands.
 
 ### 1. Add an explicit unordered batch mutation mode
 
@@ -590,14 +600,20 @@ count, log occupancy/debt, maintenance work, encoded bytes, and callback count.
 2. Add one-orientation slab and edge/payload overflow-log batch primitives with
    plan/reserve/commit and failure-atomic tests.
 3. Add pending-aware leaf/window planning, dynamic one-shot expansion, and
-   existing-log fold. **Implemented for edge-only existing-bucket runs in Plan
-   0125; payload-bearing expansion and relocation remain deferred.**
+   existing-log fold. **Implemented for existing-bucket runs in Plans 0125 and
+   0128.** Plan 0125 covers edge-only expansion; Plan 0128 extends the same
+   failure-atomic boundary to fixed, uniform non-zero payload widths, including
+   payload-log fold and payload-span growth at a reusable or occupied-tail
+   span. Relocation and new-bucket creation remain deferred.
    Expansion-success evidence remains owned by LARA; GraphStore exposes only
    internal admission classification and reserve-all rollback behavior. It
    must not publish or fabricate PMA leaf, overflow-log cursor, or bucket-head
    metadata for tests.
-4. Add bidirectional directed and two-forward-half undirected orchestration plus
-   ordinal-based physical-location results and the ADR 0048 mate boundary.
+4. **Partially implemented.** Plans 0123–0128 provide bidirectional directed
+   and two-forward-half undirected orchestration. Plan 0129 now returns exact
+   internal slab/overflow-log edge and payload locations from LARA and joins
+   them by logical ordinal in GraphStore, including self-loop cardinality.
+   Persistent mate indexing and public result exposure remain planned.
 5. Add GraphStore edge insertion with initial inline values, properties, label
    deltas, and durable derived events.
 6. Add existing inline-value and vertex/edge property batch updates.
@@ -615,8 +631,9 @@ invariants and failure-atomic boundaries are covered.
 ## Design document impact
 
 - `design/adr/0045-unordered-batch-graph-mutations-and-lara-placement.md`:
-  status remains Partially Implemented; stages 1–3 are implemented only for
-  the explicitly bounded edge-only existing-bucket expansion path.
+  status remains Partially Implemented; stages 1–3 are implemented for the
+  explicitly bounded existing-bucket expansion path, with fixed-width payload
+  support limited to reusable or occupied-tail spans.
 - `design/storage/lara.md`: link the read-only planning contract and note that
   direct slab/log batch writes, rebalance, and relocation remain planned.
 - `design/storage/lara-dgap-contract.md`: pending-aware leaf placement remains

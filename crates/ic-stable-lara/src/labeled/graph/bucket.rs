@@ -215,7 +215,7 @@ where
         Ok(())
     }
 
-    pub(super) fn find_bucket(
+    pub(crate) fn find_bucket(
         &self,
         src: VertexId,
         vertex: &LabeledVertex,

@@ -1,6 +1,6 @@
 # Set `CANBENCH_GLEAPH_GRAPH_FEATURES=canbench_large` to include the heavyweight
 # query-call scale benches under `src/bench/large.rs` (vector expand, payload
-# predicate skewed 10k/50k, feed page, friends-of-friends, road grid).
+# predicate/skewed-noise 10k/50k, feed page, friends-of-friends, road grid).
 # canbench builds into a dedicated CARGO_TARGET_DIR (../../target/canbench) so its
 # `--features canbench` wasm never clobbers the `--features pocket-ic-e2e` artifacts the
 # pocket-ic-tests build.rs writes under ../../target.

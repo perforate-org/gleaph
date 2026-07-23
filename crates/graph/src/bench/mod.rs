@@ -1776,7 +1776,6 @@ const EXPAND_MIXED_LABEL_COUNT_L: u32 = 20;
 const EXPAND_EDGES_PER_LABEL_L: u32 = 500;
 
 const EXPAND_HUB_OUT_XL: u32 = 1_000;
-const EXPAND_SKEW_NOISE_XL: u32 = 49_000;
 const EXPAND_MIXED_LABEL_COUNT_XL: u32 = 50;
 const EXPAND_EDGES_PER_LABEL_XL: u32 = 1_000;
 
@@ -1887,16 +1886,6 @@ fn bench_graph_expand_mixed_label_hub_10kscan_500match() -> canbench_rs::BenchRe
 #[bench(raw)]
 fn bench_graph_expand_hub_return_dst_1k_only() -> canbench_rs::BenchResult {
     bench_expand_hub_control(EXPAND_HUB_OUT_XL, "expand_hub_return_dst_1k")
-}
-
-/// 49_000 noise + 1_000 target-label edges (50_000 incident); expand target label only.
-#[bench(raw)]
-fn bench_graph_expand_skewed_noise_50k_a_1k_b() -> canbench_rs::BenchResult {
-    bench_expand_skewed_noise(
-        EXPAND_SKEW_NOISE_XL,
-        EXPAND_HUB_OUT_XL,
-        "expand_skewed_noise_50k_a_1k_b",
-    )
 }
 
 /// 200 noise + 24 matching inline value edges on one label; edge inline value `Eq` predicate expand.

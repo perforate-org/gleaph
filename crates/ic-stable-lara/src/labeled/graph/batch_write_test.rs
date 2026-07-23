@@ -9,8 +9,8 @@ mod tests {
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::batch_write::{
-        OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchPlan,
-        OneOrientationBucketRun,
+        OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
+        OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
     };
     use crate::labeled::graph::iter::LabeledEdgeInlineValueBatchScratch;
     use crate::labeled::graph::test_support::{PayloadTestEdge, test_graph_with_default};
@@ -1528,6 +1528,134 @@ mod tests {
             3 + log_capacity,
             "all folded and pending edges must be visible"
         );
+    }
+
+    #[test]
+    fn expanded_slab_payload_single_bucket_success() {
+        let graph = segment16_payload_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+
+        let label = BucketLabelKey::directed_from_index(1);
+        let other_label = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .unwrap();
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), other_label, 0)
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                other_label,
+                PayloadTestEdge::with_bytes(1, &[]),
+            )
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), label, PayloadTestEdge::with_i32(1, 10))
+            .unwrap();
+
+        let header = graph.edges().header();
+        let leaf = LabeledLaraGraph::<PayloadTestEdge, crate::VectorMemory>::leaf_index_for_vid(
+            VertexId::from(0),
+            header.segment_size,
+        );
+        let edge_log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+        let payload_log_capacity = graph.values.read_payload_log_state(leaf).1 as usize;
+        assert_eq!(edge_log_capacity, payload_log_capacity);
+        let edge_entries = (0..edge_log_capacity)
+            .map(|i| {
+                (
+                    if i == 0 { -1 } else { (i - 1) as i32 },
+                    PayloadTestEdge::with_i32(100 + i as u32, 1000 + i as i32),
+                )
+            })
+            .collect::<Vec<_>>();
+        graph
+            .edges()
+            .write_overflow_log_entries(leaf, 0, &edge_entries)
+            .unwrap();
+        let payload_bytes = (0..payload_log_capacity)
+            .flat_map(|i| (2000 + i as i32).to_le_bytes())
+            .collect::<Vec<_>>();
+        graph
+            .values
+            .write_payload_log_entries(leaf, 0, -1, 4, &payload_bytes)
+            .unwrap();
+
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let (slot, bucket) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label)
+            .unwrap()
+        {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("payload bucket must exist"),
+        };
+        graph
+            .buckets()
+            .write_label_bucket_slot(
+                slot,
+                bucket
+                    .with_overflow_log_head((edge_log_capacity - 1) as i32)
+                    .with_degree_field((edge_log_capacity + 1) as u32)
+                    .try_with_payload_log(
+                        (payload_log_capacity - 1) as i32,
+                        payload_log_capacity as u8,
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_value_width: 4,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(1),
+                    label_id: label,
+                    edge: PayloadTestEdge::with_i32(1, 3000),
+                }],
+            }],
+        };
+
+        let payload_tail_before = graph.values.header().slab_occupied_tail;
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("payload expanded-slab batch should reserve");
+        assert!(reservation.uses_expansion());
+        reservation.rollback(&graph);
+        assert_eq!(
+            graph.values.header().slab_occupied_tail,
+            payload_tail_before,
+            "payload expansion rollback must restore the occupied tail"
+        );
+
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("payload expanded-slab batch should reserve after rollback");
+        let result = reservation.commit(&graph);
+        assert_eq!(result.edge_log_entries_written, 0);
+        assert_eq!(result.payload_log_entries_written, 0);
+        assert_eq!(
+            result.payload_slots_written,
+            (payload_log_capacity + 1) as u32
+        );
+        assert!(matches!(
+            result.locations.as_slice(),
+            [OneOrientationBatchLocation {
+                location: OneOrientationPhysicalLocation::Slab {
+                    payload_byte_offset: Some(_),
+                    ..
+                },
+                ..
+            }]
+        ));
+        let values = collect_payload_values(&graph, VertexId::from(0), label);
+        assert_eq!(values.len(), payload_log_capacity + 2);
+        assert_eq!(values.last().unwrap(), &3000_i32.to_le_bytes().to_vec());
     }
 
     #[test]

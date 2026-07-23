@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: accepted (implementation planned)
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 01:02:26 UTC +0000
+Anchor timestamp: 2026-07-23 08:50:57 UTC +0000
 
 ## Context
 
@@ -134,7 +134,8 @@ logical-ordinal plan before publishing it.
 
 ### 3. Return exact slots from insertion
 
-Scalar and batch LARA insertion return the physical location written for every logical ordinal.
+Plan 0129 implements the internal batch path's physical-location return for every logical ordinal;
+scalar return integration and persistent mate-index consumption remain planned.
 GraphStore must not scan for the most recently matching neighbor or payload after insertion.
 
 The internal result distinguishes one-entry and two-entry cases:

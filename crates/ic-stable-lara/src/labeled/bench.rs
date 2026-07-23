@@ -236,6 +236,105 @@ fn bench_labeled_batch_edge_only_expansion_existing_bucket() -> canbench_rs::Ben
     })
 }
 
+/// Existing-bucket fixed-width payload expansion fixture. Setup remains outside
+/// the measured closure; reserve and rollback measure the coupled edge/payload
+/// geometry and allocator boundary without charging fixture construction.
+#[bench(raw)]
+fn bench_labeled_batch_payload_expansion_existing_bucket() -> canbench_rs::BenchResult {
+    let graph = payload_bench_graph(256);
+    for _ in 0..2 {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    }
+    let payload_label = BucketLabelKey::from_raw(2);
+    let edge_only_label = BucketLabelKey::from_raw(3);
+    graph
+        .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), payload_label, 8)
+        .expect("payload bucket");
+    graph
+        .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), edge_only_label, 0)
+        .expect("edge-only bucket");
+    graph
+        .insert_edge(
+            VertexId::from(0),
+            edge_only_label,
+            PayloadBenchEdge::with_payload(1, 0, &[]),
+        )
+        .expect("edge-only seed");
+    graph
+        .insert_edge(
+            VertexId::from(0),
+            payload_label,
+            PayloadBenchEdge::with_payload(1, 8, &[1; 8]),
+        )
+        .expect("payload seed");
+
+    let leaf = u32::from(VertexId::from(0)) / graph.edges().header().segment_size.max(1);
+    let edge_log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+    let payload_log_capacity = graph.values().read_payload_log_state(leaf).1 as usize;
+    let edge_entries: Vec<(i32, PayloadBenchEdge)> = (0..edge_log_capacity)
+        .map(|i| {
+            (
+                if i == 0 { -1 } else { (i as i32) - 1 },
+                PayloadBenchEdge::with_payload(100 + i as u32, 8, &[2; 8]),
+            )
+        })
+        .collect();
+    graph
+        .edges()
+        .write_overflow_log_entries(leaf, 0, &edge_entries)
+        .expect("fill edge log");
+    let payload_bytes = (0..payload_log_capacity)
+        .flat_map(|_| [3u8; 8])
+        .collect::<Vec<_>>();
+    graph
+        .values()
+        .write_payload_log_entries(leaf, 0, -1, 8, &payload_bytes)
+        .expect("fill payload log");
+    let vertex = graph.vertices().get(VertexId::from(0));
+    let (bucket_slot, bucket) = match graph
+        .find_bucket(VertexId::from(0), &vertex, payload_label)
+        .expect("payload bucket lookup")
+    {
+        crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+        _ => panic!("payload bucket must exist"),
+    };
+    graph
+        .buckets()
+        .write_label_bucket_slot(
+            bucket_slot,
+            bucket
+                .with_overflow_log_head((edge_log_capacity - 1) as i32)
+                .with_degree_field((edge_log_capacity + 1) as u32)
+                .try_with_payload_log(
+                    (payload_log_capacity - 1) as i32,
+                    payload_log_capacity as u8,
+                )
+                .expect("payload log metadata"),
+        )
+        .expect("payload bucket metadata");
+    let plan = OneOrientationBatchPlan {
+        runs: vec![OneOrientationBucketRun {
+            owner_vertex_id: VertexId::from(0),
+            label_id: payload_label,
+            inline_value_width: 8,
+            edges: vec![OneOrientationBatchEdge {
+                logical_ordinal: 0,
+                owner_vertex_id: VertexId::from(0),
+                neighbor_vertex_id: VertexId::from(1),
+                label_id: payload_label,
+                edge: PayloadBenchEdge::with_payload(1, 8, &[4; 8]),
+            }],
+        }],
+    };
+    bench_fn(|| {
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("payload expansion reservation");
+        reservation.rollback(&graph);
+        black_box(1u32);
+    })
+}
+
 fn payload_bench_graph(
     elem_capacity: u64,
 ) -> LabeledLaraGraph<PayloadBenchEdge, crate::VectorMemory> {
