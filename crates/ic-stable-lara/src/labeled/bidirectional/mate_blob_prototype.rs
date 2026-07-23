@@ -41,6 +41,9 @@ impl Mode {
         let entries = u64::from(entries);
         let bytes = match self {
             Self::Sampled { stride } => {
+                if !matches!(stride, 16 | 32 | 64) {
+                    return Err(DecodeError::UnsupportedSampleStride(stride));
+                }
                 let checkpoints = entries
                     .checked_add(u64::from(stride) - 1)
                     .ok_or(DecodeError::ArithmeticOverflow)?
@@ -51,10 +54,15 @@ impl Mode {
                     .and_then(|value| value.checked_mul(SAMPLE_U32_BYTES))
                     .ok_or(DecodeError::ArithmeticOverflow)?
             }
-            Self::Packed { width_bytes } => PHYSICAL_HALVES
-                .checked_mul(entries)
-                .and_then(|value| value.checked_mul(u64::from(width_bytes)))
-                .ok_or(DecodeError::ArithmeticOverflow)?,
+            Self::Packed { width_bytes } => {
+                if !(1..=4).contains(&width_bytes) {
+                    return Err(DecodeError::UnsupportedPackedWidth(width_bytes));
+                }
+                PHYSICAL_HALVES
+                    .checked_mul(entries)
+                    .and_then(|value| value.checked_mul(u64::from(width_bytes)))
+                    .ok_or(DecodeError::ArithmeticOverflow)?
+            }
         };
         usize::try_from(bytes).map_err(|_| DecodeError::ArithmeticOverflow)
     }
@@ -491,6 +499,12 @@ fn malformed_shapes_and_trailing_bytes_are_rejected() {
         (MateBlob { buckets: vec![] }).encode(),
         Err(EncodeError::EmptyBlob)
     );
+
+    let mut trailing = blob.encode().expect("encode");
+    trailing.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+    let trailing_len = u32::try_from(trailing.len()).expect("fixture fits u32");
+    trailing[20..24].copy_from_slice(&trailing_len.to_be_bytes());
+    assert_eq!(MateBlob::decode(&trailing), Err(DecodeError::TrailingBytes));
 }
 
 #[test]
@@ -506,6 +520,37 @@ fn encoding_rejects_duplicate_or_unsorted_buckets_and_wrong_mapping_length() {
         Err(EncodeError::BucketsNotStrictlyIncreasing)
     );
 
+    let unsorted = MateBlob {
+        buckets: vec![
+            bucket(2, 9, 1, Mode::Packed { width_bytes: 1 }),
+            bucket(2, 7, 1, Mode::Packed { width_bytes: 1 }),
+        ],
+    };
+    assert_eq!(
+        unsorted.encode(),
+        Err(EncodeError::BucketsNotStrictlyIncreasing)
+    );
+
+    for mode in [Mode::Sampled { stride: 8 }, Mode::Packed { width_bytes: 5 }] {
+        let invalid = MateBlob {
+            buckets: vec![Bucket {
+                owner_vertex_id: 2,
+                bucket_label_key: 7,
+                entries: 1,
+                mode,
+                mapping: Vec::new(),
+            }],
+        };
+        let error = invalid.encode().expect_err("unsupported mode must reject");
+        assert!(matches!(
+            (mode, error),
+            (
+                Mode::Sampled { .. },
+                EncodeError::UnsupportedSampleStride(8)
+            ) | (Mode::Packed { .. }, EncodeError::UnsupportedPackedWidth(5))
+        ));
+    }
+
     let mut malformed = bucket(2, 7, 1, Mode::Packed { width_bytes: 1 });
     malformed.mapping.pop();
     assert!(matches!(
@@ -515,4 +560,17 @@ fn encoding_rejects_duplicate_or_unsorted_buckets_and_wrong_mapping_length() {
         .encode(),
         Err(EncodeError::MappingLengthMismatch { .. })
     ));
+}
+
+#[test]
+fn decoding_rejects_unsorted_canonical_identities() {
+    let blob = MateBlob {
+        buckets: vec![
+            bucket(2, 7, 1, Mode::Packed { width_bytes: 1 }),
+            bucket(2, 9, 1, Mode::Packed { width_bytes: 1 }),
+        ],
+    };
+    let mut bytes = blob.encode().expect("encode");
+    bytes[44..48].copy_from_slice(&1u32.to_be_bytes());
+    assert_eq!(MateBlob::decode(&bytes), Err(DecodeError::BucketOrder));
 }
