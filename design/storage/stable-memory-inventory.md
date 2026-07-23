@@ -169,10 +169,11 @@ existing stable memory.
 | 30 | `MAINTENANCE_QUEUE` | Deferred PMA work queue | maintenance | Internal LARA drain |
 | 31 | `DIRTY_WORK_ITEMS` | Dirty work tracking | maintenance | Internal LARA drain |
 
-### Planned adaptive mate bundle (ADR 0048; excluded from current counts)
+### Dormant adaptive mate bundle (ADR 0048 / Plan 0136; excluded from current counts)
 
 ADR 0048 accepts four bidirectional-LARA-owned logical regions and removal of
-facade `EDGE_ALIASES`. Exact `MemoryId` assignment is deferred to implementation,
+facade `EDGE_ALIASES`. Plan 0136 implements the storage boundary; callers still supply four
+distinct `MemoryId`-backed memories and the final Graph/LARA assignment is deferred to promotion,
 so the current 47-region Graph count and tables above/below remain authoritative.
 
 | Planned symbol | Role | Class | Rebuild |
@@ -188,7 +189,9 @@ columns, not `StableVec`, and does not enlarge existing vertex, bucket, count,
 or span rows. The mate `FreeSpanStore` reuses the existing implementation and
 algorithm in a separate address space; it never shares edge or payload spans.
 
-Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consult PMA maintenance stores ([lara.md](./lara.md)).
+Owner: `ic-stable-lara` / graph `GRAPH` thread-local when promoted. The dormant foundation itself
+accepts four distinct memories and is not wired to `GRAPH`; scan paths must not consult PMA
+maintenance stores ([lara.md](./lara.md)).
 
 ---
 

@@ -156,7 +156,7 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 
 ---
 
-## Bidirectional mate contract (accepted, implementation planned)
+## Bidirectional mate contract (accepted; dormant storage foundation implemented)
 
 [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) places physical
 entry-to-entry pairing in bidirectional LARA rather than a Graph facade B-tree.
@@ -175,9 +175,10 @@ payload, and mate free ranges are never mixed.
 Location capture returns exact physical locations by logical ordinal only when explicitly requested;
 aggregate-only insertion does not materialize them. Slot-preserving
 rebalance requires no mate repair. Slot-renumbering compaction rebuilds affected
-sampled/packed leaf blobs at the LARA boundary that publishes slot moves. This contract
-is accepted but not yet implemented; the current Graph facade still uses
-`EDGE_ALIASES`.
+sampled/packed leaf blobs at the LARA boundary that publishes slot moves. Plan 0136 implements
+the dormant LARA-owned locator/blob/free-span storage foundation with fresh/reopen/partial-layout
+validation and publication-before-retirement ordering. It is not wired into graph construction
+or lookup; the current Graph facade still uses `EDGE_ALIASES`.
 
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half

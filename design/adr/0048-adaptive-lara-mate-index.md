@@ -1,7 +1,7 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; persistent replacement planned)
+Status: accepted (ScanOnly implemented; dormant persistent storage foundation implemented in Plan 0136; promotion and alias replacement planned)
 Last revised: 2026-07-23
 Anchor timestamp: 2026-07-23 10:38:22 UTC +0000
 
@@ -443,8 +443,8 @@ positive budget for the target workload.
 
 ### Isolated serialized layout prototype (Plan 0135)
 
-The test-only `ic-stable-lara::labeled::bidirectional::mate_blob_prototype` now makes the shared
-blob terms concrete without exposing a runtime API. Its fixed-endian prototype layout is:
+The internal `ic-stable-lara::labeled::bidirectional::mate_blob_prototype` makes the shared blob
+terms concrete without exposing a runtime promotion API. Its fixed-endian layout is:
 
 | Component | Size |
 | --- | ---: |
@@ -457,11 +457,13 @@ The header declares the directory, mapping, and total lengths. Mode, stride/widt
 are per-directory-entry fields because a leaf may mix modes by bucket; no synthetic bucket-id table
 is introduced. Directory entries carry the canonical `(owner_vertex_id, BucketLabelKey)` identity,
 are strictly ordered, and point to contiguous mapping ranges. Decode checks every range, count,
-mode, width, reserved flag, and the absence of trailing bytes. Free-span records, rebuild reserve, locator rows, and substrate
-allocation are intentionally not serialized by this test-only codec and remain separate terms in
-the Plan 0134 gate. Round-trip and corruption tests cover all requested strides and widths,
-single-bucket and multi-bucket leaves. This is evidence for a later stable-layout design, not
-runtime promotion or alias removal.
+mode, width, reserved flag, and the absence of trailing bytes. Free-span records, rebuild reserve,
+locator rows, and substrate allocation remain separate terms in the Plan 0134 gate. Round-trip and
+corruption tests cover all requested strides and widths, single-bucket and multi-bucket leaves.
+Plan 0136 places this codec behind an internal locator/blob/free-span storage boundary with
+fresh/reopen/partial-layout validation, publication ordering, old-span retirement, and
+locator-to-blob reopen validation. This remains dormant storage foundation; it is not runtime
+promotion or alias removal.
 
 ### Reads
 
@@ -640,12 +642,13 @@ microbenchmarks.
 - ADR 0045 delegates physical pairing and returned-slot requirements to this ADR.
 - ADR 0026 remains the implemented repair contract until this ADR lands; its successor must restore
   exact pair rank and mate acceleration.
-- `design/storage/lara.md` records planned mate resolution at the bidirectional LARA boundary.
+- `design/storage/lara.md` records the Plan 0136 dormant storage foundation and planned mate
+  resolution at the bidirectional LARA boundary.
 - `design/storage/lara-and-facade.md` moves mate ownership from Graph facade to LARA while retaining
   canonical properties in GraphStore.
 - `design/storage/labeled-edge-inline-values.md` records `mate_of` as the planned exact mirrored
   update path.
-- `design/storage/stable-memory-inventory.md` records the planned four-region bundle without
+- `design/storage/stable-memory-inventory.md` records the four-region dormant bundle without
   changing current implemented region counts.
 
 ## Related

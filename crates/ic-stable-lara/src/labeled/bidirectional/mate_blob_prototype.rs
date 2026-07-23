@@ -1,7 +1,10 @@
-//! Test-only versioned mate blob prototype for ADR 0048.
+//! Versioned mate blob codec for ADR 0048's dormant storage foundation.
 //!
-//! This module intentionally has no stable-memory or runtime entry point. It validates the
-//! proposed byte boundary before a production locator/blob store is designed.
+//! The codec is internal-only: it has no graph lookup or promotion entry point. The storage
+//! foundation uses it to validate blobs before publication and on reopen; runtime promotion is
+//! deferred to a later slice.
+
+#![expect(dead_code, reason = "codec is dormant until the promotion slice")]
 
 const MAGIC: [u8; 4] = *b"MATE";
 const VERSION: u8 = 1;
