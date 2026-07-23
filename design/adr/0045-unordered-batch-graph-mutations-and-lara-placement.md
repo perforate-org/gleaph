@@ -88,21 +88,26 @@ overflow log only to fold it back into the slab during repeated rebalances.
 
 ## Decision
 
-Implementation status as of 2026-07-23 01:32:14 UTC +0000:
+Implementation status as of 2026-07-23 01:56:14 UTC +0000:
 
 - Plan 0121 read-only placement planning is implemented.
 - Plan 0122 one-orientation batch commit is implemented in `ic-stable-lara`:
   the internal `OneOrientationBatchPlan` / `reserve_one_orientation_batch` /
-  `BatchReservation::commit` boundary exists.  Reserve performs all fallible
-  validation, edge/payload capacity reservation, and payload allocation before
-  any canonical write; on failure it rolls back both the edge-store logical
-  capacity and the payload occupied tail to their pre-reserve values (retained
-  stable-memory page slack is non-canonical and safe).  Commit validates the
-  reservation token, the originating graph instance, and every bucket
-  fingerprint/geometry before the first canonical byte write.  Supported
-  geometries are existing buckets whose run fits the current planned slab window
-  (including the first bucket's vertex quota), with payload span growth at the
-  occupied tail.
+  `BatchReservation::commit` boundary exists.  Empty plans are rejected by
+  `reserve_one_orientation_batch`; the batch boundary does not define a no-op
+  success path.  Reserve performs all fallible validation, edge/payload capacity
+  reservation, and payload allocation before any canonical write; on failure it
+  rolls back both the edge-store logical capacity and the payload occupied tail
+  to their pre-reserve values (retained stable-memory page slack is non-canonical
+  and safe).  Commit validates the reservation token, the originating graph
+  instance, and every bucket fingerprint/geometry before the first canonical byte
+  write.  After the first canonical byte write, a panic is an invariant
+  violation.  In an ICP canister message the trap rolls back the entire message,
+  so no partial canonical state is published at that boundary; direct library
+  callers without such a transaction boundary do not receive the same atomicity
+  guarantee.  Supported geometries are existing buckets whose run fits the current
+  planned slab window (including the first bucket's vertex quota), with payload
+  span growth at the occupied tail.
 - New bucket creation, overflow-log batch appends, rebalance/relocation,
   dynamic leaf expansion, GraphStore orchestration wiring, and scalar-vs-batch
   benchmarks remain planned for later slices.

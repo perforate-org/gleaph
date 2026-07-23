@@ -776,36 +776,110 @@ mod tests {
     }
 
     #[test]
-    fn commit_result_counts_use_checked_conversion() {
-        // Sanity check: a normal batch converts its result counts to u32 safely.
-        let graph = segment16_payload_graph();
-        for _ in 0..3 {
-            graph.push_vertex(LabeledVertex::default()).unwrap();
-        }
+    fn reserve_checks_total_slot_counts_fit_in_u32_results() {
+        // The reserve boundary rejects batches whose total edge or payload slot
+        // count would not fit in the public u32 result fields.
+        use crate::labeled::graph::batch_write::PreflightRun;
 
-        let label = BucketLabelKey::directed_from_index(1);
-        graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
-            .unwrap();
-
-        let plan = OneOrientationBatchPlan {
-            runs: vec![OneOrientationBucketRun {
-                owner_vertex_id: VertexId::from(0),
-                label_id: label,
-                inline_value_width: 4,
-                edges: vec![OneOrientationBatchEdge {
-                    logical_ordinal: 0,
-                    owner_vertex_id: VertexId::from(0),
-                    neighbor_vertex_id: VertexId::from(1),
-                    label_id: label,
-                    edge: PayloadTestEdge::with_i32(1, 100),
-                }],
-            }],
+        let check = |preflight: &[PreflightRun]| {
+            LabeledLaraGraph::<PayloadTestEdge, crate::VectorMemory>::check_total_result_counts_fit_u32(
+                preflight,
+            )
         };
 
-        let result = graph.insert_one_orientation_batch(&plan).unwrap();
-        assert_eq!(result.edge_slots_written, 1);
-        assert_eq!(result.payload_slots_written, 1);
+        let ok = vec![PreflightRun {
+            edge_slot_count: 10,
+            inline_value_width: 4,
+            payload_byte_offset: Some(0),
+            payload_byte_count: 40,
+            ..PreflightRun::default()
+        }];
+        assert!(check(&ok).is_ok(), "small counts must fit in u32");
+
+        let max_u32 = u32::MAX as u64;
+        let too_many_edge = vec![
+            PreflightRun {
+                edge_slot_count: 1,
+                ..PreflightRun::default()
+            },
+            PreflightRun {
+                owner_vertex_id: VertexId::from(1),
+                label_id: BucketLabelKey::directed_from_index(2),
+                bucket_slot: 1,
+                edge_start_slot: 1,
+                edge_slot_count: u32::MAX,
+                ..PreflightRun::default()
+            },
+        ];
+        assert!(
+            check(&too_many_edge).is_err(),
+            "edge slot count overflowing u32 must be rejected"
+        );
+
+        let too_many_payload = vec![
+            PreflightRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: BucketLabelKey::directed_from_index(1),
+                bucket_slot: 0,
+                edge_slot_count: u32::MAX / 2 + 1,
+                inline_value_width: 4,
+                payload_byte_offset: Some(0),
+                payload_byte_count: (u32::MAX / 2 + 1) as u64 * 4,
+                ..PreflightRun::default()
+            },
+            PreflightRun {
+                owner_vertex_id: VertexId::from(1),
+                label_id: BucketLabelKey::directed_from_index(2),
+                bucket_slot: 1,
+                edge_start_slot: 1,
+                edge_slot_count: u32::MAX / 2 + 1,
+                inline_value_width: 4,
+                payload_byte_offset: Some(0),
+                payload_byte_count: (u32::MAX / 2 + 1) as u64 * 4,
+                ..PreflightRun::default()
+            },
+        ];
+        assert!(
+            check(&too_many_payload).is_err(),
+            "payload slot count overflowing u32 must be rejected"
+        );
+
+        let edge_at_max_u32 = vec![PreflightRun {
+            edge_slot_count: u32::MAX,
+            ..PreflightRun::default()
+        }];
+        assert!(
+            check(&edge_at_max_u32).is_ok(),
+            "exactly u32::MAX edge slots must be accepted"
+        );
+
+        let payload_at_max_u32 = vec![PreflightRun {
+            edge_slot_count: u32::MAX,
+            inline_value_width: 1,
+            payload_byte_offset: Some(0),
+            payload_byte_count: max_u32,
+            ..PreflightRun::default()
+        }];
+        assert!(
+            check(&payload_at_max_u32).is_ok(),
+            "exactly u32::MAX payload slots must be accepted"
+        );
+    }
+
+    #[test]
+    fn reserve_rejects_empty_plan() {
+        // An empty batch has no defined semantics and must be rejected.
+        let graph = segment16_payload_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+
+        let plan = OneOrientationBatchPlan { runs: vec![] };
+
+        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
+        assert!(
+            matches!(err, OneOrientationBatchError::UnsupportedGeometry(_)),
+            "expected UnsupportedGeometry for empty plan, got {err}"
+        );
     }
 
     #[test]

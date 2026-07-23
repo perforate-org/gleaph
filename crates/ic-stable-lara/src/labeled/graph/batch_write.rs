@@ -17,8 +17,13 @@
 //! 2. `BatchReservation::commit` performs the actual stable-memory mutations.
 //!    Because all fallible checks happened in reserve, a recoverable error
 //!    cannot occur after the first canonical byte write.  A panic here is an
-//!    invariant violation; in a canister message the trap rolls back the entire
-//!    message, so no partial canonical state is published.
+//!    invariant violation.  In an ICP canister message the trap rolls back the
+//!    entire message, so no partial canonical state is published at that
+//!    boundary; direct library callers without such a transaction boundary do
+//!    not receive the same atomicity guarantee.
+//!
+//! Empty plans are rejected by `reserve_one_orientation_batch`; the batch
+//! boundary does not define a no-op success path.
 //!
 //! The initial slice supports only existing buckets whose run fits the current
 //! slab window with payload span growth at the occupied tail.  New buckets,
@@ -204,7 +209,7 @@ pub enum OneOrientationBatchError {
 
 /// Intermediate preflight record for one run before any mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PayloadAllocationKind {
+pub(crate) enum PayloadAllocationKind {
     /// Existing span; write at the existing offset.
     Existing { offset: u64 },
     /// New span of the given byte length must be allocated at reserve time.
@@ -217,17 +222,35 @@ enum PayloadAllocationKind {
     },
 }
 
-struct PreflightRun {
-    owner_vertex_id: VertexId,
-    label_id: BucketLabelKey,
-    bucket_slot: u64,
-    bucket: super::LabelBucket,
-    edge_start_slot: u64,
-    edge_slot_count: u32,
-    inline_value_width: u16,
-    payload_byte_offset: Option<u64>,
-    payload_byte_count: u64,
-    payload_allocation: Option<PayloadAllocationKind>,
+pub(crate) struct PreflightRun {
+    pub(crate) owner_vertex_id: VertexId,
+    pub(crate) label_id: BucketLabelKey,
+    pub(crate) bucket_slot: u64,
+    pub(crate) bucket: super::LabelBucket,
+    pub(crate) edge_start_slot: u64,
+    pub(crate) edge_slot_count: u32,
+    pub(crate) inline_value_width: u16,
+    pub(crate) payload_byte_offset: Option<u64>,
+    pub(crate) payload_byte_count: u64,
+    pub(crate) payload_allocation: Option<PayloadAllocationKind>,
+}
+
+#[cfg(test)]
+impl Default for PreflightRun {
+    fn default() -> Self {
+        Self {
+            owner_vertex_id: VertexId::from(0),
+            label_id: BucketLabelKey::directed_from_index(0),
+            bucket_slot: 0,
+            bucket: super::LabelBucket::default(),
+            edge_start_slot: 0,
+            edge_slot_count: 0,
+            inline_value_width: 0,
+            payload_byte_offset: None,
+            payload_byte_count: 0,
+            payload_allocation: None,
+        }
+    }
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -263,15 +286,7 @@ where
         }
 
         // Phase 2.5: prove that the total result counts fit in the public u32 fields.
-        let total_edge_slots: u64 = preflight.iter().map(|p| u64::from(p.edge_slot_count)).sum();
-        let total_payload_slots: u64 = preflight
-            .iter()
-            .filter(|p| p.inline_value_width > 0)
-            .map(|p| u64::from(p.edge_slot_count))
-            .sum();
-        if u32::try_from(total_edge_slots).is_err() || u32::try_from(total_payload_slots).is_err() {
-            return Err(OneOrientationBatchError::SlabCapacityExceeded);
-        }
+        Self::check_total_result_counts_fit_u32(&preflight)?;
 
         // Phase 3: mutate allocator state.  We resize edge-store capacity once and
         // then perform every payload allocation/growth.  If any payload operation
@@ -286,7 +301,6 @@ where
         let payload_tail_before = self.values.header().slab_occupied_tail;
         let mut allocated_payload_offsets: Vec<Option<(u64, u64)>> =
             Vec::with_capacity(preflight.len());
-        let mut payload_alloc_ok = false;
         for p in &preflight {
             if let Some(allocation) = p.payload_allocation {
                 match allocation {
@@ -329,10 +343,7 @@ where
             } else {
                 allocated_payload_offsets.push(None);
             }
-            payload_alloc_ok = true;
         }
-        // Suppress unused-mut warning when all payload runs are edge-only.
-        let _ = payload_alloc_ok;
 
         // Phase 4: build the opaque reservation token from the preflight snapshot.
         // No fallible allocator calls remain from this point onward.
@@ -386,6 +397,11 @@ where
     fn validate_plan_invariants(
         plan: &OneOrientationBatchPlan<E>,
     ) -> Result<(), OneOrientationBatchError> {
+        if plan.runs.is_empty() {
+            return Err(OneOrientationBatchError::UnsupportedGeometry(
+                "empty batch plan has no defined no-op semantics".into(),
+            ));
+        }
         let mut seen_buckets = std::collections::BTreeSet::<(VertexId, BucketLabelKey)>::new();
         for run in &plan.runs {
             if run.edges.is_empty() {
@@ -430,6 +446,26 @@ where
         }
     }
 
+    /// Verify that the summed edge and payload slot counts of the preflight runs
+    /// fit into the public `u32` result fields.
+    ///
+    /// This is pulled out so the boundary can be unit-tested directly: a batch
+    /// with more than `u32::MAX` edge or payload slots is rejected at reserve time
+    /// instead of truncating the commit result.
+    pub(crate) fn check_total_result_counts_fit_u32(
+        preflight: &[PreflightRun],
+    ) -> Result<(), OneOrientationBatchError> {
+        let total_edge_slots: u64 = preflight.iter().map(|p| u64::from(p.edge_slot_count)).sum();
+        let total_payload_slots: u64 = preflight
+            .iter()
+            .filter(|p| p.inline_value_width > 0)
+            .map(|p| u64::from(p.edge_slot_count))
+            .sum();
+        if u32::try_from(total_edge_slots).is_err() || u32::try_from(total_payload_slots).is_err() {
+            return Err(OneOrientationBatchError::SlabCapacityExceeded);
+        }
+        Ok(())
+    }
     /// Roll back edge-store logical capacity growth performed during a partially-failed reserve.
     ///
     /// The underlying stable-memory pages are not shrunk; they become harmless
