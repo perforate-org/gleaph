@@ -11,9 +11,11 @@
 //!    backing-capacity reservation before any canonical write.  On success it
 //!    returns a `BatchReservation` token that records the preflight snapshot
 //!    and required destination geometry.  If reserve fails part-way through
-//!    capacity reservation, it rolls back the logical edge-store capacity and
-//!    payload occupied tail to their pre-reserve values; the retained
-//!    stable-memory page slack is non-canonical and safe.
+//!    capacity reservation, it restores the logical edge-store capacity and the
+//!    payload occupied tail to their pre-reserve values.  Any payload bytes that
+//!    were already appended are retired to the payload free-list as reusable
+//!    slack.  The underlying stable-memory pages are not shrunk.  Canonical
+//!    adjacency and bucket metadata are never modified.
 //! 2. `BatchReservation::commit` performs the actual stable-memory mutations.
 //!    Because all fallible checks happened in reserve, a recoverable error
 //!    cannot occur after the first canonical byte write.  A panic here is an
@@ -21,6 +23,10 @@
 //!    entire message, so no partial canonical state is published at that
 //!    boundary; direct library callers without such a transaction boundary do
 //!    not receive the same atomicity guarantee.
+//! 3. `BatchReservation::rollback` consumes the token and reverts the same
+//!    logical capacity and occupied-tail changes without publishing canonical
+//!    state.  Because the token is consumed, a reservation cannot be rolled
+//!    back twice.
 //!
 //! Empty plans are rejected by `reserve_one_orientation_batch`; the batch
 //! boundary does not define a no-op success path.
@@ -266,11 +272,13 @@ where
     /// This is the `reserve` step of the ADR 0045 boundary.  It performs all
     /// fallible validation before any canonical write.  If reserve fails after
     /// growing edge/payload backing capacity, it restores the logical edge-store
-    /// capacity and payload occupied tail to their pre-reserve values, leaving
-    /// only harmless stable-memory page slack.  Canonical adjacency and bucket
-    /// metadata are never modified.  On success it returns an opaque
-    /// [`BatchReservation`] token; the only valid operation on that token is
-    /// [`BatchReservation::commit`].
+    /// capacity and payload occupied tail to their pre-reserve values.  Payload
+    /// bytes that were already appended are retired to the payload free-list
+    /// as reusable slack; the underlying stable-memory pages are not shrunk.
+    /// Canonical adjacency and bucket metadata are never modified.  On success
+    /// it returns an opaque [`BatchReservation`] token; the valid operations on
+    /// that token are [`BatchReservation::commit`] and
+    /// [`BatchReservation::rollback`].
     pub fn reserve_one_orientation_batch(
         &self,
         plan: &OneOrientationBatchPlan<E>,
@@ -297,9 +305,11 @@ where
         // occupied tail to their pre-reserve values.  (The underlying stable-memory
         // pages are not shrunk; they become harmless slack.)
         let edge_capacity_before = self.edges.header().elem_capacity;
-        self.edges
-            .set_elem_capacity(max_edge_end_slot)
-            .map_err(storage_resize_error)?;
+        if max_edge_end_slot > edge_capacity_before {
+            self.edges
+                .set_elem_capacity(max_edge_end_slot)
+                .map_err(storage_resize_error)?;
+        }
 
         let payload_tail_before = self.values.header().slab_occupied_tail;
         let mut allocated_payload_offsets: Vec<Option<(u64, u64)>> =
@@ -438,9 +448,11 @@ where
     ///
     /// All payload allocations in this batch append at the occupied tail, so the
     /// new bytes are exactly `[original_tail, current_tail)`.  We retire that
-    /// range to the free list and restore the header.  Existing payload spans
-    /// are untouched.  If retiring the tail span fails, we panic: the allocator
-    /// would be left in an inconsistent state and continuing is unsafe.
+    /// range to the free list and restore the header, turning the unused bytes
+    /// into reusable slack.  Existing payload spans are untouched.  The
+    /// underlying stable-memory pages are not shrunk.  If retiring the tail
+    /// span fails, we panic: the allocator would be left in an inconsistent
+    /// state and continuing is unsafe.
     fn rollback_payload_tail(&self, original_tail: u64) {
         let current_tail = self.values.header().slab_occupied_tail;
         if current_tail > original_tail {
@@ -478,8 +490,9 @@ where
     }
     /// Roll back edge-store logical capacity growth performed during a partially-failed reserve.
     ///
-    /// The underlying stable-memory pages are not shrunk; they become harmless
-    /// slack.  Only the persisted logical capacity is restored.
+    /// Only the persisted logical `elem_capacity` is restored.  The underlying
+    /// stable-memory pages are not shrunk and no new edge free spans are
+    /// created, so the exact shape of the edge free-list is unchanged.
     fn rollback_edge_capacity(&self, original_capacity: u64) {
         let current_capacity = self.edges.header().elem_capacity;
         if current_capacity > original_capacity {
@@ -866,11 +879,14 @@ where
 
     /// Roll back the capacity and payload reservations made by this reservation.
     ///
-    /// This restores the edge-store logical capacity and payload occupied tail to
-    /// the values captured before `reserve_one_orientation_batch` mutated them.
-    /// Canonical adjacency and bucket metadata are untouched.  It is safe to call
-    /// this multiple times and after a partial rollback.
-    pub(crate) fn rollback<M: Memory>(&self, graph: &LabeledLaraGraph<E, M>) {
+    /// This consumes the token and restores the edge-store logical capacity
+    /// and payload occupied tail to the values captured before
+    /// `reserve_one_orientation_batch` mutated them.  Any payload bytes that
+    /// were already appended are retired to the payload free-list as reusable
+    /// slack; the underlying stable-memory pages are not shrunk.  Canonical
+    /// adjacency and bucket metadata are untouched.  Because the token is
+    /// consumed, a reservation cannot be rolled back twice.
+    pub(crate) fn rollback<M: Memory>(self, graph: &LabeledLaraGraph<E, M>) {
         assert_eq!(
             self.graph_marker,
             graph.instance_marker(),

@@ -121,8 +121,11 @@ impl GraphStore {
     /// If any orientation cannot be reserved on the clean-slab path, this method
     /// returns [`BatchEdgeInsertResult::Unsupported`] without writing any canonical
     /// adjacency. Any reservation that succeeded before the failure is rolled back
-    /// to its pre-reserve allocator state, so no capacity or payload tail is leaked
-    /// before the caller falls back to the existing scalar path.
+    /// by consuming its token; the rollback restores logical edge capacity and
+    /// the payload occupied tail, and retires any allocated payload bytes to the
+    /// free-list as reusable slack. The underlying stable-memory pages are not
+    /// shrunk. This leaves no leaked capacity or tail before the caller falls
+    /// back to the existing scalar path.
     pub(crate) fn try_insert_batch_edges_clean_slab(
         &self,
         edges: &[super::batch_placement::BatchEdgeInput],
@@ -145,7 +148,7 @@ impl GraphStore {
             match self.reserve_one_orientation_plan(&req.plan, req.orientation) {
                 Ok(reservation) => reservations.push((req.orientation, reservation)),
                 Err(err) => {
-                    self.rollback_one_orientation_reservations(&reservations);
+                    self.rollback_one_orientation_reservations(reservations);
                     return Ok(BatchEdgeInsertResult::Unsupported {
                         reason: format!("{err}"),
                     });
@@ -251,11 +254,11 @@ impl GraphStore {
 
     fn rollback_one_orientation_reservations(
         &self,
-        reservations: &[(LabeledOrientation, BatchReservation<Edge>)],
+        reservations: Vec<(LabeledOrientation, BatchReservation<Edge>)>,
     ) {
         for (orientation, reservation) in reservations {
             self.with_graph_mut(|graph| {
-                graph.rollback_batch_reservation(*orientation, reservation);
+                graph.rollback_batch_reservation(orientation, reservation);
             });
         }
     }
@@ -293,6 +296,8 @@ mod tests {
     use crate::test_labels::install_test_edge_inline_value_profile;
     use gleaph_graph_kernel::entry::EdgeLabelId;
     use ic_stable_lara::VertexId;
+    use ic_stable_lara::lara::edge::free_span::FreeSpanAllocatorStats;
+    use ic_stable_lara::lara::edge_inline_value::PayloadAllocatorStats;
 
     fn fresh_store() -> GraphStore {
         GraphStore::new()
@@ -334,20 +339,24 @@ mod tests {
         );
     }
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     struct AllocatorSnapshot {
         forward_edge_capacity: u64,
         reverse_edge_capacity: u64,
-        forward_payload_tail: u64,
-        reverse_payload_tail: u64,
+        forward_edge_free: FreeSpanAllocatorStats,
+        reverse_edge_free: FreeSpanAllocatorStats,
+        forward_payload: PayloadAllocatorStats,
+        reverse_payload: PayloadAllocatorStats,
     }
 
     fn allocator_snapshot(store: &GraphStore) -> AllocatorSnapshot {
         store.with_graph_mut(|graph| AllocatorSnapshot {
             forward_edge_capacity: graph.forward().edges().header().elem_capacity,
             reverse_edge_capacity: graph.reverse().edges().header().elem_capacity,
-            forward_payload_tail: graph.forward().values().header().slab_occupied_tail,
-            reverse_payload_tail: graph.reverse().values().header().slab_occupied_tail,
+            forward_edge_free: graph.forward().edges().allocator_stats(),
+            reverse_edge_free: graph.reverse().edges().allocator_stats(),
+            forward_payload: graph.forward().values().allocator_stats(),
+            reverse_payload: graph.reverse().values().allocator_stats(),
         })
     }
 
@@ -589,28 +598,21 @@ mod tests {
         let target_with_bucket = vertices[1];
         let target_without_bucket = vertices[2];
 
-        // Prepare forward bucket at source and reverse bucket at target_with_bucket.
-        // target_without_bucket intentionally has no reverse bucket.
+        // Prepare a forward bucket at source (and an unused reverse bucket at
+        // target_with_bucket).  The edge below targets target_without_bucket, whose
+        // reverse bucket does not exist, so reverse reserve fails after the forward
+        // payload allocation has already happened.
         store.prepare_clean_slab_dir_buckets(source, target_with_bucket, label, 8);
 
         let before = allocator_snapshot(&store);
 
-        let edges = vec![
-            input(
-                source,
-                target_with_bucket,
-                Some(label),
-                true,
-                payload.clone(),
-            ),
-            input(
-                source,
-                target_without_bucket,
-                Some(label),
-                true,
-                payload.clone(),
-            ),
-        ];
+        let edges = vec![input(
+            source,
+            target_without_bucket,
+            Some(label),
+            true,
+            payload.clone(),
+        )];
         let result = store
             .try_insert_batch_edges_clean_slab(&edges)
             .expect("plan/encode ok");
@@ -620,9 +622,61 @@ mod tests {
         );
 
         let after = allocator_snapshot(&store);
+
+        // Logical edge capacity is restored for both orientations.
         assert_eq!(
-            before, after,
-            "partial reserve failure must roll back edge capacity and payload tail for both orientations"
+            after.forward_edge_capacity, before.forward_edge_capacity,
+            "forward edge capacity must be restored"
+        );
+        assert_eq!(
+            after.reverse_edge_capacity, before.reverse_edge_capacity,
+            "reverse edge capacity must be restored"
+        );
+
+        // Edge free-list accounting is unchanged; no edge free spans were created.
+        assert_eq!(
+            after.forward_edge_free, before.forward_edge_free,
+            "forward edge free-list accounting must be unchanged"
+        );
+        assert_eq!(
+            after.reverse_edge_free, before.reverse_edge_free,
+            "reverse edge free-list accounting must be unchanged"
+        );
+
+        // Payload occupied tail is restored for both orientations.
+        assert_eq!(
+            after.forward_payload.slab_occupied_tail, before.forward_payload.slab_occupied_tail,
+            "forward payload occupied tail must be restored"
+        );
+        assert_eq!(
+            after.reverse_payload.slab_occupied_tail, before.reverse_payload.slab_occupied_tail,
+            "reverse payload occupied tail must be restored"
+        );
+
+        // Reverse payload allocator state is untouched.
+        assert_eq!(after.reverse_payload, before.reverse_payload);
+
+        // The forward payload bytes that were allocated before the failure are
+        // retired to the free-list as reusable slack. The stable-memory backing
+        // capacity is not shrunk.
+        let expected_forward_payload_bytes = u64::try_from(payload.len()).unwrap();
+        assert_eq!(
+            after.forward_payload.free_bytes - before.forward_payload.free_bytes,
+            expected_forward_payload_bytes,
+            "forward payload free bytes must increase by the allocated run length"
+        );
+        assert_eq!(
+            after.forward_payload.free_span_count - before.forward_payload.free_span_count,
+            1,
+            "forward payload free-list must gain exactly one retired span"
+        );
+        assert!(
+            after.forward_payload.largest_free_span >= expected_forward_payload_bytes,
+            "largest forward payload free span must cover the retired run"
+        );
+        assert!(
+            after.forward_payload.byte_capacity >= before.forward_payload.byte_capacity,
+            "stable-memory payload capacity must not shrink on rollback"
         );
     }
 

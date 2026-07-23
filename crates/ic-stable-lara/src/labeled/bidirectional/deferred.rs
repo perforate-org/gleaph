@@ -1089,13 +1089,16 @@ where
 
     /// Roll back a one-orientation batch reservation without committing it.
     ///
-    /// This delegates to the forward or reverse labeled graph and restores the
-    /// edge-store logical capacity and payload occupied tail captured at reserve
-    /// time. Canonical adjacency and bucket metadata are untouched.
+    /// This consumes the reservation token, delegates to the forward or reverse
+    /// labeled graph, and restores the edge-store logical capacity and payload
+    /// occupied tail captured at reserve time.  Any payload bytes that were
+    /// already appended are retired to the payload free-list as reusable slack;
+    /// the underlying stable-memory pages are not shrunk.  Canonical adjacency
+    /// and bucket metadata are untouched.
     pub fn rollback_batch_reservation(
         &self,
         orientation: Orientation,
-        reservation: &BatchReservation<E>,
+        reservation: BatchReservation<E>,
     ) {
         match orientation {
             Orientation::Forward => reservation.rollback(&self.forward),

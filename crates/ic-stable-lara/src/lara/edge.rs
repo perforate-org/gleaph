@@ -116,3 +116,16 @@ pub struct EdgeStore<E: CsrEdge, M: Memory> {
     span_meta: SegmentSpanMetaStore<M>,
     free_spans: FreeSpanStore<M>,
 }
+
+impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
+    /// Returns edge-slab allocator statistics (free span accounting).
+    pub fn allocator_stats(&self) -> crate::lara::edge::free_span::FreeSpanAllocatorStats {
+        self.free_spans.allocator_stats()
+    }
+
+    /// Returns the current edge free spans for testing and diagnostics.
+    #[cfg(test)]
+    pub(crate) fn free_byte_spans(&self) -> Vec<crate::lara::edge::free_span::FreeSpan> {
+        self.free_spans.spans()
+    }
+}

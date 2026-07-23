@@ -93,37 +93,43 @@ Implementation status as of 2026-07-23 02:45:52 UTC +0000:
 - Plan 0121 read-only placement planning is implemented.
 - Plan 0122 one-orientation batch commit is implemented in `ic-stable-lara`:
   the internal `OneOrientationBatchPlan` / `reserve_one_orientation_batch` /
-  `BatchReservation::commit` boundary exists.  Empty plans are rejected by
-  `reserve_one_orientation_batch`; the batch boundary does not define a no-op
-  success path.  Reserve performs all fallible validation, edge/payload capacity
-  reservation, and payload allocation before any canonical write; on failure it
-  rolls back both the edge-store logical capacity and the payload occupied tail
-  to their pre-reserve values (retained stable-memory page slack is non-canonical
-  and safe).  Commit validates the reservation token, the originating graph
-  instance, and every bucket fingerprint/geometry before the first canonical byte
-  write.  After the first canonical byte write, a panic is an invariant
-  violation.  In an ICP canister message the trap rolls back the entire message,
-  so no partial canonical state is published at that boundary; direct library
-  callers without such a transaction boundary do not receive the same atomicity
-  guarantee.  Supported geometries are existing buckets whose run fits the current
-  planned slab window (including the first bucket's vertex quota), with payload
-  span growth at the occupied tail.
+  `BatchReservation::commit` / `BatchReservation::rollback` boundary exists.
+  Empty plans are rejected by `reserve_one_orientation_batch`; the batch boundary
+  does not define a no-op success path.  Reserve performs all fallible validation,
+  edge/payload capacity reservation, and payload allocation before any canonical
+  write; on failure it restores the edge-store logical capacity and the payload
+  occupied tail to their pre-reserve values.  Any payload bytes already appended
+  are retired to the payload free-list as reusable slack; the underlying
+  stable-memory pages are not shrunk.  `BatchReservation::rollback` consumes the
+  token and applies the same restoration, so a reservation cannot be rolled back
+  twice.  Commit validates the reservation token, the originating graph instance,
+  and every bucket fingerprint/geometry before the first canonical byte write.
+  After the first canonical byte write, a panic is an invariant violation.  In an
+  ICP canister message the trap rolls back the entire message, so no partial
+  canonical state is published at that boundary; direct library callers without
+  such a transaction boundary do not receive the same atomicity guarantee.
+  Supported geometries are existing buckets whose run fits the current planned
+  slab window (including the first bucket's vertex quota), with payload span
+  growth at the occupied tail.
 - Plan 0123 GraphStore clean-slab orchestration is implemented: `GraphStore::
   try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   existing read-only planner, reserves every orientation before committing any
   orientation, and returns `BatchEdgeInsertResult::Unsupported` before any
   canonical write when the clean-slab path cannot admit the geometry.  If a later
   orientation reservation fails, every previously successful reservation is rolled
-  back via `BatchReservation::rollback` / `DeferredBidirectionalLabeledLaraGraph::
-  rollback_batch_reservation`, restoring the edge-store logical capacity and
-  payload occupied tail so the caller can safely fall back to the existing scalar
-  insertion path without leaking allocator state.  Focused unit tests cover
-  directed/reverse pairing, undirected two-forward-half and self-loop behavior,
-  payload read-back, multi-run commits, reserve failure leaving canonical state
-  and allocator headers unchanged, and empty/new-bucket unsupported rejection.
-  Canbench coverage compares the clean-slab path against scalar insertion for 128
-  directed edges with widths 0 and 8, with identical pre-created buckets and
-  input construction outside the measured closure.
+  back by consuming its token via `BatchReservation::rollback` /
+  `DeferredBidirectionalLabeledLaraGraph::rollback_batch_reservation`, restoring
+  the edge-store logical capacity and payload occupied tail and retiring any
+  allocated payload bytes to the free-list as reusable slack.  The underlying
+  stable-memory pages are not shrunk, so the caller can safely fall back to the
+  existing scalar insertion path without leaking logical capacity or payload
+  tail.  Focused unit tests cover directed/reverse pairing, undirected
+  two-forward-half and self-loop behavior, payload read-back, multi-run commits,
+  reserve failure leaving canonical state and allocator headers/logical capacity
+  unchanged plus the expected free-list slack shape, and empty/new-bucket
+  unsupported rejection.  Canbench coverage compares the clean-slab path against
+  scalar insertion for 128 directed edges with widths 0 and 8, with identical
+  pre-created buckets and input construction outside the measured closure.
 - New bucket creation, overflow-log batch appends, rebalance/relocation,
   dynamic leaf expansion, and full public wire integration remain planned for
   later slices.
