@@ -87,15 +87,19 @@ overflow log only to fold it back into the slab during repeated rebalances.
 
 ## Decision
 
-Implementation status as of 2026-07-22 23:53:58 UTC +0000:
+Implementation status as of 2026-07-23 06:40:00 UTC +0000:
 
 - Plan 0121 read-only placement planning is implemented.
 - Plan 0122 one-orientation batch commit is partially implemented: the
   internal `OneOrientationBatchPlan` / `reserve_one_orientation_batch` /
-  `commit_one_orientation_batch` boundary exists in `ic-stable-lara`, and
-  reserve performs all fallible validation and capacity reservation before any
-  canonical write.  Supported geometries are existing buckets whose run fits
-  the current slab window with payload span growth at the occupied tail.
+  `BatchReservation::commit` boundary exists in `ic-stable-lara`.  Reserve
+  performs all fallible validation, edge/payload capacity reservation, and
+  payload allocation before any canonical write, and rolls back payload tail
+  growth on mid-reservation failure.  Commit validates the reservation token,
+  the originating graph instance, and every bucket fingerprint/geometry before
+  the first canonical byte write.  Supported geometries are existing buckets
+  whose run fits the current planned slab window (including the first
+  bucket's vertex quota), with payload span growth at the occupied tail.
 - New bucket creation, overflow-log batch appends, rebalance/relocation,
   dynamic leaf expansion, GraphStore orchestration wiring, and scalar-vs-batch
   benchmarks remain planned for later slices.

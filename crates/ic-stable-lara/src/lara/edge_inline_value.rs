@@ -22,6 +22,39 @@ pub use blob_store::{BlobStoreError, EdgeInlineValueBlobStore, NoopEdgeInlineVal
 pub use cell::InlineValueLogCell;
 pub use log::{InitError as InlineValueLogInitError, InlineValueLogStore as ValueOverflowLogStore};
 
+#[cfg(test)]
+thread_local! {
+    /// Number of successful payload slab allocations (`append_byte_span` or
+    /// `grow_byte_span_in_place`) to allow before the next allocation returns a
+    /// synthetic `GrowFailed`.  `u32::MAX` means no forced error.  Used by the
+    /// batch-write reserve rollback tests to prove that a partially-grown tail
+    /// is restored.
+    static FORCE_PAYLOAD_ALLOC_ERROR_AFTER: Cell<u32> = const { Cell::new(u32::MAX) };
+}
+
+#[cfg(test)]
+/// Force the payload allocator to fail after `successful_allocations` successful
+/// calls to `append_byte_span` or `grow_byte_span_in_place`.
+pub(crate) fn force_payload_allocation_error_after(successful_allocations: u32) {
+    FORCE_PAYLOAD_ALLOC_ERROR_AFTER.with(|c| c.set(successful_allocations));
+}
+
+#[cfg(test)]
+fn take_forced_payload_allocation_error() -> bool {
+    FORCE_PAYLOAD_ALLOC_ERROR_AFTER.with(|c| {
+        let v = c.get();
+        if v == u32::MAX {
+            false
+        } else if v == 0 {
+            c.set(u32::MAX);
+            true
+        } else {
+            c.set(v - 1);
+            false
+        }
+    })
+}
+
 /// Magic bytes for the value byte slab.
 pub const MAGIC: [u8; 3] = *b"LVG";
 /// Current payload slab layout version.
@@ -683,6 +716,18 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         Ok(())
     }
 
+    /// Resets the occupied tail to `tail` and persists the header.
+    ///
+    /// Used internally to roll back partially-failed batch reservations that
+    /// only appended bytes at the occupied tail.  Callers must first retire
+    /// any newly appended byte range.
+    pub(crate) fn reset_slab_occupied_tail(&self, tail: u64) {
+        let mut h = self.header();
+        h.slab_occupied_tail = tail;
+        self.slab.write_header(&h);
+        self.header.set(h);
+    }
+
     /// Reads bytes from the payload slab.
     pub fn read_bytes(&self, offset: u64, out: &mut [u8]) {
         debug_assert!(byte_offset_fits(offset));
@@ -774,6 +819,13 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         old_len: u64,
         new_len: u64,
     ) -> Result<bool, GrowFailed> {
+        #[cfg(test)]
+        if take_forced_payload_allocation_error() {
+            return Err(GrowFailed {
+                current_size: self.byte_capacity(),
+                delta: 0,
+            });
+        }
         if new_len <= old_len {
             return Ok(true);
         }
@@ -851,6 +903,13 @@ impl<M: Memory> EdgeInlineValueStore<M> {
 
     /// Allocates at the occupied tail without consulting the free list.
     pub fn append_byte_span(&self, len: u64) -> Result<u64, GrowFailed> {
+        #[cfg(test)]
+        if take_forced_payload_allocation_error() {
+            return Err(GrowFailed {
+                current_size: self.byte_capacity(),
+                delta: 0,
+            });
+        }
         let start = self.header().slab_occupied_tail;
         let end = checked_add_byte_offset(start, len).ok_or(GrowFailed {
             current_size: self.byte_capacity(),

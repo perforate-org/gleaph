@@ -199,7 +199,7 @@ Use this when reviewing LARA PRs:
 
 - [lara-dgap-contract.md](./lara-dgap-contract.md) — DGAP mapping and labeled gap detail
 - [adr/0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — labeled physical migration
-- [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented**; one-orientation batch commit skeleton implemented (`plan/reserve/commit` boundary, existing-bucket slab-fit runs, payload-at-tail growth); new buckets, overflow-log batch writes, rebalance/relocation, dynamic expansion, and GraphStore orchestration remain planned
+- [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented**; one-orientation batch commit implemented (`plan/reserve/commit` boundary, opaque graph-bound reservation, payload allocation with tail rollback, pre-write fingerprint/geometry validation, success and adversarial tests); new buckets, overflow-log batch writes, rebalance/relocation, dynamic expansion, and GraphStore orchestration remain planned
 - [lara-labeled-migration-tests.md](./lara-labeled-migration-tests.md) — phase test gates (A–E)
 - `crates/ic-stable-lara/README.md` — crate entry point
 - `reference/DGAP/dgap/src/graph.h` — reference implementation
