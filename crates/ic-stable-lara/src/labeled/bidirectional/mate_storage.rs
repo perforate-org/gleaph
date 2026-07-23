@@ -111,6 +111,16 @@ impl<M: Memory> MateLocatorStore<M> {
                 actual,
             });
         }
+        let required_bytes = HEADER_BYTES
+            .checked_add(
+                actual
+                    .checked_mul(LOCATOR_ROW_BYTES)
+                    .ok_or(MateStorageInitError::InvalidLocatorLayout)?,
+            )
+            .ok_or(MateStorageInitError::InvalidLocatorLayout)?;
+        if memory.size() * WASM_PAGE_BYTES < required_bytes {
+            return Err(MateStorageInitError::InvalidLocatorLayout);
+        }
         Ok(Self {
             memory,
             row_count: actual,
@@ -430,6 +440,7 @@ impl<M: Memory> MateStorage<M> {
 mod tests {
     use super::*;
     use crate::labeled::bidirectional::mate_blob_prototype::{Bucket, Mode};
+    use crate::test_support::FailpointMemory;
     use ic_stable_structures::{
         DefaultMemoryImpl,
         memory_manager::{MemoryId, MemoryManager, VirtualMemory},
@@ -445,6 +456,10 @@ mod tests {
             manager.get(MemoryId::new(2)),
             manager.get(MemoryId::new(3)),
         ]
+    }
+
+    fn failpoint_memories() -> [FailpointMemory; 4] {
+        std::array::from_fn(|_| FailpointMemory::new())
     }
 
     fn blob() -> Vec<u8> {
@@ -474,6 +489,8 @@ mod tests {
             storage.locator(0).expect("locator"),
             Some(old + first.len() as u64)
         );
+        storage.replace(0, &first).expect("reuse retired span");
+        assert_eq!(storage.locator(0).expect("locator"), Some(old));
         let memories = storage.into_memories();
         let reopened = MateStorage::init(memories.0, memories.1, memories.2, memories.3, 4)
             .expect("reopen storage");
@@ -521,5 +538,57 @@ mod tests {
             MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4),
             Err(MateStorageInitError::InvalidBlob)
         ));
+    }
+
+    #[test]
+    fn reopen_rejects_locator_rows_that_do_not_fit_backing_memory() {
+        let [locator, blobs, free_spans, free_span_by_start] = memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let (locator, blobs, free_spans, free_span_by_start) = storage.into_memories();
+        let mut row_count = [0u8; 8];
+        row_count[0..8].copy_from_slice(&1_000_000u64.to_be_bytes());
+        locator.write(LOCATOR_ROW_COUNT_OFFSET, &row_count);
+        assert!(matches!(
+            MateStorage::init(locator, blobs, free_spans, free_span_by_start, 1_000_000),
+            Err(MateStorageInitError::InvalidLocatorLayout)
+        ));
+    }
+
+    #[test]
+    fn allocation_failure_preserves_locator_tail_and_free_spans() {
+        let [locator, blobs, free_spans, free_span_by_start] = failpoint_memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let tail = WASM_PAGE_BYTES - HEADER_BYTES;
+        storage.blobs.set_tail(tail).expect("seed tail");
+        let before = storage.free_spans.allocator_stats();
+        storage
+            .blobs
+            .memory
+            .fail_at_grow(storage.blobs.memory.grow_count() + 1);
+        assert!(matches!(
+            storage.replace(0, &blob()),
+            Err(MateStorageInitError::Grow(_))
+        ));
+        assert_eq!(storage.locator(0).expect("locator"), None);
+        assert_eq!(storage.blobs.tail(), tail);
+        assert_eq!(storage.free_spans.allocator_stats(), before);
+    }
+
+    #[test]
+    fn four_regions_have_independent_headers() {
+        let [locator, blobs, free_spans, free_span_by_start] = memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let (locator, blobs, free_spans, free_span_by_start) = storage.into_memories();
+        let mut locator_magic = [0u8; 3];
+        let mut blob_magic = [0u8; 3];
+        locator.read(0, &mut locator_magic);
+        blobs.read(0, &mut blob_magic);
+        assert_eq!(locator_magic, LOCATOR_MAGIC);
+        assert_eq!(blob_magic, BLOB_MAGIC);
+        assert!(free_spans.size() > 0);
+        assert!(free_span_by_start.size() > 0);
     }
 }
