@@ -387,6 +387,34 @@ with both halves indexed, multiply the per-half mapping cost by two. The current
 stores 18 raw key/value bytes per indexed logical edge before node overhead; two B-trees would
 store at least 36 raw bytes.
 
+### Logical footprint accounting (Plan 0133)
+
+The following table is a storage decision aid, not a stable-layout measurement. It charges both
+physical halves of a non-self logical edge and includes the two five-byte locator rows amortized
+over `n` entries. It excludes each blob's header, indexed-bucket directory, free-span metadata,
+rebuild reserve, and StableBTreeMap/MemoryManager overhead; those terms remain explicit unknowns
+until a storage prototype exists.
+
+For `Sampled`, the exact variable term is `16 * ceil(n / K) + 10` bytes per two-half bucket
+(`8` bytes per checkpoint per half, plus two locator rows). For `Packed`, it is `2 * width * n +
+10`, where `width` is the slot width in bytes. Values below are bytes per logical edge:
+
+| Entries `n` | Sampled K=16 | Sampled K=32 | Sampled K=64 | Packed U8 | Packed U16 | Packed U24 | Packed U32 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 26.00 | 26.00 | 26.00 | 12.00 | 14.00 | 16.00 | 18.00 |
+| 8 | 3.25 | 3.25 | 3.25 | 3.25 | 5.25 | 7.25 | 9.25 |
+| 32 | 1.31 | 0.81 | 0.81 | 2.31 | 4.31 | 6.31 | 8.31 |
+| 128 | 1.08 | 0.58 | 0.33 | 2.08 | 4.08 | 6.08 | 8.08 |
+| 1,024 | 1.01 | 0.51 | 0.26 | 2.01 | 4.01 | 6.01 | 8.01 |
+| 65,536 (hub example) | 1.00 | 0.50 | 0.25 | 2.00 | 4.00 | 6.00 | 8.00 |
+
+The alias comparison remains exactly 18 raw bytes per non-self logical edge. Sampled and Packed
+U8/U16/U24 beat that raw payload for sufficiently large buckets even before shared overhead is
+added; U32 only ties it in the large-bucket limit and is not a storage win once shared terms are
+included. Small buckets should remain `ScanOnly`. This table does not authorize promotion or alias
+removal: the storage gate must add the measured shared terms, and instruction results remain a
+bounded guardrail.
+
 ### Reads
 
 - `ScanOnly`: scan the source bucket to compute equal-neighbor rank and the target bucket to select

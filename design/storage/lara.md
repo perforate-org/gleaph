@@ -179,6 +179,14 @@ sampled/packed leaf blobs at the LARA boundary that publishes slot moves. This c
 is accepted but not yet implemented; the current Graph facade still uses
 `EDGE_ALIASES`.
 
+Plan 0133 establishes the logical byte accounting used before any persistent replacement:
+the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half
+Sampled bucket contributes `16 * ceil(n / K) + 10` bytes before blob headers, directories,
+free-span/rebuild reserve, and stable-structure overhead. Packed contributes `2 * width * n + 10`
+for slot width `width`. These shared and allocator terms are intentionally unknown until an
+isolated storage prototype; MemoryManager page deltas are not per-edge measurements. Promotion
+and alias removal therefore remain planned and storage-gated.
+
 ---
 
 ## What is IC-specific (substrate only)
