@@ -152,9 +152,11 @@ The paired one-edge lookup probe measures approximately 2.3K instructions for al
 4.3K for post-insert adjacency rediscovery, and 12.5K for the current ScanOnly implementation;
 the latest run reports ScanOnly at +5.8% versus its prior baseline while alias and rediscovery
 remain within noise. The scalar location slice removes post-insert rediscovery on supported
-named-bucket paths, but ScanOnly remains comparison evidence and is not adopted as a replacement
-for aliases. GraphStore must not scan for the most recently matching neighbor or payload after an
-insertion that returned an exact location.
+named-bucket paths. These instruction results are a guardrail, not the primary alias-removal
+criterion: the primary objective is reducing persistent bytes per edge, with Sampled/Packed
+metadata expected to recover acceptable lookup cost in promoted buckets. GraphStore must not scan
+for the most recently matching neighbor or payload after an insertion that returned an exact
+location.
 
 The internal result distinguishes one-entry and two-entry cases:
 
@@ -513,7 +515,8 @@ Costs and risks:
 - Pair-rank preservation becomes a mandatory LARA write invariant.
 - Four LARA regions replace one facade region.
 - Sampled/Packed allocation, reopen validation, and rebuild add implementation complexity.
-- Scan fallback can be expensive before promotion or while rebuilding.
+- Scan fallback can be expensive before promotion or while rebuilding; bounded instruction
+  regression is accepted when it buys the intended persistent-byte reduction.
 - Existing reverse repair is count-exact, not pair-exact, for parallel edges and must be
   strengthened during implementation.
 
