@@ -1,9 +1,9 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; geometry/error boundaries hardened; promotion and alias replacement planned)
+Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission and pure leaf-blob construction started in Plan 0141; publication/runtime lookup, mutation invalidation, and alias replacement remain deferred)
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 12:25:05 UTC +0000
+Anchor timestamp: 2026-07-23 14:13:50 UTC +0000
 
 ## Context
 
@@ -453,7 +453,7 @@ terms concrete without exposing a runtime promotion API. Its fixed-endian layout
 | --- | ---: |
 | versioned header | 24 bytes |
 | indexed-bucket directory entry (`owner_vertex_id` + `BucketLabelKey` identity) | 20 bytes per bucket |
-| Sampled mapping | `16 * ceil(n / K)` bytes per bucket (two halves, two `u32` fields) |
+| Sampled mapping | `8 * ceil(n / K)` bytes per bucket (source and mate `u32` fields); a two-half pair therefore contributes `16 * ceil(n / K)` |
 | Packed mapping | `2 * width * n` bytes per bucket |
 
 The header declares the directory, mapping, and total lengths. Mode, stride/width, and entry count

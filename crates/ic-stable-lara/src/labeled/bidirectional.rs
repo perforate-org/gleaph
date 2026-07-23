@@ -3,6 +3,7 @@
 pub(crate) mod deferred;
 mod mate;
 pub(crate) mod mate_blob_prototype;
+pub(crate) mod mate_promotion;
 pub(crate) mod mate_storage;
 
 pub use deferred::{

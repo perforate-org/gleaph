@@ -650,6 +650,31 @@ impl<M: Memory> MateStorage<M> {
         self.restore_rebuild_token(token)
     }
 
+    /// Clears one published row and retires its validated blob.
+    ///
+    /// The locator is changed only after the old blob has been read and decoded.  Retirement is
+    /// deliberately a trap boundary: a published locator must never be left pointing at a span
+    /// that the free-span index failed to retire.
+    pub(crate) fn clear_published(&self, row: u64) -> Result<(), MateStorageInitError> {
+        let state = self.locators.get_state(row)?;
+        let MateLocatorState::Published { blob_offset } = state else {
+            return if matches!(state, MateLocatorState::Rebuilding) {
+                Err(MateStorageInitError::RebuildStateMismatch)
+            } else {
+                Ok(())
+            };
+        };
+        let bytes = self.blobs.read(blob_offset)?;
+        MateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
+        let len =
+            u64::try_from(bytes.len()).map_err(|_| MateStorageInitError::BlobLengthOverflow)?;
+        self.locators.publish_scan_only(row)?;
+        self.free_spans
+            .release_span(blob_offset, len)
+            .expect("published clear must retire the previous blob");
+        Ok(())
+    }
+
     pub(crate) fn publish_rebuild(
         &self,
         token: MateRebuildToken,
@@ -806,6 +831,40 @@ mod tests {
     }
 
     #[test]
+    fn clear_published_returns_scan_only_and_reuses_retired_span() {
+        let [locator, blobs, free_spans, free_span_by_start] = memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let first = blob();
+        storage.replace(0, &first).expect("publish");
+        let old = storage.published_blob_offset(0).expect("offset");
+        storage.clear_published(0).expect("clear");
+        assert_eq!(
+            storage.locator_state(0).expect("state"),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(storage.published_blob_offset(0).expect("offset"), None);
+        storage.replace(0, &first).expect("reuse retired span");
+        assert_eq!(storage.published_blob_offset(0).expect("offset"), old);
+    }
+
+    #[test]
+    fn clear_published_does_not_leave_rebuilding_state() {
+        let [locator, blobs, free_spans, free_span_by_start] = memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let _token = storage.begin_rebuild(0).expect("begin");
+        assert_eq!(
+            storage.clear_published(0),
+            Err(MateStorageInitError::RebuildStateMismatch)
+        );
+        assert_eq!(
+            storage.locator_state(0).expect("state"),
+            MateLocatorState::Rebuilding
+        );
+    }
+
+    #[test]
     fn rebuilding_cannot_be_started_twice_for_one_locator() {
         let [locator, blobs, free_spans, free_span_by_start] = memories();
         let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
@@ -828,6 +887,7 @@ mod tests {
             .published_blob_offset(0)
             .expect("locator")
             .expect("published");
+        let old_bytes = storage.blobs.read(old_start).expect("old blob");
         let tail = WASM_PAGE_BYTES - HEADER_BYTES;
         storage.blobs.set_tail(tail).expect("seed tail");
         let token = storage.begin_rebuild(0).expect("begin rebuild");
@@ -850,6 +910,7 @@ mod tests {
             }
         );
         assert_eq!(storage.blobs.tail(), tail);
+        assert_eq!(storage.blobs.read(old_start).expect("old blob"), old_bytes);
     }
 
     #[test]
@@ -863,6 +924,7 @@ mod tests {
             .published_blob_offset(0)
             .expect("locator")
             .expect("published");
+        let old_bytes = storage.blobs.read(old_start).expect("old blob");
         let token = storage.begin_rebuild(0).expect("begin rebuild");
         assert_eq!(
             storage.publish_rebuild(token, b"invalid-mate-blob"),
@@ -874,6 +936,7 @@ mod tests {
                 blob_offset: old_start
             }
         );
+        assert_eq!(storage.blobs.read(old_start).expect("old blob"), old_bytes);
     }
 
     #[test]

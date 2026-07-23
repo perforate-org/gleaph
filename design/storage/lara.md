@@ -162,7 +162,9 @@ The bidirectional owner rejects forward/reverse PMA segment-size or segment-coun
 before opening the shared `(orientation, leaf)` locator namespace.  Mate initialization errors
 remain typed through `MateStorageInitError`; callers therefore distinguish geometry, partial-layout,
 row-count, and stable-memory failures without parsing display strings.  The two mate data regions
-remain derived but have no rebuild path until the runtime rebuild slice is implemented.
+Plan 0141 adds bounded, read-only promotion admission and pure Sampled/Packed leaf-blob construction.
+The two mate data regions remain derived and publication/runtime lookup remain deferred, so canonical
+adjacency and `EDGE_ALIASES` paths are unchanged.
 Owner construction preflights the four-region composite and compares its fresh/reopen state with
 the LARA sentinel regions before opening either orientation, so mixed fresh/reopen or partial mate
 state cannot leave a newly opened canonical adjacency owner behind. This check runs only during

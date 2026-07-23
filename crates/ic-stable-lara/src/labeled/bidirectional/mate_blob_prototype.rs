@@ -51,9 +51,11 @@ impl Mode {
                     .checked_add(u64::from(stride) - 1)
                     .ok_or(DecodeError::ArithmeticOverflow)?
                     / u64::from(stride);
-                PHYSICAL_HALVES
-                    .checked_mul(checkpoints)
-                    .and_then(|value| value.checked_mul(SAMPLE_FIELDS))
+                // One directory bucket stores one source/mate pair per checkpoint. A
+                // non-self logical edge has two such buckets (forward and reverse), hence
+                // the two-half accounting is 16 bytes per checkpoint in the ADR.
+                checkpoints
+                    .checked_mul(SAMPLE_FIELDS)
                     .and_then(|value| value.checked_mul(SAMPLE_U32_BYTES))
                     .ok_or(DecodeError::ArithmeticOverflow)?
             }
@@ -169,15 +171,16 @@ fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, DecodeError> {
 }
 
 impl MateBlob {
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, EncodeError> {
-        if self.buckets.is_empty() {
-            return Err(EncodeError::EmptyBlob);
-        }
+    /// Returns the exact encoded size after applying the same validation used by [`Self::encode`].
+    pub(crate) fn encoded_len(&self) -> Result<usize, EncodeError> {
         let directory_bytes = self
             .buckets
             .len()
             .checked_mul(DIRECTORY_ENTRY_BYTES)
             .ok_or(EncodeError::ArithmeticOverflow)?;
+        if self.buckets.is_empty() {
+            return Err(EncodeError::EmptyBlob);
+        }
         let mut mapping_bytes = 0usize;
         let mut previous_id = None;
         for bucket in &self.buckets {
@@ -195,6 +198,24 @@ impl MateBlob {
         let total_bytes = HEADER_BYTES
             .checked_add(directory_bytes)
             .and_then(|value| value.checked_add(mapping_bytes))
+            .ok_or(EncodeError::ArithmeticOverflow)?;
+        u32::try_from(self.buckets.len()).map_err(|_| EncodeError::TooLarge)?;
+        u32::try_from(directory_bytes).map_err(|_| EncodeError::TooLarge)?;
+        u32::try_from(mapping_bytes).map_err(|_| EncodeError::TooLarge)?;
+        u32::try_from(total_bytes).map_err(|_| EncodeError::TooLarge)?;
+        Ok(total_bytes)
+    }
+
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        let total_bytes = self.encoded_len()?;
+        let directory_bytes = self
+            .buckets
+            .len()
+            .checked_mul(DIRECTORY_ENTRY_BYTES)
+            .ok_or(EncodeError::ArithmeticOverflow)?;
+        let mapping_bytes = total_bytes
+            .checked_sub(HEADER_BYTES)
+            .and_then(|value| value.checked_sub(directory_bytes))
             .ok_or(EncodeError::ArithmeticOverflow)?;
         let bucket_count = u32::try_from(self.buckets.len()).map_err(|_| EncodeError::TooLarge)?;
         let directory_bytes = u32::try_from(directory_bytes).map_err(|_| EncodeError::TooLarge)?;
@@ -409,7 +430,7 @@ fn multi_bucket_directory_amortizes_shared_layout() {
     let bytes = blob.encode().expect("encode multi-bucket");
     assert_eq!(
         bytes.len(),
-        HEADER_BYTES + 2 * DIRECTORY_ENTRY_BYTES + 16 + 128
+        HEADER_BYTES + 2 * DIRECTORY_ENTRY_BYTES + 8 + 128
     );
     assert_eq!(MateBlob::decode(&bytes).expect("decode multi-bucket"), blob);
 }

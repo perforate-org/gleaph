@@ -4,7 +4,11 @@
 //! (bucket MSB), not edge-inline-value flags. Use [`Self::for_each_directed_out_edges`],
 //! [`Self::for_each_undirected_edges`], and the matching `*_iter` helpers.
 
-use super::mate_storage::MateStorage;
+use super::mate_promotion::{
+    MateBlobBuildError, MateLeafPromotionDecision, MateLeafPromotionPlan, MatePromotionRows,
+    build_promoted_blob,
+};
+use super::mate_storage::{MateRebuildToken, MateStorage};
 pub use super::mate_storage::{MateStorageInitError, MateStorageMemories};
 use crate::{
     VertexCount, VertexId,
@@ -1154,6 +1158,140 @@ where
         self.reverse
             .read_leaf_placement_stats(leaf)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Performs bounded, read-only mate promotion admission for one leaf.
+    ///
+    /// The candidate mappings are pure builder data; this method does not enumerate or mutate
+    /// canonical adjacency and does not open a rebuild token. Publication is a later boundary.
+    pub(crate) fn decide_mate_leaf_promotion(
+        &self,
+        plan: &MateLeafPromotionPlan,
+    ) -> MateLeafPromotionDecision {
+        plan.decide()
+    }
+
+    /// Builds a complete validated mate blob from canonical live pair rows without publishing it.
+    pub(crate) fn build_mate_leaf_blob(
+        &self,
+        orientation: Orientation,
+        leaf: u32,
+        decision: &MateLeafPromotionDecision,
+        rows: &[MatePromotionRows],
+    ) -> Result<(Vec<u8>, usize), MateBlobBuildError> {
+        self.validate_mate_leaf_rows(orientation, leaf, rows)?;
+        let (_blob, encoded) = build_promoted_blob(decision, rows)?;
+        let len = encoded.len();
+        Ok((encoded, len))
+    }
+
+    fn validate_mate_leaf_rows(
+        &self,
+        orientation: Orientation,
+        leaf: u32,
+        rows: &[MatePromotionRows],
+    ) -> Result<(), MateBlobBuildError> {
+        let segment = self.forward.segment_size().max(1);
+        for row in rows {
+            if u32::from(row.inputs.owner_vertex_id) / segment != leaf
+                || row.source_slots.len() != row.mate_slots.len()
+                || row.source_slots.len() as u64 != row.inputs.live_entries
+            {
+                return Err(MateBlobBuildError::CanonicalMismatch);
+            }
+            let source_graph = match orientation {
+                Orientation::Forward => self.forward(),
+                Orientation::Reverse => self.reverse(),
+            };
+            let mut source_rows = Vec::new();
+            source_graph
+                .for_each_live_edge_slot_for_label(
+                    row.inputs.owner_vertex_id,
+                    row.inputs.bucket_label_key,
+                    |slot, edge| source_rows.push((slot, edge.neighbor_vid())),
+                )
+                .map_err(|_| MateBlobBuildError::CanonicalMismatch)?;
+            let expected_source_slots = source_rows
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>();
+            if expected_source_slots != row.source_slots {
+                return Err(MateBlobBuildError::CanonicalMismatch);
+            }
+            for (index, (slot, neighbor)) in source_rows.iter().enumerate() {
+                let expected_mate = if row.inputs.bucket_label_key.is_undirected()
+                    && *neighbor == row.inputs.owner_vertex_id
+                {
+                    *slot
+                } else {
+                    let counterpart_orientation = if row.inputs.bucket_label_key.is_directed() {
+                        match orientation {
+                            Orientation::Forward => Orientation::Reverse,
+                            Orientation::Reverse => Orientation::Forward,
+                        }
+                    } else {
+                        Orientation::Forward
+                    };
+                    let counterpart_graph = match counterpart_orientation {
+                        Orientation::Forward => self.forward(),
+                        Orientation::Reverse => self.reverse(),
+                    };
+                    let mut matching = Vec::new();
+                    counterpart_graph
+                        .for_each_live_edge_slot_for_label(
+                            *neighbor,
+                            row.inputs.bucket_label_key,
+                            |mate_slot, mate_edge| {
+                                if mate_edge.neighbor_vid() == row.inputs.owner_vertex_id {
+                                    matching.push(mate_slot);
+                                }
+                            },
+                        )
+                        .map_err(|_| MateBlobBuildError::CanonicalMismatch)?;
+                    let rank = source_rows[..index]
+                        .iter()
+                        .filter(|(_, prior_neighbor)| *prior_neighbor == *neighbor)
+                        .count();
+                    *matching
+                        .get(rank)
+                        .ok_or(MateBlobBuildError::CanonicalMismatch)?
+                };
+                if row.mate_slots[index] != expected_mate {
+                    return Err(MateBlobBuildError::CanonicalMismatch);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Opens a rebuild token for one orientation/leaf locator row.
+    pub(crate) fn begin_mate_leaf_rebuild(
+        &self,
+        row: u64,
+    ) -> Result<MateRebuildToken, MateStorageInitError> {
+        self.mate.begin_rebuild(row)
+    }
+
+    /// Aborts a caller-owned rebuild token and restores its captured locator state.
+    pub(crate) fn abort_mate_leaf_rebuild(
+        &self,
+        token: MateRebuildToken,
+    ) -> Result<(), MateStorageInitError> {
+        self.mate.abort_rebuild(token)
+    }
+
+    /// Publishes a previously built and validated leaf blob through the affine token boundary.
+    pub(crate) fn publish_mate_leaf_rebuild(
+        &self,
+        token: MateRebuildToken,
+        encoded_blob: &[u8],
+    ) -> Result<(), MateStorageInitError> {
+        self.mate.publish_rebuild(token, encoded_blob)
+    }
+
+    /// Applies an explicit ScanOnly transition for a leaf with no admitted buckets.
+    pub(crate) fn clear_mate_leaf_published(&self, row: u64) -> Result<(), MateStorageInitError> {
+        self.mate.clear_published(row)
     }
 
     /// Returns the validated deferred maintenance configuration.
@@ -3077,6 +3215,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::labeled::bidirectional::mate_blob_prototype::{MateBlob, Mode};
+    use crate::labeled::bidirectional::mate_promotion::{
+        MateLeafPromotionConfig, MatePromotionInputs, MatePromotionMode,
+    };
     use crate::labeled::bidirectional::mate_storage::MateLocatorState;
     use crate::{
         labeled::PhysicalEdgeRef,
@@ -5013,6 +5155,342 @@ mod tests {
                 "returned logical slot must remain a live slot"
             );
         }
+    }
+
+    #[test]
+    fn mate_blob_builder_rejects_noncanonical_pair_slots() {
+        let graph = valued_bidirectional_graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(17);
+        graph
+            .ensure_directed_edge_inline_value_width(source, target, label, 1)
+            .unwrap();
+        for value in 1..=2u8 {
+            graph
+                .insert_directed_edge(
+                    source,
+                    target,
+                    label,
+                    PayloadTestEdge::with_bytes(u32::from(target), &[value]),
+                    PayloadTestEdge::with_bytes(u32::from(source), &[value]),
+                )
+                .unwrap();
+        }
+
+        let mut source_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .unwrap();
+        let mut mate_slots = Vec::new();
+        graph
+            .reverse()
+            .for_each_live_edge_slot_for_label(target, label, |slot, _| mate_slots.push(slot))
+            .unwrap();
+        let inputs = MatePromotionInputs {
+            owner_vertex_id: source,
+            bucket_label_key: label,
+            live_entries: source_slots.len() as u64,
+            source_scan_rows: source_slots.len() as u64,
+            counterpart_scan_rows: mate_slots.len() as u64,
+            sampled_stride: 16,
+            packed_width_bytes: 0,
+            min_scan_rows: 1,
+        };
+        let rows = MatePromotionRows {
+            inputs,
+            source_slots: source_slots.clone(),
+            mate_slots: mate_slots.clone(),
+        };
+        let decision = MateLeafPromotionDecision::Promote {
+            mode: MatePromotionMode::Packed { width_bytes: 4 },
+            config: MateLeafPromotionConfig {
+                leaf_shared_overhead_bytes: 8,
+                max_encoded_blob_bytes: u64::MAX,
+                max_total_promotion_bytes: u64::MAX,
+                max_bytes_per_entry: 1 << 20,
+            },
+            bucket_ids: vec![(source, label)],
+            encoded_blob_bytes: 0,
+            total_promotion_bytes: 0,
+        };
+        let (built_bytes, _) = graph
+            .build_mate_leaf_blob(
+                Orientation::Forward,
+                0,
+                &decision,
+                std::slice::from_ref(&rows),
+            )
+            .expect("canonical blob");
+        assert!(!built_bytes.is_empty());
+        let MateLeafPromotionDecision::Promote {
+            mode,
+            config,
+            bucket_ids,
+            ..
+        } = decision.clone()
+        else {
+            unreachable!("test decision is promote");
+        };
+        let limited = MateLeafPromotionDecision::Promote {
+            mode,
+            config: MateLeafPromotionConfig {
+                max_encoded_blob_bytes: (built_bytes.len() - 1) as u64,
+                ..config
+            },
+            bucket_ids,
+            encoded_blob_bytes: 0,
+            total_promotion_bytes: 0,
+        };
+        assert_eq!(
+            graph.build_mate_leaf_blob(
+                Orientation::Forward,
+                0,
+                &limited,
+                std::slice::from_ref(&rows)
+            ),
+            Err(MateBlobBuildError::LengthMismatch)
+        );
+
+        let total_promotion_bytes = built_bytes.len() as u64 + 8;
+        let mut total_limited = decision.clone();
+        if let MateLeafPromotionDecision::Promote { config, .. } = &mut total_limited {
+            config.max_total_promotion_bytes = total_promotion_bytes - 1;
+        }
+        assert_eq!(
+            graph.build_mate_leaf_blob(
+                Orientation::Forward,
+                0,
+                &total_limited,
+                std::slice::from_ref(&rows)
+            ),
+            Err(MateBlobBuildError::LengthMismatch)
+        );
+
+        let mut per_entry_limited = decision.clone();
+        if let MateLeafPromotionDecision::Promote { config, .. } = &mut per_entry_limited {
+            config.max_bytes_per_entry = (total_promotion_bytes - 1) / rows.inputs.live_entries;
+        }
+        assert_eq!(
+            graph.build_mate_leaf_blob(
+                Orientation::Forward,
+                0,
+                &per_entry_limited,
+                std::slice::from_ref(&rows)
+            ),
+            Err(MateBlobBuildError::LengthMismatch)
+        );
+
+        let mut malformed = rows.clone();
+        malformed.mate_slots.pop();
+        assert_eq!(
+            graph.build_mate_leaf_blob(Orientation::Forward, 0, &decision, &[malformed]),
+            Err(MateBlobBuildError::CanonicalMismatch)
+        );
+
+        let mut forged = rows;
+        forged.mate_slots.swap(0, 1);
+        assert_eq!(
+            graph.build_mate_leaf_blob(Orientation::Forward, 0, &decision, &[forged]),
+            Err(MateBlobBuildError::CanonicalMismatch)
+        );
+    }
+
+    #[test]
+    fn mate_blob_builder_validates_reverse_directed_pairs() {
+        let graph = graph();
+        graph.push_vertex().unwrap();
+        graph.push_vertex().unwrap();
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(18);
+        for _ in 0..3 {
+            graph
+                .insert_directed_edge(source, target, label, TestEdge(1), TestEdge(0))
+                .unwrap();
+        }
+        let mut source_slots = Vec::new();
+        graph
+            .reverse()
+            .for_each_live_edge_slot_for_label(target, label, |slot, _| source_slots.push(slot))
+            .unwrap();
+        let mut mate_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, _| mate_slots.push(slot))
+            .unwrap();
+        let inputs = MatePromotionInputs {
+            owner_vertex_id: target,
+            bucket_label_key: label,
+            live_entries: 3,
+            source_scan_rows: 3,
+            counterpart_scan_rows: 3,
+            sampled_stride: 0,
+            packed_width_bytes: 4,
+            min_scan_rows: 1,
+        };
+        let expected_source_slots = source_slots.clone();
+        let expected_mate_slots = mate_slots.clone();
+        let rows = MatePromotionRows {
+            inputs,
+            source_slots: expected_source_slots.clone(),
+            mate_slots: expected_mate_slots.clone(),
+        };
+        let decision = MateLeafPromotionDecision::Promote {
+            mode: MatePromotionMode::Packed { width_bytes: 4 },
+            config: MateLeafPromotionConfig {
+                leaf_shared_overhead_bytes: 8,
+                max_encoded_blob_bytes: u64::MAX,
+                max_total_promotion_bytes: u64::MAX,
+                max_bytes_per_entry: 1 << 20,
+            },
+            bucket_ids: vec![(target, label)],
+            encoded_blob_bytes: 0,
+            total_promotion_bytes: 0,
+        };
+        let (bytes, _) = graph
+            .build_mate_leaf_blob(Orientation::Reverse, 0, &decision, &[rows])
+            .expect("reverse canonical pair mapping");
+        let decoded = MateBlob::decode(&bytes).expect("decode reverse blob");
+        assert_eq!(decoded.buckets[0].owner_vertex_id, u32::from(target));
+        assert_eq!(decoded.buckets[0].bucket_label_key, label.raw());
+        assert_eq!(decoded.buckets[0].entries, 3);
+        assert_eq!(decoded.buckets[0].mode, Mode::Packed { width_bytes: 4 });
+        let expected_mapping = expected_source_slots
+            .iter()
+            .zip(&expected_mate_slots)
+            .flat_map(|(source, mate)| source.to_be_bytes().into_iter().chain(mate.to_be_bytes()))
+            .collect::<Vec<_>>();
+        assert_eq!(decoded.buckets[0].mapping, expected_mapping);
+    }
+
+    #[test]
+    fn mate_blob_builder_validates_undirected_nonself_and_self_loop_pairs() {
+        let graph = graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::undirected_from_index(19);
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(2),
+                VertexId::from(2),
+                label,
+                TestEdge(2),
+                TestEdge(2),
+            )
+            .unwrap();
+
+        let mut first_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(VertexId::from(0), label, |slot, _| {
+                first_slots.push(slot)
+            })
+            .unwrap();
+        let mut self_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(VertexId::from(2), label, |slot, _| {
+                self_slots.push(slot)
+            })
+            .unwrap();
+        let first_inputs = MatePromotionInputs {
+            owner_vertex_id: VertexId::from(0),
+            bucket_label_key: label,
+            live_entries: 1,
+            source_scan_rows: 1,
+            counterpart_scan_rows: 1,
+            sampled_stride: 0,
+            packed_width_bytes: 4,
+            min_scan_rows: 1,
+        };
+        let self_inputs = MatePromotionInputs {
+            owner_vertex_id: VertexId::from(2),
+            ..first_inputs
+        };
+        let target_slots = {
+            let mut slots = Vec::new();
+            graph
+                .forward()
+                .for_each_live_edge_slot_for_label(VertexId::from(1), label, |slot, _| {
+                    slots.push(slot)
+                })
+                .unwrap();
+            slots
+        };
+        let rows = vec![
+            MatePromotionRows {
+                inputs: first_inputs,
+                source_slots: first_slots.clone(),
+                mate_slots: target_slots.clone(),
+            },
+            MatePromotionRows {
+                inputs: self_inputs,
+                source_slots: self_slots.clone(),
+                mate_slots: self_slots.clone(),
+            },
+        ];
+        let decision = MateLeafPromotionDecision::Promote {
+            mode: MatePromotionMode::Packed { width_bytes: 4 },
+            config: MateLeafPromotionConfig {
+                leaf_shared_overhead_bytes: 8,
+                max_encoded_blob_bytes: u64::MAX,
+                max_total_promotion_bytes: u64::MAX,
+                max_bytes_per_entry: 1 << 20,
+            },
+            bucket_ids: vec![(VertexId::from(0), label), (VertexId::from(2), label)],
+            encoded_blob_bytes: 0,
+            total_promotion_bytes: 0,
+        };
+        let (bytes, _) = graph
+            .build_mate_leaf_blob(Orientation::Forward, 0, &decision, &rows)
+            .expect("undirected canonical pair mapping");
+        let decoded = MateBlob::decode(&bytes).expect("decode undirected blob");
+        assert_eq!(decoded.buckets.len(), 2);
+        assert_eq!(
+            (
+                decoded.buckets[0].owner_vertex_id,
+                decoded.buckets[0].bucket_label_key
+            ),
+            (0, label.raw())
+        );
+        assert_eq!(
+            (
+                decoded.buckets[1].owner_vertex_id,
+                decoded.buckets[1].bucket_label_key
+            ),
+            (2, label.raw())
+        );
+        assert_eq!(decoded.buckets[0].entries, 1);
+        assert_eq!(decoded.buckets[1].entries, 1);
+        assert_eq!(decoded.buckets[0].mode, Mode::Packed { width_bytes: 4 });
+        assert_eq!(decoded.buckets[1].mode, Mode::Packed { width_bytes: 4 });
+        let expected_first = first_slots[0]
+            .to_be_bytes()
+            .into_iter()
+            .chain(target_slots[0].to_be_bytes())
+            .collect::<Vec<_>>();
+        let expected_self = self_slots[0]
+            .to_be_bytes()
+            .into_iter()
+            .chain(self_slots[0].to_be_bytes())
+            .collect::<Vec<_>>();
+        assert_eq!(decoded.buckets[0].mapping, expected_first);
+        assert_eq!(decoded.buckets[1].mapping, expected_self);
     }
 
     #[test]
