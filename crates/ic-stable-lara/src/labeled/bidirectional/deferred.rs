@@ -4572,6 +4572,58 @@ mod tests {
     }
 
     #[test]
+    fn scalar_payload_parallel_overflow_locations_match_live_slots() {
+        let graph = valued_bidirectional_graph();
+        graph.push_vertex().unwrap();
+        graph.push_vertex().unwrap();
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(13);
+        graph
+            .ensure_directed_edge_inline_value_width(source, target, label, 2)
+            .unwrap();
+
+        let mut locations = Vec::new();
+        for value in 0..300u16 {
+            let bytes = value.to_le_bytes();
+            let pair = graph
+                .insert_directed_edge_with_locations(
+                    source,
+                    target,
+                    label,
+                    PayloadTestEdge::with_bytes(u32::from(target), &bytes),
+                    PayloadTestEdge::with_bytes(u32::from(source), &bytes),
+                )
+                .unwrap();
+            locations.push(pair.forward.expect("named forward location"));
+        }
+
+        assert!(
+            locations.iter().any(
+                |location| location.storage == crate::labeled::ScalarInsertStorage::OverflowLog
+            ),
+            "parallel payload inserts must exercise overflow-log location capture"
+        );
+
+        let mut live_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, edge| {
+                live_slots.push((slot, edge.edge_inline_value_bytes().to_vec()));
+            })
+            .unwrap();
+        assert_eq!(live_slots.len(), locations.len());
+        for location in locations {
+            assert!(
+                live_slots
+                    .iter()
+                    .any(|(slot, _)| *slot == location.logical_slot),
+                "returned logical slot must remain a live slot"
+            );
+        }
+    }
+
+    #[test]
     fn scalar_undirected_location_pair_preserves_owner_and_self_loop_shape() {
         let graph = graph();
         for _ in 0..3 {
