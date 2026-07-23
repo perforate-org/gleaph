@@ -577,6 +577,37 @@ mod tests {
     }
 
     #[test]
+    fn replacement_allocation_failure_preserves_existing_locator_and_blob() {
+        let [locator, blobs, free_spans, free_span_by_start] = failpoint_memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let first = blob();
+        storage.replace(0, &first).expect("initial publish");
+        let old_start = storage.locator(0).expect("locator").expect("published");
+        let old_bytes = storage.blobs.read(old_start).expect("old blob");
+        let tail = WASM_PAGE_BYTES - HEADER_BYTES;
+        storage.blobs.set_tail(tail).expect("seed tail");
+        let before = storage.free_spans.allocator_stats();
+        storage
+            .blobs
+            .memory
+            .fail_at_grow(storage.blobs.memory.grow_count() + 1);
+
+        assert!(matches!(
+            storage.replace(0, &first),
+            Err(MateStorageInitError::Grow(_))
+        ));
+        assert_eq!(
+            storage.locator(0).expect("locator"),
+            Some(old_start),
+            "failed replacement must preserve the old locator"
+        );
+        assert_eq!(storage.blobs.read(old_start).expect("old blob"), old_bytes);
+        assert_eq!(storage.blobs.tail(), tail);
+        assert_eq!(storage.free_spans.allocator_stats(), before);
+    }
+
+    #[test]
     fn four_regions_have_independent_headers() {
         let [locator, blobs, free_spans, free_span_by_start] = memories();
         let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
