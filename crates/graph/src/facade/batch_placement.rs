@@ -17,6 +17,7 @@ use ic_stable_lara::{
 use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara_label};
 use super::{GraphStore, GraphStoreError, stable::GRAPH};
 use crate::edge_inline_value_schema::lookup_edge_inline_value_profile;
+use rapidhash::{HashMapExt, RapidHashMap};
 
 /// One logical edge supplied by a client for unordered batch planning.
 ///
@@ -39,7 +40,7 @@ pub struct BatchEdgeInput {
 }
 
 /// Role of one physical half-edge intent within a logical edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BatchEdgeIntentRole {
     /// Canonical forward half of a directed edge, owned by the source vertex.
     CanonicalForward,
@@ -480,8 +481,8 @@ impl GraphStore {
             return Err(BatchPlacementError::BatchTooLarge);
         }
 
-        let mut first_index: std::collections::HashMap<EdgeTargetKey, usize> =
-            std::collections::HashMap::with_capacity(edges.len());
+        let mut first_index: RapidHashMap<EdgeTargetKey, usize> =
+            RapidHashMap::with_capacity(edges.len());
         let mut intents = Vec::with_capacity(edges.len().checked_mul(2).unwrap_or(edges.len()));
 
         for (ordinal, input) in edges.iter().enumerate() {

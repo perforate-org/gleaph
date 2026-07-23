@@ -6,18 +6,19 @@
 //! caller before any canonical write so the existing scalar path can handle it.
 //! No LARA placement policy leaks outside this module.
 
-use std::collections::BTreeMap;
-
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::batch_write::{
     BatchReservation, OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchPlan,
-    OneOrientationBatchResult, OneOrientationBucketRun,
+    OneOrientationBatchResult, OneOrientationBucketRun, OneOrientationPhysicalLocation,
 };
 use ic_stable_lara::{CsrEdge, labeled::LabeledOrientation};
+use rapidhash::{HashMapExt, RapidHashMap};
 
 use super::GraphStore;
-use super::batch_placement::{BatchEdgeIntent, BatchPlacementError, BatchPlacementKey};
+use super::batch_placement::{
+    BatchEdgeInput, BatchEdgeIntent, BatchEdgeIntentRole, BatchPlacementError, BatchPlacementKey,
+};
 use super::store::helpers::{
     build_edge_to, build_edge_to_with_inline_value_bytes, edge_storage_label, lara_label,
 };
@@ -32,8 +33,12 @@ use super::store::helpers::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BatchEdgeInsertResult {
     Committed {
-        /// Per-orientation write results, in the order they were committed.
-        results: Vec<OneOrientationBatchResult>,
+        /// Aggregate edge slab slots written across all orientations.
+        edge_slots_written: u64,
+        /// Aggregate payload slab slots written across all orientations.
+        payload_slots_written: u64,
+        /// Paired physical locations keyed by the logical input ordinal.
+        locations: Vec<BatchEdgePhysicalLocation>,
         /// True when at least one orientation used pending-aware leaf expansion.
         used_expansion: bool,
     },
@@ -43,16 +48,48 @@ pub(crate) enum BatchEdgeInsertResult {
     },
 }
 
+/// Physical locations for one logical edge after the orientation join.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BatchEdgePhysicalLocation {
+    Directed {
+        logical_ordinal: u32,
+        forward: OneOrientationPhysicalLocation,
+        reverse: OneOrientationPhysicalLocation,
+    },
+    Undirected {
+        logical_ordinal: u32,
+        owner: OneOrientationPhysicalLocation,
+        alias: OneOrientationPhysicalLocation,
+    },
+    UndirectedSelfLoop {
+        logical_ordinal: u32,
+        location: OneOrientationPhysicalLocation,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BatchLocationJoinError {
+    Missing {
+        logical_ordinal: u32,
+        role: BatchEdgeIntentRole,
+    },
+    Duplicate {
+        logical_ordinal: u32,
+        role: BatchEdgeIntentRole,
+    },
+    Unexpected {
+        logical_ordinal: u32,
+        owner_vertex_id: VertexId,
+    },
+}
+
 impl BatchEdgeInsertResult {
     /// Total edge slab slots written across all committed orientations.
     pub(crate) fn total_edge_slots(&self) -> Option<u64> {
         match self {
-            Self::Committed { results, .. } => Some(
-                results
-                    .iter()
-                    .map(|r| u64::from(r.edge_slots_written))
-                    .sum(),
-            ),
+            Self::Committed {
+                edge_slots_written, ..
+            } => Some(*edge_slots_written),
             Self::Unsupported { .. } => None,
         }
     }
@@ -60,12 +97,10 @@ impl BatchEdgeInsertResult {
     /// Total payload slab slots written across all committed orientations.
     pub(crate) fn total_payload_slots(&self) -> Option<u64> {
         match self {
-            Self::Committed { results, .. } => Some(
-                results
-                    .iter()
-                    .map(|r| u64::from(r.payload_slots_written))
-                    .sum(),
-            ),
+            Self::Committed {
+                payload_slots_written,
+                ..
+            } => Some(*payload_slots_written),
             Self::Unsupported { .. } => None,
         }
     }
@@ -181,11 +216,24 @@ impl GraphStore {
                 };
                 reservation.commit(labeled)
             });
-            results.push(result);
+            results.push((orientation, result));
         }
 
+        let edge_slots_written = results
+            .iter()
+            .map(|(_, result)| u64::from(result.edge_slots_written))
+            .sum();
+        let payload_slots_written = results
+            .iter()
+            .map(|(_, result)| u64::from(result.payload_slots_written))
+            .sum();
+        let locations = join_physical_locations(edges, &intents, &results)
+            .expect("committed batch must publish one complete location per intent");
+
         Ok(BatchEdgeInsertResult::Committed {
-            results,
+            edge_slots_written,
+            payload_slots_written,
+            locations,
             used_expansion,
         })
     }
@@ -196,10 +244,10 @@ impl GraphStore {
         intents: &[BatchEdgeIntent],
         encode_edge: impl Fn(&BatchEdgeIntent) -> Result<E, BatchPlacementError>,
     ) -> Result<Vec<OneOrientationBatchWriteRequest<E>>, BatchPlacementError> {
-        let mut forward_runs: BTreeMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>> =
-            BTreeMap::new();
-        let mut reverse_runs: BTreeMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>> =
-            BTreeMap::new();
+        let mut forward_runs: RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>> =
+            RapidHashMap::default();
+        let mut reverse_runs: RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>> =
+            RapidHashMap::default();
 
         for intent in intents {
             let key = BatchPlacementKey {
@@ -293,10 +341,110 @@ fn encode_intent_edge(intent: &BatchEdgeIntent) -> Result<Edge, BatchPlacementEr
     }
 }
 
+fn join_physical_locations(
+    inputs: &[BatchEdgeInput],
+    intents: &[BatchEdgeIntent],
+    results: &[(LabeledOrientation, OneOrientationBatchResult)],
+) -> Result<Vec<BatchEdgePhysicalLocation>, BatchLocationJoinError> {
+    let orientation_key = |orientation: LabeledOrientation| match orientation {
+        LabeledOrientation::Forward => 0u8,
+        LabeledOrientation::Reverse => 1u8,
+    };
+    let mut intent_by_key = RapidHashMap::with_capacity(intents.len());
+    for intent in intents {
+        let key = (
+            intent.logical_ordinal,
+            orientation_key(intent.orientation),
+            intent.owner_vertex_id,
+        );
+        if intent_by_key.insert(key, intent.role).is_some() {
+            return Err(BatchLocationJoinError::Duplicate {
+                logical_ordinal: intent.logical_ordinal,
+                role: intent.role,
+            });
+        }
+    }
+    let mut by_key = RapidHashMap::with_capacity(intents.len());
+    for (orientation, result) in results {
+        for location in &result.locations {
+            let role = intent_by_key
+                .get(&(
+                    location.logical_ordinal,
+                    orientation_key(*orientation),
+                    location.owner_vertex_id,
+                ))
+                .copied()
+                .ok_or(BatchLocationJoinError::Unexpected {
+                    logical_ordinal: location.logical_ordinal,
+                    owner_vertex_id: location.owner_vertex_id,
+                })?;
+            let key = (location.logical_ordinal, role);
+            if by_key.insert(key, location.location).is_some() {
+                return Err(BatchLocationJoinError::Duplicate {
+                    logical_ordinal: location.logical_ordinal,
+                    role,
+                });
+            }
+        }
+    }
+
+    let mut joined = Vec::with_capacity(inputs.len());
+    for (logical_ordinal, input) in inputs.iter().enumerate() {
+        let logical_ordinal = u32::try_from(logical_ordinal).expect("input ordinal is bounded");
+        if input.directed {
+            let forward = *by_key
+                .get(&(logical_ordinal, BatchEdgeIntentRole::CanonicalForward))
+                .ok_or(BatchLocationJoinError::Missing {
+                    logical_ordinal,
+                    role: BatchEdgeIntentRole::CanonicalForward,
+                })?;
+            let reverse = *by_key
+                .get(&(logical_ordinal, BatchEdgeIntentRole::DerivedReverse))
+                .ok_or(BatchLocationJoinError::Missing {
+                    logical_ordinal,
+                    role: BatchEdgeIntentRole::DerivedReverse,
+                })?;
+            joined.push(BatchEdgePhysicalLocation::Directed {
+                logical_ordinal,
+                forward,
+                reverse,
+            });
+        } else {
+            let owner = *by_key
+                .get(&(logical_ordinal, BatchEdgeIntentRole::UndirectedOwnerForward))
+                .ok_or(BatchLocationJoinError::Missing {
+                    logical_ordinal,
+                    role: BatchEdgeIntentRole::UndirectedOwnerForward,
+                })?;
+            if input.source_vertex_id == input.target_vertex_id {
+                joined.push(BatchEdgePhysicalLocation::UndirectedSelfLoop {
+                    logical_ordinal,
+                    location: owner,
+                });
+            } else {
+                let alias = *by_key
+                    .get(&(logical_ordinal, BatchEdgeIntentRole::UndirectedAliasForward))
+                    .ok_or(BatchLocationJoinError::Missing {
+                        logical_ordinal,
+                        role: BatchEdgeIntentRole::UndirectedAliasForward,
+                    })?;
+                joined.push(BatchEdgePhysicalLocation::Undirected {
+                    logical_ordinal,
+                    owner,
+                    alias,
+                });
+            }
+        }
+    }
+    Ok(joined)
+}
+
 fn runs_from_map<E: CsrEdge>(
-    map: BTreeMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>>,
+    map: RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>>,
 ) -> Vec<OneOrientationBucketRun<E>> {
-    map.into_iter()
+    let mut runs: Vec<_> = map.into_iter().collect();
+    runs.sort_by_key(|(key, _)| *key);
+    runs.into_iter()
         .map(|(key, edges)| OneOrientationBucketRun {
             owner_vertex_id: key.owner_vertex_id,
             label_id: key.storage_label,
@@ -314,6 +462,7 @@ mod tests {
     use crate::test_labels::install_test_edge_inline_value_profile;
     use gleaph_graph_kernel::entry::EdgeLabelId;
     use ic_stable_lara::VertexId;
+    use ic_stable_lara::labeled::batch_write::OneOrientationBatchLocation;
     use ic_stable_lara::lara::edge::free_span::FreeSpanAllocatorStats;
     use ic_stable_lara::lara::edge_inline_value::PayloadAllocatorStats;
 
@@ -411,10 +560,24 @@ mod tests {
         let result = store
             .try_insert_batch_edges_clean_slab(&edges)
             .expect("plan/encode ok");
-        assert!(
-            matches!(result, BatchEdgeInsertResult::Committed { .. }),
-            "expected committed batch, got {result:?}"
-        );
+        let locations = match &result {
+            BatchEdgeInsertResult::Committed { locations, .. } => locations,
+            other => panic!("expected committed batch, got {other:?}"),
+        };
+        assert!(matches!(
+            locations.as_slice(),
+            [BatchEdgePhysicalLocation::Directed {
+                forward: OneOrientationPhysicalLocation::Slab {
+                    payload_byte_offset: Some(_),
+                    ..
+                },
+                reverse: OneOrientationPhysicalLocation::Slab {
+                    payload_byte_offset: Some(_),
+                    ..
+                },
+                ..
+            }]
+        ));
         assert_eq!(result.total_edge_slots(), Some(2));
         assert_eq!(result.total_payload_slots(), Some(2));
         assert!(!result.used_expansion());
@@ -451,7 +614,13 @@ mod tests {
         let result = store
             .try_insert_batch_edges_clean_slab(&edges)
             .expect("plan/encode ok");
-        assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
+        assert!(matches!(
+            &result,
+            BatchEdgeInsertResult::Committed {
+                locations,
+                ..
+            } if matches!(locations.as_slice(), [BatchEdgePhysicalLocation::Undirected { .. }])
+        ));
         assert_eq!(result.total_edge_slots(), Some(2));
         assert_eq!(result.total_payload_slots(), Some(2));
 
@@ -491,7 +660,13 @@ mod tests {
         let result = store
             .try_insert_batch_edges_clean_slab(&edges)
             .expect("plan/encode ok");
-        assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
+        assert!(matches!(
+            &result,
+            BatchEdgeInsertResult::Committed {
+                locations,
+                ..
+            } if matches!(locations.as_slice(), [BatchEdgePhysicalLocation::UndirectedSelfLoop { .. }])
+        ));
         assert_eq!(result.total_edge_slots(), Some(1));
         assert_eq!(result.total_payload_slots(), Some(1));
 
@@ -884,7 +1059,19 @@ mod tests {
             .try_insert_batch_edges_clean_slab(&edges)
             .expect("plan/encode ok");
         assert!(
-            matches!(result, BatchEdgeInsertResult::Committed { .. }),
+            matches!(
+                &result,
+                BatchEdgeInsertResult::Committed {
+                    locations,
+                    ..
+                } if locations.iter().all(|location| match location {
+                    BatchEdgePhysicalLocation::Directed { forward, reverse, .. } => {
+                        matches!(forward, OneOrientationPhysicalLocation::OverflowLog { .. })
+                            && matches!(reverse, OneOrientationPhysicalLocation::OverflowLog { .. })
+                    }
+                    _ => false,
+                })
+            ),
             "expected committed overflow-log batch, got {result:?}"
         );
         assert_eq!(result.total_edge_slots(), Some(2));
@@ -900,5 +1087,64 @@ mod tests {
         let store = fresh_store();
         let result = store.try_insert_batch_edges_clean_slab(&[]).expect("ok");
         assert!(matches!(result, BatchEdgeInsertResult::Unsupported { .. }));
+    }
+
+    #[test]
+    fn location_join_rejects_missing_and_duplicate_entries() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(7001);
+        install_width(label, 0);
+        let vertices = make_vertices(&store, 2);
+        let input = input(vertices[0], vertices[1], Some(label), true, vec![]);
+        let intents = store
+            .expand_batch_edge_intents(std::slice::from_ref(&input))
+            .expect("intents");
+        let forward = intents
+            .iter()
+            .find(|intent| intent.role == BatchEdgeIntentRole::CanonicalForward)
+            .expect("forward intent");
+        let location = OneOrientationBatchLocation {
+            logical_ordinal: forward.logical_ordinal,
+            owner_vertex_id: forward.owner_vertex_id,
+            location: OneOrientationPhysicalLocation::Slab {
+                edge_slot: 10,
+                payload_byte_offset: None,
+            },
+        };
+        let result = OneOrientationBatchResult {
+            edge_slots_written: 1,
+            edge_log_entries_written: 0,
+            payload_slots_written: 0,
+            payload_log_entries_written: 0,
+            locations: vec![location],
+        };
+        assert!(matches!(
+            join_physical_locations(
+                std::slice::from_ref(&input),
+                &intents,
+                &[(LabeledOrientation::Forward, result.clone())],
+            ),
+            Err(BatchLocationJoinError::Missing {
+                role: BatchEdgeIntentRole::DerivedReverse,
+                ..
+            })
+        ));
+        assert!(matches!(
+            join_physical_locations(
+                std::slice::from_ref(&input),
+                &intents,
+                &[(
+                    LabeledOrientation::Forward,
+                    OneOrientationBatchResult {
+                        locations: vec![location, location],
+                        ..result
+                    }
+                )],
+            ),
+            Err(BatchLocationJoinError::Duplicate {
+                role: BatchEdgeIntentRole::CanonicalForward,
+                ..
+            })
+        ));
     }
 }
