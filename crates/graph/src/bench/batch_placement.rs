@@ -237,33 +237,46 @@ fn bench_batch_plan_fan_out_256_width_0() -> canbench_rs::BenchResult {
     })
 }
 
+fn setup_128_directed_edges(width: u16) -> (GraphStore, EdgeLabelId, Vec<BatchEdgeInput>) {
+    let store = GraphStore::new();
+    let label = label_id(if width == 0 {
+        "BenchCleanSlabDirectedW0"
+    } else {
+        "BenchCleanSlabDirectedW8"
+    });
+    install_width_profile(label, width);
+    let payload = if width == 0 {
+        vec![]
+    } else {
+        vec![0u8; width as usize]
+    };
+    let mut sources = Vec::with_capacity(128);
+    let mut targets = Vec::with_capacity(128);
+    for _ in 0..128 {
+        sources.push(store.insert_vertex().expect("src"));
+        targets.push(store.insert_vertex().expect("dst"));
+    }
+    for (i, &src) in sources.iter().enumerate() {
+        store.prepare_clean_slab_dir_buckets(src, targets[i], label, width);
+    }
+    let input: Vec<BatchEdgeInput> = sources
+        .iter()
+        .zip(&targets)
+        .map(|(&s, &t)| BatchEdgeInput {
+            source_vertex_id: s,
+            target_vertex_id: t,
+            catalog_label: Some(label),
+            directed: true,
+            inline_value_bytes: payload.clone(),
+        })
+        .collect();
+    (store, label, input)
+}
+
 #[bench(raw)]
 fn bench_clean_slab_directed_128_width_0() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_128_directed_edges(0);
     canbench_rs::bench_fn(|| {
-        let store = GraphStore::new();
-        let label = label_id("BenchCleanSlabDirectedW0");
-        install_width_profile(label, 0);
-        let mut sources = Vec::with_capacity(128);
-        let mut targets = Vec::with_capacity(128);
-        for _ in 0..128 {
-            sources.push(store.insert_vertex().expect("src"));
-            targets.push(store.insert_vertex().expect("dst"));
-        }
-        for (i, &src) in sources.iter().enumerate() {
-            let dst = targets[i];
-            store.prepare_clean_slab_dir_buckets(src, dst, label, 0);
-        }
-        let input: Vec<BatchEdgeInput> = sources
-            .iter()
-            .zip(&targets)
-            .map(|(&s, &t)| BatchEdgeInput {
-                source_vertex_id: s,
-                target_vertex_id: t,
-                catalog_label: Some(label),
-                directed: true,
-                inline_value_bytes: vec![],
-            })
-            .collect();
         let _scope = canbench_rs::bench_scope("clean_slab_directed_128_w0");
         let result = store
             .try_insert_batch_edges_clean_slab(&input)
@@ -274,27 +287,8 @@ fn bench_clean_slab_directed_128_width_0() -> canbench_rs::BenchResult {
 
 #[bench(raw)]
 fn bench_scalar_directed_128_width_0() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_128_directed_edges(0);
     canbench_rs::bench_fn(|| {
-        let store = GraphStore::new();
-        let label = label_id("BenchScalarDirectedW0");
-        install_width_profile(label, 0);
-        let mut sources = Vec::with_capacity(128);
-        let mut targets = Vec::with_capacity(128);
-        for _ in 0..128 {
-            sources.push(store.insert_vertex().expect("src"));
-            targets.push(store.insert_vertex().expect("dst"));
-        }
-        let input: Vec<BatchEdgeInput> = sources
-            .iter()
-            .zip(&targets)
-            .map(|(&s, &t)| BatchEdgeInput {
-                source_vertex_id: s,
-                target_vertex_id: t,
-                catalog_label: Some(label),
-                directed: true,
-                inline_value_bytes: vec![],
-            })
-            .collect();
         let _scope = canbench_rs::bench_scope("scalar_directed_128_w0");
         for edge in &input {
             store
@@ -306,32 +300,8 @@ fn bench_scalar_directed_128_width_0() -> canbench_rs::BenchResult {
 
 #[bench(raw)]
 fn bench_clean_slab_directed_128_width_8() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_128_directed_edges(8);
     canbench_rs::bench_fn(|| {
-        let store = GraphStore::new();
-        let label = label_id("BenchCleanSlabDirectedW8");
-        install_width_profile(label, 8);
-        let payload = vec![0u8; 8];
-        let mut sources = Vec::with_capacity(128);
-        let mut targets = Vec::with_capacity(128);
-        for _ in 0..128 {
-            sources.push(store.insert_vertex().expect("src"));
-            targets.push(store.insert_vertex().expect("dst"));
-        }
-        for (i, &src) in sources.iter().enumerate() {
-            let dst = targets[i];
-            store.prepare_clean_slab_dir_buckets(src, dst, label, 8);
-        }
-        let input: Vec<BatchEdgeInput> = sources
-            .iter()
-            .zip(&targets)
-            .map(|(&s, &t)| BatchEdgeInput {
-                source_vertex_id: s,
-                target_vertex_id: t,
-                catalog_label: Some(label),
-                directed: true,
-                inline_value_bytes: payload.clone(),
-            })
-            .collect();
         let _scope = canbench_rs::bench_scope("clean_slab_directed_128_w8");
         let result = store
             .try_insert_batch_edges_clean_slab(&input)
@@ -342,28 +312,8 @@ fn bench_clean_slab_directed_128_width_8() -> canbench_rs::BenchResult {
 
 #[bench(raw)]
 fn bench_scalar_directed_128_width_8() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_128_directed_edges(8);
     canbench_rs::bench_fn(|| {
-        let store = GraphStore::new();
-        let label = label_id("BenchScalarDirectedW8");
-        install_width_profile(label, 8);
-        let payload = vec![0u8; 8];
-        let mut sources = Vec::with_capacity(128);
-        let mut targets = Vec::with_capacity(128);
-        for _ in 0..128 {
-            sources.push(store.insert_vertex().expect("src"));
-            targets.push(store.insert_vertex().expect("dst"));
-        }
-        let input: Vec<BatchEdgeInput> = sources
-            .iter()
-            .zip(&targets)
-            .map(|(&s, &t)| BatchEdgeInput {
-                source_vertex_id: s,
-                target_vertex_id: t,
-                catalog_label: Some(label),
-                directed: true,
-                inline_value_bytes: payload.clone(),
-            })
-            .collect();
         let _scope = canbench_rs::bench_scope("scalar_directed_128_w8");
         for edge in &input {
             store
@@ -371,7 +321,7 @@ fn bench_scalar_directed_128_width_8() -> canbench_rs::BenchResult {
                     edge.source_vertex_id,
                     edge.target_vertex_id,
                     Some(label),
-                    &payload,
+                    &edge.inline_value_bytes,
                 )
                 .expect("scalar insert");
         }

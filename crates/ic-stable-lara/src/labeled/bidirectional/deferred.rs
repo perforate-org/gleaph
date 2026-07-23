@@ -9,6 +9,7 @@ use crate::{
     labeled::{
         BucketLabelKey, InitialCapacities,
         bucket_label_key::BucketDirectedness,
+        graph::batch_write::BatchReservation,
         graph::{
             EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph, LabeledOperationError,
             OutEdgeOrder,
@@ -1084,6 +1085,22 @@ where
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
         }
         Ok(())
+    }
+
+    /// Roll back a one-orientation batch reservation without committing it.
+    ///
+    /// This delegates to the forward or reverse labeled graph and restores the
+    /// edge-store logical capacity and payload occupied tail captured at reserve
+    /// time. Canonical adjacency and bucket metadata are untouched.
+    pub fn rollback_batch_reservation(
+        &self,
+        orientation: Orientation,
+        reservation: &BatchReservation<E>,
+    ) {
+        match orientation {
+            Orientation::Forward => reservation.rollback(&self.forward),
+            Orientation::Reverse => reservation.rollback(&self.reverse),
+        }
     }
 
     /// Inserts one directed edge into forward and reverse orientations.

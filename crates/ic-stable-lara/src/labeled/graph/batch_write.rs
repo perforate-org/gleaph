@@ -93,10 +93,11 @@ where
 
 /// Opaque reservation produced by [`LabeledLaraGraph::reserve_one_orientation_batch`].
 ///
-/// The fields are deliberately private; the only valid use is passing it to
-/// [`BatchReservation::commit`].  The token embeds a snapshot of the bucket
+/// The fields are deliberately private; the valid uses are [`BatchReservation::commit`]
+/// and [`BatchReservation::rollback`].  The token embeds a snapshot of the bucket
 /// identity and expected occupancy at reservation time so commit can detect
-/// tampering or stale state.
+/// tampering or stale state, plus the pre-reserve edge/payload allocator state so
+/// rollback can restore it.
 pub struct BatchReservation<E>
 where
     E: CsrEdge,
@@ -104,6 +105,8 @@ where
     plan: OneOrientationBatchPlan<E>,
     runs: Vec<BatchReservationRun>,
     graph_marker: usize,
+    edge_capacity_before: u64,
+    payload_tail_before: u64,
 }
 
 impl<E> std::fmt::Debug for BatchReservation<E>
@@ -391,6 +394,8 @@ where
             plan: plan.clone(),
             runs,
             graph_marker: self.instance_marker(),
+            edge_capacity_before,
+            payload_tail_before,
         })
     }
 
@@ -857,6 +862,22 @@ where
                 .expect("reserve guaranteed total payload slots fit in u32"),
             payload_log_entries_written: 0,
         }
+    }
+
+    /// Roll back the capacity and payload reservations made by this reservation.
+    ///
+    /// This restores the edge-store logical capacity and payload occupied tail to
+    /// the values captured before `reserve_one_orientation_batch` mutated them.
+    /// Canonical adjacency and bucket metadata are untouched.  It is safe to call
+    /// this multiple times and after a partial rollback.
+    pub(crate) fn rollback<M: Memory>(&self, graph: &LabeledLaraGraph<E, M>) {
+        assert_eq!(
+            self.graph_marker,
+            graph.instance_marker(),
+            "reservation was produced by a different graph instance"
+        );
+        graph.rollback_edge_capacity(self.edge_capacity_before);
+        graph.rollback_payload_tail(self.payload_tail_before);
     }
 }
 

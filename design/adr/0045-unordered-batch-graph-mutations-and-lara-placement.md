@@ -3,7 +3,7 @@
 Date: 2026-07-19
 Status: Partially Implemented
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 02:26:03 UTC +0000
+Anchor timestamp: 2026-07-23 02:45:52 UTC +0000
 
 ## Context
 
@@ -88,7 +88,7 @@ overflow log only to fold it back into the slab during repeated rebalances.
 
 ## Decision
 
-Implementation status as of 2026-07-23 02:26:03 UTC +0000:
+Implementation status as of 2026-07-23 02:45:52 UTC +0000:
 
 - Plan 0121 read-only placement planning is implemented.
 - Plan 0122 one-orientation batch commit is implemented in `ic-stable-lara`:
@@ -112,13 +112,18 @@ Implementation status as of 2026-07-23 02:26:03 UTC +0000:
   try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   existing read-only planner, reserves every orientation before committing any
   orientation, and returns `BatchEdgeInsertResult::Unsupported` before any
-  canonical write when the clean-slab path cannot admit the geometry.  The caller
-  can then fall back to the existing scalar insertion path.  Focused unit tests
-  cover directed/reverse pairing, undirected two-forward-half and self-loop
-  behavior, payload read-back, multi-run commits, reserve failure leaving
-  canonical state unchanged, and empty/new-bucket unsupported rejection.  Canbench
-  coverage compares the clean-slab path against scalar insertion for 128 directed
-  edges with widths 0 and 8.
+  canonical write when the clean-slab path cannot admit the geometry.  If a later
+  orientation reservation fails, every previously successful reservation is rolled
+  back via `BatchReservation::rollback` / `DeferredBidirectionalLabeledLaraGraph::
+  rollback_batch_reservation`, restoring the edge-store logical capacity and
+  payload occupied tail so the caller can safely fall back to the existing scalar
+  insertion path without leaking allocator state.  Focused unit tests cover
+  directed/reverse pairing, undirected two-forward-half and self-loop behavior,
+  payload read-back, multi-run commits, reserve failure leaving canonical state
+  and allocator headers unchanged, and empty/new-bucket unsupported rejection.
+  Canbench coverage compares the clean-slab path against scalar insertion for 128
+  directed edges with widths 0 and 8, with identical pre-created buckets and
+  input construction outside the measured closure.
 - New bucket creation, overflow-log batch appends, rebalance/relocation,
   dynamic leaf expansion, and full public wire integration remain planned for
   later slices.

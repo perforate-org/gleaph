@@ -120,9 +120,9 @@ impl GraphStore {
     ///
     /// If any orientation cannot be reserved on the clean-slab path, this method
     /// returns [`BatchEdgeInsertResult::Unsupported`] without writing any canonical
-    /// adjacency. The caller is responsible for falling back to the existing scalar
-    /// path. Reserved capacity from already-succeeded orientations becomes harmless
-    /// stable-memory slack and is not itself canonical.
+    /// adjacency. Any reservation that succeeded before the failure is rolled back
+    /// to its pre-reserve allocator state, so no capacity or payload tail is leaked
+    /// before the caller falls back to the existing scalar path.
     pub(crate) fn try_insert_batch_edges_clean_slab(
         &self,
         edges: &[super::batch_placement::BatchEdgeInput],
@@ -136,14 +136,16 @@ impl GraphStore {
         let intents = self.expand_batch_edge_intents(edges)?;
         let requests = self.build_one_orientation_batch_plans(&intents, encode_intent_edge)?;
 
-        // Reserve every orientation first. If any orientation is unsupported, drop
-        // all reservations and return unsupported before any canonical write.
+        // Reserve every orientation first. If any orientation is unsupported, roll
+        // back every previously successful reservation before returning unsupported.
+        // No canonical write occurs on this path.
         let mut reservations: Vec<(LabeledOrientation, BatchReservation<Edge>)> =
             Vec::with_capacity(requests.len());
         for req in requests {
             match self.reserve_one_orientation_plan(&req.plan, req.orientation) {
                 Ok(reservation) => reservations.push((req.orientation, reservation)),
                 Err(err) => {
+                    self.rollback_one_orientation_reservations(&reservations);
                     return Ok(BatchEdgeInsertResult::Unsupported {
                         reason: format!("{err}"),
                     });
@@ -246,6 +248,17 @@ impl GraphStore {
             labeled.reserve_one_orientation_batch(plan)
         })
     }
+
+    fn rollback_one_orientation_reservations(
+        &self,
+        reservations: &[(LabeledOrientation, BatchReservation<Edge>)],
+    ) {
+        for (orientation, reservation) in reservations {
+            self.with_graph_mut(|graph| {
+                graph.rollback_batch_reservation(*orientation, reservation);
+            });
+        }
+    }
 }
 
 fn encode_intent_edge(intent: &BatchEdgeIntent) -> Result<Edge, BatchPlacementError> {
@@ -321,35 +334,21 @@ mod tests {
         );
     }
 
-    /// Create empty label buckets for both sides of a directed edge so the clean-
-    /// slab path has the initial per-bucket quota available.
-    fn ensure_clean_slab_dir_buckets(
-        store: &GraphStore,
-        source: VertexId,
-        target: VertexId,
-        label: EdgeLabelId,
-        width: u16,
-    ) {
-        let storage = lara_label(edge_storage_label(Some(label), false));
-        store.with_graph_mut(|g| {
-            g.ensure_directed_edge_inline_value_width(source, target, storage, width)
-                .expect("ensure directed buckets");
-        });
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct AllocatorSnapshot {
+        forward_edge_capacity: u64,
+        reverse_edge_capacity: u64,
+        forward_payload_tail: u64,
+        reverse_payload_tail: u64,
     }
 
-    /// Create empty label buckets at both endpoints of an undirected edge.
-    fn ensure_clean_slab_undir_buckets(
-        store: &GraphStore,
-        a: VertexId,
-        b: VertexId,
-        label: EdgeLabelId,
-        width: u16,
-    ) {
-        let storage = lara_label(edge_storage_label(Some(label), true));
-        store.with_graph_mut(|g| {
-            g.ensure_undirected_edge_inline_value_width(a, b, storage, width)
-                .expect("ensure undirected buckets");
-        });
+    fn allocator_snapshot(store: &GraphStore) -> AllocatorSnapshot {
+        store.with_graph_mut(|graph| AllocatorSnapshot {
+            forward_edge_capacity: graph.forward().edges().header().elem_capacity,
+            reverse_edge_capacity: graph.reverse().edges().header().elem_capacity,
+            forward_payload_tail: graph.forward().values().header().slab_occupied_tail,
+            reverse_payload_tail: graph.reverse().values().header().slab_occupied_tail,
+        })
     }
 
     fn count_labeled_dir_edges(
@@ -576,6 +575,54 @@ mod tests {
             count_labeled_dir_edges(&store, target_without_bucket, label_raw, false,),
             in_before,
             "reverse canonical state must remain absent"
+        );
+    }
+
+    #[test]
+    fn reserve_failure_restores_allocator_state() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(5002);
+        install_width(label, 8);
+        let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let vertices = make_vertices(&store, 3);
+        let source = vertices[0];
+        let target_with_bucket = vertices[1];
+        let target_without_bucket = vertices[2];
+
+        // Prepare forward bucket at source and reverse bucket at target_with_bucket.
+        // target_without_bucket intentionally has no reverse bucket.
+        store.prepare_clean_slab_dir_buckets(source, target_with_bucket, label, 8);
+
+        let before = allocator_snapshot(&store);
+
+        let edges = vec![
+            input(
+                source,
+                target_with_bucket,
+                Some(label),
+                true,
+                payload.clone(),
+            ),
+            input(
+                source,
+                target_without_bucket,
+                Some(label),
+                true,
+                payload.clone(),
+            ),
+        ];
+        let result = store
+            .try_insert_batch_edges_clean_slab(&edges)
+            .expect("plan/encode ok");
+        assert!(
+            matches!(result, BatchEdgeInsertResult::Unsupported { .. }),
+            "expected unsupported after partial reserve, got {result:?}"
+        );
+
+        let after = allocator_snapshot(&store);
+        assert_eq!(
+            before, after,
+            "partial reserve failure must roll back edge capacity and payload tail for both orientations"
         );
     }
 

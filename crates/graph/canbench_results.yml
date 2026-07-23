@@ -83,6 +83,30 @@ benches:
         instructions: 5262002
         heap_increase: 2
         stable_memory_increase: 0
+  bench_clean_slab_directed_128_width_0:
+    total:
+      calls: 1
+      instructions: 4405705
+      heap_increase: 2
+      stable_memory_increase: 0
+    scopes:
+      clean_slab_directed_128_w0:
+        calls: 1
+        instructions: 4404617
+        heap_increase: 2
+        stable_memory_increase: 0
+  bench_clean_slab_directed_128_width_8:
+    total:
+      calls: 1
+      instructions: 5261737
+      heap_increase: 2
+      stable_memory_increase: 0
+    scopes:
+      clean_slab_directed_128_w8:
+        calls: 1
+        instructions: 5260649
+        heap_increase: 2
+        stable_memory_increase: 0
   bench_edge_vector_dot_dispatch_4096x16_25pct:
     total:
       calls: 1
@@ -2226,6 +2250,30 @@ benches:
       scalar_directed_128_w8:
         calls: 1
         instructions: 44027326
+        heap_increase: 0
+        stable_memory_increase: 16
+  bench_scalar_directed_128_width_0:
+    total:
+      calls: 1
+      instructions: 8550597
+      heap_increase: 0
+      stable_memory_increase: 16
+    scopes:
+      scalar_directed_128_w0:
+        calls: 1
+        instructions: 8549598
+        heap_increase: 0
+        stable_memory_increase: 16
+  bench_scalar_directed_128_width_8:
+    total:
+      calls: 1
+      instructions: 12778188
+      heap_increase: 0
+      stable_memory_increase: 16
+    scopes:
+      scalar_directed_128_w8:
+        calls: 1
+        instructions: 12777189
         heap_increase: 0
         stable_memory_increase: 16
 version: 0.6.0
