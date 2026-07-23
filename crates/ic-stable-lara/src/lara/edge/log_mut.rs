@@ -438,6 +438,47 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let capacity = log_h.max_log_entries.max(1) as f64;
         idx / capacity
     }
+
+    pub(crate) fn read_overflow_log_idx(&self, leaf: u32) -> i32 {
+        let log_h = self.log.header();
+        self.log.read_idx_with_header(&log_h, leaf)
+    }
+
+    pub(crate) fn read_overflow_log_state(&self, leaf: u32) -> (i32, u32) {
+        let log_h = self.log.header();
+        (
+            self.log.read_idx_with_header(&log_h, leaf),
+            log_h.max_log_entries,
+        )
+    }
+
+    pub(crate) fn write_overflow_log_entries(
+        &self,
+        leaf: u32,
+        start_idx: u32,
+        entries: &[(i32, E)],
+    ) -> Result<(), LaraOperationError> {
+        let log_h = self.log.header();
+        for (offset, (prev, edge)) in entries.iter().enumerate() {
+            let entry_idx = start_idx + offset as u32;
+            if E::BYTES <= INLINE_EDGE_BYTES {
+                let mut payload = [0u8; INLINE_EDGE_BYTES];
+                edge.write_to(&mut payload[..E::BYTES]);
+                self.log
+                    .write_entry_with_header(&log_h, leaf, entry_idx, *prev, &payload[..E::BYTES])
+                    .map_err(LaraOperationError::WriteLogFailed)?;
+            } else {
+                let mut payload = vec![0u8; E::BYTES];
+                edge.write_to(&mut payload);
+                self.log
+                    .write_entry_with_header(&log_h, leaf, entry_idx, *prev, &payload)
+                    .map_err(LaraOperationError::WriteLogFailed)?;
+            }
+        }
+        let next_idx = (start_idx as i32).saturating_add(entries.len() as i32);
+        self.log.write_idx_with_header(&log_h, leaf, next_idx);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

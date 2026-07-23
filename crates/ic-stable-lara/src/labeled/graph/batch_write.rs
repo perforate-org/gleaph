@@ -133,16 +133,12 @@ struct BatchReservationRun {
     bucket_slot: u64,
     /// Expected bucket fingerprint at reservation time.
     bucket_fingerprint: BucketFingerprint,
-    /// First edge slab slot written for the run.
-    edge_start_slot: u64,
     /// Number of edge slots reserved for the run.
     edge_slot_count: u32,
     /// Byte width per inline value slot (`0` = no payload).
     inline_value_width: u16,
-    /// Byte offset in the payload slab where the run writes, if payload-bearing.
-    payload_byte_offset: Option<u64>,
-    /// Number of payload bytes reserved.
-    payload_byte_count: u64,
+    /// Physical destination chosen at reservation time.
+    destination: RunDestination,
 }
 
 /// Snapshot of bucket identity and occupancy used to detect stale/tampered reservations.
@@ -216,6 +212,27 @@ pub enum OneOrientationBatchError {
     StorageError(LabeledOperationError),
 }
 
+/// Physical destination chosen for one bucket-local run at preflight time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunDestination {
+    /// Write into the bucket's contiguous slab window.
+    Slab {
+        /// First edge slab slot written for the run.
+        edge_start_slot: u64,
+        /// Byte offset in the payload slab where the run writes, if payload-bearing.
+        payload_byte_offset: Option<u64>,
+        /// Number of payload bytes reserved.
+        payload_byte_count: u64,
+    },
+    /// Append to the bucket's edge overflow log and, when applicable, payload overflow log.
+    OverflowLog {
+        /// Index of the first reserved edge log entry.
+        edge_log_start_idx: u32,
+        /// Index of the first reserved payload log entry, if payload-bearing.
+        payload_log_start_idx: Option<u32>,
+    },
+}
+
 /// Intermediate preflight record for one run before any mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PayloadAllocationKind {
@@ -236,12 +253,11 @@ struct PreflightRun {
     label_id: BucketLabelKey,
     bucket_slot: u64,
     bucket: super::LabelBucket,
-    edge_start_slot: u64,
     edge_slot_count: u32,
     inline_value_width: u16,
-    payload_byte_offset: Option<u64>,
     payload_byte_count: u64,
     payload_allocation: Option<PayloadAllocationKind>,
+    destination: RunDestination,
 }
 
 #[cfg(test)]
@@ -252,12 +268,15 @@ impl Default for PreflightRun {
             label_id: BucketLabelKey::directed_from_index(0),
             bucket_slot: 0,
             bucket: super::LabelBucket::default(),
-            edge_start_slot: 0,
             edge_slot_count: 0,
             inline_value_width: 0,
-            payload_byte_offset: None,
             payload_byte_count: 0,
             payload_allocation: None,
+            destination: RunDestination::Slab {
+                edge_start_slot: 0,
+                payload_byte_offset: None,
+                payload_byte_count: 0,
+            },
         }
     }
 }
@@ -291,19 +310,22 @@ where
         let mut max_edge_end_slot: u64 = 0;
         for run in &plan.runs {
             let p = self.preflight_run(run)?;
-            max_edge_end_slot =
-                max_edge_end_slot.max(p.edge_start_slot + u64::from(p.edge_slot_count));
+            if let RunDestination::Slab {
+                edge_start_slot, ..
+            } = p.destination
+            {
+                max_edge_end_slot =
+                    max_edge_end_slot.max(edge_start_slot + u64::from(p.edge_slot_count));
+            }
             preflight.push(p);
         }
 
         // Phase 2.5: prove that the total result counts fit in the public u32 fields.
         Self::check_total_result_counts_fit_u32(&preflight)?;
 
-        // Phase 3: mutate allocator state.  We resize edge-store capacity once and
-        // then perform every payload allocation/growth.  If any payload operation
-        // fails, we roll back both the edge-store logical capacity and the payload
-        // occupied tail to their pre-reserve values.  (The underlying stable-memory
-        // pages are not shrunk; they become harmless slack.)
+        // Phase 3: mutate allocator state for slab-bound runs only.  Overflow-log
+        // runs reserve only ephemeral log capacity checked in preflight; they do not
+        // touch the edge-store logical capacity or payload occupied tail before commit.
         let edge_capacity_before = self.edges.header().elem_capacity;
         if max_edge_end_slot > edge_capacity_before {
             self.edges
@@ -315,46 +337,55 @@ where
         let mut allocated_payload_offsets: Vec<Option<(u64, u64)>> =
             Vec::with_capacity(preflight.len());
         for p in &preflight {
-            if let Some(allocation) = p.payload_allocation {
-                match allocation {
-                    PayloadAllocationKind::Existing { offset } => {
-                        allocated_payload_offsets.push(Some((offset, 0)));
-                    }
-                    PayloadAllocationKind::New { byte_len } => {
-                        let actual_offset =
-                            self.values.append_byte_span(byte_len).map_err(|e| {
-                                self.rollback_payload_tail(payload_tail_before);
-                                self.rollback_edge_capacity(edge_capacity_before);
-                                storage_resize_error(e)
-                            })?;
-                        allocated_payload_offsets.push(Some((actual_offset, byte_len)));
-                    }
-                    PayloadAllocationKind::GrowInPlace {
-                        offset,
-                        had_bytes,
-                        new_bytes,
-                    } => {
-                        let grown = self
-                            .values
-                            .grow_byte_span_in_place(offset, had_bytes, new_bytes)
-                            .map_err(|e| {
-                                self.rollback_payload_tail(payload_tail_before);
-                                self.rollback_edge_capacity(edge_capacity_before);
-                                storage_resize_error(e)
-                            })?;
-                        if !grown {
-                            self.rollback_payload_tail(payload_tail_before);
-                            self.rollback_edge_capacity(edge_capacity_before);
-                            return Err(OneOrientationBatchError::UnsupportedGeometry(
-                                "payload span is not at occupied tail and cannot grow in place"
-                                    .into(),
-                            ));
+            match p.destination {
+                RunDestination::Slab { .. } => {
+                    if let Some(allocation) = p.payload_allocation {
+                        match allocation {
+                            PayloadAllocationKind::Existing { offset } => {
+                                allocated_payload_offsets.push(Some((offset, 0)));
+                            }
+                            PayloadAllocationKind::New { byte_len } => {
+                                let actual_offset =
+                                    self.values.append_byte_span(byte_len).map_err(|e| {
+                                        self.rollback_payload_tail(payload_tail_before);
+                                        self.rollback_edge_capacity(edge_capacity_before);
+                                        storage_resize_error(e)
+                                    })?;
+                                allocated_payload_offsets.push(Some((actual_offset, byte_len)));
+                            }
+                            PayloadAllocationKind::GrowInPlace {
+                                offset,
+                                had_bytes,
+                                new_bytes,
+                            } => {
+                                let grown = self
+                                    .values
+                                    .grow_byte_span_in_place(offset, had_bytes, new_bytes)
+                                    .map_err(|e| {
+                                        self.rollback_payload_tail(payload_tail_before);
+                                        self.rollback_edge_capacity(edge_capacity_before);
+                                        storage_resize_error(e)
+                                    })?;
+                                if !grown {
+                                    self.rollback_payload_tail(payload_tail_before);
+                                    self.rollback_edge_capacity(edge_capacity_before);
+                                    return Err(OneOrientationBatchError::UnsupportedGeometry(
+                                        "payload span is not at occupied tail and cannot grow in place"
+                                            .into(),
+                                    ));
+                                }
+                                allocated_payload_offsets.push(Some((offset, new_bytes)));
+                            }
                         }
-                        allocated_payload_offsets.push(Some((offset, new_bytes)));
+                    } else {
+                        allocated_payload_offsets.push(None);
                     }
                 }
-            } else {
-                allocated_payload_offsets.push(None);
+                RunDestination::OverflowLog { .. } => {
+                    // Overflow-log runs do not allocate payload slab bytes; payload bytes
+                    // are written directly into the payload overflow log at commit time.
+                    allocated_payload_offsets.push(None);
+                }
             }
         }
 
@@ -364,24 +395,42 @@ where
             .into_iter()
             .zip(allocated_payload_offsets)
             .map(|(p, allocated)| {
-                let payload_byte_offset = if p.inline_value_width > 0 {
-                    let (actual_offset, _allocated_len) =
-                        allocated.expect("payload-bearing run must have an allocated offset");
-                    // Defensive: for existing spans the actual offset must equal the
-                    // preflight placeholder.
-                    if let Some(PayloadAllocationKind::Existing { offset }) = p.payload_allocation {
-                        assert_eq!(
-                            actual_offset, offset,
-                            "existing payload offset must not change during allocation"
-                        );
+                let destination = match p.destination {
+                    RunDestination::Slab {
+                        edge_start_slot, ..
+                    } => {
+                        let payload_byte_offset = if p.inline_value_width > 0 {
+                            let (actual_offset, _allocated_len) = allocated
+                                .expect("payload-bearing slab run must have an allocated offset");
+                            if let Some(PayloadAllocationKind::Existing { offset }) =
+                                p.payload_allocation
+                            {
+                                assert_eq!(
+                                    actual_offset, offset,
+                                    "existing payload offset must not change during allocation"
+                                );
+                            }
+                            Some(actual_offset)
+                        } else {
+                            debug_assert!(
+                                allocated.is_none(),
+                                "edge-only slab run must have no payload allocation"
+                            );
+                            None
+                        };
+                        RunDestination::Slab {
+                            edge_start_slot,
+                            payload_byte_offset,
+                            payload_byte_count: p.payload_byte_count,
+                        }
                     }
-                    Some(actual_offset)
-                } else {
-                    debug_assert!(
-                        allocated.is_none(),
-                        "edge-only run must have no payload allocation"
-                    );
-                    None
+                    RunDestination::OverflowLog {
+                        edge_log_start_idx,
+                        payload_log_start_idx,
+                    } => RunDestination::OverflowLog {
+                        edge_log_start_idx,
+                        payload_log_start_idx,
+                    },
                 };
                 BatchReservationRun {
                     bucket_slot: p.bucket_slot,
@@ -391,11 +440,9 @@ where
                         &p.bucket,
                         &self.vertices.get(p.owner_vertex_id),
                     ),
-                    edge_start_slot: p.edge_start_slot,
                     edge_slot_count: p.edge_slot_count,
                     inline_value_width: p.inline_value_width,
-                    payload_byte_offset,
-                    payload_byte_count: p.payload_byte_count,
+                    destination,
                 }
             })
             .collect();
@@ -545,7 +592,7 @@ where
             .bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)
             .map_err(OneOrientationBatchError::from)?;
         if edge_end_slot > successor_start {
-            return Err(OneOrientationBatchError::SlabCapacityExceeded);
+            return self.preflight_overflow_log_run(run, bucket_slot, bucket);
         }
 
         // Verify every payload-bearing edge matches the declared width.  This
@@ -571,7 +618,6 @@ where
         // Compute payload destination and allocation kind without mutating the
         // payload store.  For a brand-new span we only record the required byte
         // length; the actual offset is determined by the allocator in Phase 3.
-        let mut payload_byte_offset = None;
         let mut payload_allocation = None;
         if run.inline_value_width > 0 {
             let width = u64::from(run.inline_value_width);
@@ -592,21 +638,17 @@ where
                 payload_allocation = Some(PayloadAllocationKind::New {
                     byte_len: total_payload_bytes,
                 });
-                payload_byte_offset = Some(offset);
             } else if span_ends_at_tail {
                 payload_allocation = Some(PayloadAllocationKind::GrowInPlace {
                     offset,
                     had_bytes,
                     new_bytes: total_payload_bytes,
                 });
-                payload_byte_offset = Some(offset);
             } else {
                 return Err(OneOrientationBatchError::UnsupportedGeometry(
                     "payload span is not at occupied tail and cannot grow in place".into(),
                 ));
             }
-            // Consistency check: the projected byte count from the bucket geometry
-            // must equal the sum of per-edge payload widths.
             assert_eq!(
                 total_payload_bytes,
                 payload_byte_count + had_bytes,
@@ -619,12 +661,91 @@ where
             label_id: run.label_id,
             bucket_slot,
             bucket,
-            edge_start_slot,
             edge_slot_count,
             inline_value_width: run.inline_value_width,
-            payload_byte_offset,
             payload_byte_count,
             payload_allocation,
+            destination: RunDestination::Slab {
+                edge_start_slot,
+                payload_byte_offset: None,
+                payload_byte_count,
+            },
+        })
+    }
+
+    fn preflight_overflow_log_run(
+        &self,
+        run: &OneOrientationBucketRun<E>,
+        bucket_slot: u64,
+        bucket: super::LabelBucket,
+    ) -> Result<PreflightRun, OneOrientationBatchError> {
+        self.ensure_vertex(run.owner_vertex_id)
+            .map_err(OneOrientationBatchError::from)?;
+        let edge_slot_count = u32::try_from(run.edges.len())
+            .map_err(|_| OneOrientationBatchError::LogCapacityExceeded)?;
+
+        // Edge overflow log capacity check.
+        let header = self.edges.header();
+        let leaf = Self::leaf_index_for_vid(run.owner_vertex_id, header.segment_size);
+        let needed_i32 = i32::try_from(edge_slot_count)
+            .map_err(|_| OneOrientationBatchError::LogCapacityExceeded)?;
+        let (current_edge_idx, edge_log_capacity) = self.edges.read_overflow_log_state(leaf);
+        if current_edge_idx < 0
+            || current_edge_idx
+                .checked_add(needed_i32)
+                .map(|end| end > edge_log_capacity as i32)
+                .unwrap_or(true)
+        {
+            return Err(OneOrientationBatchError::LogCapacityExceeded);
+        }
+
+        // Verify every payload-bearing edge matches the declared width and check
+        // payload overflow log capacity.
+        let mut payload_byte_count: u64 = 0;
+        let mut payload_log_start_idx = None;
+        if run.inline_value_width > 0 {
+            let width = usize::from(run.inline_value_width);
+            for e in &run.edges {
+                let actual = e.edge.edge_inline_value_bytes().len();
+                if actual != width {
+                    return Err(OneOrientationBatchError::PayloadLengthMismatch {
+                        logical_ordinal: e.logical_ordinal,
+                        expected_width: run.inline_value_width,
+                        actual_length: actual,
+                    });
+                }
+            }
+            payload_byte_count = u64::from(edge_slot_count)
+                .checked_mul(u64::from(run.inline_value_width))
+                .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
+
+            let payload_leaf = self.payload_log_leaf(run.owner_vertex_id);
+            let (current_payload_idx, payload_log_capacity) =
+                self.values.read_payload_log_state(payload_leaf);
+            if current_payload_idx < 0
+                || current_payload_idx
+                    .checked_add(needed_i32)
+                    .map(|end| end > payload_log_capacity as i32)
+                    .unwrap_or(true)
+            {
+                return Err(OneOrientationBatchError::LogCapacityExceeded);
+            }
+            payload_log_start_idx = Some(current_payload_idx as u32);
+        }
+
+        Ok(PreflightRun {
+            owner_vertex_id: run.owner_vertex_id,
+            label_id: run.label_id,
+            bucket_slot,
+            bucket,
+            edge_slot_count,
+            inline_value_width: run.inline_value_width,
+            payload_byte_count,
+            payload_allocation: None,
+            destination: RunDestination::OverflowLog {
+                edge_log_start_idx: current_edge_idx as u32,
+                payload_log_start_idx,
+            },
         })
     }
 }
@@ -711,19 +832,24 @@ where
                 "bucket occupancy changed between reserve and commit"
             );
 
-            let _updated_stored_slots = bucket
-                .stored_slots
-                .checked_add(res.edge_slot_count)
-                .expect("reserve guaranteed stored_slots overflow safety");
             let _updated_degree = bucket
                 .degree
                 .checked_add(res.edge_slot_count)
                 .expect("reserve guaranteed degree overflow safety");
-            if res.inline_value_width > 0 {
-                let _updated_payload_slots = bucket
-                    .inline_value_slab_slots()
-                    .checked_add(res.edge_slot_count)
-                    .expect("reserve guaranteed payload slab slot overflow safety");
+            match &res.destination {
+                RunDestination::Slab { .. } => {
+                    let _updated_stored_slots = bucket
+                        .stored_slots
+                        .checked_add(res.edge_slot_count)
+                        .expect("reserve guaranteed stored_slots overflow safety");
+                    if res.inline_value_width > 0 {
+                        let _updated_payload_slots = bucket
+                            .inline_value_slab_slots()
+                            .checked_add(res.edge_slot_count)
+                            .expect("reserve guaranteed payload slab slot overflow safety");
+                    }
+                }
+                RunDestination::OverflowLog { .. } => {}
             }
         }
 
@@ -736,45 +862,133 @@ where
 
         // First pass: write all edge and payload bytes.
         let mut edge_slots_written: u64 = 0;
+        let mut edge_log_entries_written: u64 = 0;
         let mut payload_slots_written: u64 = 0;
+        let mut payload_log_entries_written: u64 = 0;
         for (run, res) in self.plan.runs.iter().zip(self.runs.iter()) {
-            let mut edge_bytes = Vec::with_capacity(run.edges.len() * E::BYTES);
-            for e in &run.edges {
-                let mut buf = vec![0u8; E::BYTES];
-                e.edge.write_to(&mut buf);
-                edge_bytes.extend_from_slice(&buf);
-            }
-            graph
-                .edges
-                .write_slots_contiguous(res.edge_start_slot, &edge_bytes)
-                .expect("reserve guaranteed edge slab capacity");
+            match &res.destination {
+                RunDestination::Slab {
+                    edge_start_slot,
+                    payload_byte_offset,
+                    payload_byte_count,
+                } => {
+                    let mut edge_bytes = Vec::with_capacity(run.edges.len() * E::BYTES);
+                    for e in &run.edges {
+                        let mut buf = vec![0u8; E::BYTES];
+                        e.edge.write_to(&mut buf);
+                        edge_bytes.extend_from_slice(&buf);
+                    }
+                    graph
+                        .edges
+                        .write_slots_contiguous(*edge_start_slot, &edge_bytes)
+                        .expect("reserve guaranteed edge slab capacity");
 
-            if res.inline_value_width > 0 {
-                let payload_offset = res
-                    .payload_byte_offset
-                    .expect("reserve guaranteed a payload byte offset for payload-bearing run");
-                let payload_bytes = run
-                    .edges
-                    .iter()
-                    .flat_map(|e| e.edge.edge_inline_value_bytes().iter().copied())
-                    .collect::<Vec<u8>>();
-                assert_eq!(
-                    payload_bytes.len() as u64,
-                    res.payload_byte_count,
-                    "reserve payload byte count must match actual payload bytes"
-                );
-                graph
-                    .values
-                    .write_bytes(payload_offset, &payload_bytes)
-                    .expect("reserve guaranteed payload slab capacity");
-                payload_slots_written = payload_slots_written
-                    .checked_add(u64::from(res.edge_slot_count))
-                    .expect("reserve guaranteed payload slot count");
-            }
+                    if res.inline_value_width > 0 {
+                        let payload_offset = payload_byte_offset.expect(
+                            "reserve guaranteed a payload byte offset for payload-bearing run",
+                        );
+                        let payload_bytes = run
+                            .edges
+                            .iter()
+                            .flat_map(|e| e.edge.edge_inline_value_bytes().iter().copied())
+                            .collect::<Vec<u8>>();
+                        assert_eq!(
+                            payload_bytes.len() as u64,
+                            *payload_byte_count,
+                            "reserve payload byte count must match actual payload bytes"
+                        );
+                        graph
+                            .values
+                            .write_bytes(payload_offset, &payload_bytes)
+                            .expect("reserve guaranteed payload slab capacity");
+                        payload_slots_written = payload_slots_written
+                            .checked_add(u64::from(res.edge_slot_count))
+                            .expect("reserve guaranteed payload slot count");
+                    }
 
-            edge_slots_written = edge_slots_written
-                .checked_add(u64::from(res.edge_slot_count))
-                .expect("reserve guaranteed edge slot count");
+                    edge_slots_written = edge_slots_written
+                        .checked_add(u64::from(res.edge_slot_count))
+                        .expect("reserve guaranteed edge slot count");
+                }
+                RunDestination::OverflowLog {
+                    edge_log_start_idx,
+                    payload_log_start_idx,
+                } => {
+                    let leaf = LabeledLaraGraph::<E, M>::leaf_index_for_vid(
+                        res.bucket_fingerprint.owner_vertex_id,
+                        graph.edges.header().segment_size,
+                    );
+                    let (bucket_slot, bucket) = match graph
+                        .find_bucket(
+                            res.bucket_fingerprint.owner_vertex_id,
+                            &graph.vertices.get(res.bucket_fingerprint.owner_vertex_id),
+                            res.bucket_fingerprint.label_id,
+                        )
+                        .expect("reserve found this bucket")
+                    {
+                        BucketSearch::Found { slot, bucket } => (slot, bucket),
+                        BucketSearch::Missing { .. } => {
+                            panic!("bucket disappeared between reserve and commit");
+                        }
+                    };
+                    let _ = bucket_slot;
+
+                    let prev_head = bucket.overflow_log_head();
+                    let entries: Vec<(i32, E)> = run
+                        .edges
+                        .iter()
+                        .enumerate()
+                        .map(|(offset, e)| {
+                            let prev = if offset == 0 {
+                                prev_head
+                            } else {
+                                (edge_log_start_idx + offset as u32 - 1) as i32
+                            };
+                            (prev, e.edge.clone())
+                        })
+                        .collect();
+                    graph
+                        .edges
+                        .write_overflow_log_entries(leaf, *edge_log_start_idx, &entries)
+                        .expect("reserve guaranteed edge log capacity");
+                    edge_log_entries_written = edge_log_entries_written
+                        .checked_add(u64::from(res.edge_slot_count))
+                        .expect("reserve guaranteed edge log slot count");
+                    edge_slots_written = edge_slots_written
+                        .checked_add(u64::from(res.edge_slot_count))
+                        .expect("reserve guaranteed edge slot count");
+
+                    if res.inline_value_width > 0 {
+                        let payload_leaf =
+                            graph.payload_log_leaf(res.bucket_fingerprint.owner_vertex_id);
+                        let prev_payload_head = bucket.inline_value_log_head();
+                        let payload_bytes = run
+                            .edges
+                            .iter()
+                            .flat_map(|e| e.edge.edge_inline_value_bytes().iter().copied())
+                            .collect::<Vec<u8>>();
+                        let payload_start = payload_log_start_idx.expect(
+                            "reserve guaranteed a payload log start index for payload-bearing run",
+                        );
+                        graph
+                            .values
+                            .write_payload_log_entries(
+                                payload_leaf,
+                                payload_start,
+                                prev_payload_head,
+                                res.inline_value_width,
+                                &payload_bytes,
+                            )
+                            .expect("reserve guaranteed payload log capacity");
+                        payload_log_entries_written = payload_log_entries_written
+                            .checked_add(u64::from(res.edge_slot_count))
+                            .expect("reserve guaranteed payload log slot count");
+                        payload_slots_written = payload_slots_written
+                            .checked_add(u64::from(res.edge_slot_count))
+                            .expect("reserve guaranteed payload slot count");
+                    }
+                }
+            }
         }
 
         // Second pass: publish all bucket metadata and segment counts.
@@ -794,31 +1008,57 @@ where
                 }
             };
 
-            let mut updated_bucket = bucket
-                .with_stored_slots(
-                    bucket
-                        .stored_slots
-                        .checked_add(res.edge_slot_count)
-                        .expect("reserve guaranteed stored_slots overflow safety"),
-                )
-                .with_degree_field(
-                    bucket
-                        .degree
-                        .checked_add(res.edge_slot_count)
-                        .expect("reserve guaranteed degree overflow safety"),
-                );
-            if res.inline_value_width > 0 {
-                updated_bucket = updated_bucket.with_inline_value_slab_slots(
-                    bucket
-                        .inline_value_slab_slots()
-                        .checked_add(res.edge_slot_count)
-                        .expect("reserve guaranteed payload slab slot overflow safety"),
-                );
-                if bucket.inline_value_slab_slots() == 0 {
-                    updated_bucket = updated_bucket.with_inline_value_offset(
-                        res.payload_byte_offset
-                            .expect("reserve payload offset for new payload span"),
+            let next_degree = bucket
+                .degree
+                .checked_add(res.edge_slot_count)
+                .expect("reserve guaranteed degree overflow safety");
+            let mut updated_bucket = bucket.with_degree_field(next_degree);
+            match &res.destination {
+                RunDestination::Slab {
+                    payload_byte_offset,
+                    ..
+                } => {
+                    updated_bucket = updated_bucket.with_stored_slots(
+                        bucket
+                            .stored_slots
+                            .checked_add(res.edge_slot_count)
+                            .expect("reserve guaranteed stored_slots overflow safety"),
                     );
+                    if res.inline_value_width > 0 {
+                        updated_bucket = updated_bucket.with_inline_value_slab_slots(
+                            bucket
+                                .inline_value_slab_slots()
+                                .checked_add(res.edge_slot_count)
+                                .expect("reserve guaranteed payload slab slot overflow safety"),
+                        );
+                        if bucket.inline_value_slab_slots() == 0 {
+                            updated_bucket = updated_bucket.with_inline_value_offset(
+                                payload_byte_offset
+                                    .expect("reserve payload offset for new payload span"),
+                            );
+                        }
+                    }
+                }
+                RunDestination::OverflowLog {
+                    edge_log_start_idx,
+                    payload_log_start_idx,
+                } => {
+                    let last_edge_idx = edge_log_start_idx + res.edge_slot_count - 1;
+                    updated_bucket = updated_bucket.with_overflow_log_head(last_edge_idx as i32);
+                    if res.inline_value_width > 0 {
+                        let payload_start = payload_log_start_idx.expect(
+                            "reserve guaranteed payload log start index for payload-bearing run",
+                        );
+                        let last_payload_idx = payload_start + res.edge_slot_count - 1;
+                        let next_payload_len = u32::from(bucket.inline_value_log_len())
+                            .checked_add(res.edge_slot_count)
+                            .expect("reserve guaranteed payload log len overflow safety");
+                        let next_payload_len_u8 = u8::try_from(next_payload_len)
+                            .expect("reserve guaranteed payload log len fits in u8");
+                        updated_bucket = updated_bucket
+                            .try_with_payload_log(last_payload_idx as i32, next_payload_len_u8)
+                            .expect("reserve guaranteed payload log state");
+                    }
                 }
             }
             graph
@@ -838,15 +1078,21 @@ where
 
         // Publish any vertex span growth caused by growing the last bucket on a
         // vertex.  For non-last buckets the end slot stays within the existing
-        // vertex span, so the vertex row is unchanged.
+        // vertex span, so the vertex row is unchanged.  Overflow-log runs do not
+        // change the vertex slab span.
         let mut vertex_stored_slot_ends: std::collections::BTreeMap<VertexId, u64> =
             std::collections::BTreeMap::new();
         for res in &self.runs {
-            let end = res.edge_start_slot + u64::from(res.edge_slot_count);
-            let entry = vertex_stored_slot_ends
-                .entry(res.bucket_fingerprint.owner_vertex_id)
-                .or_default();
-            *entry = (*entry).max(end);
+            if let RunDestination::Slab {
+                edge_start_slot, ..
+            } = &res.destination
+            {
+                let end = edge_start_slot + u64::from(res.edge_slot_count);
+                let entry = vertex_stored_slot_ends
+                    .entry(res.bucket_fingerprint.owner_vertex_id)
+                    .or_default();
+                *entry = (*entry).max(end);
+            }
         }
         for (vid, end) in vertex_stored_slot_ends {
             let vertex = graph.vertices.get(vid);
@@ -870,10 +1116,12 @@ where
         OneOrientationBatchResult {
             edge_slots_written: u32::try_from(edge_slots_written)
                 .expect("reserve guaranteed total edge slots fit in u32"),
-            edge_log_entries_written: 0,
+            edge_log_entries_written: u32::try_from(edge_log_entries_written)
+                .expect("reserve guaranteed total edge log entries fit in u32"),
             payload_slots_written: u32::try_from(payload_slots_written)
                 .expect("reserve guaranteed total payload slots fit in u32"),
-            payload_log_entries_written: 0,
+            payload_log_entries_written: u32::try_from(payload_log_entries_written)
+                .expect("reserve guaranteed total payload log entries fit in u32"),
         }
     }
 
@@ -985,6 +1233,7 @@ fn storage_resize_error(e: crate::GrowFailed) -> OneOrientationBatchError {
 
 #[cfg(test)]
 mod tests {
+    use crate::LabeledLaraGraph;
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::test_support::{TestEdge as GraphTestEdge, test_graph_with_default};
@@ -1186,12 +1435,12 @@ mod tests {
     }
 
     #[test]
-    fn reserve_rejects_slab_capacity_exceeded() {
+    fn overflow_log_append_success() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
-        // Fill the bucket slab window with one edge per slot.
+        // Fill the bucket slab window so the batch must use the overflow log.
         let label = BucketLabelKey::directed_from_index(1);
         for i in 1..=3u32 {
             graph
@@ -1214,10 +1463,81 @@ mod tests {
             }],
         };
 
+        let result = graph
+            .insert_one_orientation_batch(&plan)
+            .expect("overflow-log batch append should succeed");
+        assert_eq!(result.edge_slots_written, 1);
+        assert_eq!(result.edge_log_entries_written, 1);
+        assert_eq!(result.payload_slots_written, 0);
+
+        let out = graph.out_edges(VertexId::from(0)).unwrap();
+        assert_eq!(
+            out.len(),
+            4,
+            "expected four out-edges after overflow append"
+        );
+        assert!(
+            out.iter().any(|e| e.target == 10),
+            "overflow-log edge must be visible in read-back"
+        );
+    }
+
+    #[test]
+    fn reserve_rejects_log_capacity_exceeded() {
+        let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+
+        // Create a bucket and fill its slab window.
+        let label = BucketLabelKey::directed_from_index(1);
+        for i in 1..=3u32 {
+            graph
+                .insert_edge(VertexId::from(0), label, GraphTestEdge { target: i })
+                .unwrap();
+        }
+
+        // Fill the per-leaf edge overflow log to capacity (170 entries).
+        let header = graph.edges().header();
+        let leaf = LabeledLaraGraph::<GraphTestEdge, crate::VectorMemory>::leaf_index_for_vid(
+            VertexId::from(0),
+            header.segment_size,
+        );
+        let log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+        let entries: Vec<(i32, GraphTestEdge)> = (0..log_capacity)
+            .map(|i| {
+                let prev = if i == 0 { -1 } else { (i as i32) - 1 };
+                (
+                    prev,
+                    GraphTestEdge {
+                        target: 100 + i as u32,
+                    },
+                )
+            })
+            .collect();
+        graph
+            .edges()
+            .write_overflow_log_entries(leaf, 0, &entries)
+            .expect("fill log");
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_value_width: 0,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(1),
+                    label_id: label,
+                    edge: GraphTestEdge { target: 10 },
+                }],
+            }],
+        };
+
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
-            matches!(err, OneOrientationBatchError::SlabCapacityExceeded),
-            "expected SlabCapacityExceeded, got {err}"
+            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
+            "expected LogCapacityExceeded, got {err}"
         );
     }
 }

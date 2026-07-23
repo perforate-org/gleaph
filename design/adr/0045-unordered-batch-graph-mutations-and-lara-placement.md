@@ -1,9 +1,9 @@
 # 0045. Unordered batch graph mutations and LARA placement planning
 
-Date: 2026-07-19
+Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 02:45:52 UTC +0000
+Anchor timestamp: 2026-07-23 03:44:36 UTC +0000
 
 ## Context
 
@@ -88,7 +88,7 @@ overflow log only to fold it back into the slab during repeated rebalances.
 
 ## Decision
 
-Implementation status as of 2026-07-23 02:45:52 UTC +0000:
+Implementation status as of 2026-07-23 03:44:36 UTC +0000:
 
 - Plan 0121 read-only placement planning is implemented.
 - Plan 0122 one-orientation batch commit is implemented in `ic-stable-lara`:
@@ -130,9 +130,24 @@ Implementation status as of 2026-07-23 02:45:52 UTC +0000:
   unsupported rejection.  Canbench coverage compares the clean-slab path against
   scalar insertion for 128 directed edges with widths 0 and 8, with identical
   pre-created buckets and input construction outside the measured closure.
-- New bucket creation, overflow-log batch appends, rebalance/relocation,
-  dynamic leaf expansion, and full public wire integration remain planned for
-  later slices.
+- Plan 0124 per-leaf overflow-log batch append is implemented in
+  `ic-stable-lara` and `gleaph-graph`.  `reserve_one_orientation_batch` now admits
+  existing-bucket runs that do not fit the current clean slab window but fit the
+  per-leaf edge/payload overflow logs.  The reserve/commit boundary still rejects
+  empty plans, validates all geometry and capacity before any canonical write,
+  and returns unsupported before any write when admission fails.  Overflow-log
+  runs do not mutate edge-store logical capacity or payload occupied tail before
+  commit; they reserve only ephemeral log capacity.  Commit appends edge and
+  payload entries in logical ordinal order, updates bucket overflow heads and
+  degree, and leaves stored_slots and vertex slab span unchanged.  Cross-
+  orientation reserve-all-then-commit and rollback remain unchanged.  Scalar
+  fallback remains for new buckets, default/unlabeled promotion,
+  rebalance/relocation, dynamic leaf expansion, tombstone reuse, and other
+  unsupported geometry.  Focused unit tests cover successful edge/payload log
+  append, log capacity exhaustion, multi-run and multi-orientation rollback,
+  read-back order, and unchanged canonical/allocator state after rejection.
+- New bucket creation, rebalance/relocation, dynamic leaf expansion, and full
+  public wire integration remain planned for later slices.
 - ADR 0048's mate index and returned-slot orchestration are accepted target
   design but not implemented. The current scalar facade still uses
   `EDGE_ALIASES` and post-insert scans until that migration lands.

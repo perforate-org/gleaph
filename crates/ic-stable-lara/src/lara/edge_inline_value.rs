@@ -582,6 +582,61 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         Ok(entry_idx)
     }
 
+    pub(crate) fn read_payload_log_idx(&self, leaf_segment: u32) -> i32 {
+        let h = self.log.header();
+        self.log.read_idx_with_header(&h, leaf_segment)
+    }
+
+    pub(crate) fn read_payload_log_state(&self, leaf_segment: u32) -> (i32, u32) {
+        let h = self.log.header();
+        (
+            self.log.read_idx_with_header(&h, leaf_segment),
+            h.max_log_entries,
+        )
+    }
+
+    pub(crate) fn write_payload_log_entries(
+        &self,
+        leaf_segment: u32,
+        start_idx: u32,
+        prev_head: i32,
+        width: u16,
+        payload_bytes: &[u8],
+    ) -> Result<(), InlineValueLogWriteError> {
+        let w = usize::from(width);
+        if w == 0 {
+            return Ok(());
+        }
+        debug_assert_eq!(
+            payload_bytes.len() % w,
+            0,
+            "payload byte count must be a multiple of width"
+        );
+        let count = payload_bytes.len() / w;
+        let h = self.log.header();
+        for i in 0..count {
+            let entry_idx = start_idx + i as u32;
+            let prev = if i == 0 {
+                prev_head
+            } else {
+                (entry_idx - 1) as i32
+            };
+            let bytes = &payload_bytes[i * w..(i + 1) * w];
+            let cell = if payload_log_uses_blob(width) {
+                let id = EdgeInlineValueBlobId::from_log_site(leaf_segment, entry_idx);
+                self.blobs.put_blob(id, bytes)?;
+                InlineValueLogCell::EMPTY
+            } else {
+                InlineValueLogCell::inline(width, bytes)
+            };
+            self.log
+                .write_entry_with_header(&h, leaf_segment, entry_idx, prev, cell.as_bytes())?;
+        }
+        let next_idx = (start_idx as i32).saturating_add(count as i32);
+        self.log.write_idx_at_least(leaf_segment, next_idx);
+        Ok(())
+    }
+
     pub(crate) fn read_payload_log_entry(
         &self,
         leaf_segment: u32,

@@ -838,6 +838,44 @@ mod tests {
     }
 
     #[test]
+    fn overflow_log_append_success() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(6001);
+        install_width(label, 0);
+        let vertices = make_vertices(&store, 2);
+        let source = vertices[0];
+        let target = vertices[1];
+
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+
+        let quota =
+            store.with_graph_mut(|g| g.forward().edges().header().initial_vertex_edge_slots);
+        for _ in 0..quota {
+            store
+                .insert_directed_edge(source, target, Some(label))
+                .expect("scalar fill");
+        }
+
+        let label_raw = storage_label_for(Some(label), true);
+        let out_before = count_labeled_dir_edges(&store, source, label_raw, true);
+
+        let edges = vec![input(source, target, Some(label), true, vec![])];
+        let result = store
+            .try_insert_batch_edges_clean_slab(&edges)
+            .expect("plan/encode ok");
+        assert!(
+            matches!(result, BatchEdgeInsertResult::Committed { .. }),
+            "expected committed overflow-log batch, got {result:?}"
+        );
+        assert_eq!(result.total_edge_slots(), Some(2));
+        assert_eq!(
+            count_labeled_dir_edges(&store, source, label_raw, true),
+            out_before + 1,
+            "overflow-log batch edge must be visible in read-back"
+        );
+    }
+
+    #[test]
     fn empty_batch_is_unsupported() {
         let store = fresh_store();
         let result = store.try_insert_batch_edges_clean_slab(&[]).expect("ok");

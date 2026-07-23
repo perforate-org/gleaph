@@ -69,9 +69,8 @@ mod tests {
     }
 
     #[test]
-    fn reserve_failure_leaves_canonical_state_unchanged() {
+    fn overflow_log_reserve_failure_leaves_canonical_state_unchanged() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
-        graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
@@ -85,6 +84,29 @@ mod tests {
                 )
                 .unwrap();
         }
+
+        // Fill the edge overflow log to capacity so the batch cannot be reserved.
+        let header = graph.edges().header();
+        let leaf = crate::LabeledLaraGraph::<
+            crate::labeled::graph::test_support::TestEdge,
+            crate::VectorMemory,
+        >::leaf_index_for_vid(VertexId::from(0), header.segment_size);
+        let log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+        let entries: Vec<(i32, crate::labeled::graph::test_support::TestEdge)> = (0..log_capacity)
+            .map(|i| {
+                let prev = if i == 0 { -1 } else { (i as i32) - 1 };
+                (
+                    prev,
+                    crate::labeled::graph::test_support::TestEdge {
+                        target: 100 + i as u32,
+                    },
+                )
+            })
+            .collect();
+        graph
+            .edges()
+            .write_overflow_log_entries(leaf, 0, &entries)
+            .expect("fill log");
 
         let before = graph.out_edges(VertexId::from(0)).unwrap();
 
@@ -105,8 +127,8 @@ mod tests {
 
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
-            matches!(err, OneOrientationBatchError::SlabCapacityExceeded),
-            "expected SlabCapacityExceeded, got {err}"
+            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
+            "expected LogCapacityExceeded, got {err}"
         );
 
         let after = graph.out_edges(VertexId::from(0)).unwrap();
@@ -114,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn reserve_failure_after_multi_run_preflight_leaves_allocator_state_unchanged() {
+    fn overflow_log_reserve_failure_leaves_allocator_state_unchanged() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -137,6 +159,30 @@ mod tests {
             )
             .unwrap();
 
+        // Fill the shared edge overflow log to capacity so the second run fails
+        // after the first run has already been reserved.
+        let header = graph.edges().header();
+        let leaf = crate::LabeledLaraGraph::<
+            crate::labeled::graph::test_support::TestEdge,
+            crate::VectorMemory,
+        >::leaf_index_for_vid(VertexId::from(0), header.segment_size);
+        let log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+        let entries: Vec<(i32, crate::labeled::graph::test_support::TestEdge)> = (0..log_capacity)
+            .map(|i| {
+                let prev = if i == 0 { -1 } else { (i as i32) - 1 };
+                (
+                    prev,
+                    crate::labeled::graph::test_support::TestEdge {
+                        target: 100 + i as u32,
+                    },
+                )
+            })
+            .collect();
+        graph
+            .edges()
+            .write_overflow_log_entries(leaf, 0, &entries)
+            .expect("fill log");
+
         let edge_capacity_before = graph.edges.header().elem_capacity;
         let payload_tail_before = graph.values.header().slab_occupied_tail;
 
@@ -158,30 +204,21 @@ mod tests {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
                     inline_value_width: 0,
-                    edges: vec![
-                        OneOrientationBatchEdge {
-                            logical_ordinal: 1,
-                            owner_vertex_id: VertexId::from(0),
-                            neighbor_vertex_id: VertexId::from(2),
-                            label_id: label_b,
-                            edge: crate::labeled::graph::test_support::TestEdge { target: 2 },
-                        },
-                        OneOrientationBatchEdge {
-                            logical_ordinal: 2,
-                            owner_vertex_id: VertexId::from(0),
-                            neighbor_vertex_id: VertexId::from(2),
-                            label_id: label_b,
-                            edge: crate::labeled::graph::test_support::TestEdge { target: 3 },
-                        },
-                    ],
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 1,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(2),
+                        label_id: label_b,
+                        edge: crate::labeled::graph::test_support::TestEdge { target: 2 },
+                    }],
                 },
             ],
         };
 
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
-            matches!(err, OneOrientationBatchError::SlabCapacityExceeded),
-            "expected SlabCapacityExceeded, got {err}"
+            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
+            "expected LogCapacityExceeded, got {err}"
         );
 
         let edge_capacity_after = graph.edges.header().elem_capacity;
@@ -318,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn reserve_rejects_slab_capacity_exceeded() {
+    fn overflow_log_read_back_order() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -339,21 +376,44 @@ mod tests {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
                 inline_value_width: 0,
-                edges: vec![OneOrientationBatchEdge {
-                    logical_ordinal: 0,
-                    owner_vertex_id: VertexId::from(0),
-                    neighbor_vertex_id: VertexId::from(1),
-                    label_id: label,
-                    edge: crate::labeled::graph::test_support::TestEdge { target: 10 },
-                }],
+                edges: vec![
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(1),
+                        label_id: label,
+                        edge: crate::labeled::graph::test_support::TestEdge { target: 10 },
+                    },
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 1,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(1),
+                        label_id: label,
+                        edge: crate::labeled::graph::test_support::TestEdge { target: 11 },
+                    },
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 2,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(1),
+                        label_id: label,
+                        edge: crate::labeled::graph::test_support::TestEdge { target: 12 },
+                    },
+                ],
             }],
         };
 
-        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
-        assert!(
-            matches!(err, OneOrientationBatchError::SlabCapacityExceeded),
-            "expected SlabCapacityExceeded, got {err}"
-        );
+        let result = graph
+            .insert_one_orientation_batch(&plan)
+            .expect("overflow-log batch append should commit");
+        assert_eq!(result.edge_slots_written, 3);
+        assert_eq!(result.edge_log_entries_written, 3);
+
+        let out = graph.out_edges(VertexId::from(0)).unwrap();
+        let targets: Vec<u32> = out.iter().map(|e| e.target).collect();
+        // The first three scalar edges stay in slab order, the batch edges follow
+        // in logical ordinal order inside the overflow log, and ascending
+        // traversal replays the log oldest-to-newest after the slab prefix.
+        assert_eq!(targets, vec![12, 11, 10, 3, 2, 1]);
     }
 
     #[test]
