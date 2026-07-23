@@ -141,7 +141,7 @@ pub fn canonical_undirected_owner(a: VertexId, b: VertexId) -> VertexId {
     if u32::from(a) >= u32::from(b) { a } else { b }
 }
 
-pub(super) fn build_edge_to(target: VertexId) -> Edge {
+pub(crate) fn build_edge_to(target: VertexId) -> Edge {
     Edge {
         target: VertexRef::local(target),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
@@ -150,7 +150,7 @@ pub(super) fn build_edge_to(target: VertexId) -> Edge {
     }
 }
 
-pub(super) fn build_edge_to_with_inline_value_bytes(
+pub(crate) fn build_edge_to_with_inline_value_bytes(
     target: VertexId,
     inline_value_bytes: &[u8],
 ) -> Edge {

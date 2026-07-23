@@ -3,7 +3,7 @@
 Date: 2026-07-19
 Status: Partially Implemented
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 01:02:26 UTC +0000
+Anchor timestamp: 2026-07-23 02:26:03 UTC +0000
 
 ## Context
 
@@ -88,7 +88,7 @@ overflow log only to fold it back into the slab during repeated rebalances.
 
 ## Decision
 
-Implementation status as of 2026-07-23 01:56:14 UTC +0000:
+Implementation status as of 2026-07-23 02:26:03 UTC +0000:
 
 - Plan 0121 read-only placement planning is implemented.
 - Plan 0122 one-orientation batch commit is implemented in `ic-stable-lara`:
@@ -108,9 +108,20 @@ Implementation status as of 2026-07-23 01:56:14 UTC +0000:
   guarantee.  Supported geometries are existing buckets whose run fits the current
   planned slab window (including the first bucket's vertex quota), with payload
   span growth at the occupied tail.
+- Plan 0123 GraphStore clean-slab orchestration is implemented: `GraphStore::
+  try_insert_batch_edges_clean_slab` builds one-orientation plans from the
+  existing read-only planner, reserves every orientation before committing any
+  orientation, and returns `BatchEdgeInsertResult::Unsupported` before any
+  canonical write when the clean-slab path cannot admit the geometry.  The caller
+  can then fall back to the existing scalar insertion path.  Focused unit tests
+  cover directed/reverse pairing, undirected two-forward-half and self-loop
+  behavior, payload read-back, multi-run commits, reserve failure leaving
+  canonical state unchanged, and empty/new-bucket unsupported rejection.  Canbench
+  coverage compares the clean-slab path against scalar insertion for 128 directed
+  edges with widths 0 and 8.
 - New bucket creation, overflow-log batch appends, rebalance/relocation,
-  dynamic leaf expansion, GraphStore orchestration wiring, and scalar-vs-batch
-  benchmarks remain planned for later slices.
+  dynamic leaf expansion, and full public wire integration remain planned for
+  later slices.
 - ADR 0048's mate index and returned-slot orchestration are accepted target
   design but not implemented. The current scalar facade still uses
   `EDGE_ALIASES` and post-insert scans until that migration lands.

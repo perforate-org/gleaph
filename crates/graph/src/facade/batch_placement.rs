@@ -72,6 +72,8 @@ pub struct BatchEdgeIntent {
     pub storage_label: LaraLabelId,
     /// Physical byte width per inline value slot (`0` = no payload).
     pub inline_value_width: u16,
+    /// Inline payload bytes carried by this half-edge.
+    pub inline_value_bytes: Vec<u8>,
 }
 
 /// Error returned when batch planning cannot produce a read-only summary.
@@ -465,10 +467,13 @@ impl GraphStore {
     /// budgets are measured.
     pub const MAX_LOGICAL_EDGES: u32 = 1024 * 1024;
 
-    pub fn plan_batch_edge_insertion(
+    /// Validate a bounded unordered batch and expand it into physical half-edge
+    /// intents. This is reusable by callers that need the intents without the
+    /// full placement summary.
+    pub(crate) fn expand_batch_edge_intents(
         &self,
         edges: &[BatchEdgeInput],
-    ) -> Result<BatchPlacementSummary, BatchPlacementError> {
+    ) -> Result<Vec<BatchEdgeIntent>, BatchPlacementError> {
         let logical_count =
             u32::try_from(edges.len()).map_err(|_| BatchPlacementError::BatchTooLarge)?;
         if logical_count > Self::MAX_LOGICAL_EDGES {
@@ -493,12 +498,22 @@ impl GraphStore {
             expand_logical_edge_to_intents(self, input, ordinal, &mut intents)?;
         }
 
+        Ok(intents)
+    }
+
+    pub fn plan_batch_edge_insertion(
+        &self,
+        edges: &[BatchEdgeInput],
+    ) -> Result<BatchPlacementSummary, BatchPlacementError> {
+        let intents = self.expand_batch_edge_intents(edges)?;
         let (groups, leaf_summaries) = group_intents_for_placement(&intents)?;
         let physical_intent_count = u64::try_from(intents.len())
             .map_err(|_| BatchPlacementError::ProjectedCountOverflow)?;
+        let logical_edge_count =
+            u32::try_from(edges.len()).map_err(|_| BatchPlacementError::BatchTooLarge)?;
 
         Ok(BatchPlacementSummary {
-            logical_edge_count: logical_count,
+            logical_edge_count,
             physical_intent_count,
             groups,
             leaf_summaries,
@@ -554,6 +569,7 @@ fn expand_logical_edge_to_intents(
             neighbor_vertex_id: input.target_vertex_id,
             storage_label,
             inline_value_width: expected_width,
+            inline_value_bytes: input.inline_value_bytes.clone(),
         });
         out.push(BatchEdgeIntent {
             logical_ordinal: ordinal,
@@ -563,6 +579,7 @@ fn expand_logical_edge_to_intents(
             neighbor_vertex_id: input.source_vertex_id,
             storage_label,
             inline_value_width: expected_width,
+            inline_value_bytes: input.inline_value_bytes.clone(),
         });
     } else {
         // Undirected: two forward halves. The canonical owner is the higher id.
@@ -584,6 +601,7 @@ fn expand_logical_edge_to_intents(
             },
             storage_label,
             inline_value_width: expected_width,
+            inline_value_bytes: input.inline_value_bytes.clone(),
         });
         // Self-loops produce only one forward half.
         if owner != alias {
@@ -595,6 +613,7 @@ fn expand_logical_edge_to_intents(
                 neighbor_vertex_id: owner,
                 storage_label,
                 inline_value_width: expected_width,
+                inline_value_bytes: input.inline_value_bytes.clone(),
             });
         }
     }

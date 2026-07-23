@@ -1,46 +1,174 @@
-//! Internal one-orientation batch write orchestration for ADR 0045.
+//! Internal GraphStore clean-slab batch orchestration for ADR 0045.
 //!
-//! This module consumes the read-only placement summary produced by
-//! [`super::batch_placement`] and turns it into a one-orientation write plan
-//! for the LARA labeled-graph layer.  It does not add a public or Candid API.
-//!
-//! The slice supported here matches Plan 0122:
-//! - one orientation only (forward or reverse);
-//! - one bounded batch of already-live vertices and already-valid catalog labels;
-//! - bucket runs that fit the current clean slab window without overflow-log,
-//!   rebalance, relocation, or dynamic leaf expansion;
-//! - scalar fallback for everything else.
+//! This module consumes physical half-edge intents produced by
+//! [`super::batch_placement`] and attempts to commit them through the LARA
+//! one-orientation batch primitive.  Unsupported geometry is returned to the
+//! caller before any canonical write so the existing scalar path can handle it.
+//! No LARA placement policy leaks outside this module.
 
 use std::collections::BTreeMap;
 
+use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
+use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::batch_write::{
-    OneOrientationBatchEdge, OneOrientationBatchPlan, OneOrientationBucketRun,
+    BatchReservation, OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchPlan,
+    OneOrientationBatchResult, OneOrientationBucketRun,
 };
 use ic_stable_lara::{CsrEdge, labeled::LabeledOrientation};
 
 use super::GraphStore;
 use super::batch_placement::{BatchEdgeIntent, BatchPlacementError, BatchPlacementKey};
+use super::store::helpers::{
+    build_edge_to, build_edge_to_with_inline_value_bytes, edge_storage_label, lara_label,
+};
+
+/// Result of attempting a clean-slab batch edge insert through GraphStore.
+///
+/// - `Committed`: every required one-orientation reservation succeeded and was
+///   committed. The contained results are ordered by orientation.
+/// - `Unsupported`: at least one orientation could not be reserved on the clean-
+///   slab path. No canonical write was published by this attempt; the caller
+///   may fall back to the existing scalar insertion path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BatchEdgeInsertResult {
+    Committed {
+        /// Per-orientation write results, in the order they were committed.
+        results: Vec<OneOrientationBatchResult>,
+    },
+    Unsupported {
+        /// Human-readable reason the clean-slab path could not be used.
+        reason: String,
+    },
+}
+
+impl BatchEdgeInsertResult {
+    /// Total edge slab slots written across all committed orientations.
+    pub(crate) fn total_edge_slots(&self) -> Option<u64> {
+        match self {
+            Self::Committed { results } => Some(
+                results
+                    .iter()
+                    .map(|r| u64::from(r.edge_slots_written))
+                    .sum(),
+            ),
+            Self::Unsupported { .. } => None,
+        }
+    }
+
+    /// Total payload slab slots written across all committed orientations.
+    pub(crate) fn total_payload_slots(&self) -> Option<u64> {
+        match self {
+            Self::Committed { results } => Some(
+                results
+                    .iter()
+                    .map(|r| u64::from(r.payload_slots_written))
+                    .sum(),
+            ),
+            Self::Unsupported { .. } => None,
+        }
+    }
+}
 
 /// One-orientation batch write request derived from a placement summary.
-///
-/// This is the internal wire shape between GraphStore and the LARA labeled-graph
-/// layer.  It carries only the physical half-edges for a single orientation;
-/// GraphStore keeps the logical-to-physical expansion and orchestrates the
-/// forward/reverse/undirected alias pairs at a higher layer.
-pub struct OneOrientationBatchWriteRequest<E: CsrEdge> {
-    pub orientation: LabeledOrientation,
-    pub plan: OneOrientationBatchPlan<E>,
+pub(crate) struct OneOrientationBatchWriteRequest<E: CsrEdge> {
+    pub(crate) orientation: LabeledOrientation,
+    pub(crate) plan: OneOrientationBatchPlan<E>,
 }
 
 impl GraphStore {
+    /// Pre-create empty directed buckets for `src -> dst` with the given inline
+    /// value width so a later clean-slab batch can consume the per-bucket initial
+    /// quota. This is a test/bench helper and is not part of the public API.
+    pub(crate) fn prepare_clean_slab_dir_buckets(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        label: EdgeLabelId,
+        width: u16,
+    ) {
+        let storage = lara_label(edge_storage_label(Some(label), false));
+        self.with_graph_mut(|g| {
+            g.ensure_directed_edge_inline_value_width(src, dst, storage, width)
+                .expect("ensure directed buckets");
+        });
+    }
+
+    /// Pre-create empty undirected buckets for `{a,b}` with the given inline value
+    /// width so a later clean-slab batch can consume the per-bucket initial quota.
+    pub(crate) fn prepare_clean_slab_undir_buckets(
+        &self,
+        a: VertexId,
+        b: VertexId,
+        label: EdgeLabelId,
+        width: u16,
+    ) {
+        let storage = lara_label(edge_storage_label(Some(label), true));
+        self.with_graph_mut(|g| {
+            g.ensure_undirected_edge_inline_value_width(a, b, storage, width)
+                .expect("ensure undirected buckets");
+        });
+    }
+
+    /// Attempt to insert a bounded unordered batch of logical edges through the
+    /// clean-slab one-orientation path.
+    ///
+    /// This is the GraphStore orchestration entry point for Plan 0123. It:
+    /// 1. Validates the input and expands it into physical half-edge intents.
+    /// 2. Groups the intents into one-orientation plans.
+    /// 3. Reserves every orientation before committing any orientation.
+    /// 4. Commits only after all reservations succeed.
+    ///
+    /// If any orientation cannot be reserved on the clean-slab path, this method
+    /// returns [`BatchEdgeInsertResult::Unsupported`] without writing any canonical
+    /// adjacency. The caller is responsible for falling back to the existing scalar
+    /// path. Reserved capacity from already-succeeded orientations becomes harmless
+    /// stable-memory slack and is not itself canonical.
+    pub(crate) fn try_insert_batch_edges_clean_slab(
+        &self,
+        edges: &[super::batch_placement::BatchEdgeInput],
+    ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
+        if edges.is_empty() {
+            return Ok(BatchEdgeInsertResult::Unsupported {
+                reason: "empty batch is not admitted to the clean-slab path".into(),
+            });
+        }
+
+        let intents = self.expand_batch_edge_intents(edges)?;
+        let requests = self.build_one_orientation_batch_plans(&intents, encode_intent_edge)?;
+
+        // Reserve every orientation first. If any orientation is unsupported, drop
+        // all reservations and return unsupported before any canonical write.
+        let mut reservations: Vec<(LabeledOrientation, BatchReservation<Edge>)> =
+            Vec::with_capacity(requests.len());
+        for req in requests {
+            match self.reserve_one_orientation_plan(&req.plan, req.orientation) {
+                Ok(reservation) => reservations.push((req.orientation, reservation)),
+                Err(err) => {
+                    return Ok(BatchEdgeInsertResult::Unsupported {
+                        reason: format!("{err}"),
+                    });
+                }
+            }
+        }
+
+        // All reservations succeeded: commit each orientation.
+        let mut results = Vec::with_capacity(reservations.len());
+        for (orientation, reservation) in reservations {
+            let result = self.with_graph_mut(|graph| {
+                let labeled = match orientation {
+                    LabeledOrientation::Forward => graph.forward(),
+                    LabeledOrientation::Reverse => graph.reverse(),
+                };
+                reservation.commit(labeled)
+            });
+            results.push(result);
+        }
+
+        Ok(BatchEdgeInsertResult::Committed { results })
+    }
+
     /// Convert physical intents into per-orientation batch write plans.
-    ///
-    /// This is the bridge between Plan 0121 (read-only placement) and Plan 0122
-    /// (one-orientation batch commit).  It groups physical intents by orientation
-    /// and bucket run, preserving logical ordinals for edge/payload alignment.
-    ///
-    /// The returned plans are still heap-only metadata; no canonical state is written.
-    pub fn build_one_orientation_batch_plans<E: CsrEdge>(
+    fn build_one_orientation_batch_plans<E: CsrEdge>(
         &self,
         intents: &[BatchEdgeIntent],
         encode_edge: impl Fn(&BatchEdgeIntent) -> Result<E, BatchPlacementError>,
@@ -76,7 +204,7 @@ impl GraphStore {
         }
 
         // Ensure each run is sorted by logical ordinal so edge/payload alignment is
-        // deterministic.  The LARA reserve step also checks this, but doing it here
+        // deterministic. The LARA reserve step also checks this, but doing it here
         // keeps the GraphStore contract closer to the source of physical intents.
         for runs in [&mut forward_runs, &mut reverse_runs] {
             for edges in runs.values_mut() {
@@ -104,6 +232,31 @@ impl GraphStore {
 
         Ok(requests)
     }
+
+    fn reserve_one_orientation_plan(
+        &self,
+        plan: &OneOrientationBatchPlan<Edge>,
+        orientation: LabeledOrientation,
+    ) -> Result<BatchReservation<Edge>, OneOrientationBatchError> {
+        self.with_graph_mut(|graph| {
+            let labeled = match orientation {
+                LabeledOrientation::Forward => graph.forward(),
+                LabeledOrientation::Reverse => graph.reverse(),
+            };
+            labeled.reserve_one_orientation_batch(plan)
+        })
+    }
+}
+
+fn encode_intent_edge(intent: &BatchEdgeIntent) -> Result<Edge, BatchPlacementError> {
+    if intent.inline_value_width == 0 {
+        Ok(build_edge_to(intent.neighbor_vertex_id))
+    } else {
+        Ok(build_edge_to_with_inline_value_bytes(
+            intent.neighbor_vertex_id,
+            &intent.inline_value_bytes,
+        ))
+    }
 }
 
 fn runs_from_map<E: CsrEdge>(
@@ -117,4 +270,319 @@ fn runs_from_map<E: CsrEdge>(
             edges,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::batch_placement::BatchEdgeInput;
+    use super::super::store::helpers::{edge_storage_label, lara_label};
+    use super::*;
+    use crate::test_labels::install_test_edge_inline_value_profile;
+    use gleaph_graph_kernel::entry::EdgeLabelId;
+    use ic_stable_lara::VertexId;
+
+    fn fresh_store() -> GraphStore {
+        GraphStore::new()
+    }
+
+    fn make_vertices(store: &GraphStore, n: u32) -> Vec<VertexId> {
+        (0..n)
+            .map(|_| store.insert_vertex().expect("vertex"))
+            .collect()
+    }
+
+    fn input(
+        source: VertexId,
+        target: VertexId,
+        label: Option<EdgeLabelId>,
+        directed: bool,
+        bytes: Vec<u8>,
+    ) -> BatchEdgeInput {
+        BatchEdgeInput {
+            source_vertex_id: source,
+            target_vertex_id: target,
+            catalog_label: label,
+            directed,
+            inline_value_bytes: bytes,
+        }
+    }
+
+    fn storage_label_for(catalog_label: Option<EdgeLabelId>, directed: bool) -> u16 {
+        lara_label(edge_storage_label(catalog_label, !directed)).raw()
+    }
+
+    fn install_width(label: EdgeLabelId, width: u16) {
+        install_test_edge_inline_value_profile(
+            label,
+            gleaph_graph_kernel::entry::EdgeInlineValueProfile {
+                byte_width: width,
+                encoding: gleaph_graph_kernel::entry::EdgeInlineValueEncoding::RawBytes,
+            },
+        );
+    }
+
+    /// Create empty label buckets for both sides of a directed edge so the clean-
+    /// slab path has the initial per-bucket quota available.
+    fn ensure_clean_slab_dir_buckets(
+        store: &GraphStore,
+        source: VertexId,
+        target: VertexId,
+        label: EdgeLabelId,
+        width: u16,
+    ) {
+        let storage = lara_label(edge_storage_label(Some(label), false));
+        store.with_graph_mut(|g| {
+            g.ensure_directed_edge_inline_value_width(source, target, storage, width)
+                .expect("ensure directed buckets");
+        });
+    }
+
+    /// Create empty label buckets at both endpoints of an undirected edge.
+    fn ensure_clean_slab_undir_buckets(
+        store: &GraphStore,
+        a: VertexId,
+        b: VertexId,
+        label: EdgeLabelId,
+        width: u16,
+    ) {
+        let storage = lara_label(edge_storage_label(Some(label), true));
+        store.with_graph_mut(|g| {
+            g.ensure_undirected_edge_inline_value_width(a, b, storage, width)
+                .expect("ensure undirected buckets");
+        });
+    }
+
+    fn count_labeled_dir_edges(
+        store: &GraphStore,
+        vertex_id: VertexId,
+        storage_label: u16,
+        outgoing: bool,
+    ) -> usize {
+        let edges = if outgoing {
+            store.directed_out_edges(vertex_id).expect("out")
+        } else {
+            store.directed_in_edges(vertex_id).expect("in")
+        };
+        edges
+            .into_iter()
+            .filter(|e| e.label_id == storage_label)
+            .count()
+    }
+
+    #[test]
+    fn clean_slab_directed_payload_success() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(1001);
+        install_width(label, 8);
+        let vertices = make_vertices(&store, 2);
+        let source = vertices[0];
+        let target = vertices[1];
+        let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+
+        store.prepare_clean_slab_dir_buckets(source, target, label, 8);
+
+        let edges = vec![input(source, target, Some(label), true, payload.clone())];
+        let result = store
+            .try_insert_batch_edges_clean_slab(&edges)
+            .expect("plan/encode ok");
+        assert!(
+            matches!(result, BatchEdgeInsertResult::Committed { .. }),
+            "expected committed batch, got {result:?}"
+        );
+        assert_eq!(result.total_edge_slots(), Some(2));
+        assert_eq!(result.total_payload_slots(), Some(2));
+
+        let label_raw = storage_label_for(Some(label), true);
+        assert_eq!(count_labeled_dir_edges(&store, source, label_raw, true), 1);
+        assert_eq!(count_labeled_dir_edges(&store, target, label_raw, false), 1);
+
+        for edge in store.directed_out_edges(source).expect("out") {
+            if edge.label_id == label_raw {
+                assert_eq!(edge.edge_inline_value_bytes(), payload.as_slice());
+            }
+        }
+        for edge in store.directed_in_edges(target).expect("in") {
+            if edge.label_id == label_raw {
+                assert_eq!(edge.edge_inline_value_bytes(), payload.as_slice());
+            }
+        }
+    }
+
+    #[test]
+    fn clean_slab_undirected_success() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(2001);
+        install_width(label, 1);
+        let vertices = make_vertices(&store, 2);
+        let a = vertices[0];
+        let b = vertices[1];
+        let payload = vec![7u8];
+
+        store.prepare_clean_slab_undir_buckets(a, b, label, 1);
+
+        let edges = vec![input(a, b, Some(label), false, payload.clone())];
+        let result = store
+            .try_insert_batch_edges_clean_slab(&edges)
+            .expect("plan/encode ok");
+        assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
+        assert_eq!(result.total_edge_slots(), Some(2));
+        assert_eq!(result.total_payload_slots(), Some(2));
+
+        let label_raw = storage_label_for(Some(label), false);
+        assert_eq!(
+            store
+                .undirected_edges(a)
+                .expect("undirected")
+                .into_iter()
+                .filter(|e| e.label_id == label_raw)
+                .count(),
+            1
+        );
+        assert_eq!(
+            store
+                .undirected_edges(b)
+                .expect("undirected")
+                .into_iter()
+                .filter(|e| e.label_id == label_raw)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn clean_slab_self_loop_success() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(3001);
+        install_width(label, 4);
+        let vertices = make_vertices(&store, 1);
+        let a = vertices[0];
+        let payload = vec![9u8, 8, 7, 6];
+
+        store.prepare_clean_slab_undir_buckets(a, a, label, 4);
+
+        let edges = vec![input(a, a, Some(label), false, payload.clone())];
+        let result = store
+            .try_insert_batch_edges_clean_slab(&edges)
+            .expect("plan/encode ok");
+        assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
+        assert_eq!(result.total_edge_slots(), Some(1));
+        assert_eq!(result.total_payload_slots(), Some(1));
+
+        let label_raw = storage_label_for(Some(label), false);
+        assert_eq!(
+            store
+                .undirected_edges(a)
+                .expect("undirected")
+                .into_iter()
+                .filter(|e| e.label_id == label_raw)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn clean_slab_multiple_runs_success() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(3101);
+        install_width(label, 0);
+        let vertices = make_vertices(&store, 4);
+        let s0 = vertices[0];
+        let s1 = vertices[1];
+        let t0 = vertices[2];
+        let t1 = vertices[3];
+
+        store.prepare_clean_slab_dir_buckets(s0, t0, label, 0);
+        store.prepare_clean_slab_dir_buckets(s1, t1, label, 0);
+
+        let edges = vec![
+            input(s0, t0, Some(label), true, vec![]),
+            input(s1, t1, Some(label), true, vec![]),
+        ];
+        let result = store
+            .try_insert_batch_edges_clean_slab(&edges)
+            .expect("plan/encode ok");
+        assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
+        assert_eq!(result.total_edge_slots(), Some(4));
+        assert_eq!(result.total_payload_slots(), Some(0));
+
+        let label_raw = storage_label_for(Some(label), true);
+        assert_eq!(count_labeled_dir_edges(&store, s0, label_raw, true), 1);
+        assert_eq!(count_labeled_dir_edges(&store, s1, label_raw, true), 1);
+        assert_eq!(count_labeled_dir_edges(&store, t0, label_raw, false), 1);
+        assert_eq!(count_labeled_dir_edges(&store, t1, label_raw, false), 1);
+    }
+
+    #[test]
+    fn unsupported_new_bucket_falls_back_to_scalar() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4001);
+        install_width(label, 0);
+        let vertices = make_vertices(&store, 2);
+        let source = vertices[0];
+        let target = vertices[1];
+
+        let edges = vec![input(source, target, Some(label), true, vec![])];
+        let result = store
+            .try_insert_batch_edges_clean_slab(&edges)
+            .expect("plan/encode ok");
+        assert!(
+            matches!(result, BatchEdgeInsertResult::Unsupported { .. }),
+            "expected unsupported for new bucket, got {result:?}"
+        );
+
+        store
+            .insert_directed_edge(source, target, Some(label))
+            .expect("scalar fallback");
+        let label_raw = storage_label_for(Some(label), true);
+        assert_eq!(count_labeled_dir_edges(&store, source, label_raw, true), 1);
+        assert_eq!(count_labeled_dir_edges(&store, target, label_raw, false), 1);
+    }
+
+    #[test]
+    fn reserve_failure_leaves_canonical_state_unchanged() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(5001);
+        install_width(label, 0);
+        let vertices = make_vertices(&store, 3);
+        let source = vertices[0];
+        let target_with_bucket = vertices[1];
+        let target_without_bucket = vertices[2];
+
+        // Forward bucket at source and reverse bucket at target_with_bucket only.
+        store.prepare_clean_slab_dir_buckets(source, target_with_bucket, label, 0);
+
+        let label_raw = storage_label_for(Some(label), true);
+        let out_before = count_labeled_dir_edges(&store, source, label_raw, true);
+        let in_before = count_labeled_dir_edges(&store, target_without_bucket, label_raw, false);
+
+        let edges = vec![
+            input(source, target_with_bucket, Some(label), true, vec![]),
+            input(source, target_without_bucket, Some(label), true, vec![]),
+        ];
+        let result = store
+            .try_insert_batch_edges_clean_slab(&edges)
+            .expect("plan/encode ok");
+        assert!(
+            matches!(result, BatchEdgeInsertResult::Unsupported { .. }),
+            "expected unsupported after partial reserve, got {result:?}"
+        );
+
+        assert_eq!(
+            count_labeled_dir_edges(&store, source, label_raw, true),
+            out_before,
+            "forward canonical state must not be partially published"
+        );
+        assert_eq!(
+            count_labeled_dir_edges(&store, target_without_bucket, label_raw, false,),
+            in_before,
+            "reverse canonical state must remain absent"
+        );
+    }
+
+    #[test]
+    fn empty_batch_is_unsupported() {
+        let store = fresh_store();
+        let result = store.try_insert_batch_edges_clean_slab(&[]).expect("ok");
+        assert!(matches!(result, BatchEdgeInsertResult::Unsupported { .. }));
+    }
 }
