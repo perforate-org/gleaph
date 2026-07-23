@@ -590,7 +590,8 @@ count, log occupancy/debt, maintenance work, encoded bytes, and callback count.
 2. Add one-orientation slab and edge/payload overflow-log batch primitives with
    plan/reserve/commit and failure-atomic tests.
 3. Add pending-aware leaf/window planning, dynamic one-shot expansion, and
-   existing-log fold.
+   existing-log fold. **Implemented for edge-only existing-bucket runs in Plan
+   0125; payload-bearing expansion and relocation remain deferred.**
 4. Add bidirectional directed and two-forward-half undirected orchestration plus
    ordinal-based physical-location results and the ADR 0048 mate boundary.
 5. Add GraphStore edge insertion with initial inline values, properties, label
@@ -610,8 +611,8 @@ invariants and failure-atomic boundaries are covered.
 ## Design document impact
 
 - `design/adr/0045-unordered-batch-graph-mutations-and-lara-placement.md`:
-  status updated to Partially Implemented; stage 1 read-only planning is
-  implemented.
+  status remains Partially Implemented; stages 1–3 are implemented only for
+  the explicitly bounded edge-only existing-bucket expansion path.
 - `design/storage/lara.md`: link the read-only planning contract and note that
   direct slab/log batch writes, rebalance, and relocation remain planned.
 - `design/storage/lara-dgap-contract.md`: pending-aware leaf placement remains
