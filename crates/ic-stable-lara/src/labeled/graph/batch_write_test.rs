@@ -707,4 +707,159 @@ mod tests {
             "commit must not write canonical bytes to the wrong graph instance"
         );
     }
+
+    #[test]
+    fn reserve_failure_restores_edge_capacity_after_payload_alloc_failure() {
+        // Use a segment16 graph: creating the first non-default label bucket pins
+        // a 16-slot leaf block at the tail of the edge slab.  The initial capacity
+        // is 256, so after bucket setup it is 272.  We then deliberately shrink the
+        // logical edge-store capacity to the slot just before the bucket's
+        // edge_start, forcing the upcoming one-edge run to call set_elem_capacity
+        // before the payload allocator runs.  Forcing that payload allocation to
+        // fail must restore the logical edge capacity to the pre-reserve snapshot.
+        let graph = segment16_payload_graph();
+        for _ in 0..3 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+
+        let label = BucketLabelKey::directed_from_index(1);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .unwrap();
+
+        let edge_capacity_after_setup = graph.edges.header().elem_capacity;
+        // Sanity: the segment16 leaf pin grew the edge store by one 16-slot block.
+        assert!(
+            edge_capacity_after_setup >= 256 + 16,
+            "bucket setup must pin a leaf block"
+        );
+
+        // Shrink logical capacity to the slot immediately before the bucket's
+        // edge_start (the original capacity before the leaf pin).  The bucket's
+        // one-slot window still fits, but reserve must grow the edge store to
+        // write into it.
+        let shrunk_capacity = edge_capacity_after_setup - 16;
+        graph
+            .edges
+            .set_elem_capacity(shrunk_capacity)
+            .expect("shrinking edge logical capacity to existing memory slack must succeed");
+        assert_eq!(graph.edges.header().elem_capacity, shrunk_capacity);
+
+        force_payload_allocation_error_after(0);
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_value_width: 4,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(1),
+                    label_id: label,
+                    edge: PayloadTestEdge::with_i32(1, 100),
+                }],
+            }],
+        };
+
+        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
+        assert!(
+            matches!(err, OneOrientationBatchError::StorageError(_)),
+            "expected StorageError after forced allocation failure, got {err}"
+        );
+
+        let edge_capacity_after = graph.edges.header().elem_capacity;
+        assert_eq!(
+            shrunk_capacity, edge_capacity_after,
+            "reserve failure must restore edge-store logical capacity to the pre-reserve snapshot"
+        );
+    }
+
+    #[test]
+    fn commit_result_counts_use_checked_conversion() {
+        // Sanity check: a normal batch converts its result counts to u32 safely.
+        let graph = segment16_payload_graph();
+        for _ in 0..3 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+
+        let label = BucketLabelKey::directed_from_index(1);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .unwrap();
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_value_width: 4,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(1),
+                    label_id: label,
+                    edge: PayloadTestEdge::with_i32(1, 100),
+                }],
+            }],
+        };
+
+        let result = graph.insert_one_orientation_batch(&plan).unwrap();
+        assert_eq!(result.edge_slots_written, 1);
+        assert_eq!(result.payload_slots_written, 1);
+    }
+
+    #[test]
+    fn commit_multi_payload_run_offsets_match_read_back() {
+        // Two separate vertices with payload buckets; verify each run's payload
+        // is written at the correct offset by reading back values.
+        let graph = segment16_payload_graph();
+        for _ in 0..4 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+
+        let label = BucketLabelKey::directed_from_index(1);
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .unwrap();
+        graph
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(2), label, 4)
+            .unwrap();
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label,
+                    inline_value_width: 4,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(1),
+                        label_id: label,
+                        edge: PayloadTestEdge::with_i32(1, 100),
+                    }],
+                },
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(2),
+                    label_id: label,
+                    inline_value_width: 4,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 1,
+                        owner_vertex_id: VertexId::from(2),
+                        neighbor_vertex_id: VertexId::from(1),
+                        label_id: label,
+                        edge: PayloadTestEdge::with_i32(1, 200),
+                    }],
+                },
+            ],
+        };
+
+        let result = graph.insert_one_orientation_batch(&plan).unwrap();
+        assert_eq!(result.payload_slots_written, 2);
+
+        let v0_values = collect_payload_values(&graph, VertexId::from(0), label);
+        let v2_values = collect_payload_values(&graph, VertexId::from(2), label);
+        assert_eq!(v0_values, vec![100_i32.to_le_bytes().to_vec()]);
+        assert_eq!(v2_values, vec![200_i32.to_le_bytes().to_vec()]);
+    }
 }

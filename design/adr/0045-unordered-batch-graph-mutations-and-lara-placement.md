@@ -88,19 +88,21 @@ overflow log only to fold it back into the slab during repeated rebalances.
 
 ## Decision
 
-Implementation status as of 2026-07-23 01:02:26 UTC +0000:
+Implementation status as of 2026-07-23 01:32:14 UTC +0000:
 
 - Plan 0121 read-only placement planning is implemented.
-- Plan 0122 one-orientation batch commit is partially implemented: the
-  internal `OneOrientationBatchPlan` / `reserve_one_orientation_batch` /
-  `BatchReservation::commit` boundary exists in `ic-stable-lara`.  Reserve
-  performs all fallible validation, edge/payload capacity reservation, and
-  payload allocation before any canonical write, and rolls back payload tail
-  growth on mid-reservation failure.  Commit validates the reservation token,
-  the originating graph instance, and every bucket fingerprint/geometry before
-  the first canonical byte write.  Supported geometries are existing buckets
-  whose run fits the current planned slab window (including the first
-  bucket's vertex quota), with payload span growth at the occupied tail.
+- Plan 0122 one-orientation batch commit is implemented in `ic-stable-lara`:
+  the internal `OneOrientationBatchPlan` / `reserve_one_orientation_batch` /
+  `BatchReservation::commit` boundary exists.  Reserve performs all fallible
+  validation, edge/payload capacity reservation, and payload allocation before
+  any canonical write; on failure it rolls back both the edge-store logical
+  capacity and the payload occupied tail to their pre-reserve values (retained
+  stable-memory page slack is non-canonical and safe).  Commit validates the
+  reservation token, the originating graph instance, and every bucket
+  fingerprint/geometry before the first canonical byte write.  Supported
+  geometries are existing buckets whose run fits the current planned slab window
+  (including the first bucket's vertex quota), with payload span growth at the
+  occupied tail.
 - New bucket creation, overflow-log batch appends, rebalance/relocation,
   dynamic leaf expansion, GraphStore orchestration wiring, and scalar-vs-batch
   benchmarks remain planned for later slices.

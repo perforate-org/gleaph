@@ -7,15 +7,18 @@
 //!
 //! The reserve/commit design is intentionally split:
 //!
-//! 1. `reserve_one_orientation_batch` performs **only** read-only validation and
-//!    mutation-free capacity projection.  It returns a `BatchReservation` token
-//!    that records the preflight snapshot and required destination geometry.
+//! 1. `reserve_one_orientation_batch` performs all fallible validation and
+//!    backing-capacity reservation before any canonical write.  On success it
+//!    returns a `BatchReservation` token that records the preflight snapshot
+//!    and required destination geometry.  If reserve fails part-way through
+//!    capacity reservation, it rolls back the logical edge-store capacity and
+//!    payload occupied tail to their pre-reserve values; the retained
+//!    stable-memory page slack is non-canonical and safe.
 //! 2. `BatchReservation::commit` performs the actual stable-memory mutations.
-//!    Because all fallible checks happened in reserve, commit is infallible.
-//!
-//! If reserve fails after any run, it has not yet grown edge/payload backing
-//! memory, so allocator state is unchanged.  Commit is all-or-nothing and
-//! panics on invariant violation rather than returning a recoverable error.
+//!    Because all fallible checks happened in reserve, a recoverable error
+//!    cannot occur after the first canonical byte write.  A panic here is an
+//!    invariant violation; in a canister message the trap rolls back the entire
+//!    message, so no partial canonical state is published.
 //!
 //! The initial slice supports only existing buckets whose run fits the current
 //! slab window with payload span growth at the occupied tail.  New buckets,
@@ -235,8 +238,11 @@ where
     /// Validate a one-orientation batch plan and reserve the required capacity.
     ///
     /// This is the `reserve` step of the ADR 0045 boundary.  It performs all
-    /// fallible validation **without mutating canonical or allocator state**.  A
-    /// failure here leaves the store unchanged.  On success it returns an opaque
+    /// fallible validation before any canonical write.  If reserve fails after
+    /// growing edge/payload backing capacity, it restores the logical edge-store
+    /// capacity and payload occupied tail to their pre-reserve values, leaving
+    /// only harmless stable-memory page slack.  Canonical adjacency and bucket
+    /// metadata are never modified.  On success it returns an opaque
     /// [`BatchReservation`] token; the only valid operation on that token is
     /// [`BatchReservation::commit`].
     pub fn reserve_one_orientation_batch(
@@ -256,10 +262,23 @@ where
             preflight.push(p);
         }
 
+        // Phase 2.5: prove that the total result counts fit in the public u32 fields.
+        let total_edge_slots: u64 = preflight.iter().map(|p| u64::from(p.edge_slot_count)).sum();
+        let total_payload_slots: u64 = preflight
+            .iter()
+            .filter(|p| p.inline_value_width > 0)
+            .map(|p| u64::from(p.edge_slot_count))
+            .sum();
+        if u32::try_from(total_edge_slots).is_err() || u32::try_from(total_payload_slots).is_err() {
+            return Err(OneOrientationBatchError::SlabCapacityExceeded);
+        }
+
         // Phase 3: mutate allocator state.  We resize edge-store capacity once and
         // then perform every payload allocation/growth.  If any payload operation
-        // fails, we roll back the payload occupied tail to its pre-reserve value.
-        // Edge-store capacity growth is monotone and safe to retain.
+        // fails, we roll back both the edge-store logical capacity and the payload
+        // occupied tail to their pre-reserve values.  (The underlying stable-memory
+        // pages are not shrunk; they become harmless slack.)
+        let edge_capacity_before = self.edges.header().elem_capacity;
         self.edges
             .set_elem_capacity(max_edge_end_slot)
             .map_err(storage_resize_error)?;
@@ -267,6 +286,7 @@ where
         let payload_tail_before = self.values.header().slab_occupied_tail;
         let mut allocated_payload_offsets: Vec<Option<(u64, u64)>> =
             Vec::with_capacity(preflight.len());
+        let mut payload_alloc_ok = false;
         for p in &preflight {
             if let Some(allocation) = p.payload_allocation {
                 match allocation {
@@ -277,6 +297,7 @@ where
                         let actual_offset =
                             self.values.append_byte_span(byte_len).map_err(|e| {
                                 self.rollback_payload_tail(payload_tail_before);
+                                self.rollback_edge_capacity(edge_capacity_before);
                                 storage_resize_error(e)
                             })?;
                         allocated_payload_offsets.push(Some((actual_offset, byte_len)));
@@ -291,10 +312,12 @@ where
                             .grow_byte_span_in_place(offset, had_bytes, new_bytes)
                             .map_err(|e| {
                                 self.rollback_payload_tail(payload_tail_before);
+                                self.rollback_edge_capacity(edge_capacity_before);
                                 storage_resize_error(e)
                             })?;
                         if !grown {
                             self.rollback_payload_tail(payload_tail_before);
+                            self.rollback_edge_capacity(edge_capacity_before);
                             return Err(OneOrientationBatchError::UnsupportedGeometry(
                                 "payload span is not at occupied tail and cannot grow in place"
                                     .into(),
@@ -306,7 +329,10 @@ where
             } else {
                 allocated_payload_offsets.push(None);
             }
+            payload_alloc_ok = true;
         }
+        // Suppress unused-mut warning when all payload runs are edge-only.
+        let _ = payload_alloc_ok;
 
         // Phase 4: build the opaque reservation token from the preflight snapshot.
         // No fallible allocator calls remain from this point onward.
@@ -391,14 +417,29 @@ where
     ///
     /// All payload allocations in this batch append at the occupied tail, so the
     /// new bytes are exactly `[original_tail, current_tail)`.  We retire that
-    /// range and restore the header.  Existing payload spans are untouched.
+    /// range to the free list and restore the header.  Existing payload spans
+    /// are untouched.  If retiring the tail span fails, we panic: the allocator
+    /// would be left in an inconsistent state and continuing is unsafe.
     fn rollback_payload_tail(&self, original_tail: u64) {
         let current_tail = self.values.header().slab_occupied_tail;
         if current_tail > original_tail {
-            let _ = self
-                .values
-                .retire_byte_span(original_tail, current_tail - original_tail);
+            self.values
+                .retire_byte_span(original_tail, current_tail - original_tail)
+                .expect("reserve rollback must restore payload free-list consistency");
             self.values.reset_slab_occupied_tail(original_tail);
+        }
+    }
+
+    /// Roll back edge-store logical capacity growth performed during a partially-failed reserve.
+    ///
+    /// The underlying stable-memory pages are not shrunk; they become harmless
+    /// slack.  Only the persisted logical capacity is restored.
+    fn rollback_edge_capacity(&self, original_capacity: u64) {
+        let current_capacity = self.edges.header().elem_capacity;
+        if current_capacity > original_capacity {
+            self.edges.set_elem_capacity(original_capacity).expect(
+                "shrinking edge-store logical capacity must not fail when memory already has slack",
+            );
         }
     }
 
@@ -535,13 +576,12 @@ where
 {
     /// Commit the reserved batch.
     ///
-    /// This is the `commit` step.  All fallible validation and capacity
-    /// reservation was performed during reserve, so this method performs only
-    /// infallible canonical byte writes and metadata updates.  A panic here is an
-    /// invariant violation rather than a recoverable error.
-    ///
-    /// The reservation embeds a runtime marker of the graph instance that produced
-    /// it; passing the token to a different graph of the same type panics.
+    /// This is the `commit` step.  All fallible validation and capacity reservation
+    /// was performed during reserve, so this method performs only canonical byte
+    /// writes and metadata updates that reserve proved cannot fail due to capacity.
+    /// A panic here is an invariant violation rather than a recoverable error.  In
+    /// a canister message, such a panic traps and rolls back the entire message, so
+    /// no partial canonical state is published.
     pub fn commit<M: Memory>(self, graph: &LabeledLaraGraph<E, M>) -> OneOrientationBatchResult {
         assert_eq!(
             self.plan.runs.len(),
@@ -769,9 +809,11 @@ where
         graph.edges.set_num_edges(next_num_edges);
 
         OneOrientationBatchResult {
-            edge_slots_written: edge_slots_written as u32,
+            edge_slots_written: u32::try_from(edge_slots_written)
+                .expect("reserve guaranteed total edge slots fit in u32"),
             edge_log_entries_written: 0,
-            payload_slots_written: payload_slots_written as u32,
+            payload_slots_written: u32::try_from(payload_slots_written)
+                .expect("reserve guaranteed total payload slots fit in u32"),
             payload_log_entries_written: 0,
         }
     }
