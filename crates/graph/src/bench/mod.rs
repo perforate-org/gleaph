@@ -7,6 +7,7 @@ mod batch_placement;
 mod capacity;
 #[cfg(feature = "canbench_large")]
 mod large;
+mod mate_footprint;
 mod stable_layout;
 
 use crate::edge_inline_value_scalar_codec::encode_edge_inline_value_scalar;

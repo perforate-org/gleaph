@@ -415,6 +415,32 @@ included. Small buckets should remain `ScanOnly`. This table does not authorize 
 removal: the storage gate must add the measured shared terms, and instruction results remain a
 bounded guardrail.
 
+### Logical footprint prototype (Plan 0134)
+
+The pure accounting model in `crates/graph/src/bench/mate_footprint.rs` is the owner of the
+prototype arithmetic. It covers one non-self logical edge represented by two physical halves and
+returns these components independently: two five-byte locator rows, blob header bytes, indexed
+bucket-directory bytes, checkpoint/packed mapping bytes, free-span bytes, and rebuild-reserve
+bytes. The latter four are explicit inputs because the blob wire layout and allocation records are
+not implemented yet. StableBTreeMap node bytes, allocator slack, and MemoryManager extent rounding
+are deliberately outside the model and are never converted into bytes per edge.
+
+For a candidate with `n` entries, the storage gate is algebraically:
+
+```text
+known_mate_bytes = 10 + shared_header + shared_directory + mapping
+                   + shared_free_span + shared_rebuild_reserve
+unknown_overhead_budget = 18 * n - known_mate_bytes
+```
+
+`unknown_overhead_budget` is reported only when positive. A non-positive value rejects the
+candidate before any runtime implementation is proposed. The prototype tests all requested
+degrees (`1`, `8`, `32`, `128`, `1,024`, and the `65,536` hub case), Sampled strides `16/32/64`,
+and Packed widths `U8/U16/U24/U32`, including checked overflow and unsupported-parameter rejection.
+The zero-shared-overhead table above is therefore a reproducible lower bound, not an adoption
+decision; a follow-up storage prototype is justified only when measured shared terms leave a
+positive budget for the target workload.
+
 ### Reads
 
 - `ScanOnly`: scan the source bucket to compute equal-neighbor rank and the target bucket to select

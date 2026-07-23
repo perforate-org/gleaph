@@ -187,6 +187,14 @@ for slot width `width`. These shared and allocator terms are intentionally unkno
 isolated storage prototype; MemoryManager page deltas are not per-edge measurements. Promotion
 and alias removal therefore remain planned and storage-gated.
 
+Plan 0134 adds a pure accounting prototype at
+`crates/graph/src/bench/mate_footprint.rs`. It reports locator, header, indexed-bucket directory,
+mapping, free-span, and rebuild-reserve bytes separately. Shared terms are explicit model inputs;
+StableBTreeMap nodes, allocator slack, and MemoryManager extent rounding remain unknown substrate
+overhead and are not divided by edge count. A candidate must retain positive headroom against the
+18-byte alias raw payload after all measured shared terms before a persistent-layout prototype is
+justified. No runtime promotion, blob store, or alias replacement is implemented by this slice.
+
 ---
 
 ## What is IC-specific (substrate only)
