@@ -121,6 +121,19 @@ where
     leaf_expansions: std::collections::BTreeMap<u32, LeafExpansionState>,
 }
 
+impl<E> BatchReservation<E>
+where
+    E: CsrEdge,
+{
+    /// Whether this reservation uses the pending-aware one-shot leaf expansion
+    /// path rather than a direct slab or overflow-log destination.
+    pub fn uses_expansion(&self) -> bool {
+        self.runs
+            .iter()
+            .any(|run| matches!(run.destination, RunDestination::ExpandedSlab { .. }))
+    }
+}
+
 impl<E> std::fmt::Debug for BatchReservation<E>
 where
     E: CsrEdge,
