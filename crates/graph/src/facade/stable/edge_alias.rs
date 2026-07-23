@@ -128,6 +128,12 @@ pub struct EdgeAliasIndex<M: Memory> {
     aliases: StableBTreeMap<EdgeAliasKey, EdgeAliasValue, M>,
 }
 
+/// Raw serialized key/value bytes occupied by one alias entry, excluding
+/// StableBTreeMap node and allocator overhead.
+pub const EDGE_ALIAS_KEY_BYTES: u64 = 10;
+pub const EDGE_ALIAS_VALUE_BYTES: u64 = 8;
+pub const EDGE_ALIAS_RAW_ENTRY_BYTES: u64 = EDGE_ALIAS_KEY_BYTES + EDGE_ALIAS_VALUE_BYTES;
+
 impl<M: Memory> EdgeAliasIndex<M> {
     pub fn init(memory: M) -> Self {
         Self {
@@ -181,6 +187,12 @@ impl<M: Memory> EdgeAliasIndex<M> {
 
     pub fn is_empty(&self) -> bool {
         self.aliases.is_empty()
+    }
+
+    /// Returns the raw serialized key/value payload size, excluding B-tree
+    /// node and memory-manager allocation overhead.
+    pub fn raw_payload_bytes(&self) -> u64 {
+        self.len().saturating_mul(EDGE_ALIAS_RAW_ENTRY_BYTES)
     }
 
     pub fn move_alias_key(
@@ -323,5 +335,13 @@ mod tests {
             Some((alias, 3))
         );
         assert_eq!(index.find_alias_for_canonical(canonical, 8, 9), None);
+    }
+
+    #[test]
+    fn raw_payload_bytes_uses_fixed_key_and_value_widths() {
+        let mut index = EdgeAliasIndex::init(VectorMemory::default());
+        assert_eq!(index.raw_payload_bytes(), 0);
+        index.insert(VertexId::from(2), 7, 3, VertexId::from(1), 9);
+        assert_eq!(index.raw_payload_bytes(), EDGE_ALIAS_RAW_ENTRY_BYTES);
     }
 }

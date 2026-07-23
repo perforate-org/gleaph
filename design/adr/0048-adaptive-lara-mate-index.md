@@ -158,6 +158,13 @@ metadata expected to recover acceptable lookup cost in promoted buckets. GraphSt
 for the most recently matching neighbor or payload after an insertion that returned an exact
 location.
 
+A GraphStore footprint probe that creates one source and 128 or 1,024 named directed edges
+reports a total stable-memory increase of 16 Wasm pages in both cases. This is only a
+MemoryManager allocation baseline and must not be divided by edge count. The alias index's raw
+serialized payload is 18 bytes per entry (10-byte key plus 8-byte value), excluding B-tree node
+and allocator overhead. Future Sampled/Packed measurements must report this raw payload baseline
+plus separately measured node and region overhead.
+
 The internal result distinguishes one-entry and two-entry cases:
 
 ```rust
