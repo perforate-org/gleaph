@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: accepted (ScanOnly implemented; persistent replacement planned)
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 09:57:33 UTC +0000
+Anchor timestamp: 2026-07-23 10:38:22 UTC +0000
 
 ## Context
 
@@ -139,7 +139,7 @@ Plan 0130 makes that return opt-in: ordinary batch writes use aggregate-only res
 capture mode remains available for the future mate-index consumer. Scalar return integration and
 persistent mate-index consumption remain planned.
 
-Plan 0131 implements the persistence-free part of this boundary. The bidirectional LARA wrapper
+Plan 0132 implements the persistence-free part of this boundary. The bidirectional LARA wrapper
 now exposes an internal `PhysicalEdgeRef`, exact rank-based `mate_of`, and canonical-handle
 resolution for directed, undirected, and self-loop relations. Its live-slot primitive now reads a
 bucket's slab/log representation in one pass. Scalar GraphStore insertion consumes the exact
@@ -148,11 +148,12 @@ default-label, and unsupported paths retain the alias/scan fallback. The Graph f
 `EDGE_ALIASES` as the compatibility and recovery surface; alias removal is not implied by this
 slice.
 
-The initial paired lookup probe measured approximately 2.3K instructions for alias lookup,
-4.3K for post-insert adjacency rediscovery, and 11.8K for the initial ScanOnly implementation
-on a one-edge fixture. The scalar location slice removes post-insert rediscovery on supported
-named-bucket paths; the ScanOnly numbers remain comparison evidence rather than an adoption
-decision. GraphStore must not scan for the most recently matching neighbor or payload after an
+The paired one-edge lookup probe measures approximately 2.3K instructions for alias lookup,
+4.3K for post-insert adjacency rediscovery, and 12.5K for the current ScanOnly implementation;
+the latest run reports ScanOnly at +5.8% versus its prior baseline while alias and rediscovery
+remain within noise. The scalar location slice removes post-insert rediscovery on supported
+named-bucket paths, but ScanOnly remains comparison evidence and is not adopted as a replacement
+for aliases. GraphStore must not scan for the most recently matching neighbor or payload after an
 insertion that returned an exact location.
 
 The internal result distinguishes one-entry and two-entry cases:
