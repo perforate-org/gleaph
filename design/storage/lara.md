@@ -163,13 +163,24 @@ before opening the shared `(orientation, leaf)` locator namespace.  Mate initial
 remain typed through `MateStorageInitError`; callers therefore distinguish geometry, partial-layout,
 row-count, and stable-memory failures without parsing display strings.  The two mate data regions
 Plan 0141 adds bounded, read-only promotion admission and pure Sampled/Packed leaf-blob construction.
-The two mate data regions remain derived; the owner-facing failure-atomic publication boundary is
-implemented, while automatic rebuild scheduling and runtime lookup remain deferred, so canonical
-adjacency and `EDGE_ALIASES` paths are unchanged.
+The two mate data regions remain derived; the owner-facing failure-atomic publication boundary and
+mutation invalidation/rebuild scheduling are implemented. The existing durable maintenance queue
+deduplicates `(orientation, leaf)` rebuild work, and compaction work hides an affected row before
+processing it and requeues failed work, while runtime lookup remains deferred, so
+canonical adjacency and `EDGE_ALIASES` paths are unchanged.
 Owner construction preflights the four-region composite and compares its fresh/reopen state with
 the LARA sentinel regions before opening either orientation, so mixed fresh/reopen or partial mate
 state cannot leave a newly opened canonical adjacency owner behind. This check runs only during
 owner construction; normal edge mutation and query paths do not rescan the composite.
+
+The public `forward()` and `reverse()` accessors remain read-capable for adjacency, placement, and
+allocator diagnostics, but do not expose canonical mutation primitives. Single-orientation writes
+and batch reserve/commit operations are crate-private on `LabeledLaraGraph`; the bidirectional owner
+provides the owner-facing wrappers used by GraphStore and repair code. This keeps read traversal
+direct while making it impossible for a caller to mutate one orientation without going through the
+owner boundary that coordinates mate invalidation. Batch commit hides every affected owner leaf
+before the first canonical byte write; reverse-repair wrappers likewise invalidate before changing
+one orientation and are not general-purpose paired-write APIs.
 
 [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) places physical
 entry-to-entry pairing in bidirectional LARA rather than a Graph facade B-tree.
@@ -193,7 +204,7 @@ the dormant LARA-owned locator/blob/free-span storage foundation with fresh/reop
 validation and publication-before-retirement ordering. Plan 0140 hardens the opt-in Graph facade
 ScanOnly bridge: it resolves exact canonical handles through LARA rank/select without reading or
 mutating `EDGE_ALIASES`; ordinary callers still use the alias compatibility path. Promotion,
-automatic rebuild scheduling, published blob reads, and alias removal remain planned.
+published blob reads and alias removal remain planned.
 
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half
@@ -268,7 +279,7 @@ Use this when reviewing LARA PRs:
 - [lara-dgap-contract.md](./lara-dgap-contract.md) — DGAP mapping and labeled gap detail
 - [adr/0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — labeled physical migration
 - [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented**; one-orientation batch commit implemented (`plan/reserve/commit/rollback` boundary, opaque graph-bound reservation token consumed on rollback, payload allocation with tail rollback and free-list slack, pre-write fingerprint/geometry validation, success and adversarial tests including allocator free-list shape); **GraphStore clean-slab orchestration implemented** (`try_insert_batch_edges_clean_slab` reserve-all-then-commit with explicit `Unsupported` fallback to the scalar path, cross-orientation reservation rollback on partial failure, directed/reverse/undirected/self-loop tests, scalar-vs-batch canbench); **per-leaf overflow-log batch append implemented** (`reserve_one_orientation_batch` admits existing-bucket runs to the shared per-leaf edge/payload overflow logs, reserve checks log and payload-log capacity before any canonical write, commit appends entries in logical ordinal order and updates bucket heads/degree without changing stored_slots or vertex slab span, scalar fallback preserved for unsupported geometry); **Plans 0125/0128 pending-aware one-shot expansion implemented for existing-bucket runs** (one expansion per PMA leaf, adjacent free-span/tail growth, segment-count publication and rollback, preserved edge/payload-log fold, fixed-width payload span reuse or occupied-tail growth, edge and payload read-back/rollback coverage); **Plan 0129 internal physical-location results implemented** (LARA returns exact slab/overflow-log edge and payload locations keyed by ordinal and owner, GraphStore joins directed/reverse, undirected pair, and self-loop results without adjacency rediscovery); relocation, new buckets, persistent mate index, and public wire integration remain planned
-- [adr/0048-adaptive-lara-mate-index.md](../adr/0048-adaptive-lara-mate-index.md) — accepted physical-pairing design; Plans 0132 and 0142 add one-pass live-slot traversal, exact scalar location consumption, and canonical read-only leaf enumeration for supported named buckets. Alias removal is primarily a persistent-bytes optimization: the raw alias payload is 18 bytes per entry (excluding B-tree/allocator overhead), while MemoryManager page deltas are not per-edge measurements and ScanOnly instruction cost is only a guardrail. Runtime published-blob lookup, invalidation, and scheduling remain planned
+- [adr/0048-adaptive-lara-mate-index.md](../adr/0048-adaptive-lara-mate-index.md) — accepted physical-pairing design; Plans 0132, 0142, and 0143 add one-pass live-slot traversal, exact scalar location consumption, canonical read-only leaf enumeration, and mutation invalidation/rebuild scheduling for supported named buckets. Alias removal is primarily a persistent-bytes optimization: the raw alias payload is 18 bytes per entry (excluding B-tree/allocator overhead), while MemoryManager page deltas are not per-edge measurements and ScanOnly instruction cost is only a guardrail. Runtime published-blob lookup and alias removal remain planned
 - [lara-labeled-migration-tests.md](./lara-labeled-migration-tests.md) — phase test gates (A–E)
 - `crates/ic-stable-lara/README.md` — crate entry point
 - `reference/DGAP/dgap/src/graph.h` — reference implementation

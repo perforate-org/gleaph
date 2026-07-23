@@ -182,8 +182,8 @@ deferred, so canonical adjacency and `EDGE_ALIASES` paths are unchanged.
 
 | MemoryId | Symbol | Role | Class | Rebuild |
 | --- | --- | --- | --- | --- |
-| 47 | `MATE_LEAF_LOCATORS` | Dense five-byte `(orientation, leaf)` locator rows | derived | Plan 0141 admission/build and owner-facing failure-atomic publication boundary; automatic rebuild/runtime consumption remains deferred |
-| 48 | `MATE_BLOBS` | Versioned sampled-checkpoint or packed counterpart-slot arrays for indexed leaves | derived | Plan 0141 pure builder and owner-facing publication boundary; automatic rebuild/runtime consumption remains deferred |
+| 47 | `MATE_LEAF_LOCATORS` | Dense five-byte `(orientation, leaf)` locator rows | derived | Plan 0141 admission/build, Plan 0142 canonical enumeration, and Plan 0143 mutation invalidation + queued rebuild; runtime consumption remains deferred |
+| 48 | `MATE_BLOBS` | Versioned sampled-checkpoint or packed counterpart-slot arrays for indexed leaves | derived | Plan 0141 publication, Plan 0142 canonical revalidation, and Plan 0143 failure-safe maintenance rebuild; runtime consumption remains deferred |
 | 49 | `MATE_FREE_SPANS` | Retired mate-blob byte ranges | maintenance | Allocator validation |
 | 50 | `MATE_FREE_SPAN_BY_START` | Coalescing index for mate-blob free ranges | maintenance | Paired `FreeSpanStore` validation |
 
@@ -448,7 +448,7 @@ secondary index and is commit-synced with Region 1 (`PROVISION_JOB_BY_REQUEST`).
 
 - [Refactoring roadmap](../architecture/refactoring-roadmap.md) — phased plan; Phase 0 exit criteria
 - [LARA and graph facade](./lara-and-facade.md) — layering; defers byte layout to this inventory
-- [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) — accepted adaptive mate-index layout; canonical leaf enumeration is implemented, while runtime lookup, invalidation, scheduling, and alias removal remain planned
+- [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) — accepted adaptive mate-index layout; canonical leaf enumeration and mutation invalidation/rebuild scheduling are implemented, while runtime lookup and alias removal remain planned
 - [Property index](../index/property-index.md) — posting model and router seed routing
 - [Label index](../index/label-index.md) — label postings and backfill orchestration
 - [ADR 0004: Label index](../adr/0004-label-index.md)

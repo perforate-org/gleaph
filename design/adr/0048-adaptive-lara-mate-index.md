@@ -1,9 +1,9 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, and canonical leaf enumeration wired in Plans 0141/0142; automatic rebuild scheduling, runtime lookup, mutation invalidation, and alias replacement remain deferred)
+Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; runtime lookup, adoption measurement, and alias replacement remain deferred)
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 15:38:06 UTC +0000
+Anchor timestamp: 2026-07-23 19:55:43 UTC +0000
 
 ## Context
 
@@ -171,8 +171,21 @@ plus separately measured node and region overhead.
 Plan 0142 adds a read-only owner boundary that discovers existing non-default buckets on one
 orientation/PMA leaf, derives canonical source/mate slots by equal-neighbor occurrence rank, and
 feeds the existing admission and rebuild boundary. The aggregate is structurally revalidated
-before publication; runtime published-blob lookup, mutation invalidation, and scheduling remain
-deferred.
+before publication. Plan 0143 adds the owner-level invalidation boundary: successful canonical
+inserts, deletes, compaction work, and vertex purge work hide affected Published rows before
+scheduling one deduplicated `(orientation, leaf)` maintenance item. Compaction invalidates before
+processing an eligible row so failure or a later slot rewrite cannot expose stale data; failed
+compaction work is requeued for retry. ScanOnly rows do not create unnecessary work; rebuild
+failures leave the row non-Published and the item retryable. Runtime
+published-blob lookup, adoption measurement, and alias replacement remain deferred.
+
+The bidirectional owner is also the mutation boundary: `forward()` and `reverse()` remain public
+read accessors, while single-orientation canonical mutation methods are crate-private. GraphStore,
+repair, and batch paths use owner-facing wrappers so a forward/reverse mutation cannot bypass mate
+invalidation. Batch commit invalidates all affected owner leaves before its first canonical write;
+repair-only one-orientation wrappers do the same and are not general-purpose paired-write APIs. This
+visibility split changes no read traversal or diagnostic API; it only removes direct mutation through
+an orientation handle.
 
 The internal result distinguishes one-entry and two-entry cases:
 
