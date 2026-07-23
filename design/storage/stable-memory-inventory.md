@@ -173,7 +173,7 @@ existing stable memory.
 | 30 | `MAINTENANCE_QUEUE` | Deferred PMA work queue | maintenance | Internal LARA drain |
 | 31 | `DIRTY_WORK_ITEMS` | Dirty work tracking | maintenance | Internal LARA drain |
 
-### Adaptive mate bundle (ADR 0048 / Plan 0139; ownership wired, runtime dormant)
+### Adaptive mate bundle (ADR 0048 / Plans 0139/0142; ownership and canonical enumeration wired, runtime dormant)
 
 ADR 0048 accepts four bidirectional-LARA-owned logical regions and removal of
 facade `EDGE_ALIASES`. Plan 0136 implements the storage boundary and Plan 0139 wires it into the
@@ -448,7 +448,7 @@ secondary index and is commit-synced with Region 1 (`PROVISION_JOB_BY_REQUEST`).
 
 - [Refactoring roadmap](../architecture/refactoring-roadmap.md) — phased plan; Phase 0 exit criteria
 - [LARA and graph facade](./lara-and-facade.md) — layering; defers byte layout to this inventory
-- [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) — accepted adaptive mate-index layout; implementation planned
+- [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) — accepted adaptive mate-index layout; canonical leaf enumeration is implemented, while runtime lookup, invalidation, scheduling, and alias removal remain planned
 - [Property index](../index/property-index.md) — posting model and router seed routing
 - [Label index](../index/label-index.md) — label postings and backfill orchestration
 - [ADR 0004: Label index](../adr/0004-label-index.md)

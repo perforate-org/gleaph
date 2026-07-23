@@ -124,15 +124,15 @@ pub(crate) enum MateLeafPromotionDecision {
     },
 }
 
-fn supported_sampled_stride(stride: u8) -> bool {
+pub(crate) fn supported_sampled_stride(stride: u8) -> bool {
     matches!(stride, 16 | 32 | 64)
 }
 
-fn supported_packed_width(width: u8) -> bool {
+pub(crate) fn supported_packed_width(width: u8) -> bool {
     (1..=4).contains(&width)
 }
 
-fn valid_config(config: MateLeafPromotionConfig) -> bool {
+pub(crate) fn valid_config(config: MateLeafPromotionConfig) -> bool {
     config.max_encoded_blob_bytes != 0
         && config.max_total_promotion_bytes != 0
         && config.max_bytes_per_entry != 0

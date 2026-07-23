@@ -1,9 +1,9 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, and owner-facing failure-atomic publication wired in Plan 0141; automatic rebuild scheduling, runtime lookup, mutation invalidation, and alias replacement remain deferred)
+Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, and canonical leaf enumeration wired in Plans 0141/0142; automatic rebuild scheduling, runtime lookup, mutation invalidation, and alias replacement remain deferred)
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 14:13:50 UTC +0000
+Anchor timestamp: 2026-07-23 15:38:06 UTC +0000
 
 ## Context
 
@@ -167,6 +167,12 @@ MemoryManager allocation baseline and must not be divided by edge count. The ali
 serialized payload is 18 bytes per entry (10-byte key plus 8-byte value), excluding B-tree node
 and allocator overhead. Future Sampled/Packed measurements must report this raw payload baseline
 plus separately measured node and region overhead.
+
+Plan 0142 adds a read-only owner boundary that discovers existing non-default buckets on one
+orientation/PMA leaf, derives canonical source/mate slots by equal-neighbor occurrence rank, and
+feeds the existing admission and rebuild boundary. The aggregate is structurally revalidated
+before publication; runtime published-blob lookup, mutation invalidation, and scheduling remain
+deferred.
 
 The internal result distinguishes one-entry and two-entry cases:
 

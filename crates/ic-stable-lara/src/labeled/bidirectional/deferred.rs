@@ -4,6 +4,7 @@
 //! (bucket MSB), not edge-inline-value flags. Use [`Self::for_each_directed_out_edges`],
 //! [`Self::for_each_undirected_edges`], and the matching `*_iter` helpers.
 
+use super::mate_enumeration::MateLeafEnumerationError;
 use super::mate_promotion::{
     MateBlobBuildError, MateLeafPromotionDecision, MateLeafPromotionPlan, MatePromotionRows,
     build_promoted_blob,
@@ -36,6 +37,10 @@ use std::{borrow::Cow, fmt};
 /// Failure returned by the owner-facing mate leaf rebuild boundary.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum MateLeafRebuildError {
+    /// Canonical enumeration failed before any derived-state write.
+    Enumeration(MateLeafEnumerationError),
+    /// Canonical state changed between enumeration and publication admission.
+    StaleEnumeration,
     /// Canonical rows or the promotion decision could not produce a valid blob.
     Build(MateBlobBuildError),
     /// The shared mate storage could not begin, publish, or clear the rebuild.
@@ -47,6 +52,8 @@ pub(crate) enum MateLeafRebuildError {
 impl fmt::Display for MateLeafRebuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Enumeration(error) => write!(f, "mate leaf enumeration failed: {error}"),
+            Self::StaleEnumeration => write!(f, "mate leaf enumeration is stale"),
             Self::Build(error) => write!(f, "mate leaf build failed: {error:?}"),
             Self::Storage(error) => write!(f, "mate storage rebuild failed: {error}"),
             Self::RowsForScanOnly => write!(f, "ScanOnly mate rebuild cannot receive rows"),
@@ -1314,6 +1321,14 @@ where
         self.mate
             .abort_rebuild(token)
             .map_err(MateLeafRebuildError::Storage)
+    }
+
+    pub(crate) fn mate_rebuild_token_matches_row(
+        &self,
+        token: &MateRebuildToken,
+        row: u64,
+    ) -> bool {
+        self.mate.rebuild_token_row(token) == row
     }
 
     /// Publishes a previously built and validated leaf blob through the affine token boundary.
@@ -3302,6 +3317,7 @@ where
 mod tests {
     use super::*;
     use crate::labeled::bidirectional::mate_blob_prototype::{MateBlob, Mode};
+    use crate::labeled::bidirectional::mate_enumeration::MateLeafEnumerationPolicy;
     use crate::labeled::bidirectional::mate_promotion::{
         MateLeafPromotionConfig, MatePromotionInputs, MatePromotionMode,
         test_finalize_decision_sizes,
@@ -3346,6 +3362,37 @@ mod tests {
 
     fn graph() -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
         sized_graph(128)
+    }
+
+    fn enumeration_policy() -> MateLeafEnumerationPolicy {
+        MateLeafEnumerationPolicy {
+            config: MateLeafPromotionConfig {
+                leaf_shared_overhead_bytes: 0,
+                max_encoded_blob_bytes: 4096,
+                max_total_promotion_bytes: 4096,
+                max_bytes_per_entry: 4096,
+            },
+            sampled_stride: 16,
+            packed_width_bytes: 1,
+            min_scan_rows: 1,
+        }
+    }
+
+    #[test]
+    fn canonical_mate_leaf_policy_rejects_zero_shared_limits_before_scan() {
+        let graph = graph();
+        for field in 0..2 {
+            let mut policy = enumeration_policy();
+            if field == 0 {
+                policy.config.max_total_promotion_bytes = 0;
+            } else {
+                policy.config.max_bytes_per_entry = 0;
+            }
+            assert!(matches!(
+                graph.enumerate_mate_leaf(Orientation::Forward, 0, policy),
+                Err(crate::labeled::bidirectional::mate_enumeration::MateLeafEnumerationError::PolicyRejected)
+            ));
+        }
     }
 
     #[test]
@@ -3591,6 +3638,15 @@ mod tests {
     fn sized_graph(
         elem_capacity: u64,
     ) -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
+        sized_graph_with_region_memories(elem_capacity).0
+    }
+
+    fn sized_graph_with_region_memories(
+        elem_capacity: u64,
+    ) -> (
+        DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory>,
+        Vec<VectorMemory>,
+    ) {
         let (
             fv,
             fb,
@@ -3625,7 +3681,51 @@ mod tests {
             rvlog,
             rvblobs,
         ) = labeled_lara_memories();
-        DeferredBidirectionalLabeledLaraGraph::new(
+        let mate_locator = vector_memory();
+        let mate_blobs = vector_memory();
+        let mate_free_spans = vector_memory();
+        let mate_free_by_start = vector_memory();
+        let maintenance_queue = vector_memory();
+        let dirty_work_items = vector_memory();
+        let regions = vec![
+            fv.clone(),
+            fb.clone(),
+            fbfs.clone(),
+            fbfsbs.clone(),
+            fec.clone(),
+            fe.clone(),
+            fel.clone(),
+            fesm.clone(),
+            fefs.clone(),
+            fefsbs.clone(),
+            fvs.clone(),
+            fvffs.clone(),
+            fvffsbs.clone(),
+            fvlog.clone(),
+            fvblobs.clone(),
+            rv.clone(),
+            rb.clone(),
+            rbfs.clone(),
+            rbfsbs.clone(),
+            rec.clone(),
+            re.clone(),
+            rel.clone(),
+            resm.clone(),
+            refs.clone(),
+            refsbs.clone(),
+            rvs.clone(),
+            rvffs.clone(),
+            rvffsbs.clone(),
+            rvlog.clone(),
+            rvblobs.clone(),
+            mate_locator.clone(),
+            mate_blobs.clone(),
+            mate_free_spans.clone(),
+            mate_free_by_start.clone(),
+            maintenance_queue.clone(),
+            dirty_work_items.clone(),
+        ];
+        let graph = DeferredBidirectionalLabeledLaraGraph::new(
             fv,
             fb,
             fbfs,
@@ -3657,17 +3757,18 @@ mod tests {
             rvlog,
             rvblobs,
             MateStorageMemories::new(
-                vector_memory(),
-                vector_memory(),
-                vector_memory(),
-                vector_memory(),
+                mate_locator,
+                mate_blobs,
+                mate_free_spans,
+                mate_free_by_start,
             ),
-            vector_memory(),
-            vector_memory(),
+            maintenance_queue,
+            dirty_work_items,
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             BucketLabelKey::from_raw(1),
         )
-        .expect("graph")
+        .expect("graph");
+        (graph, regions)
     }
 
     fn unbounded_budget() -> MaintenanceBudget {
@@ -5934,6 +6035,510 @@ mod tests {
         assert_eq!(
             graph.mate_of(source_ref).unwrap().orientation,
             Orientation::Reverse
+        );
+    }
+
+    #[test]
+    fn canonical_mate_leaf_enumeration_is_read_only_and_deterministic() {
+        let (graph, region_memories) = sized_graph_with_region_memories(128);
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(19);
+        let earlier_label = BucketLabelKey::directed_from_index(18);
+        for _ in 0..3 {
+            graph
+                .insert_directed_edge(
+                    source,
+                    target,
+                    label,
+                    TestEdge(u32::from(target)),
+                    TestEdge(u32::from(source)),
+                )
+                .unwrap();
+        }
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    source,
+                    target,
+                    earlier_label,
+                    TestEdge(u32::from(target)),
+                    TestEdge(u32::from(source)),
+                )
+                .unwrap();
+        }
+        let undirected_label = BucketLabelKey::undirected_from_index(20);
+        graph
+            .insert_undirected_deferred(
+                source,
+                target,
+                undirected_label,
+                TestEdge(u32::from(target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        let policy = enumeration_policy();
+        let published = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, policy)
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&published).unwrap();
+        let before = graph.forward().read_leaf_placement_stats(0).unwrap();
+        let before_bucket_identities = graph.forward().read_leaf_bucket_identities(0).unwrap();
+        let before_bucket_descriptors = graph
+            .forward()
+            .read_leaf_all_bucket_placement_info(0)
+            .unwrap();
+        let before_reverse = graph.reverse().read_leaf_placement_stats(0).unwrap();
+        let before_reverse_bucket_identities =
+            graph.reverse().read_leaf_bucket_identities(0).unwrap();
+        let before_reverse_bucket_descriptors = graph
+            .reverse()
+            .read_leaf_all_bucket_placement_info(0)
+            .unwrap();
+        let mut expected_mate_slots = Vec::new();
+        graph
+            .reverse()
+            .for_each_live_edge_slot_for_label(target, label, |slot, _| {
+                expected_mate_slots.push(slot)
+            })
+            .unwrap();
+        let before_out = graph.directed_out_edges(source).unwrap();
+        let before_in = graph.directed_in_edges(target).unwrap();
+        let before_undirected_source = graph.undirected_edges(source).unwrap();
+        let before_undirected_target = graph.undirected_edges(target).unwrap();
+        let before_locator = graph.mate.locator_state(0).unwrap();
+        let before_queue = graph.maintenance_queue_len();
+        let before_edge_allocator = graph.forward().edges().allocator_stats();
+        let before_edge_free_spans = graph.forward().edges().free_byte_spans();
+        let before_payload = graph.forward().payload_storage_stats().unwrap();
+        let before_reverse_edge_allocator = graph.reverse().edges().allocator_stats();
+        let before_reverse_edge_free_spans = graph.reverse().edges().free_byte_spans();
+        let before_reverse_payload = graph.reverse().payload_storage_stats().unwrap();
+        let before_mate = graph.mate.test_snapshot();
+        let before_region_pages = region_memories
+            .iter()
+            .map(VectorMemory::size)
+            .collect::<Vec<_>>();
+        let first = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, policy)
+            .unwrap();
+        let second = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, policy)
+            .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.rows.len(), 4);
+        assert_eq!(first.rows[0].inputs.bucket_label_key, undirected_label);
+        assert_eq!(first.rows[1].inputs.bucket_label_key, earlier_label);
+        assert_eq!(first.rows[2].inputs.bucket_label_key, label);
+        assert_eq!(first.rows[2].source_slots.len(), 3);
+        assert_eq!(first.rows[2].mate_slots, expected_mate_slots);
+        assert_eq!(first.rows[3].inputs.bucket_label_key, undirected_label);
+        assert!(first.rows[0].inputs.owner_vertex_id < first.rows[3].inputs.owner_vertex_id);
+        assert_eq!(
+            before,
+            graph.forward().read_leaf_placement_stats(0).unwrap()
+        );
+        assert_eq!(
+            before_bucket_identities,
+            graph.forward().read_leaf_bucket_identities(0).unwrap()
+        );
+        let after_bucket_descriptors = graph
+            .forward()
+            .read_leaf_all_bucket_placement_info(0)
+            .unwrap();
+        assert_eq!(before_bucket_descriptors, after_bucket_descriptors);
+        assert_eq!(
+            before_reverse,
+            graph.reverse().read_leaf_placement_stats(0).unwrap()
+        );
+        let after_reverse_bucket_identities =
+            graph.reverse().read_leaf_bucket_identities(0).unwrap();
+        assert_eq!(
+            before_reverse_bucket_identities,
+            after_reverse_bucket_identities
+        );
+        let after_reverse_bucket_descriptors = graph
+            .reverse()
+            .read_leaf_all_bucket_placement_info(0)
+            .unwrap();
+        assert_eq!(
+            before_reverse_bucket_descriptors,
+            after_reverse_bucket_descriptors
+        );
+        assert_eq!(before_out, graph.directed_out_edges(source).unwrap());
+        assert_eq!(before_in, graph.directed_in_edges(target).unwrap());
+        assert_eq!(
+            before_undirected_source,
+            graph.undirected_edges(source).unwrap()
+        );
+        assert_eq!(
+            before_undirected_target,
+            graph.undirected_edges(target).unwrap()
+        );
+        assert_eq!(before_locator, graph.mate.locator_state(0).unwrap());
+        assert_eq!(before_queue, graph.maintenance_queue_len());
+        assert_eq!(
+            before_edge_allocator,
+            graph.forward().edges().allocator_stats()
+        );
+        assert_eq!(
+            before_edge_free_spans,
+            graph.forward().edges().free_byte_spans()
+        );
+        assert_eq!(
+            before_payload,
+            graph.forward().payload_storage_stats().unwrap()
+        );
+        assert_eq!(
+            before_reverse_edge_allocator,
+            graph.reverse().edges().allocator_stats()
+        );
+        assert_eq!(
+            before_reverse_edge_free_spans,
+            graph.reverse().edges().free_byte_spans()
+        );
+        assert_eq!(
+            before_reverse_payload,
+            graph.reverse().payload_storage_stats().unwrap()
+        );
+        assert_eq!(
+            before_region_pages,
+            region_memories
+                .iter()
+                .map(VectorMemory::size)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(before_mate, graph.mate.test_snapshot());
+    }
+
+    #[test]
+    fn canonical_mate_leaf_enumeration_rejects_invalid_leaf() {
+        let graph = graph();
+        let policy = enumeration_policy();
+        assert!(
+            graph
+                .enumerate_mate_leaf(Orientation::Forward, 0, policy)
+                .unwrap()
+                .rows
+                .is_empty()
+        );
+        assert!(matches!(
+            graph.enumerate_mate_leaf(Orientation::Forward, graph.forward().segment_count(), policy),
+            Err(crate::labeled::bidirectional::mate_enumeration::MateLeafEnumerationError::InvalidLeaf { .. })
+        ));
+    }
+
+    #[test]
+    fn canonical_mate_leaf_rebuild_rejects_same_slot_target_replacement() {
+        let graph = graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let old_target = VertexId::from(1);
+        let new_target = VertexId::from(2);
+        let label = BucketLabelKey::directed_from_index(23);
+        graph
+            .insert_directed_edge(
+                source,
+                old_target,
+                label,
+                TestEdge(u32::from(old_target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        let policy = enumeration_policy();
+        let expected = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, policy)
+            .unwrap();
+        assert!(
+            graph
+                .remove_directed_deferred(source, old_target, TestEdge(u32::from(old_target)))
+                .unwrap()
+        );
+        graph
+            .insert_directed_edge(
+                source,
+                new_target,
+                label,
+                TestEdge(u32::from(new_target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        assert!(matches!(
+            graph.rebuild_mate_leaf_from_canonical(&expected),
+            Err(MateLeafRebuildError::StaleEnumeration)
+        ));
+    }
+
+    #[test]
+    fn canonical_mate_leaf_enumeration_covers_reverse_and_undirected_shapes() {
+        let graph = graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let directed = BucketLabelKey::directed_from_index(29);
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                directed,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        let reverse = graph
+            .enumerate_mate_leaf(Orientation::Reverse, 0, enumeration_policy())
+            .unwrap();
+        assert_eq!(reverse.rows.len(), 1);
+        assert_eq!(reverse.rows[0].source_slots.len(), 1);
+
+        let undirected = BucketLabelKey::undirected_from_index(31);
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(2),
+                undirected,
+                TestEdge(2),
+                TestEdge(0),
+            )
+            .unwrap();
+        let forward = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        let row = forward
+            .rows
+            .iter()
+            .find(|row| row.inputs.bucket_label_key == undirected)
+            .unwrap();
+        assert_eq!(row.source_slots, row.mate_slots);
+        assert!(matches!(
+            graph.enumerate_mate_leaf(Orientation::Reverse, 0, enumeration_policy()),
+            Err(crate::labeled::bidirectional::mate_enumeration::MateLeafEnumerationError::InvalidOrientation(label)) if label == undirected
+        ));
+
+        let self_loop = BucketLabelKey::undirected_from_index(33);
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(2),
+                VertexId::from(2),
+                self_loop,
+                TestEdge(2),
+                TestEdge(2),
+            )
+            .unwrap();
+        let forward = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        let row = forward
+            .rows
+            .iter()
+            .find(|row| row.inputs.bucket_label_key == self_loop)
+            .unwrap();
+        assert_eq!(row.source_slots, row.mate_slots);
+    }
+
+    #[test]
+    fn canonical_mate_leaf_policy_rejects_unsupported_modes() {
+        let graph = graph();
+        let mut policy = enumeration_policy();
+        policy.sampled_stride = 7;
+        assert!(matches!(
+            graph.enumerate_mate_leaf(Orientation::Forward, 0, policy),
+            Err(crate::labeled::bidirectional::mate_enumeration::MateLeafEnumerationError::PolicyRejected)
+        ));
+        let mut policy = enumeration_policy();
+        policy.packed_width_bytes = 9;
+        assert!(matches!(
+            graph.enumerate_mate_leaf(Orientation::Forward, 0, policy),
+            Err(crate::labeled::bidirectional::mate_enumeration::MateLeafEnumerationError::PolicyRejected)
+        ));
+    }
+
+    #[test]
+    fn canonical_mate_leaf_missing_counterpart_is_typed_and_fail_closed() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::directed_from_index(41);
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        graph
+            .reverse()
+            .remove_edge_at_slot(VertexId::from(1), label, 0)
+            .unwrap()
+            .expect("reverse row");
+        assert!(matches!(
+            graph.enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy()),
+            Err(crate::labeled::bidirectional::mate_enumeration::MateLeafEnumerationError::MissingCounterpart { owner, label: actual, .. })
+                if owner == VertexId::from(0) && actual == label
+        ));
+    }
+
+    #[test]
+    fn canonical_mate_leaf_omits_ineligible_bucket_from_promotion() {
+        let graph = graph();
+        for _ in 0..3 {
+            graph.push_vertex().unwrap();
+        }
+        let eligible = BucketLabelKey::directed_from_index(43);
+        let rejected = BucketLabelKey::directed_from_index(44);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    eligible,
+                    TestEdge(1),
+                    TestEdge(0),
+                )
+                .unwrap();
+        }
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(2),
+                rejected,
+                TestEdge(2),
+                TestEdge(0),
+            )
+            .unwrap();
+        let result = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+        let MateLeafPromotionDecision::Promote { bucket_ids, .. } = result.decision else {
+            panic!("expected eligible bucket promotion");
+        };
+        assert_eq!(bucket_ids, vec![(VertexId::from(0), eligible)]);
+    }
+
+    #[test]
+    fn canonical_mate_leaf_rebuild_publishes_matching_aggregate() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::directed_from_index(37);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    label,
+                    TestEdge(1),
+                    TestEdge(0),
+                )
+                .unwrap();
+        }
+        let aggregate = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+    }
+
+    #[test]
+    fn canonical_mate_leaf_empty_rebuild_handles_initial_and_published_states() {
+        let empty = graph();
+        let policy = enumeration_policy();
+        let initial = empty
+            .enumerate_mate_leaf(Orientation::Forward, 0, policy)
+            .unwrap();
+        assert!(initial.rows.is_empty());
+        empty.rebuild_mate_leaf_from_canonical(&initial).unwrap();
+        assert_eq!(
+            empty.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::directed_from_index(47);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    label,
+                    TestEdge(1),
+                    TestEdge(0),
+                )
+                .unwrap();
+        }
+        let populated = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, policy)
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&populated).unwrap();
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        let wrong = graph.begin_mate_leaf_rebuild(1).unwrap();
+        let mut wrong = Some(wrong);
+        assert!(matches!(
+            graph.rebuild_mate_leaf_from_canonical_with_token(&populated, &mut wrong),
+            Err(MateLeafRebuildError::Storage(
+                MateStorageInitError::RebuildStateMismatch
+            ))
+        ));
+        assert!(wrong.is_some());
+        assert_eq!(
+            graph.mate.locator_state(1).unwrap(),
+            MateLocatorState::Rebuilding
+        );
+        graph
+            .abort_mate_leaf_rebuild(wrong.take().unwrap())
+            .unwrap();
+        let token = graph.begin_mate_leaf_rebuild(0).unwrap();
+        let mut token = Some(token);
+        graph
+            .rebuild_mate_leaf_from_canonical_with_token(&populated, &mut token)
+            .unwrap();
+        assert!(token.is_none());
+        for _ in 0..2 {
+            assert!(
+                graph
+                    .remove_directed_deferred(VertexId::from(0), VertexId::from(1), TestEdge(1),)
+                    .unwrap()
+            );
+        }
+        let empty_again = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, policy)
+            .unwrap();
+        assert!(empty_again.rows.is_empty());
+        let token = graph.begin_mate_leaf_rebuild(0).unwrap();
+        let mut token = Some(token);
+        graph
+            .rebuild_mate_leaf_from_canonical_with_token(&empty_again, &mut token)
+            .unwrap();
+        assert!(token.is_none());
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        graph
+            .rebuild_mate_leaf_from_canonical(&empty_again)
+            .unwrap();
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
         );
     }
 }

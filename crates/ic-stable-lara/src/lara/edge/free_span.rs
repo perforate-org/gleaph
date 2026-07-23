@@ -351,6 +351,40 @@ impl<M: Memory> FreeSpanStore<M> {
         self.len() == 0
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_by_start_entries(&self) -> Vec<(u64, SpanId)> {
+        self.by_start.borrow().iter().collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_records(&self) -> Vec<(SpanId, u64, u64, SpanId, SpanId, u8, u8)> {
+        let header = self.header();
+        (1..=header.record_slots)
+            .filter_map(|id| {
+                let record = self.read_record(id);
+                (record.flags == FLAG_ACTIVE).then_some((
+                    id,
+                    record.start_slot,
+                    record.len,
+                    record.prev_bin,
+                    record.next_bin,
+                    record.flags,
+                    record.bin_idx,
+                ))
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_memory_size(&self) -> u64 {
+        self.store.size()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_by_start_memory_size(&self) -> u64 {
+        self.by_start.borrow().memory_size()
+    }
+
     /// Grows the backing memories so the store can absorb `additional_active`
     /// more released spans without a grow failure during the commit phase.
     ///

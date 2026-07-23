@@ -279,6 +279,14 @@ impl<M: Memory> StablePagedOrderedMap<M> {
         self.memory
     }
 
+    /// Returns the current stable-memory size in Wasm pages.
+    ///
+    /// This is a read-only inspection primitive for owners that need to include the backing
+    /// region in a stable-memory snapshot.
+    pub fn memory_size(&self) -> u64 {
+        self.memory.size()
+    }
+
     /// Number of `(key, value)` pairs in the map.
     pub fn len(&self) -> u64 {
         read_u64(&self.memory, OFFSET_LEN)

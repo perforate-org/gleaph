@@ -449,6 +449,18 @@ pub(crate) struct MateStorage<M: Memory> {
     free_spans: FreeSpanStore<M>,
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MateStorageTestSnapshot {
+    pub locator_states: Vec<MateLocatorState>,
+    pub published_blobs: Vec<(u64, Vec<u8>)>,
+    pub blob_tail: u64,
+    pub free_header: crate::lara::edge::free_span::HeaderV1,
+    pub free_records: Vec<(u64, u64, u64, u64, u64, u8, u8)>,
+    pub free_by_start: Vec<(u64, crate::lara::edge::free_span::SpanId)>,
+    pub memory_pages: [u64; 4],
+}
+
 /// Caller-assigned stable regions owned jointly by both LARA orientations.
 pub struct MateStorageMemories<M: Memory> {
     /// Fixed-row locator memory shared by both orientations.
@@ -594,6 +606,42 @@ impl<M: Memory> MateStorage<M> {
 
     pub(crate) fn locator_row_count(&self) -> u64 {
         self.locators.row_count.get()
+    }
+
+    pub(crate) fn rebuild_token_row(&self, token: &MateRebuildToken) -> u64 {
+        token.row
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_snapshot(&self) -> MateStorageTestSnapshot {
+        let mut locator_states = Vec::with_capacity(self.locators.row_count.get() as usize);
+        let mut published_blobs = Vec::new();
+        for row in 0..self.locators.row_count.get() {
+            let state = self.locators.get_state(row).expect("locator snapshot");
+            if let MateLocatorState::Published { blob_offset } = state {
+                published_blobs.push((
+                    blob_offset,
+                    self.blobs
+                        .read(blob_offset)
+                        .expect("published blob snapshot"),
+                ));
+            }
+            locator_states.push(state);
+        }
+        MateStorageTestSnapshot {
+            locator_states,
+            published_blobs,
+            blob_tail: self.blobs.tail(),
+            free_header: self.free_spans.header(),
+            free_records: self.free_spans.test_active_records(),
+            free_by_start: self.free_spans.test_by_start_entries(),
+            memory_pages: [
+                self.locators.memory.size(),
+                self.blobs.memory.size(),
+                self.free_spans.test_memory_size(),
+                self.free_spans.test_by_start_memory_size(),
+            ],
+        }
     }
 
     #[cfg(test)]

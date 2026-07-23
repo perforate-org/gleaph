@@ -74,6 +74,89 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// Returns the identities of non-default buckets on one PMA leaf.
+    ///
+    /// This is a read-only owner accessor for higher-level maintenance. It deliberately
+    /// projects bucket identity only; descriptor and stable-collection details remain owned by
+    /// this graph module.
+    pub(crate) fn read_leaf_bucket_identities(
+        &self,
+        leaf: u32,
+    ) -> Result<Vec<(VertexId, BucketLabelKey)>, LabeledOperationError> {
+        let header = self.edges.header();
+        let segment_size = header.segment_size.max(1);
+        let start = leaf
+            .checked_mul(segment_size)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if start >= self.vertices.len() {
+            return Ok(Vec::new());
+        }
+        let end = start
+            .checked_add(segment_size)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .min(self.vertices.len());
+        let mut identities = Vec::new();
+        for vid_u in start..end {
+            let vid = VertexId::from(vid_u);
+            self.ensure_vertex(vid)?;
+            let vertex = self.vertices.get(vid);
+            if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+                continue;
+            }
+            for bucket in self.read_vertex_label_buckets(&vertex)? {
+                if bucket.degree() != 0 {
+                    identities.push((vid, bucket.bucket_label_key()));
+                }
+            }
+        }
+        Ok(identities)
+    }
+
+    /// Returns every non-default bucket descriptor on one leaf, including zero-degree rows.
+    ///
+    /// This is test-only so the production planning surface continues to expose only live
+    /// identities; snapshots still cover dormant descriptors that a read-only operation must not
+    /// rewrite.
+    #[cfg(test)]
+    pub(crate) fn read_leaf_all_bucket_placement_info(
+        &self,
+        leaf: u32,
+    ) -> Result<
+        Vec<(VertexId, BucketLabelKey, Option<LabelBucketPlacementInfo>)>,
+        LabeledOperationError,
+    > {
+        let header = self.edges.header();
+        let segment_size = header.segment_size.max(1);
+        let start = leaf
+            .checked_mul(segment_size)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if start >= self.vertices.len() {
+            return Ok(Vec::new());
+        }
+        let end = start
+            .checked_add(segment_size)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            .min(self.vertices.len());
+        let mut descriptors = Vec::new();
+        for vid_u in start..end {
+            let owner = VertexId::from(vid_u);
+            self.ensure_vertex(owner)?;
+            let vertex = self.vertices.get(owner);
+            if vertex.is_default_edge_labeled() {
+                continue;
+            }
+            for bucket in self.read_vertex_label_buckets(&vertex)? {
+                let label = bucket.bucket_label_key();
+                descriptors.push((
+                    owner,
+                    label,
+                    self.read_label_bucket_placement_info(owner, label)?,
+                ));
+            }
+        }
+        Ok(descriptors)
+    }
+
     pub(crate) fn labeled_leaf_segment_is_dense(&self, vid: VertexId) -> bool {
         self.labeled_leaf_pma_density(vid) >= LEAF_VERTEX_EDGE_SEGMENT_DENSITY
     }
