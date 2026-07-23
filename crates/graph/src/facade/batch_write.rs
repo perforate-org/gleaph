@@ -587,6 +587,163 @@ mod tests {
         );
     }
 
+    /// Reserve both orientations of a payload-bearing directed edge (so both
+    /// forward and reverse payload allocations complete), then roll back both
+    /// reservations and verify every logical allocator boundary is restored.
+    ///
+    /// This exercises the cross-orientation path where *multiple* orientations
+    /// have already mutated allocator state before the orchestration decides to
+    /// abort.  The stable-memory page slack is retained as reusable free-list
+    /// space; only the logical capacity, free-list accounting, and occupied
+    /// tails are restored.
+    #[test]
+    fn multi_orientation_payload_reserve_then_rollback_restores_allocator_state() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(5003);
+        install_width(label, 8);
+        let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let vertices = make_vertices(&store, 3);
+        let source = vertices[0];
+        let target = vertices[1];
+        // A third vertex we will not use for any clean-slab batch; it just keeps
+        // the graph from being trivially symmetric.
+        let _other = vertices[2];
+
+        // Prepare buckets so a directed edge source -> target has both a
+        // forward bucket at source and a reverse bucket at target.
+        store.prepare_clean_slab_dir_buckets(source, target, label, 8);
+        // Also prepare the opposite direction so we can reserve both
+        // orientations independently without either failing because the bucket
+        // is missing.  This does not change the test edge, but it gives both
+        // stores a non-trivial allocator state to roll back.
+        store.prepare_clean_slab_dir_buckets(target, source, label, 8);
+
+        let before = allocator_snapshot(&store);
+
+        // Build the physical intents for one directed edge.
+        let intents = store
+            .expand_batch_edge_intents(&[input(source, target, Some(label), true, payload.clone())])
+            .expect("intents ok");
+        let requests = store
+            .build_one_orientation_batch_plans(&intents, encode_intent_edge)
+            .expect("plans ok");
+
+        assert_eq!(
+            requests.len(),
+            2,
+            "directed edge must produce two orientations"
+        );
+
+        // Reserve both orientations.  Each reserve grows its own edge logical
+        // capacity and allocates payload bytes at its occupied tail.
+        let reservations: Vec<(LabeledOrientation, BatchReservation<Edge>)> = requests
+            .into_iter()
+            .map(|req| {
+                let reservation = store
+                    .reserve_one_orientation_plan(&req.plan, req.orientation)
+                    .expect("reserve ok for both orientations");
+                (req.orientation, reservation)
+            })
+            .collect();
+
+        let after_reserve = allocator_snapshot(&store);
+
+        // Reserve advanced at least one payload occupied tail (the edge
+        // logical capacity may already be large enough not to grow for a single
+        // edge).
+        assert!(
+            after_reserve.forward_payload.slab_occupied_tail
+                > before.forward_payload.slab_occupied_tail
+                || after_reserve.reverse_payload.slab_occupied_tail
+                    > before.reverse_payload.slab_occupied_tail,
+            "reserve must advance at least one payload occupied tail"
+        );
+        assert!(
+            after_reserve.forward_payload.slab_occupied_tail
+                > before.forward_payload.slab_occupied_tail
+                || after_reserve.reverse_payload.slab_occupied_tail
+                    > before.reverse_payload.slab_occupied_tail,
+            "reserve must advance at least one payload occupied tail"
+        );
+
+        // Roll back every reservation without committing.  The orchestration
+        // helper consumes the tokens, so this is the exact cross-orientation
+        // failure path used by `try_insert_batch_edges_clean_slab`.
+        store.rollback_one_orientation_reservations(reservations);
+
+        let after_rollback = allocator_snapshot(&store);
+
+        // Logical edge capacity and payload tails are restored on both sides.
+        assert_eq!(
+            after_rollback.forward_edge_capacity, before.forward_edge_capacity,
+            "forward edge logical capacity must be restored"
+        );
+        assert_eq!(
+            after_rollback.reverse_edge_capacity, before.reverse_edge_capacity,
+            "reverse edge logical capacity must be restored"
+        );
+        assert_eq!(
+            after_rollback.forward_payload.slab_occupied_tail,
+            before.forward_payload.slab_occupied_tail,
+            "forward payload occupied tail must be restored"
+        );
+        assert_eq!(
+            after_rollback.reverse_payload.slab_occupied_tail,
+            before.reverse_payload.slab_occupied_tail,
+            "reverse payload occupied tail must be restored"
+        );
+
+        // Edge free-list shape is unchanged (no edge spans were retired).
+        assert_eq!(
+            after_rollback.forward_edge_free, before.forward_edge_free,
+            "forward edge free-list must be unchanged"
+        );
+        assert_eq!(
+            after_rollback.reverse_edge_free, before.reverse_edge_free,
+            "reverse edge free-list must be unchanged"
+        );
+
+        // The allocated payload bytes from both orientations became exactly one
+        // free span per orientation.  Stable-memory backing capacity is not shrunk.
+        let expected_payload_bytes = u64::try_from(payload.len()).unwrap();
+        assert_eq!(
+            after_rollback.forward_payload.free_bytes - before.forward_payload.free_bytes,
+            expected_payload_bytes,
+            "forward payload free bytes must increase by exactly the reserved run"
+        );
+        assert_eq!(
+            after_rollback.reverse_payload.free_bytes - before.reverse_payload.free_bytes,
+            expected_payload_bytes,
+            "reverse payload free bytes must increase by exactly the reserved run"
+        );
+        assert_eq!(
+            after_rollback.forward_payload.free_span_count - before.forward_payload.free_span_count,
+            1,
+            "forward payload free-list must gain one retired span"
+        );
+        assert_eq!(
+            after_rollback.reverse_payload.free_span_count - before.reverse_payload.free_span_count,
+            1,
+            "reverse payload free-list must gain one retired span"
+        );
+        assert!(
+            after_rollback.forward_payload.largest_free_span >= expected_payload_bytes,
+            "forward largest free span must cover the retired run"
+        );
+        assert!(
+            after_rollback.reverse_payload.largest_free_span >= expected_payload_bytes,
+            "reverse largest free span must cover the retired run"
+        );
+        assert!(
+            after_rollback.forward_payload.byte_capacity >= before.forward_payload.byte_capacity,
+            "forward stable-memory payload capacity must not shrink"
+        );
+        assert!(
+            after_rollback.reverse_payload.byte_capacity >= before.reverse_payload.byte_capacity,
+            "reverse stable-memory payload capacity must not shrink"
+        );
+    }
+
     #[test]
     fn reserve_failure_restores_allocator_state() {
         let store = fresh_store();
