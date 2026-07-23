@@ -218,7 +218,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     }
 
     /// Writes the full slab header to stable memory.
-    pub fn write_header(&self, h: &HeaderV1) {
+    pub(crate) fn write_header(&self, h: &HeaderV1) {
         self.memory.write(0, &h.magic);
         self.memory.write(3, &[h.version]);
         write_u64(
@@ -257,12 +257,12 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     }
 
     /// Updates the logical edge count field in the header.
-    pub fn set_num_edges(&self, n: u64) {
+    pub(crate) fn set_num_edges(&self, n: u64) {
         write_u64(&self.memory, Address::from(NUM_EDGES_OFFSET), n);
     }
 
     /// Updates the slab capacity and grows stable memory if needed.
-    pub fn set_elem_capacity(&self, n: u64) -> Result<(), GrowFailed> {
+    pub(crate) fn set_elem_capacity(&self, n: u64) -> Result<(), GrowFailed> {
         if !crate::slab_index::slot_exclusive_end_fits(n) {
             return Err(GrowFailed {
                 current_size: self.memory.size(),
@@ -311,7 +311,7 @@ impl<E: CsrEdge, M: Memory> EdgeSlabStore<E, M> {
     }
 
     /// Writes raw encoded edge bytes to `slot`.
-    pub fn write_slot(&self, slot: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
+    pub(crate) fn write_slot(&self, slot: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         debug_assert_eq!(bytes.len(), E::BYTES);
         safe_write(&self.memory, slot_offset::<E>(slot), bytes)
     }

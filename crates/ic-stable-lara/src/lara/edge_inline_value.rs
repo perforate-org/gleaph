@@ -299,7 +299,7 @@ impl<M: Memory> PayloadByteSlabStore<M> {
     }
 
     /// Persists `h` as the payload-slab header.
-    pub fn write_header(&self, h: &HeaderV1) {
+    pub(crate) fn write_header(&self, h: &HeaderV1) {
         self.memory.write(0, &h.magic);
         self.memory.write(3, &[h.version]);
         write_u64(
@@ -315,7 +315,7 @@ impl<M: Memory> PayloadByteSlabStore<M> {
     }
 
     /// Grows the byte slab capacity to `n`.
-    pub fn set_byte_capacity(&self, n: u64) -> Result<(), GrowFailed> {
+    pub(crate) fn set_byte_capacity(&self, n: u64) -> Result<(), GrowFailed> {
         if !byte_exclusive_end_fits(n) {
             return Err(GrowFailed {
                 current_size: self.memory.size(),
@@ -338,7 +338,7 @@ impl<M: Memory> PayloadByteSlabStore<M> {
     }
 
     /// Writes bytes to the payload slab at `offset`, growing stable memory if needed.
-    pub fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
+    pub(crate) fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         safe_write(&self.memory, byte_offset(offset), bytes)
     }
 
@@ -763,7 +763,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Sets the payload byte capacity to `end`.
-    pub fn set_byte_capacity(&self, end: u64) -> Result<(), GrowFailed> {
+    pub(crate) fn set_byte_capacity(&self, end: u64) -> Result<(), GrowFailed> {
         self.slab.set_byte_capacity(end)?;
         let mut h = self.header();
         h.byte_capacity = end;
@@ -790,7 +790,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Writes bytes to the payload slab.
-    pub fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
+    pub(crate) fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         if bytes.is_empty() {
             return Ok(());
         }
@@ -821,7 +821,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Writes one fixed-width payload slot.
-    pub fn write_payload_slot(
+    pub(crate) fn write_payload_slot(
         &self,
         offset: u64,
         width: u16,
@@ -835,12 +835,12 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Writes an arbitrary byte range to the payload slab.
-    pub fn write_range(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
+    pub(crate) fn write_range(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         self.write_bytes(offset, bytes)
     }
 
     /// Allocates a byte span, preferring the free list then bumping the occupied tail.
-    pub fn allocate_byte_span(&self, len: u64) -> Result<u64, GrowFailed> {
+    pub(crate) fn allocate_byte_span(&self, len: u64) -> Result<u64, GrowFailed> {
         if len == 0 {
             return Ok(0);
         }
@@ -868,7 +868,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Grows a span when it ends at the occupied tail (no free-list churn).
-    pub fn grow_byte_span_in_place(
+    pub(crate) fn grow_byte_span_in_place(
         &self,
         offset: u64,
         old_len: u64,
@@ -916,7 +916,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Returns a retired byte range to the free list regardless of occupied tail.
-    pub fn retire_byte_span(&self, offset: u64, len: u64) -> Result<(), GrowFailed> {
+    pub(crate) fn retire_byte_span(&self, offset: u64, len: u64) -> Result<(), GrowFailed> {
         if len == 0 {
             return Ok(());
         }
@@ -936,7 +936,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     ///
     /// Spans still covered by [`HeaderV1::slab_occupied_tail`] are ignored so a
     /// failed in-place grow cannot recycle bytes that remain live at the tail.
-    pub fn release_byte_span(&self, offset: u64, len: u64) -> Result<(), GrowFailed> {
+    pub(crate) fn release_byte_span(&self, offset: u64, len: u64) -> Result<(), GrowFailed> {
         if len == 0 {
             return Ok(());
         }
@@ -957,7 +957,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Allocates at the occupied tail without consulting the free list.
-    pub fn append_byte_span(&self, len: u64) -> Result<u64, GrowFailed> {
+    pub(crate) fn append_byte_span(&self, len: u64) -> Result<u64, GrowFailed> {
         #[cfg(test)]
         if take_forced_payload_allocation_error() {
             return Err(GrowFailed {

@@ -102,6 +102,133 @@ where
     pub runs: Vec<OneOrientationBucketRun<E>>,
 }
 
+/// Logical orientation shape for an owner-coordinated batch.
+///
+/// A caller cannot accidentally submit an unpaired one-sided directed batch: the only
+/// single-orientation form is explicitly named `SelfLoop`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BidirectionalBatchPlan<E>
+where
+    E: CsrEdge,
+{
+    /// Directed edge batch with forward and reverse plans.
+    Directed {
+        /// Forward out-adjacency plan.
+        forward: OneOrientationBatchPlan<E>,
+        /// Reverse in-adjacency plan.
+        reverse: OneOrientationBatchPlan<E>,
+    },
+    /// Undirected non-self batch with two forward plans.
+    Undirected {
+        /// First endpoint's forward plan.
+        first: OneOrientationBatchPlan<E>,
+        /// Second endpoint's forward plan.
+        second: OneOrientationBatchPlan<E>,
+    },
+    /// Undirected self-loop batch with one forward plan.
+    SelfLoop {
+        /// Self-loop forward plan.
+        forward: OneOrientationBatchPlan<E>,
+    },
+}
+
+impl<E> BidirectionalBatchPlan<E>
+where
+    E: CsrEdge,
+{
+    pub(crate) fn validate(&self) -> Result<(), OneOrientationBatchError> {
+        fn entries<E: CsrEdge>(
+            plan: &OneOrientationBatchPlan<E>,
+        ) -> Vec<(u32, VertexId, VertexId, BucketLabelKey, u16)> {
+            let mut rows = plan
+                .runs
+                .iter()
+                .flat_map(|run| {
+                    run.edges.iter().map(|edge| {
+                        (
+                            edge.logical_ordinal,
+                            edge.owner_vertex_id,
+                            edge.neighbor_vertex_id,
+                            edge.label_id,
+                            run.inline_value_width,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            rows.sort_unstable_by_key(|row| row.0);
+            rows
+        }
+
+        fn validate_pair<E: CsrEdge>(
+            left: &OneOrientationBatchPlan<E>,
+            right: &OneOrientationBatchPlan<E>,
+            directed: bool,
+        ) -> Result<(), OneOrientationBatchError> {
+            let left = entries(left);
+            let right = entries(right);
+            if left.is_empty() || left.len() != right.len() {
+                return Err(OneOrientationBatchError::InvalidOrientationPair(
+                    "orientation cardinality is empty or differs".into(),
+                ));
+            }
+            for (a, b) in left.iter().zip(right.iter()) {
+                if a.0 != b.0
+                    || a.1 != b.2
+                    || a.2 != b.1
+                    || a.3 != b.3
+                    || a.4 != b.4
+                    || a.3.is_directed() != directed
+                {
+                    return Err(OneOrientationBatchError::InvalidOrientationPair(
+                        "orientation rows are not exact reversed pairs".into(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+
+        match self {
+            Self::Directed { forward, reverse } => validate_pair(forward, reverse, true),
+            Self::Undirected { first, second } => validate_pair(first, second, false),
+            Self::SelfLoop { forward } => {
+                let rows = entries(forward);
+                if !rows.is_empty()
+                    && rows.iter().all(|(_, owner, neighbor, label, _)| {
+                        owner == neighbor && label.is_undirected()
+                    })
+                {
+                    Ok(())
+                } else {
+                    Err(OneOrientationBatchError::InvalidOrientationPair(
+                        "self-loop plan contains a non-self or directed edge".into(),
+                    ))
+                }
+            }
+        }
+    }
+
+    pub(crate) fn into_orientations(
+        self,
+    ) -> Vec<(
+        crate::labeled::LabeledOrientation,
+        OneOrientationBatchPlan<E>,
+    )> {
+        match self {
+            Self::Directed { forward, reverse } => vec![
+                (crate::labeled::LabeledOrientation::Forward, forward),
+                (crate::labeled::LabeledOrientation::Reverse, reverse),
+            ],
+            Self::Undirected { first, second } => vec![
+                (crate::labeled::LabeledOrientation::Forward, first),
+                (crate::labeled::LabeledOrientation::Forward, second),
+            ],
+            Self::SelfLoop { forward } => {
+                vec![(crate::labeled::LabeledOrientation::Forward, forward)]
+            }
+        }
+    }
+}
+
 /// Exact physical location of one edge written by a one-orientation batch.
 ///
 /// This is an internal fact owned by LARA.  Overflow-log entries retain their
@@ -163,6 +290,23 @@ impl<E> BatchReservation<E>
 where
     E: CsrEdge,
 {
+    /// Returns the canonical vertex rows whose PMA leaves are touched by this reservation.
+    ///
+    /// The bidirectional owner uses this before the first canonical write to hide any derived
+    /// mate rows that could become stale.  The reservation remains opaque to callers; only the
+    /// owner can inspect this impact set.
+    pub(crate) fn affected_owner_vertices(&self) -> Vec<VertexId> {
+        let mut vertices = self
+            .plan
+            .runs
+            .iter()
+            .map(|run| run.owner_vertex_id)
+            .collect::<Vec<_>>();
+        vertices.sort_unstable();
+        vertices.dedup();
+        vertices
+    }
+
     /// Whether this reservation uses the pending-aware one-shot leaf expansion
     /// path rather than a direct slab or overflow-log destination.
     pub fn uses_expansion(&self) -> bool {
@@ -274,6 +418,8 @@ pub enum OneOrientationBatchError {
     },
     /// A stable-memory reservation or write failed.
     StorageError(LabeledOperationError),
+    /// Logical forward/reverse or undirected pairing is malformed.
+    InvalidOrientationPair(String),
 }
 
 /// Physical destination chosen for one bucket-local run at preflight time.
@@ -408,7 +554,7 @@ where
     /// it returns an opaque [`BatchReservation`] token; the valid operations on
     /// that token are [`BatchReservation::commit`] and
     /// [`BatchReservation::rollback`].
-    pub fn reserve_one_orientation_batch(
+    pub(crate) fn reserve_one_orientation_batch(
         &self,
         plan: &OneOrientationBatchPlan<E>,
     ) -> Result<BatchReservation<E>, OneOrientationBatchError> {
@@ -1365,12 +1511,15 @@ where
     /// A panic here is an invariant violation rather than a recoverable error.  In
     /// a canister message, such a panic traps and rolls back the entire message, so
     /// no partial canonical state is published.
-    pub fn commit<M: Memory>(self, graph: &LabeledLaraGraph<E, M>) -> OneOrientationBatchResult {
+    pub(crate) fn commit<M: Memory>(
+        self,
+        graph: &LabeledLaraGraph<E, M>,
+    ) -> OneOrientationBatchResult {
         self.commit_with_location_mode(graph, BatchLocationMode::AggregateOnly)
     }
 
     /// Commit while retaining exact physical locations for every edge.
-    pub fn commit_with_locations<M: Memory>(
+    pub(crate) fn commit_with_locations<M: Memory>(
         self,
         graph: &LabeledLaraGraph<E, M>,
     ) -> OneOrientationBatchResult {
@@ -1378,7 +1527,7 @@ where
     }
 
     /// Commit with explicit control over physical-location materialization.
-    pub fn commit_with_location_mode<M: Memory>(
+    pub(crate) fn commit_with_location_mode<M: Memory>(
         self,
         graph: &LabeledLaraGraph<E, M>,
         location_mode: BatchLocationMode,
@@ -2193,7 +2342,7 @@ where
     /// This is useful for tests and internal callers that do not need to hold
     /// the reservation separately.  It still preserves the reserve-then-commit
     /// failure atomicity.
-    pub fn insert_one_orientation_batch(
+    pub(crate) fn insert_one_orientation_batch(
         &self,
         plan: &OneOrientationBatchPlan<E>,
     ) -> Result<OneOrientationBatchResult, OneOrientationBatchError> {
@@ -2202,7 +2351,7 @@ where
     }
 
     /// Convenience variant that returns exact physical locations.
-    pub fn insert_one_orientation_batch_with_locations(
+    pub(crate) fn insert_one_orientation_batch_with_locations(
         &self,
         plan: &OneOrientationBatchPlan<E>,
     ) -> Result<OneOrientationBatchResult, OneOrientationBatchError> {
@@ -2254,6 +2403,7 @@ impl std::fmt::Display for OneOrientationBatchError {
                 "edge/payload overflow-log length mismatch: edge {edge_log_len}, payload {payload_log_len}"
             ),
             Self::StorageError(e) => write!(f, "storage error: {e}"),
+            Self::InvalidOrientationPair(detail) => write!(f, "invalid orientation pair: {detail}"),
         }
     }
 }
@@ -2281,9 +2431,67 @@ mod tests {
     use crate::labeled::record::LabeledVertex;
 
     use super::{
-        OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchPlan,
-        OneOrientationBucketRun, PreflightRun,
+        BidirectionalBatchPlan, OneOrientationBatchEdge, OneOrientationBatchError,
+        OneOrientationBatchPlan, OneOrientationBucketRun, PreflightRun,
     };
+
+    fn one_edge_plan(
+        owner: VertexId,
+        neighbor: VertexId,
+        label: BucketLabelKey,
+    ) -> OneOrientationBatchPlan<GraphTestEdge> {
+        OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: owner,
+                label_id: label,
+                inline_value_width: 0,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: owner,
+                    neighbor_vertex_id: neighbor,
+                    label_id: label,
+                    edge: GraphTestEdge {
+                        target: u32::from(neighbor),
+                    },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn logical_batch_shape_rejects_malformed_self_loop() {
+        let plan = BidirectionalBatchPlan::SelfLoop {
+            forward: one_edge_plan(
+                VertexId::from(0),
+                VertexId::from(1),
+                BucketLabelKey::undirected_from_index(1),
+            ),
+        };
+        assert!(matches!(
+            plan.validate(),
+            Err(OneOrientationBatchError::InvalidOrientationPair(_))
+        ));
+    }
+
+    #[test]
+    fn logical_batch_shape_rejects_mismatched_directed_pair() {
+        let plan = BidirectionalBatchPlan::Directed {
+            forward: one_edge_plan(
+                VertexId::from(0),
+                VertexId::from(1),
+                BucketLabelKey::directed_from_index(2),
+            ),
+            reverse: one_edge_plan(
+                VertexId::from(1),
+                VertexId::from(2),
+                BucketLabelKey::directed_from_index(2),
+            ),
+        };
+        assert!(matches!(
+            plan.validate(),
+            Err(OneOrientationBatchError::InvalidOrientationPair(_))
+        ));
+    }
 
     #[test]
     fn reserve_checks_total_edge_and_payload_slot_counts_fit_in_u32_results() {

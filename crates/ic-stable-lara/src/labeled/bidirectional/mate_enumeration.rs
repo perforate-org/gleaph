@@ -25,6 +25,21 @@ pub(crate) struct MateLeafEnumerationPolicy {
     pub min_scan_rows: u64,
 }
 
+/// Stable owner policy used by queued rebuild work.
+pub(crate) fn default_mate_leaf_enumeration_policy() -> MateLeafEnumerationPolicy {
+    MateLeafEnumerationPolicy {
+        config: MateLeafPromotionConfig {
+            leaf_shared_overhead_bytes: 24,
+            max_encoded_blob_bytes: 64 * 1024,
+            max_total_promotion_bytes: 256 * 1024,
+            max_bytes_per_entry: 4096,
+        },
+        sampled_stride: 32,
+        packed_width_bytes: 4,
+        min_scan_rows: 1,
+    }
+}
+
 /// Typed failures from canonical enumeration.
 #[derive(Debug)]
 pub(crate) enum MateLeafEnumerationError {

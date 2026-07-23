@@ -723,6 +723,21 @@ impl<M: Memory> MateStorage<M> {
         Ok(())
     }
 
+    /// Hides a published blob after canonical adjacency changes.
+    ///
+    /// A row already rebuilding is already hidden from lookup and is therefore left in that
+    /// state; the rebuild owner will either publish a fresh blob or restore a safe state.
+    pub(crate) fn invalidate_published(&self, row: u64) -> Result<bool, MateStorageInitError> {
+        match self.locators.get_state(row)? {
+            MateLocatorState::Published { .. } => {
+                self.clear_published(row)?;
+                Ok(true)
+            }
+            MateLocatorState::ScanOnly => Ok(false),
+            MateLocatorState::Rebuilding => Ok(true),
+        }
+    }
+
     pub(crate) fn publish_rebuild(
         &self,
         token: MateRebuildToken,

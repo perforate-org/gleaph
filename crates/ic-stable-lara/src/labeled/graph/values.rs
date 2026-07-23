@@ -57,7 +57,7 @@ where
     /// The complete move set is preflighted before any span is consumed. Retired
     /// destination spans are reserved up front, so the commit path does not need
     /// additional allocator records.
-    pub fn compact_payload_slab(
+    pub(crate) fn compact_payload_slab(
         &self,
     ) -> Result<LabeledPayloadCompactionResult, LabeledOperationError> {
         #[cfg(test)]
@@ -734,7 +734,7 @@ where
     }
 
     /// Ensures that the bucket for `label_id` can store payload slots of `inline_value_byte_width`.
-    pub fn ensure_label_bucket_inline_value_byte_width(
+    pub(crate) fn ensure_label_bucket_inline_value_byte_width(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -887,7 +887,7 @@ where
     }
 
     /// Updates the edge-inline-value payload for one live edge at `slot_index` inside `label_id`.
-    pub fn update_edge_inline_value_at_slot(
+    pub(crate) fn update_edge_inline_value_at_slot(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,

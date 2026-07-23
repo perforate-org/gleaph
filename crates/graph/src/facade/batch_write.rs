@@ -8,10 +8,11 @@
 
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use ic_stable_lara::VertexId;
+#[cfg(test)]
+use ic_stable_lara::labeled::batch_write::BatchReservation;
 use ic_stable_lara::labeled::batch_write::{
-    BatchLocationMode, BatchReservation, OneOrientationBatchEdge, OneOrientationBatchError,
-    OneOrientationBatchPlan, OneOrientationBatchResult, OneOrientationBucketRun,
-    OneOrientationPhysicalLocation,
+    BatchLocationMode, BidirectionalBatchPlan, OneOrientationBatchEdge, OneOrientationBatchPlan,
+    OneOrientationBatchResult, OneOrientationBucketRun, OneOrientationPhysicalLocation,
 };
 use ic_stable_lara::{CsrEdge, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
@@ -120,6 +121,7 @@ impl BatchEdgeInsertResult {
 /// One-orientation batch write request derived from a placement summary.
 pub(crate) struct OneOrientationBatchWriteRequest<E: CsrEdge> {
     pub(crate) orientation: LabeledOrientation,
+    pub(crate) role: BatchEdgeIntentRole,
     pub(crate) plan: OneOrientationBatchPlan<E>,
 }
 
@@ -204,41 +206,75 @@ impl GraphStore {
             });
         }
 
+        // The owner API accepts one logical shape at a time.  Reject mixed
+        // directedness/self-loop batches before any placement or allocator
+        // work so they can safely fall back to the scalar path.
+        let directed = edges[0].directed;
+        let undirected_self_loop =
+            !directed && edges[0].source_vertex_id == edges[0].target_vertex_id;
+        if edges.iter().any(|edge| edge.directed != directed)
+            || (!directed
+                && edges.iter().any(|edge| {
+                    (edge.source_vertex_id == edge.target_vertex_id) != undirected_self_loop
+                }))
+        {
+            return Ok(BatchEdgeInsertResult::Unsupported {
+                reason: "mixed logical edge shapes are not admitted to the clean-slab path".into(),
+            });
+        }
+
         let intents = self.expand_batch_edge_intents(edges)?;
         let requests = self.build_one_orientation_batch_plans(&intents, encode_intent_edge)?;
 
         // Reserve every orientation first. If any orientation is unsupported, roll
         // back every previously successful reservation before returning unsupported.
         // No canonical write occurs on this path.
-        let mut reservations: Vec<(LabeledOrientation, BatchReservation<Edge>)> =
-            Vec::with_capacity(requests.len());
-        for req in requests {
-            match self.reserve_one_orientation_plan(&req.plan, req.orientation) {
-                Ok(reservation) => reservations.push((req.orientation, reservation)),
+        let owner_plan = match requests.as_slice() {
+            [request] if request.role == BatchEdgeIntentRole::UndirectedOwnerForward => {
+                BidirectionalBatchPlan::SelfLoop {
+                    forward: request.plan.clone(),
+                }
+            }
+            [first, second]
+                if first.role == BatchEdgeIntentRole::CanonicalForward
+                    && second.role == BatchEdgeIntentRole::DerivedReverse =>
+            {
+                BidirectionalBatchPlan::Directed {
+                    forward: first.plan.clone(),
+                    reverse: second.plan.clone(),
+                }
+            }
+            [first, second]
+                if first.role == BatchEdgeIntentRole::UndirectedOwnerForward
+                    && second.role == BatchEdgeIntentRole::UndirectedAliasForward =>
+            {
+                BidirectionalBatchPlan::Undirected {
+                    first: first.plan.clone(),
+                    second: second.plan.clone(),
+                }
+            }
+            _ => {
+                return Ok(BatchEdgeInsertResult::Unsupported {
+                    reason: "physical intent roles do not form one logical batch shape".into(),
+                });
+            }
+        };
+        let reservations =
+            match self.with_graph_mut(|graph| graph.reserve_batch_orientations(owner_plan)) {
+                Ok(reservations) => reservations,
                 Err(err) => {
-                    self.rollback_one_orientation_reservations(reservations);
                     return Ok(BatchEdgeInsertResult::Unsupported {
                         reason: format!("{err}"),
                     });
                 }
-            }
-        }
+            };
 
         // All reservations succeeded: commit each orientation.
         let used_expansion = reservations
             .iter()
             .any(|(_, reservation)| reservation.uses_expansion());
-        let mut results = Vec::with_capacity(reservations.len());
-        for (orientation, reservation) in reservations {
-            let result = self.with_graph_mut(|graph| {
-                let labeled = match orientation {
-                    LabeledOrientation::Forward => graph.forward(),
-                    LabeledOrientation::Reverse => graph.reverse(),
-                };
-                reservation.commit_with_location_mode(labeled, location_mode)
-            });
-            results.push((orientation, result));
-        }
+        let results = self
+            .with_graph_mut(|graph| graph.commit_batch_orientations(reservations, location_mode));
 
         let edge_slots_written = results
             .iter()
@@ -267,10 +303,10 @@ impl GraphStore {
         intents: &[BatchEdgeIntent],
         encode_edge: impl Fn(&BatchEdgeIntent) -> Result<E, BatchPlacementError>,
     ) -> Result<Vec<OneOrientationBatchWriteRequest<E>>, BatchPlacementError> {
-        let mut forward_runs: RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>> =
-            RapidHashMap::default();
-        let mut reverse_runs: RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>> =
-            RapidHashMap::default();
+        let mut runs_by_role: RapidHashMap<
+            (BatchEdgeIntentRole, BatchPlacementKey),
+            Vec<OneOrientationBatchEdge<E>>,
+        > = RapidHashMap::default();
 
         for intent in intents {
             let key = BatchPlacementKey {
@@ -291,64 +327,56 @@ impl GraphStore {
                 label_id: intent.storage_label,
                 edge,
             };
-            match intent.orientation {
-                LabeledOrientation::Forward => forward_runs.entry(key).or_default().push(entry),
-                LabeledOrientation::Reverse => reverse_runs.entry(key).or_default().push(entry),
-            }
+            runs_by_role
+                .entry((intent.role, key))
+                .or_default()
+                .push(entry);
         }
 
         // Ensure each run is sorted by logical ordinal so edge/payload alignment is
         // deterministic. The LARA reserve step also checks this, but doing it here
         // keeps the GraphStore contract closer to the source of physical intents.
-        for runs in [&mut forward_runs, &mut reverse_runs] {
-            for edges in runs.values_mut() {
-                edges.sort_by_key(|e| e.logical_ordinal);
-            }
+        for edges in runs_by_role.values_mut() {
+            edges.sort_by_key(|e| e.logical_ordinal);
         }
 
-        let mut requests = Vec::with_capacity(2);
-        if !forward_runs.is_empty() {
-            requests.push(OneOrientationBatchWriteRequest {
-                orientation: LabeledOrientation::Forward,
-                plan: OneOrientationBatchPlan {
-                    runs: runs_from_map(forward_runs),
-                },
-            });
+        let mut grouped: RapidHashMap<
+            BatchEdgeIntentRole,
+            RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>>,
+        > = RapidHashMap::default();
+        for ((role, key), edges) in runs_by_role {
+            grouped.entry(role).or_default().insert(key, edges);
         }
-        if !reverse_runs.is_empty() {
-            requests.push(OneOrientationBatchWriteRequest {
-                orientation: LabeledOrientation::Reverse,
-                plan: OneOrientationBatchPlan {
-                    runs: runs_from_map(reverse_runs),
+        let mut requests = grouped
+            .into_iter()
+            .map(|(role, runs)| OneOrientationBatchWriteRequest {
+                orientation: match role {
+                    BatchEdgeIntentRole::DerivedReverse => LabeledOrientation::Reverse,
+                    _ => LabeledOrientation::Forward,
                 },
-            });
-        }
+                role,
+                plan: OneOrientationBatchPlan {
+                    runs: runs_from_map(runs),
+                },
+            })
+            .collect::<Vec<_>>();
+        requests.sort_by_key(|request| match request.role {
+            BatchEdgeIntentRole::CanonicalForward => 0,
+            BatchEdgeIntentRole::DerivedReverse => 1,
+            BatchEdgeIntentRole::UndirectedOwnerForward => 2,
+            BatchEdgeIntentRole::UndirectedAliasForward => 3,
+        });
 
         Ok(requests)
     }
 
-    fn reserve_one_orientation_plan(
-        &self,
-        plan: &OneOrientationBatchPlan<Edge>,
-        orientation: LabeledOrientation,
-    ) -> Result<BatchReservation<Edge>, OneOrientationBatchError> {
-        self.with_graph_mut(|graph| {
-            let labeled = match orientation {
-                LabeledOrientation::Forward => graph.forward(),
-                LabeledOrientation::Reverse => graph.reverse(),
-            };
-            labeled.reserve_one_orientation_batch(plan)
-        })
-    }
-
+    #[cfg(test)]
     fn rollback_one_orientation_reservations(
         &self,
         reservations: Vec<(LabeledOrientation, BatchReservation<Edge>)>,
     ) {
         for (orientation, reservation) in reservations {
-            self.with_graph_mut(|graph| {
-                graph.rollback_batch_reservation(orientation, reservation);
-            });
+            self.with_graph_mut(|graph| graph.rollback_batch_reservation(orientation, reservation));
         }
     }
 }
@@ -816,6 +844,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn owner_batch_second_orientation_failure_restores_allocator_state() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(5002);
+        install_width(label, 8);
+        let vertices = make_vertices(&store, 3);
+        let source = vertices[0];
+        let prepared_target = vertices[1];
+        let target = vertices[2];
+        store.prepare_clean_slab_dir_buckets(source, prepared_target, label, 8);
+        let before = allocator_snapshot(&store);
+
+        let result = store
+            .try_insert_batch_edges_clean_slab(&[input(
+                source,
+                target,
+                Some(label),
+                true,
+                vec![1, 2, 3, 4, 5, 6, 7, 8],
+            )])
+            .expect("plan/encode ok");
+        assert!(matches!(result, BatchEdgeInsertResult::Unsupported { .. }));
+        let after = allocator_snapshot(&store);
+        assert_eq!(after.forward_edge_capacity, before.forward_edge_capacity);
+        assert_eq!(after.reverse_edge_capacity, before.reverse_edge_capacity);
+        assert_eq!(
+            after.forward_payload.slab_occupied_tail,
+            before.forward_payload.slab_occupied_tail
+        );
+        assert_eq!(
+            after.reverse_payload.slab_occupied_tail,
+            before.reverse_payload.slab_occupied_tail
+        );
+        assert!(after.forward_payload.free_bytes >= before.forward_payload.free_bytes);
+        assert_eq!(after.reverse_payload, before.reverse_payload);
+    }
+
     /// Reserve both orientations of a payload-bearing directed edge (so both
     /// forward and reverse payload allocations complete), then roll back both
     /// reservations and verify every logical allocator boundary is restored.
@@ -865,15 +930,14 @@ mod tests {
 
         // Reserve both orientations.  Each reserve grows its own edge logical
         // capacity and allocates payload bytes at its occupied tail.
-        let reservations: Vec<(LabeledOrientation, BatchReservation<Edge>)> = requests
-            .into_iter()
-            .map(|req| {
-                let reservation = store
-                    .reserve_one_orientation_plan(&req.plan, req.orientation)
-                    .expect("reserve ok for both orientations");
-                (req.orientation, reservation)
+        let reservations = store
+            .with_graph_mut(|graph| {
+                graph.reserve_batch_orientations(BidirectionalBatchPlan::Directed {
+                    forward: requests[0].plan.clone(),
+                    reverse: requests[1].plan.clone(),
+                })
             })
-            .collect();
+            .expect("reserve ok for both orientations");
 
         let after_reserve = allocator_snapshot(&store);
 

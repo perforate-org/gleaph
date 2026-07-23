@@ -34,7 +34,7 @@ use crate::facade::store::helpers::{catalog_edge_label_from_wire, edge_alias_slo
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_graph_kernel::entry::{Edge, EdgeInlineValue, EdgeSlotIndex, EdgeTarget, VertexRef};
 use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
+    BucketLabelKey as LaraLabelId, VertexId,
     labeled::{LabeledEdgeInlineValueBatchScratch, OutEdgeOrder},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -274,15 +274,19 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
     for (forward_slot, payload) in &forward {
         store.with_graph_mut(|graph| {
             if inline_value_width > 0 {
-                graph
-                    .reverse()
-                    .ensure_label_bucket_inline_value_byte_width(target, wire, inline_value_width)
-                    .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+                graph.repair_ensure_orientation_inline_value_width(
+                    ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                    target,
+                    wire,
+                    inline_value_width,
+                )?;
             }
-            graph
-                .reverse()
-                .insert_edge(target, wire, reverse_edge_to(source, payload))
-                .map_err(DeferredBidirectionalLabeledError::Reverse)
+            graph.repair_insert_one_orientation_edge(
+                ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                target,
+                wire,
+                reverse_edge_to(source, payload),
+            )
         })?;
         let canonical = EdgeHandle::at_slot(source, wire, *forward_slot);
         if let Some(alias) = store.find_reverse_alias_for_canonical(canonical, target, source)? {
@@ -348,8 +352,12 @@ mod tests {
         // the forward write and then failed the reverse write.
         GRAPH.with_borrow(|graph| {
             graph
-                .forward()
-                .insert_edge(source, label, local_edge_to(target))
+                .repair_insert_one_orientation_edge(
+                    ic_stable_lara::labeled::LabeledOrientation::Forward,
+                    source,
+                    label,
+                    local_edge_to(target),
+                )
                 .expect("inject forward-only edge");
         });
 
@@ -374,8 +382,12 @@ mod tests {
         // Inject a reverse in-edge at `target` from `source` with no canonical forward half.
         GRAPH.with_borrow(|graph| {
             graph
-                .reverse()
-                .insert_edge(target, label, local_edge_to(source))
+                .repair_insert_one_orientation_edge(
+                    ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                    target,
+                    label,
+                    local_edge_to(source),
+                )
                 .expect("inject reverse-only edge");
         });
 
@@ -399,8 +411,12 @@ mod tests {
 
         GRAPH.with_borrow(|graph| {
             graph
-                .forward()
-                .insert_edge(source, label, local_edge_to(target))
+                .repair_insert_one_orientation_edge(
+                    ic_stable_lara::labeled::LabeledOrientation::Forward,
+                    source,
+                    label,
+                    local_edge_to(target),
+                )
                 .expect("inject forward-only edge");
         });
         assert!(check_reverse_adjacency(&store).is_err());
@@ -423,8 +439,12 @@ mod tests {
 
         GRAPH.with_borrow(|graph| {
             graph
-                .reverse()
-                .insert_edge(target, label, local_edge_to(source))
+                .repair_insert_one_orientation_edge(
+                    ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                    target,
+                    label,
+                    local_edge_to(source),
+                )
                 .expect("inject reverse-only edge");
         });
         assert!(check_reverse_adjacency(&store).is_err());
@@ -553,8 +573,12 @@ mod tests {
         // A separate diverged key (forward-only) sharing the target's reverse bucket.
         GRAPH.with_borrow(|graph| {
             graph
-                .forward()
-                .insert_edge(repair_source, label, local_edge_to(target))
+                .repair_insert_one_orientation_edge(
+                    ic_stable_lara::labeled::LabeledOrientation::Forward,
+                    repair_source,
+                    label,
+                    local_edge_to(target),
+                )
                 .expect("inject forward-only edge");
         });
         assert!(check_reverse_adjacency(&store).is_err());

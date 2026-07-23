@@ -53,7 +53,7 @@ where
     M: Memory,
 {
     /// Appends a vertex row and grows segment metadata when a new leaf is needed.
-    pub fn push_vertex(
+    pub(crate) fn push_vertex(
         &self,
         mut vertex: LabeledVertex,
     ) -> Result<VertexId, LabeledOperationError> {
@@ -82,7 +82,7 @@ where
     }
 
     /// Compacts the label-bucket descriptor segment containing `vid`.
-    pub fn compact_label_bucket_vertex_segment(
+    pub(crate) fn compact_label_bucket_vertex_segment(
         &self,
         vid: VertexId,
     ) -> Result<(), LabeledOperationError> {
@@ -97,7 +97,7 @@ where
     }
 
     /// Inserts `edge` into the bucket identified by `label_id` for `src`.
-    pub fn insert_edge(
+    pub(crate) fn insert_edge(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -540,7 +540,10 @@ where
     }
 
     /// Converts an eligible vertex row back to default-label bypass storage.
-    pub fn enable_default_edge_bypass(&self, src: VertexId) -> Result<(), LabeledOperationError>
+    pub(crate) fn enable_default_edge_bypass(
+        &self,
+        src: VertexId,
+    ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {

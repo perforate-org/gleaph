@@ -4,7 +4,7 @@
 //! (bucket MSB), not edge-inline-value flags. Use [`Self::for_each_directed_out_edges`],
 //! [`Self::for_each_undirected_edges`], and the matching `*_iter` helpers.
 
-use super::mate_enumeration::MateLeafEnumerationError;
+use super::mate_enumeration::{MateLeafEnumerationError, default_mate_leaf_enumeration_policy};
 use super::mate_promotion::{
     MateBlobBuildError, MateLeafPromotionDecision, MateLeafPromotionPlan, MatePromotionRows,
     build_promoted_blob,
@@ -16,7 +16,10 @@ use crate::{
     labeled::{
         BucketLabelKey, InitialCapacities,
         bucket_label_key::BucketDirectedness,
-        graph::batch_write::BatchReservation,
+        graph::batch_write::{
+            BatchLocationMode, BatchReservation, OneOrientationBatchError,
+            OneOrientationBatchResult,
+        },
         graph::{
             EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph, LabeledOperationError,
             OutEdgeOrder, ScalarInsertLocation,
@@ -182,6 +185,13 @@ pub enum MaintenanceWorkItem {
         /// Incident edges already removed (informational; threaded across steps).
         removed_edges: u32,
     },
+    /// Rebuild one derived mate locator row from canonical adjacency.
+    MateLeafRebuild {
+        /// Orientation owning the locator row.
+        orientation: Orientation,
+        /// PMA leaf identity within that orientation.
+        leaf: u32,
+    },
 }
 
 fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
@@ -253,6 +263,14 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
                 Orientation::Reverse => 1,
             };
         }
+        MaintenanceWorkItem::MateLeafRebuild { orientation, leaf } => {
+            b[0] = 7;
+            b[1] = match orientation {
+                Orientation::Forward => 0,
+                Orientation::Reverse => 1,
+            };
+            b[4..8].copy_from_slice(&leaf.to_le_bytes());
+        }
     }
     b
 }
@@ -299,6 +317,10 @@ impl Storable for MaintenanceWorkItem {
                 removed_edges: u32::from_le_bytes(b[8..12].try_into().unwrap()),
             },
             6 => Self::CompactPayloadSlab { orientation },
+            7 => Self::MateLeafRebuild {
+                orientation,
+                leaf: u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            },
             _ => Self::CompactLabelBucketVertexSegment { orientation, vid },
         }
     }
@@ -461,6 +483,14 @@ fn work_item_key(item: MaintenanceWorkItem) -> u32 {
         // DeleteVertex bypasses the dirty gate, so this key is never inserted,
         // checked, or cleared; it exists only to keep the match exhaustive.
         MaintenanceWorkItem::DeleteVertex { vid, .. } => 0xE000_0000 | u32::from(vid),
+        MaintenanceWorkItem::MateLeafRebuild { orientation, leaf } => {
+            0x7000_0000
+                | leaf.saturating_mul(2)
+                | match orientation {
+                    Orientation::Forward => 0,
+                    Orientation::Reverse => 1,
+                }
+        }
     }
 }
 
@@ -1139,6 +1169,126 @@ where
         &self.reverse
     }
 
+    /// Reserves all orientations for one owner batch.
+    ///
+    /// Direct LARA mutation is crate-private. All reservations are acquired before any
+    /// canonical write, and partial reservation failure is rolled back inside this owner.
+    pub fn reserve_batch_orientations(
+        &self,
+        plans: crate::labeled::batch_write::BidirectionalBatchPlan<E>,
+    ) -> Result<Vec<(super::Orientation, BatchReservation<E>)>, OneOrientationBatchError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        plans.validate()?;
+        let plans = plans.into_orientations();
+        let mut reservations = Vec::with_capacity(plans.len());
+        for (orientation, plan) in plans {
+            let result = match orientation {
+                super::Orientation::Forward => self.forward.reserve_one_orientation_batch(&plan),
+                super::Orientation::Reverse => self.reverse.reserve_one_orientation_batch(&plan),
+            };
+            match result {
+                Ok(reservation) => reservations.push((orientation, reservation)),
+                Err(error) => {
+                    for (reserved_orientation, reservation) in reservations {
+                        match reserved_orientation {
+                            super::Orientation::Forward => reservation.rollback(&self.forward),
+                            super::Orientation::Reverse => reservation.rollback(&self.reverse),
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(reservations)
+    }
+
+    /// Commits all previously reserved orientations through the owner boundary.
+    pub fn commit_batch_orientations(
+        &self,
+        reservations: Vec<(super::Orientation, BatchReservation<E>)>,
+        location_mode: BatchLocationMode,
+    ) -> Vec<(super::Orientation, OneOrientationBatchResult)>
+    where
+        E: CsrEdgeTombstone,
+    {
+        for (orientation, reservation) in &reservations {
+            for vid in reservation.affected_owner_vertices() {
+                self.invalidate_mate_leaf_for_vertex(*orientation, vid)
+                    .unwrap_or_else(|error| panic!("batch mate invalidation failed: {error}"));
+            }
+        }
+        reservations
+            .into_iter()
+            .map(|(orientation, reservation)| {
+                let result = match orientation {
+                    super::Orientation::Forward => {
+                        reservation.commit_with_location_mode(&self.forward, location_mode)
+                    }
+                    super::Orientation::Reverse => {
+                        reservation.commit_with_location_mode(&self.reverse, location_mode)
+                    }
+                };
+                (orientation, result)
+            })
+            .collect()
+    }
+
+    /// Ensures the inline-value schema for one orientation during reverse repair.
+    ///
+    /// The affected mate leaf is hidden before the canonical schema mutation. This method is
+    /// intentionally a repair boundary, not a general-purpose single-orientation write API.
+    pub fn repair_ensure_orientation_inline_value_width(
+        &self,
+        orientation: super::Orientation,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        inline_value_byte_width: u16,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.invalidate_mate_leaf_for_vertex(orientation, src)?;
+        match orientation {
+            super::Orientation::Forward => self
+                .forward
+                .ensure_label_bucket_inline_value_byte_width(src, label_id, inline_value_byte_width)
+                .map_err(DeferredBidirectionalLabeledError::Forward),
+            super::Orientation::Reverse => self
+                .reverse
+                .ensure_label_bucket_inline_value_byte_width(src, label_id, inline_value_byte_width)
+                .map_err(DeferredBidirectionalLabeledError::Reverse),
+        }
+    }
+
+    /// Inserts one edge half during reverse repair.
+    ///
+    /// The affected mate leaf is hidden before the canonical mutation. Callers must use the
+    /// paired GraphStore repair protocol when restoring a missing reverse half.
+    pub fn repair_insert_one_orientation_edge(
+        &self,
+        orientation: super::Orientation,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        edge: E,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.invalidate_mate_leaf_for_vertex(orientation, src)?;
+        match orientation {
+            super::Orientation::Forward => self
+                .forward
+                .insert_edge(src, label_id, edge)
+                .map_err(DeferredBidirectionalLabeledError::Forward),
+            super::Orientation::Reverse => self
+                .reverse
+                .insert_edge(src, label_id, edge)
+                .map_err(DeferredBidirectionalLabeledError::Reverse),
+        }
+    }
+
     /// Read-only placement metadata for an existing forward label bucket.
     ///
     /// See [`crate::labeled::graph::LabelBucketPlacementInfo`].
@@ -1345,6 +1495,72 @@ where
         self.mate.clear_published(row)
     }
 
+    fn mate_leaf_row(
+        &self,
+        orientation: Orientation,
+        leaf: u32,
+    ) -> Result<u64, MateStorageInitError> {
+        let segment_count = u64::from(self.forward.segment_count());
+        if u64::from(leaf) >= segment_count {
+            return Err(MateStorageInitError::RowOutOfRange);
+        }
+        match orientation {
+            Orientation::Forward => Ok(u64::from(leaf)),
+            Orientation::Reverse => segment_count
+                .checked_add(u64::from(leaf))
+                .ok_or(MateStorageInitError::RowCountOverflow),
+        }
+    }
+
+    /// Invalidates a derived mate leaf and schedules one deduplicated rebuild.
+    ///
+    /// Canonical adjacency remains the source of truth.  The locator is hidden before the
+    /// maintenance item is admitted, so a queue failure cannot expose stale published bytes.
+    pub(crate) fn invalidate_mate_leaf(
+        &self,
+        orientation: Orientation,
+        leaf: u32,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let row = self
+            .mate_leaf_row(orientation, leaf)
+            .map_err(DeferredBidirectionalLabeledError::Mate)?;
+        let needs_rebuild = self
+            .mate
+            .invalidate_published(row)
+            .map_err(DeferredBidirectionalLabeledError::Mate)?;
+        if needs_rebuild
+            && let Err(error) = self
+                .maintenance
+                .mark_dirty(MaintenanceWorkItem::MateLeafRebuild { orientation, leaf })
+        {
+            // The locator is already ScanOnly.  A recoverable error here would report a failed
+            // mutation after canonical state changed, so trap and let the IC message rollback
+            // restore the complete operation instead.
+            panic!("mate rebuild queue admission after invalidation failed: {error}");
+        }
+        Ok(())
+    }
+
+    fn invalidate_mate_leaf_for_vertex(
+        &self,
+        orientation: Orientation,
+        vid: VertexId,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let leaf = u32::from(vid) / self.forward.segment_size().max(1);
+        self.invalidate_mate_leaf(orientation, leaf)
+    }
+
+    fn rebuild_queued_mate_leaf(
+        &self,
+        orientation: Orientation,
+        leaf: u32,
+    ) -> Result<(), MateLeafRebuildError> {
+        let expected = self
+            .enumerate_mate_leaf(orientation, leaf, default_mate_leaf_enumeration_policy())
+            .map_err(MateLeafRebuildError::Enumeration)?;
+        self.rebuild_mate_leaf_from_canonical(&expected)
+    }
+
     /// Rebuilds and publishes one orientation/leaf blob through the owner boundary.
     ///
     /// The blob is fully built and validated before a rebuild token is opened.  A `ScanOnly`
@@ -1493,6 +1709,7 @@ where
                 .forward
                 .payload_compaction_needed(u64::from(forward_edge.edge_inline_value_byte_width()))
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
         self.forward
             .insert_edge_skip_leaf_cascade_deferred_payload(src, label_id, forward_edge)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
@@ -1510,6 +1727,8 @@ where
         label_id: BucketLabelKey,
         inline_value_byte_width: u16,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
+        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
         self.forward
             .ensure_label_bucket_inline_value_byte_width(src, label_id, inline_value_byte_width)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
@@ -1526,6 +1745,7 @@ where
         label_id: BucketLabelKey,
         inline_value_byte_width: u16,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
         self.forward
             .ensure_label_bucket_inline_value_byte_width(src, label_id, inline_value_byte_width)
             .map_err(DeferredBidirectionalLabeledError::Forward)
@@ -1539,6 +1759,10 @@ where
         label_id: BucketLabelKey,
         inline_value_byte_width: u16,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, u)?;
+        if u != v {
+            self.invalidate_mate_leaf_for_vertex(Orientation::Forward, v)?;
+        }
         self.forward
             .ensure_label_bucket_inline_value_byte_width(u, label_id, inline_value_byte_width)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
@@ -1591,6 +1815,8 @@ where
         forward_edge: E,
         reverse_edge: E,
     ) -> Result<ScalarInsertPair, DeferredBidirectionalLabeledError> {
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
+        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
         // Storage-owned capacity preparation: before any canonical edge write, make
         // sure both orientations have room for a new label bucket.  This keeps
         // ordinary writes writable when deferred leaf maintenance has not yet drained.
@@ -2204,9 +2430,19 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.forward
+        if !self
+            .forward
+            .edge_exists_at_slot(src, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?
+        {
+            return Ok(None);
+        }
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
+        let removed = self
+            .forward
             .remove_edge_at_slot(src, label_id, slot_index)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        Ok(removed)
     }
 
     /// Removes one forward edge and reports the bounded slot shifts from overflow unlink.
@@ -2219,9 +2455,19 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.forward
+        if !self
+            .forward
+            .edge_exists_at_slot(src, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?
+        {
+            return Ok(None);
+        }
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
+        let removal = self
+            .forward
             .remove_edge_at_slot_with_move(src, label_id, slot_index)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        Ok(removal)
     }
 
     /// Updates the edge-inline-value payload for one forward-out edge at `slot_index`.
@@ -2235,6 +2481,14 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        if !self
+            .forward
+            .edge_exists_at_slot(src, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?
+        {
+            return Ok(false);
+        }
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
         self.forward
             .update_edge_inline_value_at_slot(src, label_id, slot_index, edge)
             .map_err(DeferredBidirectionalLabeledError::Forward)
@@ -2251,6 +2505,14 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        if !self
+            .reverse
+            .edge_exists_at_slot(dst, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?
+        {
+            return Ok(false);
+        }
+        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
         self.reverse
             .update_edge_inline_value_at_slot(dst, label_id, slot_index, edge)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
@@ -2266,9 +2528,19 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.reverse
+        if !self
+            .reverse
+            .edge_exists_at_slot(dst, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?
+        {
+            return Ok(None);
+        }
+        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
+        let removed = self
+            .reverse
             .remove_edge_at_slot(dst, label_id, slot_index)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        Ok(removed)
     }
 
     /// Removes one reverse edge and reports the bounded slot shifts from overflow unlink.
@@ -2281,9 +2553,19 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.reverse
+        if !self
+            .reverse
+            .edge_exists_at_slot(dst, label_id, slot_index)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?
+        {
+            return Ok(None);
+        }
+        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
+        let removal = self
+            .reverse
             .remove_edge_at_slot_with_move(dst, label_id, slot_index)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        Ok(removal)
     }
 
     /// Removes one reverse-store edge from `dst` under `label_id`.
@@ -2291,15 +2573,28 @@ where
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
-        matches: F,
+        mut matches: F,
     ) -> Result<Option<E>, DeferredBidirectionalLabeledError>
     where
         E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
-        self.reverse
-            .remove_edge_matching(dst, label_id, matches)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
+        let slot = self
+            .reverse
+            .iter_edges_for_label(dst, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?
+            .iter()
+            .find(|candidate| matches(candidate))
+            .map(|candidate| candidate.edge_slot_index_raw());
+        let Some(slot) = slot else {
+            return Ok(None);
+        };
+        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
+        let removed = self
+            .reverse
+            .remove_edge_at_slot(dst, label_id, slot)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        Ok(removed)
     }
 
     /// Removes one matching forward edge and reports the bounded slot shifts from overflow unlink.
@@ -2307,15 +2602,28 @@ where
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
-        matches: F,
+        mut matches: F,
     ) -> Result<Option<EdgeRemoval<E>>, DeferredBidirectionalLabeledError>
     where
         E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
-        self.forward
-            .remove_edge_matching_with_move(src, label_id, matches)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
+        let slot = self
+            .forward
+            .iter_edges_for_label(src, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?
+            .iter()
+            .find(|candidate| matches(candidate))
+            .map(|candidate| candidate.edge_slot_index_raw());
+        let Some(slot) = slot else {
+            return Ok(None);
+        };
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
+        let removal = self
+            .forward
+            .remove_edge_at_slot_with_move(src, label_id, slot)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        Ok(removal)
     }
 
     /// Processes queued maintenance work up to `budget`.
@@ -2417,11 +2725,18 @@ where
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
                     };
-                    if graph.compact_label_bucket_vertex_segment(vid).is_ok() {
-                        report.work.rebalanced_segments =
-                            report.work.rebalanced_segments.saturating_add(1);
+                    self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
+                    match graph.compact_label_bucket_vertex_segment(vid) {
+                        Ok(()) => {
+                            report.work.rebalanced_segments =
+                                report.work.rebalanced_segments.saturating_add(1);
+                            None
+                        }
+                        Err(_) => {
+                            stalled = true;
+                            None
+                        }
                     }
-                    None
                 }
                 MaintenanceWorkItem::CompactVertexEdgeSpan {
                     orientation,
@@ -2437,8 +2752,10 @@ where
                     if anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
+                        self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
                         match graph.compact_vertex_edge_span_one_step(vid, resume_bucket_index) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(moved)) => {
+                                self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
                                 observer.edge_slot_moved(orientation, vid, moved);
                                 Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
                                     orientation,
@@ -2456,6 +2773,7 @@ where
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves)) => {
+                                self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
                                 for moved in moves {
                                     observer.edge_slot_moved(orientation, vid, moved);
                                 }
@@ -2467,6 +2785,7 @@ where
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::Finished) => {
+                                self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
                                 report.work.rebalanced_segments =
                                     report.work.rebalanced_segments.saturating_add(1);
                                 None
@@ -2483,16 +2802,20 @@ where
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
                     };
-                    if graph.compact_label_bucket_vertex_segment(vid).is_ok() {
+                    self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
+                    if graph.compact_label_bucket_vertex_segment(vid).is_err() {
+                        stalled = true;
+                        None
+                    } else {
                         report.work.rebalanced_segments =
                             report.work.rebalanced_segments.saturating_add(1);
+                        Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
+                            orientation,
+                            vid,
+                            anchor_bucket_index: 0,
+                            resume_bucket_index: 0,
+                        })
                     }
-                    Some(MaintenanceWorkItem::CompactVertexEdgeSpan {
-                        orientation,
-                        vid,
-                        anchor_bucket_index: 0,
-                        resume_bucket_index: 0,
-                    })
                 }
                 MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
                 MaintenanceWorkItem::CompactPayloadSlab { orientation } => {
@@ -2514,6 +2837,18 @@ where
                         }
                     }
                 }
+                MaintenanceWorkItem::MateLeafRebuild { orientation, leaf } => {
+                    match self.rebuild_queued_mate_leaf(orientation, leaf) {
+                        Ok(()) => None,
+                        Err(_) => {
+                            // The locator was already hidden at invalidation. Keep the item
+                            // queued for a later maintenance tick; no stale Published state is
+                            // reachable while canonical state or storage is temporarily bad.
+                            stalled = true;
+                            None
+                        }
+                    }
+                }
                 MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
                     orientation,
                     vid,
@@ -2528,8 +2863,10 @@ where
                     if anchor_bucket_index >= vertex.degree() {
                         None
                     } else {
+                        self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
                         match graph.compact_vertex_edge_span_one_step(vid, resume_bucket_index) {
                             Ok(VertexEdgeSpanCompactOneStep::EdgeMoved(_)) => {
+                                self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
                                 Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
                                     orientation,
                                     vid,
@@ -2546,6 +2883,7 @@ where
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(_)) => {
+                                self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
                                 Some(MaintenanceWorkItem::CompactVertexEdgeAndValueSpan {
                                     orientation,
                                     vid,
@@ -2554,6 +2892,7 @@ where
                                 })
                             }
                             Ok(VertexEdgeSpanCompactOneStep::Finished) => {
+                                self.invalidate_mate_leaf_for_vertex(orientation, vid)?;
                                 report.work.rebalanced_segments =
                                     report.work.rebalanced_segments.saturating_add(1);
                                 None
@@ -2814,7 +3153,28 @@ where
             .forward
             .out_edge_label_ids(src)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        let mut matching_label = None;
+        for &label_id in &labels {
+            let found = self
+                .forward
+                .iter_edges_for_label(src, label_id)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?
+                .iter()
+                .any(|candidate| edge_matches_remove_target(candidate, &edge, dst));
+            if found {
+                matching_label = Some(label_id);
+                break;
+            }
+        }
+        let Some(matching_label) = matching_label else {
+            return Ok(false);
+        };
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
+        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
         for label_id in labels {
+            if label_id != matching_label {
+                continue;
+            }
             let removed = self
                 .forward
                 .remove_edge_matching(src, label_id, |cand| {
@@ -2852,6 +3212,15 @@ where
         E: PartialEq,
     {
         let edge_at_v = edge_at_u.with_neighbor_vid(u);
+        let has_u = self.has_undirected_half(u, v, &edge_at_u)?;
+        let has_v = u != v && self.has_undirected_half(v, u, &edge_at_v)?;
+        if !has_u && !has_v {
+            return Ok(false);
+        }
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, u)?;
+        if u != v {
+            self.invalidate_mate_leaf_for_vertex(Orientation::Forward, v)?;
+        }
         let ok_uv = self.remove_forward_half_undirected(u, v, edge_at_u)?;
         let ok_vu = if u == v {
             ok_uv
@@ -2859,6 +3228,36 @@ where
             self.remove_forward_half_undirected(v, u, edge_at_v)?
         };
         Ok(ok_uv || ok_vu)
+    }
+
+    fn has_undirected_half(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+        edge: &E,
+    ) -> Result<bool, DeferredBidirectionalLabeledError>
+    where
+        E: PartialEq,
+    {
+        for label_id in self
+            .forward
+            .out_edge_label_ids(src)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?
+        {
+            if label_id.is_directed() {
+                continue;
+            }
+            if self
+                .forward
+                .iter_edges_for_label(src, label_id)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?
+                .iter()
+                .any(|candidate| edge_matches_remove_target(candidate, edge, dst))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn remove_forward_half_undirected(
@@ -2911,6 +3310,12 @@ where
     where
         E: PartialEq + CsrEdgeTombstone,
     {
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, vid)?;
+        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, vid)?;
+        let mut affected_forward = std::collections::BTreeSet::new();
+        let mut affected_reverse = std::collections::BTreeSet::new();
+        affected_forward.insert(vid);
+        affected_reverse.insert(vid);
         // Drain `vid`'s own rows in O(degree) (descending-slot removal, no per-edge
         // predicate re-scan), then remove only the counterpart row at each neighbour.
         // The owner side never re-scans, so the cost is O(degree + sum of neighbour
@@ -2931,10 +3336,14 @@ where
                     continue;
                 }
                 if label_id.is_undirected() {
+                    affected_forward.insert(neighbor);
+                    self.invalidate_mate_leaf_for_vertex(Orientation::Forward, neighbor)?;
                     self.forward
                         .remove_edge_matching(neighbor, label_id, |cand| cand.neighbor_vid() == vid)
                         .map_err(DeferredBidirectionalLabeledError::Forward)?;
                 } else {
+                    affected_reverse.insert(neighbor);
+                    self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, neighbor)?;
                     self.reverse
                         .remove_edge_matching(neighbor, label_id, |cand| cand.neighbor_vid() == vid)
                         .map_err(DeferredBidirectionalLabeledError::Reverse)?;
@@ -2956,12 +3365,20 @@ where
                 if src == vid {
                     continue;
                 }
+                affected_forward.insert(src);
+                self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
                 self.forward
                     .remove_edge_matching(src, label_id, |cand| cand.neighbor_vid() == vid)
                     .map_err(DeferredBidirectionalLabeledError::Forward)?;
             }
         }
         self.finalize_vertex_delete(vid)?;
+        for owner in affected_forward {
+            self.invalidate_mate_leaf_for_vertex(Orientation::Forward, owner)?;
+        }
+        for owner in affected_reverse {
+            self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, owner)?;
+        }
         Ok(true)
     }
 
@@ -3033,6 +3450,47 @@ where
         if u32::from(vid) >= len.0 {
             return Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid, len });
         }
+        let mut affected_forward = std::collections::BTreeSet::new();
+        let mut affected_reverse = std::collections::BTreeSet::new();
+        affected_forward.insert(vid);
+        affected_reverse.insert(vid);
+        for label_id in self
+            .forward
+            .out_edge_label_ids(vid)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?
+        {
+            self.forward
+                .for_each_edges_for_label(vid, label_id, |edge| {
+                    if edge.neighbor_vid() != vid {
+                        if label_id.is_undirected() {
+                            affected_forward.insert(edge.neighbor_vid());
+                        } else {
+                            affected_reverse.insert(edge.neighbor_vid());
+                        }
+                    }
+                })
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        }
+        for label_id in self
+            .reverse
+            .out_edge_label_ids(vid)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?
+        {
+            self.reverse
+                .for_each_edges_for_label(vid, label_id, |edge| {
+                    if edge.neighbor_vid() != vid {
+                        affected_forward.insert(edge.neighbor_vid());
+                    }
+                })
+                .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        }
+        for owner in &affected_forward {
+            self.invalidate_mate_leaf_for_vertex(Orientation::Forward, *owner)?;
+        }
+        for owner in &affected_reverse {
+            self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, *owner)?;
+        }
+
         let forward_row = self.forward.vertices().get(vid);
         if !forward_row.is_tombstone() {
             self.forward
@@ -3049,7 +3507,8 @@ where
             .enqueue_delete_vertex(MaintenanceWorkItem::DeleteVertex {
                 vid,
                 removed_edges: 0,
-            })
+            })?;
+        Ok(())
     }
 
     /// Performs one step of a resumable vertex-delete job: removes a single
@@ -3082,6 +3541,7 @@ where
         // per-edge predicate re-find) to O(degree). Bypass rows are left as-is and
         // drained by a bounded descending scan.
         if removed_edges == 0 {
+            self.invalidate_mate_leaf_for_vertex(Orientation::Forward, vid)?;
             for moved in self
                 .forward
                 .compact_vertex_edge_span_with_moves(vid, 0)
@@ -3089,6 +3549,7 @@ where
             {
                 move_observer.edge_slot_moved(Orientation::Forward, vid, moved);
             }
+            self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, vid)?;
             for moved in self
                 .reverse
                 .compact_vertex_edge_span_with_moves(vid, 0)
@@ -3100,6 +3561,7 @@ where
 
         // Drain one owner out-edge (forward) and remove only its counterpart row at the
         // neighbour, mirroring the synchronous `delete_vertex_deferred` per edge.
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, vid)?;
         if let Some((edge, label)) = self
             .forward
             .remove_top_out_edge(vid)
@@ -3110,6 +3572,7 @@ where
             delete_observer.on_delete_outgoing_edge(vid, edge.clone());
             if dst != vid {
                 if label.is_undirected() {
+                    self.invalidate_mate_leaf_for_vertex(Orientation::Forward, dst)?;
                     if let Some(removal) = self
                         .forward
                         .remove_edge_matching_with_move(dst, label, |cand| {
@@ -3122,6 +3585,7 @@ where
                         }
                     }
                 } else {
+                    self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
                     if let Some(removal) = self
                         .reverse
                         .remove_edge_matching_with_move(dst, label, |cand| {
@@ -3140,6 +3604,7 @@ where
 
         // Then one directed in-edge: the owner record lives in the reverse store; remove
         // the surviving forward record at the source.
+        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, vid)?;
         if let Some((edge, label)) = self
             .reverse
             .remove_top_out_edge(vid)
@@ -3148,14 +3613,16 @@ where
             let src = edge.neighbor_vid();
             // The counterpart forward unlink may shift a survivor into the removed canonical slot.
             delete_observer.on_delete_incoming_edge(vid, edge.clone());
-            if src != vid
-                && let Some(removal) = self
+            if src != vid {
+                self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
+                if let Some(removal) = self
                     .forward
                     .remove_edge_matching_with_move(src, label, |cand| cand.neighbor_vid() == vid)
                     .map_err(DeferredBidirectionalLabeledError::Forward)?
-            {
-                for moved in removal.moves {
-                    move_observer.edge_slot_moved(Orientation::Forward, src, moved);
+                {
+                    for moved in removal.moves {
+                        move_observer.edge_slot_moved(Orientation::Forward, src, moved);
+                    }
                 }
             }
             return Ok((next_item(removed_edges), true, false));
@@ -3192,6 +3659,10 @@ where
             label_id.is_undirected(),
             "insert_undirected_deferred requires an undirected bucket label"
         );
+        self.invalidate_mate_leaf_for_vertex(Orientation::Forward, u)?;
+        if u != v {
+            self.invalidate_mate_leaf_for_vertex(Orientation::Forward, v)?;
+        }
         self.forward
             .prepare_labeled_edge_capacity_for_insert(u, label_id)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
@@ -3325,6 +3796,10 @@ mod tests {
     use crate::labeled::bidirectional::mate_storage::MateLocatorState;
     use crate::{
         labeled::PhysicalEdgeRef,
+        labeled::graph::batch_write::{
+            BatchLocationMode, OneOrientationBatchEdge, OneOrientationBatchPlan,
+            OneOrientationBucketRun,
+        },
         test_support::{labeled_lara_memories, vector_memory},
         traits::{CsrEdge, CsrEdgeTombstone},
     };
@@ -3771,6 +4246,56 @@ mod tests {
         (graph, regions)
     }
 
+    fn reopen_sized_graph(
+        regions: &[VectorMemory],
+        elem_capacity: u64,
+    ) -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
+        assert_eq!(regions.len(), 36, "sized graph region order changed");
+        DeferredBidirectionalLabeledLaraGraph::init(
+            regions[0].clone(),
+            regions[1].clone(),
+            regions[2].clone(),
+            regions[3].clone(),
+            regions[4].clone(),
+            regions[5].clone(),
+            regions[6].clone(),
+            regions[7].clone(),
+            regions[8].clone(),
+            regions[9].clone(),
+            regions[10].clone(),
+            regions[11].clone(),
+            regions[12].clone(),
+            regions[13].clone(),
+            regions[14].clone(),
+            regions[15].clone(),
+            regions[16].clone(),
+            regions[17].clone(),
+            regions[18].clone(),
+            regions[19].clone(),
+            regions[20].clone(),
+            regions[21].clone(),
+            regions[22].clone(),
+            regions[23].clone(),
+            regions[24].clone(),
+            regions[25].clone(),
+            regions[26].clone(),
+            regions[27].clone(),
+            regions[28].clone(),
+            regions[29].clone(),
+            MateStorageMemories::new(
+                regions[30].clone(),
+                regions[31].clone(),
+                regions[32].clone(),
+                regions[33].clone(),
+            ),
+            regions[34].clone(),
+            regions[35].clone(),
+            crate::labeled::InitialCapacities::uniform(elem_capacity),
+            BucketLabelKey::from_raw(1),
+        )
+        .expect("reopen graph")
+    }
+
     fn unbounded_budget() -> MaintenanceBudget {
         MaintenanceBudget {
             max_instructions: 0,
@@ -3780,6 +4305,24 @@ mod tests {
             max_segments: None,
             max_delete_edge_steps: None,
         }
+    }
+
+    fn published_bucket_entry_counts(
+        graph: &DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory>,
+    ) -> Vec<u32> {
+        graph
+            .mate
+            .test_snapshot()
+            .published_blobs
+            .into_iter()
+            .flat_map(|(_, bytes)| {
+                MateBlob::decode(&bytes)
+                    .expect("published mate blob")
+                    .buckets
+                    .into_iter()
+                    .map(|bucket| bucket.entries)
+            })
+            .collect()
     }
 
     #[test]
@@ -4705,6 +5248,29 @@ mod tests {
     }
 
     #[test]
+    fn mate_leaf_rebuild_work_item_round_trips_and_deduplicates() {
+        use ic_stable_structures::Storable;
+        let item = MaintenanceWorkItem::MateLeafRebuild {
+            orientation: Orientation::Reverse,
+            leaf: 17,
+        };
+        assert_eq!(MaintenanceWorkItem::from_bytes(item.to_bytes()), item);
+
+        let graph = graph();
+        graph
+            .maintenance
+            .mark_dirty(item)
+            .expect("first mate rebuild enqueue");
+        assert!(
+            !graph
+                .maintenance
+                .mark_dirty(item)
+                .expect("duplicate mate rebuild enqueue")
+        );
+        assert_eq!(graph.maintenance_queue_len(), 1);
+    }
+
+    #[test]
     fn payload_compaction_work_item_round_trips_and_runs_once() {
         use ic_stable_structures::Storable;
         let item = MaintenanceWorkItem::CompactPayloadSlab {
@@ -4774,20 +5340,20 @@ mod tests {
         let hub = VertexId::from(1);
         let dst = VertexId::from(0);
         let label = BucketLabelKey::from_raw(2);
-        graph
-            .insert_directed_edge(
-                hub,
-                dst,
-                BucketLabelKey::from_raw(99),
-                TestEdge(0),
-                TestEdge(0),
-            )
-            .unwrap();
         for _ in 0..80 {
             graph
                 .insert_directed_edge(hub, dst, label, TestEdge(1), TestEdge(0))
                 .unwrap();
         }
+        let aggregate = graph
+            .enumerate_mate_leaf(
+                Orientation::Forward,
+                0,
+                default_mate_leaf_enumeration_policy(),
+            )
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+        assert_eq!(published_bucket_entry_counts(&graph), vec![80]);
         graph.forward().compact_vertex_edge_span(hub, 0).unwrap();
         for _ in 0..72 {
             graph
@@ -4814,7 +5380,38 @@ mod tests {
         }
 
         let after = graph.forward().vertices().get(hub);
-        assert_eq!(after.stored_slots, 9);
+        assert_eq!(after.stored_slots, 8);
+        assert_eq!(published_bucket_entry_counts(&graph), vec![8]);
+    }
+
+    #[test]
+    fn label_bucket_compaction_hides_and_rebuilds_published_mate() {
+        let graph = graph();
+        graph.push_vertex().expect("src");
+        graph.push_vertex().expect("dst");
+        let label = BucketLabelKey::directed_from_index(52);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    label,
+                    TestEdge(1),
+                    TestEdge(0),
+                )
+                .unwrap();
+        }
+        let aggregate = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+        assert_eq!(published_bucket_entry_counts(&graph), vec![2]);
+
+        graph
+            .mark_compact_label_bucket_vertex_segment(Orientation::Forward, VertexId::from(0))
+            .unwrap();
+        graph.maintenance(unbounded_budget()).unwrap();
+        assert_eq!(published_bucket_entry_counts(&graph), vec![2]);
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -6453,6 +7050,658 @@ mod tests {
     }
 
     #[test]
+    fn published_mate_leaf_invalidation_is_deduplicated_and_rebuilt() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::directed_from_index(45);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    label,
+                    TestEdge(1),
+                    TestEdge(0),
+                )
+                .unwrap();
+        }
+        let aggregate = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        let queue_before = graph.maintenance_queue_len();
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(graph.maintenance_queue_len(), queue_before + 1);
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        assert_eq!(graph.maintenance_queue_len(), queue_before + 1);
+        graph.maintenance(unbounded_budget()).unwrap();
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        assert_eq!(published_bucket_entry_counts(&graph), vec![4]);
+    }
+
+    #[test]
+    fn batch_commit_invalidates_affected_published_leaf_before_write() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(46);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    source,
+                    target,
+                    label,
+                    TestEdge(u32::from(target)),
+                    TestEdge(u32::from(source)),
+                )
+                .unwrap();
+        }
+        let aggregate = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        let queue_before = graph.maintenance_queue_len();
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: source,
+                label_id: label,
+                inline_value_width: 0,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: source,
+                    neighbor_vertex_id: target,
+                    label_id: label,
+                    edge: TestEdge(u32::from(target)),
+                }],
+            }],
+        };
+        let reverse_plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: target,
+                label_id: label,
+                inline_value_width: 0,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: target,
+                    neighbor_vertex_id: source,
+                    label_id: label,
+                    edge: TestEdge(u32::from(source)),
+                }],
+            }],
+        };
+        let reservation = graph
+            .reserve_batch_orientations(
+                crate::labeled::graph::batch_write::BidirectionalBatchPlan::Directed {
+                    forward: plan,
+                    reverse: reverse_plan,
+                },
+            )
+            .unwrap();
+        // Tamper with the canonical bucket after reserve so commit's pre-write
+        // fingerprint validation must panic.  The locator must already be
+        // hidden when that panic occurs; otherwise an implementation that
+        // invalidates after commit would leave the stale Published state.
+        graph
+            .forward
+            .insert_edge(source, label, TestEdge(u32::from(target)))
+            .unwrap();
+        let commit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            graph.commit_batch_orientations(reservation, BatchLocationMode::AggregateOnly);
+        }));
+        assert!(
+            commit.is_err(),
+            "stale reservation must fail before canonical write"
+        );
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(graph.maintenance_queue_len(), queue_before + 1);
+    }
+
+    #[test]
+    fn repair_one_orientation_mutation_invalidates_published_leaf() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(47);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    source,
+                    target,
+                    label,
+                    TestEdge(u32::from(target)),
+                    TestEdge(u32::from(source)),
+                )
+                .unwrap();
+        }
+        let aggregate = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+        let queue_before = graph.maintenance_queue_len();
+        graph
+            .repair_insert_one_orientation_edge(
+                Orientation::Forward,
+                source,
+                label,
+                TestEdge(u32::from(target)),
+            )
+            .unwrap();
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(graph.maintenance_queue_len(), queue_before + 1);
+    }
+
+    #[test]
+    fn schema_mutation_invalidates_both_published_directed_leaves() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(48);
+        graph
+            .insert_directed_edge(
+                source,
+                target,
+                label,
+                TestEdge(u32::from(target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                source,
+                target,
+                label,
+                TestEdge(u32::from(target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        let forward = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        let reverse = graph
+            .enumerate_mate_leaf(Orientation::Reverse, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&forward).unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&reverse).unwrap();
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        assert!(matches!(
+            graph.mate.locator_state(1).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+
+        graph
+            .ensure_directed_edge_inline_value_width(source, target, label, 0)
+            .unwrap();
+
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(
+            graph.mate.locator_state(1).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+    }
+
+    #[test]
+    fn no_op_directed_remove_preserves_published_mates() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(49);
+        graph
+            .insert_directed_edge(
+                source,
+                target,
+                label,
+                TestEdge(u32::from(target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                source,
+                target,
+                label,
+                TestEdge(u32::from(target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        let forward = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        let reverse = graph
+            .enumerate_mate_leaf(Orientation::Reverse, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&forward).unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&reverse).unwrap();
+        let queue_before = graph.maintenance_queue_len();
+
+        assert!(
+            !graph
+                .remove_directed_deferred(source, VertexId::from(7), TestEdge(7))
+                .unwrap()
+        );
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        assert!(matches!(
+            graph.mate.locator_state(1).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        assert_eq!(graph.maintenance_queue_len(), queue_before);
+        assert_eq!(
+            graph
+                .forward
+                .iter_edges_for_label(source, label)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn no_op_slot_remove_preserves_published_mate() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(50);
+        graph
+            .insert_directed_edge(
+                source,
+                target,
+                label,
+                TestEdge(u32::from(target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                source,
+                target,
+                label,
+                TestEdge(u32::from(target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        let forward = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&forward).unwrap();
+        let queue_before = graph.maintenance_queue_len();
+
+        assert!(
+            graph
+                .remove_forward_edge_at_slot(source, label, 99)
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        assert_eq!(graph.maintenance_queue_len(), queue_before);
+        assert_eq!(
+            graph
+                .forward
+                .iter_edges_for_label(source, label)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn undirected_invalidation_hides_forward_endpoints_but_not_reverse_rows() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::undirected_from_index(46);
+        let directed_label = BucketLabelKey::directed_from_index(47);
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                directed_label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                directed_label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        let reverse_aggregate = graph
+            .enumerate_mate_leaf(Orientation::Reverse, 0, enumeration_policy())
+            .unwrap();
+        graph
+            .rebuild_mate_leaf_from_canonical(&reverse_aggregate)
+            .unwrap();
+        assert!(matches!(
+            graph.mate.locator_state(1).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        let aggregate = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert!(matches!(
+            graph.mate.locator_state(1).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+    }
+
+    #[test]
+    fn failed_mate_rebuild_stays_scan_only_and_retries() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::undirected_from_index(48);
+        for _ in 0..2 {
+            graph
+                .insert_undirected_deferred(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    label,
+                    TestEdge(1),
+                    TestEdge(0),
+                )
+                .unwrap();
+        }
+        graph
+            .maintenance
+            .mark_dirty(MaintenanceWorkItem::MateLeafRebuild {
+                orientation: Orientation::Reverse,
+                leaf: 0,
+            })
+            .unwrap();
+
+        graph.maintenance(unbounded_budget()).unwrap();
+        assert_eq!(
+            graph.mate.locator_state(1).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(graph.maintenance_queue_len(), 1);
+
+        graph.maintenance(unbounded_budget()).unwrap();
+        assert_eq!(
+            graph.mate.locator_state(1).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(graph.maintenance_queue_len(), 1);
+    }
+
+    #[test]
+    fn self_loop_invalidation_rebuilds_current_canonical_mapping() {
+        let graph = graph();
+        let vertex = graph.push_vertex().unwrap();
+        let label = BucketLabelKey::undirected_from_index(49);
+        for _ in 0..2 {
+            graph
+                .insert_undirected_deferred(
+                    vertex,
+                    vertex,
+                    label,
+                    TestEdge(u32::from(vertex)),
+                    TestEdge(u32::from(vertex)),
+                )
+                .unwrap();
+        }
+        let aggregate = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+        assert!(matches!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::Published { .. }
+        ));
+
+        graph
+            .insert_undirected_deferred(
+                vertex,
+                vertex,
+                label,
+                TestEdge(u32::from(vertex)),
+                TestEdge(u32::from(vertex)),
+            )
+            .unwrap();
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(graph.maintenance_queue_len(), 1);
+        graph.maintenance(unbounded_budget()).unwrap();
+        assert_eq!(published_bucket_entry_counts(&graph), vec![3]);
+    }
+
+    #[test]
+    fn directed_delete_invalidates_both_published_orientation_rows() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::directed_from_index(50);
+        for _ in 0..3 {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    label,
+                    TestEdge(1),
+                    TestEdge(0),
+                )
+                .unwrap();
+        }
+        let forward = graph
+            .enumerate_mate_leaf(
+                Orientation::Forward,
+                0,
+                default_mate_leaf_enumeration_policy(),
+            )
+            .unwrap();
+        let reverse = graph
+            .enumerate_mate_leaf(
+                Orientation::Reverse,
+                0,
+                default_mate_leaf_enumeration_policy(),
+            )
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&forward).unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&reverse).unwrap();
+        assert_eq!(published_bucket_entry_counts(&graph), vec![3, 3]);
+
+        assert!(
+            graph
+                .remove_directed_deferred(VertexId::from(0), VertexId::from(1), TestEdge(1))
+                .unwrap()
+        );
+        assert_eq!(
+            graph.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(
+            graph.mate.locator_state(1).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        assert_eq!(graph.maintenance_queue_len(), 2);
+        let after_forward = graph
+            .enumerate_mate_leaf(
+                Orientation::Forward,
+                0,
+                default_mate_leaf_enumeration_policy(),
+            )
+            .unwrap();
+        let after_reverse = graph
+            .enumerate_mate_leaf(
+                Orientation::Reverse,
+                0,
+                default_mate_leaf_enumeration_policy(),
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                &after_forward.decision,
+                MateLeafPromotionDecision::Promote { .. }
+            ),
+            "forward decision: {:?}",
+            after_forward.decision
+        );
+        assert!(
+            matches!(
+                &after_reverse.decision,
+                MateLeafPromotionDecision::Promote { .. }
+            ),
+            "reverse decision: {:?}",
+            after_reverse.decision
+        );
+        graph.maintenance(unbounded_budget()).unwrap();
+        assert_eq!(published_bucket_entry_counts(&graph), vec![2, 2]);
+    }
+
+    #[test]
+    fn queued_mate_rebuild_survives_reopen_and_republishes_current_blob() {
+        let (graph, regions) = sized_graph_with_region_memories(128);
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let label = BucketLabelKey::directed_from_index(51);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    label,
+                    TestEdge(1),
+                    TestEdge(0),
+                )
+                .unwrap();
+        }
+        let aggregate = graph
+            .enumerate_mate_leaf(
+                Orientation::Forward,
+                0,
+                default_mate_leaf_enumeration_policy(),
+            )
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .unwrap();
+        assert_eq!(graph.maintenance_queue_len(), 1);
+        drop(graph);
+
+        let reopened = reopen_sized_graph(&regions, 128);
+        assert_eq!(reopened.maintenance_queue_len(), 1);
+        assert_eq!(
+            reopened.mate.locator_state(0).unwrap(),
+            MateLocatorState::ScanOnly
+        );
+        reopened.maintenance(unbounded_budget()).unwrap();
+        assert_eq!(published_bucket_entry_counts(&reopened), vec![3]);
+    }
+
+    #[test]
     fn canonical_mate_leaf_empty_rebuild_handles_initial_and_published_states() {
         let empty = graph();
         let policy = enumeration_policy();
@@ -6529,10 +7778,10 @@ mod tests {
             .rebuild_mate_leaf_from_canonical_with_token(&empty_again, &mut token)
             .unwrap();
         assert!(token.is_none());
-        assert!(matches!(
+        assert_eq!(
             graph.mate.locator_state(0).unwrap(),
-            MateLocatorState::Published { .. }
-        ));
+            MateLocatorState::ScanOnly
+        );
         graph
             .rebuild_mate_leaf_from_canonical(&empty_again)
             .unwrap();

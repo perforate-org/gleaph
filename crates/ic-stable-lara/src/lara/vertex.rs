@@ -482,7 +482,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     /// Replaces the vertex row for `id`.
     ///
     /// Panics if `id >= self.len()`.
-    pub fn set(&self, id: VertexId, item: &V) {
+    pub(crate) fn set(&self, id: VertexId, item: &V) {
         let index = u64::from(id);
         assert!(index < u64::from(self.len()));
         crate::write(
@@ -493,7 +493,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     }
 
     /// Appends a vertex row and grows stable memory if necessary.
-    pub fn push(&self, item: V) -> Result<(), GrowFailed> {
+    pub(crate) fn push(&self, item: V) -> Result<(), GrowFailed> {
         let len = self.len();
         let new_len = len
             .checked_add(1)

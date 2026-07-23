@@ -2011,7 +2011,7 @@ where
     }
 
     /// Compacts all edge buckets for `vid` into slab-backed spans.
-    pub fn compact_vertex_edge_span(
+    pub(crate) fn compact_vertex_edge_span(
         &self,
         vid: VertexId,
         bucket_index: u32,
@@ -2024,7 +2024,7 @@ where
     }
 
     /// Compacts all edge buckets for `vid` and returns the slab-slot moves performed.
-    pub fn compact_vertex_edge_span_with_moves(
+    pub(crate) fn compact_vertex_edge_span_with_moves(
         &self,
         vid: VertexId,
         bucket_index: u32,

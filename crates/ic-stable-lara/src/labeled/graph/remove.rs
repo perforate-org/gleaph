@@ -94,6 +94,55 @@ where
             .saturating_sub(self.default_bypass_edge_log_slots(src, vertex))
     }
 
+    /// Read-only existence check for a label-row slot.  Mutation callers use this
+    /// before invalidating a published mate leaf so a missing edge remains a true
+    /// no-op.
+    pub(crate) fn edge_exists_at_slot(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+    ) -> Result<bool, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            if label_id != self.bypass_storage_label_for(&vertex)
+                || slot_index >= vertex.stored_degree()
+            {
+                return Ok(false);
+            }
+            let prefix = self.default_bypass_slab_prefix_slots(src, &vertex);
+            if slot_index < prefix {
+                let physical =
+                    checked_add_slot_index(vertex.base_slot_start(), u64::from(slot_index))
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let edge = self.edges.read_slot(physical);
+                return Ok(!edge.is_deleted_slot() && !edge.is_tombstone_edge());
+            }
+            let leaf = self.payload_log_leaf(src);
+            let ordinal = slot_index
+                .checked_sub(prefix)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let chain = self
+                .edges
+                .overflow_log_chain_asc_indices(leaf, vertex.bypass_overflow_log_head());
+            let Some(&entry_idx) = chain.get(ordinal as usize) else {
+                return Ok(false);
+            };
+            let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+            return Ok(!edge.is_tombstone_edge());
+        }
+        let BucketSearch::Found { bucket, .. } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(false);
+        };
+        Ok(self
+            .locate_bucket_edge_for_delete(src, &bucket, slot_index)?
+            .is_some())
+    }
+
     fn remove_default_bypass_edge_at_slot(
         &self,
         src: VertexId,
@@ -239,7 +288,7 @@ where
     }
 
     /// Removes the edge stored at `slot_index` in the bucket identified by `label_id`.
-    pub fn remove_edge_at_slot(
+    pub(crate) fn remove_edge_at_slot(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -254,7 +303,7 @@ where
     }
 
     /// Removes one edge and reports the bounded survivor slot shifts produced by overflow unlink.
-    pub fn remove_edge_at_slot_with_move(
+    pub(crate) fn remove_edge_at_slot_with_move(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -845,7 +894,7 @@ where
     /// (tombstones are not trimmed from `stored_slots`; see
     /// [`crate::traits::CsrVertex::after_slab_tombstone_delete`]). Cost is O(reserved slots)
     /// for the slab prefix; overflow-log slots remain O(chain) per removal.
-    pub fn drain_out_edges_for_label<F>(
+    pub(crate) fn drain_out_edges_for_label<F>(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -889,7 +938,7 @@ where
     /// the row once before draining), each call is O(1): the top slab slot is
     /// `live - 1`. If tombstones interleave the reserved span, it falls back to a
     /// descending scan of that bucket.
-    pub fn remove_top_out_edge(
+    pub(crate) fn remove_top_out_edge(
         &self,
         src: VertexId,
     ) -> Result<Option<(E, BucketLabelKey)>, LabeledOperationError>
@@ -962,7 +1011,7 @@ where
     }
 
     /// Removes the first edge in `label_id` for `src` that satisfies `matches`.
-    pub fn remove_edge_matching<F>(
+    pub(crate) fn remove_edge_matching<F>(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -979,7 +1028,7 @@ where
 
     /// Removes the first matching edge and reports the bounded survivor slot shifts produced by
     /// overflow unlink.
-    pub fn remove_edge_matching_with_move<F>(
+    pub(crate) fn remove_edge_matching_with_move<F>(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
