@@ -377,7 +377,7 @@ pub(crate) struct MateStorage<M: Memory> {
     free_spans: FreeSpanStore<M>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MateRebuildToken {
     row: u64,
     previous: MateLocatorState,
@@ -667,6 +667,18 @@ mod tests {
         assert_eq!(
             reopened.locator_state(0).expect("state"),
             MateLocatorState::Rebuilding
+        );
+    }
+
+    #[test]
+    fn rebuilding_cannot_be_started_twice_for_one_locator() {
+        let [locator, blobs, free_spans, free_span_by_start] = memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let _token = storage.begin_rebuild(0).expect("begin rebuild");
+        assert_eq!(
+            storage.begin_rebuild(0),
+            Err(MateStorageInitError::RebuildAlreadyActive)
         );
     }
 
