@@ -161,7 +161,8 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 entry-to-entry pairing in bidirectional LARA rather than a Graph facade B-tree.
 Adjacency order and equal-neighbor occurrence rank remain authoritative. Small
 or cold buckets resolve a mate by rank/select; selected PMA leaves may use a
-packed, derived mate blob. Ordinary adjacency scans do not read this metadata.
+sampled checkpoint blob or full packed, derived mate blob. Ordinary adjacency
+scans do not read this metadata.
 
 The only fixed addition is a dedicated five-byte locator row per orientation
 and leaf. It uses a custom fixed-row column modeled on `VertexStore`, rather
@@ -172,7 +173,7 @@ payload, and mate free ranges are never mixed.
 
 Insertion returns exact physical locations by logical ordinal. Slot-preserving
 rebalance requires no mate repair. Slot-renumbering compaction rebuilds affected
-packed leaf blobs at the LARA boundary that publishes slot moves. This contract
+sampled/packed leaf blobs at the LARA boundary that publishes slot moves. This contract
 is accepted but not yet implemented; the current Graph facade still uses
 `EDGE_ALIASES`.
 

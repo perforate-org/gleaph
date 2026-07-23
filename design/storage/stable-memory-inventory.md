@@ -178,7 +178,7 @@ so the current 47-region Graph count and tables above/below remain authoritative
 | Planned symbol | Role | Class | Rebuild |
 | --- | --- | --- | --- |
 | `MATE_LEAF_LOCATORS` | Dense five-byte `(orientation, leaf)` locator rows | derived | Rank/select fallback; rebuild affected leaves |
-| `MATE_BLOBS` | Versioned packed counterpart-slot arrays for indexed leaves | derived | Rebuild from adjacency pair rank |
+| `MATE_BLOBS` | Versioned sampled-checkpoint or packed counterpart-slot arrays for indexed leaves | derived | Rebuild from adjacency pair rank |
 | `MATE_FREE_SPANS` | Retired mate-blob byte ranges | maintenance | Allocator validation |
 | `MATE_FREE_SPAN_BY_START` | Coalescing index for mate-blob free ranges | maintenance | Paired `FreeSpanStore` validation |
 

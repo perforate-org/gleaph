@@ -157,13 +157,38 @@ data and does not require returning one handle per edge in a public replicated r
 ### 4. Use an adaptive leaf-owned mate accelerator
 
 Every bucket begins in `ScanOnly` mode and stores no per-edge mate data. LARA may promote a large or
-frequently accessed bucket to `Packed` mode. Promotion uses existing structural facts such as
-`LabelBucket::degree`, leaf occupancy, and scan distance plus optional heap-only heat counters.
-Access frequency is not persisted.
+frequently accessed bucket to `Sampled` or `Packed` mode. Promotion uses existing structural facts
+such as `LabelBucket::degree`, leaf occupancy, and scan distance plus optional heap-only heat
+counters. Access frequency is not persisted. The three modes are:
 
-Packed mode stores only the counterpart `slot_index`. Counterpart owner, label, orientation, and
-directedness derive from the source entry, its target, and its bucket. Slot values use the smallest
-width covering the indexed bucket:
+```text
+ScanOnly:
+  no mate array; exact rank/select scan
+
+Sampled:
+  a checkpoint every K pair entries; scan at most K - 1 matching entries around it
+
+Packed:
+  a counterpart slot for every indexed entry
+```
+
+`Sampled` checkpoints store the source and counterpart slots. The checkpoint ordinal is implicit in
+its position in the checkpoint array:
+
+```text
+checkpoint = (source_slot, mate_slot)
+```
+
+Given a physical source handle, lookup binary-searches the source checkpoints, scans forward to
+establish the exact pair rank, then scans the mate bucket to resolve the counterpart. There are at
+most `K - 1` matching pair entries between checkpoints; unrelated entries interleaved in the
+bucket may add physical-row reads. This is exact for parallel edges while bounding the pair-rank
+work introduced by sampled mode. `K = 32` or `64` is an initial benchmark candidate, not a stable
+wire contract.
+
+`Packed` mode stores only the counterpart `slot_index` for every indexed entry. Counterpart owner,
+label, orientation, and directedness derive from the source entry, its target, and its bucket. Slot
+values use the smallest width covering the indexed bucket:
 
 | Width code | Bytes per indexed half |
 | --- | ---: |
@@ -172,16 +197,22 @@ width covering the indexed bucket:
 | `U24` | 3 |
 | `U32` | 4 |
 
-Packed arrays are grouped into a versioned blob per indexed PMA leaf. A blob contains a small
-header, a directory of indexed buckets only, and packed arrays in bucket-local live order. Exact
-directory field packing is implementation- and benchmark-selected; it remains bounds-checked and
-self-describing by version and width code.
+Sampled checkpoints and Packed arrays are grouped into a versioned blob per indexed PMA leaf. A
+blob contains a header, a directory of indexed buckets only, and bucket-local arrays in live order.
+The header records `mode`, `checkpoint_stride`, `entry_count`, and width codes. Exact directory
+field packing is implementation- and benchmark-selected; it remains bounds-checked and
+self-describing by version and mode.
+
+An indexed leaf may mix modes by bucket. A high-degree bucket therefore first receives a sampled
+index if bounded scanning is cheaper than a full array; only a hot or scan-expensive bucket receives
+full Packed coverage. A small bucket in the same leaf can remain ScanOnly.
 
 Packed arrays may reserve bounded geometric capacity. An insertion fitting the current width and
-capacity updates one packed word for each physical half. Width/capacity growth, promotion,
-demotion, and slot-renumbering compaction rebuild the affected leaf blob once. A delete may leave
-an unreachable packed cell until the next leaf rebuild because adjacency tombstones remain the
-liveness authority.
+capacity updates one packed word for each physical half. Sampled insertion updates a checkpoint
+only when a stride boundary is crossed; otherwise it remains scan-backed. Width/capacity growth,
+promotion, demotion, checkpoint-boundary changes, and slot-renumbering compaction rebuild the
+affected leaf blob once. A delete may leave an unreachable sampled or packed cell until the next
+leaf rebuild because adjacency tombstones remain the liveness authority.
 
 ### 5. Store one fixed locator row per orientation and leaf
 
@@ -191,13 +222,13 @@ The bidirectional LARA wrapper owns one shared `MateLeafLocatorStore`. Its dense
 
 ```text
 0      ScanOnly: no blob
-1      Rebuilding: packed data must not be read; use scan fallback
-n >= 2 Packed: blob byte offset = n - 2
+1      Rebuilding: sampled/packed data must not be read; use scan fallback
+n >= 2 Sampled or Packed blob: byte offset = n - 2
 ```
 
-No persistent generation, delta length, indexed-bucket count, hotness, or separate mode field is
-stored. Blob length, version, and directory count belong in the blob header. Existing adjacency
-and PMA metadata remain authoritative for degree, liveness, and leaf geometry.
+No persistent generation, delta length, indexed-bucket count, or hotness is stored. The mode and
+checkpoint stride belong in the blob header, not the locator. Existing adjacency and PMA metadata
+remain authoritative for degree, liveness, and leaf geometry.
 
 Implement `MateLeafLocatorStore` as a dedicated fixed-row stable vector modeled on `VertexStore`,
 `SegmentSpanMetaStore`, and `SegmentEdgeCountsStore`, not
@@ -307,18 +338,24 @@ With `segment_size = 16` and one million vertices:
 This is about 0.60 MiB of logical locator bytes. A `u64` row would cost 1,000,000 bytes. Adding
 five bytes to every `LabeledVertex` would cost 10,000,000 bytes across both orientations.
 
-### Packed mappings
+### Mate mapping storage
 
-For one non-self logical edge, both physical halves together require:
+For `Sampled` with stride `K`, each checkpoint contains two slot values. With `u32` slots, its
+amortized mapping cost is `8 / K` bytes per indexed entry; with `u16` slots it is `4 / K` bytes.
+At `K = 32` this is `0.25` or `0.125` bytes per entry, before the blob directory and header.
 
-| Counterpart width | Dense bytes/logical edge | At 1.25x reserved capacity |
+For one indexed physical half, the mapping cost is:
+
+| Mode / width | Dense bytes / indexed half | At 1.25x reserved capacity |
 | ---: | ---: | ---: |
-| 8 bit | 2 | 2.5 |
-| 16 bit | 4 | 5.0 |
-| 24 bit | 6 | 7.5 |
-| 32 bit | 8 | 10.0 |
+| `Sampled`, `K=32`, `U32` | 0.25 | n/a |
+| `Packed U8` | 1 | 1.25 |
+| `Packed U16` | 2 | 2.5 |
+| `Packed U24` | 3 | 3.75 |
+| `Packed U32` | 4 | 5.0 |
 
-`ScanOnly` edges and undirected self-loops require zero mapping bytes. The current one-way B-tree
+`ScanOnly` entries and undirected self-loops require zero mapping bytes. For a non-self logical edge
+with both halves indexed, multiply the per-half mapping cost by two. The current one-way B-tree
 stores 18 raw key/value bytes per indexed logical edge before node overhead; two B-trees would
 store at least 36 raw bytes.
 
@@ -326,18 +363,24 @@ store at least 36 raw bytes.
 
 - `ScanOnly`: scan the source bucket to compute equal-neighbor rank and the target bucket to select
   that rank. Approximate edge-row traffic is `4 * (source_slots + target_slots)` bytes.
+- `Sampled`: read the locator, blob directory, and nearest checkpoint, then scan at most `K - 1`
+  matching pair entries on each side, plus any unrelated physical rows interleaved in the two
+  buckets.
 - `Packed`: read the five-byte locator, blob header/directory, one packed word, and candidate
   adjacency row. A heap directory cache may reduce this after validation.
 - Ordinary adjacency traversal reads no mate metadata.
 
-Two 32-entry buckets imply about 256 edge bytes of scan traffic; two 1,024-entry buckets imply
-about 8 KiB. Promotion is therefore adaptive rather than universal.
+Two 32-entry buckets imply about 256 edge bytes of full scan traffic; a sampled `K=32` lookup is
+bounded in pair-rank work but remains sensitive to interleaved rows. Two 1,024-entry buckets imply
+about 8 KiB of full scan traffic. Promotion is therefore adaptive rather than universal.
 
 ### Writes
 
 - Inline-value or property update: zero mate writes.
 - Packed insert with unchanged width/capacity: one aligned packed-word read/modify/write per half;
   with 64-bit words, approximately 16 bytes read plus 16 bytes written across the pair.
+- Sampled insert without crossing a checkpoint stride: no mapping write. Crossing a stride or
+  changing pair rank marks the sampled blob for rebuild; reads use scan fallback while rebuilding.
 - Delete without slot renumbering: zero immediate mate writes when the cell remains unreachable
   behind an adjacency tombstone. A packed move or other slot-renumbering delete rebuilds the
   affected packed leaf mappings.
@@ -350,14 +393,14 @@ without migration.
 
 ## Failure atomicity and consistency
 
-Adjacency plus pair order is canonical; packed mate data never makes an edge live. Before changing
-adjacency or a clean packed locator, LARA reserves all required fixed rows, blob bytes, and
+Adjacency plus pair order is canonical; sampled/packed mate data never makes an edge live. Before
+changing adjacency or a clean sampled/packed locator, LARA reserves all required fixed rows, blob bytes, and
 free-span records. Commit order is:
 
-1. mark a packed locator `Rebuilding` when work can span maintenance steps;
+1. mark a sampled/packed locator `Rebuilding` when work can span maintenance steps;
 2. write or rebuild adjacency and mate blob bytes;
 3. validate bounds, pair counts, and reciprocal slot mapping;
-4. publish the packed locator, or `ScanOnly` if acceleration is dropped; and
+4. publish the sampled/packed locator, or `ScanOnly` if acceleration is dropped; and
 5. retire the previous blob only after the new locator is visible.
 
 Single-message commits may omit an externally visible rebuilding phase when trap rollback and
@@ -369,7 +412,7 @@ Reads seeing `Rebuilding` use rank/select.
 Implementation adds four logical regions owned by bidirectional LARA:
 
 1. `MATE_LEAF_LOCATORS` — fixed five-byte rows;
-2. `MATE_BLOBS` — versioned packed leaf blobs;
+2. `MATE_BLOBS` — versioned sampled/packed leaf blobs;
 3. `MATE_FREE_SPANS` — retired blob byte ranges; and
 4. `MATE_FREE_SPAN_BY_START` — coalescing index.
 
@@ -439,7 +482,8 @@ Positive:
 
 - Exact mate lookup remains available from either physical half.
 - Small/cold buckets pay no per-edge metadata.
-- High-degree/hot buckets use compact direct lookup.
+- High-degree buckets can use compact sampled lookup; hot or scan-expensive buckets can use full
+  Packed lookup.
 - Known insertion slots eliminate post-insert neighbor scans.
 - Slot allocation and mate repair have one owner and commit boundary.
 - Four-byte edge rows and canonical physical-handle properties remain intact.
@@ -449,7 +493,7 @@ Costs and risks:
 
 - Pair-rank preservation becomes a mandatory LARA write invariant.
 - Four LARA regions replace one facade region.
-- Packed allocation, reopen validation, and rebuild add implementation complexity.
+- Sampled/Packed allocation, reopen validation, and rebuild add implementation complexity.
 - Scan fallback can be expensive before promotion or while rebuilding.
 - Existing reverse repair is count-exact, not pair-exact, for parallel edges and must be
   strengthened during implementation.
@@ -470,18 +514,18 @@ Implementation covers:
 - slab/log combinations;
 - rebalance with zero repair and slot-renumbering compaction with leaf rebuild;
 - canonical property-key repair;
-- reverse repair restoring pair rank, payloads, and packed mappings;
+- sampled/packed reverse repair restoring pair rank, payloads, and mappings;
 - fresh/reopen/partial-layout and corrupt locator/blob bounds;
 - failpoints around locator publication and old-blob retirement; and
 - complete removal of facade alias dependencies.
 
 ## Benchmark contract
 
-Canbench compares rank/select and packed lookup at bucket degrees 1, 8, 32, 128, 1,024, and larger
-hub sizes, with unique and parallel neighbors. Measure stable reads/writes and instructions for
-`mate_of`, inline update, delete, scalar insert, and batch insert; promotion/rebuild amortization;
-width transitions; compaction and reverse repair; and logical bytes plus stable-memory pages for
-sparse, mixed, and hub-heavy graphs.
+Canbench compares rank/select, sampled lookup at `K = 16/32/64`, and packed lookup at bucket
+degrees 1, 8, 32, 128, 1,024, and larger hub sizes, with unique and parallel neighbors. Measure
+stable reads/writes and instructions for `mate_of`, inline update, delete, scalar insert, and batch
+insert; promotion/rebuild amortization; checkpoint stride and width transitions; compaction and
+reverse repair; and logical bytes plus stable-memory pages for sparse, mixed, and hub-heavy graphs.
 
 Promotion thresholds are selected from end-to-end update/delete cost, not only lookup
 microbenchmarks.
