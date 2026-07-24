@@ -33,42 +33,8 @@ fn bench_lara_deferred_bidirectional_insert_directed_1024() -> canbench_rs::Benc
 /// deferred maintenance bookkeeping.
 #[bench(raw)]
 fn bench_lara_deferred_bidirectional_insert_undirected_1024() -> canbench_rs::BenchResult {
-    let mut memories = helper::BenchMemoryFactory::new();
-    let graph = crate::DeferredBidirectionalLaraGraph::<
-        crate::test_support::UndirectedTestEdge,
-        crate::Vertex,
-        helper::BenchMemory,
-    >::new_with_config(
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        1024,
-        16,
-        16,
-        crate::DeferredConfig {
-            leaf_dirty_density: 0.0,
-            log_urgent_ratio: 0.80,
-        },
-    )
-    .expect("deferred bidirectional graph");
-    for vid in 0..256u32 {
-        graph
-            .push_vertex(helper::vertex(u64::from(vid) * 16))
-            .expect("push vertex");
-    }
+    let graph =
+        helper::deferred_bidirectional_graph::<crate::test_support::UndirectedTestEdge>(256);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lara_deferred_bidirectional_insert_undirected");
         for i in 0..helper::MEDIUM_N {

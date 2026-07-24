@@ -168,11 +168,6 @@ pub(crate) fn test_edge(seed: u64) -> TestEdge {
     TestEdge((splitmix64(seed) as u32) & 0x00ff_ffff)
 }
 
-#[inline]
-pub(crate) fn vertex(base_slot_start: u64) -> Vertex {
-    Vertex::from_parts(base_slot_start, 0, 0, -1, false)
-}
-
 pub(crate) fn lara_graph(
     elem_capacity: u64,
     segment_size: u32,
@@ -196,10 +191,8 @@ pub(crate) fn lara_graph(
         .edges()
         .grow_segment_tree_to(segment_tree_leaf_count(vertex_count.into(), segment_size))
         .expect("grow lara graph segments");
-    for vid in 0..vertex_count {
-        graph
-            .push_vertex(vertex(u64::from(vid) * u64::from(segment_size)))
-            .expect("push vertex");
+    for _ in 0..vertex_count {
+        graph.push_vertex(Vertex::default()).expect("push vertex");
     }
     graph
 }
@@ -255,10 +248,8 @@ pub(crate) fn deferred_graph(
         .edges()
         .grow_segment_tree_to(segment_tree_leaf_count(vertex_count.into(), segment_size))
         .expect("grow deferred graph segments");
-    for vid in 0..vertex_count {
-        graph
-            .push_vertex(vertex(u64::from(vid) * u64::from(segment_size)))
-            .expect("push vertex");
+    for _ in 0..vertex_count {
+        graph.push_vertex(Vertex::default()).expect("push vertex");
     }
     graph
 }
@@ -301,17 +292,18 @@ where
         .edges()
         .grow_segment_tree_to(target_segments)
         .expect("grow reverse graph segments");
-    for vid in 0..vertex_count {
-        graph
-            .push_vertex(vertex(u64::from(vid) * 16))
-            .expect("push vertex");
+    for _ in 0..vertex_count {
+        graph.push_vertex(Vertex::default()).expect("push vertex");
     }
     graph
 }
 
-pub(crate) fn deferred_bidirectional_graph(
+pub(crate) fn deferred_bidirectional_graph<E>(
     vertex_count: u32,
-) -> DeferredBidirectionalLaraGraph<TestEdge, Vertex, BenchMemory> {
+) -> DeferredBidirectionalLaraGraph<E, Vertex, BenchMemory>
+where
+    E: crate::traits::CsrEdge + crate::traits::CsrEdgeTombstone,
+{
     let mut memories = BenchMemoryFactory::new();
     let graph = DeferredBidirectionalLaraGraph::new_with_config(
         memories.memory(),
@@ -332,7 +324,7 @@ pub(crate) fn deferred_bidirectional_graph(
         memories.memory(),
         u64::from(vertex_count).saturating_mul(4).max(16),
         16,
-        0,
+        16,
         DeferredConfig {
             leaf_dirty_density: 0.0,
             log_urgent_ratio: 0.80,
@@ -350,10 +342,8 @@ pub(crate) fn deferred_bidirectional_graph(
         .edges()
         .grow_segment_tree_to(target_segments)
         .expect("grow deferred reverse graph segments");
-    for vid in 0..vertex_count {
-        graph
-            .push_vertex(vertex(u64::from(vid) * 16))
-            .expect("push vertex");
+    for _ in 0..vertex_count {
+        graph.push_vertex(Vertex::default()).expect("push vertex");
     }
     graph
 }
@@ -430,5 +420,18 @@ mod tests {
             result,
             Err(message) if message == "fixture edge endpoint is out of range"
         ));
+    }
+
+    #[test]
+    fn deferred_undirected_fixture_uses_production_vertex_materialization() {
+        let graph = deferred_bidirectional_graph::<UndirectedTestEdge>(256);
+        for i in 0..MEDIUM_N {
+            let src = VertexId::from((i % 256) as u32);
+            let dst = VertexId::from(((i + 1) % 256) as u32);
+            graph
+                .insert_undirected_deferred(src, dst, UndirectedTestEdge::new(u32::from(dst)))
+                .expect("production-path undirected fixture insert");
+        }
+        assert!(graph.maintenance_queue_len() > 0);
     }
 }

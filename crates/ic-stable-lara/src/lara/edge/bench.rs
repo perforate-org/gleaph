@@ -19,6 +19,10 @@ fn edge_store_with_vertices(
     VertexStore<Vertex, helper::BenchMemory>,
     EdgeStore<TestEdge, helper::BenchMemory>,
 ) {
+    // Deliberately below the production graph boundary: these benches measure
+    // EdgeStore slab/log primitives with controlled row geometry. Production
+    // graph fixtures use the shared helpers in `crate::bench`, which materialize
+    // rows through `LaraGraph::push_vertex` instead of assigning base slots.
     let mut memories = helper::BenchMemoryFactory::new();
     let vertices = VertexStore::new(memories.memory()).expect("vertices");
     for vid in 0..vertex_count {
