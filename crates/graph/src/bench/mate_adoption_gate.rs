@@ -783,6 +783,26 @@ pub(crate) fn build_fixture(spec: FixtureSpec) -> DeterministicFixture {
 /// `ic-stable-lara` adapter. Unsupported shapes remain synthetic/deferred until their owner exists.
 #[cfg(feature = "canbench")]
 pub(crate) fn build_real_alias_fixture(spec: FixtureSpec) -> Result<DeterministicFixture, String> {
+    build_real_adjacency_fixture(
+        spec,
+        ic_stable_lara::adoption_fixture::FixtureRepresentation::AliasOnly,
+    )
+}
+
+/// Build a real ScanOnly identity fixture from canonical adjacency without mate metadata.
+#[cfg(feature = "canbench")]
+pub(crate) fn build_real_scan_fixture(spec: FixtureSpec) -> Result<DeterministicFixture, String> {
+    build_real_adjacency_fixture(
+        spec,
+        ic_stable_lara::adoption_fixture::FixtureRepresentation::ScanOnly,
+    )
+}
+
+#[cfg(feature = "canbench")]
+fn build_real_adjacency_fixture(
+    spec: FixtureSpec,
+    representation: ic_stable_lara::adoption_fixture::FixtureRepresentation,
+) -> Result<DeterministicFixture, String> {
     let vertex_count = u32::try_from(spec.logical_edges.saturating_add(1))
         .map_err(|_| "real AliasOnly fixture vertex count overflow".to_owned())?;
     let physical_identities = match spec.shape {
@@ -794,12 +814,37 @@ pub(crate) fn build_real_alias_fixture(spec: FixtureSpec) -> Result<Deterministi
                         .map_err(|_| "real AliasOnly fixture endpoint overflow".to_owned())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            ic_stable_lara::adoption_fixture::build_alias_only_fixture(vertex_count, &edges)?
-                .identities
+            match representation {
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::AliasOnly => {
+                    ic_stable_lara::adoption_fixture::build_alias_only_fixture(
+                        vertex_count,
+                        &edges,
+                    )?
+                    .identities
+                }
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::ScanOnly => {
+                    ic_stable_lara::adoption_fixture::build_scan_only_fixture(vertex_count, &edges)?
+                        .identities
+                }
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::Published => {
+                    return Err("Published fixture owner is not wired".to_owned());
+                }
+            }
         }
         FixtureShape::Parallel => {
             let edges = (0..spec.logical_edges).map(|_| (0, 1)).collect::<Vec<_>>();
-            ic_stable_lara::adoption_fixture::build_alias_only_fixture(2, &edges)?.identities
+            match representation {
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::AliasOnly => {
+                    ic_stable_lara::adoption_fixture::build_alias_only_fixture(2, &edges)?
+                        .identities
+                }
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::ScanOnly => {
+                    ic_stable_lara::adoption_fixture::build_scan_only_fixture(2, &edges)?.identities
+                }
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::Published => {
+                    return Err("Published fixture owner is not wired".to_owned());
+                }
+            }
         }
         FixtureShape::Undirected => {
             let edges = (0..spec.logical_edges)
@@ -809,16 +854,39 @@ pub(crate) fn build_real_alias_fixture(spec: FixtureSpec) -> Result<Deterministi
                         .map_err(|_| "real AliasOnly fixture endpoint overflow".to_owned())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            ic_stable_lara::adoption_fixture::build_alias_only_undirected_fixture(
-                vertex_count,
-                &edges,
-            )?
-            .identities
+            match representation {
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::AliasOnly => {
+                    ic_stable_lara::adoption_fixture::build_alias_only_undirected_fixture(
+                        vertex_count,
+                        &edges,
+                    )?
+                    .identities
+                }
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::ScanOnly => {
+                    ic_stable_lara::adoption_fixture::build_scan_only_undirected_fixture(
+                        vertex_count,
+                        &edges,
+                    )?
+                    .identities
+                }
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::Published => {
+                    return Err("Published fixture owner is not wired".to_owned());
+                }
+            }
         }
-        FixtureShape::UndirectedSelfLoop => {
-            ic_stable_lara::adoption_fixture::build_alias_only_undirected_fixture(1, &[(0, 0)])?
-                .identities
-        }
+        FixtureShape::UndirectedSelfLoop => match representation {
+            ic_stable_lara::adoption_fixture::FixtureRepresentation::AliasOnly => {
+                ic_stable_lara::adoption_fixture::build_alias_only_undirected_fixture(1, &[(0, 0)])?
+                    .identities
+            }
+            ic_stable_lara::adoption_fixture::FixtureRepresentation::ScanOnly => {
+                ic_stable_lara::adoption_fixture::build_scan_only_undirected_fixture(1, &[(0, 0)])?
+                    .identities
+            }
+            ic_stable_lara::adoption_fixture::FixtureRepresentation::Published => {
+                return Err("Published fixture owner is not wired".to_owned());
+            }
+        },
         _ => {
             return Err(
                 "real AliasOnly adapter currently supports directed/parallel/undirected shapes only"
@@ -848,7 +916,15 @@ pub(crate) fn build_real_alias_fixture(spec: FixtureSpec) -> Result<Deterministi
     let descriptor = ShapeDescriptor {
         shape_id: spec.id.to_owned(),
         shape_definition_digest: shape_definition_digest(spec),
-        fixture_ids: vec![format!("{}-alias-only", spec.id)],
+        fixture_ids: vec![format!(
+            "{}-{}",
+            spec.id,
+            match representation {
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::AliasOnly => "alias-only",
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::ScanOnly => "scan-only",
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::Published => "published",
+            }
+        )],
         logical_edges: spec.logical_edges,
         physical_half_edges: identities.len() as u64,
         alias_rows: identities.len() as u64,
@@ -1250,6 +1326,19 @@ mod fixture_evidence_tests {
                 );
             }
         }
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn real_scan_fixture_uses_independent_canonical_rows() {
+        let spec = FixtureSpec::required_matrix()[0];
+        let fixture = build_real_scan_fixture(spec).expect("real ScanOnly fixture");
+        assert_eq!(fixture.identities.len() as u64, spec.physical_half_edges);
+        assert_eq!(
+            fixture.descriptor.fixture_ids,
+            vec!["directed_low-scan-only"]
+        );
+        assert!(fixture.identities.windows(2).all(|pair| pair[0] != pair[1]));
     }
 
     #[cfg(feature = "canbench")]

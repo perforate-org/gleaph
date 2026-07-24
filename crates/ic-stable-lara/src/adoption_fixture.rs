@@ -22,9 +22,9 @@ const MAX_USABLE_MEMORY_ID: u8 = u8::MAX - 1;
 pub enum FixtureRepresentation {
     /// Existing alias-backed adjacency only.
     AliasOnly,
-    /// ScanOnly candidate (reserved for the later fixture slice).
+    /// Canonical adjacency with no mate metadata.
     ScanOnly,
-    /// Published mate candidate (reserved for the later fixture slice).
+    /// Published mate candidate (requires the separate mate storage owner).
     Published,
 }
 
@@ -231,6 +231,20 @@ pub fn build_alias_only_fixture(
     })
 }
 
+/// Build an isolated ScanOnly fixture from the same canonical directed adjacency specification.
+///
+/// ScanOnly deliberately owns only canonical adjacency; this helper does not allocate or publish
+/// mate metadata. The separate representation tag keeps the evidence boundary explicit while the
+/// identity rows remain sourced from the owning LARA graph.
+pub fn build_scan_only_fixture(
+    vertex_count: u32,
+    directed_edges: &[(u32, u32)],
+) -> Result<AliasOnlyFixture, String> {
+    let mut fixture = build_alias_only_fixture(vertex_count, directed_edges)?;
+    fixture.representation = FixtureRepresentation::ScanOnly;
+    Ok(fixture)
+}
+
 /// Build an isolated AliasOnly fixture from undirected endpoint pairs.
 pub fn build_alias_only_undirected_fixture(
     vertex_count: u32,
@@ -325,6 +339,16 @@ pub fn build_alias_only_undirected_fixture(
     })
 }
 
+/// Build an isolated ScanOnly fixture for undirected and self-loop canonical adjacency.
+pub fn build_scan_only_undirected_fixture(
+    vertex_count: u32,
+    edges: &[(u32, u32)],
+) -> Result<AliasOnlyFixture, String> {
+    let mut fixture = build_alias_only_undirected_fixture(vertex_count, edges)?;
+    fixture.representation = FixtureRepresentation::ScanOnly;
+    Ok(fixture)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +374,13 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn scan_only_fixture_has_independent_canonical_rows() {
+        let fixture = build_scan_only_fixture(3, &[(0, 1), (0, 2)]).expect("scan fixture");
+        assert_eq!(fixture.representation, FixtureRepresentation::ScanOnly);
+        assert_eq!(fixture.identities.len(), 4);
+        assert!(fixture.identities.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }
