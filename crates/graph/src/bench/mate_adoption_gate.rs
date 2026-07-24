@@ -80,7 +80,8 @@ impl FixtureSpec {
                 id: "directed_self_loop",
                 shape: FixtureShape::DirectedSelfLoop,
                 logical_edges: 1,
-                physical_half_edges: 1,
+                // Directed self-loops occupy one forward and one reverse orientation row.
+                physical_half_edges: 2,
                 degree: 1,
             },
             Self {
@@ -4432,7 +4433,10 @@ mod fixture_evidence_tests {
                     .iter()
                     .any(|identity| identity.orientation == 0)
             );
-            if matches!(spec.shape, FixtureShape::Directed | FixtureShape::Parallel) {
+            if matches!(
+                spec.shape,
+                FixtureShape::Directed | FixtureShape::DirectedSelfLoop | FixtureShape::Parallel
+            ) {
                 assert!(
                     fixture
                         .identities
