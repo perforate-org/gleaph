@@ -4,6 +4,7 @@ use crate::{
     lara::edge::segment_tree_leaf_count,
     lara::vertex::Vertex,
     test_support::{TestEdge, UndirectedTestEdge},
+    traits::CsrEdge,
 };
 #[cfg(test)]
 use ic_stable_structures::Memory;
@@ -80,6 +81,78 @@ impl MeasurementMemoryBundle {
 }
 
 pub(crate) type BenchMemoryFactory = MeasurementMemoryBundle;
+
+#[allow(dead_code, reason = "consumed by the Plan 0146 Graph evidence adapter")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Ord, PartialOrd)]
+pub(crate) struct MeasurementPhysicalIdentity {
+    pub(crate) owner: u32,
+    pub(crate) target: u32,
+    pub(crate) orientation: u8,
+    pub(crate) slot: u32,
+}
+
+#[allow(dead_code, reason = "consumed by the Plan 0146 Graph evidence adapter")]
+pub(crate) struct AliasOnlyMeasurementFixture {
+    pub(crate) graph: BidirectionalLaraGraph<TestEdge, Vertex, BenchMemory>,
+    pub(crate) identities: Vec<MeasurementPhysicalIdentity>,
+}
+
+/// Builds an alias-only candidate from real bidirectional LARA storage and returns its physical
+/// identity rows. Other representations are intentionally not accepted until their owning stores
+/// are wired into the fixture boundary.
+#[allow(dead_code, reason = "consumed by the Plan 0146 Graph evidence adapter")]
+pub(crate) fn build_alias_only_measurement_fixture(
+    vertex_count: u32,
+    directed_edges: &[(u32, u32)],
+) -> Result<AliasOnlyMeasurementFixture, String> {
+    let graph = bidirectional_graph::<TestEdge>(vertex_count);
+    for &(source, target) in directed_edges {
+        if source >= vertex_count || target >= vertex_count {
+            return Err("fixture edge endpoint is out of range".to_owned());
+        }
+        graph
+            .insert_directed(
+                VertexId::from(source),
+                VertexId::from(target),
+                TestEdge(target),
+            )
+            .map_err(|error| format!("fixture edge insert failed: {error}"))?;
+    }
+
+    let mut identities = Vec::with_capacity(directed_edges.len().saturating_mul(2));
+    for owner in 0..vertex_count {
+        for edge in graph
+            .directed_out_edges_iter(VertexId::from(owner), crate::OutEdgeOrder::Ascending)
+            .map_err(|error| format!("forward identity scan failed: {error}"))?
+        {
+            identities.push(MeasurementPhysicalIdentity {
+                owner,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 0,
+                slot: edge.edge_slot_index_raw(),
+            });
+        }
+        for edge in graph
+            .directed_in_edges_iter(VertexId::from(owner), crate::OutEdgeOrder::Ascending)
+            .map_err(|error| format!("reverse identity scan failed: {error}"))?
+        {
+            identities.push(MeasurementPhysicalIdentity {
+                owner,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 1,
+                slot: edge.edge_slot_index_raw(),
+            });
+        }
+    }
+    identities.sort();
+    if identities.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("fixture produced duplicate physical identities".to_owned());
+    }
+    if identities.len() != directed_edges.len().saturating_mul(2) {
+        return Err("fixture physical identity cardinality mismatch".to_owned());
+    }
+    Ok(AliasOnlyMeasurementFixture { graph, identities })
+}
 
 #[inline]
 pub(crate) fn splitmix64(mut x: u64) -> u64 {
@@ -324,5 +397,38 @@ mod tests {
         alias_memory.grow(1);
         assert_eq!(alias_memory.size(), 1);
         assert_eq!(published_memory.size(), 0);
+    }
+
+    #[test]
+    fn alias_fixture_extracts_forward_and_reverse_physical_identities() {
+        let fixture =
+            build_alias_only_measurement_fixture(4, &[(0, 1), (0, 2)]).expect("alias fixture");
+        assert_eq!(fixture.identities.len(), 4);
+        assert_eq!(
+            fixture
+                .identities
+                .iter()
+                .filter(|identity| identity.orientation == 0)
+                .count(),
+            2
+        );
+        assert_eq!(
+            fixture
+                .identities
+                .iter()
+                .filter(|identity| identity.orientation == 1)
+                .count(),
+            2
+        );
+        assert!(fixture.identities.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn alias_fixture_rejects_out_of_range_edges_before_population() {
+        let result = build_alias_only_measurement_fixture(2, &[(0, 2)]);
+        assert!(matches!(
+            result,
+            Err(message) if message == "fixture edge endpoint is out of range"
+        ));
     }
 }

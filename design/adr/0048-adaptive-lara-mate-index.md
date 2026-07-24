@@ -698,8 +698,9 @@ benchmark/test allocation must not consume IDs from that range even when the fix
 in-memory `MemoryManager`.
 
 Plan 0147 implements this first ownership boundary in `ic-stable-lara` with a fresh
-`MeasurementMemoryBundle` per candidate and a non-interference test. Real LARA population,
-canonical identity extraction, and evidence integration remain pending.
+`MeasurementMemoryBundle` per candidate and a non-interference test. AliasOnly fixture
+construction now populates real bidirectional LARA and extracts physical identity rows;
+ScanOnly/Published population and evidence integration remain pending.
 
 ## Related
 
