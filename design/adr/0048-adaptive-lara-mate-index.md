@@ -700,8 +700,10 @@ in-memory `MemoryManager`.
 Plan 0147 implements this first ownership boundary in `ic-stable-lara` with a fresh
 `MeasurementMemoryBundle` per candidate and a non-interference test. AliasOnly fixture
 construction now populates real bidirectional LARA and extracts physical identity rows;
-Published population remains pending. ScanOnly now has an independent canonical-adjacency
-fixture with no mate metadata. The AliasOnly builder is
+Graph evidence still defers Published rows because promotion eligibility is shape/policy
+dependent. The owning layer now has an independent Published fixture for promotion-eligible
+high-degree directed rows, while ScanOnly has a canonical-adjacency fixture with no mate metadata.
+The AliasOnly builder is
 exposed only through the `adoption-fixtures` feature, which Graph enables only for `canbench`.
 The Graph bench adapter now consumes those physical rows for both directed sizes plus parallel,
 undirected, and undirected-self-loop AliasOnly fixtures. Deferred evidence rows use real identity

@@ -5,7 +5,12 @@
 
 use crate::{
     BidirectionalLaraGraph, Vertex, VertexId,
-    traits::{CsrEdge, CsrEdgeUndirected},
+    labeled::{
+        BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, InitialCapacities,
+        MateStorageMemories, OutEdgeOrder, bidirectional::Orientation as LabeledOrientation,
+        bidirectional::mate_enumeration::default_mate_leaf_enumeration_policy,
+    },
+    traits::{CsrEdge, CsrEdgeTombstone, CsrEdgeUndirected},
 };
 use ic_stable_structures::{
     DefaultMemoryImpl,
@@ -24,7 +29,7 @@ pub enum FixtureRepresentation {
     AliasOnly,
     /// Canonical adjacency with no mate metadata.
     ScanOnly,
-    /// Published mate candidate (requires the separate mate storage owner).
+    /// Published mate candidate with an independently owned mate storage bundle.
     Published,
 }
 
@@ -98,6 +103,58 @@ impl CsrEdgeUndirected for FixtureEdge {
     }
 }
 
+/// Labeled edge record used only by the Published measurement fixture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublishedEdge {
+    neighbor: u32,
+    slot: u32,
+}
+
+impl CsrEdge for PublishedEdge {
+    const BYTES: usize = 10;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        Self {
+            neighbor: u32::from_le_bytes(bytes[..4].try_into().expect("published edge bytes")),
+            slot: 0,
+        }
+    }
+
+    fn write_to(&self, bytes: &mut [u8]) {
+        bytes[..4].copy_from_slice(&self.neighbor.to_le_bytes());
+        bytes[4..10].fill(0);
+    }
+
+    fn neighbor_vid(&self) -> VertexId {
+        VertexId::from(self.neighbor)
+    }
+
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
+        Self {
+            neighbor: u32::from(vid),
+            ..*self
+        }
+    }
+
+    fn with_slot_index(mut self, slot: u32) -> Self {
+        self.slot = slot;
+        self
+    }
+
+    fn edge_slot_index_raw(&self) -> u32 {
+        self.slot
+    }
+}
+
+impl CsrEdgeTombstone for PublishedEdge {
+    fn tombstone_edge() -> Self {
+        Self {
+            neighbor: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
+            slot: 0,
+        }
+    }
+}
+
 struct MemoryBundle {
     manager: MemoryManager<DefaultMemoryImpl>,
     next_id: u8,
@@ -131,6 +188,154 @@ pub struct AliasOnlyFixture {
     pub identities: Vec<PhysicalIdentity>,
     /// Representation tag for evidence routing.
     pub representation: FixtureRepresentation,
+}
+
+/// Independently owned Published candidate with canonical rows and published mate blobs.
+pub struct PublishedFixture {
+    /// The deferred labeled graph owning canonical and mate storage.
+    pub graph: DeferredBidirectionalLabeledLaraGraph<PublishedEdge, FixtureMemory>,
+    /// Sorted, duplicate-free physical half-edge identities.
+    pub identities: Vec<PhysicalIdentity>,
+    /// Representation tag for evidence routing.
+    pub representation: FixtureRepresentation,
+}
+
+fn labeled_memory_regions(memories: &mut MemoryBundle) -> [FixtureMemory; 15] {
+    core::array::from_fn(|_| memories.memory())
+}
+
+/// Build a directed Published fixture and publish every canonical mate leaf.
+pub fn build_published_fixture(
+    vertex_count: u32,
+    directed_edges: &[(u32, u32)],
+) -> Result<PublishedFixture, String> {
+    let mut memories = MemoryBundle::new(FixtureRepresentation::Published);
+    let forward = labeled_memory_regions(&mut memories);
+    let reverse = labeled_memory_regions(&mut memories);
+    let graph = DeferredBidirectionalLabeledLaraGraph::new(
+        forward[0].clone(),
+        forward[1].clone(),
+        forward[2].clone(),
+        forward[3].clone(),
+        forward[4].clone(),
+        forward[5].clone(),
+        forward[6].clone(),
+        forward[7].clone(),
+        forward[8].clone(),
+        forward[9].clone(),
+        forward[10].clone(),
+        forward[11].clone(),
+        forward[12].clone(),
+        forward[13].clone(),
+        forward[14].clone(),
+        reverse[0].clone(),
+        reverse[1].clone(),
+        reverse[2].clone(),
+        reverse[3].clone(),
+        reverse[4].clone(),
+        reverse[5].clone(),
+        reverse[6].clone(),
+        reverse[7].clone(),
+        reverse[8].clone(),
+        reverse[9].clone(),
+        reverse[10].clone(),
+        reverse[11].clone(),
+        reverse[12].clone(),
+        reverse[13].clone(),
+        reverse[14].clone(),
+        MateStorageMemories::new(
+            memories.memory(),
+            memories.memory(),
+            memories.memory(),
+            memories.memory(),
+        ),
+        memories.memory(),
+        memories.memory(),
+        InitialCapacities::uniform(1 << 16),
+        BucketLabelKey::UNLABELED_DIRECTED,
+    )
+    .map_err(|error| format!("published fixture graph init failed: {error}"))?;
+
+    for _ in 0..vertex_count {
+        graph
+            .push_vertex()
+            .map_err(|error| format!("published fixture vertex insert failed: {error}"))?;
+    }
+    let label = BucketLabelKey::directed_from_index(1);
+    for &(source, target) in directed_edges {
+        if source >= vertex_count || target >= vertex_count {
+            return Err("published fixture edge endpoint is out of range".to_owned());
+        }
+        graph
+            .insert_directed_edge(
+                VertexId::from(source),
+                VertexId::from(target),
+                label,
+                PublishedEdge {
+                    neighbor: target,
+                    slot: 0,
+                },
+                PublishedEdge {
+                    neighbor: source,
+                    slot: 0,
+                },
+            )
+            .map_err(|error| format!("published fixture edge insert failed: {error}"))?;
+    }
+    let policy = default_mate_leaf_enumeration_policy();
+    for orientation in [LabeledOrientation::Forward, LabeledOrientation::Reverse] {
+        let segment_count = graph.forward().segment_count();
+        for leaf in 0..segment_count {
+            let aggregate = graph
+                .enumerate_mate_leaf(orientation, leaf, policy)
+                .map_err(|error| format!("published fixture mate enumeration failed: {error}"))?;
+            graph
+                .rebuild_mate_leaf_from_canonical(&aggregate)
+                .map_err(|error| format!("published fixture mate publish failed: {error}"))?;
+        }
+    }
+
+    let mut identities = Vec::with_capacity(directed_edges.len().saturating_mul(2));
+    for owner in 0..vertex_count {
+        for edge in graph
+            .directed_out_edges_iter(VertexId::from(owner), OutEdgeOrder::Ascending)
+            .map_err(|error| format!("published forward identity scan failed: {error}"))?
+        {
+            let edge =
+                edge.map_err(|error| format!("published forward identity read failed: {error}"))?;
+            identities.push(PhysicalIdentity {
+                owner,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 0,
+                slot: edge.edge_slot_index_raw(),
+            });
+        }
+        for edge in graph
+            .directed_in_edges_iter(VertexId::from(owner), OutEdgeOrder::Ascending)
+            .map_err(|error| format!("published reverse identity scan failed: {error}"))?
+        {
+            let edge =
+                edge.map_err(|error| format!("published reverse identity read failed: {error}"))?;
+            identities.push(PhysicalIdentity {
+                owner,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 1,
+                slot: edge.edge_slot_index_raw(),
+            });
+        }
+    }
+    identities.sort();
+    if identities.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("published fixture produced duplicate physical identities".to_owned());
+    }
+    if identities.len() != directed_edges.len().saturating_mul(2) {
+        return Err("published fixture physical identity cardinality mismatch".to_owned());
+    }
+    Ok(PublishedFixture {
+        graph,
+        identities,
+        representation: FixtureRepresentation::Published,
+    })
 }
 
 /// Build an isolated AliasOnly fixture from directed endpoint pairs.
@@ -381,6 +586,15 @@ mod tests {
         let fixture = build_scan_only_fixture(3, &[(0, 1), (0, 2)]).expect("scan fixture");
         assert_eq!(fixture.representation, FixtureRepresentation::ScanOnly);
         assert_eq!(fixture.identities.len(), 4);
+        assert!(fixture.identities.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn published_fixture_publishes_real_mate_storage() {
+        let edges = (0..80).map(|_| (0, 1)).collect::<Vec<_>>();
+        let fixture = build_published_fixture(2, &edges).expect("published fixture");
+        assert_eq!(fixture.representation, FixtureRepresentation::Published);
+        assert_eq!(fixture.identities.len(), 160);
         assert!(fixture.identities.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }
