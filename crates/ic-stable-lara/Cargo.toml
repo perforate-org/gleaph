@@ -20,6 +20,9 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 canbench = ["dep:canbench-rs", "dep:candid"]
+# Enables only scoped instruction probes in production code paths. Unlike `canbench`, this does
+# not compile the crate's benchmark-export module and therefore does not enlarge canister exports.
+canbench-scopes = ["dep:canbench-rs"]
 adoption-fixtures = []
 # Optional multiplicative headroom when growing label-bucket descriptor span on segment rewrite.
 # Default is 1.25× (ceil). `bucket_row_grow_150` selects 1.5×; `bucket_row_grow_double` selects

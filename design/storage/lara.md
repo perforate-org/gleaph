@@ -267,14 +267,30 @@ rank/select with the dormant Published validator, require exact result parity, a
 or stale fallback behavior separate from the instruction totals. Published is not presumed faster:
 the current validator costs more than ScanOnly on these bounded probes, especially for parallel
 rows. No ordinary caller activation or alias decision follows from these measurements.
-Plan 0150's attempted Packed lookup shortcut was rejected: it was instruction-neutral in the
-runtime probe and would have weakened malformed-blob ordering validation. The existing linear,
-strictly validated mapping path remains the dormant implementation.
+Plan 0150's attempted source-slot binary-search shortcut was rejected: it was instruction-neutral
+in the runtime probe and would have weakened malformed-blob ordering validation. The old
+source/mate Published path is retained only as historical measurement evidence; the next runtime
+candidate is rank-indexed Packed with canonical validation.
 Plan 0151's logical-byte gate reports Alias raw payloads of 2,304 bytes for the 128-edge directed
 and undirected-high fixtures and 576 bytes for the 32-edge parallel fixture. Exact Published blob
 payloads are 3,776, 1,888, and 104 bytes respectively, before locator and allocator overhead.
 Published therefore loses on directed-high but wins on undirected-high and parallel in this
 fixture-only accounting; this does not activate any production caller.
+The size-series follow-up (Plan 0152) shows the same topology dependence at 32/64/128/256 edges:
+directed Published is 944/1,888/3,776/7,552 bytes versus 576/1,152/2,304/4,608 alias bytes;
+undirected is 472/944/1,888/3,776; parallel is 104/120/152/216. No unsupported low-degree or
+self-loop point is extrapolated, and no ordinary caller is activated from this curve alone.
+Plan 0154 also measures ScanOnly canonical rank/select independently from both alias and the
+retired Published blob path. Directed 32/128/256 probes intentionally keep local degree at two
+(about 18.07M instructions per 1,024-request run), while same-bucket parallel probes expose the
+degree-sensitive baseline (696.30M at 32, 10.14B at 128, and 7.75B at 256 in the 2026-07-24
+focused run). The parallel series is non-monotonic and remains diagnostic evidence only until repeated;
+it is not a production adoption or activation decision.
+The focused scope probe also removes the temporary row-vector pass from canonical `select_rank`;
+the measured total remains effectively unchanged, so this is recorded as a safe cleanup, not as a
+material optimization. The measurement-only `canbench-scopes` feature keeps source/counterpart
+scope instrumentation separate from the crate's full benchmark export module. Plan 0155 targets
+the remaining per-lookup logical-slot vector materialization in the canonical traversal.
 
 ---
 

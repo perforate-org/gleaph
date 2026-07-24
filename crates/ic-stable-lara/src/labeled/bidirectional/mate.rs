@@ -155,28 +155,37 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    let mut rows = Vec::new();
-    graph
-        .for_each_live_edge_slot_for_label(owner, label, |slot, row| {
-            rows.push((slot, row));
-        })
-        .map_err(|err| MateLookupError::ReadFailed(err.to_string()))?;
     let mut count = 0u32;
     let mut selected = None;
-    for (slot, row) in rows {
-        if row.neighbor_vid() == neighbor {
-            if count == rank {
-                selected = Some(PhysicalEdgeRef {
-                    orientation: Orientation::Forward,
-                    owner_vertex_id: owner,
-                    label_id: label,
-                    slot_index: slot,
-                });
+    let mut overflow = false;
+    graph
+        .for_each_live_edge_slot_for_label(owner, label, |slot, row| {
+            if row.neighbor_vid() == neighbor {
+                if overflow {
+                    return;
+                }
+                if count == rank {
+                    selected = Some(PhysicalEdgeRef {
+                        orientation: Orientation::Forward,
+                        owner_vertex_id: owner,
+                        label_id: label,
+                        slot_index: slot,
+                    });
+                }
+                count = match count.checked_add(1) {
+                    Some(next) => next,
+                    None => {
+                        overflow = true;
+                        count
+                    }
+                };
             }
-            count = count
-                .checked_add(1)
-                .ok_or_else(|| MateLookupError::ReadFailed("counterpart rank overflow".into()))?;
-        }
+        })
+        .map_err(|err| MateLookupError::ReadFailed(err.to_string()))?;
+    if overflow {
+        return Err(MateLookupError::ReadFailed(
+            "counterpart rank overflow".into(),
+        ));
     }
     selected
         .map(|edge| (edge, count))
@@ -444,8 +453,16 @@ where
             return Err(MateLookupError::InvalidOrientation(edge));
         }
         let (neighbor, rank, source_count, _row_count) = match edge.orientation {
-            Orientation::Forward => scan_rank(self.forward(), edge)?,
-            Orientation::Reverse => scan_rank(self.reverse(), edge)?,
+            Orientation::Forward => {
+                #[cfg(feature = "canbench-scopes")]
+                let _scope = canbench_rs::bench_scope("scan_only_source_scan_rank");
+                scan_rank(self.forward(), edge)?
+            }
+            Orientation::Reverse => {
+                #[cfg(feature = "canbench-scopes")]
+                let _scope = canbench_rs::bench_scope("scan_only_source_scan_rank");
+                scan_rank(self.reverse(), edge)?
+            }
         };
         if edge.label_id.is_undirected() && neighbor == edge.owner_vertex_id {
             return Ok(edge);
@@ -459,20 +476,28 @@ where
             (Orientation::Forward, neighbor)
         };
         let (mate, counterpart_count) = match counterpart_orientation {
-            Orientation::Forward => select_rank(
-                self.forward(),
-                counterpart_owner,
-                edge.label_id,
-                edge.owner_vertex_id,
-                rank,
-            )?,
-            Orientation::Reverse => select_rank(
-                self.reverse(),
-                counterpart_owner,
-                edge.label_id,
-                edge.owner_vertex_id,
-                rank,
-            )?,
+            Orientation::Forward => {
+                #[cfg(feature = "canbench-scopes")]
+                let _scope = canbench_rs::bench_scope("scan_only_counterpart_select_rank");
+                select_rank(
+                    self.forward(),
+                    counterpart_owner,
+                    edge.label_id,
+                    edge.owner_vertex_id,
+                    rank,
+                )?
+            }
+            Orientation::Reverse => {
+                #[cfg(feature = "canbench-scopes")]
+                let _scope = canbench_rs::bench_scope("scan_only_counterpart_select_rank");
+                select_rank(
+                    self.reverse(),
+                    counterpart_owner,
+                    edge.label_id,
+                    edge.owner_vertex_id,
+                    rank,
+                )?
+            }
         };
         if source_count != counterpart_count {
             return Err(MateLookupError::InconsistentRelation {

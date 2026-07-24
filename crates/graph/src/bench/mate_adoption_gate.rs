@@ -1550,7 +1550,21 @@ fn published_directed_runtime_fixture() -> (
     ic_stable_lara::adoption_fixture::PublishedFixture,
     Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
 ) {
-    let vertex_count = 64u32;
+    published_directed_runtime_fixture_with_logical_edges(128)
+}
+
+#[cfg(feature = "canbench")]
+fn published_directed_runtime_fixture_with_logical_edges(
+    logical_edges: u32,
+) -> (
+    ic_stable_lara::adoption_fixture::PublishedFixture,
+    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) {
+    // The fixture type owns a mate-capable graph so the same canonical rows can also support the
+    // retired-path comparison.  These scan-only benches call `mate_of` exclusively; no published
+    // blob lookup is performed and the published result is never consulted.
+    assert!(logical_edges >= 2 && logical_edges.is_multiple_of(2));
+    let vertex_count = logical_edges / 2;
     let edges = (0..vertex_count)
         .flat_map(|source| {
             [
@@ -1580,11 +1594,55 @@ fn published_directed_runtime_fixture() -> (
 }
 
 #[cfg(feature = "canbench")]
+fn bench_scan_runtime_lookup_count(
+    fixture: ic_stable_lara::adoption_fixture::PublishedFixture,
+    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    count: usize,
+) -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for edge in refs.iter().cycle().take(count) {
+            let mate = fixture.graph.mate_of(*edge).expect("canonical mate");
+            checksum = checksum.saturating_add(u64::from(mate.slot_index));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+fn bench_scan_runtime_single_ref(
+    fixture: ic_stable_lara::adoption_fixture::PublishedFixture,
+    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    index: usize,
+) -> canbench_rs::BenchResult {
+    let edge = refs[index];
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for _ in 0..1024 {
+            let mate = fixture.graph.mate_of(edge).expect("canonical mate");
+            checksum = checksum.saturating_add(u64::from(mate.slot_index));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
 fn published_parallel_runtime_fixture() -> (
     ic_stable_lara::adoption_fixture::PublishedFixture,
     Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
 ) {
-    let edges = (0..32).map(|_| (0, 1)).collect::<Vec<_>>();
+    published_parallel_runtime_fixture_with_edges(32)
+}
+
+#[cfg(feature = "canbench")]
+fn published_parallel_runtime_fixture_with_edges(
+    logical_edges: u32,
+) -> (
+    ic_stable_lara::adoption_fixture::PublishedFixture,
+    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) {
+    assert!(logical_edges > 0);
+    let edges = (0..logical_edges).map(|_| (0, 1)).collect::<Vec<_>>();
     let fixture = ic_stable_lara::adoption_fixture::build_published_fixture(2, &edges)
         .expect("published parallel runtime fixture");
     let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
@@ -1642,9 +1700,19 @@ fn bench_runtime_lookup(
     refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
     published: bool,
 ) -> canbench_rs::BenchResult {
+    bench_runtime_lookup_count(fixture, refs, published, 1024)
+}
+
+#[cfg(feature = "canbench")]
+fn bench_runtime_lookup_count(
+    fixture: ic_stable_lara::adoption_fixture::PublishedFixture,
+    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    published: bool,
+    count: usize,
+) -> canbench_rs::BenchResult {
     bench_fn(|| {
         let mut checksum = 0u64;
-        for edge in refs.iter().cycle().take(1024) {
+        for edge in refs.iter().cycle().take(count) {
             let mate = if published {
                 fixture.graph.published_mate_of(*edge)
             } else {
@@ -1661,14 +1729,21 @@ fn bench_runtime_lookup(
 #[bench(raw)]
 fn bench_mate_adoption_runtime_scan_directed_high() -> canbench_rs::BenchResult {
     let (fixture, refs) = published_directed_runtime_fixture();
-    bench_fn(|| {
-        let mut checksum = 0u64;
-        for edge in refs.iter().cycle().take(1024) {
-            let mate = fixture.graph.mate_of(*edge).expect("canonical mate");
-            checksum = checksum.saturating_add(u64::from(mate.slot_index));
-        }
-        black_box(checksum);
-    })
+    bench_scan_runtime_lookup_count(fixture, refs, 1024)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_directed_low() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_directed_runtime_fixture_with_logical_edges(32);
+    bench_scan_runtime_lookup_count(fixture, refs, 1024)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_directed_wide() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_directed_runtime_fixture_with_logical_edges(256);
+    bench_scan_runtime_lookup_count(fixture, refs, 1024)
 }
 
 #[cfg(feature = "canbench")]
@@ -1680,9 +1755,58 @@ fn bench_mate_adoption_runtime_published_directed_high() -> canbench_rs::BenchRe
 
 #[cfg(feature = "canbench")]
 #[bench(raw)]
+fn bench_mate_adoption_runtime_scan_directed_single() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_directed_runtime_fixture();
+    bench_runtime_lookup_count(fixture, refs, false, 1)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_published_directed_single() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_directed_runtime_fixture();
+    bench_runtime_lookup_count(fixture, refs, true, 1)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
 fn bench_mate_adoption_runtime_scan_parallel() -> canbench_rs::BenchResult {
     let (fixture, refs) = published_parallel_runtime_fixture();
     bench_runtime_lookup(fixture, refs, false)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_parallel_128() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_parallel_runtime_fixture_with_edges(128);
+    bench_runtime_lookup(fixture, refs, false)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_parallel_256() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_parallel_runtime_fixture_with_edges(256);
+    bench_runtime_lookup(fixture, refs, false)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_parallel_mid_32() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_parallel_runtime_fixture_with_edges(32);
+    bench_scan_runtime_single_ref(fixture, refs, 16)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_parallel_mid_128() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_parallel_runtime_fixture_with_edges(128);
+    bench_scan_runtime_single_ref(fixture, refs, 64)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_parallel_mid_256() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_parallel_runtime_fixture_with_edges(256);
+    bench_scan_runtime_single_ref(fixture, refs, 128)
 }
 
 #[cfg(feature = "canbench")]
@@ -1997,6 +2121,31 @@ mod fixture_evidence_tests {
                     .expect("published mate");
                 assert_eq!(actual, expected);
             }
+        }
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn scan_runtime_fixture_covers_required_directed_cardinalities() {
+        for logical_edges in [32, 128, 256] {
+            let (fixture, refs) =
+                published_directed_runtime_fixture_with_logical_edges(logical_edges);
+            assert_eq!(refs.len(), (logical_edges as usize) * 2);
+            for edge in refs.iter().take(8) {
+                let canonical = fixture.graph.mate_of(*edge).expect("canonical mate");
+                assert!(canonical.slot_index < logical_edges);
+            }
+        }
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn scan_runtime_fixture_covers_parallel_degree_series() {
+        for logical_edges in [32, 128, 256] {
+            let (fixture, refs) = published_parallel_runtime_fixture_with_edges(logical_edges);
+            assert_eq!(refs.len(), (logical_edges as usize) * 2);
+            let mate = fixture.graph.mate_of(refs[0]).expect("canonical mate");
+            assert_eq!(mate.owner_vertex_id, ic_stable_lara::VertexId::from(1));
         }
     }
 

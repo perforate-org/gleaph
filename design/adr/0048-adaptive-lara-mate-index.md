@@ -732,6 +732,23 @@ bytes for the 32-edge parallel fixture. Exact Published blob bytes are 3,776 (di
 (undirected-high), and 104 (parallel), excluding separately charged locator/allocator overhead.
 Thus the current Published blob is not smaller for directed-high but is smaller for undirected-high
 and parallel; no shape is activated by this evidence alone.
+Plan 0152 confirms the size trend: directed 32/64/128/256 logical edges use 944/1,888/3,776/7,552
+blob bytes versus 576/1,152/2,304/4,608 alias bytes, so no crossover is reached. Undirected uses
+472/944/1,888/3,776 versus the same alias series, and parallel uses 104/120/152/216 versus
+576/1,152/2,304/4,608. These are exact fixture blob payloads with bucket counts recorded
+separately; unsupported smaller or self-loop shapes are not extrapolated.
+Plan 0154 now treats ScanOnly canonical rank/select instructions as a separate third baseline.
+The directed 32/128/256 fixtures keep local degree at two, so their focused probes are all about
+18.07M instructions for 1,024 requests and must not be interpreted as a degree-scaling series.
+Same-bucket parallel probes add the degree-sensitive points: 32 edges 696.30M, 128 edges 10.14B,
+and 256 edges 7.75B instructions in the 2026-07-24 focused run. These new measurements are not
+persisted adoption artifacts yet; the non-monotonic parallel result requires a repeat/diagnostic
+run before it can be used as a gate. No rank-indexed runtime path or ordinary caller is activated.
+The same slice also removes the temporary row-vector pass from canonical `select_rank`; focused
+scope results show that this is not the dominant cost, so it is retained as a correctness-preserving
+cleanup rather than an adoption result. A dedicated `canbench-scopes` feature enables source and
+counterpart scopes without compiling the full low-level benchmark export module. Plan 0155 now
+targets the remaining per-lookup logical-slot materialization in the owning LARA traversal.
 
 ## Related
 
