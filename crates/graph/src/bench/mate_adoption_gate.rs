@@ -786,13 +786,16 @@ pub(crate) fn build_real_alias_fixture(spec: FixtureSpec) -> Result<Deterministi
     if spec.shape != FixtureShape::Directed {
         return Err("real AliasOnly adapter currently supports directed shapes only".to_owned());
     }
+    let vertex_count = u32::try_from(spec.logical_edges.saturating_add(1))
+        .map_err(|_| "real AliasOnly fixture vertex count overflow".to_owned())?;
     let edges = (0..spec.logical_edges)
-        .map(|index| (0, index as u32 + 1))
-        .collect::<Vec<_>>();
-    let fixture = ic_stable_lara::adoption_fixture::build_alias_only_fixture(
-        (spec.logical_edges + 1) as u32,
-        &edges,
-    )?;
+        .map(|index| {
+            u32::try_from(index + 1)
+                .map(|target| (0, target))
+                .map_err(|_| "real AliasOnly fixture endpoint overflow".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let fixture = ic_stable_lara::adoption_fixture::build_alias_only_fixture(vertex_count, &edges)?;
     let identities = fixture
         .identities
         .into_iter()
@@ -1157,24 +1160,33 @@ mod fixture_evidence_tests {
     #[cfg(feature = "canbench")]
     #[test]
     fn real_alias_fixture_uses_lara_physical_slots() {
-        let fixture = build_real_alias_fixture(FixtureSpec::required_matrix()[0])
-            .expect("real alias fixture");
-        assert_eq!(fixture.identities.len(), 16);
-        assert!(fixture.identities.iter().all(|identity| identity.slot < 16));
-        assert!(
-            fixture
-                .identities
-                .iter()
-                .any(|identity| identity.orientation == 0)
-        );
-        assert!(
-            fixture
-                .identities
-                .iter()
-                .any(|identity| identity.orientation == 1)
-        );
-        assert_eq!(fixture.descriptor.alias_rows, 16);
-        assert_eq!(canonical_identity_digest(&fixture.identities).len(), 64);
+        for spec in [
+            FixtureSpec::required_matrix()[0],
+            FixtureSpec::required_matrix()[1],
+        ] {
+            let fixture = build_real_alias_fixture(spec).expect("real alias fixture");
+            assert_eq!(fixture.identities.len() as u64, spec.physical_half_edges);
+            assert!(
+                fixture
+                    .identities
+                    .iter()
+                    .all(|identity| identity.slot < 256)
+            );
+            assert!(
+                fixture
+                    .identities
+                    .iter()
+                    .any(|identity| identity.orientation == 0)
+            );
+            assert!(
+                fixture
+                    .identities
+                    .iter()
+                    .any(|identity| identity.orientation == 1)
+            );
+            assert_eq!(fixture.descriptor.alias_rows, spec.physical_half_edges);
+            assert_eq!(canonical_identity_digest(&fixture.identities).len(), 64);
+        }
     }
 
     #[test]
