@@ -1166,34 +1166,44 @@ impl EvidenceArtifact {
 
 #[bench(raw)]
 fn bench_mate_adoption_fixture_corpus() -> canbench_rs::BenchResult {
-    let evidence_fixtures = FixtureSpec::required_matrix()
-        .into_iter()
-        .map(build_evidence_fixture)
-        .collect::<Vec<_>>();
-    let mut descriptors = evidence_fixtures
-        .iter()
-        .map(|(descriptor, _)| descriptor.clone())
-        .collect::<Vec<_>>();
+    let mut descriptors = Vec::new();
+    let mut rows = Vec::new();
+    let mut corpus_generated_count = 0u32;
+    for spec in FixtureSpec::required_matrix() {
+        let (mut descriptor, alias_digest) = build_evidence_fixture(spec);
+        let alias_fixture_id = descriptor.fixture_ids[0].clone();
+        let mut candidate_rows = vec![(alias_fixture_id, alias_digest)];
+        #[cfg(feature = "canbench")]
+        if let Ok(scan) = build_real_scan_fixture(spec) {
+            candidate_rows.push((
+                scan.descriptor.fixture_ids[0].clone(),
+                Some(canonical_identity_digest(&scan.identities)),
+            ));
+        }
+        candidate_rows.sort_by(|left, right| left.0.cmp(&right.0));
+        descriptor.fixture_ids = candidate_rows
+            .iter()
+            .map(|(fixture_id, _)| fixture_id.clone())
+            .collect();
+        descriptors.push(descriptor.clone());
+        rows.extend(
+            candidate_rows
+                .into_iter()
+                .map(|(fixture_id, digest)| EvidenceRow {
+                    shape_id: descriptor.shape_id.clone(),
+                    fixture_id,
+                    status: EvidenceStatus::Deferred,
+                    policy_version: POLICY_VERSION.to_owned(),
+                    canonical_identity_digest: digest,
+                    request_identity: None,
+                    instruction_total: None,
+                    exact_result_status: None,
+                }),
+        );
+        corpus_generated_count = corpus_generated_count
+            .saturating_add(build_request_corpus(spec, 0x0048_0146).len() as u32);
+    }
     descriptors.sort_by(|left, right| left.shape_id.cmp(&right.shape_id));
-    let corpus_generated_count = evidence_fixtures
-        .iter()
-        .map(|(descriptor, _)| {
-            build_request_corpus(spec_for_shape_id(&descriptor.shape_id), 0x0048_0146).len() as u32
-        })
-        .sum();
-    let rows = evidence_fixtures
-        .iter()
-        .map(|(descriptor, identity_digest)| EvidenceRow {
-            shape_id: descriptor.shape_id.clone(),
-            fixture_id: descriptor.fixture_ids[0].clone(),
-            status: EvidenceStatus::Deferred,
-            policy_version: POLICY_VERSION.to_owned(),
-            canonical_identity_digest: identity_digest.clone(),
-            request_identity: None,
-            instruction_total: None,
-            exact_result_status: None,
-        })
-        .collect::<Vec<_>>();
     let mut artifact = EvidenceArtifact {
         schema_version: 1,
         policy_version: POLICY_VERSION.to_owned(),

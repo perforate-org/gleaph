@@ -256,8 +256,8 @@ AliasOnly bidirectional-LARA fixture with physical identity extraction. The fixt
 only for measurement builds; Published evidence integration remains deferred except for the
 promotion-eligible fixture-owner test. Graph's bench adapter consumes AliasOnly physical rows for directed, parallel, undirected,
 and undirected-self-loop fixtures only; the measurement owner also constructs an independent
-ScanOnly canonical-adjacency fixture. Unsupported shapes remain deferred without synthetic identity
-claims.
+ScanOnly canonical-adjacency fixture and emits separate deferred rows for representable ScanOnly
+shapes. Unsupported shapes remain deferred without synthetic identity claims.
 
 ---
 
