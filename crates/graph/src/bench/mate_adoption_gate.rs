@@ -894,6 +894,19 @@ fn build_real_adjacency_fixture(
             );
         }
     };
+    Ok(deterministic_fixture_from_physical(
+        spec,
+        representation,
+        physical_identities,
+    ))
+}
+
+#[cfg(feature = "canbench")]
+fn deterministic_fixture_from_physical(
+    spec: FixtureSpec,
+    representation: ic_stable_lara::adoption_fixture::FixtureRepresentation,
+    physical_identities: Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>,
+) -> DeterministicFixture {
     let identities = physical_identities
         .into_iter()
         .map(|identity| {
@@ -930,10 +943,10 @@ fn build_real_adjacency_fixture(
         alias_rows: identities.len() as u64,
         indexed_half_edges: identities.len() as u64,
     };
-    Ok(DeterministicFixture {
+    DeterministicFixture {
         descriptor,
         identities,
-    })
+    }
 }
 
 /// Select the owning-layer fixture for evidence generation. Unsupported shapes retain their
