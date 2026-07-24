@@ -6,7 +6,10 @@ Anchor timestamp: 2026-07-24 00:28:53 UTC +0000
 
 Plan 0170 update (2026-07-24 13:44:22 UTC +0000): the versioned mate envelope codec, 22-byte locator
 value, raw payload region, and reopen fixture are implemented behind isolated `VectorMemory`-backed
-stores; no production `MemoryId` or canonical region changed.
+stores; these are evidence fixtures rather than the selected production layout. Production remains
+the existing leaf locator plus multi-bucket blob owner; a later slice may compact that blob to an
+8-byte header and approximately 15-byte bucket-directory entries. No production `MemoryId` or
+canonical region changed.
 Plan 0139 update (2026-07-23 12:25:05 UTC +0000): Graph now assigns four shared ADR 0048 mate
 regions at MemoryIds 47–50, for 51 graph regions total. The runtime remains dormant beyond storage
 ownership.

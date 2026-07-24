@@ -2291,21 +2291,21 @@ benches:
   bench_mate_adoption_published_directed_high:
     total:
       calls: 1
-      instructions: 58813512
+      instructions: 58800712
       heap_increase: 1
       stable_memory_increase: 4171
     scopes: {}
   bench_mate_adoption_published_parallel:
     total:
       calls: 1
-      instructions: 34604904
+      instructions: 34604824
       heap_increase: 0
       stable_memory_increase: 4171
     scopes: {}
   bench_mate_adoption_published_undirected_high:
     total:
       calls: 1
-      instructions: 46838850
+      instructions: 46823234
       heap_increase: 1
       stable_memory_increase: 4171
     scopes: {}
@@ -2361,28 +2361,28 @@ benches:
   bench_mate_adoption_ranked_bytes_directed_high:
     total:
       calls: 1
-      instructions: 1265118
+      instructions: 1272912
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
   bench_mate_adoption_ranked_bytes_parallel:
     total:
       calls: 1
-      instructions: 76858
+      instructions: 76963
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_mate_adoption_ranked_bytes_sparse_slots:
     total:
       calls: 1
-      instructions: 81122
+      instructions: 81227
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_mate_adoption_ranked_bytes_undirected_high:
     total:
       calls: 1
-      instructions: 1091692
+      instructions: 1097422
       heap_increase: 1
       stable_memory_increase: 0
     scopes: {}
@@ -2613,7 +2613,7 @@ benches:
   bench_mate_integrated_canonical_mutation_real_mixed_labels:
     total:
       calls: 1
-      instructions: 1786204
+      instructions: 1786044
       heap_increase: 0
       stable_memory_increase: 4171
     scopes:
@@ -2640,13 +2640,13 @@ benches:
   bench_mate_integrated_canonical_mutation_real_sparse_slots:
     total:
       calls: 1
-      instructions: 41385957
+      instructions: 41385982
       heap_increase: 0
       stable_memory_increase: 4171
     scopes:
       mate_candidate_rebuild_sparse:
         calls: 1
-        instructions: 144903
+        instructions: 145008
         heap_increase: 0
         stable_memory_increase: 0
       mate_canonical_delete_sparse:
@@ -2667,28 +2667,28 @@ benches:
   bench_mate_maintenance_ranked_real_mixed_labels:
     total:
       calls: 1
-      instructions: 43820
+      instructions: 44135
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_mate_maintenance_ranked_real_sparse_slots:
     total:
       calls: 1
-      instructions: 235068
+      instructions: 235383
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_mate_maintenance_rebuild_real_mixed_labels:
     total:
       calls: 1
-      instructions: 67179
+      instructions: 67494
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_mate_maintenance_rebuild_real_sparse_slots:
     total:
       calls: 1
-      instructions: 326095
+      instructions: 326410
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

@@ -260,6 +260,35 @@ An indexed leaf may mix modes by bucket. A high-degree bucket therefore first re
 index if bounded scanning is cheaper than a full array; only a hot or scan-expensive bucket receives
 full Packed coverage. A small bucket in the same leaf can remain ScanOnly.
 
+#### Cardinality admission and directory omission
+
+The admission unit is the live logical edge count of one `(orientation, leaf, owner, label)` bucket;
+physical slab slots, tombstones, and payload bytes do not satisfy this floor. The initial policy
+constants are:
+
+```text
+PROMOTE_MIN_LIVE_EDGES = 32
+DEMOTE_MAX_LIVE_EDGES  = 16
+```
+
+They are policy defaults, not wire-format values, and must be confirmed by the byte/instruction
+and read/update amortization gates before ordinary activation. A bucket with fewer than
+`PROMOTE_MIN_LIVE_EDGES` live edges is definitively `ScanOnly`, regardless of its leaf or
+neighboring buckets. A bucket at or above the promote floor is only eligible for `Sampled` or
+`Packed` after the exactness, stale-safety, byte, and request-volume gates also pass. A published
+bucket is demoted when its live count reaches `DEMOTE_MAX_LIVE_EDGES` or any gate fails. The gap
+between the floors prevents rebuild thrashing around one boundary; a failed rebuild also stays
+`ScanOnly` until a later admission attempt crosses the promote floor.
+
+`ScanOnly` buckets are omitted from the blob directory entirely. The directory is therefore a
+sparse directory of indexed buckets, not a complete catalog of canonical buckets. If a leaf has
+no indexed buckets, no blob is allocated and its five-byte leaf locator remains `ScanOnly`. If
+other buckets in the leaf are indexed, only those buckets contribute directory entries and blob
+payload; canonical LARA remains the source of truth for omitted buckets. A directory entry is
+never used to represent a negative/ScanOnly decision. Plan 0172 implements and tests this policy
+in the measurement-only adoption gate and sparse footprint accounting; it does not activate
+persistent admission or change the production codec.
+
 Packed arrays may reserve bounded geometric capacity. An insertion fitting the current width and
 capacity updates one packed word for each physical half. Sampled insertion updates a checkpoint
 only when a stride boundary is crossed; otherwise it remains scan-backed. Width/capacity growth,
@@ -971,11 +1000,23 @@ only one bounded candidate payload without repeated magic/version framing. The p
 are `MAX_MATE_BUCKET_ENTRIES = 65_535` and `MAX_MATE_BUCKET_PAYLOAD_BYTES = 2 MiB`; records
 exceeding either bound are rejected and remain `ScanOnly`.
 
-The fixture now models this ownership with a fixed 32-byte region header, matching the existing
-LARA byte-store header convention, a 22-byte fixed locator value, and a separate raw payload
-region;
-reopen validates the region header before reading entries. The entry codec is 35 bytes before
-payload and derives payload length from `total_len`; it has no per-entry checksum.
+The fixture now models the alternative ownership with a fixed 32-byte region header, matching the
+existing LARA byte-store header convention, a 22-byte fixed locator value, and a separate raw
+payload region; reopen validates the region header before reading entries. The entry codec is 35
+bytes before payload and derives payload length from `total_len`; it has no per-entry checksum.
+That bucket-locator/raw-payload split remains an isolated evidence fixture, not the selected
+production layout.
+
+The selected production baseline remains the existing leaf-scoped locator plus one multi-bucket
+blob per leaf. The next compaction target is to keep the leaf locator unchanged, reduce the blob
+header from the historical 24 bytes to an 8-byte `{bucket_count, total_length}` header, and reduce
+each bucket-directory entry from 20 bytes to approximately 15 bytes: owner vertex (4), label (2),
+packed candidate/width flags (1), cardinality (4), and mapping offset (4). Mapping length is
+derived from the next offset or blob end. Excluding the fixed 5-byte leaf locator and allocator/
+MemoryManager overhead, this changes the logical overhead from `29 + 20B` to `13 + 15B` bytes
+per leaf with `B` buckets, saving `16 + 5B` bytes. This is a planned codec/layout optimization;
+the current 24/20-byte codec remains the implemented measurement baseline until a later slice
+implements and remeasures it.
 
 The lifecycle is `Empty → Rebuilding → Published` or `Stale`. A canonical mutation first makes the
 derived record unavailable, commits canonical adjacency, then rebuilds from canonical rows and

@@ -154,6 +154,80 @@ impl MateFootprintInput {
                 .filter(|budget| *budget > 0),
         })
     }
+
+    /// Aggregate one leaf's sparse directory. ScanOnly inputs contribute no blob header,
+    /// directory, or mapping bytes; the locator rows are charged once for the leaf. An empty
+    /// slice therefore represents an all-ScanOnly leaf with locator cost only.
+    pub fn calculate_sparse_leaf(
+        inputs: &[Self],
+        locator_rows: u64,
+        alias_rows: u64,
+    ) -> Result<MateFootprint, MateFootprintError> {
+        let mut blob_header_bytes: u64 = 0;
+        let mut indexed_bucket_directory_bytes: u64 = 0;
+        let mut mapping_bytes: u64 = 0;
+        let mut free_span_bytes: u64 = 0;
+        let mut rebuild_reserve_bytes: u64 = 0;
+        let mut has_indexed_bucket = false;
+
+        for input in inputs {
+            if input.entries == 0 {
+                return Err(MateFootprintError::EmptyBucket);
+            }
+            if matches!(input.mode, MateMode::ScanOnly) {
+                continue;
+            }
+            let footprint = input.calculate_with_geometry(0, PHYSICAL_HALVES, 0)?;
+            has_indexed_bucket = true;
+            blob_header_bytes = blob_header_bytes.max(footprint.blob_header_bytes);
+            indexed_bucket_directory_bytes = indexed_bucket_directory_bytes
+                .checked_add(footprint.indexed_bucket_directory_bytes)
+                .ok_or(MateFootprintError::ArithmeticOverflow)?;
+            mapping_bytes = mapping_bytes
+                .checked_add(footprint.mapping_bytes)
+                .ok_or(MateFootprintError::ArithmeticOverflow)?;
+            // These are leaf-shared terms, not per-bucket terms. Fixture callers normally pass
+            // the same value for every bucket; max() charges that shared value once while still
+            // remaining conservative if a caller supplies different measurements.
+            free_span_bytes = free_span_bytes.max(footprint.free_span_bytes);
+            rebuild_reserve_bytes = rebuild_reserve_bytes.max(footprint.rebuild_reserve_bytes);
+        }
+
+        let locator_bytes = locator_rows
+            .checked_mul(LOCATOR_BYTES_PER_ROW)
+            .ok_or(MateFootprintError::ArithmeticOverflow)?;
+        let known_logical_bytes = locator_bytes
+            .checked_add(if has_indexed_bucket {
+                blob_header_bytes
+            } else {
+                0
+            })
+            .and_then(|bytes| bytes.checked_add(indexed_bucket_directory_bytes))
+            .and_then(|bytes| bytes.checked_add(mapping_bytes))
+            .and_then(|bytes| bytes.checked_add(free_span_bytes))
+            .and_then(|bytes| bytes.checked_add(rebuild_reserve_bytes))
+            .ok_or(MateFootprintError::ArithmeticOverflow)?;
+        let alias_bytes = alias_rows
+            .checked_mul(18)
+            .ok_or(MateFootprintError::ArithmeticOverflow)?;
+
+        Ok(MateFootprint {
+            locator_bytes,
+            blob_header_bytes: if has_indexed_bucket {
+                blob_header_bytes
+            } else {
+                0
+            },
+            indexed_bucket_directory_bytes,
+            mapping_bytes,
+            free_span_bytes,
+            rebuild_reserve_bytes,
+            known_logical_bytes,
+            alias_headroom_bytes: alias_bytes
+                .checked_sub(known_logical_bytes)
+                .filter(|budget| *budget > 0),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -292,6 +366,43 @@ mod tests {
         assert_eq!(footprint.known_logical_bytes, 24 * LOCATOR_BYTES_PER_ROW);
         assert_eq!(footprint.blob_header_bytes, 0);
         assert_eq!(footprint.alias_headroom_bytes, Some(2_184));
+    }
+
+    #[test]
+    fn sparse_leaf_omits_scan_only_buckets_and_blob_when_empty() {
+        let scan_only = MateFootprintInput {
+            entries: 8,
+            mode: MateMode::ScanOnly,
+            shared: MateSharedOverhead {
+                blob_header_bytes: 8,
+                indexed_bucket_directory_bytes: 15,
+                free_span_bytes: 10,
+                rebuild_reserve_bytes: 20,
+            },
+        };
+        let indexed = MateFootprintInput {
+            entries: 32,
+            mode: MateMode::Packed { width_bytes: 1 },
+            shared: MateSharedOverhead {
+                blob_header_bytes: 8,
+                indexed_bucket_directory_bytes: 15,
+                ..MateSharedOverhead::zero()
+            },
+        };
+
+        let mixed = MateFootprintInput::calculate_sparse_leaf(&[scan_only, indexed], 2, 40)
+            .expect("mixed sparse leaf");
+        assert_eq!(mixed.locator_bytes, 10);
+        assert_eq!(mixed.blob_header_bytes, 8);
+        assert_eq!(mixed.indexed_bucket_directory_bytes, 15);
+        assert_eq!(mixed.mapping_bytes, 64);
+
+        let empty = MateFootprintInput::calculate_sparse_leaf(&[scan_only], 2, 8)
+            .expect("all ScanOnly leaf");
+        assert_eq!(empty.blob_header_bytes, 0);
+        assert_eq!(empty.indexed_bucket_directory_bytes, 0);
+        assert_eq!(empty.mapping_bytes, 0);
+        assert_eq!(empty.known_logical_bytes, 10);
     }
 
     #[test]

@@ -467,6 +467,18 @@ degree, byte, and exactness gates; `RankedPacked` is the bounded fallback when i
 otherwise the bucket remains `ScanOnly`. No metadata is shared across labels, and this precedence
 does not activate an ordinary caller.
 
+The cardinality policy is now explicit for the planned persistent layout. It counts live logical
+edges per `(orientation, leaf, owner, label)` bucket, excluding tombstones and physical slot
+capacity. The initial hysteresis defaults are `PROMOTE_MIN_LIVE_EDGES = 32` and
+`DEMOTE_MAX_LIVE_EDGES = 16`. Below the promote floor a bucket is definitively `ScanOnly`; at or
+above it, promotion still requires the exactness, stale, byte, and request/update amortization
+gates. A published bucket is demoted at or below the demote floor or whenever a gate fails.
+ScanOnly buckets are omitted from the blob directory, and a leaf with no indexed buckets allocates
+no blob; the five-byte leaf locator remains the only derived row. These constants are policy
+defaults to be confirmed by the adoption benchmark, not serialized wire fields. Plan 0172 now
+implements this boundary in the measurement-only adoption gate and sparse footprint accounting;
+production admission and codec changes remain deferred.
+
 Plan 0166 adds deterministic measurement traces for one insert, delete, and reorder on the real
 identity sets. Rebuilding three trace states costs 95.16K instructions for SharedOrientation versus
 235.15K for RankedPacked on sparse slots, and 23.08K versus 43.90K for one mixed-label bucket.
@@ -494,7 +506,15 @@ is intentionally omitted.
 The isolated fixture uses a fixed 32-byte region header matching existing LARA byte-store headers,
 a 22-byte fixed locator value, and a separate raw payload region; its old self-contained envelope
 codec remains only as a validation fixture.
-is 35 bytes before payload; this does not allocate or register production `MemoryId`s.
+This bucket-locator/raw-payload split is not the selected production layout and does not allocate or
+register production `MemoryId`s. Production remains the existing leaf locator plus multi-bucket
+blob owner. The planned compact blob format keeps the 5-byte leaf locator, uses an 8-byte blob
+header (`bucket_count` and `total_length`), and targets approximately 15-byte directory entries
+(owner 4, label 2, packed flags 1, cardinality 4, mapping offset 4), deriving mapping length from
+the next offset/blob end. Its logical overhead target is `13 + 15B` bytes per leaf versus the
+current `29 + 20B`, a saving of `16 + 5B` bytes before allocator and MemoryManager overhead.
+The current 24-byte header/20-byte directory codec remains the measurement baseline until a later
+implementation slice. The isolated entry codec is 35 bytes before payload and is fixture-only.
 Plan 0169 consolidates the persistence design: canonical LARA owns truth, while derived mate state
 is one versioned record per orientation/leaf/owner/label bucket. Region metadata carries candidate
 kind, lifecycle, topology identity, canonical epoch, cardinality, blob offset, and total length.

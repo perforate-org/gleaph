@@ -22,6 +22,8 @@ use std::hint::black_box;
 pub(crate) const POLICY_VERSION: &str = "1.0";
 pub(crate) const SAMPLED_STRIDE: u8 = 32;
 pub(crate) const MIN_HUB_REQUESTS: u32 = 64;
+pub(crate) const PROMOTE_MIN_LIVE_EDGES: u64 = 32;
+pub(crate) const DEMOTE_MAX_LIVE_EDGES: u64 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum FixtureShape {
@@ -233,7 +235,9 @@ pub(crate) fn select_mode(inputs: SelectionInputs) -> Option<SelectedMode> {
     if !inputs.validate() {
         return None;
     }
-    if inputs.live_degree < 32 || matches!(inputs.access_profile, AccessProfile::Cold) {
+    if inputs.live_degree < PROMOTE_MIN_LIVE_EDGES
+        || matches!(inputs.access_profile, AccessProfile::Cold)
+    {
         return Some(SelectedMode::ScanOnly);
     }
     if matches!(inputs.access_profile, AccessProfile::Warm) {
@@ -327,8 +331,16 @@ pub(crate) fn select_amortized_candidate(
     }
 }
 
-pub(crate) const MIN_RANK_LIVE_DEGREE: u64 = 32;
+pub(crate) const MIN_RANK_LIVE_DEGREE: u64 = PROMOTE_MIN_LIVE_EDGES;
 pub(crate) const MIN_RANK_REQUESTS: u32 = 64;
+
+pub(crate) const fn cardinality_allows_promotion(live_edges: u64) -> bool {
+    live_edges >= PROMOTE_MIN_LIVE_EDGES
+}
+
+pub(crate) const fn cardinality_requires_demotion(live_edges: u64) -> bool {
+    live_edges <= DEMOTE_MAX_LIVE_EDGES
+}
 
 pub(crate) fn select_compression_candidate(
     observation: CompressionPolicyObservation,
@@ -727,6 +739,14 @@ mod tests {
             .expect("valid selection"),
             SelectedMode::Packed { width_bytes: 2 }
         );
+    }
+
+    #[test]
+    fn cardinality_hysteresis_has_strict_admission_boundaries() {
+        assert!(!cardinality_allows_promotion(PROMOTE_MIN_LIVE_EDGES - 1));
+        assert!(cardinality_allows_promotion(PROMOTE_MIN_LIVE_EDGES));
+        assert!(cardinality_requires_demotion(DEMOTE_MAX_LIVE_EDGES));
+        assert!(!cardinality_requires_demotion(DEMOTE_MAX_LIVE_EDGES + 1));
     }
 
     #[test]
