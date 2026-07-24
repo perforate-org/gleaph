@@ -302,7 +302,8 @@ because that path is not weighted payload-batch hot.
 
 ## Related documents
 
-- [ADR 0045](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **planned** direct unordered vertex/edge/value/property batching; this document remains the implemented post-ingest maintenance/finalize hook
+- [ADR 0045](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **partially implemented substrate** for direct planned placement/reservation/commit; its unordered public contract has not shipped
+- [ADR 0049](../adr/0049-input-order-preserving-batch-graph-mutations.md) — **planned after ADR 0048 completion** input-order-preserving direct edge-insertion batch path; non-edge public batch operations remain absent in v1, and this document remains the implemented post-ingest maintenance/finalize hook
 - [inline-value-first-traversal.md](./inline-value-first-traversal.md) — dense eligibility, M6 sparse path
 - [lara-and-facade.md](./lara-and-facade.md) — `GraphStore` vs LARA maintenance
 - [gql/layers.md](../gql/layers.md) — Gleaph extensions stay out of portable GQL crates

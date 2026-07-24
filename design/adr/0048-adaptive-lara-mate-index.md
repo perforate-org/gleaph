@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; the validated Published Sampled/Packed runtime primitive is implemented but dormant; ordinary-caller activation, adoption measurement, and alias replacement remain deferred)
 Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 21:25:19 UTC +0000
+Anchor timestamp: 2026-07-23 23:12:48 UTC +0000
 
 ## Context
 
@@ -126,10 +126,11 @@ orientations. Undirected self-loops require no rank join.
 same rank from the counterpart bucket. This is exact for parallel edges without a persistent
 logical edge id.
 
-All insert paths enforce the same pair order on both projections. An ordered batch additionally
-preserves its public input-order contract. An unordered batch may reorder logical edges, but it
-chooses one internal order per pair key and applies that identical order to both projections.
-Independent sorting of the two projections is forbidden.
+All insert paths enforce the same pair order on both projections. The current partially implemented
+ADR 0045 substrate may reorder logical edges only after choosing one internal order per pair key
+and applying that identical order to both projections. After this ADR is complete, ADR 0049 replaces
+the unshipped unordered public contract with one input-order-preserving batch contract. Independent
+sorting of the two projections is forbidden in every phase.
 
 Compaction may renumber slots but preserves relative live order for every pair key. A
 transformation that cannot prove this property rebuilds the affected pair relation from a shared
@@ -639,8 +640,11 @@ Implementation covers:
 - parallel edges with distinct inline values and exact update/delete from either half;
 - edge/payload slots in different physical domains, including slab/log/blob combinations, with
   ordinal-based synchronization and no edge-log/payload-log index pairing;
-- scalar and ordered/unordered batch insertion returning exact per-ordinal locations;
-- identical pair-key order across unordered projections;
+- scalar and the current ADR 0045 batch substrate returning exact per-ordinal
+  locations, followed by ADR 0049 input-order-preserving batch coverage after
+  this ADR's completion gate;
+- identical pair-key order across the current ADR 0045 projections and the
+  future ADR 0049 merged physical projections;
 - `ScanOnly`, promotion, all widths, growth, demotion, and rebuilding fallback;
 - slab/log combinations;
 - rebalance with zero repair and slot-renumbering compaction with leaf rebuild;
@@ -682,5 +686,8 @@ microbenchmarks.
 - [ADR 0026](0026-reverse-adjacency-differential-repair.md): implemented reverse repair.
 - [ADR 0039](0039-production-stable-memory-evolution-and-upgrade-safety.md): production migration gate.
 - [ADR 0045](0045-unordered-batch-graph-mutations-and-lara-placement.md): batch placement and logical ordinals.
+- [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md): planned
+  input-order-preserving batch successor; implementation begins after this ADR's
+  ordinary-caller adoption and alias-removal completion gate.
 - [LARA storage contract](../storage/lara.md).
 - [LARA and Graph facade](../storage/lara-and-facade.md).

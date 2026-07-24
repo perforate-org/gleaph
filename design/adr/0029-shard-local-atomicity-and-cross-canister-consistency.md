@@ -2,7 +2,7 @@
 
 Date: 2026-06-21
 Status: accepted
-Last revised: 2026-07-21
+Last revised: 2026-07-24
 
 ## Context
 
@@ -143,6 +143,13 @@ Routing
 canonical write is recoverable and must remain in a roll-forward state rather than being relabeled
 as an all-or-nothing failure.
 
+ADR 0049's planned ordered-batch specialization extends the post-projection
+portion to `ProjectionAdvanced -> RetirementPending -> Completed`. This does
+not change existing plan-execution state: it prevents Router completion and
+envelope compaction until Graph has durably retired the exact fingerprint-bound
+replay entry. Retirement recovery is idempotent post-canonical work and never
+authorizes canonical redispatch.
+
 The terms mean:
 
 | Phase | Meaning |
@@ -151,7 +158,7 @@ The terms mean:
 | `CanonicalPending` | At least one required canonical shard outcome is not yet known |
 | `CanonicalCommitted` | All required canonical shard writes are durable |
 | `ProjectionPending` | Canonical writes are durable; one or more required derived projections lag |
-| `Completed` | Canonical writes and the projections required by the mutation contract reached their watermarks |
+| `Completed` | Canonical writes, required projections, and any request-specific replay-retirement handshake required by the mutation contract completed |
 | `Failed` | Validation or execution failed before any canonical write committed |
 
 During migration, the existing graph-journal `Completed` value continues to mean "the shard-local
@@ -171,21 +178,32 @@ client retrying.
 This is a roll-forward saga, not a distributed rollback protocol. Reads that require a globally
 committed view must use the visibility rules in the next section.
 
-**Implementation (Phase 4) — autonomous, projection-only recovery.** Recovery is split by risk:
+**Implementation (Phase 4) — autonomous, canonical-dispatch-free recovery.**
+Recovery is split by risk:
 
-- *Liveness (autonomous, projection-only).* A single self-rescheduling `ic-cdk-timers` timer
+- *Liveness (autonomous, canonical-dispatch-free).* A single self-rescheduling
+  `ic-cdk-timers` timer
   (`crates/router/src/recovery.rs`), armed after every idempotent DML and re-armed from
   `init` / `post_upgrade`, scans a bounded slice of `ROUTER_MUTATION_BY_CLIENT_KEY` per tick for
   non-terminal sagas that already have a persisted dispatch envelope, and drives each forward with
-  **idempotent, cursor-guarded projection/index convergence only** (`gql::recover_mutation_record`
-  → label-stats projection advance + graph-index watermark check). The driver **never re-dispatches
+  **idempotent, cursor-guarded canonical-dispatch-free convergence work**. For
+  implemented plan execution this is projection/index convergence only
+  (`gql::recover_mutation_record` → label-stats projection advance + graph-index
+  watermark check). The driver **never re-dispatches
   canonical DML**: autonomous re-execution of a shard write is the one operation that risks
   double-apply, so it is deliberately excluded from the background path. Per-tick work and scan
   budget are bounded; the timer backs off and stops when a lap finds no recoverable saga.
+  ADR 0049's planned ordered path also permits this driver to retry the
+  fingerprint-bound Graph retirement transition after projection convergence;
+  that transition cannot execute canonical DML and is persisted as
+  `RetirementPending` before its `await`.
 - *Unfinished canonical writes (`CanonicalPending`).* Resumed by **explicit retry**, not the timer:
   re-presenting the same `client_mutation_key` resumes the saga idempotently via the inline
   reconciliation path. `mutation_status` reports `next_action` so a client / SDK / operator knows a
-  retry is required.
+  retry is required. ADR 0049's planned ordered specialization additionally
+  permits the timer to query the exact stored Graph journal identity without
+  invoking canonical execution. A matching completed receipt advances the saga;
+  `Absent` leaves it `CanonicalPending` for explicit retry.
 - *Stuck routing reservation.* `routing_in_progress` now carries a lease (`routing_lease_ns`,
   `ROUTING_LEASE_TTL_NS`). A retry may reclaim a reservation whose lease has expired; this is safe
   because `routing_in_progress == true` implies the immutable envelope was not yet persisted and
@@ -365,8 +383,9 @@ across a commit point. This guard is expected when a second inter-canister path 
 | One mutation id is not applied twice on a graph shard | Graph | Graph mutation journal lookup before execution |
 | Router saga progress is monotonic and replayable | Router | Per-shard mutation record transitions |
 | Derived consumers apply an ordered prefix idempotently | Router or graph-index | Projection apply plus durable cursor/watermark |
-| `Completed` at the Router means all contract-required canonical and projection work completed | Router | Final mutation transition |
+| `Completed` at the Router means all contract-required canonical, projection, and replay-retirement work completed | Router | Final mutation transition |
 | Unfinished canonical work is not removed by ordinary completed-record retention | Owning journal | Retention eligibility check |
+| An ordered mutation is not compacted or made Graph-GC-eligible before exact replay retirement is durable | Router and Graph | `RetirementPending` before `await`; fingerprint-bound Graph retirement transition; request-kind-aware GC predicate |
 
 ## Consequences
 

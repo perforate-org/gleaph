@@ -1,9 +1,9 @@
 # 0025. Client-mutation idempotency journal retention, compaction, and GC
 
 Date: 2026-06-20
-Status: implemented (eviction predicate and timer stance revised by ADR 0029 Phase 4)
-Last revised: 2026-06-21
-Anchor timestamp: 2026-06-21 13:18:04 UTC +0000
+Status: implemented (eviction predicate and timer stance revised by ADR 0029 Phase 4; ordered retirement specialization planned by ADR 0049)
+Last revised: 2026-07-24
+Anchor timestamp: 2026-07-24 00:28:53 UTC +0000
 
 ## Context
 
@@ -81,9 +81,13 @@ ADR 0029 Phase 4 makes the shared eviction core (`evict_expired_client_mutation_
 evictable **iff the record is terminal** — `RouterMutationRecord::is_terminal()`, i.e. the
 lifecycle phase is `Completed` or `Failed`. Non-terminal sagas (`Routing`,
 `CanonicalPending`, `CanonicalCommitted`, `ProjectionPending`) are retained as recovery
-targets regardless of age. This subsumes the old `routing_in_progress` exclusion (a routing
-record is non-terminal) and additionally protects committed-but-unprojected sagas. Age is
-still tracked solely by `created_at_ns`; terminal records past the TTL evict exactly as
+targets regardless of age. ADR 0049's planned ordered specialization additionally
+keeps `ProjectionAdvanced` and `RetirementPending` non-terminal until
+the Graph retirement proof has been durably accepted and the Router record is
+atomically compacted to `CompletedOrderedEdgeBatch`. This subsumes the old
+`routing_in_progress` exclusion (a routing record is non-terminal) and
+additionally protects committed-but-unprojected sagas. Age is still tracked
+solely by `created_at_ns`; terminal records past the TTL evict exactly as
 before.
 
 ### Alternatives considered

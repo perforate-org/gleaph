@@ -2,8 +2,16 @@
 
 Date: 2026-07-23
 Status: Partially Implemented
-Last revised: 2026-07-23
-Anchor timestamp: 2026-07-23 08:50:57 UTC +0000
+Last revised: 2026-07-24
+Anchor timestamp: 2026-07-24 00:23:37 UTC +0000
+
+Planned successor: [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md)
+will, after ADR 0048 completion, retain this ADR's physical placement,
+reservation, commit, rollback, and location-capture substrate while superseding
+the unshipped unordered public edge-insertion contract. ADR 0049 v1 does not
+publish vertex insertion, existing value/property update, or combined
+vertex/edge batch operations. Until ADR 0049 is activated, this ADR remains the
+truthful partially implemented state of the physical substrate.
 
 ## Context
 
@@ -448,25 +456,45 @@ The implementation must make these conditions directly testable:
 9. Canonical property writes and durable net derived-state events agree.
 10. Requests and responses stay inside their measured encoded payload budgets.
 
-## State representation and migration
+## State representation and fresh-layout replacement
 
 The final adjacency, vertex, payload, and property states are representable in
 the existing stable stores. Batch placement plans, pending overlays, physical
 half intents, and ordinal maps are ephemeral heap values and add no new LARA
 stable region or persisted physical layout.
 
-The public and Router-to-Graph wire types require additive versioned Candid
-types/endpoints. Durable idempotency reuses the existing Router/Graph mutation
-lifecycle, but the journal value must gain a versioned chunk receipt/fingerprint
-representation if the currently deployed ADR 0044 record cannot distinguish a
-specialized chunk replay. This is a value-schema migration under ADR 0039, not a
-new adjacency source of truth.
+The unordered public wire described by this ADR will not ship. ADR 0049 owns its
+replacement. Because the affected surface is not active and no persistent data
+must be preserved, ADR 0049 replaces the existing Router request V1 and Graph
+journal/wire V1 structures and codec layouts in place. It separates the public
+batch fingerprint from the exact single-shard Graph request fingerprint and adds
+an unresolved public item distinct from the resolved Graph envelope, plus an
+exhaustive Graph journal request-kind identity without dropping current
+scalar/bulk state. Deterministic post-reservation/no-dispatch admission failures
+become durable terminal failures, while registry availability, shard-binding,
+and compatible-release capability failures remain same-key retryable.
+Property-bearing batches require internal exact-location capture and a separate
+exact logical-ordinal-to-canonical-handle join before publishing canonical
+sidecars. Ordered receipts count logical input edges, never physical
+projections, sidecars, or derived events. Graph journal lookup precedes mutable
+catalog/schema/routing validation so exact completed replay remains stable.
+Ordered Graph journal entries admit only completed/no-continuation state, and
+their receipts carry at most 2,048 sorted unique hot-forward vertices. Router
+retry diagnostics and terminal failures become disjoint bounded types, and
+every lifecycle record has one logical encoded-size bound while retaining the
+measured physical `Bound::Unbounded` stable-map allocation strategy. The
+replacement does not add another compatibility variant, retain a discarded V1
+decoder, or perform an in-place value-schema migration.
 
 No implementation may persist a placement plan across an `await`. Router may
-persist mutation/chunk lifecycle before calling Graph; Graph reconstructs the
-ephemeral physical plan inside the target update message and commits without an
-inter-canister await. A Router callback failure after Graph success is reconciled
-by retrying the same chunk identity and reading the durable Graph receipt.
+persist this ADR's historical unordered mutation/chunk lifecycle before calling
+Graph; Graph reconstructs the ephemeral physical plan inside the target update
+message and commits without an inter-canister await. ADR 0049 supersedes that
+unshipped lifecycle for its V1 path: it permits one Graph shard and one Graph
+request for the complete public batch, persists that exact replay envelope
+before dispatch, and reconciles a Router callback failure by resending that
+envelope under the same Graph request fingerprint and reading the durable Graph
+receipt.
 
 ## Alternatives considered
 
@@ -622,8 +650,19 @@ count, log occupancy/debt, maintenance work, encoded bytes, and callback count.
 6. Add existing inline-value and vertex/edge property batch updates.
 7. Add synchronized LARA/GraphStore vertex batches, then optional combined
    new-vertex/new-edge chunks using projected final geometry.
-8. Add versioned Router/Graph wire, portable 2 MiB chunking, receipts,
-   idempotency/recovery, SDK packing, and PocketIC coverage.
+   Stages 6–7 remain planned internal primitives only. They do not create an
+   unordered public endpoint; any later ordered public exposure requires an ADR
+   0049 revision with operation-specific semantics.
+8. **Superseded by ADR 0049.** Do not add this ADR's unordered public wire.
+   ADR 0049 replaces it with an ordered edge-insert Router/Graph V1 wire and
+   replaces the Graph journal/wire V1 structures in place, with array-position
+   logical ordinals, separate public/Graph-request fingerprints, one durable
+   exact single-target replay envelope, exhaustive Router target progress,
+   complete request-kind journal identity, uniqueness fail-closed admission,
+   single-shard/single-Graph-request admission, unresolved-public/resolved-Graph
+   wire separation, deterministic terminal admission failure, mandatory
+   property-sidecar location capture, aggregate receipts, idempotency/recovery,
+   SDK packing, PocketIC coverage, and a full release-set fresh-reset activation.
 9. Select small-spill and slack policy from benchmark evidence; run unfiltered
    `canbench --persist` for every affected benchmark crate before final artifact
    updates.
@@ -667,6 +706,10 @@ invariants and failure-atomic boundaries are covered.
 - [ADR 0044](0044-router-bulk-mutation-key.md): durable bulk mutation grouping.
 - [ADR 0048](0048-adaptive-lara-mate-index.md): physical pair rank, returned slots,
   and adaptive LARA mate acceleration replacing facade aliases.
+- [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md): planned
+  input-order-preserving successor that retains this ADR's physical batch
+  substrate and supersedes its future unordered public contract after ADR 0048
+  completes.
 - [LARA storage contract](../storage/lara.md).
 - [LARA/DGAP alignment](../storage/lara-dgap-contract.md).
 - [Bulk ingest finalize](../storage/bulk-ingest-finalize.md).

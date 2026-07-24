@@ -82,7 +82,8 @@ Last revised: YYYY-MM-DD
 | [0045](0045-unordered-batch-graph-mutations-and-lara-placement.md) | Unordered batch graph mutations and LARA placement planning | partially implemented |
 | [0046](0046-multi-variable-candidate-seed-relations.md) | Multi-variable candidate seed relations with canonical Graph revalidation | proposed |
 | [0047](0047-shared-typed-graph-bulk-envelope.md) | Shared typed Graph bulk execution envelope | proposed |
-| [0048](0048-adaptive-lara-mate-index.md) | Adaptive LARA mate index replaces Graph edge aliases | accepted (implementation planned) |
+| [0048](0048-adaptive-lara-mate-index.md) | Adaptive LARA mate index replaces Graph edge aliases | accepted (partially implemented; ordinary-caller adoption and alias removal deferred) |
+| [0049](0049-input-order-preserving-batch-graph-mutations.md) | Input-order-preserving batch edge insertions | planned (after ADR 0048 completion) |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 

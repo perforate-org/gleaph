@@ -1,9 +1,9 @@
 # 0027. Graph mutation journal retention
 
 Date: 2026-06-21
-Status: implemented
-Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 21:22:08 UTC +0000
+Status: implemented (ordered-batch retirement revision planned by ADR 0049)
+Last revised: 2026-07-24
+Anchor timestamp: 2026-07-24 00:28:53 UTC +0000
 
 ## Context
 
@@ -21,15 +21,20 @@ The hard question is the **eviction trigger**. Evicting an entry that the router
 can still replay re-applies the DML = double-application / corruption. Evicting
 too late leaks. We traced the full router↔graph `mutation_id` lifecycle:
 
-- A `mutation_id` is reserved by the router against a `ClientMutationKey` record.
-  The router re-sends `execute_plan(mutation_id)` to a shard whenever that record
-  is within TTL and not yet `completed_row_count`. After all shards complete and
-  project (or zero-shard completion), the router sets `completed_row_count` and
-  **never contacts the graph for that id again** — but that terminal state lives
-  on the *router*; the graph has no direct signal for it.
-- The router record is GC'd at `created_at_ns + CLIENT_MUTATION_KEY_TTL_NS`
+- For the implemented `GraphMutationRequestIdentityV1::PlanExecution` path, a
+  `mutation_id` is reserved by the
+  router against a `ClientMutationKey` record. The router re-sends
+  `execute_plan(mutation_id)` to a shard whenever that record is within TTL and
+  not yet `completed_row_count`. After all shards complete and project (or
+  zero-shard completion), the router sets `completed_row_count` and **never
+  contacts the graph for that id again** — but that terminal state lives on the
+  *router*; the graph has no direct signal for it.
+- The terminal plan-execution Router record is GC'd at
+  `created_at_ns + CLIENT_MUTATION_KEY_TTL_NS`
   (7 days, ADR 0025). After that the same client key allocates a **fresh**
-  `mutation_id`; the old id is retired forever and can never be replayed.
+  `mutation_id`; the old plan-execution id is retired forever and can never be
+  replayed. ADR 0049 does not apply this inference to a non-terminal ordered
+  saga.
 
 ### Why ack-through-seq is not a safe trigger
 
@@ -50,8 +55,10 @@ So ack proves "deltas were projected," not "the router will never replay this id
 ## Decision
 
 Retain journal entries on a **time bound ≥ the router's replay TTL**, swept by an
-amortized write-path GC. Time is the only graph-observable invariant that bounds
-replay.
+amortized write-path GC. This is the implemented
+`GraphMutationRequestIdentityV1::PlanExecution` contract.
+ADR 0049 introduces a stricter planned predicate for its ordered request kind,
+whose Router saga is retained without an age limit.
 
 1. **Timestamp every entry.** `GraphMutationJournalEntry` gains
    `recorded_at_ns: Option<u64>`, stamped on both `Incomplete` and `Completed`
@@ -72,8 +79,9 @@ replay.
 3. **Amortized write-path GC** (ADR 0025 mechanism B, mirrored). Each
    completed-journal write — the per-mutation growth source — funds one bounded
    step that scans `MUTATION_JOURNAL_GC_BUDGET` (2) entries from a heap-only
-   round-robin cursor and evicts those older than retention. The sweep is skipped
-   while the journal length stays below a heap-only minimum threshold
+   round-robin cursor and evicts entries that satisfy the request-kind-specific
+   retention predicate. The sweep is skipped while the journal length stays
+   below a heap-only minimum threshold
    (`MUTATION_JOURNAL_GC_MIN_LEN`), avoiding the large fixed cost of a stable
    B-tree range cursor for the common case of a short journal; the cursor is
    ephemeral (`thread_local`): resetting to the start on upgrade just restarts the
@@ -84,6 +92,26 @@ replay.
    *upgrade time* rather than being dropped immediately (which would risk evicting
    an in-flight entry written just before upgrade).
 
+5. **Ordered-batch override (planned by ADR 0049).** The fresh replacement
+   journal V1 adds stable
+   `NotApplicable | Active | Retired { at_ns }` retirement state.
+   Journal reads expose only the derived `NotApplicable | Active | Retired`
+   retirement enum; the timestamp stays Graph-internal.
+   `GraphMutationRequestIdentityV1::PlanExecution` requires `NotApplicable` and
+   retains the implemented age-only predicate above.
+   `GraphMutationRequestIdentityV1::OrderedEdgeBatch` requires `Active` or `Retired`
+   and is never evictable from `recorded_at_ns`: Router non-terminal replay has
+   no TTL, so an active ordered entry is retained regardless of age. After
+   required projections
+   converge, Router invokes the authenticated, fingerprint-bound, idempotent
+   `retire_ordered_mutation` transition. Only an ordered entry in
+   `Retired { at_ns: t }` with
+   `now >= checked_add(t, GRAPH_MUTATION_JOURNAL_RETENTION_NS)` is eligible for
+   the existing bounded amortized GC. Overflow or a future timestamp fails
+   closed rather than saturating into eligibility. Write-path GC and any future
+   operator GC share this request-kind-aware predicate and have no
+   force-eviction bypass.
+
 ## Rejected alternatives
 
 - **Evict on `ack_label_stats_deltas_through` reaching `emitted_delta_last_seq`.**
@@ -92,20 +120,28 @@ replay.
   against `Completed` entries — that *is* the dedup path.
 - **Count/LRU cap.** A fixed entry count does not bound *time*; under variable
   traffic it can evict within the replay window or retain far past it.
-- **Explicit router→graph "mutation retired" ack** on the `completed_row_count`
-  transition. The only *exact* "router will never replay" signal, but it adds a
-  cross-canister call on the completion hot path, modifies the router dispatch
-  loop, and still needs a TTL backstop for records GC'd before the ack lands.
-  Deferred as a possible future precision tightening; the time bound is sound and
-  self-contained on the graph today.
+- **Explicit router→graph "mutation retired" ack for every request kind.** Still
+  rejected for implemented `GraphMutationRequestIdentityV1::PlanExecution`,
+  whose bounded Router replay TTL
+  makes the age-only rule sound. ADR 0049 adopts the exact signal only for
+  `GraphMutationRequestIdentityV1::OrderedEdgeBatch`, because that request's
+  non-terminal Router saga is
+  intentionally retained without an age limit.
 
 ## Consequences
 
-- Region 39 is bounded by the replay TTL working set, like the router journal
-  (region 7) under ADR 0025.
-- Retention is coupled to the router TTL by contract; if `CLIENT_MUTATION_KEY_TTL_NS`
-  ever grows past `GRAPH_MUTATION_JOURNAL_RETENTION_NS - margin`, the graph
-  constant must grow too. Both ADR 0025 and this ADR call out the relationship.
+- For implemented `GraphMutationRequestIdentityV1::PlanExecution`, region 39 is
+  bounded by the replay TTL
+  working set, like the router journal (region 7) under ADR 0025. Under planned
+  ADR 0049, active ordered entries additionally form the exact set of
+  non-terminal Router-owned replay/retirement obligations; autonomous
+  journal-only reconciliation and retirement recovery are required to keep
+  that set convergent.
+- Plan-execution retention is coupled to the router TTL by contract; if
+  `CLIENT_MUTATION_KEY_TTL_NS` ever grows past
+  `GRAPH_MUTATION_JOURNAL_RETENTION_NS - margin`, the graph constant must grow
+  too. Both ADR 0025 and this ADR call out the relationship. Ordered retention
+  starts only from its explicit retirement transition.
 - The amortized sweep is conditionally skipped while the journal is short, so
   the fixed per-write sweep cost is avoided in the common case without changing
   the long-term growth bound. Once the journal exceeds the heap-only threshold,
@@ -114,6 +150,11 @@ replay.
   growth without a timer. An operator-driven paginated sweep (mirroring
   `admin_sweep_expired_client_mutation_keys`) remains a possible future addition
   if a one-shot drain is ever needed.
+- A lost ordered retirement callback cannot re-enable canonical execution.
+  Router persists `RetirementPending` before the call and retries only the
+  idempotent retirement transition. If an already retired entry ages out before
+  Router observes the callback, absence leaves the saga pending operator repair;
+  it is not retirement proof and never authorizes canonical execution.
 
 ## References
 
@@ -161,4 +202,6 @@ Measured impact vs. the Plan 0119 Candid baseline:
 - `canonical_segment_insert_bundle_4` total: ~53% reduction.
 - `canonical_segment_insert_bundle_16` total: ~23% reduction (~278 K absolute).
 
-No retention window, GC design, or replay semantics changed.
+No retention window, GC design, or replay semantics changed for the implemented
+`GraphMutationRequestIdentityV1::PlanExecution` path. ADR 0049's planned
+ordered request-kind override is specified above.
