@@ -798,6 +798,28 @@ pub(crate) fn build_real_scan_fixture(spec: FixtureSpec) -> Result<Deterministic
     )
 }
 
+/// Build a real Published identity fixture for the promotion-eligible directed-high shape.
+#[cfg(feature = "canbench")]
+pub(crate) fn build_real_published_fixture(
+    spec: FixtureSpec,
+) -> Result<DeterministicFixture, String> {
+    if spec.shape != FixtureShape::Directed || spec.logical_edges != 128 {
+        return Err("Published fixture requires directed_high topology".to_owned());
+    }
+    let vertex_count = 64u32;
+    let mut edges = Vec::with_capacity(128);
+    for source in 0..vertex_count {
+        edges.push((source, (source + 1) % vertex_count));
+        edges.push((source, (source + 2) % vertex_count));
+    }
+    let fixture = ic_stable_lara::adoption_fixture::build_published_fixture(vertex_count, &edges)?;
+    Ok(deterministic_fixture_from_physical(
+        spec,
+        ic_stable_lara::adoption_fixture::FixtureRepresentation::Published,
+        fixture.identities,
+    ))
+}
+
 #[cfg(feature = "canbench")]
 fn build_real_adjacency_fixture(
     spec: FixtureSpec,
@@ -1193,6 +1215,13 @@ fn bench_mate_adoption_fixture_corpus() -> canbench_rs::BenchResult {
                 Some(canonical_identity_digest(&scan.identities)),
             ));
         }
+        #[cfg(feature = "canbench")]
+        if let Ok(published) = build_real_published_fixture(spec) {
+            candidate_rows.push((
+                published.descriptor.fixture_ids[0].clone(),
+                Some(canonical_identity_digest(&published.identities)),
+            ));
+        }
         candidate_rows.sort_by(|left, right| left.0.cmp(&right.0));
         descriptor.fixture_ids = candidate_rows
             .iter()
@@ -1362,6 +1391,19 @@ mod fixture_evidence_tests {
             vec!["directed_low-scan-only"]
         );
         assert!(fixture.identities.windows(2).all(|pair| pair[0] != pair[1]));
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn real_published_fixture_uses_promotion_eligible_directed_high_topology() {
+        let spec = FixtureSpec::required_matrix()[1];
+        let fixture = build_real_published_fixture(spec).expect("published fixture");
+        assert_eq!(fixture.identities.len() as u64, spec.physical_half_edges);
+        assert_eq!(
+            fixture.descriptor.fixture_ids,
+            vec!["directed_high-published"]
+        );
+        assert!(build_real_published_fixture(FixtureSpec::required_matrix()[0]).is_err());
     }
 
     #[cfg(feature = "canbench")]
