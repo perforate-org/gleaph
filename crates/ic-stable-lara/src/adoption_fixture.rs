@@ -48,6 +48,7 @@ pub struct FixtureEdge {
     pub neighbor: u32,
     /// Whether the record is an undirected adjacency.
     pub undirected: bool,
+    slot: u32,
 }
 
 impl CsrEdge for FixtureEdge {
@@ -57,6 +58,7 @@ impl CsrEdge for FixtureEdge {
         Self {
             neighbor: u32::from_le_bytes(bytes[..4].try_into().expect("fixture edge bytes")),
             undirected: bytes[4] != 0,
+            slot: 0,
         }
     }
 
@@ -74,6 +76,15 @@ impl CsrEdge for FixtureEdge {
             neighbor: u32::from(vid),
             ..*self
         }
+    }
+
+    fn with_slot_index(mut self, slot: u32) -> Self {
+        self.slot = slot;
+        self
+    }
+
+    fn edge_slot_index_raw(&self) -> u32 {
+        self.slot
     }
 }
 
@@ -175,6 +186,7 @@ pub fn build_alias_only_fixture(
                 FixtureEdge {
                     neighbor: target,
                     undirected: false,
+                    slot: 0,
                 },
             )
             .map_err(|error| format!("fixture edge insert failed: {error}"))?;
@@ -272,6 +284,7 @@ pub fn build_alias_only_undirected_fixture(
                 FixtureEdge {
                     neighbor: target,
                     undirected: true,
+                    slot: 0,
                 },
             )
             .map_err(|error| format!("fixture edge insert failed: {error}"))?;

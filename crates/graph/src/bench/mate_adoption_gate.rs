@@ -797,6 +797,10 @@ pub(crate) fn build_real_alias_fixture(spec: FixtureSpec) -> Result<Deterministi
             ic_stable_lara::adoption_fixture::build_alias_only_fixture(vertex_count, &edges)?
                 .identities
         }
+        FixtureShape::Parallel => {
+            let edges = (0..spec.logical_edges).map(|_| (0, 1)).collect::<Vec<_>>();
+            ic_stable_lara::adoption_fixture::build_alias_only_fixture(2, &edges)?.identities
+        }
         FixtureShape::Undirected => {
             let edges = (0..spec.logical_edges)
                 .map(|index| {
@@ -817,7 +821,7 @@ pub(crate) fn build_real_alias_fixture(spec: FixtureSpec) -> Result<Deterministi
         }
         _ => {
             return Err(
-                "real AliasOnly adapter currently supports directed/undirected shapes only"
+                "real AliasOnly adapter currently supports directed/parallel/undirected shapes only"
                     .to_owned(),
             );
         }
@@ -1190,6 +1194,7 @@ mod fixture_evidence_tests {
             FixtureSpec::required_matrix()[1],
             FixtureSpec::required_matrix()[2],
             FixtureSpec::required_matrix()[5],
+            FixtureSpec::required_matrix()[6],
         ] {
             let fixture = build_real_alias_fixture(spec).expect("real alias fixture");
             assert_eq!(fixture.identities.len() as u64, spec.physical_half_edges);
@@ -1205,7 +1210,7 @@ mod fixture_evidence_tests {
                     .iter()
                     .any(|identity| identity.orientation == 0)
             );
-            if spec.shape == FixtureShape::Directed {
+            if matches!(spec.shape, FixtureShape::Directed | FixtureShape::Parallel) {
                 assert!(
                     fixture
                         .identities
@@ -1222,6 +1227,16 @@ mod fixture_evidence_tests {
             }
             assert_eq!(fixture.descriptor.alias_rows, spec.physical_half_edges);
             assert_eq!(canonical_identity_digest(&fixture.identities).len(), 64);
+            if spec.shape == FixtureShape::Parallel {
+                assert_eq!(
+                    fixture
+                        .identities
+                        .iter()
+                        .filter(|identity| identity.orientation == 0)
+                        .count() as u64,
+                    spec.logical_edges
+                );
+            }
         }
     }
 
