@@ -779,6 +779,55 @@ pub(crate) fn build_fixture(spec: FixtureSpec) -> DeterministicFixture {
     }
 }
 
+/// Build a real AliasOnly identity fixture for the subset currently supported by the owning
+/// `ic-stable-lara` adapter. Unsupported shapes remain synthetic/deferred until their owner exists.
+#[cfg(feature = "canbench")]
+pub(crate) fn build_real_alias_fixture(spec: FixtureSpec) -> Result<DeterministicFixture, String> {
+    if spec.shape != FixtureShape::Directed {
+        return Err("real AliasOnly adapter currently supports directed shapes only".to_owned());
+    }
+    let edges = (0..spec.logical_edges)
+        .map(|index| (0, index as u32 + 1))
+        .collect::<Vec<_>>();
+    let fixture = ic_stable_lara::adoption_fixture::build_alias_only_fixture(
+        (spec.logical_edges + 1) as u32,
+        &edges,
+    )?;
+    let identities = fixture
+        .identities
+        .into_iter()
+        .map(|identity| {
+            let mut seed = Vec::new();
+            seed.extend_from_slice(&identity.owner.to_be_bytes());
+            seed.extend_from_slice(&identity.target.to_be_bytes());
+            seed.push(identity.orientation);
+            seed.extend_from_slice(&identity.slot.to_be_bytes());
+            CanonicalIdentity {
+                owner: identity.owner,
+                target: identity.target,
+                orientation: identity.orientation,
+                label: 1,
+                slot: identity.slot,
+                inline_payload_fingerprint: digest_hex(&seed),
+                payload_bytes: Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let descriptor = ShapeDescriptor {
+        shape_id: spec.id.to_owned(),
+        shape_definition_digest: shape_definition_digest(spec),
+        fixture_ids: vec![format!("{}-alias-only", spec.id)],
+        logical_edges: spec.logical_edges,
+        physical_half_edges: identities.len() as u64,
+        alias_rows: identities.len() as u64,
+        indexed_half_edges: identities.len() as u64,
+    };
+    Ok(DeterministicFixture {
+        descriptor,
+        identities,
+    })
+}
+
 fn spec_for_shape_id(id: &str) -> FixtureSpec {
     FixtureSpec::required_matrix()
         .into_iter()
@@ -1103,6 +1152,29 @@ mod fixture_evidence_tests {
             canonical_identity_digest(&fixture.identities),
             canonical_identity_digest(&decoded)
         );
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn real_alias_fixture_uses_lara_physical_slots() {
+        let fixture = build_real_alias_fixture(FixtureSpec::required_matrix()[0])
+            .expect("real alias fixture");
+        assert_eq!(fixture.identities.len(), 16);
+        assert!(fixture.identities.iter().all(|identity| identity.slot < 16));
+        assert!(
+            fixture
+                .identities
+                .iter()
+                .any(|identity| identity.orientation == 0)
+        );
+        assert!(
+            fixture
+                .identities
+                .iter()
+                .any(|identity| identity.orientation == 1)
+        );
+        assert_eq!(fixture.descriptor.alias_rows, 16);
+        assert_eq!(canonical_identity_digest(&fixture.identities).len(), 64);
     }
 
     #[test]
