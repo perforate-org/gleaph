@@ -689,6 +689,17 @@ pub(crate) fn canonical_identity_digest(rows: &[CanonicalIdentity]) -> String {
     digest_hex(&encoded)
 }
 
+/// Exact logical byte length of the canonical identity envelope used by the evidence schema.
+pub(crate) fn canonical_identity_encoded_bytes(rows: &[CanonicalIdentity]) -> u64 {
+    let mut ordered = rows.to_vec();
+    ordered.sort();
+    ordered.iter().fold(5u64, |total, row| {
+        total
+            .saturating_add(4)
+            .saturating_add(row.row_bytes().len() as u64)
+    })
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ShapeDescriptor {
     pub(crate) shape_id: String,
@@ -1002,17 +1013,18 @@ fn deterministic_fixture_from_physical(
 /// Select the owning-layer fixture for evidence generation. Unsupported shapes retain their
 /// descriptor but deliberately omit the identity digest instead of presenting synthetic rows as
 /// real AliasOnly measurements.
-fn build_evidence_fixture(spec: FixtureSpec) -> (ShapeDescriptor, Option<String>) {
+fn build_evidence_fixture(spec: FixtureSpec) -> (ShapeDescriptor, Option<String>, Option<u64>) {
     #[cfg(feature = "canbench")]
     if let Ok(fixture) = build_real_alias_fixture(spec) {
         return (
             fixture.descriptor,
             Some(canonical_identity_digest(&fixture.identities)),
+            Some(canonical_identity_encoded_bytes(&fixture.identities)),
         );
     }
 
     let synthetic = build_fixture(spec);
-    (synthetic.descriptor, None)
+    (synthetic.descriptor, None, None)
 }
 
 fn spec_for_shape_id(id: &str) -> FixtureSpec {
@@ -1133,6 +1145,7 @@ pub(crate) struct EvidenceRow {
     pub(crate) status: EvidenceStatus,
     pub(crate) policy_version: String,
     pub(crate) canonical_identity_digest: Option<String>,
+    pub(crate) canonical_identity_bytes: Option<u64>,
     pub(crate) request_identity: Option<String>,
     pub(crate) instruction_total: Option<u64>,
     pub(crate) exact_result_status: Option<bool>,
@@ -1218,6 +1231,9 @@ impl EvidenceArtifact {
                     return Err("measured row missing instructions");
                 }
             }
+            if row.canonical_identity_bytes == Some(0) {
+                return Err("invalid identity byte length");
+            }
         }
         Ok(())
     }
@@ -1233,14 +1249,15 @@ fn bench_mate_adoption_fixture_corpus() -> canbench_rs::BenchResult {
     let mut rows = Vec::new();
     let mut corpus_generated_count = 0u32;
     for spec in FixtureSpec::required_matrix() {
-        let (mut descriptor, alias_digest) = build_evidence_fixture(spec);
+        let (mut descriptor, alias_digest, alias_bytes) = build_evidence_fixture(spec);
         let alias_fixture_id = descriptor.fixture_ids[0].clone();
-        let mut candidate_rows = vec![(alias_fixture_id, alias_digest)];
+        let mut candidate_rows = vec![(alias_fixture_id, alias_digest, alias_bytes)];
         #[cfg(feature = "canbench")]
         if let Ok(scan) = build_real_scan_fixture(spec) {
             candidate_rows.push((
                 scan.descriptor.fixture_ids[0].clone(),
                 Some(canonical_identity_digest(&scan.identities)),
+                Some(canonical_identity_encoded_bytes(&scan.identities)),
             ));
         }
         #[cfg(feature = "canbench")]
@@ -1248,23 +1265,25 @@ fn bench_mate_adoption_fixture_corpus() -> canbench_rs::BenchResult {
             candidate_rows.push((
                 published.descriptor.fixture_ids[0].clone(),
                 Some(canonical_identity_digest(&published.identities)),
+                Some(canonical_identity_encoded_bytes(&published.identities)),
             ));
         }
         candidate_rows.sort_by(|left, right| left.0.cmp(&right.0));
         descriptor.fixture_ids = candidate_rows
             .iter()
-            .map(|(fixture_id, _)| fixture_id.clone())
+            .map(|(fixture_id, _, _)| fixture_id.clone())
             .collect();
         descriptors.push(descriptor.clone());
         rows.extend(
             candidate_rows
                 .into_iter()
-                .map(|(fixture_id, digest)| EvidenceRow {
+                .map(|(fixture_id, digest, identity_bytes)| EvidenceRow {
                     shape_id: descriptor.shape_id.clone(),
                     fixture_id,
                     status: EvidenceStatus::Deferred,
                     policy_version: POLICY_VERSION.to_owned(),
                     canonical_identity_digest: digest,
+                    canonical_identity_bytes: identity_bytes,
                     request_identity: None,
                     instruction_total: None,
                     exact_result_status: None,
@@ -1452,13 +1471,16 @@ mod fixture_evidence_tests {
     fn evidence_uses_real_digest_only_for_supported_alias_shapes() {
         let parallel = build_evidence_fixture(FixtureSpec::required_matrix()[6]);
         assert!(parallel.1.is_some());
+        assert!(parallel.2.is_some_and(|bytes| bytes > 0));
 
         let sparse = build_evidence_fixture(FixtureSpec::required_matrix()[7]);
         assert!(sparse.1.is_none());
+        assert!(sparse.2.is_none());
         assert_eq!(sparse.0.fixture_ids, vec!["sparse_slots-fixture"]);
 
         let mixed = build_evidence_fixture(FixtureSpec::required_matrix()[8]);
         assert!(mixed.1.is_none());
+        assert!(mixed.2.is_none());
         assert_eq!(mixed.0.fixture_ids, vec!["mixed_labels_low-fixture"]);
     }
 
@@ -1478,6 +1500,7 @@ mod fixture_evidence_tests {
                 status: EvidenceStatus::Measured,
                 policy_version: POLICY_VERSION.to_owned(),
                 canonical_identity_digest: None,
+                canonical_identity_bytes: None,
                 request_identity: None,
                 instruction_total: None,
                 exact_result_status: None,
@@ -1503,6 +1526,9 @@ mod fixture_evidence_tests {
                 status: EvidenceStatus::Deferred,
                 policy_version: POLICY_VERSION.to_owned(),
                 canonical_identity_digest: Some(canonical_identity_digest(&fixture.identities)),
+                canonical_identity_bytes: Some(canonical_identity_encoded_bytes(
+                    &fixture.identities,
+                )),
                 request_identity: None,
                 instruction_total: None,
                 exact_result_status: None,

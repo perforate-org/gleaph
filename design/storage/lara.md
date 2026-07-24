@@ -257,7 +257,8 @@ only for measurement builds; Published evidence integration is limited to promot
 directed-high, parallel, and undirected-high rows. Graph's bench adapter consumes AliasOnly physical rows for directed, parallel, undirected,
 and undirected-self-loop fixtures only; the measurement owner also constructs an independent
 ScanOnly canonical-adjacency fixture and emits separate deferred rows for representable ScanOnly
-shapes. Unsupported shapes remain deferred without synthetic identity claims.
+shapes. Evidence records logical identity bytes separately from stable-memory page deltas;
+unsupported shapes remain deferred without synthetic identity claims.
 
 ---
 

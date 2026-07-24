@@ -704,7 +704,8 @@ Graph evidence now emits Published rows for the promotion-eligible directed-high
 undirected-high topologies; other Published shapes remain deferred because promotion eligibility is
 shape/policy dependent. The owning layer has independent Published fixtures for those topologies, while ScanOnly has a
 canonical-adjacency fixture with no mate metadata. Deferred evidence emits separate ScanOnly rows
-for representable shapes. The AliasOnly builder is
+for representable shapes and records exact logical identity-envelope bytes separately from
+stable-memory page deltas. The AliasOnly builder is
 exposed only through the `adoption-fixtures` feature, which Graph enables only for `canbench`.
 The Graph bench adapter now consumes those physical rows for both directed sizes plus parallel,
 undirected, and undirected-self-loop AliasOnly fixtures. Deferred evidence rows use real identity
