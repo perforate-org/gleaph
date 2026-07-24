@@ -367,11 +367,24 @@ pub(crate) fn select_adoption_disposition(
     if observation.live_degree < PROMOTE_MIN_LIVE_EDGES {
         return AdoptionDisposition::ScanOnly;
     }
-    match (shape, select_compression_candidate(observation)) {
-        (FixtureShape::Undirected, CompressionCandidate::RankedPacked)
-        | (FixtureShape::Undirected, CompressionCandidate::MonotoneCompressed) => {
+    if shape == FixtureShape::Undirected {
+        let (Some(bytes), Some(instructions)) = (
+            observation.pair_rank_bytes,
+            observation.pair_rank_instructions,
+        ) else {
+            return AdoptionDisposition::Deferred;
+        };
+        return if observation.exact_and_fail_closed
+            && bytes != 0
+            && bytes <= observation.alias_bytes
+            && instructions <= observation.scan_instructions
+        {
             AdoptionDisposition::PairRank
-        }
+        } else {
+            AdoptionDisposition::ScanOnly
+        };
+    }
+    match (shape, select_compression_candidate(observation)) {
         (FixtureShape::Directed, CompressionCandidate::SharedOrientation)
         | (FixtureShape::Parallel, CompressionCandidate::SharedOrientation)
         | (FixtureShape::SparseSlots, CompressionCandidate::SharedOrientation)
@@ -407,6 +420,8 @@ pub(crate) struct CompressionPolicyObservation {
     pub(crate) shared_instructions: Option<u64>,
     pub(crate) compressed_bytes: Option<u64>,
     pub(crate) compressed_instructions: Option<u64>,
+    pub(crate) pair_rank_bytes: Option<u64>,
+    pub(crate) pair_rank_instructions: Option<u64>,
     pub(crate) exact_and_fail_closed: bool,
 }
 
@@ -3920,6 +3935,8 @@ mod fixture_evidence_tests {
             shared_instructions: None,
             compressed_bytes: None,
             compressed_instructions: None,
+            pair_rank_bytes: None,
+            pair_rank_instructions: None,
             exact_and_fail_closed: true,
         }
     }
@@ -4118,6 +4135,8 @@ mod fixture_evidence_tests {
         let mut undirected = observation();
         undirected.shared_bytes = None;
         undirected.shared_instructions = None;
+        undirected.pair_rank_bytes = Some(1_544);
+        undirected.pair_rank_instructions = Some(721_260);
         assert_eq!(
             select_adoption_disposition(
                 FixtureShape::Undirected,
@@ -4125,6 +4144,26 @@ mod fixture_evidence_tests {
                 Some(undirected)
             ),
             AdoptionDisposition::PairRank
+        );
+        let mut pair_rank_fail = undirected;
+        pair_rank_fail.pair_rank_instructions = Some(pair_rank_fail.scan_instructions + 1);
+        assert_eq!(
+            select_adoption_disposition(
+                FixtureShape::Undirected,
+                AccessProfile::Hot,
+                Some(pair_rank_fail)
+            ),
+            AdoptionDisposition::ScanOnly
+        );
+        let mut pair_rank_missing = undirected;
+        pair_rank_missing.pair_rank_bytes = None;
+        assert_eq!(
+            select_adoption_disposition(
+                FixtureShape::Undirected,
+                AccessProfile::Hot,
+                Some(pair_rank_missing)
+            ),
+            AdoptionDisposition::Deferred
         );
 
         let mut unsafe_result = shared;
@@ -4474,6 +4513,8 @@ mod fixture_evidence_tests {
             shared_instructions: Some(672_220),
             compressed_bytes: None,
             compressed_instructions: None,
+            pair_rank_bytes: None,
+            pair_rank_instructions: None,
             exact_and_fail_closed: true,
         };
         assert_eq!(
@@ -4498,6 +4539,8 @@ mod fixture_evidence_tests {
             ranked_instructions: 1_560_000,
             shared_bytes: None,
             shared_instructions: None,
+            pair_rank_bytes: Some(1_544),
+            pair_rank_instructions: Some(721_260),
             ..directed
         };
         assert_eq!(
