@@ -469,7 +469,7 @@ where
                         self.src,
                         &self.bucket,
                         ordinal,
-                        edge.with_slot_index(slot),
+                        edge,
                         self.log_chains.as_ref(),
                     )
                     .map(|edge| (slot, edge)),
