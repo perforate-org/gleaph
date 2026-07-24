@@ -703,8 +703,9 @@ construction now populates real bidirectional LARA and extracts physical identit
 ScanOnly/Published population and evidence integration remain pending. The AliasOnly builder is
 exposed only through the `adoption-fixtures` feature, which Graph enables only for `canbench`.
 The Graph bench adapter now consumes those physical rows for both directed sizes plus parallel,
-undirected, and undirected-self-loop AliasOnly fixtures; sparse-slot and mixed-label shapes remain
-deferred.
+undirected, and undirected-self-loop AliasOnly fixtures. Deferred evidence rows use real identity
+digests only for those supported shapes; sparse-slot and mixed-label rows retain null identity
+measurements until their owning representations exist.
 
 ## Related
 

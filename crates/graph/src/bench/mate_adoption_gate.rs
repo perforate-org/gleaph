@@ -860,6 +860,22 @@ pub(crate) fn build_real_alias_fixture(spec: FixtureSpec) -> Result<Deterministi
     })
 }
 
+/// Select the owning-layer fixture for evidence generation. Unsupported shapes retain their
+/// descriptor but deliberately omit the identity digest instead of presenting synthetic rows as
+/// real AliasOnly measurements.
+fn build_evidence_fixture(spec: FixtureSpec) -> (ShapeDescriptor, Option<String>) {
+    #[cfg(feature = "canbench")]
+    if let Ok(fixture) = build_real_alias_fixture(spec) {
+        return (
+            fixture.descriptor,
+            Some(canonical_identity_digest(&fixture.identities)),
+        );
+    }
+
+    let synthetic = build_fixture(spec);
+    (synthetic.descriptor, None)
+}
+
 fn spec_for_shape_id(id: &str) -> FixtureSpec {
     FixtureSpec::required_matrix()
         .into_iter()
@@ -1074,30 +1090,29 @@ impl EvidenceArtifact {
 
 #[bench(raw)]
 fn bench_mate_adoption_fixture_corpus() -> canbench_rs::BenchResult {
-    let fixtures = FixtureSpec::required_matrix()
+    let evidence_fixtures = FixtureSpec::required_matrix()
         .into_iter()
-        .map(build_fixture)
+        .map(build_evidence_fixture)
         .collect::<Vec<_>>();
-    let mut descriptors = fixtures
+    let mut descriptors = evidence_fixtures
         .iter()
-        .map(|fixture| fixture.descriptor.clone())
+        .map(|(descriptor, _)| descriptor.clone())
         .collect::<Vec<_>>();
     descriptors.sort_by(|left, right| left.shape_id.cmp(&right.shape_id));
-    let corpus_generated_count = fixtures
+    let corpus_generated_count = evidence_fixtures
         .iter()
-        .map(|fixture| {
-            build_request_corpus(spec_for_shape_id(&fixture.descriptor.shape_id), 0x0048_0146).len()
-                as u32
+        .map(|(descriptor, _)| {
+            build_request_corpus(spec_for_shape_id(&descriptor.shape_id), 0x0048_0146).len() as u32
         })
         .sum();
-    let rows = fixtures
+    let rows = evidence_fixtures
         .iter()
-        .map(|fixture| EvidenceRow {
-            shape_id: fixture.descriptor.shape_id.clone(),
-            fixture_id: fixture.descriptor.fixture_ids[0].clone(),
+        .map(|(descriptor, identity_digest)| EvidenceRow {
+            shape_id: descriptor.shape_id.clone(),
+            fixture_id: descriptor.fixture_ids[0].clone(),
             status: EvidenceStatus::Deferred,
             policy_version: POLICY_VERSION.to_owned(),
-            canonical_identity_digest: Some(canonical_identity_digest(&fixture.identities)),
+            canonical_identity_digest: identity_digest.clone(),
             request_identity: None,
             instruction_total: None,
             exact_result_status: None,
@@ -1109,10 +1124,7 @@ fn bench_mate_adoption_fixture_corpus() -> canbench_rs::BenchResult {
         fixture_generator: 1,
         corpus_seed: 0x0048_0146,
         corpus_generator: 1,
-        shape_descriptors: fixtures
-            .iter()
-            .map(|fixture| fixture.descriptor.clone())
-            .collect(),
+        shape_descriptors: descriptors.clone(),
         corpus_generated_count,
         rows,
     };
@@ -1238,6 +1250,21 @@ mod fixture_evidence_tests {
                 );
             }
         }
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn evidence_uses_real_digest_only_for_supported_alias_shapes() {
+        let parallel = build_evidence_fixture(FixtureSpec::required_matrix()[6]);
+        assert!(parallel.1.is_some());
+
+        let sparse = build_evidence_fixture(FixtureSpec::required_matrix()[7]);
+        assert!(sparse.1.is_none());
+        assert_eq!(sparse.0.fixture_ids, vec!["sparse_slots-fixture"]);
+
+        let mixed = build_evidence_fixture(FixtureSpec::required_matrix()[8]);
+        assert!(mixed.1.is_none());
+        assert_eq!(mixed.0.fixture_ids, vec!["mixed_labels_low-fixture"]);
     }
 
     #[test]

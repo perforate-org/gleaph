@@ -255,7 +255,8 @@ Plan 0147 now provides the bench-only `MeasurementMemoryBundle` ownership bounda
 AliasOnly bidirectional-LARA fixture with physical identity extraction. The fixture API is enabled
 only for measurement builds; ScanOnly/Published population and evidence integration remain
 deferred. Graph's bench adapter consumes AliasOnly physical rows for directed, parallel, undirected,
-and undirected-self-loop fixtures only.
+and undirected-self-loop fixtures only; unsupported shapes remain deferred without synthetic identity
+claims.
 
 ---
 
