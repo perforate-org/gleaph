@@ -14,6 +14,7 @@ use super::mate_compression::{
 };
 use super::mate_footprint::{MateFootprintInput, MateMode, MateSharedOverhead};
 use canbench_rs::{bench, bench_fn};
+use ic_stable_lara::traits::CsrEdge;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::hint::black_box;
@@ -271,6 +272,58 @@ pub(crate) enum CompressionCandidate {
     SharedOrientation,
     RankedPacked,
     MonotoneCompressed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AmortizationObservation {
+    pub(crate) compression: CompressionPolicyObservation,
+    pub(crate) shared_update_instructions: u64,
+    pub(crate) ranked_update_instructions: u64,
+    pub(crate) reads_per_update: u64,
+}
+
+pub(crate) fn break_even_reads(
+    scan_instructions: u64,
+    candidate_instructions: u64,
+    update_instructions: u64,
+) -> Option<u64> {
+    let savings = scan_instructions.checked_sub(candidate_instructions)?;
+    if savings == 0 {
+        return None;
+    }
+    Some(update_instructions.saturating_add(savings - 1) / savings)
+}
+
+pub(crate) fn select_amortized_candidate(
+    observation: AmortizationObservation,
+) -> CompressionCandidate {
+    let candidate = select_compression_candidate(observation.compression);
+    let update_cost = |candidate| match candidate {
+        CompressionCandidate::SharedOrientation => observation.shared_update_instructions,
+        CompressionCandidate::RankedPacked => observation.ranked_update_instructions,
+        _ => 0,
+    };
+    if matches!(
+        candidate,
+        CompressionCandidate::SharedOrientation | CompressionCandidate::RankedPacked
+    ) && break_even_reads(
+        observation.compression.scan_instructions,
+        match candidate {
+            CompressionCandidate::SharedOrientation => observation
+                .compression
+                .shared_instructions
+                .unwrap_or(u64::MAX),
+            CompressionCandidate::RankedPacked => observation.compression.ranked_instructions,
+            _ => 0,
+        },
+        update_cost(candidate),
+    )
+    .is_some_and(|reads| observation.reads_per_update >= reads)
+    {
+        candidate
+    } else {
+        CompressionCandidate::ScanOnly
+    }
 }
 
 pub(crate) const MIN_RANK_LIVE_DEGREE: u64 = 32;
@@ -2212,6 +2265,203 @@ fn amortized_read_savings(
 }
 
 #[cfg(feature = "canbench")]
+fn extract_sparse_identities(
+    graph: &ic_stable_lara::labeled::DeferredBidirectionalLabeledLaraGraph<
+        ic_stable_lara::adoption_fixture::PublishedEdge,
+        ic_stable_lara::adoption_fixture::FixtureMemory,
+    >,
+) -> Result<Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>, String> {
+    let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
+    let mut identities = Vec::new();
+    graph
+        .forward()
+        .for_each_live_physical_edge_location_for_label(
+            ic_stable_lara::VertexId::from(0),
+            label,
+            |slot, edge| {
+                identities.push(ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: 0,
+                    target: u32::from(edge.neighbor_vid()),
+                    orientation: 0,
+                    slot,
+                })
+            },
+        )
+        .map_err(|error| format!("sparse forward extract failed: {error}"))?;
+    graph
+        .reverse()
+        .for_each_live_physical_edge_location_for_label(
+            ic_stable_lara::VertexId::from(1),
+            label,
+            |slot, edge| {
+                identities.push(ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: 1,
+                    target: u32::from(edge.neighbor_vid()),
+                    orientation: 1,
+                    slot,
+                })
+            },
+        )
+        .map_err(|error| format!("sparse reverse extract failed: {error}"))?;
+    identities.sort();
+    Ok(identities)
+}
+
+#[cfg(feature = "canbench")]
+fn integrated_sparse_mutation_checksum() -> u64 {
+    let fixture = ic_stable_lara::adoption_fixture::build_sparse_slot_published_fixture(64)
+        .expect("sparse fixture");
+    let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
+    let mut checksum = fixture.identities.len() as u64;
+    {
+        let _scope = canbench_rs::bench_scope("mate_canonical_insert_sparse");
+        fixture
+            .graph
+            .insert_directed_edge(
+                ic_stable_lara::VertexId::from(0),
+                ic_stable_lara::VertexId::from(1),
+                label,
+                ic_stable_lara::adoption_fixture::PublishedEdge::new(1, 0),
+                ic_stable_lara::adoption_fixture::PublishedEdge::new(0, 0),
+            )
+            .expect("sparse canonical insert");
+    }
+    let after_insert = {
+        let _scope = canbench_rs::bench_scope("mate_physical_extract_sparse");
+        extract_sparse_identities(&fixture.graph).expect("sparse extract after insert")
+    };
+    checksum = checksum.wrapping_add(after_insert.len() as u64);
+    {
+        let _scope = canbench_rs::bench_scope("mate_canonical_delete_sparse");
+        fixture
+            .graph
+            .remove_forward_edge_at_slot(ic_stable_lara::VertexId::from(0), label, 1)
+            .expect("sparse forward delete");
+        fixture
+            .graph
+            .remove_reverse_edge_at_slot(ic_stable_lara::VertexId::from(1), label, 1)
+            .expect("sparse reverse delete");
+    }
+    let after_delete = {
+        let _scope = canbench_rs::bench_scope("mate_physical_extract_sparse");
+        extract_sparse_identities(&fixture.graph).expect("sparse extract after delete")
+    };
+    checksum = checksum.wrapping_add(after_delete.len() as u64);
+    let _scope = canbench_rs::bench_scope("mate_candidate_rebuild_sparse");
+    checksum
+        .wrapping_add(maintenance_candidate_checksum(
+            &[after_insert, after_delete],
+            MaintenanceCandidate::Shared,
+        ))
+        .wrapping_add(maintenance_candidate_checksum(
+            &[fixture.identities],
+            MaintenanceCandidate::Ranked,
+        ))
+}
+
+#[cfg(feature = "canbench")]
+fn extract_mixed_label_identities(
+    graph: &ic_stable_lara::labeled::DeferredBidirectionalLabeledLaraGraph<
+        ic_stable_lara::adoption_fixture::PublishedEdge,
+        ic_stable_lara::adoption_fixture::FixtureMemory,
+    >,
+    label: ic_stable_lara::labeled::BucketLabelKey,
+) -> Result<Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>, String> {
+    let mut identities = Vec::new();
+    graph
+        .forward()
+        .for_each_live_physical_edge_location_for_label(
+            ic_stable_lara::VertexId::from(0),
+            label,
+            |slot, edge| {
+                identities.push(ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: 0,
+                    target: u32::from(edge.neighbor_vid()),
+                    orientation: 0,
+                    slot,
+                })
+            },
+        )
+        .map_err(|error| format!("mixed forward extract failed: {error}"))?;
+    graph
+        .reverse()
+        .for_each_live_physical_edge_location_for_label(
+            ic_stable_lara::VertexId::from(1),
+            label,
+            |slot, edge| {
+                identities.push(ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: 1,
+                    target: u32::from(edge.neighbor_vid()),
+                    orientation: 1,
+                    slot,
+                })
+            },
+        )
+        .map_err(|error| format!("mixed reverse extract failed: {error}"))?;
+    identities.sort();
+    Ok(identities)
+}
+
+#[cfg(feature = "canbench")]
+fn integrated_mixed_mutation_checksum() -> u64 {
+    let fixture = ic_stable_lara::adoption_fixture::build_mixed_label_published_fixture(2, 4)
+        .expect("mixed fixture");
+    let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
+    let mut checksum = fixture.identities.len() as u64;
+    {
+        let _scope = canbench_rs::bench_scope("mate_canonical_insert_mixed");
+        fixture
+            .graph
+            .insert_directed_edge(
+                ic_stable_lara::VertexId::from(0),
+                ic_stable_lara::VertexId::from(1),
+                label,
+                ic_stable_lara::adoption_fixture::PublishedEdge::new(1, 0),
+                ic_stable_lara::adoption_fixture::PublishedEdge::new(0, 0),
+            )
+            .expect("mixed canonical insert");
+    }
+    let after_insert = {
+        let _scope = canbench_rs::bench_scope("mate_physical_extract_mixed");
+        extract_mixed_label_identities(&fixture.graph, label).expect("mixed extract after insert")
+    };
+    checksum = checksum.wrapping_add(after_insert.len() as u64);
+    {
+        let _scope = canbench_rs::bench_scope("mate_canonical_delete_mixed");
+        fixture
+            .graph
+            .remove_forward_edge_at_slot(ic_stable_lara::VertexId::from(0), label, 1)
+            .expect("mixed forward delete");
+        fixture
+            .graph
+            .remove_reverse_edge_at_slot(ic_stable_lara::VertexId::from(1), label, 1)
+            .expect("mixed reverse delete");
+    }
+    let after_delete = {
+        let _scope = canbench_rs::bench_scope("mate_physical_extract_mixed");
+        extract_mixed_label_identities(&fixture.graph, label).expect("mixed extract after delete")
+    };
+    checksum = checksum.wrapping_add(after_delete.len() as u64);
+    let _scope = canbench_rs::bench_scope("mate_candidate_rebuild_mixed");
+    checksum.wrapping_add(maintenance_candidate_checksum(
+        &[after_insert, after_delete],
+        MaintenanceCandidate::Shared,
+    ))
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_integrated_canonical_mutation_real_sparse_slots() -> canbench_rs::BenchResult {
+    bench_fn(|| black_box(integrated_sparse_mutation_checksum()))
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_integrated_canonical_mutation_real_mixed_labels() -> canbench_rs::BenchResult {
+    bench_fn(|| black_box(integrated_mixed_mutation_checksum()))
+}
+
+#[cfg(feature = "canbench")]
 #[bench(raw)]
 fn bench_mate_maintenance_rebuild_real_sparse_slots() -> canbench_rs::BenchResult {
     let traces = sparse_maintenance_trace();
@@ -3555,6 +3805,53 @@ mod fixture_evidence_tests {
         assert!(amortized_read_savings(45_630_000, 45_500_000, 326_110, 1) < 0);
         assert!(amortized_read_savings(45_630_000, 175_430, 326_110, 1_024) > 0);
         assert!(amortized_read_savings(16_010_000, 350_590, 67_190, 1) > 0);
+    }
+
+    #[test]
+    fn final_amortization_gate_reports_break_even_and_fail_closed_outcomes() {
+        assert_eq!(break_even_reads(45_590_000, 175_430, 506_530), Some(1));
+        let mut sparse = observation();
+        sparse.live_degree = 32;
+        sparse.requests = 1024;
+        sparse.scan_instructions = 45_590_000;
+        sparse.alias_bytes = 2304;
+        sparse.ranked_bytes = 128;
+        sparse.ranked_instructions = 300_350;
+        sparse.shared_bytes = Some(84);
+        sparse.shared_instructions = Some(175_430);
+        assert_eq!(
+            select_amortized_candidate(AmortizationObservation {
+                compression: sparse,
+                shared_update_instructions: 506_530,
+                ranked_update_instructions: 506_530,
+                reads_per_update: 1,
+            }),
+            CompressionCandidate::SharedOrientation
+        );
+        let mut negative = sparse;
+        negative.scan_instructions = 1_000_000;
+        negative.ranked_instructions = 900_000;
+        negative.shared_instructions = Some(900_000);
+        assert_eq!(
+            select_amortized_candidate(AmortizationObservation {
+                compression: negative,
+                shared_update_instructions: 506_530,
+                ranked_update_instructions: 506_530,
+                reads_per_update: 1,
+            }),
+            CompressionCandidate::ScanOnly
+        );
+        let mut malformed = sparse;
+        malformed.exact_and_fail_closed = false;
+        assert_eq!(
+            select_amortized_candidate(AmortizationObservation {
+                compression: malformed,
+                shared_update_instructions: 1,
+                ranked_update_instructions: 1,
+                reads_per_update: u64::MAX,
+            }),
+            CompressionCandidate::ScanOnly
+        );
     }
 
     #[test]

@@ -264,6 +264,13 @@ pub struct PublishedEdge {
     slot: u32,
 }
 
+impl PublishedEdge {
+    /// Construct a labeled fixture edge for measurement-only canonical mutation traces.
+    pub const fn new(neighbor: u32, slot: u32) -> Self {
+        Self { neighbor, slot }
+    }
+}
+
 impl CsrEdge for PublishedEdge {
     const BYTES: usize = 10;
 

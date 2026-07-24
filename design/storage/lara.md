@@ -475,6 +475,17 @@ charged only through an explicit read/update amortization helper; malformed or
 cardinality-mismatched traces fail closed. Canonical LARA state and production stable layout are
 untouched.
 
+Plan 0167 charges the real canonical mutation boundary as well: sparse insert/delete/extract/rebuild
+measure 72.74K / 162.18K / 126.71K / 144.90K instructions, while the mixed-label trace measures
+60.96K / 35.70K / 26.19K / 18.25K. The 4,171 stable pages reported by these fixture runs are
+setup allocation for measurement memory, not logical candidate size or production allocator
+evidence. No mate metadata is published by this probe.
+
+Plan 0168 applies the amortization gate: the sparse integrated cost is 506.53K instructions versus
+45.59M for ScanOnly, and mixed-label is 141.10K versus 15.94M. Both SharedOrientation candidates
+break even at one read per canonical update, subject to byte, exactness, stale, and fallback gates.
+This remains measurement-only; no candidate is persisted or activated for ordinary callers.
+
 ## Consensus checklist
 
 Use this when reviewing LARA PRs:

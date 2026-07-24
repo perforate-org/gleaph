@@ -946,6 +946,21 @@ against explicit read/update ratios: a candidate is rejected when savings are ne
 malformed counterpart cardinality fails closed. These are rebuild probes, not persistent maintenance
 or activation evidence.
 
+Plan 0167 runs the same operation boundary through real fixture graphs: canonical insert, physical
+location extraction, canonical delete, extraction again, and candidate rebuild. The sparse trace
+measures 72.74K insert, 162.18K delete, 126.71K extraction (two passes), and 144.90K candidate
+rebuild instructions. The mixed-label trace measures 60.96K insert, 35.70K delete, 26.19K
+extraction, and 18.25K rebuild instructions. Fixture setup reports 4,171 stable pages, which is
+measurement-fixture allocation rather than logical candidate bytes and is not production evidence.
+These integrated probes remain feature-gated and do not publish or persist mate metadata.
+
+Plan 0168 closes the measurement-only amortization gate. Using the integrated sparse cost of
+506.53K instructions and the 45.59M ScanOnly baseline, SharedOrientation breaks even at one read
+per canonical update. The mixed-label integrated cost is 141.10K against a 15.94M ScanOnly
+baseline, also breaking even at one read per update. The final selector still requires byte
+savings, exact/fail-closed evidence, and stale detection; any failed condition selects ScanOnly.
+This is a measurement decision only and does not authorize persistence or ordinary-caller activation.
+
 Plan 0160's first common-fixture comparison confirms the intended ordering: shared-orientation is
 1,800 bytes / 672.22K instructions for directed-high and 84 bytes / 175.43K for parallel-32;
 rank-indexed is 2,840 / 1.56M and 128 / 323.90K respectively. Sampled residual reaches 60 bytes
