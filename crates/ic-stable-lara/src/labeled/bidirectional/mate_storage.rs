@@ -611,6 +611,27 @@ impl<M: Memory> MateStorage<M> {
         self.locators.published_offset(row)
     }
 
+    /// Returns the exact encoded bytes occupied by currently published fixture blobs.
+    ///
+    /// This is only exposed to the measurement fixture boundary; it is not a production
+    /// accounting API and does not include allocator pages or free spans.
+    #[cfg(feature = "adoption-fixtures")]
+    pub(crate) fn published_blob_bytes(&self) -> Result<u64, MateStorageInitError> {
+        let mut total = 0u64;
+        for row in 0..self.locators.row_count.get() {
+            if let Some(offset) = self.locators.published_offset(row)? {
+                let bytes = self.blobs.read(offset)?;
+                total = total
+                    .checked_add(
+                        u64::try_from(bytes.len())
+                            .map_err(|_| MateStorageInitError::BlobLengthOverflow)?,
+                    )
+                    .ok_or(MateStorageInitError::BlobLengthOverflow)?;
+            }
+        }
+        Ok(total)
+    }
+
     /// Reads one bucket from a currently published blob.  Locator state is checked before any
     /// blob bytes are touched; ScanOnly and Rebuilding therefore never read unpublished data.
     pub(crate) fn published_bucket(

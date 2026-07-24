@@ -302,6 +302,112 @@ pub(crate) struct Denominators {
     pub(crate) indexed_half_edges: u64,
 }
 
+#[cfg(feature = "canbench")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ByteFootprintRow {
+    shape_id: &'static str,
+    logical_edges: u64,
+    alias_raw_bytes: u64,
+    sampled_known_bytes: u64,
+    packed_known_bytes: u64,
+    published_blob_bytes: Option<u64>,
+}
+
+#[cfg(feature = "canbench")]
+fn alias_raw_bytes_for_shape(spec: FixtureSpec) -> u64 {
+    if matches!(
+        spec.shape,
+        FixtureShape::DirectedSelfLoop | FixtureShape::UndirectedSelfLoop
+    ) {
+        0
+    } else {
+        spec.logical_edges.saturating_mul(18)
+    }
+}
+
+#[cfg(feature = "canbench")]
+fn published_blob_bytes_for_shape(spec: FixtureSpec) -> Option<u64> {
+    match spec.shape {
+        FixtureShape::Directed if spec.logical_edges == 128 => {
+            let vertex_count = 64u32;
+            let edges = (0..vertex_count)
+                .flat_map(|source| {
+                    [
+                        (source, (source + 1) % vertex_count),
+                        (source, (source + 2) % vertex_count),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            ic_stable_lara::adoption_fixture::build_published_fixture(vertex_count, &edges)
+                .ok()
+                .and_then(|fixture| fixture.graph.published_mate_blob_bytes().ok())
+        }
+        FixtureShape::Parallel if spec.logical_edges == 32 => {
+            let edges = (0..32).map(|_| (0, 1)).collect::<Vec<_>>();
+            ic_stable_lara::adoption_fixture::build_published_fixture(2, &edges)
+                .ok()
+                .and_then(|fixture| fixture.graph.published_mate_blob_bytes().ok())
+        }
+        FixtureShape::Undirected if spec.logical_edges == 128 => {
+            let vertex_count = 64u32;
+            let edges = (0..vertex_count)
+                .flat_map(|source| {
+                    [
+                        (source, (source + 1) % vertex_count),
+                        (source, (source + 2) % vertex_count),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            ic_stable_lara::adoption_fixture::build_published_undirected_fixture(
+                vertex_count,
+                &edges,
+            )
+            .ok()
+            .and_then(|fixture| fixture.graph.published_mate_blob_bytes().ok())
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "canbench")]
+fn byte_footprint_report() -> Vec<ByteFootprintRow> {
+    FixtureSpec::required_matrix()
+        .into_iter()
+        .map(|spec| {
+            let sampled = MateFootprintInput {
+                entries: spec.physical_half_edges,
+                mode: MateMode::Sampled { stride: 32 },
+                shared: MateSharedOverhead::zero(),
+            }
+            .calculate_with_geometry(
+                spec.physical_half_edges,
+                spec.physical_half_edges,
+                spec.physical_half_edges,
+            )
+            .expect("sampled footprint");
+            let packed = MateFootprintInput {
+                entries: spec.physical_half_edges,
+                mode: MateMode::Packed { width_bytes: 1 },
+                shared: MateSharedOverhead::zero(),
+            }
+            .calculate_with_geometry(
+                spec.physical_half_edges,
+                spec.physical_half_edges,
+                spec.physical_half_edges,
+            )
+            .expect("packed footprint");
+            ByteFootprintRow {
+                shape_id: spec.id,
+                logical_edges: spec.logical_edges,
+                alias_raw_bytes: alias_raw_bytes_for_shape(spec),
+                sampled_known_bytes: sampled.known_logical_bytes,
+                packed_known_bytes: packed.known_logical_bytes,
+                published_blob_bytes: published_blob_bytes_for_shape(spec),
+            }
+        })
+        .collect()
+}
+
 #[bench(raw)]
 fn bench_mate_adoption_policy_matrix() -> canbench_rs::BenchResult {
     bench_fn(|| {
@@ -1809,5 +1915,30 @@ mod fixture_evidence_tests {
                 assert_eq!(actual, expected);
             }
         }
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn byte_footprint_report_separates_alias_and_published_bytes() {
+        let rows = byte_footprint_report();
+        let directed_high = rows
+            .iter()
+            .find(|row| row.shape_id == "directed_high")
+            .expect("directed-high row");
+        assert_eq!(directed_high.alias_raw_bytes, 128 * 18);
+        assert!(
+            directed_high
+                .published_blob_bytes
+                .is_some_and(|bytes| bytes > 0)
+        );
+        assert!(directed_high.sampled_known_bytes > 0);
+        assert!(directed_high.packed_known_bytes > 0);
+
+        let directed_self_loop = rows
+            .iter()
+            .find(|row| row.shape_id == "directed_self_loop")
+            .expect("directed self-loop row");
+        assert_eq!(directed_self_loop.alias_raw_bytes, 0);
+        assert!(directed_self_loop.published_blob_bytes.is_none());
     }
 }

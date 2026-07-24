@@ -269,6 +269,11 @@ rows. No ordinary caller activation or alias decision follows from these measure
 Plan 0150's attempted Packed lookup shortcut was rejected: it was instruction-neutral in the
 runtime probe and would have weakened malformed-blob ordering validation. The existing linear,
 strictly validated mapping path remains the dormant implementation.
+Plan 0151's logical-byte gate reports Alias raw payloads of 2,304 bytes for the 128-edge directed
+and undirected-high fixtures and 576 bytes for the 32-edge parallel fixture. Exact Published blob
+payloads are 3,776, 1,888, and 104 bytes respectively, before locator and allocator overhead.
+Published therefore loses on directed-high but wins on undirected-high and parallel in this
+fixture-only accounting; this does not activate any production caller.
 
 ---
 

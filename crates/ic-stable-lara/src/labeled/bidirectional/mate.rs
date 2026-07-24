@@ -337,6 +337,15 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
+    /// Returns exact encoded Published blob bytes for measurement fixtures only.
+    #[cfg(feature = "adoption-fixtures")]
+    #[doc(hidden)]
+    pub fn published_mate_blob_bytes(&self) -> Result<u64, MateLookupError> {
+        self.mate
+            .published_blob_bytes()
+            .map_err(|error| MateLookupError::ReadFailed(error.to_string()))
+    }
+
     /// Resolves a mate through a Published Sampled/Packed blob when possible. The blob is only an
     /// accelerator: every candidate is checked against the live counterpart row and relation
     /// counts, while malformed, stale, or non-applicable data falls back to canonical rank/select

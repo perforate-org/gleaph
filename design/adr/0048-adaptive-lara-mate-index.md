@@ -726,6 +726,12 @@ Plan 0150 investigated a Packed source-slot binary-search replacement. The probe
 material instruction change, while removing the strict ordering check would weaken fail-closed
 handling for malformed blobs. It is therefore not adopted; the current Published primitive stays
 dormant and the canonical rank/select path remains authoritative.
+Plan 0151 adds the first shape-specific logical-byte gate. Alias raw payload is 18 bytes per
+non-self logical edge: 2,304 bytes for the 128-edge directed and undirected-high fixtures and 576
+bytes for the 32-edge parallel fixture. Exact Published blob bytes are 3,776 (directed-high), 1,888
+(undirected-high), and 104 (parallel), excluding separately charged locator/allocator overhead.
+Thus the current Published blob is not smaller for directed-high but is smaller for undirected-high
+and parallel; no shape is activated by this evidence alone.
 
 ## Related
 
