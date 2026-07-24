@@ -8,6 +8,7 @@ mod capacity;
 #[cfg(feature = "canbench_large")]
 mod large;
 mod mate_adoption_gate;
+mod mate_compression;
 mod mate_footprint;
 mod stable_layout;
 

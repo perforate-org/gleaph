@@ -280,6 +280,37 @@ The size-series follow-up (Plan 0152) shows the same topology dependence at 32/6
 directed Published is 944/1,888/3,776/7,552 bytes versus 576/1,152/2,304/4,608 alias bytes;
 undirected is 472/944/1,888/3,776; parallel is 104/120/152/216. No unsupported low-degree or
 self-loop point is extrapolated, and no ordinary caller is activated from this curve alone.
+
+Plan 0154 freezes rank-indexed Packed as the only derived candidate. On identical canonical rows,
+the 128-entry one-byte codec probe measured 27.25K encode instructions and 1,998
+decode/validate/lookup instructions for rank-indexed, versus 49.49K and 2,588 for the retired
+source/mate Packed prototype, with zero heap/stable-page growth. Its one-bucket payload is
+`44 + entries * width` bytes (76/172/556 for 32/128/256 entries at widths 1/1/2), excluding
+external locator and allocator overhead. This is not an alias-vs-rank end-to-end adoption
+decision: alias remains the active baseline, the old Published path is measurement-only, and
+ordinary-caller activation waits for a same-fixture runtime and physical-allocation gate.
+Plan 0157's initial alias-hit runtime probes use the real measurement `EdgeAliasIndex` and the
+same physical identities: directed-high is 16.36M versus 1.56M instructions for alias versus
+decoded-once rank lookup over 1,024 requests, and 32-edge parallel is 11.51M versus 323.90K.
+These are hit-only measurements; reverse lookup and alias-miss canonical fallback remain required
+before activation.
+The follow-up directed-high probes measure canonical-to-alias reverse lookup at 148.39M
+instructions and direct canonical fallback at 13.47M per 1,024 requests, versus 1.56M for rank
+lookup. Reverse lookup is currently a full alias-map scan; malformed/stale parity and physical
+allocation accounting remain open.
+The rank fixture now verifies exact counterpart parity and fail-closed truncated/out-of-range
+lookup behavior, while the alias-miss probe exercises canonical `mate_of` fallback. A combined
+adoption decision still requires presenting these strata with byte/page accounting together.
+Plan 0157 defers ordinary-caller activation after the integrated gate: rank-indexed is materially
+cheaper in the measured runtime strata, but its logical payload is larger than alias for
+directed-high (2,840 versus 2,304 bytes) and smaller for undirected-high (1,560 versus 2,304) and
+parallel-32 (128 versus 576). Fresh measurement memory reports zero page growth and is not
+production allocator evidence. Alias remains the active baseline; rank-indexed requires a later
+topology-aware policy and production-layout accounting.
+Plan 0157 adds a measurement-only rank encoder over the existing AliasOnly identity rows. Matching
+logical payloads are 2,840 versus 2,304 raw alias bytes for directed-high, 1,560 versus 2,304 for
+undirected-high, and 128 versus 576 for 32-edge parallel. These values exclude allocator/page
+effects; runtime parity, malformed/stale fallback, and ordinary-caller activation remain deferred.
 Plan 0154 also measures ScanOnly canonical rank/select independently from both alias and the
 retired Published blob path. Directed 32/128/256 probes intentionally keep local degree at two
 (about 18.07M instructions per 1,024-request run), while same-bucket parallel probes expose the
@@ -289,8 +320,17 @@ it is not a production adoption or activation decision.
 The focused scope probe also removes the temporary row-vector pass from canonical `select_rank`;
 the measured total remains effectively unchanged, so this is recorded as a safe cleanup, not as a
 material optimization. The measurement-only `canbench-scopes` feature keeps source/counterpart
-scope instrumentation separate from the crate's full benchmark export module. Plan 0155 targets
-the remaining per-lookup logical-slot vector materialization in the canonical traversal.
+scope instrumentation separate from the crate's full benchmark export module. Plan 0155 replaces
+the remaining per-lookup logical-slot vector materialization with a direct canonical range walk.
+Plan 0156 then reuses the existing descending iterator/chunk-prefetch path through an explicit
+`(logical_slot, edge)` adapter. The 32/128/256 parallel-mid probes move to 46.90M / 138.68M /
+213.78M instructions with zero stable-memory growth. This improves ScanOnly traversal without
+altering the separate alias-versus-rank-indexed adoption decision.
+
+The ordinary descending hub scan remains on the original iterator fast path and measures 15.27M
+instructions with zero heap/stable-memory growth (2.70% below its committed baseline). The mate
+improvement is therefore isolated to the explicit-slot adapter and does not add tuple overhead to
+ordinary scan callers.
 
 ---
 
@@ -318,6 +358,114 @@ Changing substrate (e.g. host-side persistent mmap) should preserve the four con
 Payload slab ([labeled-edge-inline-values.md](./labeled-edge-inline-values.md)) follows the same logical compaction order as edge bytes; physical alignment with leaf rope is part of the labeled migration.
 
 ---
+
+Plan 0158 evaluates a topology-aware policy: ScanOnly for low-degree/cold buckets, rank-indexed
+only where measured byte and runtime gates pass, and compressed candidates only with proven
+random-access invariants. Elias–Fano, restart-point delta coding, and shared-orientation maps are
+measurement-only candidates; no caller activation follows from this plan.
+The first candidate slice adds measurement-only restart-point signed delta sizing for arbitrary
+rank sequences and monotone-only Elias–Fano sizing. Elias–Fano rejects non-monotone input rather
+than reordering rank semantics; neither model is a production wire format.
+On real fixtures, directed-high yielded 1,792 bytes for delta/restart and 1,800 bytes for the
+conservative shared-orientation model, but only 3 of 128 sequences were monotone. Parallel-32
+yielded 96 bytes for delta/restart, 84 bytes for shared orientation, and 32 bytes for Elias–Fano.
+Elias–Fano therefore needs per-bucket fallback and cannot be a universal format; shared
+orientation remains a measurement-only candidate.
+The focused model probes measured 635.20K instructions for directed-high and 25.98K for
+parallel-32, with zero heap and stable-memory page growth. These are candidate-evaluation costs,
+not production lookup costs; runtime admission therefore remains a separate gate.
+The restart candidate also has a measurement-only bounded reconstruction model: lookup starts at
+the nearest restart and reconstructs at most `restart_interval - 1` deltas, with exact parity and
+u32-boundary tests. It is not a serialized decoder or production format.
+Focused restart reconstruction measured 8.59M instructions for directed-high and 690.02K for
+parallel-32, with zero heap/stable-memory growth, versus decoded rank lookup at 1.56M and
+323.90K. The restart candidate therefore fails the current runtime gate even where its logical
+bytes are smaller.
+The shared-orientation lookup model measured 672.22K instructions for directed-high and 175.43K
+for parallel-32, with zero heap/stable-memory growth. It is below decoded rank lookup (1.56M and
+323.90K) and its logical estimate is smaller (1,800 versus 2,840 bytes; 84 versus 128 bytes), so
+it is the only remaining compressed candidate passing the current measurement gates. It remains
+measurement-only pending serialized locator, stale/malformed fallback, and production-layout
+accounting.
+The measurement candidate also round-trips through a strict temporary byte model with header,
+ordering, width, truncation, trailing-byte, and rank-parity checks; it is not a stable wire format.
+The decoded model matches canonical occurrence-rank counterparts for every identity in the
+directed-high and parallel-32 fixtures and rejects out-of-range ranks.
+
+Plan 0159 adds a measurement-only sampled paired-residual model. It stores block-local signed
+`reverse_slot - forward_slot` values in 8/16-bit modes and falls back to raw mate slots. The
+current logical estimates are 2,696 bytes (21.06 B/edge) for directed-high and 60 bytes
+(1.88 B/edge) for parallel-32 at block sizes 32/64. Higher-degree parallel fixtures show
+checkpoint amortization (parallel-128: 276 -> 164 bytes; parallel-256: 532 -> 308 bytes for
+B=8 -> 64), while directed-high is flat because its endpoint pairs are mostly single-rank groups.
+Focused direct-offset lookup probes are 772.60K and 212.29K instructions respectively, with zero
+heap/stable-memory growth. A bounded local-scan probe on parallel-32 measures 579.40K instructions
+at B=8 and 1.26M at B=32/64, exposing the space/runtime trade-off. The temporary residual codec is
+strict for residual and raw-fallback blocks; raw fallback carries an explicit reverse stream because
+absolute mate slots cannot be derived by negating a residual. The model remains a candidate and is
+not a production format.
+
+Plan 0160 adds a measurement-only `SharedOrientation` policy candidate behind byte and runtime
+gates. It is eligible only for dense, sufficiently requested buckets with exact/fail-closed
+evidence; ScanOnly remains the fallback. This selector does not alter the production LARA layout
+or persist a mode.
+
+Plan 0160's initial common-fixture comparison reports shared-orientation at 1,800 bytes / 672.22K
+instructions for directed-high and 84 bytes / 175.43K for parallel-32. Rank-indexed reports
+2,840 / 1.56M and 128 / 323.90K; sampled residual reaches 60 bytes on parallel-32 but its
+bounded local scan is 1.26M instructions. These are benchmark-only inputs to the threshold gate,
+not production storage estimates.
+
+The undirected-high fixture reports 1,560 bytes for rank-indexed and treats shared-orientation as
+unsupported because that model requires directed counterpart groups. Undirected adoption remains a
+separate policy decision.
+
+Plan 0161's initial orientation-free pair-rank accounting reports 1,544 logical bytes on
+undirected-high versus 1,560 for rank-indexed. Pair-rank lookup measures 721.26K instructions,
+versus 945.74K for rank-indexed and 16.83M for ScanOnly, with zero heap/stable-memory growth.
+A synthetic 128-edge reordered exception pair measures 1,044 logical bytes and 118.07K lookup
+instructions, also with zero heap/stable-memory growth; an explicit mismatch budget controls
+whether such a pair is accepted. Persistent mutation maintenance and allocator costs remain
+outside this measurement-only slice.
+
+Plan 0162 measures a block-local permutation fallback for reordered undirected pairs. On a
+synthetic 128-edge reversal, logical metadata is 212/180/164/156 bytes at block sizes 8/16/32/64,
+while lookup is 188.72K instructions for each size with zero heap/stable-memory growth. This
+remains a benchmark-only candidate and is not a stable LARA layout.
+
+The topology synthesis is now explicit: low-degree/cold buckets, whether directed or undirected,
+remain `ScanOnly`; dense directed buckets prefer the measured `SharedOrientation` candidate when its exact/fail-closed gates pass;
+aligned undirected non-self buckets prefer pair-rank; reordered undirected pairs may use a bounded
+block permutation exception; undirected self-loops require no mate metadata; and sparse-slot or
+mixed-label buckets are evaluated independently. These are candidate precedences only. Shared,
+pair-rank, and block-permutation formats still require mutation maintenance, stale/rebuild
+handling, and stable-layout accounting before ordinary callers can activate them.
+
+Plan 0163 confirms the self-loop shape boundary with isolated fixtures: directed self-loops have
+two orientation rows, whereas undirected self-loops have one row and zero mate metadata. Plan
+0164 adds a real isolated two-label fixture and a feature-gated physical slab/log location reader;
+overflow-log indices are high-bit encoded only in measurement identities.
+
+The measurement gate can encode directed self-loops through the directed rank adapter and confirms
+that undirected self-loops carry no per-edge mate payload. The mixed-label fixture keeps both label
+buckets independent, and sparse-slot uses real deletion-churn overflow-log locations rather than
+logical live ordinals.
+
+Synthetic topology probes measure sparse directed slots at 192 B ranked versus 148 B shared; the
+corresponding lookup probes are 302.38K ranked and 171.32K shared instructions (ranked encoding
+alone is 81.12K). The real mixed-label fixture remains separate at 52 B shared versus 96 B ranked
+per label, with 350.59K shared versus 594.29K ranked instructions for a matched 4-edge-per-label
+probe; its ScanOnly counterpart is 16.01M instructions for 1,024 requests. The 190.77K/315.96K
+pair is synthetic alternating-lookup evidence. The real sparse fixture measures 128 B ranked
+versus 84 B shared and 300.35K versus 175.43K lookup instructions for 32 live edges per
+orientation; its ScanOnly counterpart is 45.63M for the same request count. These numbers are
+candidate evidence only and do not permit cross-label sharing in the production layout.
+
+Plan 0165 connects these real rows to the measurement-only adoption gate. Sparse slots and each
+mixed-label bucket are evaluated independently: `SharedOrientation` is tried after the request,
+degree, byte, and exactness gates; `RankedPacked` is the bounded fallback when its own gates pass;
+otherwise the bucket remains `ScanOnly`. No metadata is shared across labels, and this precedence
+does not activate an ordinary caller.
 
 ## Consensus checklist
 

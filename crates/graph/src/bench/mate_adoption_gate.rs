@@ -6,6 +6,12 @@
 
 #![expect(dead_code, reason = "policy is consumed by the adoption-gate probes")]
 
+use super::mate_compression::{
+    SampledPairedResidualLookup, SharedOrientationLookup, UndirectedBlockRankPermutationLookup,
+    UndirectedPairRankExceptionLookup, UndirectedPairRankLookup, delta_restart_bytes,
+    delta_restart_reconstruct_at, mate_slot_sequences, monotone_elias_fano_bytes,
+    shared_orientation_bytes,
+};
 use super::mate_footprint::{MateFootprintInput, MateMode, MateSharedOverhead};
 use canbench_rs::{bench, bench_fn};
 use serde::{Deserialize, Serialize};
@@ -239,6 +245,78 @@ pub(crate) fn select_mode(inputs: SelectionInputs) -> Option<SelectedMode> {
             stride: SAMPLED_STRIDE,
         },
     })
+}
+
+/// Measurement-only policy inputs for Plans 0158/0160. The policy never activates a production
+/// path; it records the conservative evidence gate used by the candidate benches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CompressionPolicyObservation {
+    pub(crate) live_degree: u64,
+    pub(crate) requests: u32,
+    pub(crate) monotone_rank_sequence: bool,
+    pub(crate) alias_bytes: u64,
+    pub(crate) scan_instructions: u64,
+    pub(crate) ranked_bytes: u64,
+    pub(crate) ranked_instructions: u64,
+    pub(crate) shared_bytes: Option<u64>,
+    pub(crate) shared_instructions: Option<u64>,
+    pub(crate) compressed_bytes: Option<u64>,
+    pub(crate) compressed_instructions: Option<u64>,
+    pub(crate) exact_and_fail_closed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompressionCandidate {
+    ScanOnly,
+    SharedOrientation,
+    RankedPacked,
+    MonotoneCompressed,
+}
+
+pub(crate) const MIN_RANK_LIVE_DEGREE: u64 = 32;
+pub(crate) const MIN_RANK_REQUESTS: u32 = 64;
+
+pub(crate) fn select_compression_candidate(
+    observation: CompressionPolicyObservation,
+) -> CompressionCandidate {
+    if observation.live_degree < MIN_RANK_LIVE_DEGREE
+        || observation.requests < MIN_RANK_REQUESTS
+        || !observation.exact_and_fail_closed
+    {
+        return CompressionCandidate::ScanOnly;
+    }
+    let ranked_ok = observation.ranked_bytes != 0
+        && observation.ranked_instructions <= observation.scan_instructions
+        && observation.ranked_bytes <= observation.alias_bytes;
+    let shared_ok = observation
+        .shared_bytes
+        .is_some_and(|bytes| bytes != 0 && bytes <= observation.alias_bytes)
+        && observation
+            .shared_instructions
+            .is_some_and(|instructions| instructions <= observation.scan_instructions);
+    if observation.monotone_rank_sequence
+        && ranked_ok
+        && observation
+            .compressed_bytes
+            .is_some_and(|bytes| bytes != 0 && bytes <= observation.ranked_bytes)
+        && observation
+            .compressed_instructions
+            .is_some_and(|instructions| instructions <= observation.ranked_instructions)
+    {
+        return CompressionCandidate::MonotoneCompressed;
+    }
+    if shared_ok
+        && (!ranked_ok
+            || (observation.shared_bytes <= Some(observation.ranked_bytes)
+                && observation.shared_instructions <= Some(observation.ranked_instructions)))
+    {
+        return CompressionCandidate::SharedOrientation;
+    }
+    if ranked_ok {
+        CompressionCandidate::RankedPacked
+    } else {
+        CompressionCandidate::ScanOnly
+    }
 }
 
 pub(crate) const fn packed_width_for_slot(slot: u64) -> Option<u8> {
@@ -952,11 +1030,16 @@ pub(crate) fn build_fixture(spec: FixtureSpec) -> DeterministicFixture {
         row_seed.extend_from_slice(&owner.to_be_bytes());
         row_seed.extend_from_slice(&target.to_be_bytes());
         row_seed.extend_from_slice(&payload_bytes);
+        let label = if matches!(spec.shape, FixtureShape::MixedLabels) {
+            shape_tag(spec.shape) + (index as u16 % 2)
+        } else {
+            shape_tag(spec.shape)
+        };
         identities.push(CanonicalIdentity {
             owner,
             target,
             orientation: (index % 2) as u8,
-            label: shape_tag(spec.shape),
+            label,
             slot,
             inline_payload_fingerprint: digest_hex(&row_seed),
             payload_bytes,
@@ -972,6 +1055,37 @@ pub(crate) fn build_fixture(spec: FixtureSpec) -> DeterministicFixture {
         physical_half_edges: spec.physical_half_edges,
         alias_rows: spec.physical_half_edges,
         indexed_half_edges: spec.physical_half_edges,
+    };
+    assert_eq!(identities.len() as u64, descriptor.physical_half_edges);
+    DeterministicFixture {
+        descriptor,
+        identities,
+    }
+}
+
+#[cfg(feature = "canbench")]
+fn deterministic_fixture_from_physical_canonical(
+    spec: FixtureSpec,
+    representation: ic_stable_lara::adoption_fixture::FixtureRepresentation,
+    mut identities: Vec<CanonicalIdentity>,
+) -> DeterministicFixture {
+    identities.sort();
+    let descriptor = ShapeDescriptor {
+        shape_id: spec.id.to_owned(),
+        shape_definition_digest: shape_definition_digest(spec),
+        fixture_ids: vec![format!(
+            "{}-{}",
+            spec.id,
+            match representation {
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::AliasOnly => "alias-only",
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::ScanOnly => "scan-only",
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::Published => "published",
+            }
+        )],
+        logical_edges: spec.logical_edges,
+        physical_half_edges: identities.len() as u64,
+        alias_rows: identities.len() as u64,
+        indexed_half_edges: identities.len() as u64,
     };
     assert_eq!(identities.len() as u64, descriptor.physical_half_edges);
     DeterministicFixture {
@@ -999,6 +1113,57 @@ pub(crate) fn build_real_scan_fixture(spec: FixtureSpec) -> Result<Deterministic
     )
 }
 
+#[cfg(feature = "canbench")]
+fn build_real_sparse_fixture(spec: FixtureSpec) -> Result<DeterministicFixture, String> {
+    if spec.shape != FixtureShape::SparseSlots {
+        return Err("sparse fixture requested for a non-sparse shape".to_owned());
+    }
+    let fixture = ic_stable_lara::adoption_fixture::build_sparse_slot_published_fixture(64)?;
+    Ok(deterministic_fixture_from_physical(
+        spec,
+        ic_stable_lara::adoption_fixture::FixtureRepresentation::Published,
+        fixture.identities,
+    ))
+}
+
+#[cfg(feature = "canbench")]
+fn build_real_mixed_label_fixture(spec: FixtureSpec) -> Result<DeterministicFixture, String> {
+    if spec.shape != FixtureShape::MixedLabels || !spec.logical_edges.is_multiple_of(2) {
+        return Err("mixed-label fixture requested for an incompatible shape".to_owned());
+    }
+    let fixture = ic_stable_lara::adoption_fixture::build_mixed_label_published_fixture(
+        2,
+        u32::try_from(spec.logical_edges / 2)
+            .map_err(|_| "mixed-label edge count overflow".to_owned())?,
+    )?;
+    let identities = fixture
+        .identities
+        .into_iter()
+        .map(|identity| {
+            let mut seed = Vec::new();
+            seed.extend_from_slice(&identity.owner.to_be_bytes());
+            seed.extend_from_slice(&identity.target.to_be_bytes());
+            seed.extend_from_slice(&identity.label.to_be_bytes());
+            seed.push(identity.orientation);
+            seed.extend_from_slice(&identity.slot.to_be_bytes());
+            CanonicalIdentity {
+                owner: identity.owner,
+                target: identity.target,
+                orientation: identity.orientation,
+                label: identity.label,
+                slot: identity.slot,
+                inline_payload_fingerprint: digest_hex(&seed),
+                payload_bytes: Vec::new(),
+            }
+        })
+        .collect();
+    Ok(deterministic_fixture_from_physical_canonical(
+        spec,
+        ic_stable_lara::adoption_fixture::FixtureRepresentation::Published,
+        identities,
+    ))
+}
+
 /// Build a real Published identity fixture for promotion-eligible directed/parallel shapes.
 #[cfg(feature = "canbench")]
 pub(crate) fn build_real_published_fixture(
@@ -1016,6 +1181,9 @@ pub(crate) fn build_real_published_fixture(
         }
         FixtureShape::Parallel if spec.logical_edges == 32 => {
             (2, (0..32).map(|_| (0, 1)).collect::<Vec<_>>())
+        }
+        FixtureShape::MixedLabels if spec.logical_edges.is_multiple_of(2) => {
+            return Err("mixed-label fixture uses the labeled owner directly".to_owned());
         }
         FixtureShape::Undirected if spec.logical_edges == 128 => {
             let vertex_count = 64u32;
@@ -1094,6 +1262,21 @@ fn build_real_adjacency_fixture(
                 }
                 ic_stable_lara::adoption_fixture::FixtureRepresentation::Published => {
                     return Err("Published fixture owner is not wired".to_owned());
+                }
+            }
+        }
+        FixtureShape::DirectedSelfLoop => {
+            let edges = [(0, 0)];
+            match representation {
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::AliasOnly => {
+                    ic_stable_lara::adoption_fixture::build_alias_only_fixture(1, &edges)?
+                        .identities
+                }
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::ScanOnly => {
+                    ic_stable_lara::adoption_fixture::build_scan_only_fixture(1, &edges)?.identities
+                }
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::Published => {
+                    return Err("Published directed self-loop fixture is not wired".to_owned());
                 }
             }
         }
@@ -1204,6 +1387,26 @@ fn deterministic_fixture_from_physical(
 /// descriptor but deliberately omit the identity digest instead of presenting synthetic rows as
 /// real AliasOnly measurements.
 fn build_evidence_fixture(spec: FixtureSpec) -> (ShapeDescriptor, Option<String>, Option<u64>) {
+    #[cfg(feature = "canbench")]
+    if spec.shape == FixtureShape::SparseSlots
+        && let Ok(fixture) = build_real_sparse_fixture(spec)
+    {
+        return (
+            fixture.descriptor,
+            Some(canonical_identity_digest(&fixture.identities)),
+            Some(canonical_identity_encoded_bytes(&fixture.identities)),
+        );
+    }
+    #[cfg(feature = "canbench")]
+    if spec.shape == FixtureShape::MixedLabels
+        && let Ok(fixture) = build_real_mixed_label_fixture(spec)
+    {
+        return (
+            fixture.descriptor,
+            Some(canonical_identity_digest(&fixture.identities)),
+            Some(canonical_identity_encoded_bytes(&fixture.identities)),
+        );
+    }
     #[cfg(feature = "canbench")]
     if let Ok(fixture) = build_real_alias_fixture(spec) {
         return (
@@ -1546,11 +1749,1201 @@ fixture_setup_bench!(
 );
 
 #[cfg(feature = "canbench")]
+fn bench_ranked_bytes(spec: FixtureSpec, undirected: bool) -> canbench_rs::BenchResult {
+    let (vertex_count, edges) = if undirected {
+        let vertex_count = (spec.logical_edges / 2) as u32;
+        let edges = (0..vertex_count)
+            .flat_map(|source| {
+                [
+                    (source, (source + 1) % vertex_count),
+                    (source, (source + 2) % vertex_count),
+                ]
+            })
+            .collect::<Vec<_>>();
+        (vertex_count, edges)
+    } else if matches!(spec.shape, FixtureShape::Parallel) {
+        (
+            2,
+            (0..spec.logical_edges).map(|_| (0, 1)).collect::<Vec<_>>(),
+        )
+    } else {
+        let vertex_count = (spec.logical_edges / 2) as u32;
+        let edges = (0..vertex_count)
+            .flat_map(|source| {
+                [
+                    (source, (source + 1) % vertex_count),
+                    (source, (source + 2) % vertex_count),
+                ]
+            })
+            .collect::<Vec<_>>();
+        (vertex_count, edges)
+    };
+    let fixture = if undirected {
+        ic_stable_lara::adoption_fixture::build_alias_only_undirected_fixture(vertex_count, &edges)
+            .expect("ranked byte fixture")
+    } else {
+        ic_stable_lara::adoption_fixture::build_alias_only_fixture(vertex_count, &edges)
+            .expect("ranked byte fixture")
+    };
+    bench_fn(|| {
+        let bytes = ic_stable_lara::adoption_fixture::ranked_packed_blob_bytes(
+            &fixture.identities,
+            undirected,
+        )
+        .expect("ranked bytes");
+        black_box(bytes);
+    })
+}
+
+#[cfg(feature = "canbench")]
+fn compression_sequences_for_spec(
+    spec: FixtureSpec,
+    undirected: bool,
+) -> (
+    Vec<Vec<u32>>,
+    Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>,
+) {
+    let (vertex_count, edges) = if undirected {
+        let vertex_count = (spec.logical_edges / 2) as u32;
+        let edges = (0..vertex_count)
+            .flat_map(|source| {
+                [
+                    (source, (source + 1) % vertex_count),
+                    (source, (source + 2) % vertex_count),
+                ]
+            })
+            .collect::<Vec<_>>();
+        (vertex_count, edges)
+    } else if matches!(spec.shape, FixtureShape::Parallel) {
+        (
+            2,
+            (0..spec.logical_edges).map(|_| (0, 1)).collect::<Vec<_>>(),
+        )
+    } else {
+        let vertex_count = (spec.logical_edges / 2) as u32;
+        let edges = (0..vertex_count)
+            .flat_map(|source| {
+                [
+                    (source, (source + 1) % vertex_count),
+                    (source, (source + 2) % vertex_count),
+                ]
+            })
+            .collect::<Vec<_>>();
+        (vertex_count, edges)
+    };
+    let fixture = if undirected {
+        ic_stable_lara::adoption_fixture::build_alias_only_undirected_fixture(vertex_count, &edges)
+            .expect("compression fixture")
+    } else {
+        ic_stable_lara::adoption_fixture::build_alias_only_fixture(vertex_count, &edges)
+            .expect("compression fixture")
+    };
+    (
+        mate_slot_sequences(&fixture.identities, undirected).expect("mate sequences"),
+        fixture.identities,
+    )
+}
+
+#[cfg(feature = "canbench")]
+fn synthetic_sparse_slot_identities() -> Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity> {
+    (0..32u32)
+        .flat_map(|rank| {
+            let slot = rank.saturating_mul(1024);
+            [
+                ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: 1,
+                    target: 2,
+                    orientation: 0,
+                    slot,
+                },
+                ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: 2,
+                    target: 1,
+                    orientation: 1,
+                    slot: (31 - rank).saturating_mul(1024),
+                },
+            ]
+        })
+        .collect()
+}
+
+#[cfg(feature = "canbench")]
+fn synthetic_mixed_label_identity_sets()
+-> [Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>; 2] {
+    [
+        (0..16u32)
+            .flat_map(|rank| {
+                [
+                    ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                        owner: 1,
+                        target: 2,
+                        orientation: 0,
+                        slot: rank,
+                    },
+                    ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                        owner: 2,
+                        target: 1,
+                        orientation: 1,
+                        slot: 15 - rank,
+                    },
+                ]
+            })
+            .collect(),
+        (0..16u32)
+            .flat_map(|rank| {
+                [
+                    ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                        owner: 1,
+                        target: 3,
+                        orientation: 0,
+                        slot: rank,
+                    },
+                    ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                        owner: 3,
+                        target: 1,
+                        orientation: 1,
+                        slot: 15 - rank,
+                    },
+                ]
+            })
+            .collect(),
+    ]
+}
+
+#[cfg(feature = "canbench")]
+fn real_mixed_label_identity_sets_for_bench(
+    edges_per_label: u32,
+) -> Vec<Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>> {
+    let fixture =
+        ic_stable_lara::adoption_fixture::build_mixed_label_published_fixture(2, edges_per_label)
+            .expect("real mixed-label fixture");
+    let labels = fixture
+        .identities
+        .iter()
+        .map(|identity| identity.label)
+        .collect::<std::collections::BTreeSet<_>>();
+    labels
+        .into_iter()
+        .map(|label| {
+            fixture
+                .identities
+                .iter()
+                .filter(|identity| identity.label == label)
+                .map(
+                    |identity| ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                        owner: identity.owner,
+                        target: identity.target,
+                        orientation: identity.orientation,
+                        slot: identity.slot,
+                    },
+                )
+                .collect()
+        })
+        .collect()
+}
+
+#[cfg(feature = "canbench")]
+fn real_sparse_slot_identities_for_bench() -> Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>
+{
+    ic_stable_lara::adoption_fixture::build_sparse_slot_published_fixture(64)
+        .expect("real sparse-slot fixture")
+        .identities
+}
+
+#[cfg(feature = "canbench")]
+fn real_sparse_scan_refs_for_bench() -> (
+    ic_stable_lara::adoption_fixture::SparseSlotPublishedFixture,
+    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) {
+    let fixture = ic_stable_lara::adoption_fixture::build_sparse_slot_published_fixture(64)
+        .expect("real sparse-slot fixture");
+    let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
+    let mut refs = Vec::new();
+    fixture
+        .graph
+        .forward()
+        .for_each_live_edge_slot_for_label(ic_stable_lara::VertexId::from(0), label, |slot, _| {
+            refs.push(ic_stable_lara::labeled::PhysicalEdgeRef {
+                orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
+                owner_vertex_id: ic_stable_lara::VertexId::from(0),
+                label_id: label,
+                slot_index: slot,
+            })
+        })
+        .expect("sparse forward scan");
+    fixture
+        .graph
+        .reverse()
+        .for_each_live_edge_slot_for_label(ic_stable_lara::VertexId::from(1), label, |slot, _| {
+            refs.push(ic_stable_lara::labeled::PhysicalEdgeRef {
+                orientation: ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                owner_vertex_id: ic_stable_lara::VertexId::from(1),
+                label_id: label,
+                slot_index: slot,
+            })
+        })
+        .expect("sparse reverse scan");
+    (fixture, refs)
+}
+
+#[cfg(feature = "canbench")]
+fn real_mixed_scan_refs_for_bench(
+    edges_per_label: u32,
+) -> (
+    ic_stable_lara::adoption_fixture::MixedLabelPublishedFixture,
+    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) {
+    let fixture =
+        ic_stable_lara::adoption_fixture::build_mixed_label_published_fixture(2, edges_per_label)
+            .expect("real mixed-label fixture");
+    let mut refs = Vec::new();
+    for label_index in 1..=2u32 {
+        let label =
+            ic_stable_lara::labeled::BucketLabelKey::directed_from_index(label_index as u16);
+        fixture
+            .graph
+            .forward()
+            .for_each_live_edge_slot_for_label(
+                ic_stable_lara::VertexId::from(0),
+                label,
+                |slot, _| {
+                    refs.push(ic_stable_lara::labeled::PhysicalEdgeRef {
+                        orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
+                        owner_vertex_id: ic_stable_lara::VertexId::from(0),
+                        label_id: label,
+                        slot_index: slot,
+                    })
+                },
+            )
+            .expect("mixed forward scan");
+    }
+    (fixture, refs)
+}
+
+#[cfg(feature = "canbench")]
+fn compression_candidate_probe(
+    sequences: &[Vec<u32>],
+    identities: &[ic_stable_lara::adoption_fixture::PhysicalIdentity],
+    undirected: bool,
+) -> (u64, u64, u64, u64) {
+    let delta = sequences
+        .iter()
+        .map(|sequence| delta_restart_bytes(sequence, 16).expect("delta bytes"))
+        .sum();
+    let elias_fano = sequences
+        .iter()
+        .filter_map(|sequence| monotone_elias_fano_bytes(sequence))
+        .sum();
+    let monotone_count = sequences
+        .iter()
+        .filter(|sequence| monotone_elias_fano_bytes(sequence).is_some())
+        .count() as u64;
+    let shared = shared_orientation_bytes(identities, undirected).unwrap_or(0);
+    (delta, elias_fano, monotone_count, shared)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_candidates_directed_high() -> canbench_rs::BenchResult {
+    let (sequences, identities) =
+        compression_sequences_for_spec(FixtureSpec::required_matrix()[1], false);
+    bench_fn(|| {
+        let result = compression_candidate_probe(&sequences, &identities, false);
+        black_box(result);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_candidates_parallel() -> canbench_rs::BenchResult {
+    let (sequences, identities) =
+        compression_sequences_for_spec(FixtureSpec::required_matrix()[6], false);
+    bench_fn(|| {
+        let result = compression_candidate_probe(&sequences, &identities, false);
+        black_box(result);
+    })
+}
+
+#[cfg(feature = "canbench")]
+fn bench_restart_lookup_for_spec(spec: FixtureSpec) -> canbench_rs::BenchResult {
+    let (sequences, _) = compression_sequences_for_spec(spec, false);
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for sequence in &sequences {
+            for index in 0..1024usize {
+                let index = index % sequence.len();
+                let value = delta_restart_reconstruct_at(sequence, 16, index)
+                    .expect("restart reconstruction");
+                checksum = checksum.wrapping_add(u64::from(value));
+            }
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_restart_lookup_directed_high() -> canbench_rs::BenchResult {
+    bench_restart_lookup_for_spec(FixtureSpec::required_matrix()[1])
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_restart_lookup_parallel() -> canbench_rs::BenchResult {
+    bench_restart_lookup_for_spec(FixtureSpec::required_matrix()[6])
+}
+
+#[cfg(feature = "canbench")]
+fn bench_shared_orientation_lookup_for_spec(spec: FixtureSpec) -> canbench_rs::BenchResult {
+    let (_, identities) = compression_sequences_for_spec(spec, false);
+    let lookup = SharedOrientationLookup::build(&identities, false).expect("shared lookup");
+    let encoded = lookup.encode().expect("shared encode");
+    let lookup = SharedOrientationLookup::decode(&encoded).expect("shared decode");
+    let queries = identities
+        .iter()
+        .filter(|identity| identity.orientation == 0)
+        .map(|identity| {
+            let rank = lookup
+                .rank_for(identity.owner, identity.target, identity.slot)
+                .expect("shared source rank");
+            (identity.owner, identity.target, rank)
+        })
+        .collect::<Vec<_>>();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for &(owner, target, rank) in queries.iter().cycle().take(1024) {
+            checksum = checksum.wrapping_add(u64::from(
+                lookup.lookup(owner, target, rank).expect("shared mate"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_shared_lookup_directed_high() -> canbench_rs::BenchResult {
+    bench_shared_orientation_lookup_for_spec(FixtureSpec::required_matrix()[1])
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_shared_lookup_parallel() -> canbench_rs::BenchResult {
+    bench_shared_orientation_lookup_for_spec(FixtureSpec::required_matrix()[6])
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_undirected_pair_rank() -> canbench_rs::BenchResult {
+    let spec = FixtureSpec::required_matrix()[3];
+    let (_, identities) = compression_sequences_for_spec(spec, true);
+    let lookup = UndirectedPairRankLookup::build(&identities).expect("undirected pair rank");
+    let queries = identities
+        .iter()
+        .filter(|identity| identity.owner < identity.target)
+        .map(|identity| {
+            let rank = identities
+                .iter()
+                .filter(|other| {
+                    other.owner == identity.owner
+                        && other.target == identity.target
+                        && other.slot <= identity.slot
+                })
+                .count()
+                .checked_sub(1)
+                .expect("undirected pair-rank") as u32;
+            (identity.owner, identity.target, rank)
+        })
+        .collect::<Vec<_>>();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for &(owner, target, rank) in queries.iter().cycle().take(1024) {
+            checksum = checksum.wrapping_add(u64::from(
+                lookup
+                    .lookup(owner, target, rank)
+                    .expect("undirected pair-rank mate"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_undirected_pair_rank_exception() -> canbench_rs::BenchResult {
+    let pairs = (0..128u32)
+        .map(|rank| (rank, 127u32.saturating_sub(rank)))
+        .collect::<Vec<_>>();
+    let lookup = UndirectedPairRankExceptionLookup::from_ordered_pairs(1, 2, &pairs)
+        .expect("exception lookup");
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for rank in (0..128u32).cycle().take(1024) {
+            checksum = checksum.saturating_add(u64::from(
+                lookup.lookup(1, 2, rank).expect("exception rank"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+fn bench_undirected_block_rank_permutation(block_size: u32) -> canbench_rs::BenchResult {
+    let pairs = (0..128u32)
+        .map(|rank| (rank, 127u32.saturating_sub(rank)))
+        .collect::<Vec<_>>();
+    let lookup = UndirectedBlockRankPermutationLookup::from_ordered_pairs(1, 2, &pairs, block_size)
+        .expect("block permutation lookup");
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for rank in (0..128u32).cycle().take(1024) {
+            checksum =
+                checksum.saturating_add(u64::from(lookup.lookup(1, 2, rank).expect("block rank")));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_undirected_block_rank_8() -> canbench_rs::BenchResult {
+    bench_undirected_block_rank_permutation(8)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_undirected_block_rank_16() -> canbench_rs::BenchResult {
+    bench_undirected_block_rank_permutation(16)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_undirected_block_rank_32() -> canbench_rs::BenchResult {
+    bench_undirected_block_rank_permutation(32)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_undirected_block_rank_64() -> canbench_rs::BenchResult {
+    bench_undirected_block_rank_permutation(64)
+}
+
+#[cfg(feature = "canbench")]
+fn bench_sampled_paired_residual_lookup_for_spec(
+    spec: FixtureSpec,
+    block_size: usize,
+) -> canbench_rs::BenchResult {
+    let (_, identities) = compression_sequences_for_spec(spec, false);
+    let lookup = SampledPairedResidualLookup::build(&identities, block_size)
+        .expect("sampled residual lookup");
+    let encoded = lookup.encode().expect("sampled residual encode");
+    let lookup =
+        SampledPairedResidualLookup::decode(&encoded, block_size).expect("sampled residual decode");
+    let queries = identities
+        .iter()
+        .filter(|identity| identity.orientation == 0)
+        .map(|identity| {
+            let rank = identities
+                .iter()
+                .filter(|other| {
+                    other.owner == identity.owner
+                        && other.target == identity.target
+                        && other.orientation == identity.orientation
+                })
+                .map(|other| other.slot)
+                .filter(|&slot| slot <= identity.slot)
+                .count()
+                .checked_sub(1)
+                .expect("sampled rank") as u32;
+            (identity.owner, identity.target, rank, identity.slot)
+        })
+        .collect::<Vec<_>>();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for &(owner, target, rank, source_slot) in queries.iter().cycle().take(1024) {
+            checksum = checksum.wrapping_add(u64::from(
+                lookup
+                    .lookup(owner, target, rank, source_slot)
+                    .expect("sampled mate"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+fn bench_sampled_paired_residual_local_scan_for_spec(
+    spec: FixtureSpec,
+    block_size: usize,
+) -> canbench_rs::BenchResult {
+    let (_, identities) = compression_sequences_for_spec(spec, false);
+    let lookup = SampledPairedResidualLookup::build(&identities, block_size)
+        .expect("sampled residual lookup");
+    let encoded = lookup.encode().expect("sampled residual encode");
+    let lookup =
+        SampledPairedResidualLookup::decode(&encoded, block_size).expect("sampled residual decode");
+    let mut source_groups = std::collections::BTreeMap::<(u32, u32), Vec<u32>>::new();
+    for identity in identities
+        .iter()
+        .filter(|identity| identity.orientation == 0)
+    {
+        source_groups
+            .entry((identity.owner, identity.target))
+            .or_default()
+            .push(identity.slot);
+    }
+    for slots in source_groups.values_mut() {
+        slots.sort_unstable();
+    }
+    let queries = identities
+        .iter()
+        .filter(|identity| identity.orientation == 0)
+        .map(|identity| {
+            let source_slots = source_groups
+                .get(&(identity.owner, identity.target))
+                .expect("source group");
+            let rank = source_slots
+                .binary_search(&identity.slot)
+                .expect("source rank") as u32;
+            (identity.owner, identity.target, rank)
+        })
+        .collect::<Vec<_>>();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for &(owner, target, rank) in queries.iter().cycle().take(1024) {
+            let source_slots = source_groups.get(&(owner, target)).expect("source group");
+            checksum = checksum.wrapping_add(u64::from(
+                lookup
+                    .lookup_local_scan(owner, target, rank, source_slots)
+                    .expect("sampled local-scan mate"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_b8_directed_high() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_lookup_for_spec(FixtureSpec::required_matrix()[1], 8)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_b16_directed_high() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_lookup_for_spec(FixtureSpec::required_matrix()[1], 16)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_b32_directed_high() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_lookup_for_spec(FixtureSpec::required_matrix()[1], 32)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_b64_directed_high() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_lookup_for_spec(FixtureSpec::required_matrix()[1], 64)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_b8_parallel() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_lookup_for_spec(FixtureSpec::required_matrix()[6], 8)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_b16_parallel() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_lookup_for_spec(FixtureSpec::required_matrix()[6], 16)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_b32_parallel() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_lookup_for_spec(FixtureSpec::required_matrix()[6], 32)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_b64_parallel() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_lookup_for_spec(FixtureSpec::required_matrix()[6], 64)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_scan_b8_parallel() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_local_scan_for_spec(FixtureSpec::required_matrix()[6], 8)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_scan_b32_parallel() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_local_scan_for_spec(FixtureSpec::required_matrix()[6], 32)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_sampled_paired_residual_scan_b64_parallel() -> canbench_rs::BenchResult {
+    bench_sampled_paired_residual_local_scan_for_spec(FixtureSpec::required_matrix()[6], 64)
+}
+
+#[cfg(feature = "canbench")]
+fn build_alias_runtime_probe(
+    spec: FixtureSpec,
+    undirected: bool,
+) -> (
+    crate::facade::stable::edge_alias::EdgeAliasIndex<ic_stable_structures::VectorMemory>,
+    Vec<(ic_stable_lara::VertexId, u16, u32)>,
+    Vec<(u32, u8, u32)>,
+    ic_stable_lara::adoption_fixture::RankedPackedLookup,
+) {
+    let (vertex_count, edges) = if undirected {
+        let vertex_count = (spec.logical_edges / 2) as u32;
+        let edges = (0..vertex_count)
+            .flat_map(|source| {
+                [
+                    (source, (source + 1) % vertex_count),
+                    (source, (source + 2) % vertex_count),
+                ]
+            })
+            .collect::<Vec<_>>();
+        (vertex_count, edges)
+    } else if matches!(spec.shape, FixtureShape::Parallel) {
+        (
+            2,
+            (0..spec.logical_edges).map(|_| (0, 1)).collect::<Vec<_>>(),
+        )
+    } else {
+        let vertex_count = (spec.logical_edges / 2) as u32;
+        let edges = (0..vertex_count)
+            .flat_map(|source| {
+                [
+                    (source, (source + 1) % vertex_count),
+                    (source, (source + 2) % vertex_count),
+                ]
+            })
+            .collect::<Vec<_>>();
+        (vertex_count, edges)
+    };
+    let fixture = if undirected {
+        ic_stable_lara::adoption_fixture::build_alias_only_undirected_fixture(vertex_count, &edges)
+            .expect("alias probe fixture")
+    } else {
+        ic_stable_lara::adoption_fixture::build_alias_only_fixture(vertex_count, &edges)
+            .expect("alias probe fixture")
+    };
+    let mut aliases = crate::facade::stable::edge_alias::EdgeAliasIndex::init(
+        ic_stable_structures::VectorMemory::default(),
+    );
+    let mut alias_queries = Vec::new();
+    let mut rank_queries = Vec::new();
+    for identity in &fixture.identities {
+        let is_alias = if undirected {
+            identity.owner > identity.target
+        } else {
+            identity.orientation == 1
+        };
+        if !is_alias {
+            continue;
+        }
+        let counterpart_orientation = if undirected {
+            0
+        } else {
+            1 - identity.orientation
+        };
+        let mut source_slots = fixture
+            .identities
+            .iter()
+            .filter(|other| {
+                other.owner == identity.owner
+                    && other.target == identity.target
+                    && (undirected || other.orientation == identity.orientation)
+            })
+            .map(|other| other.slot)
+            .collect::<Vec<_>>();
+        source_slots.sort_unstable();
+        let rank = source_slots
+            .binary_search(&identity.slot)
+            .expect("alias source rank");
+        let mut counterpart = fixture
+            .identities
+            .iter()
+            .filter(|other| {
+                other.owner == identity.target
+                    && other.target == identity.owner
+                    && (undirected || other.orientation == counterpart_orientation)
+            })
+            .collect::<Vec<_>>();
+        counterpart.sort_unstable_by_key(|other| other.slot);
+        let canonical = counterpart.get(rank).expect("alias counterpart");
+        aliases.insert(
+            ic_stable_lara::VertexId::from(identity.owner),
+            1,
+            identity.slot,
+            ic_stable_lara::VertexId::from(canonical.owner),
+            canonical.slot,
+        );
+        alias_queries.push((
+            ic_stable_lara::VertexId::from(identity.owner),
+            1,
+            identity.slot,
+        ));
+        rank_queries.push((
+            identity.owner,
+            if undirected { 0 } else { identity.orientation },
+            rank as u32,
+        ));
+    }
+    let bytes =
+        ic_stable_lara::adoption_fixture::ranked_packed_blob(&fixture.identities, undirected)
+            .expect("ranked probe bytes");
+    let ranked = ic_stable_lara::adoption_fixture::RankedPackedLookup::decode(&bytes)
+        .expect("ranked probe decode");
+    (aliases, alias_queries, rank_queries, ranked)
+}
+
+#[cfg(feature = "canbench")]
+fn bench_alias_hit_vs_rank_decode(
+    spec: FixtureSpec,
+    undirected: bool,
+) -> (canbench_rs::BenchResult, canbench_rs::BenchResult) {
+    let (aliases, alias_queries, rank_queries, ranked) =
+        build_alias_runtime_probe(spec, undirected);
+    let alias_result = bench_fn(|| {
+        let mut checksum = 0u64;
+        for (vertex, label, slot) in alias_queries.iter().cycle().take(1024) {
+            if let Some(value) = aliases.get(*vertex, *label, *slot) {
+                checksum = checksum.saturating_add(u64::from(value.canonical_slot_index()));
+            }
+        }
+        black_box(checksum);
+    });
+    let rank_result = bench_fn(|| {
+        let mut checksum = 0u64;
+        for (owner, orientation, rank) in rank_queries.iter().cycle().take(1024) {
+            let slot = ranked
+                .lookup(*owner, *orientation, *rank)
+                .expect("rank lookup");
+            checksum = checksum.saturating_add(u64::from(slot));
+        }
+        black_box(checksum);
+    });
+    (alias_result, rank_result)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_alias_hit_directed_high() -> canbench_rs::BenchResult {
+    bench_alias_hit_vs_rank_decode(FixtureSpec::required_matrix()[1], false).0
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_rank_decode_directed_high() -> canbench_rs::BenchResult {
+    bench_alias_hit_vs_rank_decode(FixtureSpec::required_matrix()[1], false).1
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_alias_hit_parallel() -> canbench_rs::BenchResult {
+    bench_alias_hit_vs_rank_decode(FixtureSpec::required_matrix()[6], false).0
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_rank_decode_parallel() -> canbench_rs::BenchResult {
+    bench_alias_hit_vs_rank_decode(FixtureSpec::required_matrix()[6], false).1
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_rank_decode_undirected_high() -> canbench_rs::BenchResult {
+    bench_alias_hit_vs_rank_decode(FixtureSpec::required_matrix()[3], true).1
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_ranked_bytes_directed_high() -> canbench_rs::BenchResult {
+    bench_ranked_bytes(FixtureSpec::required_matrix()[1], false)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_ranked_bytes_parallel() -> canbench_rs::BenchResult {
+    bench_ranked_bytes(FixtureSpec::required_matrix()[6], false)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_ranked_bytes_undirected_high() -> canbench_rs::BenchResult {
+    bench_ranked_bytes(FixtureSpec::required_matrix()[3], true)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_ranked_bytes_sparse_slots() -> canbench_rs::BenchResult {
+    let identities = synthetic_sparse_slot_identities();
+    bench_fn(|| {
+        let bytes = ic_stable_lara::adoption_fixture::ranked_packed_blob_bytes(&identities, false)
+            .expect("sparse ranked bytes");
+        black_box(bytes);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_shared_lookup_sparse_slots() -> canbench_rs::BenchResult {
+    let identities = synthetic_sparse_slot_identities();
+    let lookup = SharedOrientationLookup::build(&identities, false).expect("sparse shared lookup");
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for rank in (0..32u32).cycle().take(1024) {
+            checksum = checksum.saturating_add(u64::from(
+                lookup.lookup(1, 2, rank).expect("sparse shared mate"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_rank_lookup_sparse_slots() -> canbench_rs::BenchResult {
+    let identities = synthetic_sparse_slot_identities();
+    let bytes = ic_stable_lara::adoption_fixture::ranked_packed_blob(&identities, false)
+        .expect("sparse ranked blob");
+    let lookup = ic_stable_lara::adoption_fixture::RankedPackedLookup::decode(&bytes)
+        .expect("sparse ranked lookup");
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for rank in (0..32u32).cycle().take(1024) {
+            checksum = checksum.saturating_add(u64::from(
+                lookup.lookup(1, 0, rank).expect("sparse ranked mate"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_mixed_label_shared_lookup() -> canbench_rs::BenchResult {
+    let [first, second] = synthetic_mixed_label_identity_sets();
+    let first_lookup = SharedOrientationLookup::build(&first, false).expect("first label lookup");
+    let second_lookup =
+        SharedOrientationLookup::build(&second, false).expect("second label lookup");
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for rank in (0..16u32).cycle().take(1024) {
+            let lookup = if rank % 2 == 0 {
+                &first_lookup
+            } else {
+                &second_lookup
+            };
+            checksum = checksum.saturating_add(u64::from(
+                lookup
+                    .lookup(1, if rank % 2 == 0 { 2 } else { 3 }, rank / 2)
+                    .expect("mixed label mate"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_rank_lookup_mixed_labels() -> canbench_rs::BenchResult {
+    let [first, second] = synthetic_mixed_label_identity_sets();
+    let first_bytes = ic_stable_lara::adoption_fixture::ranked_packed_blob(&first, false)
+        .expect("first label ranked blob");
+    let second_bytes = ic_stable_lara::adoption_fixture::ranked_packed_blob(&second, false)
+        .expect("second label ranked blob");
+    let first_lookup = ic_stable_lara::adoption_fixture::RankedPackedLookup::decode(&first_bytes)
+        .expect("first label ranked lookup");
+    let second_lookup = ic_stable_lara::adoption_fixture::RankedPackedLookup::decode(&second_bytes)
+        .expect("second label ranked lookup");
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for rank in (0..16u32).cycle().take(1024) {
+            let slot = if rank % 2 == 0 {
+                first_lookup
+                    .lookup(1, 0, rank / 2)
+                    .expect("first label mate")
+            } else {
+                second_lookup
+                    .lookup(1, 0, rank / 2)
+                    .expect("second label mate")
+            };
+            checksum = checksum.saturating_add(u64::from(slot));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_shared_lookup_real_mixed_labels() -> canbench_rs::BenchResult {
+    let sets = real_mixed_label_identity_sets_for_bench(4);
+    let lookups = sets
+        .iter()
+        .map(|identities| {
+            let lookup = SharedOrientationLookup::build(identities, false).expect("shared lookup");
+            let queries = identities
+                .iter()
+                .filter(|identity| identity.orientation == 0)
+                .map(|identity| {
+                    let rank = lookup
+                        .rank_for(identity.owner, identity.target, identity.slot)
+                        .expect("shared rank");
+                    (identity.owner, identity.target, rank)
+                })
+                .collect::<Vec<_>>();
+            (lookup, queries)
+        })
+        .collect::<Vec<_>>();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for (lookup, queries) in &lookups {
+            for &(owner, target, rank) in queries.iter().cycle().take(1024) {
+                checksum = checksum.wrapping_add(u64::from(
+                    lookup.lookup(owner, target, rank).expect("shared mate"),
+                ));
+            }
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_rank_lookup_real_mixed_labels() -> canbench_rs::BenchResult {
+    let lookups = real_mixed_label_identity_sets_for_bench(4)
+        .into_iter()
+        .map(|identities| {
+            let bytes = ic_stable_lara::adoption_fixture::ranked_packed_blob(&identities, false)
+                .expect("ranked encode");
+            let lookup = ic_stable_lara::adoption_fixture::RankedPackedLookup::decode(&bytes)
+                .expect("ranked decode");
+            let queries = identities
+                .iter()
+                .filter(|identity| identity.orientation == 0)
+                .enumerate()
+                .map(|(rank, identity)| (identity.owner, rank as u32))
+                .collect::<Vec<_>>();
+            (lookup, queries)
+        })
+        .collect::<Vec<_>>();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for (lookup, queries) in &lookups {
+            for &(owner, rank) in queries.iter().cycle().take(1024) {
+                checksum = checksum.wrapping_add(u64::from(
+                    lookup.lookup(owner, 0, rank).expect("ranked mate"),
+                ));
+            }
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_compression_shared_lookup_real_sparse_slots() -> canbench_rs::BenchResult {
+    let identities = real_sparse_slot_identities_for_bench();
+    let lookup = SharedOrientationLookup::build(&identities, false).expect("shared lookup");
+    let queries = identities
+        .iter()
+        .filter(|identity| identity.orientation == 0)
+        .map(|identity| {
+            let rank = lookup
+                .rank_for(identity.owner, identity.target, identity.slot)
+                .expect("shared rank");
+            (identity.owner, identity.target, rank)
+        })
+        .collect::<Vec<_>>();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for &(owner, target, rank) in queries.iter().cycle().take(1024) {
+            checksum = checksum.wrapping_add(u64::from(
+                lookup.lookup(owner, target, rank).expect("shared mate"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_rank_lookup_real_sparse_slots() -> canbench_rs::BenchResult {
+    let identities = real_sparse_slot_identities_for_bench();
+    let bytes = ic_stable_lara::adoption_fixture::ranked_packed_blob(&identities, false)
+        .expect("ranked encode");
+    let lookup = ic_stable_lara::adoption_fixture::RankedPackedLookup::decode(&bytes)
+        .expect("ranked decode");
+    let queries = identities
+        .iter()
+        .filter(|identity| identity.orientation == 0)
+        .enumerate()
+        .map(|(rank, identity)| (identity.owner, rank as u32))
+        .collect::<Vec<_>>();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for &(owner, rank) in queries.iter().cycle().take(1024) {
+            checksum = checksum.wrapping_add(u64::from(
+                lookup.lookup(owner, 0, rank).expect("ranked mate"),
+            ));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+fn bench_real_scan_lookup(
+    fixture: ic_stable_lara::adoption_fixture::SparseSlotPublishedFixture,
+    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for edge in refs.iter().cycle().take(1024) {
+            let mate = fixture.graph.mate_of(*edge).expect("sparse scan mate");
+            checksum = checksum.wrapping_add(u64::from(mate.slot_index));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_scan_lookup_real_sparse_slots() -> canbench_rs::BenchResult {
+    let (fixture, refs) = real_sparse_scan_refs_for_bench();
+    bench_real_scan_lookup(fixture, refs)
+}
+
+#[cfg(feature = "canbench")]
+fn bench_real_mixed_scan_lookup(
+    fixture: ic_stable_lara::adoption_fixture::MixedLabelPublishedFixture,
+    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for edge in refs.iter().cycle().take(1024) {
+            let mate = fixture.graph.mate_of(*edge).expect("mixed scan mate");
+            checksum = checksum.wrapping_add(u64::from(mate.slot_index));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_scan_lookup_real_mixed_labels() -> canbench_rs::BenchResult {
+    let (fixture, refs) = real_mixed_scan_refs_for_bench(4);
+    bench_real_mixed_scan_lookup(fixture, refs)
+}
+
+#[cfg(feature = "canbench")]
 fn published_directed_runtime_fixture() -> (
     ic_stable_lara::adoption_fixture::PublishedFixture,
     Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
 ) {
     published_directed_runtime_fixture_with_logical_edges(128)
+}
+
+#[cfg(feature = "canbench")]
+fn build_alias_reverse_probe() -> (
+    ic_stable_lara::adoption_fixture::PublishedFixture,
+    crate::facade::stable::edge_alias::EdgeAliasIndex<ic_stable_structures::VectorMemory>,
+    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) {
+    let (fixture, _) = published_directed_runtime_fixture();
+    let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
+    let mut aliases = crate::facade::stable::edge_alias::EdgeAliasIndex::init(
+        ic_stable_structures::VectorMemory::default(),
+    );
+    let mut canonical_refs = Vec::new();
+    for identity in fixture.identities.iter().filter(|row| row.orientation == 1) {
+        let mut source_slots = fixture
+            .identities
+            .iter()
+            .filter(|other| {
+                other.orientation == 1
+                    && other.owner == identity.owner
+                    && other.target == identity.target
+            })
+            .map(|other| other.slot)
+            .collect::<Vec<_>>();
+        source_slots.sort_unstable();
+        let rank = source_slots
+            .binary_search(&identity.slot)
+            .expect("reverse source rank");
+        let mut counterparts = fixture
+            .identities
+            .iter()
+            .filter(|other| {
+                other.orientation == 0
+                    && other.owner == identity.target
+                    && other.target == identity.owner
+            })
+            .collect::<Vec<_>>();
+        counterparts.sort_unstable_by_key(|other| other.slot);
+        let canonical = counterparts.get(rank).expect("reverse counterpart");
+        aliases.insert(
+            ic_stable_lara::VertexId::from(identity.owner),
+            label.raw(),
+            identity.slot,
+            ic_stable_lara::VertexId::from(canonical.owner),
+            canonical.slot,
+        );
+    }
+    for identity in fixture.identities.iter().filter(|row| row.orientation == 0) {
+        canonical_refs.push(ic_stable_lara::labeled::PhysicalEdgeRef {
+            orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
+            owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
+            label_id: label,
+            slot_index: identity.slot,
+        });
+    }
+    (fixture, aliases, canonical_refs)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_alias_reverse_lookup_directed_high() -> canbench_rs::BenchResult {
+    let (_fixture, aliases, canonical_refs) = build_alias_reverse_probe();
+    let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for reference in canonical_refs.iter().cycle().take(1024) {
+            if let Some((vertex, slot)) = aliases.find_alias_for_canonical(
+                reference.owner_vertex_id,
+                label.raw(),
+                reference.slot_index,
+            ) {
+                checksum = checksum
+                    .saturating_add(u64::from(vertex))
+                    .saturating_add(u64::from(slot));
+            }
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_alias_miss_canonical_fallback_directed_high() -> canbench_rs::BenchResult {
+    let (fixture, _aliases, canonical_refs) = build_alias_reverse_probe();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for reference in canonical_refs.iter().cycle().take(1024) {
+            let mate = fixture
+                .graph
+                .mate_of(*reference)
+                .expect("canonical fallback");
+            checksum = checksum.saturating_add(u64::from(mate.slot_index));
+        }
+        black_box(checksum);
+    })
 }
 
 #[cfg(feature = "canbench")]
@@ -1833,6 +3226,520 @@ fn bench_mate_adoption_runtime_published_undirected_high() -> canbench_rs::Bench
 #[cfg(test)]
 mod fixture_evidence_tests {
     use super::*;
+    use crate::bench::mate_compression::UndirectedPairRankLookup;
+
+    fn observation() -> CompressionPolicyObservation {
+        CompressionPolicyObservation {
+            live_degree: 128,
+            requests: 1024,
+            monotone_rank_sequence: false,
+            alias_bytes: 2304,
+            scan_instructions: 18_000_000,
+            ranked_bytes: 2000,
+            ranked_instructions: 1_500_000,
+            shared_bytes: None,
+            shared_instructions: None,
+            compressed_bytes: None,
+            compressed_instructions: None,
+            exact_and_fail_closed: true,
+        }
+    }
+
+    #[test]
+    fn adaptive_policy_keeps_low_or_insufficient_evidence_scan_only() {
+        let mut low = observation();
+        low.live_degree = MIN_RANK_LIVE_DEGREE - 1;
+        assert_eq!(
+            select_compression_candidate(low),
+            CompressionCandidate::ScanOnly
+        );
+
+        let mut cold = observation();
+        cold.requests = MIN_RANK_REQUESTS - 1;
+        assert_eq!(
+            select_compression_candidate(cold),
+            CompressionCandidate::ScanOnly
+        );
+
+        let mut unsafe_result = observation();
+        unsafe_result.exact_and_fail_closed = false;
+        assert_eq!(
+            select_compression_candidate(unsafe_result),
+            CompressionCandidate::ScanOnly
+        );
+    }
+
+    #[test]
+    fn self_loop_contracts_keep_directed_orientations_and_undirected_single_entry() {
+        let directed = ic_stable_lara::adoption_fixture::build_alias_only_fixture(1, &[(0, 0)])
+            .expect("directed self-loop fixture");
+        assert_eq!(directed.identities.len(), 2);
+        assert_eq!(
+            directed
+                .identities
+                .iter()
+                .map(|identity| identity.orientation)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2
+        );
+
+        let undirected =
+            ic_stable_lara::adoption_fixture::build_alias_only_undirected_fixture(1, &[(0, 0)])
+                .expect("undirected self-loop fixture");
+        assert_eq!(undirected.identities.len(), 1);
+        assert_eq!(
+            undirected.identities[0].owner,
+            undirected.identities[0].target
+        );
+    }
+
+    #[test]
+    fn sparse_and_mixed_topologies_are_evaluated_per_bucket() {
+        let sparse = build_fixture(FixtureSpec::required_matrix()[7]);
+        let max_sparse_slot = sparse
+            .identities
+            .iter()
+            .map(|identity| identity.slot)
+            .max()
+            .expect("sparse slot");
+        assert!(max_sparse_slot >= sparse.identities.len() as u32 * 2);
+
+        let mixed = build_fixture(FixtureSpec::required_matrix()[8]);
+        let labels = mixed
+            .identities
+            .iter()
+            .map(|identity| identity.label)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(labels.len() >= 2);
+        let mut per_label = observation();
+        per_label.live_degree = MIN_RANK_LIVE_DEGREE / 2;
+        assert_eq!(
+            select_compression_candidate(per_label),
+            CompressionCandidate::ScanOnly
+        );
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn synthetic_sparse_and_mixed_lookup_models_keep_bucket_boundaries() {
+        let sparse = synthetic_sparse_slot_identities();
+        let sparse_lookup = SharedOrientationLookup::build(&sparse, false).expect("sparse lookup");
+        let sparse_ranked_bytes =
+            ic_stable_lara::adoption_fixture::ranked_packed_blob_bytes(&sparse, false)
+                .expect("sparse ranked bytes");
+        let sparse_shared_bytes = sparse_lookup.encode().expect("sparse encoding").len();
+        println!(
+            "sparse_slots: ranked_bytes={sparse_ranked_bytes} shared_bytes={sparse_shared_bytes}"
+        );
+        assert!(sparse_shared_bytes > 100);
+        assert_eq!(sparse_lookup.lookup(1, 2, 3), Some(3 * 1024));
+
+        let [first, second] = synthetic_mixed_label_identity_sets();
+        let first_lookup = SharedOrientationLookup::build(&first, false).expect("first label");
+        let second_lookup = SharedOrientationLookup::build(&second, false).expect("second label");
+        println!(
+            "mixed_labels: first_shared_bytes={} second_shared_bytes={} first_ranked_bytes={} second_ranked_bytes={}",
+            first_lookup.encode().expect("first encoding").len(),
+            second_lookup.encode().expect("second encoding").len(),
+            ic_stable_lara::adoption_fixture::ranked_packed_blob_bytes(&first, false)
+                .expect("first ranked bytes"),
+            ic_stable_lara::adoption_fixture::ranked_packed_blob_bytes(&second, false)
+                .expect("second ranked bytes")
+        );
+        assert_eq!(first_lookup.lookup(1, 2, 3), Some(3));
+        assert_eq!(second_lookup.lookup(1, 3, 3), Some(3));
+        assert!(first_lookup.lookup(1, 3, 0).is_none());
+        assert!(second_lookup.lookup(1, 2, 0).is_none());
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn real_mixed_label_fixture_keeps_label_local_candidates() {
+        let fixture = ic_stable_lara::adoption_fixture::build_mixed_label_published_fixture(2, 16)
+            .expect("real mixed-label fixture");
+        let labels = fixture
+            .identities
+            .iter()
+            .map(|identity| identity.label)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(labels.len(), 2);
+        for label in labels {
+            let identities = fixture
+                .identities
+                .iter()
+                .filter(|identity| identity.label == label)
+                .map(
+                    |identity| ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                        owner: identity.owner,
+                        target: identity.target,
+                        orientation: identity.orientation,
+                        slot: identity.slot,
+                    },
+                )
+                .collect::<Vec<_>>();
+            let shared = SharedOrientationLookup::build(&identities, false).expect("shared");
+            let ranked =
+                ic_stable_lara::adoption_fixture::ranked_packed_blob_bytes(&identities, false)
+                    .expect("ranked");
+            println!(
+                "real_mixed_label label={label}: ranked_bytes={ranked} shared_bytes={}",
+                shared.encode().expect("shared encoding").len()
+            );
+            assert!(!identities.is_empty());
+        }
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn real_sparse_fixture_exposes_overflow_log_locations() {
+        let fixture = ic_stable_lara::adoption_fixture::build_sparse_slot_published_fixture(16)
+            .expect("real sparse-slot fixture");
+        assert_eq!(fixture.identities.len(), 16);
+        assert!(
+            fixture
+                .identities
+                .iter()
+                .all(|identity| identity.slot & 0x8000_0000 != 0)
+        );
+        let ranked =
+            ic_stable_lara::adoption_fixture::ranked_packed_blob_bytes(&fixture.identities, false)
+                .expect("ranked bytes");
+        let shared = SharedOrientationLookup::build(&fixture.identities, false)
+            .expect("shared lookup")
+            .encode()
+            .expect("shared bytes")
+            .len();
+        println!("real_sparse_slots: ranked_bytes={ranked} shared_bytes={shared}");
+        assert!(ranked > 0);
+        assert!(shared > 0);
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn topology_fixture_gate_records_self_loop_bytes_and_unsupported_rows() {
+        let directed = build_real_alias_fixture(FixtureSpec::required_matrix()[4])
+            .expect("directed self-loop fixture");
+        let directed_ids = directed
+            .identities
+            .iter()
+            .map(
+                |identity| ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: identity.owner,
+                    target: identity.target,
+                    orientation: identity.orientation,
+                    slot: identity.slot as u32,
+                },
+            )
+            .collect::<Vec<_>>();
+        assert!(
+            ic_stable_lara::adoption_fixture::ranked_packed_blob_bytes(&directed_ids, false)
+                .expect("directed self-loop ranked bytes")
+                > 0
+        );
+
+        let undirected = build_real_alias_fixture(FixtureSpec::required_matrix()[5])
+            .expect("undirected self-loop fixture");
+        let undirected_ids = undirected
+            .identities
+            .iter()
+            .map(
+                |identity| ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: identity.owner,
+                    target: identity.target,
+                    orientation: identity.orientation,
+                    slot: identity.slot as u32,
+                },
+            )
+            .collect::<Vec<_>>();
+        let pair_rank =
+            UndirectedPairRankLookup::build(&undirected_ids).expect("self-loop pair rank");
+        assert_eq!(pair_rank.logical_bytes(), Some(8));
+
+        assert!(build_real_alias_fixture(FixtureSpec::required_matrix()[7]).is_err());
+        assert!(build_real_alias_fixture(FixtureSpec::required_matrix()[8]).is_err());
+    }
+
+    #[test]
+    fn adaptive_policy_requires_both_byte_and_runtime_gates() {
+        assert_eq!(
+            select_compression_candidate(observation()),
+            CompressionCandidate::RankedPacked
+        );
+
+        let mut bytes_fail = observation();
+        bytes_fail.ranked_bytes = bytes_fail.alias_bytes + 1;
+        assert_eq!(
+            select_compression_candidate(bytes_fail),
+            CompressionCandidate::ScanOnly
+        );
+
+        let mut runtime_fail = observation();
+        runtime_fail.ranked_instructions = runtime_fail.scan_instructions + 1;
+        assert_eq!(
+            select_compression_candidate(runtime_fail),
+            CompressionCandidate::ScanOnly
+        );
+    }
+
+    #[test]
+    fn adaptive_policy_accepts_compressed_candidate_only_with_monotone_proof() {
+        let mut compressed = observation();
+        compressed.monotone_rank_sequence = true;
+        compressed.compressed_bytes = Some(1000);
+        compressed.compressed_instructions = Some(1_000_000);
+        assert_eq!(
+            select_compression_candidate(compressed),
+            CompressionCandidate::MonotoneCompressed
+        );
+
+        let mut non_monotone = compressed;
+        non_monotone.monotone_rank_sequence = false;
+        assert_eq!(
+            select_compression_candidate(non_monotone),
+            CompressionCandidate::RankedPacked
+        );
+
+        let mut shared = observation();
+        shared.shared_bytes = Some(1800);
+        shared.shared_instructions = Some(672_000);
+        assert_eq!(
+            select_compression_candidate(shared),
+            CompressionCandidate::SharedOrientation
+        );
+
+        let mut shared_bytes_fail = shared;
+        shared_bytes_fail.shared_bytes = Some(shared_bytes_fail.ranked_bytes + 1);
+        assert_eq!(
+            select_compression_candidate(shared_bytes_fail),
+            CompressionCandidate::RankedPacked
+        );
+
+        let mut shared_runtime_fail = shared;
+        shared_runtime_fail.shared_instructions = Some(shared_runtime_fail.ranked_instructions + 1);
+        assert_eq!(
+            select_compression_candidate(shared_runtime_fail),
+            CompressionCandidate::RankedPacked
+        );
+
+        let mut undirected = observation();
+        undirected.shared_bytes = None;
+        undirected.shared_instructions = None;
+        assert_eq!(
+            select_compression_candidate(undirected),
+            CompressionCandidate::RankedPacked
+        );
+    }
+
+    #[test]
+    fn measured_common_fixture_policy_prefers_shared_only_for_directed_shapes() {
+        let directed = CompressionPolicyObservation {
+            live_degree: 128,
+            requests: 1024,
+            monotone_rank_sequence: false,
+            alias_bytes: 2304,
+            scan_instructions: 13_720_000,
+            ranked_bytes: 2840,
+            ranked_instructions: 1_560_000,
+            shared_bytes: Some(1800),
+            shared_instructions: Some(672_220),
+            compressed_bytes: None,
+            compressed_instructions: None,
+            exact_and_fail_closed: true,
+        };
+        assert_eq!(
+            select_compression_candidate(directed),
+            CompressionCandidate::SharedOrientation
+        );
+
+        let parallel = CompressionPolicyObservation {
+            ranked_bytes: 128,
+            ranked_instructions: 323_900,
+            shared_bytes: Some(84),
+            shared_instructions: Some(175_430),
+            ..directed
+        };
+        assert_eq!(
+            select_compression_candidate(parallel),
+            CompressionCandidate::SharedOrientation
+        );
+
+        let undirected = CompressionPolicyObservation {
+            ranked_bytes: 1560,
+            ranked_instructions: 1_560_000,
+            shared_bytes: None,
+            shared_instructions: None,
+            ..directed
+        };
+        assert_eq!(
+            select_compression_candidate(undirected),
+            CompressionCandidate::RankedPacked
+        );
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn candidate_size_models_report_real_fixture_values() {
+        for (name, spec, undirected) in [
+            ("directed-high", FixtureSpec::required_matrix()[1], false),
+            ("parallel-32", FixtureSpec::required_matrix()[6], false),
+        ] {
+            let (sequences, identities) = compression_sequences_for_spec(spec, undirected);
+            let (delta, elias_fano, monotone_count, shared) =
+                compression_candidate_probe(&sequences, &identities, undirected);
+            println!(
+                "{name}: delta_restart={delta} elias_fano={elias_fano} shared={shared} monotone={monotone_count}/{}",
+                sequences.len()
+            );
+            assert!(delta > 0);
+            assert!(monotone_count <= sequences.len() as u64);
+        }
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn common_fixture_policy_reports_undirected_without_shared_orientation() {
+        let spec = FixtureSpec::required_matrix()[3];
+        let (_, identities) = compression_sequences_for_spec(spec, true);
+        let ranked = ic_stable_lara::adoption_fixture::ranked_packed_blob_bytes(&identities, true)
+            .expect("undirected rank bytes");
+        println!(
+            "{}: rank_indexed={} shared=unsupported scan_only=default",
+            spec.id, ranked
+        );
+        assert!(ranked > 0);
+        assert!(SharedOrientationLookup::build(&identities, true).is_err());
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn undirected_pair_rank_reports_identity_metadata_size() {
+        let spec = FixtureSpec::required_matrix()[3];
+        let (_, identities) = compression_sequences_for_spec(spec, true);
+        let lookup = UndirectedPairRankLookup::build(&identities).expect("pair-rank fixture");
+        let bytes = lookup.logical_bytes().expect("pair-rank bytes");
+        println!(
+            "{}: pair_rank_bytes={} bytes_per_edge={:.3}",
+            spec.id,
+            bytes,
+            bytes as f64 / spec.logical_edges as f64
+        );
+        assert!(bytes > 0);
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn shared_orientation_round_trip_matches_canonical_counterparts() {
+        for spec in [
+            FixtureSpec::required_matrix()[1],
+            FixtureSpec::required_matrix()[6],
+        ] {
+            let (_, identities) = compression_sequences_for_spec(spec, false);
+            let lookup =
+                SharedOrientationLookup::build(&identities, false).expect("shared fixture lookup");
+            let encoded = lookup.encode().expect("shared fixture encode");
+            let decoded = SharedOrientationLookup::decode(&encoded).expect("shared fixture decode");
+            for identity in &identities {
+                let mut source_slots = identities
+                    .iter()
+                    .filter(|other| {
+                        other.owner == identity.owner
+                            && other.target == identity.target
+                            && other.orientation == identity.orientation
+                    })
+                    .map(|other| other.slot)
+                    .collect::<Vec<_>>();
+                source_slots.sort_unstable();
+                let rank = source_slots
+                    .binary_search(&identity.slot)
+                    .expect("source rank") as u32;
+                let mut counterparts = identities
+                    .iter()
+                    .filter(|other| {
+                        other.owner == identity.target
+                            && other.target == identity.owner
+                            && other.orientation != identity.orientation
+                    })
+                    .map(|other| other.slot)
+                    .collect::<Vec<_>>();
+                counterparts.sort_unstable();
+                assert_eq!(
+                    decoded.lookup(identity.owner, identity.target, rank),
+                    counterparts.get(rank as usize).copied()
+                );
+                assert_eq!(
+                    decoded.lookup(identity.owner, identity.target, rank + 1_000_000),
+                    None
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn sampled_paired_residual_reports_block_size_series() {
+        for (name, spec) in [
+            ("directed-high", FixtureSpec::required_matrix()[1]),
+            ("parallel-32", FixtureSpec::required_matrix()[6]),
+            (
+                "parallel-128",
+                FixtureSpec {
+                    id: "parallel-128",
+                    shape: FixtureShape::Parallel,
+                    logical_edges: 128,
+                    physical_half_edges: 256,
+                    degree: 128,
+                },
+            ),
+            (
+                "parallel-256",
+                FixtureSpec {
+                    id: "parallel-256",
+                    shape: FixtureShape::Parallel,
+                    logical_edges: 256,
+                    physical_half_edges: 512,
+                    degree: 256,
+                },
+            ),
+        ] {
+            let (_, identities) = compression_sequences_for_spec(spec, false);
+            for block_size in [8usize, 16, 32, 64] {
+                let lookup = SampledPairedResidualLookup::build(&identities, block_size)
+                    .expect("sampled fixture lookup");
+                let bytes = lookup.logical_bytes().expect("sampled bytes");
+                let encoded = lookup.encode().expect("sampled fixture encode");
+                let decoded = SampledPairedResidualLookup::decode(&encoded, block_size)
+                    .expect("sampled fixture decode");
+                println!(
+                    "{name}: block={block_size} bytes={bytes} bytes_per_edge={:.3}",
+                    bytes as f64 / spec.logical_edges as f64
+                );
+                assert!(bytes > 0);
+                assert_eq!(u64::try_from(encoded.len()).expect("encoded length"), bytes);
+                let identity = identities
+                    .iter()
+                    .find(|identity| identity.orientation == 0)
+                    .expect("forward identity");
+                assert_eq!(
+                    decoded.lookup(identity.owner, identity.target, 0, identity.slot),
+                    lookup.lookup(identity.owner, identity.target, 0, identity.slot)
+                );
+                let source_slots = identities
+                    .iter()
+                    .filter(|other| {
+                        other.owner == identity.owner
+                            && other.target == identity.target
+                            && other.orientation == identity.orientation
+                    })
+                    .map(|other| other.slot)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    decoded.lookup_local_scan(identity.owner, identity.target, 0, &source_slots,),
+                    decoded.lookup(identity.owner, identity.target, 0, identity.slot)
+                );
+            }
+        }
+    }
 
     #[test]
     fn required_shapes_have_matching_identity_cardinality_and_digest() {
@@ -1898,6 +3805,7 @@ mod fixture_evidence_tests {
             FixtureSpec::required_matrix()[0],
             FixtureSpec::required_matrix()[1],
             FixtureSpec::required_matrix()[2],
+            FixtureSpec::required_matrix()[4],
             FixtureSpec::required_matrix()[5],
             FixtureSpec::required_matrix()[6],
         ] {
@@ -1988,20 +3896,20 @@ mod fixture_evidence_tests {
 
     #[cfg(feature = "canbench")]
     #[test]
-    fn evidence_uses_real_digest_only_for_supported_alias_shapes() {
+    fn evidence_uses_real_digest_for_real_topology_shapes() {
         let parallel = build_evidence_fixture(FixtureSpec::required_matrix()[6]);
         assert!(parallel.1.is_some());
         assert!(parallel.2.is_some_and(|bytes| bytes > 0));
 
         let sparse = build_evidence_fixture(FixtureSpec::required_matrix()[7]);
-        assert!(sparse.1.is_none());
-        assert!(sparse.2.is_none());
-        assert_eq!(sparse.0.fixture_ids, vec!["sparse_slots-fixture"]);
+        assert!(sparse.1.is_some());
+        assert!(sparse.2.is_some_and(|bytes| bytes > 0));
+        assert_eq!(sparse.0.fixture_ids, vec!["sparse_slots-published"]);
 
         let mixed = build_evidence_fixture(FixtureSpec::required_matrix()[8]);
-        assert!(mixed.1.is_none());
-        assert!(mixed.2.is_none());
-        assert_eq!(mixed.0.fixture_ids, vec!["mixed_labels_low-fixture"]);
+        assert!(mixed.1.is_some());
+        assert!(mixed.2.is_some_and(|bytes| bytes > 0));
+        assert_eq!(mixed.0.fixture_ids, vec!["mixed_labels_low-published"]);
     }
 
     #[test]

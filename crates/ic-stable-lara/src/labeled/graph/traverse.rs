@@ -436,6 +436,39 @@ where
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
     ) -> Result<LabeledSpanIter<'_, E, M>, LabeledOperationError> {
+        self.out_edges_iter_for_label_ordered_with_payload(src, label_id, order, true)
+    }
+
+    pub(crate) fn for_each_live_edge_slot_for_label_desc<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(u32, E),
+    {
+        let mut iter = self.out_edges_iter_for_label_ordered_with_payload(
+            src,
+            label_id,
+            OutEdgeOrder::Descending,
+            false,
+        )?;
+        while let Some(edge) = iter.next_with_slot() {
+            let (slot, edge) = edge?;
+            visit(slot, edge);
+        }
+        Ok(())
+    }
+
+    fn out_edges_iter_for_label_ordered_with_payload(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        attach_payload: bool,
+    ) -> Result<LabeledSpanIter<'_, E, M>, LabeledOperationError> {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
@@ -470,7 +503,15 @@ where
         match self.find_bucket(src, &vertex, label_id)? {
             BucketSearch::Found { slot, bucket } => {
                 let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-                self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, true)
+                self.labeled_bucket_span_iter(
+                    src,
+                    order,
+                    &vertex,
+                    &[bucket],
+                    0,
+                    bucket_index,
+                    attach_payload,
+                )
             }
             BucketSearch::Missing { .. } => Ok(LabeledSpanIter::Empty),
         }
@@ -1403,20 +1444,116 @@ where
             return Ok(());
         }
 
-        // Resolve the bucket once and let the storage-owned topology reader walk the
-        // slab/log representation in one pass.  The previous implementation called the
-        // single-slot reader once per logical slot, rebuilding the bucket/log view for every
-        // row.  The callback receives the same logical slot indices, but all bucket reads and
-        // overflow-chain reconstruction are now amortized over the complete row.
-        let slots: Vec<u32> = (0..logical_slots).collect();
-        self.read_out_edge_slots_for_label_with_replay_and_slot(
-            src,
-            label_id,
-            &slots,
-            OutEdgeOrder::Ascending,
-            None,
-            visit,
-        )
+        self.for_each_live_edge_slot_for_label_direct(src, label_id, logical_slots, visit)
+    }
+
+    /// Measurement-only reader that exposes physical slab and overflow-log locations.
+    ///
+    /// Slab slots use their local index. Overflow-log entry indices set the high bit so the two
+    /// storage tiers cannot collide. The default-label bypass remains excluded. It is feature
+    /// gated so production callers cannot accidentally depend on measurement geometry.
+    #[cfg(feature = "adoption-fixtures")]
+    pub fn for_each_live_physical_edge_location_for_label<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(u32, E),
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(());
+        }
+        let BucketSearch::Found { bucket, .. } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(());
+        };
+        for slot in 0..bucket.stored_slots {
+            let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let edge = self.edges.read_slot(physical_slot);
+            if edge.is_tombstone_edge() {
+                continue;
+            }
+            visit(
+                slot,
+                edge.with_slot_index(slot).with_label_id(label_id.raw()),
+            );
+        }
+        if bucket.overflow_log_head() >= 0 {
+            let leaf = self.payload_log_leaf(src);
+            for entry_idx in self
+                .edges
+                .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head())
+            {
+                let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+                if edge.is_tombstone_edge() {
+                    continue;
+                }
+                let encoded = entry_idx | 0x8000_0000;
+                visit(
+                    encoded,
+                    edge.with_slot_index(encoded).with_label_id(label_id.raw()),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Walks the canonical logical slot range without materializing slot indices.
+    ///
+    /// This path is intentionally limited to the ScanOnly rank/select primitive.  It resolves
+    /// the bucket and overflow chain once, then streams the logical range through the canonical
+    /// topology reader.  The public slice-reader retains its dense/replay optimizations; this
+    /// helper exists to avoid allocating and sorting a full slot vector for every mate lookup.
+    fn for_each_live_edge_slot_for_label_direct<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        logical_slots: u32,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(u32, E),
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(());
+        }
+        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(());
+        };
+        if bucket.degree() == 0 {
+            return Ok(());
+        }
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
+            #[cfg(test)]
+            crate::lara::edge::scan_guard::record_overflow_chain_rebuild();
+            self.edges.overflow_log_chain_asc_indices(
+                self.payload_log_leaf(src),
+                bucket.overflow_log_head(),
+            )
+        });
+        for slot_index in 0..logical_slots {
+            if let Some(edge) = self.read_out_edge_topology_at_slot(
+                src,
+                &vertex,
+                bucket_index,
+                &bucket,
+                slot_index,
+                label_id,
+                overflow_chain.as_deref(),
+            )? {
+                visit(slot_index, edge);
+            }
+        }
+        Ok(())
     }
 
     /// Like [`Self::read_out_edge_slots_for_label`], but may reuse hybrid overflow replay cached

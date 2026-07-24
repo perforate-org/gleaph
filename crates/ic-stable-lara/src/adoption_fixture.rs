@@ -16,6 +16,9 @@ use ic_stable_structures::{
     DefaultMemoryImpl,
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
 };
+use std::collections::BTreeMap;
+
+use crate::labeled::bidirectional::mate_ranked_prototype::{RankedBlob, RankedBucket};
 
 /// In-memory virtual region used by one measurement fixture.
 pub type FixtureMemory = VirtualMemory<DefaultMemoryImpl>;
@@ -44,6 +47,157 @@ pub struct PhysicalIdentity {
     pub orientation: u8,
     /// Slot index within the owning row.
     pub slot: u32,
+}
+
+/// Exact physical identity for a labeled measurement row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Ord, PartialOrd)]
+pub struct LabeledPhysicalIdentity {
+    /// Owning vertex row.
+    pub owner: u32,
+    /// Neighbor vertex row.
+    pub target: u32,
+    /// Raw bucket label key (including directedness bit).
+    pub label: u16,
+    /// Forward (`0`) or reverse (`1`) orientation.
+    pub orientation: u8,
+    /// Slot index within the owning row and bucket.
+    pub slot: u32,
+}
+
+/// Encode a rank-indexed Packed blob from the same physical identities used by the fixture.
+///
+/// This is a measurement-only adapter: it derives counterpart slots by occurrence rank and does
+/// not mutate or inspect production mate storage. `undirected` selects the single forward bucket
+/// orientation; directed fixtures contain both forward and reverse identity rows.
+pub fn ranked_packed_blob_bytes(
+    identities: &[PhysicalIdentity],
+    undirected: bool,
+) -> Result<u64, String> {
+    ranked_packed_blob(identities, undirected).map(|bytes| bytes.len() as u64)
+}
+
+/// Encode and return the measurement-only rank-indexed Packed bytes.
+pub fn ranked_packed_blob(
+    identities: &[PhysicalIdentity],
+    undirected: bool,
+) -> Result<Vec<u8>, String> {
+    let mut grouped: BTreeMap<(u32, u32, u8), Vec<u32>> = BTreeMap::new();
+    for identity in identities {
+        let orientation = if undirected { 0 } else { identity.orientation };
+        grouped
+            .entry((identity.owner, identity.target, orientation))
+            .or_default()
+            .push(identity.slot);
+    }
+    for slots in grouped.values_mut() {
+        slots.sort_unstable();
+    }
+    let mut buckets: BTreeMap<(u32, u8), Vec<(u32, u32)>> = BTreeMap::new();
+    for identity in identities {
+        let orientation = if undirected { 0 } else { identity.orientation };
+        let counterpart_orientation = if undirected { 0 } else { 1 - orientation };
+        let source_slots = grouped
+            .get(&(identity.owner, identity.target, orientation))
+            .ok_or_else(|| "rank source group missing".to_owned())?;
+        let rank = source_slots
+            .binary_search(&identity.slot)
+            .map_err(|_| "rank source slot missing".to_owned())?;
+        let mate_slots = grouped
+            .get(&(identity.target, identity.owner, counterpart_orientation))
+            .ok_or_else(|| "rank counterpart group missing".to_owned())?;
+        let mate = *mate_slots
+            .get(rank)
+            .ok_or_else(|| "rank counterpart occurrence missing".to_owned())?;
+        buckets
+            .entry((identity.owner, orientation))
+            .or_default()
+            .push((identity.slot, mate));
+    }
+    let mut ranked_buckets = Vec::with_capacity(buckets.len());
+    for ((owner, orientation), mut rows) in buckets {
+        rows.sort_unstable_by_key(|(slot, _)| *slot);
+        rows.dedup_by_key(|(slot, _)| *slot);
+        if rows.is_empty() {
+            continue;
+        }
+        let max_slot = rows
+            .iter()
+            .flat_map(|(source, mate)| [*source, *mate])
+            .max()
+            .ok_or_else(|| "rank bucket has no slots".to_owned())?;
+        let width = if max_slot <= 0xff {
+            1
+        } else if max_slot <= 0xffff {
+            2
+        } else if max_slot <= 0x00ff_ffff {
+            3
+        } else {
+            4
+        };
+        let mut mate_bytes = Vec::with_capacity(rows.len() * usize::from(width));
+        for (_, mate) in rows {
+            let bytes = mate.to_be_bytes();
+            mate_bytes.extend_from_slice(&bytes[4 - usize::from(width)..]);
+        }
+        ranked_buckets.push(RankedBucket {
+            owner_vertex_id: owner,
+            bucket_label_key: if orientation == 0 { 1 } else { 2 },
+            entries: u32::try_from(mate_bytes.len() / usize::from(width))
+                .map_err(|_| "rank entry count overflow".to_owned())?,
+            width_bytes: width,
+            mate_slots: mate_bytes,
+        });
+    }
+    RankedBlob {
+        buckets: ranked_buckets,
+    }
+    .encode()
+    .map_err(|error| format!("ranked blob encode failed: {error:?}"))
+}
+
+/// Resolve one rank-indexed mate slot from a measurement blob.
+pub fn ranked_packed_lookup(
+    bytes: &[u8],
+    owner: u32,
+    orientation: u8,
+    rank: u32,
+) -> Result<u32, String> {
+    let blob =
+        RankedBlob::decode(bytes).map_err(|error| format!("ranked decode failed: {error:?}"))?;
+    let label = if orientation == 0 { 1 } else { 2 };
+    blob.buckets
+        .iter()
+        .find(|bucket| bucket.owner_vertex_id == owner && bucket.bucket_label_key == label)
+        .ok_or_else(|| "ranked bucket missing".to_owned())?
+        .mate_slot_for_rank(rank)
+        .map_err(|error| format!("ranked lookup failed: {error:?}"))
+}
+
+/// Decoded measurement-only rank lookup handle. Decode is performed once during setup so runtime
+/// probes measure lookup rather than repeatedly charging blob parsing.
+pub struct RankedPackedLookup {
+    blob: RankedBlob,
+}
+
+impl RankedPackedLookup {
+    /// Decode one measurement-only rank blob once for repeated lookup probes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        RankedBlob::decode(bytes)
+            .map(|blob| Self { blob })
+            .map_err(|error| format!("ranked decode failed: {error:?}"))
+    }
+
+    /// Resolve a mate slot by owner, orientation, and canonical occurrence rank.
+    pub fn lookup(&self, owner: u32, orientation: u8, rank: u32) -> Result<u32, String> {
+        let label = if orientation == 0 { 1 } else { 2 };
+        self.blob
+            .buckets
+            .iter()
+            .find(|bucket| bucket.owner_vertex_id == owner && bucket.bucket_label_key == label)
+            .ok_or_else(|| "ranked bucket missing".to_owned())?
+            .mate_slot_for_rank(rank)
+            .map_err(|error| format!("ranked lookup failed: {error:?}"))
+    }
 }
 
 /// Four-byte fixture edge payload with an explicit undirected marker.
@@ -200,6 +354,26 @@ pub struct PublishedFixture {
     pub representation: FixtureRepresentation,
 }
 
+/// Published labeled fixture retaining label-local physical identities.
+pub struct MixedLabelPublishedFixture {
+    /// The deferred labeled graph owning canonical and mate storage.
+    pub graph: DeferredBidirectionalLabeledLaraGraph<PublishedEdge, FixtureMemory>,
+    /// Sorted, duplicate-free identities including their bucket labels.
+    pub identities: Vec<LabeledPhysicalIdentity>,
+    /// Representation tag for evidence routing.
+    pub representation: FixtureRepresentation,
+}
+
+/// Published directed fixture with deletion churn retained in the physical location evidence.
+pub struct SparseSlotPublishedFixture {
+    /// The deferred labeled graph owning canonical and mate storage.
+    pub graph: DeferredBidirectionalLabeledLaraGraph<PublishedEdge, FixtureMemory>,
+    /// Sorted physical identities; overflow-log locations have the high bit set.
+    pub identities: Vec<PhysicalIdentity>,
+    /// Representation tag for evidence routing.
+    pub representation: FixtureRepresentation,
+}
+
 fn labeled_memory_regions(memories: &mut MemoryBundle) -> [FixtureMemory; 15] {
     core::array::from_fn(|_| memories.memory())
 }
@@ -338,6 +512,207 @@ pub fn build_published_fixture(
         return Err("published fixture physical identity cardinality mismatch".to_owned());
     }
     Ok(PublishedFixture {
+        graph,
+        identities,
+        representation: FixtureRepresentation::Published,
+    })
+}
+
+/// Build a real labeled Published fixture with two independent directed buckets.
+///
+/// Both labels intentionally use the same endpoints so any cross-label sharing would be visible
+/// in the extracted identities. Mate publication is performed for both orientations after all
+/// canonical inserts, matching the normal fixture lifecycle.
+pub fn build_mixed_label_published_fixture(
+    vertex_count: u32,
+    edges_per_label: u32,
+) -> Result<MixedLabelPublishedFixture, String> {
+    if vertex_count < 2 {
+        return Err("mixed-label fixture requires at least two vertices".to_owned());
+    }
+    let mut memories = MemoryBundle::new(FixtureRepresentation::Published);
+    let graph = new_published_graph(&mut memories)?;
+    for _ in 0..vertex_count {
+        graph
+            .push_vertex()
+            .map_err(|error| format!("mixed-label fixture vertex insert failed: {error}"))?;
+    }
+    let labels = [
+        BucketLabelKey::directed_from_index(1),
+        BucketLabelKey::directed_from_index(2),
+    ];
+    for label in labels {
+        for _ in 0..edges_per_label {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    label,
+                    PublishedEdge {
+                        neighbor: 1,
+                        slot: 0,
+                    },
+                    PublishedEdge {
+                        neighbor: 0,
+                        slot: 0,
+                    },
+                )
+                .map_err(|error| format!("mixed-label fixture edge insert failed: {error}"))?;
+        }
+    }
+    let policy = default_mate_leaf_enumeration_policy();
+    for orientation in [LabeledOrientation::Forward, LabeledOrientation::Reverse] {
+        let segment_count = graph.forward().segment_count();
+        for leaf in 0..segment_count {
+            let aggregate = graph
+                .enumerate_mate_leaf(orientation, leaf, policy)
+                .map_err(|error| format!("mixed-label fixture mate enumeration failed: {error}"))?;
+            graph
+                .rebuild_mate_leaf_from_canonical(&aggregate)
+                .map_err(|error| format!("mixed-label fixture mate publish failed: {error}"))?;
+        }
+    }
+
+    let mut identities = Vec::with_capacity(
+        usize::try_from(edges_per_label)
+            .map_err(|_| "mixed-label fixture edge count overflow".to_owned())?
+            .saturating_mul(labels.len())
+            .saturating_mul(2),
+    );
+    for owner in 0..vertex_count {
+        for label in labels {
+            graph
+                .forward()
+                .for_each_edges_for_label(VertexId::from(owner), label, |edge| {
+                    identities.push(LabeledPhysicalIdentity {
+                        owner,
+                        target: u32::from(edge.neighbor_vid()),
+                        label: label.raw(),
+                        orientation: 0,
+                        slot: edge.edge_slot_index_raw(),
+                    });
+                })
+                .map_err(|error| format!("mixed-label forward identity scan failed: {error}"))?;
+            graph
+                .reverse()
+                .for_each_edges_for_label(VertexId::from(owner), label, |edge| {
+                    identities.push(LabeledPhysicalIdentity {
+                        owner,
+                        target: u32::from(edge.neighbor_vid()),
+                        label: label.raw(),
+                        orientation: 1,
+                        slot: edge.edge_slot_index_raw(),
+                    });
+                })
+                .map_err(|error| format!("mixed-label reverse identity scan failed: {error}"))?;
+        }
+    }
+    identities.sort();
+    if identities.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("mixed-label fixture produced duplicate physical identities".to_owned());
+    }
+    let expected = usize::try_from(edges_per_label)
+        .map_err(|_| "mixed-label fixture edge count overflow".to_owned())?
+        .saturating_mul(labels.len())
+        .saturating_mul(2);
+    if identities.len() != expected {
+        return Err(format!(
+            "mixed-label fixture cardinality mismatch: expected {expected}, got {}",
+            identities.len()
+        ));
+    }
+    Ok(MixedLabelPublishedFixture {
+        graph,
+        identities,
+        representation: FixtureRepresentation::Published,
+    })
+}
+
+/// Build a real directed fixture with deletion-created slab/log location gaps.
+pub fn build_sparse_slot_published_fixture(
+    inserted_edges: u32,
+) -> Result<SparseSlotPublishedFixture, String> {
+    if inserted_edges < 4 || !inserted_edges.is_multiple_of(2) {
+        return Err("sparse-slot fixture requires an even edge count >= 4".to_owned());
+    }
+    let mut memories = MemoryBundle::new(FixtureRepresentation::Published);
+    let graph = new_published_graph(&mut memories)?;
+    for _ in 0..2 {
+        graph
+            .push_vertex()
+            .map_err(|error| format!("sparse-slot fixture vertex insert failed: {error}"))?;
+    }
+    let label = BucketLabelKey::directed_from_index(1);
+    for _ in 0..inserted_edges {
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                PublishedEdge {
+                    neighbor: 1,
+                    slot: 0,
+                },
+                PublishedEdge {
+                    neighbor: 0,
+                    slot: 0,
+                },
+            )
+            .map_err(|error| format!("sparse-slot fixture edge insert failed: {error}"))?;
+    }
+    for slot in (0..inserted_edges).step_by(2).rev() {
+        graph
+            .remove_forward_edge_at_slot(VertexId::from(0), label, slot)
+            .map_err(|error| format!("sparse-slot forward removal failed: {error}"))?;
+        graph
+            .remove_reverse_edge_at_slot(VertexId::from(1), label, slot)
+            .map_err(|error| format!("sparse-slot reverse removal failed: {error}"))?;
+    }
+    let policy = default_mate_leaf_enumeration_policy();
+    for orientation in [LabeledOrientation::Forward, LabeledOrientation::Reverse] {
+        for leaf in 0..graph.forward().segment_count() {
+            let aggregate = graph
+                .enumerate_mate_leaf(orientation, leaf, policy)
+                .map_err(|error| format!("sparse-slot fixture mate enumeration failed: {error}"))?;
+            graph
+                .rebuild_mate_leaf_from_canonical(&aggregate)
+                .map_err(|error| format!("sparse-slot fixture mate publish failed: {error}"))?;
+        }
+    }
+    let mut identities = Vec::new();
+    graph
+        .forward()
+        .for_each_live_physical_edge_location_for_label(VertexId::from(0), label, |slot, edge| {
+            identities.push(PhysicalIdentity {
+                owner: 0,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 0,
+                slot,
+            });
+        })
+        .map_err(|error| format!("sparse-slot forward identity scan failed: {error}"))?;
+    graph
+        .reverse()
+        .for_each_live_physical_edge_location_for_label(VertexId::from(1), label, |slot, edge| {
+            identities.push(PhysicalIdentity {
+                owner: 1,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 1,
+                slot,
+            });
+        })
+        .map_err(|error| format!("sparse-slot reverse identity scan failed: {error}"))?;
+    identities.sort();
+    let expected =
+        usize::try_from(inserted_edges).map_err(|_| "sparse count overflow".to_owned())?;
+    if identities.len() != expected
+        || identities
+            .iter()
+            .any(|identity| identity.slot & 0x8000_0000 == 0)
+    {
+        return Err("sparse-slot fixture did not retain overflow-log locations".to_owned());
+    }
+    Ok(SparseSlotPublishedFixture {
         graph,
         identities,
         representation: FixtureRepresentation::Published,
@@ -697,5 +1072,159 @@ mod tests {
 
         let self_loop = build_published_undirected_fixture(1, &[(0, 0)]);
         assert!(self_loop.is_err());
+    }
+
+    #[test]
+    fn mixed_label_fixture_keeps_real_rows_label_local() {
+        let fixture = build_mixed_label_published_fixture(2, 8).expect("mixed labels");
+        assert_eq!(fixture.representation, FixtureRepresentation::Published);
+        assert_eq!(fixture.identities.len(), 32);
+        let labels: std::collections::BTreeSet<_> = fixture
+            .identities
+            .iter()
+            .map(|identity| identity.label)
+            .collect();
+        assert_eq!(labels.len(), 2);
+        for label in labels {
+            assert_eq!(
+                fixture
+                    .identities
+                    .iter()
+                    .filter(|identity| identity.label == label)
+                    .count(),
+                16
+            );
+        }
+        assert!(fixture.identities.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn sparse_slot_probe_is_explicitly_blocked_by_logical_slot_iterator() {
+        let mut memories = MemoryBundle::new(FixtureRepresentation::Published);
+        let graph = new_published_graph(&mut memories).expect("graph");
+        for _ in 0..2 {
+            graph.push_vertex().expect("vertex");
+        }
+        let label = BucketLabelKey::directed_from_index(1);
+        for _ in 0..16 {
+            graph
+                .insert_directed_edge(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    label,
+                    PublishedEdge {
+                        neighbor: 1,
+                        slot: 0,
+                    },
+                    PublishedEdge {
+                        neighbor: 0,
+                        slot: 0,
+                    },
+                )
+                .expect("edge");
+        }
+        for slot in (0..16u32).step_by(2).rev() {
+            graph
+                .remove_forward_edge_at_slot(VertexId::from(0), label, slot)
+                .expect("forward remove");
+            graph
+                .remove_reverse_edge_at_slot(VertexId::from(1), label, slot)
+                .expect("reverse remove");
+        }
+        let mut slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(VertexId::from(0), label, |slot, _| {
+                slots.push(slot);
+            })
+            .expect("scan");
+        assert_eq!(slots, (1..=8).collect::<Vec<_>>());
+
+        let mut physical_slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_physical_edge_location_for_label(VertexId::from(0), label, |slot, _| {
+                physical_slots.push(slot)
+            })
+            .expect("physical scan");
+        assert_eq!(physical_slots.len(), 8);
+        assert!(physical_slots.iter().all(|slot| slot & 0x8000_0000 != 0));
+
+        let fixture = build_sparse_slot_published_fixture(16).expect("sparse fixture");
+        assert_eq!(fixture.identities.len(), 16);
+        assert!(
+            fixture
+                .identities
+                .iter()
+                .all(|identity| identity.slot & 0x8000_0000 != 0)
+        );
+    }
+
+    #[test]
+    fn ranked_blob_adapter_preserves_directed_parallel_and_undirected_rows() {
+        let directed = build_alias_only_fixture(4, &[(0, 1), (0, 2)]).expect("directed");
+        let directed_bytes = ranked_packed_blob_bytes(&directed.identities, false).expect("ranked");
+        assert!(directed_bytes > 0);
+
+        let parallel_edges = (0..32).map(|_| (0, 1)).collect::<Vec<_>>();
+        let parallel = build_alias_only_fixture(2, &parallel_edges).expect("parallel");
+        let parallel_bytes = ranked_packed_blob_bytes(&parallel.identities, false).expect("ranked");
+        assert!(parallel_bytes > 0);
+
+        let undirected =
+            build_alias_only_undirected_fixture(4, &[(0, 1), (1, 2)]).expect("undirected");
+        let undirected_bytes =
+            ranked_packed_blob_bytes(&undirected.identities, true).expect("ranked");
+        assert!(undirected_bytes > 0);
+    }
+
+    #[test]
+    fn ranked_blob_adapter_reports_shape_payloads_separately_from_alias_bytes() {
+        let directed_edges = (0..64)
+            .flat_map(|source| [(source, (source + 1) % 64), (source, (source + 2) % 64)])
+            .collect::<Vec<_>>();
+        let directed = build_alias_only_fixture(64, &directed_edges).expect("directed");
+        assert_eq!(
+            ranked_packed_blob_bytes(&directed.identities, false),
+            Ok(2_840)
+        );
+
+        let undirected =
+            build_alias_only_undirected_fixture(64, &directed_edges).expect("undirected");
+        assert_eq!(
+            ranked_packed_blob_bytes(&undirected.identities, true),
+            Ok(1_560)
+        );
+
+        let parallel_edges = (0..32).map(|_| (0, 1)).collect::<Vec<_>>();
+        let parallel = build_alias_only_fixture(2, &parallel_edges).expect("parallel");
+        assert_eq!(
+            ranked_packed_blob_bytes(&parallel.identities, false),
+            Ok(128)
+        );
+    }
+
+    #[test]
+    fn ranked_lookup_has_exact_parity_and_fail_closed_decode() {
+        let fixture = build_alias_only_fixture(4, &[(0, 1), (0, 2)]).expect("fixture");
+        let bytes = ranked_packed_blob(&fixture.identities, false).expect("ranked bytes");
+        let lookup = RankedPackedLookup::decode(&bytes).expect("decode");
+        for identity in &fixture.identities {
+            let counterpart = fixture
+                .identities
+                .iter()
+                .find(|other| {
+                    other.owner == identity.target
+                        && other.target == identity.owner
+                        && other.orientation != identity.orientation
+                })
+                .expect("counterpart");
+            assert_eq!(
+                lookup.lookup(identity.owner, identity.orientation, 0),
+                Ok(counterpart.slot)
+            );
+        }
+        assert!(RankedPackedLookup::decode(&bytes[..bytes.len() - 1]).is_err());
+        assert!(lookup.lookup(1, 0, u32::MAX).is_err());
     }
 }
