@@ -266,6 +266,9 @@ rank/select with the dormant Published validator, require exact result parity, a
 or stale fallback behavior separate from the instruction totals. Published is not presumed faster:
 the current validator costs more than ScanOnly on these bounded probes, especially for parallel
 rows. No ordinary caller activation or alias decision follows from these measurements.
+Plan 0150's attempted Packed lookup shortcut was rejected: it was instruction-neutral in the
+runtime probe and would have weakened malformed-blob ordering validation. The existing linear,
+strictly validated mapping path remains the dormant implementation.
 
 ---
 

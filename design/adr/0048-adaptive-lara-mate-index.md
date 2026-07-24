@@ -722,6 +722,10 @@ rank/select and preserve zero stable-memory growth; the current Published path i
 assumed to be faster, especially for parallel buckets where canonical validation remains costly.
 Malformed/stale fallback-once behavior remains covered by the owner-level runtime tests. These are
 runtime fixture measurements, not ordinary-caller adoption evidence or an activation decision.
+Plan 0150 investigated a Packed source-slot binary-search replacement. The probe produced no
+material instruction change, while removing the strict ordering check would weaken fail-closed
+handling for malformed blobs. It is therefore not adopted; the current Published primitive stays
+dormant and the canonical rank/select path remains authoritative.
 
 ## Related
 
