@@ -455,10 +455,10 @@ Synthetic topology probes measure sparse directed slots at 192 B ranked versus 1
 corresponding lookup probes are 302.38K ranked and 171.32K shared instructions (ranked encoding
 alone is 81.12K). The real mixed-label fixture remains separate at 52 B shared versus 96 B ranked
 per label, with 350.59K shared versus 594.29K ranked instructions for a matched 4-edge-per-label
-probe; its ScanOnly counterpart is 16.01M instructions for 1,024 requests. The 190.77K/315.96K
+probe; its persisted ScanOnly counterpart is 15.94M instructions for 1,024 requests. The 190.77K/315.96K
 pair is synthetic alternating-lookup evidence. The real sparse fixture measures 128 B ranked
 versus 84 B shared and 300.35K versus 175.43K lookup instructions for 32 live edges per
-orientation; its ScanOnly counterpart is 45.63M for the same request count. These numbers are
+orientation; its persisted ScanOnly counterpart is 45.59M for the same request count. These numbers are
 candidate evidence only and do not permit cross-label sharing in the production layout.
 
 Plan 0165 connects these real rows to the measurement-only adoption gate. Sparse slots and each
@@ -466,6 +466,14 @@ mixed-label bucket are evaluated independently: `SharedOrientation` is tried aft
 degree, byte, and exactness gates; `RankedPacked` is the bounded fallback when its own gates pass;
 otherwise the bucket remains `ScanOnly`. No metadata is shared across labels, and this precedence
 does not activate an ordinary caller.
+
+Plan 0166 adds deterministic measurement traces for one insert, delete, and reorder on the real
+identity sets. Rebuilding three trace states costs 95.16K instructions for SharedOrientation versus
+235.15K for RankedPacked on sparse slots, and 23.08K versus 43.90K for one mixed-label bucket.
+Stale detection costs 468.95K instructions for sparse and 217.17K for mixed labels. The values are
+charged only through an explicit read/update amortization helper; malformed or
+cardinality-mismatched traces fail closed. Canonical LARA state and production stable layout are
+untouched.
 
 ## Consensus checklist
 

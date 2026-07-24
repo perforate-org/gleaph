@@ -2021,6 +2021,275 @@ fn real_mixed_scan_refs_for_bench(
 }
 
 #[cfg(feature = "canbench")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaintenanceTraceOp {
+    Insert,
+    Delete,
+    Reorder,
+}
+
+#[cfg(feature = "canbench")]
+fn mutate_identity_trace(
+    base: &[ic_stable_lara::adoption_fixture::PhysicalIdentity],
+    op: MaintenanceTraceOp,
+) -> Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity> {
+    let mut identities = base.to_vec();
+    match op {
+        MaintenanceTraceOp::Insert => {
+            let forward_max = identities
+                .iter()
+                .filter(|identity| identity.orientation == 0)
+                .map(|identity| identity.slot)
+                .max()
+                .expect("forward identity");
+            let reverse_max = identities
+                .iter()
+                .filter(|identity| identity.orientation == 1)
+                .map(|identity| identity.slot)
+                .max()
+                .expect("reverse identity");
+            identities.extend([
+                ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: 0,
+                    target: 1,
+                    orientation: 0,
+                    slot: forward_max.saturating_add(1),
+                },
+                ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                    owner: 1,
+                    target: 0,
+                    orientation: 1,
+                    slot: reverse_max.saturating_add(1),
+                },
+            ]);
+        }
+        MaintenanceTraceOp::Delete => {
+            let forward = identities
+                .iter()
+                .find(|identity| identity.orientation == 0)
+                .copied()
+                .expect("forward identity");
+            let reverse = identities
+                .iter()
+                .find(|identity| identity.orientation == 1)
+                .copied()
+                .expect("reverse identity");
+            identities.retain(|identity| *identity != forward && *identity != reverse);
+        }
+        MaintenanceTraceOp::Reorder => identities.reverse(),
+    }
+    identities.sort();
+    identities
+}
+
+#[cfg(feature = "canbench")]
+fn sparse_maintenance_trace() -> Vec<Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>> {
+    let base = real_sparse_slot_identities_for_bench();
+    [
+        MaintenanceTraceOp::Insert,
+        MaintenanceTraceOp::Delete,
+        MaintenanceTraceOp::Reorder,
+    ]
+    .into_iter()
+    .map(|op| mutate_identity_trace(&base, op))
+    .collect()
+}
+
+#[cfg(feature = "canbench")]
+fn mixed_maintenance_trace() -> Vec<Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>> {
+    let fixture = ic_stable_lara::adoption_fixture::build_mixed_label_published_fixture(2, 4)
+        .expect("real mixed-label fixture");
+    let label = fixture
+        .identities
+        .iter()
+        .map(|identity| identity.label)
+        .min()
+        .expect("mixed label");
+    let base = fixture
+        .identities
+        .iter()
+        .filter(|identity| identity.label == label)
+        .map(
+            |identity| ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                owner: identity.owner,
+                target: identity.target,
+                orientation: identity.orientation,
+                slot: identity.slot,
+            },
+        )
+        .collect::<Vec<_>>();
+    [
+        MaintenanceTraceOp::Insert,
+        MaintenanceTraceOp::Delete,
+        MaintenanceTraceOp::Reorder,
+    ]
+    .into_iter()
+    .map(|op| mutate_identity_trace(&base, op))
+    .collect()
+}
+
+#[cfg(feature = "canbench")]
+fn maintenance_rebuild_checksum(
+    traces: &[Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>],
+) -> u64 {
+    traces.iter().fold(0u64, |checksum, identities| {
+        let shared = SharedOrientationLookup::build(identities, false);
+        let shared_bytes = match shared.as_ref() {
+            Ok(lookup) => lookup.encode().map_or(0, |bytes| bytes.len() as u64),
+            Err(_) => 0,
+        };
+        let shared_invalid = shared.is_err();
+        let ranked_bytes = ic_stable_lara::adoption_fixture::ranked_packed_blob(identities, false)
+            .map_or(0, |bytes| bytes.len() as u64);
+        checksum
+            .wrapping_add(shared_bytes)
+            .wrapping_add(ranked_bytes)
+            .wrapping_add(u64::from(shared_invalid))
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaintenanceCandidate {
+    Shared,
+    Ranked,
+}
+
+#[cfg(feature = "canbench")]
+fn maintenance_candidate_checksum(
+    traces: &[Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>],
+    candidate: MaintenanceCandidate,
+) -> u64 {
+    traces.iter().fold(0u64, |checksum, identities| {
+        let bytes = match candidate {
+            MaintenanceCandidate::Shared => {
+                SharedOrientationLookup::build(identities, false).and_then(|lookup| lookup.encode())
+            }
+            MaintenanceCandidate::Ranked => {
+                ic_stable_lara::adoption_fixture::ranked_packed_blob(identities, false)
+            }
+        };
+        checksum.wrapping_add(bytes.map_or(0, |value| value.len() as u64))
+    })
+}
+
+#[cfg(feature = "canbench")]
+fn identity_trace_digest(
+    identities: &[ic_stable_lara::adoption_fixture::PhysicalIdentity],
+) -> String {
+    let mut bytes = Vec::with_capacity(identities.len().saturating_mul(13));
+    for identity in identities {
+        bytes.extend_from_slice(&identity.owner.to_be_bytes());
+        bytes.extend_from_slice(&identity.target.to_be_bytes());
+        bytes.push(identity.orientation);
+        bytes.extend_from_slice(&identity.slot.to_be_bytes());
+    }
+    digest_hex(&bytes)
+}
+
+#[cfg(feature = "canbench")]
+fn stale_detection_checksum(
+    baseline: &[ic_stable_lara::adoption_fixture::PhysicalIdentity],
+    traces: &[Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>],
+) -> u64 {
+    let baseline_digest = identity_trace_digest(baseline);
+    traces
+        .iter()
+        .filter(|trace| identity_trace_digest(trace) != baseline_digest)
+        .count() as u64
+}
+
+#[cfg(feature = "canbench")]
+fn amortized_read_savings(
+    scan_instructions: u64,
+    candidate_instructions: u64,
+    maintenance_instructions: u64,
+    reads_per_update: u64,
+) -> i128 {
+    i128::from(scan_instructions.saturating_sub(candidate_instructions))
+        .saturating_mul(i128::from(reads_per_update))
+        .saturating_sub(i128::from(maintenance_instructions))
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_maintenance_rebuild_real_sparse_slots() -> canbench_rs::BenchResult {
+    let traces = sparse_maintenance_trace();
+    bench_fn(|| black_box(maintenance_rebuild_checksum(&traces)))
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_maintenance_rebuild_real_mixed_labels() -> canbench_rs::BenchResult {
+    let traces = mixed_maintenance_trace();
+    bench_fn(|| black_box(maintenance_rebuild_checksum(&traces)))
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_maintenance_shared_real_sparse_slots() -> canbench_rs::BenchResult {
+    let traces = sparse_maintenance_trace();
+    bench_fn(|| {
+        black_box(maintenance_candidate_checksum(
+            &traces,
+            MaintenanceCandidate::Shared,
+        ))
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_maintenance_ranked_real_sparse_slots() -> canbench_rs::BenchResult {
+    let traces = sparse_maintenance_trace();
+    bench_fn(|| {
+        black_box(maintenance_candidate_checksum(
+            &traces,
+            MaintenanceCandidate::Ranked,
+        ))
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_maintenance_shared_real_mixed_labels() -> canbench_rs::BenchResult {
+    let traces = mixed_maintenance_trace();
+    bench_fn(|| {
+        black_box(maintenance_candidate_checksum(
+            &traces,
+            MaintenanceCandidate::Shared,
+        ))
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_maintenance_ranked_real_mixed_labels() -> canbench_rs::BenchResult {
+    let traces = mixed_maintenance_trace();
+    bench_fn(|| {
+        black_box(maintenance_candidate_checksum(
+            &traces,
+            MaintenanceCandidate::Ranked,
+        ))
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_maintenance_stale_detection_real_sparse_slots() -> canbench_rs::BenchResult {
+    let baseline = real_sparse_slot_identities_for_bench();
+    let traces = sparse_maintenance_trace();
+    bench_fn(|| black_box(stale_detection_checksum(&baseline, &traces)))
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_maintenance_stale_detection_real_mixed_labels() -> canbench_rs::BenchResult {
+    let traces = mixed_maintenance_trace();
+    let baseline = traces.first().expect("mixed trace");
+    bench_fn(|| black_box(stale_detection_checksum(baseline, &traces)))
+}
+
+#[cfg(feature = "canbench")]
 fn compression_candidate_probe(
     sequences: &[Vec<u32>],
     identities: &[ic_stable_lara::adoption_fixture::PhysicalIdentity],
@@ -3243,6 +3512,49 @@ mod fixture_evidence_tests {
             compressed_instructions: None,
             exact_and_fail_closed: true,
         }
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn maintenance_traces_are_deterministic_and_pair_preserving() {
+        let first = sparse_maintenance_trace();
+        let second = sparse_maintenance_trace();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 3);
+        for trace in &first {
+            assert_eq!(trace.len() % 2, 0);
+            assert!(SharedOrientationLookup::build(trace, false).is_ok());
+            assert!(ic_stable_lara::adoption_fixture::ranked_packed_blob(trace, false).is_ok());
+        }
+        assert_eq!(
+            stale_detection_checksum(&real_sparse_slot_identities_for_bench(), &first),
+            2
+        );
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn malformed_maintenance_trace_fails_closed_without_mutating_base() {
+        let base = real_sparse_slot_identities_for_bench();
+        let snapshot = base.clone();
+        let mut malformed = base.clone();
+        let removed = malformed
+            .iter()
+            .find(|identity| identity.orientation == 1)
+            .copied()
+            .expect("reverse identity");
+        malformed.retain(|identity| *identity != removed);
+        assert!(SharedOrientationLookup::build(&malformed, false).is_err());
+        assert!(ic_stable_lara::adoption_fixture::ranked_packed_blob(&malformed, false).is_err());
+        assert_eq!(base, snapshot);
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn maintenance_amortization_requires_explicit_read_update_ratio() {
+        assert!(amortized_read_savings(45_630_000, 45_500_000, 326_110, 1) < 0);
+        assert!(amortized_read_savings(45_630_000, 175_430, 326_110, 1_024) > 0);
+        assert!(amortized_read_savings(16_010_000, 350_590, 67_190, 1) > 0);
     }
 
     #[test]

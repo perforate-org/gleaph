@@ -923,11 +923,11 @@ The synthetic topology probes add sparse-slot evidence: sparse directed slots
 measure 192 B for ranked versus 148 B for shared, with 302.38K ranked lookup and 171.32K shared
 lookup instructions (ranked encoding alone is 81.12K). The real two-label fixture independently
 measures 52 B shared versus 96 B ranked per label, with 350.59K shared versus 594.29K ranked
-instructions for a matched low-degree 4-edge-per-label probe; its ScanOnly counterpart is 16.01M
+instructions for a matched low-degree 4-edge-per-label probe; its persisted ScanOnly counterpart is 15.94M
 instructions for 1,024 requests. The earlier 190.77K/315.96K values remain synthetic
 alternating-lookup evidence. The real sparse fixture measures 128 B ranked versus 84 B shared,
-with 300.35K versus 175.43K lookup instructions for 32 live edges per orientation; its ScanOnly
-counterpart is 45.63M instructions for the same request count. All are measurement-only results;
+with 300.35K versus 175.43K lookup instructions for 32 live edges per orientation; its persisted
+ScanOnly counterpart is 45.59M instructions for the same request count. All are measurement-only results;
 they do not authorize cross-label metadata sharing or production activation.
 
 Plan 0165 folds these real rows into the evidence adapter. The measurement policy is to evaluate
@@ -935,6 +935,16 @@ sparse slots and each mixed-label bucket independently: try `SharedOrientation` 
 request/degree, byte, and exactness gates pass; otherwise try `RankedPacked` only if its own gates
 pass, and finally remain `ScanOnly`. This is a candidate precedence rule, not production
 activation; no metadata may be shared across labels.
+
+Plan 0166 adds measurement-only mutation traces derived from the real sparse and mixed fixtures.
+Each trace applies one insert, delete, or reorder to the extracted physical identities and rebuilds
+the candidate without mutating canonical LARA state. Across the three operations, SharedOrientation
+rebuild costs 95.16K instructions for sparse slots and 23.08K for one mixed-label bucket, while
+RankedPacked costs 235.15K and 43.90K respectively. The persisted ScanOnly baselines are 45.59M
+and 15.94M instructions. Stale detection costs 468.95K and 217.17K respectively. The amortization helper charges these costs
+against explicit read/update ratios: a candidate is rejected when savings are negative, and
+malformed counterpart cardinality fails closed. These are rebuild probes, not persistent maintenance
+or activation evidence.
 
 Plan 0160's first common-fixture comparison confirms the intended ordering: shared-orientation is
 1,800 bytes / 672.22K instructions for directed-high and 84 bytes / 175.43K for parallel-32;
