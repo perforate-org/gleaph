@@ -248,8 +248,8 @@ canonical identity digests, fixed-seed request identities, and fail-closed defer
 evidence serialization in the Graph bench layer. It does not yet provide independent stable-memory
 ownership or lifecycle measurement, and it does not activate or replace the alias path.
 
-Measurement fixtures reserve `MemoryId`s from `255` downward so they cannot overlap the production
-Graph low-ID layout as that layout grows.
+Measurement fixtures reserve usable `MemoryId`s from `254` downward (`255` is reserved by
+`MemoryManager`) so they cannot overlap the production Graph low-ID layout as that layout grows.
 
 ---
 

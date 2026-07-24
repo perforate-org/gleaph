@@ -5,6 +5,8 @@ use crate::{
     lara::vertex::Vertex,
     test_support::{TestEdge, UndirectedTestEdge},
 };
+#[cfg(test)]
+use ic_stable_structures::Memory;
 use ic_stable_structures::{
     DefaultMemoryImpl,
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
@@ -15,19 +17,40 @@ pub(crate) const MEDIUM_N: u64 = 1024;
 pub(crate) const LARGE_N: u64 = 4096;
 
 pub(crate) type BenchMemory = VirtualMemory<DefaultMemoryImpl>;
+/// Highest usable `MemoryId`; `u8::MAX` is reserved internally by `MemoryManager`.
+pub(crate) const MEASUREMENT_MEMORY_ID_MAX: u8 = u8::MAX - 1;
 
-pub(crate) struct BenchMemoryFactory {
-    manager: MemoryManager<DefaultMemoryImpl>,
-    next_id: u8,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MeasurementRepresentation {
+    AliasOnly,
+    ScanOnly,
+    Published,
 }
 
-impl BenchMemoryFactory {
+/// Owns one isolated measurement memory bundle. Each candidate gets a fresh manager and allocates
+/// IDs from the high end so benchmark regions cannot overlap the production low-ID layout.
+pub(crate) struct MeasurementMemoryBundle {
+    manager: MemoryManager<DefaultMemoryImpl>,
+    next_id: u8,
+    #[allow(
+        dead_code,
+        reason = "candidate tag is consumed by the Plan 0147 fixture adapter"
+    )]
+    representation: MeasurementRepresentation,
+}
+
+impl MeasurementMemoryBundle {
     pub(crate) fn new() -> Self {
+        Self::with_representation(MeasurementRepresentation::AliasOnly)
+    }
+
+    pub(crate) fn with_representation(representation: MeasurementRepresentation) -> Self {
         Self {
             manager: MemoryManager::init(DefaultMemoryImpl::default()),
             // Bench-only regions are allocated from the top of the u8 MemoryId space so future
             // production layouts can continue allocating from the low end without collisions.
-            next_id: u8::MAX,
+            next_id: MEASUREMENT_MEMORY_ID_MAX,
+            representation,
         }
     }
 
@@ -39,7 +62,17 @@ impl BenchMemoryFactory {
             .expect("benchmark memory id overflow");
         self.manager.get(MemoryId::new(id))
     }
+
+    #[allow(
+        dead_code,
+        reason = "candidate tag is consumed by the Plan 0147 fixture adapter"
+    )]
+    pub(crate) const fn representation(&self) -> MeasurementRepresentation {
+        self.representation
+    }
 }
+
+pub(crate) type BenchMemoryFactory = MeasurementMemoryBundle;
 
 #[inline]
 pub(crate) fn splitmix64(mut x: u64) -> u64 {
@@ -65,7 +98,8 @@ pub(crate) fn lara_graph(
     segment_size: u32,
     vertex_count: u32,
 ) -> LaraGraph<TestEdge, Vertex, BenchMemory> {
-    let mut memories = BenchMemoryFactory::new();
+    let mut memories =
+        BenchMemoryFactory::with_representation(MeasurementRepresentation::AliasOnly);
     let graph = LaraGraph::new(
         memories.memory(),
         memories.memory(),
@@ -117,7 +151,8 @@ pub(crate) fn deferred_graph(
     vertex_count: u32,
 ) -> DeferredLaraGraph<TestEdge, Vertex, BenchMemory> {
     let segment_size = 16;
-    let mut memories = BenchMemoryFactory::new();
+    let mut memories =
+        BenchMemoryFactory::with_representation(MeasurementRepresentation::AliasOnly);
     let graph = DeferredLaraGraph::new_with_config(
         memories.memory(),
         memories.memory(),
@@ -156,7 +191,7 @@ pub(crate) fn bidirectional_graph<E>(
 where
     E: crate::traits::CsrEdge,
 {
-    let mut memories = BenchMemoryFactory::new();
+    let mut memories = BenchMemoryFactory::with_representation(MeasurementRepresentation::ScanOnly);
     let graph = BidirectionalLaraGraph::new(
         memories.memory(),
         memories.memory(),
@@ -199,7 +234,8 @@ where
 pub(crate) fn deferred_bidirectional_graph(
     vertex_count: u32,
 ) -> DeferredBidirectionalLaraGraph<TestEdge, Vertex, BenchMemory> {
-    let mut memories = BenchMemoryFactory::new();
+    let mut memories =
+        BenchMemoryFactory::with_representation(MeasurementRepresentation::Published);
     let graph = DeferredBidirectionalLaraGraph::new_with_config(
         memories.memory(),
         memories.memory(),
@@ -248,4 +284,31 @@ pub(crate) fn deferred_bidirectional_graph(
 #[inline]
 pub(crate) fn undirected_edge(dst: u32) -> UndirectedTestEdge {
     UndirectedTestEdge::new(dst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measurement_bundles_are_independent_and_descend_from_max_id() {
+        let mut alias =
+            MeasurementMemoryBundle::with_representation(MeasurementRepresentation::AliasOnly);
+        let mut published =
+            MeasurementMemoryBundle::with_representation(MeasurementRepresentation::Published);
+        let alias_memory = alias.memory();
+        let published_memory = published.memory();
+
+        assert_eq!(alias.representation(), MeasurementRepresentation::AliasOnly);
+        assert_eq!(
+            published.representation(),
+            MeasurementRepresentation::Published
+        );
+        assert_eq!(alias.next_id, MEASUREMENT_MEMORY_ID_MAX - 1);
+        assert_eq!(published.next_id, MEASUREMENT_MEMORY_ID_MAX - 1);
+
+        alias_memory.grow(1);
+        assert_eq!(alias_memory.size(), 1);
+        assert_eq!(published_memory.size(), 0);
+    }
 }

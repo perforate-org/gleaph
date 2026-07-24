@@ -692,9 +692,10 @@ encoding/digests, fixed-seed request identities, and a deferred/measured evidenc
 fail-closed validation. This slice is a schema and fixture prototype only; it does not claim
 independent stable-memory ownership, lifecycle coverage, ordinary-caller activation, or adoption.
 
-Measurement-only LARA fixtures must allocate `MemoryId`s from `u8::MAX` downward. The production
-Graph layout owns the low-ID range, so benchmark/test allocation must not consume IDs from that
-range even when the fixture uses a fresh in-memory `MemoryManager`.
+Measurement-only LARA fixtures must allocate usable `MemoryId`s from `254` downward (`255` is an
+internal `MemoryManager` marker). The production Graph layout owns the low-ID range, so
+benchmark/test allocation must not consume IDs from that range even when the fixture uses a fresh
+in-memory `MemoryManager`.
 
 ## Related
 
