@@ -1235,6 +1235,9 @@ impl EvidenceArtifact {
             if row.canonical_identity_bytes == Some(0) {
                 return Err("invalid identity byte length");
             }
+            if row.canonical_identity_digest.is_some() != row.canonical_identity_bytes.is_some() {
+                return Err("identity digest/byte length mismatch");
+            }
         }
         Ok(())
     }
@@ -1505,6 +1508,8 @@ mod fixture_evidence_tests {
             undirected.descriptor.fixture_ids,
             vec!["undirected_high-published"]
         );
+        assert!(build_real_published_fixture(FixtureSpec::required_matrix()[2]).is_err());
+        assert!(build_real_published_fixture(FixtureSpec::required_matrix()[5]).is_err());
     }
 
     #[cfg(feature = "canbench")]
@@ -1580,5 +1585,34 @@ mod fixture_evidence_tests {
             .to_yaml_compatible_json()
             .expect("serialize evidence");
         assert!(encoded.contains("\"schema_version\": 1"));
+    }
+
+    #[test]
+    fn evidence_rejects_mismatched_identity_digest_and_byte_length() {
+        let fixture = build_fixture(FixtureSpec::required_matrix()[0]);
+        let artifact = EvidenceArtifact {
+            schema_version: 1,
+            policy_version: POLICY_VERSION.to_owned(),
+            fixture_generator: 1,
+            corpus_seed: 1,
+            corpus_generator: 1,
+            shape_descriptors: vec![fixture.descriptor.clone()],
+            corpus_generated_count: 0,
+            rows: vec![EvidenceRow {
+                shape_id: fixture.descriptor.shape_id,
+                fixture_id: fixture.descriptor.fixture_ids[0].clone(),
+                status: EvidenceStatus::Deferred,
+                policy_version: POLICY_VERSION.to_owned(),
+                canonical_identity_digest: Some("a".repeat(64)),
+                canonical_identity_bytes: None,
+                request_identity: None,
+                instruction_total: None,
+                exact_result_status: None,
+            }],
+        };
+        assert_eq!(
+            artifact.validate(),
+            Err("identity digest/byte length mismatch")
+        );
     }
 }
