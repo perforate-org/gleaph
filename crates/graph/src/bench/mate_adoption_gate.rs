@@ -798,20 +798,28 @@ pub(crate) fn build_real_scan_fixture(spec: FixtureSpec) -> Result<Deterministic
     )
 }
 
-/// Build a real Published identity fixture for the promotion-eligible directed-high shape.
+/// Build a real Published identity fixture for promotion-eligible directed/parallel shapes.
 #[cfg(feature = "canbench")]
 pub(crate) fn build_real_published_fixture(
     spec: FixtureSpec,
 ) -> Result<DeterministicFixture, String> {
-    if spec.shape != FixtureShape::Directed || spec.logical_edges != 128 {
-        return Err("Published fixture requires directed_high topology".to_owned());
-    }
-    let vertex_count = 64u32;
-    let mut edges = Vec::with_capacity(128);
-    for source in 0..vertex_count {
-        edges.push((source, (source + 1) % vertex_count));
-        edges.push((source, (source + 2) % vertex_count));
-    }
+    let (vertex_count, edges) = match spec.shape {
+        FixtureShape::Directed if spec.logical_edges == 128 => {
+            let vertex_count = 64u32;
+            let mut edges = Vec::with_capacity(128);
+            for source in 0..vertex_count {
+                edges.push((source, (source + 1) % vertex_count));
+                edges.push((source, (source + 2) % vertex_count));
+            }
+            (vertex_count, edges)
+        }
+        FixtureShape::Parallel if spec.logical_edges == 32 => {
+            (2, (0..32).map(|_| (0, 1)).collect::<Vec<_>>())
+        }
+        _ => {
+            return Err("Published fixture requires a promotion-eligible topology".to_owned());
+        }
+    };
     let fixture = ic_stable_lara::adoption_fixture::build_published_fixture(vertex_count, &edges)?;
     Ok(deterministic_fixture_from_physical(
         spec,
@@ -1404,6 +1412,11 @@ mod fixture_evidence_tests {
             vec!["directed_high-published"]
         );
         assert!(build_real_published_fixture(FixtureSpec::required_matrix()[0]).is_err());
+
+        let parallel = build_real_published_fixture(FixtureSpec::required_matrix()[6])
+            .expect("parallel published fixture");
+        assert_eq!(parallel.identities.len() as u64, 64);
+        assert_eq!(parallel.descriptor.fixture_ids, vec!["parallel-published"]);
     }
 
     #[cfg(feature = "canbench")]

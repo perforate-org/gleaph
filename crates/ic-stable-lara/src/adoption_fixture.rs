@@ -596,5 +596,10 @@ mod tests {
         assert_eq!(fixture.representation, FixtureRepresentation::Published);
         assert_eq!(fixture.identities.len(), 160);
         assert!(fixture.identities.windows(2).all(|pair| pair[0] < pair[1]));
+
+        let parallel_edges = (0..32).map(|_| (0, 1)).collect::<Vec<_>>();
+        let parallel_fixture =
+            build_published_fixture(2, &parallel_edges).expect("parallel published fixture");
+        assert_eq!(parallel_fixture.identities.len(), 64);
     }
 }
