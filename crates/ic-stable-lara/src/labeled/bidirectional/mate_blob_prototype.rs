@@ -1,23 +1,13 @@
-//! Mate blob codecs for ADR 0048.
+//! Sole compact mate blob codec for ADR 0048.
 //!
-//! `CompactMateBlob` is the production payload codec used by `MateStorage`. `MateBlob` remains
-//! the legacy admission/measurement representation used to build and compare candidate blobs;
-//! it is never accepted as persisted bytes after the compact reset boundary.
+//! The storage owner, promotion admission, and reopen validation all use this same compact
+//! representation. ScanOnly buckets are omitted by the caller.
 
-#![expect(
-    dead_code,
-    reason = "legacy measurement codec and dormant candidate helpers"
-)]
-
-const MAGIC: [u8; 4] = *b"MATE";
-const VERSION: u8 = 1;
-const HEADER_BYTES: usize = 24;
-const DIRECTORY_ENTRY_BYTES: usize = 20;
 const PHYSICAL_HALVES: u64 = 2;
 const SAMPLE_FIELDS: u64 = 2;
 const SAMPLE_U32_BYTES: u64 = 4;
-const COMPACT_HEADER_BYTES: usize = 8;
-const COMPACT_DIRECTORY_ENTRY_BYTES: usize = 15;
+const HEADER_BYTES: usize = 8;
+const DIRECTORY_ENTRY_BYTES: usize = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -26,25 +16,6 @@ pub(crate) enum Mode {
 }
 
 impl Mode {
-    fn encode(self) -> (u8, u8) {
-        match self {
-            Self::Sampled { stride } => (1, stride),
-            Self::Packed { width_bytes } => (2, width_bytes),
-        }
-    }
-
-    fn decode(mode: u8, parameter: u8) -> Result<Self, DecodeError> {
-        match mode {
-            1 if matches!(parameter, 16 | 32 | 64) => Ok(Self::Sampled { stride: parameter }),
-            2 if (1..=4).contains(&parameter) => Ok(Self::Packed {
-                width_bytes: parameter,
-            }),
-            1 => Err(DecodeError::UnsupportedSampleStride(parameter)),
-            2 => Err(DecodeError::UnsupportedPackedWidth(parameter)),
-            other => Err(DecodeError::UnsupportedMode(other)),
-        }
-    }
-
     fn mapping_bytes(self, entries: u32) -> Result<usize, DecodeError> {
         let entries = u64::from(entries);
         let bytes = match self {
@@ -110,15 +81,6 @@ pub(crate) struct MateBlob {
     pub buckets: Vec<Bucket>,
 }
 
-/// Compact production codec for the selected leaf-locator/multi-bucket-blob layout.
-///
-/// Region-level validation owns magic/version framing; this blob stores only bucket count, total
-/// length, and packed bucket-directory fields. ScanOnly buckets are omitted by the caller.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CompactMateBlob {
-    pub buckets: Vec<Bucket>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EncodeError {
     EmptyBlob,
@@ -135,28 +97,11 @@ pub(crate) enum EncodeError {
     TooLarge,
 }
 
-impl From<DecodeError> for EncodeError {
-    fn from(error: DecodeError) -> Self {
-        match error {
-            DecodeError::ArithmeticOverflow => Self::ArithmeticOverflow,
-            DecodeError::UnsupportedSampleStride(value) => Self::UnsupportedSampleStride(value),
-            DecodeError::UnsupportedPackedWidth(value) => Self::UnsupportedPackedWidth(value),
-            _ => Self::ArithmeticOverflow,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DecodeError {
     Truncated,
-    BadMagic,
-    UnsupportedVersion(u8),
-    UnsupportedFlags(u8),
-    InvalidHeaderLength(u16),
     EmptyBlob,
-    DirectoryLengthMismatch,
     TotalLengthMismatch,
-    UnsupportedMode(u8),
     UnsupportedSampleStride(u8),
     UnsupportedPackedWidth(u8),
     ArithmeticOverflow,
@@ -167,6 +112,17 @@ pub(crate) enum DecodeError {
     TrailingBytes,
     CompactReservedBits,
     CompactFlags(u8),
+}
+
+impl From<DecodeError> for EncodeError {
+    fn from(error: DecodeError) -> Self {
+        match error {
+            DecodeError::ArithmeticOverflow => Self::ArithmeticOverflow,
+            DecodeError::UnsupportedSampleStride(value) => Self::UnsupportedSampleStride(value),
+            DecodeError::UnsupportedPackedWidth(value) => Self::UnsupportedPackedWidth(value),
+            _ => Self::ArithmeticOverflow,
+        }
+    }
 }
 
 fn read<const N: usize>(bytes: &[u8], offset: &mut usize) -> Result<[u8; N], DecodeError> {
@@ -184,226 +140,6 @@ fn read_u16(bytes: &[u8], offset: &mut usize) -> Result<u16, DecodeError> {
 
 fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, DecodeError> {
     Ok(u32::from_be_bytes(read(bytes, offset)?))
-}
-
-impl MateBlob {
-    /// Returns the exact encoded size after applying the same validation used by [`Self::encode`].
-    pub(crate) fn encoded_len(&self) -> Result<usize, EncodeError> {
-        let directory_bytes = self
-            .buckets
-            .len()
-            .checked_mul(DIRECTORY_ENTRY_BYTES)
-            .ok_or(EncodeError::ArithmeticOverflow)?;
-        if self.buckets.is_empty() {
-            return Err(EncodeError::EmptyBlob);
-        }
-        let mut mapping_bytes = 0usize;
-        let mut previous_id = None;
-        for bucket in &self.buckets {
-            if previous_id.is_some_and(|previous| {
-                (bucket.owner_vertex_id, bucket.bucket_label_key) <= previous
-            }) {
-                return Err(EncodeError::BucketsNotStrictlyIncreasing);
-            }
-            bucket.validate()?;
-            mapping_bytes = mapping_bytes
-                .checked_add(bucket.mapping.len())
-                .ok_or(EncodeError::ArithmeticOverflow)?;
-            previous_id = Some((bucket.owner_vertex_id, bucket.bucket_label_key));
-        }
-        let total_bytes = HEADER_BYTES
-            .checked_add(directory_bytes)
-            .and_then(|value| value.checked_add(mapping_bytes))
-            .ok_or(EncodeError::ArithmeticOverflow)?;
-        u32::try_from(self.buckets.len()).map_err(|_| EncodeError::TooLarge)?;
-        u32::try_from(directory_bytes).map_err(|_| EncodeError::TooLarge)?;
-        u32::try_from(mapping_bytes).map_err(|_| EncodeError::TooLarge)?;
-        u32::try_from(total_bytes).map_err(|_| EncodeError::TooLarge)?;
-        Ok(total_bytes)
-    }
-
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, EncodeError> {
-        let total_bytes = self.encoded_len()?;
-        let directory_bytes = self
-            .buckets
-            .len()
-            .checked_mul(DIRECTORY_ENTRY_BYTES)
-            .ok_or(EncodeError::ArithmeticOverflow)?;
-        let mapping_bytes = total_bytes
-            .checked_sub(HEADER_BYTES)
-            .and_then(|value| value.checked_sub(directory_bytes))
-            .ok_or(EncodeError::ArithmeticOverflow)?;
-        let bucket_count = u32::try_from(self.buckets.len()).map_err(|_| EncodeError::TooLarge)?;
-        let directory_bytes = u32::try_from(directory_bytes).map_err(|_| EncodeError::TooLarge)?;
-        let mapping_bytes = u32::try_from(mapping_bytes).map_err(|_| EncodeError::TooLarge)?;
-        let total_bytes = u32::try_from(total_bytes).map_err(|_| EncodeError::TooLarge)?;
-
-        let mut out = Vec::with_capacity(usize::try_from(total_bytes).expect("u32 fits usize"));
-        out.extend_from_slice(&MAGIC);
-        out.push(VERSION);
-        out.push(0);
-        out.extend_from_slice(&(HEADER_BYTES as u16).to_be_bytes());
-        out.extend_from_slice(&bucket_count.to_be_bytes());
-        out.extend_from_slice(&directory_bytes.to_be_bytes());
-        out.extend_from_slice(&mapping_bytes.to_be_bytes());
-        out.extend_from_slice(&total_bytes.to_be_bytes());
-
-        let mut mapping_offset = HEADER_BYTES
-            .checked_add(usize::try_from(directory_bytes).expect("u32 fits usize"))
-            .ok_or(EncodeError::ArithmeticOverflow)?;
-        for bucket in &self.buckets {
-            let (mode, parameter) = bucket.mode.encode();
-            out.extend_from_slice(&bucket.owner_vertex_id.to_be_bytes());
-            out.extend_from_slice(&bucket.bucket_label_key.to_be_bytes());
-            out.push(mode);
-            out.push(parameter);
-            out.extend_from_slice(&bucket.entries.to_be_bytes());
-            out.extend_from_slice(
-                &u32::try_from(mapping_offset)
-                    .map_err(|_| EncodeError::TooLarge)?
-                    .to_be_bytes(),
-            );
-            out.extend_from_slice(
-                &u32::try_from(bucket.mapping.len())
-                    .map_err(|_| EncodeError::TooLarge)?
-                    .to_be_bytes(),
-            );
-            mapping_offset = mapping_offset
-                .checked_add(bucket.mapping.len())
-                .ok_or(EncodeError::ArithmeticOverflow)?;
-        }
-        for bucket in &self.buckets {
-            out.extend_from_slice(&bucket.mapping);
-        }
-        debug_assert_eq!(
-            out.len(),
-            usize::try_from(total_bytes).expect("u32 fits usize")
-        );
-        Ok(out)
-    }
-
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        if bytes.len() < HEADER_BYTES {
-            return Err(DecodeError::Truncated);
-        }
-        let mut offset = 0;
-        if read::<4>(bytes, &mut offset)? != MAGIC {
-            return Err(DecodeError::BadMagic);
-        }
-        let version = read::<1>(bytes, &mut offset)?[0];
-        if version != VERSION {
-            return Err(DecodeError::UnsupportedVersion(version));
-        }
-        let flags = read::<1>(bytes, &mut offset)?[0];
-        if flags != 0 {
-            return Err(DecodeError::UnsupportedFlags(flags));
-        }
-        let header_len = read_u16(bytes, &mut offset)?;
-        if header_len != HEADER_BYTES as u16 {
-            return Err(DecodeError::InvalidHeaderLength(header_len));
-        }
-        let bucket_count = read_u32(bytes, &mut offset)?;
-        if bucket_count == 0 {
-            return Err(DecodeError::EmptyBlob);
-        }
-        let directory_len = read_u32(bytes, &mut offset)?;
-        let mapping_len = read_u32(bytes, &mut offset)?;
-        let total_len = read_u32(bytes, &mut offset)?;
-        let expected_directory = u64::from(bucket_count)
-            .checked_mul(DIRECTORY_ENTRY_BYTES as u64)
-            .ok_or(DecodeError::ArithmeticOverflow)?;
-        if u64::from(directory_len) != expected_directory {
-            return Err(DecodeError::DirectoryLengthMismatch);
-        }
-        if usize::try_from(total_len).map_err(|_| DecodeError::ArithmeticOverflow)? != bytes.len() {
-            return Err(DecodeError::TotalLengthMismatch);
-        }
-        let mapping_start = HEADER_BYTES
-            .checked_add(
-                usize::try_from(directory_len).map_err(|_| DecodeError::ArithmeticOverflow)?,
-            )
-            .ok_or(DecodeError::ArithmeticOverflow)?;
-        let mapping_end = mapping_start
-            .checked_add(usize::try_from(mapping_len).map_err(|_| DecodeError::ArithmeticOverflow)?)
-            .ok_or(DecodeError::ArithmeticOverflow)?;
-        if mapping_end != bytes.len() {
-            return Err(if mapping_end < bytes.len() {
-                DecodeError::TrailingBytes
-            } else {
-                DecodeError::TotalLengthMismatch
-            });
-        }
-
-        let mut entries = Vec::with_capacity(
-            usize::try_from(bucket_count).map_err(|_| DecodeError::ArithmeticOverflow)?,
-        );
-        let mut previous_id = None;
-        let mut expected_offset = mapping_start;
-        for _ in 0..bucket_count {
-            let owner_vertex_id = read_u32(bytes, &mut offset)?;
-            let bucket_label_key = read_u16(bytes, &mut offset)?;
-            let mode = read::<1>(bytes, &mut offset)?[0];
-            let parameter = read::<1>(bytes, &mut offset)?[0];
-            let entry_count = read_u32(bytes, &mut offset)?;
-            let mapping_offset = usize::try_from(read_u32(bytes, &mut offset)?)
-                .map_err(|_| DecodeError::ArithmeticOverflow)?;
-            let mapping_length = usize::try_from(read_u32(bytes, &mut offset)?)
-                .map_err(|_| DecodeError::ArithmeticOverflow)?;
-            if previous_id.is_some_and(|previous| (owner_vertex_id, bucket_label_key) <= previous) {
-                return Err(DecodeError::BucketOrder);
-            }
-            let mode = Mode::decode(mode, parameter)?;
-            if entry_count == 0 {
-                return Err(DecodeError::EmptyBucket);
-            }
-            if mapping_offset != expected_offset || mapping_offset < mapping_start {
-                return Err(DecodeError::MappingOffset);
-            }
-            let expected_length = mode.mapping_bytes(entry_count)?;
-            if mapping_length != expected_length {
-                return Err(DecodeError::MappingLengthMismatch);
-            }
-            let end = mapping_offset
-                .checked_add(mapping_length)
-                .ok_or(DecodeError::ArithmeticOverflow)?;
-            if end > mapping_end {
-                return Err(DecodeError::MappingLengthMismatch);
-            }
-            entries.push((
-                owner_vertex_id,
-                bucket_label_key,
-                entry_count,
-                mode,
-                mapping_offset,
-                mapping_length,
-            ));
-            expected_offset = end;
-            previous_id = Some((owner_vertex_id, bucket_label_key));
-        }
-        if offset != mapping_start || expected_offset != mapping_end {
-            return Err(DecodeError::MappingLengthMismatch);
-        }
-        let buckets = entries
-            .into_iter()
-            .map(
-                |(
-                    owner_vertex_id,
-                    bucket_label_key,
-                    entry_count,
-                    mode,
-                    mapping_offset,
-                    mapping_length,
-                )| Bucket {
-                    owner_vertex_id,
-                    bucket_label_key,
-                    entries: entry_count,
-                    mode,
-                    mapping: bytes[mapping_offset..mapping_offset + mapping_length].to_vec(),
-                },
-            )
-            .collect();
-        Ok(Self { buckets })
-    }
 }
 
 fn encode_compact_flags(mode: Mode) -> Result<u8, EncodeError> {
@@ -444,7 +180,7 @@ fn decode_compact_flags(flags: u8) -> Result<Mode, DecodeError> {
     }
 }
 
-impl CompactMateBlob {
+impl MateBlob {
     pub(crate) fn encoded_len(&self) -> Result<usize, EncodeError> {
         if self.buckets.is_empty() {
             return Err(EncodeError::EmptyBlob);
@@ -452,7 +188,7 @@ impl CompactMateBlob {
         let directory_bytes = self
             .buckets
             .len()
-            .checked_mul(COMPACT_DIRECTORY_ENTRY_BYTES)
+            .checked_mul(DIRECTORY_ENTRY_BYTES)
             .ok_or(EncodeError::ArithmeticOverflow)?;
         let mut mapping_bytes = 0usize;
         let mut previous_id = None;
@@ -470,7 +206,7 @@ impl CompactMateBlob {
             previous_id = Some((bucket.owner_vertex_id, bucket.bucket_label_key));
         }
         u16::try_from(self.buckets.len()).map_err(|_| EncodeError::TooLarge)?;
-        let total_bytes = COMPACT_HEADER_BYTES
+        let total_bytes = HEADER_BYTES
             .checked_add(directory_bytes)
             .and_then(|value| value.checked_add(mapping_bytes))
             .ok_or(EncodeError::ArithmeticOverflow)?;
@@ -484,7 +220,7 @@ impl CompactMateBlob {
         let directory_bytes = self
             .buckets
             .len()
-            .checked_mul(COMPACT_DIRECTORY_ENTRY_BYTES)
+            .checked_mul(DIRECTORY_ENTRY_BYTES)
             .ok_or(EncodeError::ArithmeticOverflow)?;
         let mut out = Vec::with_capacity(total_bytes);
         out.extend_from_slice(&bucket_count.to_be_bytes());
@@ -494,7 +230,7 @@ impl CompactMateBlob {
                 .map_err(|_| EncodeError::TooLarge)?
                 .to_be_bytes(),
         );
-        let mut mapping_offset = COMPACT_HEADER_BYTES
+        let mut mapping_offset = HEADER_BYTES
             .checked_add(directory_bytes)
             .ok_or(EncodeError::ArithmeticOverflow)?;
         for bucket in &self.buckets {
@@ -519,7 +255,7 @@ impl CompactMateBlob {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        if bytes.len() < COMPACT_HEADER_BYTES {
+        if bytes.len() < HEADER_BYTES {
             return Err(DecodeError::Truncated);
         }
         let mut offset = 0;
@@ -536,9 +272,9 @@ impl CompactMateBlob {
             return Err(DecodeError::TotalLengthMismatch);
         }
         let directory_len = bucket_count
-            .checked_mul(COMPACT_DIRECTORY_ENTRY_BYTES)
+            .checked_mul(DIRECTORY_ENTRY_BYTES)
             .ok_or(DecodeError::ArithmeticOverflow)?;
-        let mapping_start = COMPACT_HEADER_BYTES
+        let mapping_start = HEADER_BYTES
             .checked_add(directory_len)
             .ok_or(DecodeError::ArithmeticOverflow)?;
         if mapping_start > bytes.len() {
@@ -645,24 +381,8 @@ fn all_modes_round_trip_and_reopen() {
 }
 
 #[test]
-fn multi_bucket_directory_amortizes_shared_layout() {
-    let blob = MateBlob {
-        buckets: vec![
-            bucket(2, 7, 8, Mode::Sampled { stride: 16 }),
-            bucket(2, 9, 32, Mode::Packed { width_bytes: 2 }),
-        ],
-    };
-    let bytes = blob.encode().expect("encode multi-bucket");
-    assert_eq!(
-        bytes.len(),
-        HEADER_BYTES + 2 * DIRECTORY_ENTRY_BYTES + 8 + 128
-    );
-    assert_eq!(MateBlob::decode(&bytes).expect("decode multi-bucket"), blob);
-}
-
-#[test]
 fn compact_blob_round_trip_and_sparse_directory_size() {
-    let indexed = CompactMateBlob {
+    let indexed = MateBlob {
         buckets: vec![
             bucket(2, 7, 8, Mode::Sampled { stride: 16 }),
             bucket(2, 9, 32, Mode::Packed { width_bytes: 2 }),
@@ -671,28 +391,22 @@ fn compact_blob_round_trip_and_sparse_directory_size() {
     let bytes = indexed.encode().expect("compact encode");
     assert_eq!(
         bytes.len(),
-        COMPACT_HEADER_BYTES + 2 * COMPACT_DIRECTORY_ENTRY_BYTES + 8 + 128
+        HEADER_BYTES + 2 * DIRECTORY_ENTRY_BYTES + 8 + 128
     );
     assert_eq!(bytes.len(), indexed.encoded_len().expect("compact length"));
-    assert_eq!(
-        CompactMateBlob::decode(&bytes).expect("compact decode"),
-        indexed
-    );
+    assert_eq!(MateBlob::decode(&bytes).expect("compact decode"), indexed);
 
     // ScanOnly buckets are omitted by construction; an indexed bucket is the only directory row.
-    let one = CompactMateBlob {
+    let one = MateBlob {
         buckets: vec![bucket(3, 1, 32, Mode::Packed { width_bytes: 1 })],
     };
     let one_bytes = one.encode().expect("single compact encode");
-    assert_eq!(
-        one_bytes.len(),
-        COMPACT_HEADER_BYTES + COMPACT_DIRECTORY_ENTRY_BYTES + 64
-    );
+    assert_eq!(one_bytes.len(), HEADER_BYTES + DIRECTORY_ENTRY_BYTES + 64);
 }
 
 #[test]
 fn compact_blob_rejects_reserved_flags_offsets_and_trailing_bytes() {
-    let blob = CompactMateBlob {
+    let blob = MateBlob {
         buckets: vec![bucket(2, 7, 32, Mode::Packed { width_bytes: 1 })],
     };
     let encoded = blob.encode().expect("compact encode");
@@ -700,127 +414,25 @@ fn compact_blob_rejects_reserved_flags_offsets_and_trailing_bytes() {
     let mut reserved = encoded.clone();
     reserved[2] = 1;
     assert_eq!(
-        CompactMateBlob::decode(&reserved),
+        MateBlob::decode(&reserved),
         Err(DecodeError::CompactReservedBits)
     );
 
     let mut flags = encoded.clone();
     flags[14] = 0xff;
     assert_eq!(
-        CompactMateBlob::decode(&flags),
+        MateBlob::decode(&flags),
         Err(DecodeError::CompactFlags(0xff))
     );
 
     let mut offset = encoded.clone();
     offset[19..23].copy_from_slice(&1u32.to_be_bytes());
-    assert_eq!(
-        CompactMateBlob::decode(&offset),
-        Err(DecodeError::MappingOffset)
-    );
+    assert_eq!(MateBlob::decode(&offset), Err(DecodeError::MappingOffset));
 
     let mut trailing = encoded;
     trailing.extend_from_slice(&[0, 0]);
     let total = u32::try_from(trailing.len()).expect("compact fixture fits");
     trailing[4..8].copy_from_slice(&total.to_be_bytes());
-    assert_eq!(
-        CompactMateBlob::decode(&trailing),
-        Err(DecodeError::TrailingBytes)
-    );
-}
-
-#[test]
-fn corruption_is_rejected_before_a_result_is_returned() {
-    let blob = MateBlob {
-        buckets: vec![bucket(2, 7, 32, Mode::Packed { width_bytes: 1 })],
-    };
-    let bytes = blob.encode().expect("encode");
-
-    let mut truncated = bytes.clone();
-    truncated.pop();
-    assert_eq!(
-        MateBlob::decode(&truncated),
-        Err(DecodeError::TotalLengthMismatch)
-    );
-
-    let mut wrong_version = bytes.clone();
-    wrong_version[4] = 9;
-    assert_eq!(
-        MateBlob::decode(&wrong_version),
-        Err(DecodeError::UnsupportedVersion(9))
-    );
-
-    let mut wrong_offset = bytes;
-    wrong_offset[36] = 0;
-    wrong_offset[37] = 0;
-    wrong_offset[38] = 0;
-    wrong_offset[39] = 1;
-    assert_eq!(
-        MateBlob::decode(&wrong_offset),
-        Err(DecodeError::MappingOffset)
-    );
-}
-
-#[test]
-fn malformed_shapes_and_trailing_bytes_are_rejected() {
-    let blob = MateBlob {
-        buckets: vec![bucket(2, 7, 1, Mode::Packed { width_bytes: 1 })],
-    };
-    let mut bytes = blob.encode().expect("encode");
-    bytes.push(0);
-    assert_eq!(
-        MateBlob::decode(&bytes),
-        Err(DecodeError::TotalLengthMismatch)
-    );
-
-    let mut bytes = blob.encode().expect("encode");
-    bytes[12] = 0;
-    bytes[13] = 0;
-    bytes[14] = 0;
-    bytes[15] = 1;
-    assert_eq!(
-        MateBlob::decode(&bytes),
-        Err(DecodeError::DirectoryLengthMismatch)
-    );
-
-    let mut bytes = blob.encode().expect("encode");
-    bytes[5] = 1;
-    assert_eq!(
-        MateBlob::decode(&bytes),
-        Err(DecodeError::UnsupportedFlags(1))
-    );
-
-    let mut bytes = blob.encode().expect("encode");
-    bytes[6] = 0;
-    bytes[7] = 23;
-    assert_eq!(
-        MateBlob::decode(&bytes),
-        Err(DecodeError::InvalidHeaderLength(23))
-    );
-
-    for (mode, parameter, expected) in [
-        (3, 1, DecodeError::UnsupportedMode(3)),
-        (1, 8, DecodeError::UnsupportedSampleStride(8)),
-        (2, 5, DecodeError::UnsupportedPackedWidth(5)),
-    ] {
-        let mut bytes = blob.encode().expect("encode");
-        bytes[30] = mode;
-        bytes[31] = parameter;
-        assert_eq!(MateBlob::decode(&bytes), Err(expected));
-    }
-
-    let mut bytes = blob.encode().expect("encode");
-    bytes[32..36].copy_from_slice(&0u32.to_be_bytes());
-    assert_eq!(MateBlob::decode(&bytes), Err(DecodeError::EmptyBucket));
-
-    assert_eq!(
-        (MateBlob { buckets: vec![] }).encode(),
-        Err(EncodeError::EmptyBlob)
-    );
-
-    let mut trailing = blob.encode().expect("encode");
-    trailing.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
-    let trailing_len = u32::try_from(trailing.len()).expect("fixture fits u32");
-    trailing[20..24].copy_from_slice(&trailing_len.to_be_bytes());
     assert_eq!(MateBlob::decode(&trailing), Err(DecodeError::TrailingBytes));
 }
 
@@ -879,22 +491,9 @@ fn encoding_rejects_duplicate_or_unsorted_buckets_and_wrong_mapping_length() {
     ));
 }
 
-#[test]
-fn decoding_rejects_unsorted_canonical_identities() {
-    let blob = MateBlob {
-        buckets: vec![
-            bucket(2, 7, 1, Mode::Packed { width_bytes: 1 }),
-            bucket(2, 9, 1, Mode::Packed { width_bytes: 1 }),
-        ],
-    };
-    let mut bytes = blob.encode().expect("encode");
-    bytes[44..48].copy_from_slice(&1u32.to_be_bytes());
-    assert_eq!(MateBlob::decode(&bytes), Err(DecodeError::BucketOrder));
-}
-
 #[cfg(feature = "canbench")]
-fn compact_bench_blob() -> CompactMateBlob {
-    CompactMateBlob {
+fn compact_bench_blob() -> MateBlob {
+    MateBlob {
         buckets: vec![
             bucket(2, 7, 32, Mode::Sampled { stride: 32 }),
             bucket(2, 9, 128, Mode::Packed { width_bytes: 2 }),
@@ -922,7 +521,7 @@ fn bench_mate_blob_compact_encode_decode() -> canbench_rs::BenchResult {
     let blob = compact_bench_blob();
     canbench_rs::bench_fn(|| {
         let bytes = blob.encode().expect("compact encode");
-        let decoded = CompactMateBlob::decode(&bytes).expect("compact decode");
+        let decoded = MateBlob::decode(&bytes).expect("compact decode");
         std::hint::black_box((bytes.len(), decoded.buckets.len()));
     })
 }

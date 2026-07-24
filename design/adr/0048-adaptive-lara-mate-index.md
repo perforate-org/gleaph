@@ -37,9 +37,6 @@ per non-self logical edge before node overhead and would create another synchron
 surface. It would also leave ownership of a physical-slot invariant outside LARA, which owns slot
 allocation, ordering, rebalance, and compaction.
 
-The repository has no production stable data requiring compatibility with the current layout.
-Development data may be recreated when this decision is implemented.
-
 ## Problem
 
 Given either physical entry of a local logical edge, Graph must identify the exact paired entry for
@@ -506,12 +503,12 @@ terms concrete without exposing a runtime promotion API. Its fixed-endian layout
 
 | Component | Size |
 | --- | ---: |
-| versioned header | 24 bytes |
-| indexed-bucket directory entry (`owner_vertex_id` + `BucketLabelKey` identity) | 20 bytes per bucket |
+| compact header (`bucket_count`, `total_length`) | 8 bytes |
+| indexed-bucket directory entry (`owner_vertex_id` + `BucketLabelKey` identity) | 15 bytes per bucket |
 | Sampled mapping | `8 * ceil(n / K)` bytes per bucket (source and mate `u32` fields); a two-half pair therefore contributes `16 * ceil(n / K)` |
 | Packed mapping | `2 * width * n` bytes per bucket |
 
-The header declares the directory, mapping, and total lengths. Mode, stride/width, and entry count
+The header declares the total length. Mode, stride/width, and entry count
 are per-directory-entry fields because a leaf may mix modes by bucket; no synthetic bucket-id table
 is introduced. Directory entries carry the canonical `(owner_vertex_id, BucketLabelKey)` identity,
 are strictly ordered, and point to contiguous mapping ranges. Decode checks every range, count,
@@ -519,7 +516,7 @@ mode, width, reserved flag, and the absence of trailing bytes. Free-span records
 locator rows, and substrate allocation remain separate terms in the Plan 0134 gate. Round-trip and
 corruption tests cover all requested strides and widths, single-bucket and multi-bucket leaves.
 Plan 0136 places this codec behind an internal locator/blob/free-span storage boundary with
-fresh/reopen/partial-layout validation, publication ordering, old-span retirement, and
+fresh/reopen/partial-layout validation, publication ordering, span retirement, and
 locator-to-blob reopen validation. This remains dormant storage foundation; it is not runtime
 promotion or alias removal.
 
@@ -1015,23 +1012,19 @@ Plan 0171 reconciles the implemented owner with the earlier bucket-locator/raw-p
 the production baseline is the existing leaf-scoped locator plus one multi-bucket blob per leaf.
 One locator row therefore covers all indexed buckets in an orientation/leaf; bucket identity is
 resolved by the blob directory, not by a second locator collection. Reopen and publication remain
-all-or-nothing across the four existing mate regions, and a fresh reset is required for any future
-format replacement because development compatibility is not maintained. The next compaction target
+all-or-nothing across the four existing mate regions; format replacement is outside the scope of
+format replacement is outside the scope of this pre-production layout. The next compaction target
 is to keep the leaf locator unchanged, reduce the blob
-header from the historical 24 bytes to an 8-byte `{bucket_count, total_length}` header, and reduce
-each bucket-directory entry from 20 bytes to approximately 15 bytes: owner vertex (4), label (2),
+header to an 8-byte `{bucket_count, total_length}` header, and use 15-byte bucket-directory entries:
+owner vertex (4), label (2),
 packed candidate/width flags (1), cardinality (4), and mapping offset (4). Mapping length is
 derived from the next offset or blob end. Excluding the fixed 5-byte leaf locator and allocator/
-MemoryManager overhead, this changes the logical overhead from `29 + 20B` to `13 + 15B` bytes
-per leaf with `B` buckets, saving `16 + 5B` bytes. Plan 0175 implements this compact codec at
+MemoryManager overhead, the logical overhead is `13 + 15B` bytes per leaf with `B` buckets.
+Plan 0175 implements this compact codec at
 the existing `MateStorage` publication and reopen boundary. Persisted blobs now use the
-8-byte/15-byte representation; the historical 24/20-byte codec remains only as a legacy
-admission/measurement fixture and is rejected when encountered in the persisted region. Because
-development stable data is disposable, no compatibility decoder is provided and a fresh reset is
-required.
+8-byte/15-byte representation exclusively.
 
-Plan 0173 measured the compact codec at 701 bytes versus 732 bytes for the historical codec
-(`-31` bytes, matching `16 + 5B` for `B = 3`), and 6,847 versus 7,571 instructions (`-9.6%`)
+Plan 0173 measured the compact codec at 701 bytes for three indexed buckets and 6,847 instructions
 with zero heap or stable-memory growth. Plan 0175 applies that format at the owner boundary; the
 full `ic-stable-lara` canbench sweep remains blocked by the pre-existing
 `bench_lara_deferred_bidirectional_insert_undirected_1024` `CollectAllocationOverflow` failure.
@@ -1043,8 +1036,7 @@ decode error, epoch/topology mismatch, or candidate invariant failure leaves the
 no partial payload is visible. Recovery resumes from canonical state and may discard the derived
 record. Region version mismatch, locator range failure, cardinality mismatch, or candidate-shape
 failure rejects an entry before exposing a published value. The derived region is separately
-versioned from canonical LARA, and a future format can use
-a fresh reset/version boundary under ADR 0039.
+versioned from canonical LARA.
 
 Plan 0160's first common-fixture comparison confirms the intended ordering: shared-orientation is
 1,800 bytes / 672.22K instructions for directed-high and 84 bytes / 175.43K for parallel-32;

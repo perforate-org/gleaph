@@ -380,7 +380,7 @@ mod tests {
             }
             .encoded_len()
             .unwrap();
-            assert_eq!(current - ranked, usize::try_from(entries).unwrap());
+            assert_eq!(current as isize - ranked as isize, entries as isize - 21);
         }
     }
 }

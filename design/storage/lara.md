@@ -226,7 +226,7 @@ overhead and are not divided by edge count. A candidate must retain positive hea
 justified. No runtime promotion, blob store, or alias replacement is implemented by this slice.
 
 Plan 0135 validates an isolated, test-only serialized layout at the bidirectional LARA boundary:
-the prototype uses a 24-byte versioned header, 20 bytes per indexed-bucket directory entry
+the isolated envelope fixture uses its own versioned header and directory entry
 (including the canonical owner vertex and `BucketLabelKey` identity), and the existing
 Sampled/Packed mapping formulas. Mode and width are per-bucket so a leaf may mix modes. It performs
 checked offset/length validation and
@@ -504,21 +504,18 @@ design keeps magic/version once in the region header, while locator metadata own
 candidate, epoch, identity, cardinality, offset, and total length; per-entry magic/version framing
 is intentionally omitted.
 The isolated fixture uses a fixed 32-byte region header matching existing LARA byte-store headers,
-a 22-byte fixed locator value, and a separate raw payload region; its old self-contained envelope
-codec remains only as a validation fixture.
+a 22-byte fixed locator value, and a separate raw payload region; it is not a production layout.
 This bucket-locator/raw-payload split is not the selected production layout and does not allocate or
 register production `MemoryId`s. Plan 0171 confirms the existing `MateStorage` owner as the
 production baseline: one five-byte locator row addresses one orientation/leaf and its blob
 directory contains all indexed buckets for that leaf. Reopen and publication use the existing
-four-region composite boundary; future format replacement requires a fresh reset because
-development stable-data compatibility is not maintained. Plan 0175 now uses the compact blob
+four-region composite boundary. Plan 0175 now uses the compact blob
 format at that owner: the 5-byte leaf locator remains unchanged, and the blob
-header (`bucket_count` and `total_length`), and targets approximately 15-byte directory entries
+header (`bucket_count` and `total_length`) and targets approximately 15-byte directory entries
 (owner 4, label 2, packed flags 1, cardinality 4, mapping offset 4), deriving mapping length from
 the next offset/blob end. Its logical overhead target is `13 + 15B` bytes per leaf versus the
 current `29 + 20B`, a saving of `16 + 5B` bytes before allocator and MemoryManager overhead.
-The historical 24-byte header/20-byte directory codec remains an admission/measurement fixture;
-persisted bytes use the compact format and old persisted bytes fail closed at reopen. Plan 0173's
+Persisted bytes use this compact format exclusively. Plan 0173's
 compact fixture measured 701 bytes for three indexed buckets versus 732 bytes for the historical
 baseline, and 6,847 versus 7,571 instructions for encode/decode. The full crate canbench
 sweep could not persist because the unrelated deferred undirected insert benchmark traps with

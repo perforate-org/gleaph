@@ -165,7 +165,7 @@ pub enum MaintenanceWorkItem {
         orientation: Orientation,
         vid: VertexId,
     },
-    /// Legacy stable tag. It now advances edge compaction only; value maintenance is independent.
+    /// Stable maintenance tag. It now advances edge compaction only; value maintenance is independent.
     CompactVertexEdgeAndValueSpan {
         orientation: Orientation,
         vid: VertexId,
@@ -3790,7 +3790,7 @@ mod tests {
     use crate::labeled::bidirectional::mate::{
         canonical_mate_lookup_count, reset_canonical_mate_lookup_count,
     };
-    use crate::labeled::bidirectional::mate_blob_prototype::{CompactMateBlob, MateBlob, Mode};
+    use crate::labeled::bidirectional::mate_blob_prototype::{MateBlob, Mode};
     use crate::labeled::bidirectional::mate_enumeration::MateLeafEnumerationPolicy;
     use crate::labeled::bidirectional::mate_promotion::{
         MateLeafPromotionConfig, MatePromotionInputs, MatePromotionMode,
@@ -4322,7 +4322,7 @@ mod tests {
             .published_blobs
             .into_iter()
             .flat_map(|(_, bytes)| {
-                CompactMateBlob::decode(&bytes)
+                MateBlob::decode(&bytes)
                     .expect("published mate blob")
                     .buckets
                     .into_iter()
@@ -7307,11 +7307,11 @@ mod tests {
         assert_eq!(graph.published_mate_of(edge), Ok(expected));
         assert_eq!(canonical_mate_lookup_count(), 1);
 
-        // Header (24) + one directory entry (20) = mapping offset 44; byte 49 is the
+        // Compact header (8) + one directory entry (15) = mapping offset 23; byte 30 is the
         // low byte of the first checkpoint's u32 counterpart slot.
         graph
             .mate
-            .test_write_published_blob_byte(0, 49, rows.mate_slots[16] as u8)
+            .test_write_published_blob_byte(0, 30, rows.mate_slots[16] as u8)
             .unwrap();
         let checkpoint = PhysicalEdgeRef {
             orientation: Orientation::Forward,
@@ -7644,11 +7644,11 @@ mod tests {
             .unwrap()
             .expect("published source bucket");
         assert!(matches!(published.mode, Mode::Packed { .. }));
-        // Header (24) + one directory entry (20) = mapping offset 44; byte 45 is
+        // Compact header (8) + one directory entry (15) = mapping offset 23; byte 23 is
         // the first packed counterpart slot for the first source entry.
         graph
             .mate
-            .test_write_published_blob_byte(0, 45, reverse_slots[1] as u8)
+            .test_write_published_blob_byte(0, 23, reverse_slots[1] as u8)
             .unwrap();
         let source_ref = PhysicalEdgeRef {
             orientation: Orientation::Forward,

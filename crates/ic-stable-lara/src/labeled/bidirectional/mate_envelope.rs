@@ -105,7 +105,7 @@ impl Storable for MateEnvelopeKey {
     }
 }
 
-/// Legacy self-contained codec fixture; production storage uses locator/payload separation below.
+/// Isolated self-contained codec fixture; production storage uses locator/payload separation below.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MateEnvelope {
     pub key: MateEnvelopeKey,
@@ -499,7 +499,7 @@ pub(crate) struct MateEnvelopeStore<M: Memory> {
 }
 
 /// Region-level owner that stores the format header separately from entry values.
-/// Legacy map-backed envelope fixture; production storage uses `MateLocatorStore` and
+/// Isolated map-backed envelope fixture; production storage uses `MateLocatorStore` and
 /// `MatePayloadRegion` instead.
 pub(crate) struct MateEnvelopeRegion<M: Memory> {
     header: M,

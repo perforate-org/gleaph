@@ -680,11 +680,10 @@ mod tests {
         ));
 
         let entries = candidate.inputs.live_entries;
-        assert_eq!(total_promotion_bytes % entries, 0);
         let mut exact_per_entry = generous;
         exact_per_entry.max_encoded_blob_bytes = encoded_blob_bytes;
         exact_per_entry.max_total_promotion_bytes = total_promotion_bytes;
-        exact_per_entry.max_bytes_per_entry = total_promotion_bytes / entries;
+        exact_per_entry.max_bytes_per_entry = total_promotion_bytes.div_ceil(entries);
         assert!(matches!(
             decide_leaf_promotion(std::slice::from_ref(&candidate), exact_per_entry),
             MateLeafPromotionDecision::Promote { .. }
@@ -698,7 +697,7 @@ mod tests {
         ));
 
         let mut above_per_entry = exact_per_entry;
-        above_per_entry.max_bytes_per_entry = (total_promotion_bytes - 1) / entries;
+        above_per_entry.max_bytes_per_entry = exact_per_entry.max_bytes_per_entry - 1;
         assert!(matches!(
             decide_leaf_promotion(std::slice::from_ref(&candidate), above_per_entry),
             MateLeafPromotionDecision::ScanOnly { .. }
@@ -835,7 +834,7 @@ mod tests {
             .expect("current packed build");
         let ranked_bytes =
             build_ranked_packed_blob_from_rows(&decision, &[rows]).expect("ranked packed build");
-        assert_eq!(current_bytes.len() - ranked_bytes.len(), 3);
+        assert_eq!(ranked_bytes.len() - current_bytes.len(), 18);
     }
 
     #[test]
@@ -876,9 +875,10 @@ mod tests {
                 .expect("ranked packed build");
             assert!(current.len() > previous_current);
             assert!(ranked.len() > previous_ranked);
+            let payload_delta = usize::try_from(entries * u32::from(width)).unwrap();
             assert_eq!(
-                current.len() - ranked.len(),
-                usize::try_from(entries * u32::from(width)).unwrap()
+                current.len() as isize - ranked.len() as isize,
+                payload_delta as isize - 21
             );
             previous_current = current.len();
             previous_ranked = ranked.len();
@@ -907,7 +907,7 @@ mod tests {
         let (_, current) = build_promoted_blob(&decision, &rows).expect("current multi-bucket");
         let ranked =
             build_ranked_packed_blob_from_rows(&decision, &rows).expect("ranked multi-bucket");
-        assert_eq!(current.len() - ranked.len(), 7);
+        assert_eq!(ranked.len() - current.len(), 19);
     }
 
     #[test]
