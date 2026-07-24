@@ -243,6 +243,11 @@ proven, and per-edge values use conservative ceiling division.
 It does not measure or activate ordinary callers; the persistent-byte gate and alias decision remain
 deferred until isolated lifecycle fixtures produce the machine-readable evidence artifact.
 
+Plan 0146 adds only the first fixture/evidence boundary: deterministic shape descriptors,
+canonical identity digests, fixed-seed request identities, and fail-closed deferred/measured
+evidence serialization in the Graph bench layer. It does not yet provide independent stable-memory
+ownership or lifecycle measurement, and it does not activate or replace the alias path.
+
 ---
 
 ## What is IC-specific (substrate only)

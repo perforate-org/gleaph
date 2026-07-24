@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 default = ["gql-parse", "plan-wire"]
 gql-parse = []
 plan-wire = ["gleaph-gql-planner/plan-wire"]
-canbench = ["dep:canbench-rs"]
+canbench = ["dep:canbench-rs", "dep:serde_json", "dep:sha2"]
 canbench_uniform_4 = ["canbench"]
 canbench_uniform_8 = ["canbench"]
 canbench_uniform_16 = ["canbench"]
@@ -71,6 +71,8 @@ nohash-hasher.workspace = true
 pollster.workspace = true
 rapidhash.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+sha2 = { version = "0.11", optional = true }
 
 ## canbench
 canbench-rs = { workspace = true, optional = true }

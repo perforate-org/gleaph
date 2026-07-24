@@ -8,8 +8,10 @@
 
 use super::mate_footprint::{MateFootprintInput, MateMode, MateSharedOverhead};
 use canbench_rs::{bench, bench_fn};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-pub(crate) const POLICY_VERSION: &str = "adr0048-v1";
+pub(crate) const POLICY_VERSION: &str = "1.0";
 pub(crate) const SAMPLED_STRIDE: u8 = 32;
 pub(crate) const MIN_HUB_REQUESTS: u32 = 64;
 
@@ -610,5 +612,549 @@ mod tests {
             }
             .satisfies_guard()
         );
+    }
+}
+
+/// Deterministic, representation-independent identity used by the adoption evidence.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct CanonicalIdentity {
+    pub(crate) owner: u32,
+    pub(crate) target: u32,
+    pub(crate) orientation: u8,
+    pub(crate) label: u16,
+    pub(crate) slot: u32,
+    pub(crate) inline_payload_fingerprint: String,
+    pub(crate) payload_bytes: Vec<u8>,
+}
+
+impl Ord for CanonicalIdentity {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (
+            self.owner,
+            self.target,
+            self.orientation,
+            self.label,
+            self.slot,
+            &self.inline_payload_fingerprint,
+            &self.payload_bytes,
+        )
+            .cmp(&(
+                other.owner,
+                other.target,
+                other.orientation,
+                other.label,
+                other.slot,
+                &other.inline_payload_fingerprint,
+                &other.payload_bytes,
+            ))
+    }
+}
+
+impl PartialOrd for CanonicalIdentity {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl CanonicalIdentity {
+    fn row_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(18 + self.payload_bytes.len());
+        out.push(1);
+        out.extend_from_slice(&self.owner.to_be_bytes());
+        out.extend_from_slice(&self.target.to_be_bytes());
+        out.push(self.orientation);
+        out.extend_from_slice(&self.label.to_be_bytes());
+        out.extend_from_slice(&self.slot.to_be_bytes());
+        out.extend_from_slice(&(self.payload_bytes.len() as u32).to_be_bytes());
+        out.extend_from_slice(&self.payload_bytes);
+        out
+    }
+}
+
+fn digest_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn canonical_identity_digest(rows: &[CanonicalIdentity]) -> String {
+    let mut ordered = rows.to_vec();
+    ordered.sort();
+    let mut encoded = vec![1u8];
+    encoded.extend_from_slice(&(ordered.len() as u32).to_be_bytes());
+    for row in ordered {
+        let bytes = row.row_bytes();
+        encoded.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+        encoded.extend_from_slice(&bytes);
+    }
+    digest_hex(&encoded)
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ShapeDescriptor {
+    pub(crate) shape_id: String,
+    pub(crate) shape_definition_digest: String,
+    pub(crate) fixture_ids: Vec<String>,
+    pub(crate) logical_edges: u64,
+    pub(crate) physical_half_edges: u64,
+    pub(crate) alias_rows: u64,
+    pub(crate) indexed_half_edges: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct DeterministicFixture {
+    pub(crate) descriptor: ShapeDescriptor,
+    pub(crate) identities: Vec<CanonicalIdentity>,
+}
+
+fn shape_tag(shape: FixtureShape) -> u16 {
+    match shape {
+        FixtureShape::Directed => 1,
+        FixtureShape::Undirected => 2,
+        FixtureShape::DirectedSelfLoop => 3,
+        FixtureShape::UndirectedSelfLoop => 4,
+        FixtureShape::Parallel => 5,
+        FixtureShape::SparseSlots => 6,
+        FixtureShape::MixedLabels => 7,
+    }
+}
+
+fn shape_definition_digest(spec: FixtureSpec) -> String {
+    let mut bytes = vec![1u8];
+    bytes.extend_from_slice(&(spec.id.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(spec.id.as_bytes());
+    bytes.extend_from_slice(&u64::from(shape_tag(spec.shape)).to_be_bytes());
+    bytes.extend_from_slice(&spec.logical_edges.to_be_bytes());
+    bytes.extend_from_slice(&spec.physical_half_edges.to_be_bytes());
+    bytes.extend_from_slice(&spec.degree.to_be_bytes());
+    digest_hex(&bytes)
+}
+
+pub(crate) fn build_fixture(spec: FixtureSpec) -> DeterministicFixture {
+    let mut identities = Vec::with_capacity(spec.physical_half_edges as usize);
+    for index in 0..spec.physical_half_edges {
+        let payload_bytes = if matches!(
+            spec.shape,
+            FixtureShape::MixedLabels | FixtureShape::SparseSlots
+        ) {
+            vec![(index as u8).wrapping_mul(17), shape_tag(spec.shape) as u8]
+        } else {
+            Vec::new()
+        };
+        let owner = 1 + (index / 2) as u32;
+        let target = 10_000 + index as u32;
+        let slot = if matches!(spec.shape, FixtureShape::SparseSlots) {
+            (index.saturating_mul(3)) as u32
+        } else {
+            index as u32
+        };
+        let mut row_seed = Vec::new();
+        row_seed.extend_from_slice(&owner.to_be_bytes());
+        row_seed.extend_from_slice(&target.to_be_bytes());
+        row_seed.extend_from_slice(&payload_bytes);
+        identities.push(CanonicalIdentity {
+            owner,
+            target,
+            orientation: (index % 2) as u8,
+            label: shape_tag(spec.shape),
+            slot,
+            inline_payload_fingerprint: digest_hex(&row_seed),
+            payload_bytes,
+        });
+    }
+    identities.sort();
+    assert!(identities.windows(2).all(|pair| pair[0] != pair[1]));
+    let descriptor = ShapeDescriptor {
+        shape_id: spec.id.to_owned(),
+        shape_definition_digest: shape_definition_digest(spec),
+        fixture_ids: vec![format!("{}-fixture", spec.id)],
+        logical_edges: spec.logical_edges,
+        physical_half_edges: spec.physical_half_edges,
+        alias_rows: spec.physical_half_edges,
+        indexed_half_edges: spec.physical_half_edges,
+    };
+    assert_eq!(identities.len() as u64, descriptor.physical_half_edges);
+    DeterministicFixture {
+        descriptor,
+        identities,
+    }
+}
+
+fn spec_for_shape_id(id: &str) -> FixtureSpec {
+    FixtureSpec::required_matrix()
+        .into_iter()
+        .find(|spec| spec.id == id)
+        .expect("fixture descriptor must originate from required matrix")
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct RequestIdentity {
+    pub(crate) request_id: String,
+    pub(crate) shape_id: String,
+    pub(crate) direction: String,
+    pub(crate) rank: u32,
+    pub(crate) stratum: RequestStratumWire,
+    pub(crate) payload_digest: String,
+}
+
+impl RequestIdentity {
+    /// Stable request identity.  Fixture and representation names are deliberately excluded so
+    /// the same logical request can be reused by multiple evidence rows.
+    fn encoded_identity(&self) -> Vec<u8> {
+        let mut out = vec![1u8];
+        for value in [&self.shape_id, &self.direction] {
+            let bytes = value.as_bytes();
+            out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            out.extend_from_slice(bytes);
+        }
+        out.extend_from_slice(&self.rank.to_be_bytes());
+        out.push(self.stratum as u8);
+        let payload = self.payload_digest.as_bytes();
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum RequestStratumWire {
+    ScanOnly,
+    SampledCheckpoint,
+    SampledNonCheckpoint,
+    PackedValid,
+    Malformed,
+    Stale,
+}
+
+pub(crate) fn build_request_corpus(spec: FixtureSpec, seed: u64) -> Vec<RequestIdentity> {
+    // Each stratum receives every representable rank for small fixtures and at least the frozen
+    // minimum for larger fixtures.  Repeating ranks across strata is intentional: the request
+    // identity includes the stratum and can therefore be joined across mode-specific rows.
+    let rank_count = spec
+        .physical_half_edges
+        .max(MIN_HUB_REQUESTS as u64)
+        .min(u32::MAX as u64) as u32;
+    let strata = [
+        RequestStratumWire::ScanOnly,
+        RequestStratumWire::SampledCheckpoint,
+        RequestStratumWire::SampledNonCheckpoint,
+        RequestStratumWire::PackedValid,
+        RequestStratumWire::Malformed,
+        RequestStratumWire::Stale,
+    ];
+    let mut corpus = Vec::with_capacity(rank_count as usize * strata.len());
+    for stratum in strata {
+        let count = if spec.physical_half_edges < u64::from(MIN_HUB_REQUESTS) {
+            spec.physical_half_edges as u32
+        } else {
+            rank_count
+        };
+        for rank in 0..count {
+            let mut seed_bytes = seed.to_be_bytes().to_vec();
+            seed_bytes.extend_from_slice(spec.id.as_bytes());
+            seed_bytes.extend_from_slice(&rank.to_be_bytes());
+            seed_bytes.push(stratum as u8);
+            let payload_digest = digest_hex(&seed_bytes);
+            let mut request = RequestIdentity {
+                request_id: String::new(),
+                shape_id: spec.id.to_owned(),
+                direction: if rank % 2 == 0 { "forward" } else { "reverse" }.to_owned(),
+                rank,
+                stratum,
+                payload_digest,
+            };
+            request.request_id = digest_hex(&request.encoded_identity());
+            corpus.push(request);
+        }
+    }
+    corpus
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum EvidenceStatus {
+    Measured,
+    Deferred,
+    NotComparable,
+    NotRepresented,
+    NotApplicableScanOnly,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct EvidenceArtifact {
+    pub(crate) schema_version: u8,
+    pub(crate) policy_version: String,
+    pub(crate) fixture_generator: u8,
+    pub(crate) corpus_seed: u64,
+    pub(crate) corpus_generator: u8,
+    pub(crate) shape_descriptors: Vec<ShapeDescriptor>,
+    pub(crate) corpus_generated_count: u32,
+    pub(crate) rows: Vec<EvidenceRow>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct EvidenceRow {
+    pub(crate) shape_id: String,
+    pub(crate) fixture_id: String,
+    pub(crate) status: EvidenceStatus,
+    pub(crate) policy_version: String,
+    pub(crate) canonical_identity_digest: Option<String>,
+    pub(crate) request_identity: Option<String>,
+    pub(crate) instruction_total: Option<u64>,
+    pub(crate) exact_result_status: Option<bool>,
+}
+
+impl EvidenceArtifact {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != 1 || self.fixture_generator != 1 || self.corpus_generator != 1 {
+            return Err("unsupported artifact version");
+        }
+        if self.policy_version != POLICY_VERSION {
+            return Err("policy version mismatch");
+        }
+        if self.shape_descriptors.is_empty() || self.rows.is_empty() {
+            return Err("empty evidence artifact");
+        }
+        let mut previous = None;
+        for descriptor in &self.shape_descriptors {
+            if descriptor.shape_id.is_empty() || descriptor.fixture_ids.is_empty() {
+                return Err("invalid shape descriptor");
+            }
+            if descriptor.shape_definition_digest.len() != 64
+                || !descriptor
+                    .shape_definition_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err("invalid shape definition digest");
+            }
+            let spec = spec_for_shape_id(&descriptor.shape_id);
+            if descriptor.shape_definition_digest != shape_definition_digest(spec) {
+                return Err("shape definition digest mismatch");
+            }
+            if previous.is_some_and(|value| value >= descriptor.shape_id.as_str()) {
+                return Err("shape descriptors are not ordered");
+            }
+            previous = Some(descriptor.shape_id.as_str());
+        }
+        let mut fixture_ids = std::collections::BTreeSet::new();
+        for descriptor in &self.shape_descriptors {
+            if descriptor
+                .fixture_ids
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            {
+                return Err("fixture ids are not ordered");
+            }
+            for fixture_id in &descriptor.fixture_ids {
+                if fixture_id.is_empty() || !fixture_ids.insert(fixture_id) {
+                    return Err("duplicate fixture id");
+                }
+            }
+        }
+        for row in &self.rows {
+            if row.policy_version != self.policy_version {
+                return Err("row policy version mismatch");
+            }
+            let descriptor = self
+                .shape_descriptors
+                .iter()
+                .find(|descriptor| descriptor.shape_id == row.shape_id)
+                .ok_or("unknown shape")?;
+            if !descriptor
+                .fixture_ids
+                .iter()
+                .any(|id| id == &row.fixture_id)
+            {
+                return Err("unknown fixture");
+            }
+            if row.status == EvidenceStatus::Measured {
+                let digest = row
+                    .canonical_identity_digest
+                    .as_deref()
+                    .ok_or("measured row missing identity digest")?;
+                if digest.len() != 64
+                    || !digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                {
+                    return Err("invalid identity digest");
+                }
+                if row.instruction_total.is_none() {
+                    return Err("measured row missing instructions");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn to_yaml_compatible_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+}
+
+#[bench(raw)]
+fn bench_mate_adoption_fixture_corpus() -> canbench_rs::BenchResult {
+    let fixtures = FixtureSpec::required_matrix()
+        .into_iter()
+        .map(build_fixture)
+        .collect::<Vec<_>>();
+    let mut descriptors = fixtures
+        .iter()
+        .map(|fixture| fixture.descriptor.clone())
+        .collect::<Vec<_>>();
+    descriptors.sort_by(|left, right| left.shape_id.cmp(&right.shape_id));
+    let corpus_generated_count = fixtures
+        .iter()
+        .map(|fixture| {
+            build_request_corpus(spec_for_shape_id(&fixture.descriptor.shape_id), 0x0048_0146).len()
+                as u32
+        })
+        .sum();
+    let rows = fixtures
+        .iter()
+        .map(|fixture| EvidenceRow {
+            shape_id: fixture.descriptor.shape_id.clone(),
+            fixture_id: fixture.descriptor.fixture_ids[0].clone(),
+            status: EvidenceStatus::Deferred,
+            policy_version: POLICY_VERSION.to_owned(),
+            canonical_identity_digest: Some(canonical_identity_digest(&fixture.identities)),
+            request_identity: None,
+            instruction_total: None,
+            exact_result_status: None,
+        })
+        .collect::<Vec<_>>();
+    let mut artifact = EvidenceArtifact {
+        schema_version: 1,
+        policy_version: POLICY_VERSION.to_owned(),
+        fixture_generator: 1,
+        corpus_seed: 0x0048_0146,
+        corpus_generator: 1,
+        shape_descriptors: fixtures
+            .iter()
+            .map(|fixture| fixture.descriptor.clone())
+            .collect(),
+        corpus_generated_count,
+        rows,
+    };
+    artifact.shape_descriptors = descriptors;
+    bench_fn(|| {
+        let encoded = artifact
+            .to_yaml_compatible_json()
+            .expect("fixture evidence serializes");
+        std::hint::black_box(encoded);
+    })
+}
+
+#[cfg(test)]
+mod fixture_evidence_tests {
+    use super::*;
+
+    #[test]
+    fn required_shapes_have_matching_identity_cardinality_and_digest() {
+        for spec in FixtureSpec::required_matrix() {
+            let fixture = build_fixture(spec);
+            assert_eq!(fixture.identities.len() as u64, spec.physical_half_edges);
+            assert_eq!(fixture.descriptor.logical_edges, spec.logical_edges);
+            assert_eq!(fixture.descriptor.alias_rows, spec.physical_half_edges);
+            assert_eq!(
+                fixture.descriptor.indexed_half_edges,
+                spec.physical_half_edges
+            );
+            assert_eq!(canonical_identity_digest(&fixture.identities).len(), 64);
+        }
+    }
+
+    #[test]
+    fn corpus_is_seeded_and_deterministic() {
+        let spec = FixtureSpec::required_matrix()[1];
+        let corpus = build_request_corpus(spec, 7);
+        assert_eq!(corpus, build_request_corpus(spec, 7));
+        assert_ne!(corpus, build_request_corpus(spec, 8));
+        for stratum in [
+            RequestStratumWire::ScanOnly,
+            RequestStratumWire::SampledCheckpoint,
+            RequestStratumWire::SampledNonCheckpoint,
+            RequestStratumWire::PackedValid,
+            RequestStratumWire::Malformed,
+            RequestStratumWire::Stale,
+        ] {
+            assert!(
+                corpus
+                    .iter()
+                    .filter(|request| request.stratum == stratum)
+                    .count()
+                    >= MIN_HUB_REQUESTS as usize
+            );
+        }
+        assert!(
+            corpus
+                .windows(2)
+                .all(|pair| pair[0].request_id != pair[1].request_id)
+        );
+    }
+
+    #[test]
+    fn canonical_identity_round_trip_preserves_payload_and_digest() {
+        let fixture = build_fixture(FixtureSpec::required_matrix()[7]);
+        let encoded = serde_json::to_string(&fixture.identities).expect("serialize identities");
+        let decoded: Vec<CanonicalIdentity> =
+            serde_json::from_str(&encoded).expect("deserialize identities");
+        assert_eq!(fixture.identities, decoded);
+        assert_eq!(
+            canonical_identity_digest(&fixture.identities),
+            canonical_identity_digest(&decoded)
+        );
+    }
+
+    #[test]
+    fn evidence_rejects_unknown_shape_and_bad_measured_row() {
+        let artifact = EvidenceArtifact {
+            schema_version: 1,
+            policy_version: POLICY_VERSION.to_owned(),
+            fixture_generator: 1,
+            corpus_seed: 1,
+            corpus_generator: 1,
+            shape_descriptors: vec![build_fixture(FixtureSpec::required_matrix()[0]).descriptor],
+            corpus_generated_count: 1,
+            rows: vec![EvidenceRow {
+                shape_id: "missing".to_owned(),
+                fixture_id: "missing".to_owned(),
+                status: EvidenceStatus::Measured,
+                policy_version: POLICY_VERSION.to_owned(),
+                canonical_identity_digest: None,
+                request_identity: None,
+                instruction_total: None,
+                exact_result_status: None,
+            }],
+        };
+        assert_eq!(artifact.validate(), Err("unknown shape"));
+    }
+
+    #[test]
+    fn evidence_serializes_and_validates_deferred_fixture_rows() {
+        let fixture = build_fixture(FixtureSpec::required_matrix()[0]);
+        let artifact = EvidenceArtifact {
+            schema_version: 1,
+            policy_version: POLICY_VERSION.to_owned(),
+            fixture_generator: 1,
+            corpus_seed: 7,
+            corpus_generator: 1,
+            shape_descriptors: vec![fixture.descriptor.clone()],
+            corpus_generated_count: 0,
+            rows: vec![EvidenceRow {
+                shape_id: fixture.descriptor.shape_id.clone(),
+                fixture_id: fixture.descriptor.fixture_ids[0].clone(),
+                status: EvidenceStatus::Deferred,
+                policy_version: POLICY_VERSION.to_owned(),
+                canonical_identity_digest: Some(canonical_identity_digest(&fixture.identities)),
+                request_identity: None,
+                instruction_total: None,
+                exact_result_status: None,
+            }],
+        };
+        assert!(artifact.validate().is_ok());
+        let encoded = artifact
+            .to_yaml_compatible_json()
+            .expect("serialize evidence");
+        assert!(encoded.contains("\"schema_version\": 1"));
     }
 }

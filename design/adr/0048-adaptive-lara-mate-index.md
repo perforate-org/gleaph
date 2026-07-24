@@ -686,6 +686,12 @@ microbenchmarks.
   the non-self two-half assumption. Unknown overheads must carry an explicit proven finite bound,
   and per-edge reporting uses conservative ceiling division.
 
+Plan 0146 adds the first measurement-boundary slice in
+`crates/graph/src/bench/mate_adoption_gate.rs`: deterministic shape descriptors, canonical identity
+encoding/digests, fixed-seed request identities, and a deferred/measured evidence schema with
+fail-closed validation. This slice is a schema and fixture prototype only; it does not claim
+independent stable-memory ownership, lifecycle coverage, ordinary-caller activation, or adoption.
+
 ## Related
 
 - [ADR 0001](0001-labeled-segment-slide.md): PMA leaf physical ownership and relocation.
