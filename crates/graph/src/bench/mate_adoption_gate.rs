@@ -156,6 +156,7 @@ pub(crate) enum SelectedMode {
 pub(crate) enum AdoptionDisposition {
     ScanOnly,
     SharedOrientation,
+    PairRank,
     RankIndexedPacked,
     Deferred,
 }
@@ -345,7 +346,8 @@ pub(crate) fn select_mode(inputs: SelectionInputs) -> Option<SelectedMode> {
 /// Low-degree, cold, and self-loop buckets have a deterministic ScanOnly fallback.  Dense
 /// topologies require current evidence; absence of evidence is `Deferred`, never an implicit
 /// promotion.  Undirected buckets may only select the rank-indexed candidate because the shared
-/// orientation model requires directed counterpart groups.
+/// orientation model requires directed counterpart groups.  Undirected pair-rank remains a
+/// measurement-only candidate until its own maintenance gate is complete.
 pub(crate) fn select_adoption_disposition(
     shape: FixtureShape,
     access_profile: AccessProfile,
@@ -368,7 +370,7 @@ pub(crate) fn select_adoption_disposition(
     match (shape, select_compression_candidate(observation)) {
         (FixtureShape::Undirected, CompressionCandidate::RankedPacked)
         | (FixtureShape::Undirected, CompressionCandidate::MonotoneCompressed) => {
-            AdoptionDisposition::RankIndexedPacked
+            AdoptionDisposition::PairRank
         }
         (FixtureShape::Directed, CompressionCandidate::SharedOrientation)
         | (FixtureShape::Parallel, CompressionCandidate::SharedOrientation)
@@ -4122,7 +4124,7 @@ mod fixture_evidence_tests {
                 AccessProfile::Hot,
                 Some(undirected)
             ),
-            AdoptionDisposition::RankIndexedPacked
+            AdoptionDisposition::PairRank
         );
 
         let mut unsafe_result = shared;

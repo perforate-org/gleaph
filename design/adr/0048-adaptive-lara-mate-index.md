@@ -183,7 +183,7 @@ failures leave the row non-Published and the item retryable.
 The validated Published Sampled/Packed lookup primitive is implemented but dormant: it checks blob
 results against canonical rank/select and falls back exactly once on malformed or stale data.
 Plan 0176 adds the measurement-only adoption selector. It is fail-closed: low-degree, cold, and
-self-loop buckets stay `ScanOnly`; undirected buckets may select only rank-indexed Packed; directed,
+self-loop buckets stay `ScanOnly`; undirected buckets may select only `PairRank`; directed,
 parallel, sparse-slot, and mixed-label buckets may select a gated SharedOrientation or
 rank-indexed candidate only when exactness, logical-byte, and bounded-runtime evidence is present.
 Missing evidence is `Deferred`, not promotion. Ordinary-caller activation and alias replacement
@@ -302,7 +302,7 @@ not per leaf or per graph:
 | Stratum | Candidate when all gates pass | Fallback when a gate fails |
 | --- | --- | --- |
 | directed, non-self, dense | SharedOrientation, otherwise rank-indexed Packed | ScanOnly |
-| undirected, non-self, dense | rank-indexed Packed | ScanOnly |
+| undirected, non-self, dense | PairRank | ScanOnly |
 | directed/undirected self-loop | none | ScanOnly |
 | low-degree or cold | none | ScanOnly |
 | parallel, sparse-slot, mixed-label | SharedOrientation or rank-indexed Packed only with current matched evidence | ScanOnly; `Deferred` while evidence is absent |
