@@ -486,6 +486,28 @@ Plan 0168 applies the amortization gate: the sparse integrated cost is 506.53K i
 break even at one read per canonical update, subject to byte, exactness, stale, and fallback gates.
 This remains measurement-only; no candidate is persisted or activated for ordinary callers.
 
+Plan 0170 implements the first persistence slice as an isolated envelope codec and fixture-backed
+stable map only; it does not allocate production mate regions or connect callers. The production
+design keeps magic/version once in the region header, while locator metadata owns lifecycle,
+candidate, epoch, identity, cardinality, offset, and total length; per-entry magic/version framing
+is intentionally omitted.
+The isolated fixture uses a fixed 32-byte region header matching existing LARA byte-store headers,
+a 22-byte fixed locator value, and a separate raw payload region; its old self-contained envelope
+codec remains only as a validation fixture.
+is 35 bytes before payload; this does not allocate or register production `MemoryId`s.
+Plan 0169 consolidates the persistence design: canonical LARA owns truth, while derived mate state
+is one versioned record per orientation/leaf/owner/label bucket. Region metadata carries candidate
+kind, lifecycle, topology identity, canonical epoch, cardinality, blob offset, and total length.
+Proposed bounds are 65,535 entries and 2 MiB payload per bucket; overflow or malformed
+records fail closed to `ScanOnly`. Mutation makes the derived record unavailable before canonical
+commit, and publication occurs only after a complete rebuild validates the epoch, topology, and
+candidate shape.
+Interrupted or stale rebuilds are discarded or retried from canonical rows. This is a design
+contract, not an implemented stable layout; future format changes use a fresh version/reset
+boundary under ADR 0039. Checked locator ranges, canonical epoch, cardinality, and candidate-shape
+validation reject malformed, stale, truncated, or oversized records before a published value is
+returned.
+
 ## Consensus checklist
 
 Use this when reviewing LARA PRs:

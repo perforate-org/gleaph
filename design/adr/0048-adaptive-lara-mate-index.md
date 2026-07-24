@@ -961,6 +961,32 @@ baseline, also breaking even at one read per update. The final selector still re
 savings, exact/fail-closed evidence, and stale detection; any failed condition selects ScanOnly.
 This is a measurement decision only and does not authorize persistence or ordinary-caller activation.
 
+Plan 0170 implements only an isolated codec and fixture-backed stable map for the persistence
+boundary; it does not allocate the production `MATE_*` regions or connect any caller. Canonical
+LARA adjacency remains the sole source of truth; derived mate state is owned per
+`(orientation, leaf, owner, label)` bucket. The production region has one fixed header containing
+magic and format version. Locator metadata owns candidate kind, lifecycle state, topology identity,
+canonical generation, cardinality, blob offset, and total length; each blob entry therefore carries
+only one bounded candidate payload without repeated magic/version framing. The proposed bounds
+are `MAX_MATE_BUCKET_ENTRIES = 65_535` and `MAX_MATE_BUCKET_PAYLOAD_BYTES = 2 MiB`; records
+exceeding either bound are rejected and remain `ScanOnly`.
+
+The fixture now models this ownership with a fixed 32-byte region header, matching the existing
+LARA byte-store header convention, a 22-byte fixed locator value, and a separate raw payload
+region;
+reopen validates the region header before reading entries. The entry codec is 35 bytes before
+payload and derives payload length from `total_len`; it has no per-entry checksum.
+
+The lifecycle is `Empty → Rebuilding → Published` or `Stale`. A canonical mutation first makes the
+derived record unavailable, commits canonical adjacency, then rebuilds from canonical rows and
+publishes only after epoch, topology, cardinality, and candidate-shape validation. Any trap, interruption,
+decode error, epoch/topology mismatch, or candidate invariant failure leaves the bucket in `Stale`/`ScanOnly`;
+no partial payload is visible. Recovery resumes from canonical state and may discard the derived
+record. Region version mismatch, locator range failure, cardinality mismatch, or candidate-shape
+failure rejects an entry before exposing a published value. The derived region is separately
+versioned from canonical LARA, and a future format can use
+a fresh reset/version boundary under ADR 0039.
+
 Plan 0160's first common-fixture comparison confirms the intended ordering: shared-orientation is
 1,800 bytes / 672.22K instructions for directed-high and 84 bytes / 175.43K for parallel-32;
 rank-indexed is 2,840 / 1.56M and 128 / 323.90K respectively. Sampled residual reaches 60 bytes

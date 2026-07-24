@@ -4,6 +4,7 @@ pub(crate) mod deferred;
 mod mate;
 pub(crate) mod mate_blob_prototype;
 pub(crate) mod mate_enumeration;
+pub(crate) mod mate_envelope;
 pub(crate) mod mate_promotion;
 pub(crate) mod mate_ranked_prototype;
 pub(crate) mod mate_storage;
