@@ -259,6 +259,8 @@ and undirected-self-loop fixtures only; the measurement owner also constructs an
 ScanOnly canonical-adjacency fixture and emits separate deferred rows for representable ScanOnly
 shapes. Evidence records logical identity bytes separately from stable-memory page deltas;
 unsupported shapes remain deferred without synthetic identity claims.
+Construction-only canbench probes keep these quantities separate from runtime measurements; they
+are not production layout or adoption results.
 
 ---
 

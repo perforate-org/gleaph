@@ -711,6 +711,11 @@ The Graph bench adapter now consumes those physical rows for both directed sizes
 undirected, and undirected-self-loop AliasOnly fixtures. Deferred evidence rows use real identity
 digests only for those supported shapes; sparse-slot and mixed-label rows retain null identity
 measurements until their owning representations exist.
+Representation setup probes now expose construction-only costs separately: AliasOnly/ScanOnly
+directed-high are about 17.7M instructions and 1,355 stable pages, while Published directed-high,
+Published parallel, and Published undirected-high are about 59.8M/34.9M/48.0M instructions and
+4,171 stable pages. These are fixture-construction measurements, not runtime lookup or adoption
+results.
 
 ## Related
 

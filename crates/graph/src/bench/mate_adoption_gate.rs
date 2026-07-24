@@ -10,6 +10,7 @@ use super::mate_footprint::{MateFootprintInput, MateMode, MateSharedOverhead};
 use canbench_rs::{bench, bench_fn};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::hint::black_box;
 
 pub(crate) const POLICY_VERSION: &str = "1.0";
 pub(crate) const SAMPLED_STRIDE: u8 = 32;
@@ -1311,6 +1312,46 @@ fn bench_mate_adoption_fixture_corpus() -> canbench_rs::BenchResult {
         std::hint::black_box(encoded);
     })
 }
+
+#[cfg(feature = "canbench")]
+macro_rules! fixture_setup_bench {
+    ($name:ident, $builder:ident, $spec_index:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let spec = FixtureSpec::required_matrix()[$spec_index];
+            bench_fn(|| {
+                let fixture = $builder(spec).expect("adoption fixture setup");
+                black_box(fixture.identities.len());
+            })
+        }
+    };
+}
+
+fixture_setup_bench!(
+    bench_mate_adoption_alias_directed_high,
+    build_real_alias_fixture,
+    1
+);
+fixture_setup_bench!(
+    bench_mate_adoption_scan_directed_high,
+    build_real_scan_fixture,
+    1
+);
+fixture_setup_bench!(
+    bench_mate_adoption_published_directed_high,
+    build_real_published_fixture,
+    1
+);
+fixture_setup_bench!(
+    bench_mate_adoption_published_parallel,
+    build_real_published_fixture,
+    6
+);
+fixture_setup_bench!(
+    bench_mate_adoption_published_undirected_high,
+    build_real_published_fixture,
+    3
+);
 
 #[cfg(test)]
 mod fixture_evidence_tests {
