@@ -235,6 +235,14 @@ remain outside the serialized blob and outside any per-edge claim. The validated
 primitive is implemented but dormant; ordinary-caller activation and alias replacement remain
 disabled pending a separate adoption decision.
 
+Plan 0145 adds the owning-layer, side-effect-free policy/accounting harness used by the adoption
+gate. It freezes adaptive mode precedence, charges dense locator rows (including ScanOnly rows),
+keeps logical and physical denominators explicit (including self-loop geometry), and enforces
+mode-specific fallback expectations. Unknown overheads are fail-closed unless a finite bound is
+proven, and per-edge values use conservative ceiling division.
+It does not measure or activate ordinary callers; the persistent-byte gate and alias decision remain
+deferred until isolated lifecycle fixtures produce the machine-readable evidence artifact.
+
 ---
 
 ## What is IC-specific (substrate only)

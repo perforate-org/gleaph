@@ -16,6 +16,7 @@ const SAMPLE_U32_BYTES: u64 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MateMode {
+    ScanOnly,
     Sampled { stride: u64 },
     Packed { width_bytes: u64 },
 }
@@ -68,11 +69,34 @@ pub enum MateFootprintError {
 
 impl MateFootprintInput {
     pub fn calculate(self) -> Result<MateFootprint, MateFootprintError> {
+        self.calculate_with_geometry(PHYSICAL_HALVES, PHYSICAL_HALVES, self.entries)
+    }
+
+    /// Calculates the same logical footprint while charging every dense locator row owned by
+    /// the shared locator store.  The legacy `calculate` helper intentionally keeps its
+    /// two-row fixture semantics for existing microbenchmarks.
+    pub fn calculate_with_locator_rows(
+        self,
+        locator_rows: u64,
+    ) -> Result<MateFootprint, MateFootprintError> {
+        self.calculate_with_geometry(locator_rows, PHYSICAL_HALVES, self.entries)
+    }
+
+    /// Calculates a shape-aware footprint. `physical_halves` and `alias_rows` come from the
+    /// canonical fixture, so self-loops and other non-two-half shapes are not forced through the
+    /// non-self assumption used by the legacy helper.
+    pub fn calculate_with_geometry(
+        self,
+        locator_rows: u64,
+        physical_halves: u64,
+        alias_rows: u64,
+    ) -> Result<MateFootprint, MateFootprintError> {
         if self.entries == 0 {
             return Err(MateFootprintError::EmptyBucket);
         }
 
         let mapping_bytes = match self.mode {
+            MateMode::ScanOnly => 0,
             MateMode::Sampled { stride } => {
                 if !matches!(stride, 16 | 32 | 64) {
                     return Err(MateFootprintError::UnsupportedSampleStride(stride));
@@ -82,7 +106,7 @@ impl MateFootprintInput {
                     .checked_add(stride - 1)
                     .ok_or(MateFootprintError::ArithmeticOverflow)?
                     / stride;
-                PHYSICAL_HALVES
+                physical_halves
                     .checked_mul(checkpoints)
                     .and_then(|bytes| bytes.checked_mul(SAMPLE_CHECKPOINT_FIELDS))
                     .and_then(|bytes| bytes.checked_mul(SAMPLE_U32_BYTES))
@@ -92,35 +116,38 @@ impl MateFootprintInput {
                 if !matches!(width_bytes, 1..=4) {
                     return Err(MateFootprintError::UnsupportedPackedWidth(width_bytes));
                 }
-                PHYSICAL_HALVES
+                physical_halves
                     .checked_mul(self.entries)
                     .and_then(|bytes| bytes.checked_mul(width_bytes))
                     .ok_or(MateFootprintError::ArithmeticOverflow)?
             }
         };
 
-        let locator_bytes = PHYSICAL_HALVES
+        let locator_bytes = locator_rows
             .checked_mul(LOCATOR_BYTES_PER_ROW)
             .ok_or(MateFootprintError::ArithmeticOverflow)?;
+        let shared = match self.mode {
+            MateMode::ScanOnly => MateSharedOverhead::zero(),
+            MateMode::Sampled { .. } | MateMode::Packed { .. } => self.shared,
+        };
         let known_logical_bytes = locator_bytes
-            .checked_add(self.shared.blob_header_bytes)
-            .and_then(|bytes| bytes.checked_add(self.shared.indexed_bucket_directory_bytes))
+            .checked_add(shared.blob_header_bytes)
+            .and_then(|bytes| bytes.checked_add(shared.indexed_bucket_directory_bytes))
             .and_then(|bytes| bytes.checked_add(mapping_bytes))
-            .and_then(|bytes| bytes.checked_add(self.shared.free_span_bytes))
-            .and_then(|bytes| bytes.checked_add(self.shared.rebuild_reserve_bytes))
+            .and_then(|bytes| bytes.checked_add(shared.free_span_bytes))
+            .and_then(|bytes| bytes.checked_add(shared.rebuild_reserve_bytes))
             .ok_or(MateFootprintError::ArithmeticOverflow)?;
-        let alias_bytes = self
-            .entries
+        let alias_bytes = alias_rows
             .checked_mul(18)
             .ok_or(MateFootprintError::ArithmeticOverflow)?;
 
         Ok(MateFootprint {
             locator_bytes,
-            blob_header_bytes: self.shared.blob_header_bytes,
-            indexed_bucket_directory_bytes: self.shared.indexed_bucket_directory_bytes,
+            blob_header_bytes: shared.blob_header_bytes,
+            indexed_bucket_directory_bytes: shared.indexed_bucket_directory_bytes,
             mapping_bytes,
-            free_span_bytes: self.shared.free_span_bytes,
-            rebuild_reserve_bytes: self.shared.rebuild_reserve_bytes,
+            free_span_bytes: shared.free_span_bytes,
+            rebuild_reserve_bytes: shared.rebuild_reserve_bytes,
             known_logical_bytes,
             alias_headroom_bytes: alias_bytes
                 .checked_sub(known_logical_bytes)
@@ -215,6 +242,56 @@ mod tests {
         assert_eq!(footprint.mapping_bytes, 256);
         assert_eq!(footprint.known_logical_bytes, 312);
         assert_eq!(footprint.alias_headroom_bytes, Some(1_992));
+    }
+
+    #[test]
+    fn dense_locator_rows_charge_unused_scan_only_rows() {
+        let footprint = MateFootprintInput {
+            entries: 128,
+            mode: MateMode::Packed { width_bytes: 1 },
+            shared: MateSharedOverhead::zero(),
+        }
+        .calculate_with_locator_rows(24)
+        .expect("dense locator footprint");
+        assert_eq!(footprint.locator_bytes, 24 * LOCATOR_BYTES_PER_ROW);
+        assert_eq!(
+            footprint.known_logical_bytes,
+            24 * LOCATOR_BYTES_PER_ROW + 256
+        );
+    }
+
+    #[test]
+    fn shape_geometry_keeps_self_loop_denominator_explicit() {
+        let footprint = MateFootprintInput {
+            entries: 1,
+            mode: MateMode::Packed { width_bytes: 1 },
+            shared: MateSharedOverhead::zero(),
+        }
+        .calculate_with_geometry(2, 1, 1)
+        .expect("self-loop footprint");
+        assert_eq!(footprint.mapping_bytes, 1);
+        assert_eq!(footprint.locator_bytes, 10);
+        assert_eq!(footprint.alias_headroom_bytes, Some(7));
+    }
+
+    #[test]
+    fn scan_only_does_not_charge_published_blob_overhead() {
+        let footprint = MateFootprintInput {
+            entries: 128,
+            mode: MateMode::ScanOnly,
+            shared: MateSharedOverhead {
+                blob_header_bytes: 32,
+                indexed_bucket_directory_bytes: 16,
+                free_span_bytes: 24,
+                rebuild_reserve_bytes: 64,
+            },
+        }
+        .calculate_with_locator_rows(24)
+        .expect("ScanOnly footprint");
+        assert_eq!(footprint.mapping_bytes, 0);
+        assert_eq!(footprint.known_logical_bytes, 24 * LOCATOR_BYTES_PER_ROW);
+        assert_eq!(footprint.blob_header_bytes, 0);
+        assert_eq!(footprint.alias_headroom_bytes, Some(2_184));
     }
 
     #[test]

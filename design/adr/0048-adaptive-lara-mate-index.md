@@ -678,6 +678,13 @@ microbenchmarks.
   update path.
 - `design/storage/stable-memory-inventory.md` records the four-region dormant bundle without
   changing current implemented region counts.
+- Plan 0145 adds a side-effect-free adoption-gate policy/accounting harness: the adaptive
+  precedence, dense locator charging, explicit denominators, and mode-specific fallback contract
+  are centralized before fixture measurement. This is measurement infrastructure only; the gate
+  outcome, ordinary-caller activation, and alias replacement remain deferred. The accounting
+  accepts fixture-provided physical-half and alias-row counts so self-loops are not charged using
+  the non-self two-half assumption. Unknown overheads must carry an explicit proven finite bound,
+  and per-edge reporting uses conservative ceiling division.
 
 ## Related
 

@@ -7,6 +7,7 @@ mod batch_placement;
 mod capacity;
 #[cfg(feature = "canbench_large")]
 mod large;
+mod mate_adoption_gate;
 mod mate_footprint;
 mod stable_layout;
 
@@ -742,6 +743,7 @@ fn execute_expand_plan(store: &GraphStore, plan: &PhysicalPlan) -> PlanQueryResu
     .expect("execute expand plan")
 }
 
+#[cfg_attr(feature = "canbench", allow(dead_code))]
 fn execute_expand_bindings(store: &GraphStore, plan: &PhysicalPlan) -> usize {
     pollster::block_on(execute_plan_query_bindings(
         store,
@@ -1722,6 +1724,7 @@ fn expand_vector_plan(
     ])
 }
 
+#[cfg_attr(feature = "canbench", allow(dead_code))]
 fn expand_vector_bindings_plan(
     hub_label: &str,
     edge_label: &str,
