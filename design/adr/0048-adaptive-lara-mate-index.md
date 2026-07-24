@@ -1,7 +1,7 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; the earlier source/mate Published wire is measurement-only and retired as an adoption candidate; rank-indexed Packed is the replacement direction, with alias-vs-rank-indexed comparison and runtime activation still deferred)
+Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; the earlier source/mate Published wire is measurement-only and retired as an adoption candidate; Plan 0176 now makes the topology-specific byte/runtime selector explicit, while ordinary-caller activation and alias removal remain deferred until each supported stratum clears the measured gate)
 Last revised: 2026-07-24
 Anchor timestamp: 2026-07-23 23:12:48 UTC +0000
 
@@ -178,10 +178,16 @@ inserts, deletes, compaction work, and vertex purge work hide affected Published
 scheduling one deduplicated `(orientation, leaf)` maintenance item. Compaction invalidates before
 processing an eligible row so failure or a later slot rewrite cannot expose stale data; failed
 compaction work is requeued for retry. ScanOnly rows do not create unnecessary work; rebuild
-failures leave the row non-Published and the item retryable. Runtime
- The validated Published Sampled/Packed lookup primitive is implemented but dormant: it checks blob
- results against canonical rank/select and falls back exactly once on malformed or stale data.
- Ordinary-caller activation, adoption measurement, and alias replacement remain deferred.
+failures leave the row non-Published and the item retryable.
+
+The validated Published Sampled/Packed lookup primitive is implemented but dormant: it checks blob
+results against canonical rank/select and falls back exactly once on malformed or stale data.
+Plan 0176 adds the measurement-only adoption selector. It is fail-closed: low-degree, cold, and
+self-loop buckets stay `ScanOnly`; undirected buckets may select only rank-indexed Packed; directed,
+parallel, sparse-slot, and mixed-label buckets may select a gated SharedOrientation or
+rank-indexed candidate only when exactness, logical-byte, and bounded-runtime evidence is present.
+Missing evidence is `Deferred`, not promotion. Ordinary-caller activation and alias replacement
+remain deferred.
 
 The bidirectional owner is also the mutation boundary: `forward()` and `reverse()` remain public
 read accessors, while single-orientation canonical mutation methods are crate-private. GraphStore,
@@ -289,6 +295,22 @@ payload; canonical LARA remains the source of truth for omitted buckets. A direc
 never used to represent a negative/ScanOnly decision. Plan 0172 implements and tests this policy
 in the measurement-only adoption gate and sparse footprint accounting; it does not activate
 persistent admission or change the production codec.
+
+Plan 0176 makes the measurement-only selector matrix explicit. The policy is evaluated per bucket,
+not per leaf or per graph:
+
+| Stratum | Candidate when all gates pass | Fallback when a gate fails |
+| --- | --- | --- |
+| directed, non-self, dense | SharedOrientation, otherwise rank-indexed Packed | ScanOnly |
+| undirected, non-self, dense | rank-indexed Packed | ScanOnly |
+| directed/undirected self-loop | none | ScanOnly |
+| low-degree or cold | none | ScanOnly |
+| parallel, sparse-slot, mixed-label | SharedOrientation or rank-indexed Packed only with current matched evidence | ScanOnly; `Deferred` while evidence is absent |
+
+The gates require exact canonical parity, malformed/stale fail-closed behavior, logical bytes no
+larger than the active alias baseline, and a bounded request-time instruction result. Stable-memory
+page deltas are recorded separately as allocator observations and cannot satisfy the byte gate.
+This matrix is a measurement contract only; ordinary callers remain on the canonical/alias path.
 
 Packed arrays may reserve bounded geometric capacity. An insertion fitting the current width and
 capacity updates one packed word for each physical half. Sampled insertion updates a checkpoint

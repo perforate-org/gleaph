@@ -149,6 +149,17 @@ pub(crate) enum SelectedMode {
     Packed { width_bytes: u8 },
 }
 
+/// Representation selected by the measurement-only adoption gate.  This is deliberately not a
+/// GraphStore activation switch: callers still use the canonical path until a later slice wires
+/// one of these dispositions into production.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AdoptionDisposition {
+    ScanOnly,
+    SharedOrientation,
+    RankIndexedPacked,
+    Deferred,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestStratum {
     ScanOnly,
@@ -251,6 +262,56 @@ pub(crate) fn select_mode(inputs: SelectionInputs) -> Option<SelectedMode> {
             stride: SAMPLED_STRIDE,
         },
     })
+}
+
+/// Apply the topology matrix after the byte/runtime/exactness gate has been evaluated.
+///
+/// Low-degree, cold, and self-loop buckets have a deterministic ScanOnly fallback.  Dense
+/// topologies require current evidence; absence of evidence is `Deferred`, never an implicit
+/// promotion.  Undirected buckets may only select the rank-indexed candidate because the shared
+/// orientation model requires directed counterpart groups.
+pub(crate) fn select_adoption_disposition(
+    shape: FixtureShape,
+    access_profile: AccessProfile,
+    evidence: Option<CompressionPolicyObservation>,
+) -> AdoptionDisposition {
+    if matches!(access_profile, AccessProfile::Cold)
+        || matches!(
+            shape,
+            FixtureShape::DirectedSelfLoop | FixtureShape::UndirectedSelfLoop
+        )
+    {
+        return AdoptionDisposition::ScanOnly;
+    }
+    let Some(observation) = evidence else {
+        return AdoptionDisposition::Deferred;
+    };
+    if observation.live_degree < PROMOTE_MIN_LIVE_EDGES {
+        return AdoptionDisposition::ScanOnly;
+    }
+    match (shape, select_compression_candidate(observation)) {
+        (FixtureShape::Undirected, CompressionCandidate::RankedPacked)
+        | (FixtureShape::Undirected, CompressionCandidate::MonotoneCompressed) => {
+            AdoptionDisposition::RankIndexedPacked
+        }
+        (FixtureShape::Directed, CompressionCandidate::SharedOrientation)
+        | (FixtureShape::Parallel, CompressionCandidate::SharedOrientation)
+        | (FixtureShape::SparseSlots, CompressionCandidate::SharedOrientation)
+        | (FixtureShape::MixedLabels, CompressionCandidate::SharedOrientation) => {
+            AdoptionDisposition::SharedOrientation
+        }
+        (FixtureShape::Directed, CompressionCandidate::RankedPacked)
+        | (FixtureShape::Directed, CompressionCandidate::MonotoneCompressed)
+        | (FixtureShape::Parallel, CompressionCandidate::RankedPacked)
+        | (FixtureShape::Parallel, CompressionCandidate::MonotoneCompressed)
+        | (FixtureShape::SparseSlots, CompressionCandidate::RankedPacked)
+        | (FixtureShape::SparseSlots, CompressionCandidate::MonotoneCompressed)
+        | (FixtureShape::MixedLabels, CompressionCandidate::RankedPacked)
+        | (FixtureShape::MixedLabels, CompressionCandidate::MonotoneCompressed) => {
+            AdoptionDisposition::RankIndexedPacked
+        }
+        _ => AdoptionDisposition::ScanOnly,
+    }
 }
 
 /// Measurement-only policy inputs for Plans 0158/0160. The policy never activates a production
@@ -3896,6 +3957,107 @@ mod fixture_evidence_tests {
         assert_eq!(
             select_compression_candidate(unsafe_result),
             CompressionCandidate::ScanOnly
+        );
+    }
+
+    #[test]
+    fn topology_adoption_matrix_is_explicit_and_fail_closed() {
+        let evidence = observation();
+        for shape in [
+            FixtureShape::Directed,
+            FixtureShape::Undirected,
+            FixtureShape::DirectedSelfLoop,
+            FixtureShape::UndirectedSelfLoop,
+            FixtureShape::Parallel,
+            FixtureShape::SparseSlots,
+            FixtureShape::MixedLabels,
+        ] {
+            assert_eq!(
+                select_adoption_disposition(shape, AccessProfile::Cold, Some(evidence)),
+                AdoptionDisposition::ScanOnly,
+                "cold {shape:?} must remain ScanOnly"
+            );
+        }
+        assert_eq!(
+            select_adoption_disposition(FixtureShape::Directed, AccessProfile::Cold, None),
+            AdoptionDisposition::ScanOnly
+        );
+        let mut low = evidence;
+        low.live_degree = PROMOTE_MIN_LIVE_EDGES - 1;
+        assert_eq!(
+            select_adoption_disposition(FixtureShape::Directed, AccessProfile::Hot, Some(low)),
+            AdoptionDisposition::ScanOnly
+        );
+        for shape in [
+            FixtureShape::Directed,
+            FixtureShape::Undirected,
+            FixtureShape::Parallel,
+            FixtureShape::SparseSlots,
+            FixtureShape::MixedLabels,
+        ] {
+            assert_eq!(
+                select_adoption_disposition(shape, AccessProfile::Hot, None),
+                AdoptionDisposition::Deferred,
+                "missing evidence for {shape:?} must not promote"
+            );
+        }
+        assert_eq!(
+            select_adoption_disposition(
+                FixtureShape::DirectedSelfLoop,
+                AccessProfile::Hot,
+                Some(evidence)
+            ),
+            AdoptionDisposition::ScanOnly
+        );
+        assert_eq!(
+            select_adoption_disposition(
+                FixtureShape::UndirectedSelfLoop,
+                AccessProfile::Hot,
+                Some(evidence)
+            ),
+            AdoptionDisposition::ScanOnly
+        );
+    }
+
+    #[test]
+    fn topology_adoption_matrix_maps_only_gated_candidates() {
+        let mut shared = observation();
+        shared.shared_bytes = Some(1_800);
+        shared.shared_instructions = Some(672_220);
+        assert_eq!(
+            select_adoption_disposition(FixtureShape::Directed, AccessProfile::Hot, Some(shared)),
+            AdoptionDisposition::SharedOrientation
+        );
+        assert_eq!(
+            select_adoption_disposition(
+                FixtureShape::MixedLabels,
+                AccessProfile::Hot,
+                Some(shared)
+            ),
+            AdoptionDisposition::SharedOrientation
+        );
+
+        let mut undirected = observation();
+        undirected.shared_bytes = None;
+        undirected.shared_instructions = None;
+        assert_eq!(
+            select_adoption_disposition(
+                FixtureShape::Undirected,
+                AccessProfile::Hot,
+                Some(undirected)
+            ),
+            AdoptionDisposition::RankIndexedPacked
+        );
+
+        let mut unsafe_result = shared;
+        unsafe_result.exact_and_fail_closed = false;
+        assert_eq!(
+            select_adoption_disposition(
+                FixtureShape::Directed,
+                AccessProfile::Hot,
+                Some(unsafe_result)
+            ),
+            AdoptionDisposition::ScanOnly
         );
     }
 

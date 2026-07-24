@@ -204,10 +204,15 @@ sampled/packed leaf blobs at the LARA boundary that publishes slot moves. Plan 0
 the dormant LARA-owned locator/blob/free-span storage foundation with fresh/reopen/partial-layout
 validation and publication-before-retirement ordering. Plan 0140 hardens the opt-in Graph facade
 ScanOnly bridge: it resolves exact canonical handles through LARA rank/select without reading or
-mutating `EDGE_ALIASES`; ordinary callers still use the alias compatibility path. The validated
-The earlier source/mate Published runtime primitive is measurement-only and retired as an
-adoption candidate. Rank-indexed Packed is the replacement direction; ordinary-caller activation
-and alias removal remain planned behind the alias-vs-rank-indexed gate.
+mutating `EDGE_ALIASES`; ordinary callers still use the alias compatibility path. The earlier
+source/mate Published runtime primitive is measurement-only and retired as an
+adoption candidate. Plan 0176 makes the measurement-only topology selector explicit: low-degree,
+cold, and self-loop buckets remain `ScanOnly`; undirected buckets can select only rank-indexed
+Packed; and directed, parallel, sparse-slot, and mixed-label buckets require current exact,
+logical-byte, and bounded-runtime evidence before selecting SharedOrientation or rank-indexed
+Packed. Missing evidence is `Deferred`, never an implicit promotion. Rank-indexed Packed remains
+the replacement direction; ordinary-caller activation and alias removal remain planned behind the
+alias-vs-rank-indexed gate.
 
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half
