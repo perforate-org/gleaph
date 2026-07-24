@@ -1018,6 +1018,13 @@ per leaf with `B` buckets, saving `16 + 5B` bytes. This is a planned codec/layou
 the current 24/20-byte codec remains the implemented measurement baseline until a later slice
 implements and remeasures it.
 
+Plan 0173 adds an isolated compact codec with the same three indexed buckets as the baseline
+probe. Its encoded size is 701 bytes versus 732 bytes for the 24-byte/20-byte codec (`-31` bytes,
+matching `16 + 5B` for `B = 3`), and the encode/decode probe measures 6,847 versus 7,571
+instructions (`-9.6%`) with zero heap or stable-memory growth. These are fixture-only measurements;
+the full `ic-stable-lara` canbench sweep remains blocked by the pre-existing
+`bench_lara_deferred_bidirectional_insert_undirected_1024` `CollectAllocationOverflow` failure.
+
 The lifecycle is `Empty → Rebuilding → Published` or `Stale`. A canonical mutation first makes the
 derived record unavailable, commits canonical adjacency, then rebuilds from canonical rows and
 publishes only after epoch, topology, cardinality, and candidate-shape validation. Any trap, interruption,

@@ -515,6 +515,10 @@ the next offset/blob end. Its logical overhead target is `13 + 15B` bytes per le
 current `29 + 20B`, a saving of `16 + 5B` bytes before allocator and MemoryManager overhead.
 The current 24-byte header/20-byte directory codec remains the measurement baseline until a later
 implementation slice. The isolated entry codec is 35 bytes before payload and is fixture-only.
+Plan 0173's compact fixture measures 701 bytes for three indexed buckets versus 732 bytes for the
+current baseline, and 6,847 versus 7,571 instructions for encode/decode. The full crate canbench
+sweep could not persist because the unrelated deferred undirected insert benchmark traps with
+`CollectAllocationOverflow`; the focused compact/baseline probes passed.
 Plan 0169 consolidates the persistence design: canonical LARA owns truth, while derived mate state
 is one versioned record per orientation/leaf/owner/label bucket. Region metadata carries candidate
 kind, lifecycle, topology identity, canonical epoch, cardinality, blob offset, and total length.
