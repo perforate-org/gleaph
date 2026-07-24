@@ -1,8 +1,8 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; the validated Published Sampled/Packed runtime primitive is implemented but dormant; ordinary-caller activation, adoption measurement, and alias replacement remain deferred)
-Last revised: 2026-07-23
+Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; the validated Published Sampled/Packed runtime primitive is implemented but dormant; fixture-only runtime lookup evidence exists from Plan 0149; ordinary-caller activation and alias replacement remain deferred)
+Last revised: 2026-07-24
 Anchor timestamp: 2026-07-23 23:12:48 UTC +0000
 
 ## Context
@@ -715,7 +715,13 @@ Representation setup probes now expose construction-only costs separately: Alias
 directed-high are about 17.7M instructions and 1,355 stable pages, while Published directed-high,
 Published parallel, and Published undirected-high are about 59.8M/34.9M/48.0M instructions and
 4,171 stable pages. These are fixture-construction measurements, not runtime lookup or adoption
-results.
+results. Plan 0149 adds fixture-only runtime probes over 1,024 requests: ScanOnly versus Published
+directed-high is 18.07M versus 44.84M instructions, undirected-high is 29.19M versus 62.55M, and
+parallel is 696.30M versus 1.04B. The probes validate each Published result against canonical
+rank/select and preserve zero stable-memory growth; the current Published path is therefore not
+assumed to be faster, especially for parallel buckets where canonical validation remains costly.
+Malformed/stale fallback-once behavior remains covered by the owner-level runtime tests. These are
+runtime fixture measurements, not ordinary-caller adoption evidence or an activation decision.
 
 ## Related
 

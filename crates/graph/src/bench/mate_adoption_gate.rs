@@ -1356,6 +1356,167 @@ fixture_setup_bench!(
     3
 );
 
+#[cfg(feature = "canbench")]
+fn published_directed_runtime_fixture() -> (
+    ic_stable_lara::adoption_fixture::PublishedFixture,
+    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) {
+    let vertex_count = 64u32;
+    let edges = (0..vertex_count)
+        .flat_map(|source| {
+            [
+                (source, (source + 1) % vertex_count),
+                (source, (source + 2) % vertex_count),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let fixture = ic_stable_lara::adoption_fixture::build_published_fixture(vertex_count, &edges)
+        .expect("published runtime fixture");
+    let directed_label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
+    let refs = fixture
+        .identities
+        .iter()
+        .map(|identity| ic_stable_lara::labeled::PhysicalEdgeRef {
+            orientation: if identity.orientation == 0 {
+                ic_stable_lara::labeled::LabeledOrientation::Forward
+            } else {
+                ic_stable_lara::labeled::LabeledOrientation::Reverse
+            },
+            owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
+            label_id: directed_label,
+            slot_index: identity.slot,
+        })
+        .collect();
+    (fixture, refs)
+}
+
+#[cfg(feature = "canbench")]
+fn published_parallel_runtime_fixture() -> (
+    ic_stable_lara::adoption_fixture::PublishedFixture,
+    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) {
+    let edges = (0..32).map(|_| (0, 1)).collect::<Vec<_>>();
+    let fixture = ic_stable_lara::adoption_fixture::build_published_fixture(2, &edges)
+        .expect("published parallel runtime fixture");
+    let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
+    let refs = fixture
+        .identities
+        .iter()
+        .map(|identity| ic_stable_lara::labeled::PhysicalEdgeRef {
+            orientation: if identity.orientation == 0 {
+                ic_stable_lara::labeled::LabeledOrientation::Forward
+            } else {
+                ic_stable_lara::labeled::LabeledOrientation::Reverse
+            },
+            owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
+            label_id: label,
+            slot_index: identity.slot,
+        })
+        .collect();
+    (fixture, refs)
+}
+
+#[cfg(feature = "canbench")]
+fn published_undirected_runtime_fixture() -> (
+    ic_stable_lara::adoption_fixture::PublishedFixture,
+    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+) {
+    let vertex_count = 64u32;
+    let edges = (0..vertex_count)
+        .flat_map(|source| {
+            [
+                (source, (source + 1) % vertex_count),
+                (source, (source + 2) % vertex_count),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let fixture =
+        ic_stable_lara::adoption_fixture::build_published_undirected_fixture(vertex_count, &edges)
+            .expect("published undirected runtime fixture");
+    let label = ic_stable_lara::labeled::BucketLabelKey::undirected_from_index(1);
+    let refs = fixture
+        .identities
+        .iter()
+        .map(|identity| ic_stable_lara::labeled::PhysicalEdgeRef {
+            orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
+            owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
+            label_id: label,
+            slot_index: identity.slot,
+        })
+        .collect();
+    (fixture, refs)
+}
+
+#[cfg(feature = "canbench")]
+fn bench_runtime_lookup(
+    fixture: ic_stable_lara::adoption_fixture::PublishedFixture,
+    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    published: bool,
+) -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for edge in refs.iter().cycle().take(1024) {
+            let mate = if published {
+                fixture.graph.published_mate_of(*edge)
+            } else {
+                fixture.graph.mate_of(*edge)
+            }
+            .expect("runtime mate");
+            checksum = checksum.saturating_add(u64::from(mate.slot_index));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_directed_high() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_directed_runtime_fixture();
+    bench_fn(|| {
+        let mut checksum = 0u64;
+        for edge in refs.iter().cycle().take(1024) {
+            let mate = fixture.graph.mate_of(*edge).expect("canonical mate");
+            checksum = checksum.saturating_add(u64::from(mate.slot_index));
+        }
+        black_box(checksum);
+    })
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_published_directed_high() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_directed_runtime_fixture();
+    bench_runtime_lookup(fixture, refs, true)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_parallel() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_parallel_runtime_fixture();
+    bench_runtime_lookup(fixture, refs, false)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_published_parallel() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_parallel_runtime_fixture();
+    bench_runtime_lookup(fixture, refs, true)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_scan_undirected_high() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_undirected_runtime_fixture();
+    bench_runtime_lookup(fixture, refs, false)
+}
+
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_mate_adoption_runtime_published_undirected_high() -> canbench_rs::BenchResult {
+    let (fixture, refs) = published_undirected_runtime_fixture();
+    bench_runtime_lookup(fixture, refs, true)
+}
+
 #[cfg(test)]
 mod fixture_evidence_tests {
     use super::*;
@@ -1614,5 +1775,39 @@ mod fixture_evidence_tests {
             artifact.validate(),
             Err("identity digest/byte length mismatch")
         );
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn published_runtime_matches_canonical_for_all_fixture_rows() {
+        let (fixture, refs) = published_directed_runtime_fixture();
+        let before = fixture.identities.clone();
+        for edge in refs {
+            let expected = fixture.graph.mate_of(edge).expect("canonical mate");
+            let actual = fixture
+                .graph
+                .published_mate_of(edge)
+                .expect("published mate");
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(fixture.identities, before);
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn published_runtime_matches_canonical_for_parallel_and_undirected_rows() {
+        for (fixture, refs) in [
+            published_parallel_runtime_fixture(),
+            published_undirected_runtime_fixture(),
+        ] {
+            for edge in refs {
+                let expected = fixture.graph.mate_of(edge).expect("canonical mate");
+                let actual = fixture
+                    .graph
+                    .published_mate_of(edge)
+                    .expect("published mate");
+                assert_eq!(actual, expected);
+            }
+        }
     }
 }

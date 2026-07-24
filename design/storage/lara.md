@@ -260,7 +260,12 @@ ScanOnly canonical-adjacency fixture and emits separate deferred rows for repres
 shapes. Evidence records logical identity bytes separately from stable-memory page deltas;
 unsupported shapes remain deferred without synthetic identity claims.
 Construction-only canbench probes keep these quantities separate from runtime measurements; they
-are not production layout or adoption results.
+are not production layout or adoption results. Plan 0149 adds fixture-only runtime lookup probes
+for directed-high, parallel, and undirected-high shapes. The probes compare canonical ScanOnly
+rank/select with the dormant Published validator, require exact result parity, and keep malformed
+or stale fallback behavior separate from the instruction totals. Published is not presumed faster:
+the current validator costs more than ScanOnly on these bounded probes, especially for parallel
+rows. No ordinary caller activation or alias decision follows from these measurements.
 
 ---
 
