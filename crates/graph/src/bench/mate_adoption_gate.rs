@@ -408,6 +408,89 @@ fn byte_footprint_report() -> Vec<ByteFootprintRow> {
         .collect()
 }
 
+#[cfg(feature = "canbench")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SizeSeriesRow {
+    topology: &'static str,
+    logical_edges: u64,
+    bucket_count: u64,
+    alias_raw_bytes: u64,
+    published_blob_bytes: u64,
+    published_mate_storage_pages: u64,
+}
+
+#[cfg(feature = "canbench")]
+fn published_size_series() -> Vec<SizeSeriesRow> {
+    let mut rows = Vec::new();
+    for vertex_count in [16u32, 32, 64, 128] {
+        let edges = (0..vertex_count)
+            .flat_map(|source| {
+                [
+                    (source, (source + 1) % vertex_count),
+                    (source, (source + 2) % vertex_count),
+                ]
+            })
+            .collect::<Vec<_>>();
+        if let Ok(fixture) =
+            ic_stable_lara::adoption_fixture::build_published_fixture(vertex_count, &edges)
+        {
+            rows.push(SizeSeriesRow {
+                topology: "directed",
+                logical_edges: edges.len() as u64,
+                bucket_count: fixture
+                    .graph
+                    .published_mate_blob_count()
+                    .expect("directed blob count"),
+                alias_raw_bytes: (edges.len() as u64).saturating_mul(18),
+                published_blob_bytes: fixture
+                    .graph
+                    .published_mate_blob_bytes()
+                    .expect("directed blob bytes"),
+                published_mate_storage_pages: fixture.graph.published_mate_storage_pages(),
+            });
+        }
+        if let Ok(fixture) = ic_stable_lara::adoption_fixture::build_published_undirected_fixture(
+            vertex_count,
+            &edges,
+        ) {
+            rows.push(SizeSeriesRow {
+                topology: "undirected",
+                logical_edges: edges.len() as u64,
+                bucket_count: fixture
+                    .graph
+                    .published_mate_blob_count()
+                    .expect("undirected blob count"),
+                alias_raw_bytes: (edges.len() as u64).saturating_mul(18),
+                published_blob_bytes: fixture
+                    .graph
+                    .published_mate_blob_bytes()
+                    .expect("undirected blob bytes"),
+                published_mate_storage_pages: fixture.graph.published_mate_storage_pages(),
+            });
+        }
+    }
+    for edge_count in [32usize, 64, 128, 256] {
+        let edges = (0..edge_count).map(|_| (0, 1)).collect::<Vec<_>>();
+        if let Ok(fixture) = ic_stable_lara::adoption_fixture::build_published_fixture(2, &edges) {
+            rows.push(SizeSeriesRow {
+                topology: "parallel",
+                logical_edges: edge_count as u64,
+                bucket_count: fixture
+                    .graph
+                    .published_mate_blob_count()
+                    .expect("parallel blob count"),
+                alias_raw_bytes: (edge_count as u64).saturating_mul(18),
+                published_blob_bytes: fixture
+                    .graph
+                    .published_mate_blob_bytes()
+                    .expect("parallel blob bytes"),
+                published_mate_storage_pages: fixture.graph.published_mate_storage_pages(),
+            });
+        }
+    }
+    rows
+}
+
 #[bench(raw)]
 fn bench_mate_adoption_policy_matrix() -> canbench_rs::BenchResult {
     bench_fn(|| {
@@ -1940,5 +2023,27 @@ mod fixture_evidence_tests {
             .expect("directed self-loop row");
         assert_eq!(directed_self_loop.alias_raw_bytes, 0);
         assert!(directed_self_loop.published_blob_bytes.is_none());
+    }
+
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn published_size_series_is_monotonic_and_shape_separated() {
+        let rows = published_size_series();
+        assert!(rows.iter().any(|row| row.topology == "directed"));
+        assert!(rows.iter().any(|row| row.topology == "undirected"));
+        assert!(rows.iter().any(|row| row.topology == "parallel"));
+        for topology in ["directed", "undirected", "parallel"] {
+            let mut series = rows
+                .iter()
+                .filter(|row| row.topology == topology)
+                .collect::<Vec<_>>();
+            series.sort_by_key(|row| row.logical_edges);
+            assert!(series.windows(2).all(|pair| {
+                pair[0].logical_edges < pair[1].logical_edges
+                    && pair[0].published_blob_bytes <= pair[1].published_blob_bytes
+                    && pair[0].bucket_count > 0
+                    && pair[0].published_mate_storage_pages > 0
+            }));
+        }
     }
 }

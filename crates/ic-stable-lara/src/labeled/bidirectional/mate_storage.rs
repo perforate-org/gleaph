@@ -508,6 +508,17 @@ pub(crate) struct MateRebuildToken {
 }
 
 impl<M: Memory> MateStorage<M> {
+    /// Returns the fixture-only physical page footprint of the mate sidecar regions.
+    #[cfg(feature = "adoption-fixtures")]
+    pub(crate) fn storage_pages(&self) -> u64 {
+        self.locators
+            .memory
+            .size()
+            .saturating_add(self.blobs.memory.size())
+            .saturating_add(self.free_spans.test_memory_size())
+            .saturating_add(self.free_spans.test_by_start_memory_size())
+    }
+
     /// Returns the persisted locator row count without mutating any region.
     pub(crate) fn preflight_locator_rows(memory: &M) -> Result<Option<u64>, MateStorageInitError> {
         if memory.size() == 0 {
@@ -630,6 +641,19 @@ impl<M: Memory> MateStorage<M> {
             }
         }
         Ok(total)
+    }
+
+    #[cfg(feature = "adoption-fixtures")]
+    pub(crate) fn published_blob_count(&self) -> Result<u64, MateStorageInitError> {
+        let mut count = 0u64;
+        for row in 0..self.locators.row_count.get() {
+            if self.locators.published_offset(row)?.is_some() {
+                count = count
+                    .checked_add(1)
+                    .ok_or(MateStorageInitError::BlobLengthOverflow)?;
+            }
+        }
+        Ok(count)
     }
 
     /// Reads one bucket from a currently published blob.  Locator state is checked before any

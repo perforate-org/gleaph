@@ -205,8 +205,9 @@ the dormant LARA-owned locator/blob/free-span storage foundation with fresh/reop
 validation and publication-before-retirement ordering. Plan 0140 hardens the opt-in Graph facade
 ScanOnly bridge: it resolves exact canonical handles through LARA rank/select without reading or
 mutating `EDGE_ALIASES`; ordinary callers still use the alias compatibility path. The validated
-Published Sampled/Packed runtime primitive is now implemented but dormant; ordinary-caller
-activation, adoption measurement, and alias removal remain planned.
+The earlier source/mate Published runtime primitive is measurement-only and retired as an
+adoption candidate. Rank-indexed Packed is the replacement direction; ordinary-caller activation
+and alias removal remain planned behind the alias-vs-rank-indexed gate.
 
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half

@@ -1,7 +1,7 @@
 # 0048. Adaptive LARA mate index replaces Graph edge aliases
 
 Date: 2026-07-23
-Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; the validated Published Sampled/Packed runtime primitive is implemented but dormant; fixture-only runtime lookup evidence exists from Plan 0149; ordinary-caller activation and alias replacement remain deferred)
+Status: accepted (ScanOnly implemented; shared four-region mate ownership wired in Plan 0139; bounded promotion admission, pure leaf-blob construction, owner-facing failure-atomic publication, canonical leaf enumeration, mutation invalidation, and maintenance rebuild scheduling wired in Plans 0141–0143; the earlier source/mate Published wire is measurement-only and retired as an adoption candidate; rank-indexed Packed is the replacement direction, with alias-vs-rank-indexed comparison and runtime activation still deferred)
 Last revised: 2026-07-24
 Anchor timestamp: 2026-07-23 23:12:48 UTC +0000
 
@@ -80,8 +80,8 @@ repair hooks after the LARA mate APIs are implemented. Do not replace it with tw
 
 The facade retains canonicalization as an abstraction but delegates physical mate resolution to
 LARA. Plan 0140 implements and tests this as an opt-in `scan_only_canonical_edge_handle` bridge;
-ordinary callers retain the `EDGE_ALIASES` compatibility path until promotion and adoption are
-approved. Rebuilding or unpublished locator rows do not participate in this bridge, so adjacency
+ordinary callers retain the `EDGE_ALIASES` compatibility path until rank-indexed promotion and
+adoption are approved. Rebuilding or unpublished locator rows do not participate in this bridge, so adjacency
 remains the fallback source of truth. Orientation must be explicit because `EdgeHandle` alone cannot distinguish a directed
 reverse entry from a forward entry:
 

@@ -6,6 +6,7 @@
 //! the encoded-size source of truth.
 
 use super::mate_blob_prototype::{Bucket, EncodeError, MateBlob, Mode};
+use super::mate_ranked_prototype::{RankedBlob, RankedBucket};
 use crate::{VertexId, labeled::BucketLabelKey};
 
 /// Bucket-local observations used by the read-only admission prefilter.
@@ -383,6 +384,53 @@ pub(crate) fn build_promoted_blob(
         return Err(MateBlobBuildError::AdmissionSizeMismatch);
     }
     Ok(result)
+}
+
+/// Builds the fixture-only rank-indexed Packed prototype from the same canonical rows used by
+/// [`build_promoted_blob`]. The source slots are validated for cardinality but are not persisted.
+pub(crate) fn build_ranked_packed_blob_from_rows(
+    decision: &MateLeafPromotionDecision,
+    rows: &[MatePromotionRows],
+) -> Result<Vec<u8>, MateBlobBuildError> {
+    let MateLeafPromotionDecision::Promote {
+        mode: MatePromotionMode::Packed { width_bytes },
+        bucket_ids,
+        ..
+    } = decision
+    else {
+        return Err(MateBlobBuildError::UnsupportedMode);
+    };
+    let mut buckets = Vec::with_capacity(bucket_ids.len());
+    for (owner, label) in bucket_ids {
+        let row = rows
+            .iter()
+            .find(|row| {
+                row.inputs.owner_vertex_id == *owner && row.inputs.bucket_label_key == *label
+            })
+            .ok_or(MateBlobBuildError::MissingSelectedBucket)?;
+        if row.source_slots.len() != row.mate_slots.len()
+            || row.source_slots.len()
+                != usize::try_from(row.inputs.live_entries).unwrap_or(usize::MAX)
+            || !row.source_slots.windows(2).all(|pair| pair[0] < pair[1])
+        {
+            return Err(MateBlobBuildError::RowCountMismatch);
+        }
+        let mut mate_slots = Vec::new();
+        for &mate in &row.mate_slots {
+            append_slot(&mut mate_slots, mate, *width_bytes)?;
+        }
+        buckets.push(RankedBucket {
+            owner_vertex_id: u32::from(*owner),
+            bucket_label_key: label.raw(),
+            entries: u32::try_from(row.inputs.live_entries)
+                .map_err(|_| MateBlobBuildError::RowCountMismatch)?,
+            width_bytes: *width_bytes,
+            mate_slots,
+        });
+    }
+    RankedBlob { buckets }
+        .encode()
+        .map_err(|_| MateBlobBuildError::LengthMismatch)
 }
 
 fn build_promoted_blob_unchecked(
@@ -775,6 +823,94 @@ mod tests {
     }
 
     #[test]
+    fn ranked_packed_prototype_reuses_canonical_rank_without_source_slots() {
+        let candidate = candidate(0, 1, 3);
+        let decision = decide_leaf_promotion(std::slice::from_ref(&candidate), config());
+        let rows = MatePromotionRows {
+            inputs: candidate.inputs,
+            source_slots: vec![10, 20, 30],
+            mate_slots: vec![11, 21, 31],
+        };
+        let (_, current_bytes) = build_promoted_blob(&decision, std::slice::from_ref(&rows))
+            .expect("current packed build");
+        let ranked_bytes =
+            build_ranked_packed_blob_from_rows(&decision, &[rows]).expect("ranked packed build");
+        assert_eq!(current_bytes.len() - ranked_bytes.len(), 3);
+    }
+
+    #[test]
+    fn ranked_packed_prototype_rejects_non_monotone_source_slots() {
+        let candidate = candidate(0, 1, 3);
+        let decision = decide_leaf_promotion(std::slice::from_ref(&candidate), config());
+        let rows = MatePromotionRows {
+            inputs: candidate.inputs,
+            source_slots: vec![10, 30, 20],
+            mate_slots: vec![11, 21, 31],
+        };
+        assert_eq!(
+            build_ranked_packed_blob_from_rows(&decision, &[rows]),
+            Err(MateBlobBuildError::RowCountMismatch)
+        );
+    }
+
+    #[test]
+    fn ranked_packed_size_series_scales_with_one_slot_per_rank() {
+        let mut previous_current = 0usize;
+        let mut previous_ranked = 0usize;
+        for entries in [32u32, 64, 128, 256] {
+            let width = if entries <= 128 { 1 } else { 2 };
+            let candidate = candidate(0, width, u64::from(entries));
+            let decision = decide_leaf_promotion(std::slice::from_ref(&candidate), config());
+            assert!(
+                matches!(decision, MateLeafPromotionDecision::Promote { .. }),
+                "{decision:?}"
+            );
+            let rows = MatePromotionRows {
+                inputs: candidate.inputs,
+                source_slots: (0..entries).map(|slot| slot * 2).collect(),
+                mate_slots: (0..entries).map(|slot| slot * 2 + 1).collect(),
+            };
+            let (_, current) = build_promoted_blob(&decision, std::slice::from_ref(&rows))
+                .expect("current packed build");
+            let ranked = build_ranked_packed_blob_from_rows(&decision, &[rows])
+                .expect("ranked packed build");
+            assert!(current.len() > previous_current);
+            assert!(ranked.len() > previous_ranked);
+            assert_eq!(
+                current.len() - ranked.len(),
+                usize::try_from(entries * u32::from(width)).unwrap()
+            );
+            previous_current = current.len();
+            previous_ranked = ranked.len();
+        }
+    }
+
+    #[test]
+    fn ranked_packed_multi_bucket_keeps_directory_overhead_identical() {
+        let first = candidate(0, 1, 4);
+        let mut second = candidate(0, 1, 3);
+        second.inputs.owner_vertex_id = VertexId::from(2);
+        second.inputs.bucket_label_key = BucketLabelKey::directed_from_index(4);
+        let decision = decide_leaf_promotion(&[first.clone(), second.clone()], config());
+        let rows = vec![
+            MatePromotionRows {
+                inputs: first.inputs,
+                source_slots: vec![2, 4, 6, 8],
+                mate_slots: vec![3, 5, 7, 9],
+            },
+            MatePromotionRows {
+                inputs: second.inputs,
+                source_slots: vec![10, 20, 30],
+                mate_slots: vec![11, 21, 31],
+            },
+        ];
+        let (_, current) = build_promoted_blob(&decision, &rows).expect("current multi-bucket");
+        let ranked =
+            build_ranked_packed_blob_from_rows(&decision, &rows).expect("ranked multi-bucket");
+        assert_eq!(current.len() - ranked.len(), 7);
+    }
+
+    #[test]
     fn builder_rejects_forged_admission_sizes() {
         let candidate = candidate(16, 1, 3);
         let mut decision = decide_leaf_promotion(std::slice::from_ref(&candidate), config());
@@ -842,5 +978,185 @@ mod tests {
             decide_leaf_promotion(&[candidate], below),
             MateLeafPromotionDecision::ScanOnly { .. }
         ));
+    }
+}
+
+#[cfg(feature = "canbench")]
+mod benches {
+    use super::*;
+    use crate::labeled::bidirectional::mate_blob_prototype::MateBlob;
+    use crate::labeled::bidirectional::mate_ranked_prototype::RankedBlob;
+    use canbench_rs::{bench, bench_fn};
+    use std::hint::black_box;
+
+    fn fixture(entries: u32, width: u8) -> (MateLeafPromotionDecision, Vec<MatePromotionRows>) {
+        let candidate = MatePromotionCandidate {
+            inputs: MatePromotionInputs {
+                owner_vertex_id: VertexId::from(1),
+                bucket_label_key: BucketLabelKey::directed_from_index(3),
+                live_entries: u64::from(entries),
+                source_scan_rows: u64::from(entries),
+                counterpart_scan_rows: u64::from(entries),
+                sampled_stride: 0,
+                packed_width_bytes: width,
+                min_scan_rows: 1,
+            },
+            source_slots: (0..entries).map(|slot| slot * 2).collect(),
+            mate_slots: (0..entries).map(|slot| slot * 2 + 1).collect(),
+        };
+        let decision = decide_leaf_promotion(
+            std::slice::from_ref(&candidate),
+            MateLeafPromotionConfig {
+                leaf_shared_overhead_bytes: 8,
+                max_encoded_blob_bytes: 1 << 20,
+                max_total_promotion_bytes: 1 << 20,
+                max_bytes_per_entry: 1 << 20,
+            },
+        );
+        let rows = vec![MatePromotionRows {
+            inputs: candidate.inputs,
+            source_slots: candidate.source_slots,
+            mate_slots: candidate.mate_slots,
+        }];
+        (decision, rows)
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_current_encode_128() -> canbench_rs::BenchResult {
+        let (decision, rows) = fixture(128, 1);
+        bench_fn(|| {
+            let (_, bytes) = build_promoted_blob(&decision, &rows).expect("current encode");
+            black_box(bytes);
+        })
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_ranked_encode_128() -> canbench_rs::BenchResult {
+        let (decision, rows) = fixture(128, 1);
+        bench_fn(|| {
+            let bytes =
+                build_ranked_packed_blob_from_rows(&decision, &rows).expect("ranked encode");
+            black_box(bytes);
+        })
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_current_encode_parallel_32() -> canbench_rs::BenchResult {
+        let (decision, rows) = fixture(32, 1);
+        bench_fn(|| {
+            let (_, bytes) = build_promoted_blob(&decision, &rows).expect("current encode");
+            black_box(bytes);
+        })
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_ranked_encode_parallel_32() -> canbench_rs::BenchResult {
+        let (decision, rows) = fixture(32, 1);
+        bench_fn(|| {
+            let bytes =
+                build_ranked_packed_blob_from_rows(&decision, &rows).expect("ranked encode");
+            black_box(bytes);
+        })
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_current_decode_lookup_128() -> canbench_rs::BenchResult {
+        let (decision, rows) = fixture(128, 1);
+        let (_, bytes) = build_promoted_blob(&decision, &rows).expect("current encode");
+        bench_fn(|| {
+            let blob = MateBlob::decode(&bytes).expect("current decode");
+            let bucket = &blob.buckets[0];
+            black_box(bucket.mapping.len());
+        })
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_ranked_decode_lookup_128() -> canbench_rs::BenchResult {
+        let (decision, rows) = fixture(128, 1);
+        let bytes = build_ranked_packed_blob_from_rows(&decision, &rows).expect("ranked encode");
+        bench_fn(|| {
+            let blob = RankedBlob::decode(&bytes).expect("ranked decode");
+            let slot = blob.buckets[0].mate_slot_for_rank(64).expect("rank lookup");
+            black_box(slot);
+        })
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_current_decode_validate_lookup_128() -> canbench_rs::BenchResult {
+        let (decision, rows) = fixture(128, 1);
+        let (_, bytes) = build_promoted_blob(&decision, &rows).expect("current encode");
+        let source = rows[0].source_slots[64];
+        let mate = rows[0].mate_slots[64];
+        bench_fn(|| {
+            let blob = MateBlob::decode(&bytes).expect("current decode");
+            let mapping = &blob.buckets[0].mapping;
+            let source_ok = mapping[128] == u8::try_from(source).expect("source width");
+            let mate_ok = mapping[129] == u8::try_from(mate).expect("mate width");
+            black_box((source_ok, mate_ok));
+        })
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_ranked_decode_validate_lookup_128() -> canbench_rs::BenchResult {
+        let (decision, rows) = fixture(128, 1);
+        let bytes = build_ranked_packed_blob_from_rows(&decision, &rows).expect("ranked encode");
+        let source = rows[0].source_slots[64];
+        let mate = rows[0].mate_slots[64];
+        bench_fn(|| {
+            let blob = RankedBlob::decode(&bytes).expect("ranked decode");
+            let ranked_mate = blob.buckets[0].mate_slot_for_rank(64).expect("rank lookup");
+            black_box((source == rows[0].source_slots[64], ranked_mate == mate));
+        })
+    }
+
+    fn bench_decode_validate(entries: u32, width: u8, ranked: bool) -> canbench_rs::BenchResult {
+        let (decision, rows) = fixture(entries, width);
+        let rank = entries / 2;
+        let source = rows[0].source_slots[usize::try_from(rank).expect("rank")];
+        let mate = rows[0].mate_slots[usize::try_from(rank).expect("rank")];
+        if ranked {
+            let bytes =
+                build_ranked_packed_blob_from_rows(&decision, &rows).expect("ranked encode");
+            bench_fn(|| {
+                let blob = RankedBlob::decode(&bytes).expect("ranked decode");
+                let ranked_mate = blob.buckets[0]
+                    .mate_slot_for_rank(rank)
+                    .expect("rank lookup");
+                black_box((
+                    source == rows[0].source_slots[usize::try_from(rank).unwrap()],
+                    ranked_mate == mate,
+                ));
+            })
+        } else {
+            let (_, bytes) = build_promoted_blob(&decision, &rows).expect("current encode");
+            bench_fn(|| {
+                let blob = MateBlob::decode(&bytes).expect("current decode");
+                let width = usize::from(width);
+                let start = usize::try_from(rank).unwrap() * width * 2;
+                let source_bytes = &blob.buckets[0].mapping[start..start + width];
+                let mate_bytes = &blob.buckets[0].mapping[start + width..start + width * 2];
+                black_box((source_bytes.len() == width, mate_bytes.len() == width));
+            })
+        }
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_current_decode_validate_lookup_32() -> canbench_rs::BenchResult {
+        bench_decode_validate(32, 1, false)
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_ranked_decode_validate_lookup_32() -> canbench_rs::BenchResult {
+        bench_decode_validate(32, 1, true)
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_current_decode_validate_lookup_256() -> canbench_rs::BenchResult {
+        bench_decode_validate(256, 2, false)
+    }
+
+    #[bench(raw)]
+    fn bench_mate_packed_ranked_decode_validate_lookup_256() -> canbench_rs::BenchResult {
+        bench_decode_validate(256, 2, true)
     }
 }

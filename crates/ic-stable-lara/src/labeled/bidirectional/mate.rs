@@ -346,6 +346,22 @@ where
             .map_err(|error| MateLookupError::ReadFailed(error.to_string()))
     }
 
+    /// Returns the number of published fixture blobs for measurement reports only.
+    #[cfg(feature = "adoption-fixtures")]
+    #[doc(hidden)]
+    pub fn published_mate_blob_count(&self) -> Result<u64, MateLookupError> {
+        self.mate
+            .published_blob_count()
+            .map_err(|error| MateLookupError::ReadFailed(error.to_string()))
+    }
+
+    /// Returns the fixture-only physical page footprint of mate sidecar storage.
+    #[cfg(feature = "adoption-fixtures")]
+    #[doc(hidden)]
+    pub fn published_mate_storage_pages(&self) -> u64 {
+        self.mate.storage_pages()
+    }
+
     /// Resolves a mate through a Published Sampled/Packed blob when possible. The blob is only an
     /// accelerator: every candidate is checked against the live counterpart row and relation
     /// counts, while malformed, stale, or non-applicable data falls back to canonical rank/select
