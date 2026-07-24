@@ -692,6 +692,10 @@ encoding/digests, fixed-seed request identities, and a deferred/measured evidenc
 fail-closed validation. This slice is a schema and fixture prototype only; it does not claim
 independent stable-memory ownership, lifecycle coverage, ordinary-caller activation, or adoption.
 
+Measurement-only LARA fixtures must allocate `MemoryId`s from `u8::MAX` downward. The production
+Graph layout owns the low-ID range, so benchmark/test allocation must not consume IDs from that
+range even when the fixture uses a fresh in-memory `MemoryManager`.
+
 ## Related
 
 - [ADR 0001](0001-labeled-segment-slide.md): PMA leaf physical ownership and relocation.

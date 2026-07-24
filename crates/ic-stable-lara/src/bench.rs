@@ -25,7 +25,9 @@ impl BenchMemoryFactory {
     pub(crate) fn new() -> Self {
         Self {
             manager: MemoryManager::init(DefaultMemoryImpl::default()),
-            next_id: 0,
+            // Bench-only regions are allocated from the top of the u8 MemoryId space so future
+            // production layouts can continue allocating from the low end without collisions.
+            next_id: u8::MAX,
         }
     }
 
@@ -33,7 +35,7 @@ impl BenchMemoryFactory {
         let id = self.next_id;
         self.next_id = self
             .next_id
-            .checked_add(1)
+            .checked_sub(1)
             .expect("benchmark memory id overflow");
         self.manager.get(MemoryId::new(id))
     }
