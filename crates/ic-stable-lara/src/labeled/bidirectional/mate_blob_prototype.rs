@@ -1,10 +1,13 @@
-//! Versioned mate blob codec for ADR 0048's dormant storage foundation.
+//! Mate blob codecs for ADR 0048.
 //!
-//! The codec is internal-only: it has no graph lookup or promotion entry point. The storage
-//! foundation uses it to validate blobs before publication and on reopen; runtime promotion is
-//! deferred to a later slice.
+//! `CompactMateBlob` is the production payload codec used by `MateStorage`. `MateBlob` remains
+//! the legacy admission/measurement representation used to build and compare candidate blobs;
+//! it is never accepted as persisted bytes after the compact reset boundary.
 
-#![expect(dead_code, reason = "codec is dormant until the promotion slice")]
+#![expect(
+    dead_code,
+    reason = "legacy measurement codec and dormant candidate helpers"
+)]
 
 const MAGIC: [u8; 4] = *b"MATE";
 const VERSION: u8 = 1;
@@ -107,7 +110,7 @@ pub(crate) struct MateBlob {
     pub buckets: Vec<Bucket>,
 }
 
-/// Compact evidence codec for the selected leaf-locator/multi-bucket-blob layout.
+/// Compact production codec for the selected leaf-locator/multi-bucket-blob layout.
 ///
 /// Region-level validation owns magic/version framing; this blob stores only bucket count, total
 /// length, and packed bucket-directory fields. ScanOnly buckets are omitted by the caller.

@@ -1023,15 +1023,17 @@ each bucket-directory entry from 20 bytes to approximately 15 bytes: owner verte
 packed candidate/width flags (1), cardinality (4), and mapping offset (4). Mapping length is
 derived from the next offset or blob end. Excluding the fixed 5-byte leaf locator and allocator/
 MemoryManager overhead, this changes the logical overhead from `29 + 20B` to `13 + 15B` bytes
-per leaf with `B` buckets, saving `16 + 5B` bytes. This is a planned codec/layout optimization;
-the current 24/20-byte codec remains the implemented measurement baseline until a later slice
-implements and remeasures it.
+per leaf with `B` buckets, saving `16 + 5B` bytes. Plan 0175 implements this compact codec at
+the existing `MateStorage` publication and reopen boundary. Persisted blobs now use the
+8-byte/15-byte representation; the historical 24/20-byte codec remains only as a legacy
+admission/measurement fixture and is rejected when encountered in the persisted region. Because
+development stable data is disposable, no compatibility decoder is provided and a fresh reset is
+required.
 
-Plan 0173 adds an isolated compact codec with the same three indexed buckets as the baseline
-probe. Its encoded size is 701 bytes versus 732 bytes for the 24-byte/20-byte codec (`-31` bytes,
-matching `16 + 5B` for `B = 3`), and the encode/decode probe measures 6,847 versus 7,571
-instructions (`-9.6%`) with zero heap or stable-memory growth. These are fixture-only measurements;
-the full `ic-stable-lara` canbench sweep remains blocked by the pre-existing
+Plan 0173 measured the compact codec at 701 bytes versus 732 bytes for the historical codec
+(`-31` bytes, matching `16 + 5B` for `B = 3`), and 6,847 versus 7,571 instructions (`-9.6%`)
+with zero heap or stable-memory growth. Plan 0175 applies that format at the owner boundary; the
+full `ic-stable-lara` canbench sweep remains blocked by the pre-existing
 `bench_lara_deferred_bidirectional_insert_undirected_1024` `CollectAllocationOverflow` failure.
 
 The lifecycle is `Empty → Rebuilding → Published` or `Stale`. A canonical mutation first makes the

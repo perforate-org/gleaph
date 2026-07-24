@@ -511,16 +511,16 @@ register production `MemoryId`s. Plan 0171 confirms the existing `MateStorage` o
 production baseline: one five-byte locator row addresses one orientation/leaf and its blob
 directory contains all indexed buckets for that leaf. Reopen and publication use the existing
 four-region composite boundary; future format replacement requires a fresh reset because
-development stable-data compatibility is not maintained. The planned compact blob format keeps
-the 5-byte leaf locator, uses an 8-byte blob
+development stable-data compatibility is not maintained. Plan 0175 now uses the compact blob
+format at that owner: the 5-byte leaf locator remains unchanged, and the blob
 header (`bucket_count` and `total_length`), and targets approximately 15-byte directory entries
 (owner 4, label 2, packed flags 1, cardinality 4, mapping offset 4), deriving mapping length from
 the next offset/blob end. Its logical overhead target is `13 + 15B` bytes per leaf versus the
 current `29 + 20B`, a saving of `16 + 5B` bytes before allocator and MemoryManager overhead.
-The current 24-byte header/20-byte directory codec remains the measurement baseline until a later
-implementation slice. The isolated entry codec is 35 bytes before payload and is fixture-only.
-Plan 0173's compact fixture measures 701 bytes for three indexed buckets versus 732 bytes for the
-current baseline, and 6,847 versus 7,571 instructions for encode/decode. The full crate canbench
+The historical 24-byte header/20-byte directory codec remains an admission/measurement fixture;
+persisted bytes use the compact format and old persisted bytes fail closed at reopen. Plan 0173's
+compact fixture measured 701 bytes for three indexed buckets versus 732 bytes for the historical
+baseline, and 6,847 versus 7,571 instructions for encode/decode. The full crate canbench
 sweep could not persist because the unrelated deferred undirected insert benchmark traps with
 `CollectAllocationOverflow`; the focused compact/baseline probes passed.
 Plan 0169 consolidates the persistence design: canonical LARA owns truth, while derived mate state

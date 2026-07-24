@@ -9,6 +9,10 @@ the leaf-scoped five-byte locator plus one multi-bucket blob per orientation/lea
 publishes two buckets through one locator row, reopens the four-region composite, and verifies that
 the neighboring locator remains ScanOnly. The bucket-locator/raw-payload fixture remains evidence
 only; no production MemoryId or canonical region changed.
+Plan 0175 update (2026-07-24 23:03:51 UTC +0000): `MATE_BLOBS` now persists the compact
+8-byte-header/15-byte-directory codec at the existing owner boundary. The five-byte leaf locator
+and four-region composite are unchanged; historical 24-byte/20-byte blobs fail closed on reopen,
+and no new MemoryId was allocated.
 Plan 0170 update (2026-07-24 13:44:22 UTC +0000): the versioned mate envelope codec, 22-byte locator
 value, raw payload region, and reopen fixture are implemented behind isolated `VectorMemory`-backed
 stores; these are evidence fixtures rather than the selected production layout. Production remains

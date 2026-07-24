@@ -3790,7 +3790,7 @@ mod tests {
     use crate::labeled::bidirectional::mate::{
         canonical_mate_lookup_count, reset_canonical_mate_lookup_count,
     };
-    use crate::labeled::bidirectional::mate_blob_prototype::{MateBlob, Mode};
+    use crate::labeled::bidirectional::mate_blob_prototype::{CompactMateBlob, MateBlob, Mode};
     use crate::labeled::bidirectional::mate_enumeration::MateLeafEnumerationPolicy;
     use crate::labeled::bidirectional::mate_promotion::{
         MateLeafPromotionConfig, MatePromotionInputs, MatePromotionMode,
@@ -4322,7 +4322,7 @@ mod tests {
             .published_blobs
             .into_iter()
             .flat_map(|(_, bytes)| {
-                MateBlob::decode(&bytes)
+                CompactMateBlob::decode(&bytes)
                     .expect("published mate blob")
                     .buckets
                     .into_iter()

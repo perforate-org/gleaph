@@ -4,7 +4,7 @@
 //! composite layout, allocation/publication ordering, and reopen validation needed by the later
 //! promotion slice.
 
-use super::mate_blob_prototype::MateBlob;
+use super::mate_blob_prototype::{CompactMateBlob, MateBlob};
 use crate::lara::edge::free_span::FreeSpanStore;
 use crate::{CompositeInit, GrowFailed, classify_composite_init, safe_write};
 use ic_stable_structures::Memory;
@@ -435,16 +435,16 @@ impl<M: Memory> MateBlobByteStore<M> {
 
     fn read(&self, start: u64) -> Result<Vec<u8>, MateStorageInitError> {
         let tail = self.tail();
-        if start >= tail || tail - start < 24 {
+        if start >= tail || tail - start < 8 {
             return Err(MateStorageInitError::InvalidBlobLayout);
         }
         let offset = HEADER_BYTES
             .checked_add(start)
             .ok_or(MateStorageInitError::BlobLengthOverflow)?;
-        let mut header = [0u8; 24];
+        let mut header = [0u8; 8];
         self.memory.read(offset, &mut header);
-        let len = u32::from_be_bytes(header[20..24].try_into().expect("blob length")) as u64;
-        if len < 24 || len > tail - start {
+        let len = u32::from_be_bytes(header[4..8].try_into().expect("blob length")) as u64;
+        if len < 8 || len > tail - start {
             return Err(MateStorageInitError::InvalidBlobLayout);
         }
         let mut bytes =
@@ -508,6 +508,17 @@ pub(crate) struct MateRebuildToken {
 }
 
 impl<M: Memory> MateStorage<M> {
+    /// Converts promotion-builder bytes to the compact bytes owned by persistent storage.
+    /// The legacy codec remains an admission/measurement fixture only.
+    fn compact_blob(encoded_blob: &[u8]) -> Result<Vec<u8>, MateStorageInitError> {
+        let blob = MateBlob::decode(encoded_blob).map_err(|_| MateStorageInitError::InvalidBlob)?;
+        CompactMateBlob {
+            buckets: blob.buckets,
+        }
+        .encode()
+        .map_err(|_| MateStorageInitError::InvalidBlob)
+    }
+
     /// Returns the fixture-only physical page footprint of the mate sidecar regions.
     #[cfg(feature = "adoption-fixtures")]
     pub(crate) fn storage_pages(&self) -> u64 {
@@ -546,7 +557,7 @@ impl<M: Memory> MateStorage<M> {
                 self.locators.get_state(row)?
             {
                 let bytes = self.blobs.read(start)?;
-                MateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
+                CompactMateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
             }
         }
         Ok(())
@@ -588,7 +599,7 @@ impl<M: Memory> MateStorage<M> {
         row: u64,
         encoded_blob: &[u8],
     ) -> Result<(), MateStorageInitError> {
-        MateBlob::decode(encoded_blob).map_err(|_| MateStorageInitError::InvalidBlob)?;
+        let encoded_blob = Self::compact_blob(encoded_blob)?;
         let old = self.locators.published_offset(row)?;
         let old_bytes = old.map(|start| self.blobs.read(start)).transpose()?;
         let allocation = self.blobs.allocate(
@@ -596,7 +607,7 @@ impl<M: Memory> MateStorage<M> {
             u64::try_from(encoded_blob.len())
                 .map_err(|_| MateStorageInitError::BlobLengthOverflow)?,
         )?;
-        if let Err(error) = self.blobs.write(allocation, encoded_blob) {
+        if let Err(error) = self.blobs.write(allocation, &encoded_blob) {
             self.blobs.rollback(&self.free_spans, allocation)?;
             return Err(error);
         }
@@ -670,7 +681,8 @@ impl<M: Memory> MateStorage<M> {
         #[cfg(test)]
         PUBLISHED_BLOB_READS.with(|count| count.set(count.get().saturating_add(1)));
         let bytes = self.blobs.read(offset)?;
-        let blob = MateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
+        let blob =
+            CompactMateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
         Ok(blob.buckets.into_iter().find(|bucket| {
             bucket.owner_vertex_id == owner_vertex_id && bucket.bucket_label_key == bucket_label_key
         }))
@@ -796,7 +808,7 @@ impl<M: Memory> MateStorage<M> {
         let previous_blob_len = match previous {
             MateLocatorState::Published { blob_offset } => {
                 let bytes = self.blobs.read(blob_offset)?;
-                MateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
+                CompactMateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
                 Some(u64::try_from(bytes.len()).expect("validated blob length"))
             }
             MateLocatorState::ScanOnly | MateLocatorState::Rebuilding => None,
@@ -847,7 +859,7 @@ impl<M: Memory> MateStorage<M> {
             };
         };
         let bytes = self.blobs.read(blob_offset)?;
-        MateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
+        CompactMateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
         let len =
             u64::try_from(bytes.len()).map_err(|_| MateStorageInitError::BlobLengthOverflow)?;
         self.locators.publish_scan_only(row)?;
@@ -877,10 +889,13 @@ impl<M: Memory> MateStorage<M> {
         token: MateRebuildToken,
         encoded_blob: &[u8],
     ) -> Result<(), MateStorageInitError> {
-        if MateBlob::decode(encoded_blob).is_err() {
-            self.restore_rebuild_token(token)?;
-            return Err(MateStorageInitError::InvalidBlob);
-        }
+        let encoded_blob = match Self::compact_blob(encoded_blob) {
+            Ok(encoded_blob) => encoded_blob,
+            Err(error) => {
+                self.restore_rebuild_token(token)?;
+                return Err(error);
+            }
+        };
         if !matches!(
             self.locators.get_state(token.row)?,
             MateLocatorState::Rebuilding
@@ -901,7 +916,7 @@ impl<M: Memory> MateStorage<M> {
                 return Err(error);
             }
         };
-        if let Err(error) = self.blobs.write(allocation, encoded_blob) {
+        if let Err(error) = self.blobs.write(allocation, &encoded_blob) {
             self.blobs.rollback(&self.free_spans, allocation)?;
             self.restore_rebuild_token(token)?;
             return Err(error);
@@ -1012,7 +1027,7 @@ mod tests {
             .published_blob_offset(0)
             .expect("offset")
             .expect("published");
-        let published = MateBlob::decode(&storage.blobs.read(offset).expect("blob bytes"))
+        let published = CompactMateBlob::decode(&storage.blobs.read(offset).expect("blob bytes"))
             .expect("decode published blob");
         assert_eq!(published.buckets.len(), 2);
         assert_eq!(
@@ -1037,11 +1052,43 @@ mod tests {
     }
 
     #[test]
+    fn reopen_rejects_retired_legacy_blob_format() {
+        let [locator, blobs, free_spans, free_span_by_start] = memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let legacy = blob();
+        let allocation = Allocation {
+            start: 0,
+            len: legacy.len() as u64,
+            previous_tail: 0,
+            from_free: false,
+        };
+        storage
+            .blobs
+            .grow(HEADER_BYTES + allocation.len)
+            .expect("legacy blob backing");
+        storage.blobs.set_tail(allocation.len).expect("legacy tail");
+        storage
+            .blobs
+            .write(allocation, &legacy)
+            .expect("legacy bytes");
+        storage.locators.publish(0, 0).expect("legacy locator");
+        let memories = storage.into_memories();
+        match MateStorage::init(memories.0, memories.1, memories.2, memories.3, 4) {
+            Err(error) => assert_eq!(error, MateStorageInitError::InvalidBlobLayout),
+            Ok(_) => panic!("legacy persisted bytes unexpectedly reopened"),
+        }
+    }
+
+    #[test]
     fn fresh_reopen_and_replace_retire_old_span() {
         let [locator, blobs, free_spans, free_span_by_start] = memories();
         let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
             .expect("fresh storage");
         let first = blob();
+        let compact_len = MateStorage::<TestMemory>::compact_blob(&first)
+            .expect("compact blob")
+            .len() as u64;
         storage.replace(0, &first).expect("first blob");
         let old = storage
             .published_blob_offset(0)
@@ -1050,7 +1097,7 @@ mod tests {
         storage.replace(0, &first).expect("replacement");
         assert_eq!(
             storage.published_blob_offset(0).expect("locator"),
-            Some(old + first.len() as u64)
+            Some(old + compact_len)
         );
         storage.replace(0, &first).expect("reuse retired span");
         assert_eq!(
