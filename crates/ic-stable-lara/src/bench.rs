@@ -20,6 +20,10 @@ pub(crate) type BenchMemory = VirtualMemory<DefaultMemoryImpl>;
 /// Highest usable `MemoryId`; `u8::MAX` is reserved internally by `MemoryManager`.
 pub(crate) const MEASUREMENT_MEMORY_ID_MAX: u8 = u8::MAX - 1;
 
+#[allow(
+    dead_code,
+    reason = "ScanOnly and Published are consumed by the Plan 0147 fixture adapter"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MeasurementRepresentation {
     AliasOnly,
@@ -32,6 +36,7 @@ pub(crate) enum MeasurementRepresentation {
 pub(crate) struct MeasurementMemoryBundle {
     manager: MemoryManager<DefaultMemoryImpl>,
     next_id: u8,
+    allocated_ids: Vec<u8>,
     #[allow(
         dead_code,
         reason = "candidate tag is consumed by the Plan 0147 fixture adapter"
@@ -50,12 +55,14 @@ impl MeasurementMemoryBundle {
             // Bench-only regions are allocated from the top of the u8 MemoryId space so future
             // production layouts can continue allocating from the low end without collisions.
             next_id: MEASUREMENT_MEMORY_ID_MAX,
+            allocated_ids: Vec::new(),
             representation,
         }
     }
 
     pub(crate) fn memory(&mut self) -> BenchMemory {
         let id = self.next_id;
+        self.allocated_ids.push(id);
         self.next_id = self
             .next_id
             .checked_sub(1)
@@ -98,8 +105,7 @@ pub(crate) fn lara_graph(
     segment_size: u32,
     vertex_count: u32,
 ) -> LaraGraph<TestEdge, Vertex, BenchMemory> {
-    let mut memories =
-        BenchMemoryFactory::with_representation(MeasurementRepresentation::AliasOnly);
+    let mut memories = BenchMemoryFactory::new();
     let graph = LaraGraph::new(
         memories.memory(),
         memories.memory(),
@@ -151,8 +157,7 @@ pub(crate) fn deferred_graph(
     vertex_count: u32,
 ) -> DeferredLaraGraph<TestEdge, Vertex, BenchMemory> {
     let segment_size = 16;
-    let mut memories =
-        BenchMemoryFactory::with_representation(MeasurementRepresentation::AliasOnly);
+    let mut memories = BenchMemoryFactory::new();
     let graph = DeferredLaraGraph::new_with_config(
         memories.memory(),
         memories.memory(),
@@ -191,7 +196,7 @@ pub(crate) fn bidirectional_graph<E>(
 where
     E: crate::traits::CsrEdge,
 {
-    let mut memories = BenchMemoryFactory::with_representation(MeasurementRepresentation::ScanOnly);
+    let mut memories = BenchMemoryFactory::new();
     let graph = BidirectionalLaraGraph::new(
         memories.memory(),
         memories.memory(),
@@ -234,8 +239,7 @@ where
 pub(crate) fn deferred_bidirectional_graph(
     vertex_count: u32,
 ) -> DeferredBidirectionalLaraGraph<TestEdge, Vertex, BenchMemory> {
-    let mut memories =
-        BenchMemoryFactory::with_representation(MeasurementRepresentation::Published);
+    let mut memories = BenchMemoryFactory::new();
     let graph = DeferredBidirectionalLaraGraph::new_with_config(
         memories.memory(),
         memories.memory(),
@@ -298,14 +302,24 @@ mod tests {
             MeasurementMemoryBundle::with_representation(MeasurementRepresentation::Published);
         let alias_memory = alias.memory();
         let published_memory = published.memory();
+        let _alias_second_memory = alias.memory();
+        let _published_second_memory = published.memory();
 
         assert_eq!(alias.representation(), MeasurementRepresentation::AliasOnly);
         assert_eq!(
             published.representation(),
             MeasurementRepresentation::Published
         );
-        assert_eq!(alias.next_id, MEASUREMENT_MEMORY_ID_MAX - 1);
-        assert_eq!(published.next_id, MEASUREMENT_MEMORY_ID_MAX - 1);
+        assert_eq!(
+            alias.allocated_ids,
+            vec![MEASUREMENT_MEMORY_ID_MAX, MEASUREMENT_MEMORY_ID_MAX - 1]
+        );
+        assert_eq!(
+            published.allocated_ids,
+            vec![MEASUREMENT_MEMORY_ID_MAX, MEASUREMENT_MEMORY_ID_MAX - 1]
+        );
+        assert_eq!(alias.next_id, MEASUREMENT_MEMORY_ID_MAX - 2);
+        assert_eq!(published.next_id, MEASUREMENT_MEMORY_ID_MAX - 2);
 
         alias_memory.grow(1);
         assert_eq!(alias_memory.size(), 1);
