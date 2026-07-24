@@ -187,10 +187,6 @@ pub(crate) fn lara_graph(
         0,
     )
     .expect("lara graph");
-    graph
-        .edges()
-        .grow_segment_tree_to(segment_tree_leaf_count(vertex_count.into(), segment_size))
-        .expect("grow lara graph segments");
     for _ in 0..vertex_count {
         graph.push_vertex(Vertex::default()).expect("push vertex");
     }
@@ -201,6 +197,9 @@ pub(crate) fn populated_lara_graph(
     vertex_count: u32,
     edges_per_vertex: u32,
 ) -> LaraGraph<TestEdge, Vertex, BenchMemory> {
+    // This is intentionally a production-shaped fixture: initial slab slots
+    // remain zero, so insertion may use the overflow log just as the default
+    // graph configuration does. Do not classify its scans as slab-only.
     let capacity = u64::from(vertex_count)
         .saturating_mul(u64::from(edges_per_vertex).saturating_add(4))
         .max(16);
@@ -243,11 +242,6 @@ pub(crate) fn deferred_graph(
         },
     )
     .expect("deferred graph");
-    graph
-        .graph()
-        .edges()
-        .grow_segment_tree_to(segment_tree_leaf_count(vertex_count.into(), segment_size))
-        .expect("grow deferred graph segments");
     for _ in 0..vertex_count {
         graph.push_vertex(Vertex::default()).expect("push vertex");
     }
@@ -281,17 +275,6 @@ where
         0,
     )
     .expect("bidirectional graph");
-    let target_segments = segment_tree_leaf_count(vertex_count.into(), 16);
-    graph
-        .forward()
-        .edges()
-        .grow_segment_tree_to(target_segments)
-        .expect("grow forward graph segments");
-    graph
-        .reverse()
-        .edges()
-        .grow_segment_tree_to(target_segments)
-        .expect("grow reverse graph segments");
     for _ in 0..vertex_count {
         graph.push_vertex(Vertex::default()).expect("push vertex");
     }

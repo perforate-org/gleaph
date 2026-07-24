@@ -450,7 +450,9 @@ where
             }
         };
         let (slot, edge) = edge;
-        let edge = edge.with_label_id(self.label_id.raw());
+        let edge = edge
+            .with_slot_index(slot)
+            .with_label_id(self.label_id.raw());
         if self.attach_payload {
             let ordinal = self.next_payload_ordinal;
             match self.kind {

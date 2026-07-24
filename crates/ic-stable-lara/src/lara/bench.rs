@@ -27,9 +27,9 @@ fn bench_lara_graph_insert_append_heavy_1024() -> canbench_rs::BenchResult {
     })
 }
 
-/// Measures slot-order adjacency scans over already materialized slab edges. The
-/// goal is to keep read-only traversal independent of capacity, span metadata,
-/// free spans, and maintenance structures.
+/// Measures slot-order adjacency scans over a production-materialized graph.
+/// The fixture uses the default zero initial slab width, so this may include
+/// overflow-log traversal; the benchmark is not a slab-only microbench.
 #[bench(raw)]
 fn bench_lara_graph_clean_scan_slot_order_1024() -> canbench_rs::BenchResult {
     let graph = helper::populated_lara_graph(256, 4);
@@ -46,8 +46,9 @@ fn bench_lara_graph_clean_scan_slot_order_1024() -> canbench_rs::BenchResult {
     })
 }
 
-/// Measures public iteration over already materialized slab edges. This is the
-/// streaming counterpart to `lara_graph_clean_scan_slot_order`.
+/// Measures public iteration over a production-materialized graph. This is the
+/// streaming counterpart to `lara_graph_clean_scan_slot_order` and may include
+/// overflow-log traversal.
 #[bench(raw)]
 fn bench_lara_graph_clean_scan_iter_1024() -> canbench_rs::BenchResult {
     let graph = helper::populated_lara_graph(256, 4);
