@@ -204,15 +204,12 @@ fn labeled_memory_regions(memories: &mut MemoryBundle) -> [FixtureMemory; 15] {
     core::array::from_fn(|_| memories.memory())
 }
 
-/// Build a directed Published fixture and publish every canonical mate leaf.
-pub fn build_published_fixture(
-    vertex_count: u32,
-    directed_edges: &[(u32, u32)],
-) -> Result<PublishedFixture, String> {
-    let mut memories = MemoryBundle::new(FixtureRepresentation::Published);
-    let forward = labeled_memory_regions(&mut memories);
-    let reverse = labeled_memory_regions(&mut memories);
-    let graph = DeferredBidirectionalLabeledLaraGraph::new(
+fn new_published_graph(
+    memories: &mut MemoryBundle,
+) -> Result<DeferredBidirectionalLabeledLaraGraph<PublishedEdge, FixtureMemory>, String> {
+    let forward = labeled_memory_regions(memories);
+    let reverse = labeled_memory_regions(memories);
+    DeferredBidirectionalLabeledLaraGraph::new(
         forward[0].clone(),
         forward[1].clone(),
         forward[2].clone(),
@@ -254,7 +251,16 @@ pub fn build_published_fixture(
         InitialCapacities::uniform(1 << 16),
         BucketLabelKey::UNLABELED_DIRECTED,
     )
-    .map_err(|error| format!("published fixture graph init failed: {error}"))?;
+    .map_err(|error| format!("published fixture graph init failed: {error}"))
+}
+
+/// Build a directed Published fixture and publish every canonical mate leaf.
+pub fn build_published_fixture(
+    vertex_count: u32,
+    directed_edges: &[(u32, u32)],
+) -> Result<PublishedFixture, String> {
+    let mut memories = MemoryBundle::new(FixtureRepresentation::Published);
+    let graph = new_published_graph(&mut memories)?;
 
     for _ in 0..vertex_count {
         graph
@@ -330,6 +336,86 @@ pub fn build_published_fixture(
     }
     if identities.len() != directed_edges.len().saturating_mul(2) {
         return Err("published fixture physical identity cardinality mismatch".to_owned());
+    }
+    Ok(PublishedFixture {
+        graph,
+        identities,
+        representation: FixtureRepresentation::Published,
+    })
+}
+
+/// Build an undirected Published fixture and publish forward mate leaves.
+pub fn build_published_undirected_fixture(
+    vertex_count: u32,
+    edges: &[(u32, u32)],
+) -> Result<PublishedFixture, String> {
+    let mut memories = MemoryBundle::new(FixtureRepresentation::Published);
+    let graph = new_published_graph(&mut memories)?;
+    for _ in 0..vertex_count {
+        graph
+            .push_vertex()
+            .map_err(|error| format!("published fixture vertex insert failed: {error}"))?;
+    }
+    let label = BucketLabelKey::undirected_from_index(1);
+    for &(source, target) in edges {
+        if source >= vertex_count || target >= vertex_count {
+            return Err("published undirected fixture edge endpoint is out of range".to_owned());
+        }
+        graph
+            .insert_undirected_deferred(
+                VertexId::from(source),
+                VertexId::from(target),
+                label,
+                PublishedEdge {
+                    neighbor: target,
+                    slot: 0,
+                },
+                PublishedEdge {
+                    neighbor: source,
+                    slot: 0,
+                },
+            )
+            .map_err(|error| format!("published undirected edge insert failed: {error}"))?;
+    }
+    let policy = default_mate_leaf_enumeration_policy();
+    for leaf in 0..graph.forward().segment_count() {
+        let aggregate = graph
+            .enumerate_mate_leaf(LabeledOrientation::Forward, leaf, policy)
+            .map_err(|error| format!("published undirected mate enumeration failed: {error}"))?;
+        graph
+            .rebuild_mate_leaf_from_canonical(&aggregate)
+            .map_err(|error| format!("published undirected mate publish failed: {error}"))?;
+    }
+
+    let mut identities = Vec::new();
+    for owner in 0..vertex_count {
+        for edge in graph
+            .undirected_edges_iter(VertexId::from(owner), OutEdgeOrder::Ascending)
+            .map_err(|error| format!("published undirected identity scan failed: {error}"))?
+        {
+            let edge = edge
+                .map_err(|error| format!("published undirected identity read failed: {error}"))?;
+            identities.push(PhysicalIdentity {
+                owner,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 0,
+                slot: edge.edge_slot_index_raw(),
+            });
+        }
+    }
+    identities.sort();
+    let expected = edges
+        .iter()
+        .map(|(source, target)| usize::from(source != target) + 1)
+        .sum::<usize>();
+    if identities.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("published undirected fixture produced duplicate identities".to_owned());
+    }
+    if identities.len() != expected {
+        return Err(format!(
+            "published undirected fixture cardinality mismatch: expected {expected}, got {}",
+            identities.len()
+        ));
     }
     Ok(PublishedFixture {
         graph,
@@ -601,5 +687,15 @@ mod tests {
         let parallel_fixture =
             build_published_fixture(2, &parallel_edges).expect("parallel published fixture");
         assert_eq!(parallel_fixture.identities.len(), 64);
+
+        let undirected_edges = (0..64)
+            .flat_map(|source| [(source, (source + 1) % 64), (source, (source + 2) % 64)])
+            .collect::<Vec<_>>();
+        let undirected_fixture = build_published_undirected_fixture(64, &undirected_edges)
+            .expect("undirected published fixture");
+        assert_eq!(undirected_fixture.identities.len(), 256);
+
+        let self_loop = build_published_undirected_fixture(1, &[(0, 0)]);
+        assert!(self_loop.is_err());
     }
 }

@@ -816,6 +816,26 @@ pub(crate) fn build_real_published_fixture(
         FixtureShape::Parallel if spec.logical_edges == 32 => {
             (2, (0..32).map(|_| (0, 1)).collect::<Vec<_>>())
         }
+        FixtureShape::Undirected if spec.logical_edges == 128 => {
+            let vertex_count = 64u32;
+            let edges = (0..vertex_count)
+                .flat_map(|source| {
+                    [
+                        (source, (source + 1) % vertex_count),
+                        (source, (source + 2) % vertex_count),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let fixture = ic_stable_lara::adoption_fixture::build_published_undirected_fixture(
+                vertex_count,
+                &edges,
+            )?;
+            return Ok(deterministic_fixture_from_physical(
+                spec,
+                ic_stable_lara::adoption_fixture::FixtureRepresentation::Published,
+                fixture.identities,
+            ));
+        }
         _ => {
             return Err("Published fixture requires a promotion-eligible topology".to_owned());
         }
@@ -1417,6 +1437,14 @@ mod fixture_evidence_tests {
             .expect("parallel published fixture");
         assert_eq!(parallel.identities.len() as u64, 64);
         assert_eq!(parallel.descriptor.fixture_ids, vec!["parallel-published"]);
+
+        let undirected = build_real_published_fixture(FixtureSpec::required_matrix()[3])
+            .expect("undirected published fixture");
+        assert_eq!(undirected.identities.len() as u64, 256);
+        assert_eq!(
+            undirected.descriptor.fixture_ids,
+            vec!["undirected_high-published"]
+        );
     }
 
     #[cfg(feature = "canbench")]
