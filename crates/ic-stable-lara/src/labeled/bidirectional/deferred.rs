@@ -6055,14 +6055,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(live_slots.len(), locations.len());
-        for location in locations {
-            assert!(
-                live_slots
-                    .iter()
-                    .any(|(slot, _)| *slot == location.logical_slot),
-                "returned logical slot must remain a live slot"
-            );
-        }
+        let mut returned_slots = locations
+            .into_iter()
+            .map(|location| location.logical_slot)
+            .collect::<Vec<_>>();
+        let mut live_slot_ids = live_slots.iter().map(|(slot, _)| *slot).collect::<Vec<_>>();
+        returned_slots.sort_unstable();
+        live_slot_ids.sort_unstable();
+        assert_eq!(returned_slots, live_slot_ids);
     }
 
     #[test]

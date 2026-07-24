@@ -72,7 +72,7 @@ fn edge_store_with_vertices(
     (vertices, edges)
 }
 
-/// Measures `EdgeStore::insert_edge` when each insert fits directly in the
+/// Measures the no-location `EdgeStore` insert path when each insert fits directly in the
 /// vertex-owned slab span. This isolates the update-side fast path before log
 /// spill or graph-level rebalance is involved.
 #[bench(raw)]
@@ -83,14 +83,18 @@ fn bench_lara_edge_store_slab_insert_1024() -> canbench_rs::BenchResult {
         for i in 0..helper::MEDIUM_N {
             let i = black_box(i);
             edges
-                .insert_edge(&vertices, VertexId::from(i as u32), helper::test_edge(i))
+                .insert_edge_without_logical_slot(
+                    &vertices,
+                    VertexId::from(i as u32),
+                    helper::test_edge(i),
+                )
                 .expect("insert slab edge");
         }
         black_box(vertices.len());
     })
 }
 
-/// Measures overflow-log admission after a tiny owned slab span fills. The
+/// Measures no-location overflow-log admission after a tiny owned slab span fills. The
 /// workload stays below the per-segment log cap and watches for regressions in
 /// log-chain writes and vertex `log_head` updates.
 #[bench(raw)]
@@ -101,7 +105,7 @@ fn bench_lara_edge_store_log_spill_128() -> canbench_rs::BenchResult {
         for i in 0..128 {
             let i = black_box(i);
             edges
-                .insert_edge(
+                .insert_edge_without_logical_slot(
                     &vertices,
                     VertexId::from(black_box(0u32)),
                     helper::test_edge(i),

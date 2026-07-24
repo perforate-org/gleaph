@@ -47,6 +47,12 @@ pub enum ScalarInsertStorage {
     OverflowLog,
 }
 
+#[derive(Clone, Copy)]
+enum ScalarLocationCapture {
+    Ignore,
+    Capture,
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -124,7 +130,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.insert_edge_skip_leaf_cascade_with_location(src, label_id, edge)
+        self.insert_edge_skip_leaf_cascade_impl(src, label_id, edge, ScalarLocationCapture::Ignore)
             .map(|_| ())
     }
 
@@ -133,6 +139,19 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         edge: E,
+    ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.insert_edge_skip_leaf_cascade_impl(src, label_id, edge, ScalarLocationCapture::Capture)
+    }
+
+    fn insert_edge_skip_leaf_cascade_impl(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        edge: E,
+        location_capture: ScalarLocationCapture,
     ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -250,10 +269,18 @@ where
                 successor_start,
                 src,
             );
-            match self
-                .edges
-                .insert_edge(&access, VertexId::from(0), attempt_edge.clone())
-            {
+            let insert_result = match location_capture {
+                ScalarLocationCapture::Ignore => self.edges.insert_edge_without_logical_slot(
+                    &access,
+                    VertexId::from(0),
+                    attempt_edge.clone(),
+                ),
+                ScalarLocationCapture::Capture => {
+                    self.edges
+                        .insert_edge(&access, VertexId::from(0), attempt_edge.clone())
+                }
+            };
+            match insert_result {
                 Ok(InsertLocation::Slab(written_slot)) if !has_edge_inline_value => {
                     return Ok(Some(ScalarInsertLocation {
                         logical_slot: written_slot,
@@ -313,6 +340,27 @@ where
                         logical_slot,
                         storage: ScalarInsertStorage::OverflowLog,
                     }));
+                }
+                Ok(InsertLocation::LogOnly { .. }) => {
+                    if has_edge_inline_value {
+                        bucket = self
+                            .buckets
+                            .read_label_bucket_slot(bucket_slot)
+                            .ok_or_else(|| {
+                                log_collect_overflow(
+                                    "insert_edge_skip_leaf_cascade: cannot re-read bucket after log insert",
+                                );
+                                LaraOperationError::CollectAllocationOverflow
+                            })?;
+                        let bucket = self.write_edge_inline_value_after_insert(
+                            src,
+                            bucket_slot,
+                            bucket,
+                            &attempt_edge,
+                        )?;
+                        self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+                    }
+                    return Ok(None);
                 }
                 Err(LaraOperationError::SegmentLogFull) => {
                     let vertex = self.vertices.get(src);
@@ -394,8 +442,15 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.insert_edge_skip_leaf_cascade_deferred_payload_with_location(src, label_id, edge)
-            .map(|_| ())
+        let was_deferred = self.payload_compaction_deferred.replace(true);
+        let result = self.insert_edge_skip_leaf_cascade_impl(
+            src,
+            label_id,
+            edge,
+            ScalarLocationCapture::Ignore,
+        );
+        self.payload_compaction_deferred.set(was_deferred);
+        result.map(|_| ())
     }
 
     pub(crate) fn insert_edge_skip_leaf_cascade_deferred_payload_with_location(

@@ -8,7 +8,7 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::scan_iter::{OutEdgeSlabIter, leaf_segment};
-use super::{DeleteTarget, EdgeStore, InsertLocation};
+use super::{DeleteTarget, EdgeLayout, EdgeStore, InsertLocation};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(super) fn collect_out_edge_refs_slot_order<V, A>(
@@ -151,27 +151,47 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
         let v_ord = u32::from(vid);
+        let log_owner = vertices.log_leaf_vertex(vid);
+        let logical_log_slot =
+            self.logical_slot_before_insert(&edge_layout, vertices, v_ord, log_owner, &v)?;
+        self.insert_edge_inner(vertices, vid, edge, Some(logical_log_slot))
+    }
+
+    /// Inserts an edge without calculating its logical slot.
+    ///
+    /// Callers that do not consume exact scalar locations avoid the slab/log traversal; the
+    /// returned location still records whether the write used the slab or overflow log.
+    pub(crate) fn insert_edge_without_logical_slot<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+        edge: E,
+    ) -> Result<InsertLocation, LaraOperationError>
+    where
+        V: CsrVertex + CsrVertexTombstoneScan,
+        A: VertexAccess<V>,
+    {
+        self.insert_edge_inner(vertices, vid, edge, None)
+    }
+
+    fn insert_edge_inner<V, A>(
+        &self,
+        vertices: &A,
+        vid: VertexId,
+        edge: E,
+        logical_log_slot: Option<u32>,
+    ) -> Result<InsertLocation, LaraOperationError>
+    where
+        V: CsrVertex + CsrVertexTombstoneScan,
+        A: VertexAccess<V>,
+    {
+        let edge_layout = self.edge_layout();
+        let v = vertices.get_in_range(vid)?;
+        let v_ord = u32::from(vid);
         if V::record_is_vertex_tombstone(&v) {
             return Err(LaraOperationError::VertexDeleted);
         }
         let log_owner = vertices.log_leaf_vertex(vid);
-
-        // Capture the logical row position before the write.  For log-backed rows the
-        // physical log entry index and the logical slot are different: tombstones and the
-        // slab prefix determine the latter.  Returning both from the storage write boundary
-        // lets higher layers build an exact handle without scanning the row again.
-        let slab_count = self
-            .on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?
-            .min(v.stored_degree());
-        let log_len = if v.log_head() >= 0 {
-            let leaf = leaf_segment(log_owner, edge_layout.segment_size);
-            self.overflow_log_chain_len(leaf, v.log_head())
-        } else {
-            0
-        };
-        let logical_log_slot = slab_count
-            .checked_add(log_len)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
 
         let _next_degree = v
             .degree()
@@ -210,14 +230,43 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 _next_degree,
                 edge,
             )?;
-            InsertLocation::Log {
-                log_index,
-                logical_slot: logical_log_slot,
+            match logical_log_slot {
+                Some(logical_slot) => InsertLocation::Log {
+                    log_index,
+                    logical_slot,
+                },
+                None => InsertLocation::LogOnly { log_index },
             }
         };
         self.set_num_edges(next_num_edges);
         self.bump_counts_leaf_with_layout(&edge_layout, log_owner, 1, 0)?;
         Ok(location)
+    }
+
+    fn logical_slot_before_insert<V, A>(
+        &self,
+        edge_layout: &EdgeLayout,
+        vertices: &A,
+        v_ord: u32,
+        log_owner: VertexId,
+        v: &V,
+    ) -> Result<u32, LaraOperationError>
+    where
+        V: CsrVertex,
+        A: VertexAccess<V>,
+    {
+        let slab_count = self
+            .on_slab_edges_with_layout(edge_layout, vertices, v_ord, v)?
+            .min(v.stored_degree());
+        let log_len = if v.log_head() >= 0 {
+            let leaf = leaf_segment(log_owner, edge_layout.segment_size);
+            self.overflow_log_chain_len(leaf, v.log_head())
+        } else {
+            0
+        };
+        slab_count
+            .checked_add(log_len)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)
     }
 
     pub(crate) fn remove_edge_slab_tombstone_matching<V, A, F>(

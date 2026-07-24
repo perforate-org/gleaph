@@ -162,6 +162,10 @@ metadata expected to recover acceptable lookup cost in promoted buckets. GraphSt
 for the most recently matching neighbor or payload after an insertion that returned an exact
 location.
 
+The location-producing EdgeStore path derives a log-backed row's next logical slot from the
+existing stored degree. It must not rescan the slab or overflow-log chain for every scalar insert;
+exact-location capture and update-path traversal remain separate concerns.
+
 A GraphStore footprint probe that creates one source and 128 or 1,024 named directed edges
 reports a total stable-memory increase of 16 Wasm pages in both cases. This is only a
 MemoryManager allocation baseline and must not be divided by edge count. The alias index's raw

@@ -513,15 +513,20 @@ where
             layout = self.layout();
             segment = self.segment_for_vertex_id_with_layout(&layout, src);
         }
-        let location = match self.edges.insert_edge(&self.vertices, src, edge.clone()) {
-            Ok(location) => location,
-            Err(LaraOperationError::SegmentLogFull) => {
-                self.rebalance_leaf_segment_with_layout(&layout, segment)
-                    .map_err(LaraOperationError::RebalanceFailed)?;
-                self.edges.insert_edge(&self.vertices, src, edge)?
-            }
-            Err(e) => return Err(e),
-        };
+        let location =
+            match self
+                .edges
+                .insert_edge_without_logical_slot(&self.vertices, src, edge.clone())
+            {
+                Ok(location) => location,
+                Err(LaraOperationError::SegmentLogFull) => {
+                    self.rebalance_leaf_segment_with_layout(&layout, segment)
+                        .map_err(LaraOperationError::RebalanceFailed)?;
+                    self.edges
+                        .insert_edge_without_logical_slot(&self.vertices, src, edge)?
+                }
+                Err(e) => return Err(e),
+            };
         Ok(InsertOutcome {
             segment,
             inserted_into_log: location.inserted_into_log(),
