@@ -214,6 +214,11 @@ Packed. Missing evidence is `Deferred`, never an implicit promotion. Rank-indexe
 the replacement direction; ordinary-caller activation and alias removal remain planned behind the
 alias-vs-rank-indexed gate.
 
+Plan 0177 aggregates the ten required topology rows into one status: `Adopt` only when every row is
+unique, exact, fail-closed, and passes both logical-byte and runtime gates; incomplete or unsafe
+evidence is `Hold`, while complete rows with performance failures are `Partial`. The current
+evidence remains non-authorizing, so ordinary callers continue to use the canonical/alias path.
+
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half
 Sampled bucket contributes `16 * ceil(n / K) + 10` bytes before blob headers, directories,

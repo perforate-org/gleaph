@@ -161,6 +161,82 @@ pub(crate) enum AdoptionDisposition {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AdoptionStatus {
+    Adopt,
+    Partial { ready: u8, total: u8 },
+    Hold,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum AdoptionFixtureId {
+    DirectedLow,
+    DirectedHigh,
+    UndirectedLow,
+    UndirectedHigh,
+    DirectedSelfLoop,
+    UndirectedSelfLoop,
+    Parallel,
+    SparseSlots,
+    MixedLabelsLow,
+    MixedLabelsHigh,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AdoptionEvidenceRow {
+    pub(crate) fixture_id: AdoptionFixtureId,
+    pub(crate) disposition: AdoptionDisposition,
+    pub(crate) evidence_present: bool,
+    pub(crate) exact_results: bool,
+    pub(crate) fallback_safe: bool,
+    pub(crate) logical_bytes_pass: bool,
+    pub(crate) runtime_pass: bool,
+}
+
+const REQUIRED_ADOPTION_FIXTURE_IDS: [AdoptionFixtureId; 10] = [
+    AdoptionFixtureId::DirectedLow,
+    AdoptionFixtureId::DirectedHigh,
+    AdoptionFixtureId::UndirectedLow,
+    AdoptionFixtureId::UndirectedHigh,
+    AdoptionFixtureId::DirectedSelfLoop,
+    AdoptionFixtureId::UndirectedSelfLoop,
+    AdoptionFixtureId::Parallel,
+    AdoptionFixtureId::SparseSlots,
+    AdoptionFixtureId::MixedLabelsLow,
+    AdoptionFixtureId::MixedLabelsHigh,
+];
+
+pub(crate) fn aggregate_adoption_status(rows: &[AdoptionEvidenceRow]) -> AdoptionStatus {
+    if rows.len() != REQUIRED_ADOPTION_FIXTURE_IDS.len()
+        || REQUIRED_ADOPTION_FIXTURE_IDS.iter().any(|required| {
+            rows.iter()
+                .filter(|row| row.fixture_id == *required)
+                .count()
+                != 1
+        })
+    {
+        return AdoptionStatus::Hold;
+    }
+    if rows.iter().any(|row| {
+        !row.evidence_present
+            || matches!(row.disposition, AdoptionDisposition::Deferred)
+            || !row.exact_results
+            || !row.fallback_safe
+    }) {
+        return AdoptionStatus::Hold;
+    }
+    let total = rows.len() as u8;
+    let ready = rows
+        .iter()
+        .filter(|row| row.logical_bytes_pass && row.runtime_pass)
+        .count() as u8;
+    if ready == total {
+        AdoptionStatus::Adopt
+    } else {
+        AdoptionStatus::Partial { ready, total }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestStratum {
     ScanOnly,
     SampledCheckpoint,
@@ -4059,6 +4135,65 @@ mod fixture_evidence_tests {
             ),
             AdoptionDisposition::ScanOnly
         );
+    }
+
+    fn complete_adoption_rows() -> Vec<AdoptionEvidenceRow> {
+        REQUIRED_ADOPTION_FIXTURE_IDS
+            .into_iter()
+            .map(|fixture_id| AdoptionEvidenceRow {
+                fixture_id,
+                disposition: AdoptionDisposition::ScanOnly,
+                evidence_present: true,
+                exact_results: true,
+                fallback_safe: true,
+                logical_bytes_pass: true,
+                runtime_pass: true,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn adoption_status_requires_complete_unique_safe_matrix() {
+        assert_eq!(
+            aggregate_adoption_status(&complete_adoption_rows()),
+            AdoptionStatus::Adopt
+        );
+
+        let mut missing = complete_adoption_rows();
+        missing.pop();
+        assert_eq!(aggregate_adoption_status(&missing), AdoptionStatus::Hold);
+
+        let mut duplicate = complete_adoption_rows();
+        duplicate[1].fixture_id = duplicate[0].fixture_id;
+        assert_eq!(aggregate_adoption_status(&duplicate), AdoptionStatus::Hold);
+
+        let mut absent = complete_adoption_rows();
+        absent[0].evidence_present = false;
+        assert_eq!(aggregate_adoption_status(&absent), AdoptionStatus::Hold);
+
+        let mut unsafe_result = complete_adoption_rows();
+        unsafe_result[0].exact_results = false;
+        assert_eq!(
+            aggregate_adoption_status(&unsafe_result),
+            AdoptionStatus::Hold
+        );
+    }
+
+    #[test]
+    fn adoption_status_distinguishes_performance_partial_from_hold() {
+        let mut partial = complete_adoption_rows();
+        partial[1].logical_bytes_pass = false;
+        partial[6].runtime_pass = false;
+        assert_eq!(
+            aggregate_adoption_status(&partial),
+            AdoptionStatus::Partial {
+                ready: 8,
+                total: 10
+            }
+        );
+
+        partial[2].disposition = AdoptionDisposition::Deferred;
+        assert_eq!(aggregate_adoption_status(&partial), AdoptionStatus::Hold);
     }
 
     #[test]
