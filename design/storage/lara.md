@@ -251,6 +251,9 @@ ownership or lifecycle measurement, and it does not activate or replace the alia
 Measurement fixtures reserve usable `MemoryId`s from `254` downward (`255` is reserved by
 `MemoryManager`) so they cannot overlap the production Graph low-ID layout as that layout grows.
 
+Plan 0147 now provides the bench-only `MeasurementMemoryBundle` ownership boundary; it does not
+yet populate real candidate representations or expose their canonical identity rows.
+
 ---
 
 ## What is IC-specific (substrate only)

@@ -697,6 +697,10 @@ internal `MemoryManager` marker). The production Graph layout owns the low-ID ra
 benchmark/test allocation must not consume IDs from that range even when the fixture uses a fresh
 in-memory `MemoryManager`.
 
+Plan 0147 implements this first ownership boundary in `ic-stable-lara` with a fresh
+`MeasurementMemoryBundle` per candidate and a non-interference test. Real LARA population,
+canonical identity extraction, and evidence integration remain pending.
+
 ## Related
 
 - [ADR 0001](0001-labeled-segment-slide.md): PMA leaf physical ownership and relocation.
