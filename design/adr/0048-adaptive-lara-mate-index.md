@@ -700,7 +700,8 @@ in-memory `MemoryManager`.
 Plan 0147 implements this first ownership boundary in `ic-stable-lara` with a fresh
 `MeasurementMemoryBundle` per candidate and a non-interference test. AliasOnly fixture
 construction now populates real bidirectional LARA and extracts physical identity rows;
-ScanOnly/Published population and evidence integration remain pending.
+ScanOnly/Published population and evidence integration remain pending. The AliasOnly builder is
+exposed only through the `adoption-fixtures` feature, which Graph enables only for `canbench`.
 
 ## Related
 

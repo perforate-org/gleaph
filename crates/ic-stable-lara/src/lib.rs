@@ -49,6 +49,9 @@
 #![feature(specialization)]
 #![warn(missing_docs)]
 
+#[cfg(feature = "adoption-fixtures")]
+pub mod adoption_fixture;
+
 use derive_more::{Display, From, Into};
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use std::{

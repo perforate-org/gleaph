@@ -17,7 +17,12 @@ crate-type = ["cdylib", "rlib"]
 default = ["gql-parse", "plan-wire"]
 gql-parse = []
 plan-wire = ["gleaph-gql-planner/plan-wire"]
-canbench = ["dep:canbench-rs", "dep:serde_json", "dep:sha2"]
+canbench = [
+    "dep:canbench-rs",
+    "dep:serde_json",
+    "dep:sha2",
+    "ic-stable-lara/adoption-fixtures",
+]
 canbench_uniform_4 = ["canbench"]
 canbench_uniform_8 = ["canbench"]
 canbench_uniform_16 = ["canbench"]
