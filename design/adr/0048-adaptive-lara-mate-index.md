@@ -702,8 +702,9 @@ Plan 0147 implements this first ownership boundary in `ic-stable-lara` with a fr
 construction now populates real bidirectional LARA and extracts physical identity rows;
 ScanOnly/Published population and evidence integration remain pending. The AliasOnly builder is
 exposed only through the `adoption-fixtures` feature, which Graph enables only for `canbench`.
-The Graph bench adapter now consumes those physical rows for both directed AliasOnly fixture sizes;
-unsupported shapes remain deferred.
+The Graph bench adapter now consumes those physical rows for both directed sizes plus undirected
+and undirected-self-loop AliasOnly fixtures; parallel, sparse-slot, and mixed-label shapes remain
+deferred.
 
 ## Related
 

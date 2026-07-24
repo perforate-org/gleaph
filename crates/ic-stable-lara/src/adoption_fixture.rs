@@ -3,7 +3,10 @@
 //! This module is not part of the production stable layout. It owns a fresh in-memory manager,
 //! allocates usable `MemoryId`s from 254 downward, and exposes only exact physical identities.
 
-use crate::{BidirectionalLaraGraph, Vertex, VertexId, traits::CsrEdge};
+use crate::{
+    BidirectionalLaraGraph, Vertex, VertexId,
+    traits::{CsrEdge, CsrEdgeUndirected},
+};
 use ic_stable_structures::{
     DefaultMemoryImpl,
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
@@ -38,29 +41,49 @@ pub struct PhysicalIdentity {
     pub slot: u32,
 }
 
-/// Four-byte directed fixture edge payload.
+/// Four-byte fixture edge payload with an explicit undirected marker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FixtureEdge(pub u32);
+pub struct FixtureEdge {
+    /// Neighbor vertex ID.
+    pub neighbor: u32,
+    /// Whether the record is an undirected adjacency.
+    pub undirected: bool,
+}
 
 impl CsrEdge for FixtureEdge {
-    const BYTES: usize = 4;
+    const BYTES: usize = 5;
 
     fn read_from(bytes: &[u8]) -> Self {
-        Self(u32::from_le_bytes(
-            bytes[..4].try_into().expect("fixture edge bytes"),
-        ))
+        Self {
+            neighbor: u32::from_le_bytes(bytes[..4].try_into().expect("fixture edge bytes")),
+            undirected: bytes[4] != 0,
+        }
     }
 
     fn write_to(&self, bytes: &mut [u8]) {
-        bytes[..4].copy_from_slice(&self.0.to_le_bytes());
+        bytes[..4].copy_from_slice(&self.neighbor.to_le_bytes());
+        bytes[4] = u8::from(self.undirected);
     }
 
     fn neighbor_vid(&self) -> VertexId {
-        VertexId::from(self.0)
+        VertexId::from(self.neighbor)
     }
 
     fn with_neighbor_vid(&self, vid: VertexId) -> Self {
-        Self(u32::from(vid))
+        Self {
+            neighbor: u32::from(vid),
+            ..*self
+        }
+    }
+}
+
+impl CsrEdgeUndirected for FixtureEdge {
+    fn is_undirected(&self) -> bool {
+        self.undirected
+    }
+
+    fn with_undirected(self, undirected: bool) -> Self {
+        Self { undirected, ..self }
     }
 }
 
@@ -149,7 +172,10 @@ pub fn build_alias_only_fixture(
             .insert_directed(
                 VertexId::from(source),
                 VertexId::from(target),
-                FixtureEdge(target),
+                FixtureEdge {
+                    neighbor: target,
+                    undirected: false,
+                },
             )
             .map_err(|error| format!("fixture edge insert failed: {error}"))?;
     }
@@ -193,6 +219,99 @@ pub fn build_alias_only_fixture(
     })
 }
 
+/// Build an isolated AliasOnly fixture from undirected endpoint pairs.
+pub fn build_alias_only_undirected_fixture(
+    vertex_count: u32,
+    edges: &[(u32, u32)],
+) -> Result<AliasOnlyFixture, String> {
+    let mut memories = MemoryBundle::new(FixtureRepresentation::AliasOnly);
+    let graph = BidirectionalLaraGraph::new(
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        memories.memory(),
+        u64::from(vertex_count).saturating_mul(8).max(16),
+        16,
+        0,
+    )
+    .map_err(|error| format!("fixture graph init failed: {error}"))?;
+    let target_segments = crate::lara::edge::segment_tree_leaf_count(vertex_count.into(), 16);
+    graph
+        .forward()
+        .edges()
+        .grow_segment_tree_to(target_segments)
+        .map_err(|error| format!("forward fixture geometry failed: {error}"))?;
+    graph
+        .reverse()
+        .edges()
+        .grow_segment_tree_to(target_segments)
+        .map_err(|error| format!("reverse fixture geometry failed: {error}"))?;
+    for vid in 0..vertex_count {
+        graph
+            .push_vertex(Vertex::from_parts(u64::from(vid) * 16, 0, 0, -1, false))
+            .map_err(|error| format!("fixture vertex insert failed: {error}"))?;
+    }
+    for &(source, target) in edges {
+        if source >= vertex_count || target >= vertex_count {
+            return Err("fixture edge endpoint is out of range".to_owned());
+        }
+        graph
+            .insert_undirected(
+                VertexId::from(source),
+                VertexId::from(target),
+                FixtureEdge {
+                    neighbor: target,
+                    undirected: true,
+                },
+            )
+            .map_err(|error| format!("fixture edge insert failed: {error}"))?;
+    }
+
+    let expected = edges
+        .iter()
+        .map(|(source, target)| if source == target { 1 } else { 2 })
+        .sum::<usize>();
+    let mut identities = Vec::with_capacity(expected);
+    for owner in 0..vertex_count {
+        for edge in graph
+            .undirected_edges_iter(VertexId::from(owner), crate::OutEdgeOrder::Ascending)
+            .map_err(|error| format!("undirected identity scan failed: {error}"))?
+        {
+            identities.push(PhysicalIdentity {
+                owner,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 0,
+                slot: edge.edge_slot_index_raw(),
+            });
+        }
+    }
+    identities.sort();
+    if identities.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("fixture produced duplicate physical identities".to_owned());
+    }
+    if identities.len() != expected {
+        return Err(format!(
+            "fixture physical identity cardinality mismatch: expected {expected}, got {}",
+            identities.len()
+        ));
+    }
+    Ok(AliasOnlyFixture {
+        graph,
+        identities,
+        representation: memories.representation,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +322,20 @@ mod tests {
         assert_eq!(fixture.identities.len(), 4);
         assert_eq!(fixture.representation, FixtureRepresentation::AliasOnly);
         assert!(fixture.identities.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn undirected_fixture_has_two_rows_and_self_loop_has_one() {
+        let fixture =
+            build_alias_only_undirected_fixture(4, &[(0, 1), (2, 2)]).expect("undirected fixture");
+        assert_eq!(fixture.identities.len(), 3);
+        assert_eq!(
+            fixture
+                .identities
+                .iter()
+                .filter(|identity| identity.owner == identity.target)
+                .count(),
+            1
+        );
     }
 }

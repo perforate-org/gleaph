@@ -254,8 +254,8 @@ Measurement fixtures reserve usable `MemoryId`s from `254` downward (`255` is re
 Plan 0147 now provides the bench-only `MeasurementMemoryBundle` ownership boundary and an
 AliasOnly bidirectional-LARA fixture with physical identity extraction. The fixture API is enabled
 only for measurement builds; ScanOnly/Published population and evidence integration remain
-deferred. Graph's bench adapter consumes the AliasOnly physical rows for both directed fixture sizes
-only.
+deferred. Graph's bench adapter consumes AliasOnly physical rows for directed, undirected, and
+undirected-self-loop fixtures only.
 
 ---
 
