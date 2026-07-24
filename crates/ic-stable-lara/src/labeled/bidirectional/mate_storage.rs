@@ -972,6 +972,70 @@ mod tests {
         .expect("blob")
     }
 
+    fn multi_bucket_blob() -> Vec<u8> {
+        MateBlob {
+            buckets: vec![
+                Bucket {
+                    owner_vertex_id: 2,
+                    bucket_label_key: 7,
+                    entries: 1,
+                    mode: Mode::Packed { width_bytes: 1 },
+                    mapping: vec![1, 2],
+                },
+                Bucket {
+                    owner_vertex_id: 5,
+                    bucket_label_key: 9,
+                    entries: 2,
+                    mode: Mode::Packed { width_bytes: 2 },
+                    mapping: vec![0, 0, 0, 3, 0, 1, 0, 4],
+                },
+            ],
+        }
+        .encode()
+        .expect("multi-bucket blob")
+    }
+
+    #[test]
+    fn one_leaf_locator_publishes_and_reopens_multiple_buckets() {
+        let [locator, blobs, free_spans, free_span_by_start] = memories();
+        let storage = MateStorage::init(locator, blobs, free_spans, free_span_by_start, 4)
+            .expect("fresh storage");
+        let encoded = multi_bucket_blob();
+        storage
+            .replace(0, &encoded)
+            .expect("publish multi-bucket blob");
+        assert!(matches!(
+            storage.locator_state(0).expect("published row"),
+            MateLocatorState::Published { .. }
+        ));
+        let offset = storage
+            .published_blob_offset(0)
+            .expect("offset")
+            .expect("published");
+        let published = MateBlob::decode(&storage.blobs.read(offset).expect("blob bytes"))
+            .expect("decode published blob");
+        assert_eq!(published.buckets.len(), 2);
+        assert_eq!(
+            storage.locator_state(1).expect("neighbor row"),
+            MateLocatorState::ScanOnly
+        );
+
+        let memories = storage.into_memories();
+        let reopened = MateStorage::init(memories.0, memories.1, memories.2, memories.3, 4)
+            .expect("reopen multi-bucket blob");
+        assert!(matches!(
+            reopened.locator_state(0).expect("reopened published row"),
+            MateLocatorState::Published { .. }
+        ));
+        assert_eq!(
+            reopened
+                .published_bucket(0, 5, 9)
+                .expect("bucket")
+                .map(|b| b.entries),
+            Some(2)
+        );
+    }
+
     #[test]
     fn fresh_reopen_and_replace_retire_old_span() {
         let [locator, blobs, free_spans, free_span_by_start] = memories();

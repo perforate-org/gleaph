@@ -1011,8 +1011,13 @@ bytes before payload and derives payload length from `total_len`; it has no per-
 That bucket-locator/raw-payload split remains an isolated evidence fixture, not the selected
 production layout.
 
-The selected production baseline remains the existing leaf-scoped locator plus one multi-bucket
-blob per leaf. The next compaction target is to keep the leaf locator unchanged, reduce the blob
+Plan 0171 reconciles the implemented owner with the earlier bucket-locator/raw-payload fixture:
+the production baseline is the existing leaf-scoped locator plus one multi-bucket blob per leaf.
+One locator row therefore covers all indexed buckets in an orientation/leaf; bucket identity is
+resolved by the blob directory, not by a second locator collection. Reopen and publication remain
+all-or-nothing across the four existing mate regions, and a fresh reset is required for any future
+format replacement because development compatibility is not maintained. The next compaction target
+is to keep the leaf locator unchanged, reduce the blob
 header from the historical 24 bytes to an 8-byte `{bucket_count, total_length}` header, and reduce
 each bucket-directory entry from 20 bytes to approximately 15 bytes: owner vertex (4), label (2),
 packed candidate/width flags (1), cardinality (4), and mapping offset (4). Mapping length is

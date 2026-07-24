@@ -507,8 +507,12 @@ The isolated fixture uses a fixed 32-byte region header matching existing LARA b
 a 22-byte fixed locator value, and a separate raw payload region; its old self-contained envelope
 codec remains only as a validation fixture.
 This bucket-locator/raw-payload split is not the selected production layout and does not allocate or
-register production `MemoryId`s. Production remains the existing leaf locator plus multi-bucket
-blob owner. The planned compact blob format keeps the 5-byte leaf locator, uses an 8-byte blob
+register production `MemoryId`s. Plan 0171 confirms the existing `MateStorage` owner as the
+production baseline: one five-byte locator row addresses one orientation/leaf and its blob
+directory contains all indexed buckets for that leaf. Reopen and publication use the existing
+four-region composite boundary; future format replacement requires a fresh reset because
+development stable-data compatibility is not maintained. The planned compact blob format keeps
+the 5-byte leaf locator, uses an 8-byte blob
 header (`bucket_count` and `total_length`), and targets approximately 15-byte directory entries
 (owner 4, label 2, packed flags 1, cardinality 4, mapping offset 4), deriving mapping length from
 the next offset/blob end. Its logical overhead target is `13 + 15B` bytes per leaf versus the
