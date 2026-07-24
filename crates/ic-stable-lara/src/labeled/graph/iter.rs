@@ -431,11 +431,25 @@ where
     type Item = Result<E, LabeledOperationError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        self.next_with_slot()
+            .map(|result| result.map(|(_, edge)| edge))
+    }
+}
+
+impl<E, M> LabeledBucketScan<'_, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    pub(crate) fn next_with_slot(&mut self) -> Option<Result<(u32, E), LabeledOperationError>> {
         let edge = match &mut self.kind {
-            LabeledBucketScanKind::Desc { iter } => iter.next()?,
-            LabeledBucketScanKind::Asc { iter } => iter.next()?,
+            LabeledBucketScanKind::Desc { iter } => iter.next_with_slot()?,
+            LabeledBucketScanKind::Asc { iter } => {
+                let edge = iter.next()?;
+                (edge.edge_slot_index_raw(), edge)
+            }
         };
-        let slot = edge.edge_slot_index_raw();
+        let (slot, edge) = edge;
         let edge = edge.with_label_id(self.label_id.raw());
         if self.attach_payload {
             let ordinal = self.next_payload_ordinal;
@@ -447,19 +461,23 @@ where
                     self.next_payload_ordinal = self.next_payload_ordinal.saturating_add(1);
                 }
             }
-            Some(self.graph.attach_edge_inline_value_at_ordinal(
-                self.src,
-                &self.bucket,
-                ordinal,
-                edge.with_slot_index(slot),
-                self.log_chains.as_ref(),
-            ))
+            Some(
+                self.graph
+                    .attach_edge_inline_value_at_ordinal(
+                        self.src,
+                        &self.bucket,
+                        ordinal,
+                        edge.with_slot_index(slot),
+                        self.log_chains.as_ref(),
+                    )
+                    .map(|edge| (slot, edge)),
+            )
         } else {
-            Some(Ok(edge))
+            Some(Ok((slot, edge)))
         }
     }
 
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+    fn nth(&mut self, n: usize) -> Option<Result<E, LabeledOperationError>> {
         for _ in 0..n {
             match self.next()? {
                 Ok(_) => {}
@@ -527,6 +545,13 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    pub(crate) fn next_with_slot(&mut self) -> Option<Result<(u32, E), LabeledOperationError>> {
+        match self {
+            Self::Empty => None,
+            Self::Scan(scan) => scan.next_with_slot(),
+        }
+    }
+
     pub(super) fn desc<'a>(
         graph: &'a LabeledLaraGraph<E, M>,
         src: VertexId,

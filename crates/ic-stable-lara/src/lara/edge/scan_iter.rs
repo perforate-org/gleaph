@@ -478,6 +478,50 @@ where
     }
 }
 
+impl<E, M> OutEdgesIter<'_, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    /// Returns the canonical logical slot explicitly, without relying on the edge type's
+    /// optional slot annotation support.
+    pub(crate) fn next_with_slot(&mut self) -> Option<(u32, E)> {
+        if self.yield_remaining == 0 {
+            return None;
+        }
+        while self.log_pos < self.log_entries.len() {
+            let edge = self.log_entries[self.log_pos].clone();
+            self.log_pos += 1;
+            let slot = self.next_log_slot;
+            self.next_log_slot = self.next_log_slot.saturating_sub(1);
+            if let Some(edge) = edge {
+                self.yield_remaining -= 1;
+                return Some((slot, edge));
+            }
+        }
+
+        while self.remaining_slab > 0 {
+            self.remaining_slab -= 1;
+            let slot_idx = self.remaining_slab;
+            if self.slab_slot_deleted(slot_idx) {
+                continue;
+            }
+            let edge = self.decode_slab_slot(slot_idx);
+            if edge.is_deleted_slot() {
+                continue;
+            }
+            self.yield_remaining -= 1;
+            return Some((slot_idx, edge));
+        }
+        debug_assert_eq!(
+            self.yield_remaining, 0,
+            "slab scan ended before yielding all logical edges"
+        );
+        self.yield_remaining = 0;
+        None
+    }
+}
+
 impl<E, M> Iterator for OutEdgesIter<'_, E, M>
 where
     E: CsrEdge,

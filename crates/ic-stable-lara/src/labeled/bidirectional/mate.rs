@@ -101,14 +101,14 @@ where
 {
     let mut rows = Vec::new();
     graph
-        .for_each_live_edge_slot_for_label(edge.owner_vertex_id, edge.label_id, |slot, row| {
-            rows.push((slot, row));
+        .for_each_live_edge_slot_for_label_desc(edge.owner_vertex_id, edge.label_id, |slot, row| {
+            rows.push((slot, row.neighbor_vid()));
         })
         .map_err(|err| MateLookupError::ReadFailed(err.to_string()))?;
     let source_neighbor = rows
         .iter()
         .find(|(slot, _)| *slot == edge.slot_index)
-        .map(|(_, row)| row.neighbor_vid());
+        .map(|(_, neighbor)| *neighbor);
     let Some(source_neighbor) = source_neighbor else {
         return Err(MateLookupError::SourceNotFound(edge));
     };
@@ -121,18 +121,21 @@ where
         return Err(MateLookupError::AmbiguousSource(edge));
     }
 
-    let mut rank = 0u32;
     let mut total = 0u32;
     let mut seen = false;
     let row_count = u32::try_from(rows.len())
         .map_err(|_| MateLookupError::ReadFailed("source row count overflow".into()))?;
-    for (slot, row) in rows {
-        if row.neighbor_vid() != source_neighbor {
+    let mut greater = 0u32;
+    for (slot, neighbor) in rows {
+        if neighbor != source_neighbor {
             continue;
         }
         if slot == edge.slot_index {
             seen = true;
-            rank = total;
+        } else if slot > edge.slot_index {
+            greater = greater
+                .checked_add(1)
+                .ok_or_else(|| MateLookupError::ReadFailed("source rank overflow".into()))?;
         }
         total = total
             .checked_add(1)
@@ -141,6 +144,10 @@ where
     if !seen {
         return Err(MateLookupError::SourceNotFound(edge));
     }
+    let rank = total
+        .checked_sub(greater)
+        .and_then(|value| value.checked_sub(1))
+        .ok_or_else(|| MateLookupError::ReadFailed("source rank underflow".into()))?;
     Ok((source_neighbor, rank, total, row_count))
 }
 
@@ -155,40 +162,33 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    let mut count = 0u32;
-    let mut selected = None;
-    let mut overflow = false;
+    let mut matching_slots = Vec::new();
     graph
-        .for_each_live_edge_slot_for_label(owner, label, |slot, row| {
+        .for_each_live_edge_slot_for_label_desc(owner, label, |slot, row| {
             if row.neighbor_vid() == neighbor {
-                if overflow {
-                    return;
-                }
-                if count == rank {
-                    selected = Some(PhysicalEdgeRef {
-                        orientation: Orientation::Forward,
-                        owner_vertex_id: owner,
-                        label_id: label,
-                        slot_index: slot,
-                    });
-                }
-                count = match count.checked_add(1) {
-                    Some(next) => next,
-                    None => {
-                        overflow = true;
-                        count
-                    }
-                };
+                matching_slots.push(slot);
             }
         })
         .map_err(|err| MateLookupError::ReadFailed(err.to_string()))?;
-    if overflow {
-        return Err(MateLookupError::ReadFailed(
-            "counterpart rank overflow".into(),
-        ));
-    }
-    selected
-        .map(|edge| (edge, count))
+    let count = u32::try_from(matching_slots.len())
+        .map_err(|_| MateLookupError::ReadFailed("counterpart rank overflow".into()))?;
+    let reverse_index = count
+        .checked_sub(rank)
+        .and_then(|value| value.checked_sub(1))
+        .and_then(|index| usize::try_from(index).ok());
+    reverse_index
+        .and_then(|index| matching_slots.get(index).copied())
+        .map(|slot| {
+            (
+                PhysicalEdgeRef {
+                    orientation: Orientation::Forward,
+                    owner_vertex_id: owner,
+                    label_id: label,
+                    slot_index: slot,
+                },
+                count,
+            )
+        })
         .ok_or(MateLookupError::MateNotFound(PhysicalEdgeRef {
             orientation: Orientation::Forward,
             owner_vertex_id: owner,
