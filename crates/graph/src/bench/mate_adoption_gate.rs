@@ -5001,6 +5001,155 @@ mod fixture_evidence_tests {
         );
     }
 
+    #[cfg(feature = "canbench")]
+    #[test]
+    fn real_candidate_probes_match_canonical_and_fail_closed() {
+        let (directed, directed_refs) = published_directed_runtime_fixture();
+        let shared = SharedOrientationLookup::build(&directed.identities, false)
+            .expect("directed shared candidate");
+        for edge in directed_refs {
+            let canonical = directed
+                .graph
+                .mate_of(edge)
+                .expect("canonical directed mate");
+            let rank = shared
+                .rank_for(
+                    u32::from(edge.owner_vertex_id),
+                    u32::from(canonical.owner_vertex_id),
+                    edge.slot_index,
+                )
+                .expect("shared source rank");
+            assert_eq!(
+                shared.lookup(
+                    u32::from(edge.owner_vertex_id),
+                    u32::from(canonical.owner_vertex_id),
+                    rank,
+                ),
+                Some(canonical.slot_index)
+            );
+        }
+        assert!(shared.lookup(0, 1, u32::MAX).is_none());
+        assert!(shared.lookup(u32::MAX, 0, 0).is_none());
+
+        let (parallel, parallel_refs) = published_parallel_runtime_fixture();
+        let parallel_shared = SharedOrientationLookup::build(&parallel.identities, false)
+            .expect("parallel shared candidate");
+        for edge in parallel_refs {
+            let canonical = parallel
+                .graph
+                .mate_of(edge)
+                .expect("canonical parallel mate");
+            let rank = parallel_shared
+                .rank_for(
+                    u32::from(edge.owner_vertex_id),
+                    u32::from(canonical.owner_vertex_id),
+                    edge.slot_index,
+                )
+                .expect("parallel source rank");
+            assert_eq!(
+                parallel_shared.lookup(
+                    u32::from(edge.owner_vertex_id),
+                    u32::from(canonical.owner_vertex_id),
+                    rank,
+                ),
+                Some(canonical.slot_index)
+            );
+        }
+        assert!(parallel_shared.lookup(0, 1, u32::MAX).is_none());
+
+        let sparse = ic_stable_lara::adoption_fixture::build_sparse_slot_published_fixture(64)
+            .expect("sparse candidate fixture");
+        let sparse_shared = SharedOrientationLookup::build(&sparse.identities, false)
+            .expect("sparse shared candidate");
+        let sparse_label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
+        for identity in &sparse.identities {
+            let edge = ic_stable_lara::labeled::PhysicalEdgeRef {
+                orientation: if identity.orientation == 0 {
+                    ic_stable_lara::labeled::LabeledOrientation::Forward
+                } else {
+                    ic_stable_lara::labeled::LabeledOrientation::Reverse
+                },
+                owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
+                label_id: sparse_label,
+                slot_index: identity.slot,
+            };
+            // The canonical mate scan intentionally addresses slab slots only. Sparse fixture
+            // identities retain overflow-log locations (high-bit slots), so the independent
+            // fixture identity relation is the oracle for this physical-location probe.
+            let mut counterparts = sparse
+                .identities
+                .iter()
+                .filter(|other| {
+                    other.owner == identity.target
+                        && other.target == identity.owner
+                        && other.orientation != identity.orientation
+                })
+                .collect::<Vec<_>>();
+            counterparts.sort_unstable_by_key(|other| other.slot);
+            let mut sources = sparse
+                .identities
+                .iter()
+                .filter(|other| {
+                    other.owner == identity.owner
+                        && other.target == identity.target
+                        && other.orientation == identity.orientation
+                })
+                .collect::<Vec<_>>();
+            sources.sort_unstable_by_key(|other| other.slot);
+            let source_rank = sources
+                .iter()
+                .position(|other| other.slot == identity.slot)
+                .expect("sparse source rank");
+            let expected_slot = counterparts
+                .get(source_rank)
+                .expect("sparse counterpart rank")
+                .slot;
+            let rank = sparse_shared
+                .rank_for(
+                    u32::from(edge.owner_vertex_id),
+                    identity.target,
+                    edge.slot_index,
+                )
+                .expect("sparse source rank");
+            assert_eq!(
+                sparse_shared.lookup(u32::from(edge.owner_vertex_id), identity.target, rank,),
+                Some(expected_slot)
+            );
+        }
+        assert!(sparse_shared.lookup(0, 1, u32::MAX).is_none());
+
+        let (undirected, undirected_refs) = published_undirected_runtime_fixture();
+        let pair_rank = UndirectedPairRankLookup::build(&undirected.identities)
+            .expect("undirected pair-rank candidate");
+        for edge in undirected_refs {
+            let canonical = undirected
+                .graph
+                .mate_of(edge)
+                .expect("canonical undirected mate");
+            let rank = undirected
+                .identities
+                .iter()
+                .filter(|identity| {
+                    identity.owner == u32::from(edge.owner_vertex_id)
+                        && identity.target == u32::from(canonical.owner_vertex_id)
+                        && identity.slot <= edge.slot_index
+                })
+                .count()
+                .checked_sub(1)
+                .expect("pair-rank source rank") as u32;
+            assert_eq!(
+                pair_rank.lookup(
+                    u32::from(edge.owner_vertex_id),
+                    u32::from(canonical.owner_vertex_id),
+                    rank,
+                ),
+                Some(canonical.slot_index)
+            );
+        }
+        assert!(pair_rank.lookup(0, 1, u32::MAX).is_none());
+        assert!(pair_rank.lookup(u32::MAX, 0, 0).is_none());
+    }
+
     #[test]
     fn committed_probe_snapshots_populate_known_non_deterministic_rows() {
         let mut directed = observation();
