@@ -182,6 +182,24 @@ pub(crate) enum AdoptionFixtureId {
     MixedLabelsHigh,
 }
 
+impl AdoptionFixtureId {
+    pub(crate) fn from_fixture_id(value: &str) -> Option<Self> {
+        match value {
+            "directed_low" => Some(Self::DirectedLow),
+            "directed_high" => Some(Self::DirectedHigh),
+            "undirected_low" => Some(Self::UndirectedLow),
+            "undirected_high" => Some(Self::UndirectedHigh),
+            "directed_self_loop" => Some(Self::DirectedSelfLoop),
+            "undirected_self_loop" => Some(Self::UndirectedSelfLoop),
+            "parallel" => Some(Self::Parallel),
+            "sparse_slots" => Some(Self::SparseSlots),
+            "mixed_labels_low" => Some(Self::MixedLabelsLow),
+            "mixed_labels_high" => Some(Self::MixedLabelsHigh),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AdoptionEvidenceRow {
     pub(crate) fixture_id: AdoptionFixtureId,
@@ -4755,6 +4773,14 @@ mod fixture_evidence_tests {
             );
             assert_eq!(canonical_identity_digest(&fixture.identities).len(), 64);
         }
+    }
+
+    #[test]
+    fn required_fixture_specs_map_to_typed_ids_without_substitution() {
+        for spec in FixtureSpec::required_matrix() {
+            assert!(AdoptionFixtureId::from_fixture_id(spec.id).is_some());
+        }
+        assert_eq!(AdoptionFixtureId::from_fixture_id("unknown_topology"), None);
     }
 
     #[test]
