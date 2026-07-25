@@ -5118,6 +5118,63 @@ mod fixture_evidence_tests {
         }
         assert!(sparse_shared.lookup(0, 1, u32::MAX).is_none());
 
+        let mixed = ic_stable_lara::adoption_fixture::build_mixed_label_published_fixture(2, 128)
+            .expect("mixed-label candidate fixture");
+        for label_raw in [1u16, 2u16] {
+            let label = ic_stable_lara::labeled::BucketLabelKey::from_raw(label_raw);
+            let label_identities = mixed
+                .identities
+                .iter()
+                .filter(|identity| identity.label == label_raw)
+                .map(
+                    |identity| ic_stable_lara::adoption_fixture::PhysicalIdentity {
+                        owner: identity.owner,
+                        target: identity.target,
+                        orientation: identity.orientation,
+                        slot: identity.slot,
+                    },
+                )
+                .collect::<Vec<_>>();
+            let label_shared = SharedOrientationLookup::build(&label_identities, false)
+                .expect("mixed-label shared candidate");
+            for identity in mixed
+                .identities
+                .iter()
+                .filter(|identity| identity.label == label_raw)
+            {
+                let edge = ic_stable_lara::labeled::PhysicalEdgeRef {
+                    orientation: if identity.orientation == 0 {
+                        ic_stable_lara::labeled::LabeledOrientation::Forward
+                    } else {
+                        ic_stable_lara::labeled::LabeledOrientation::Reverse
+                    },
+                    owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
+                    label_id: label,
+                    slot_index: identity.slot,
+                };
+                let canonical = mixed
+                    .graph
+                    .mate_of(edge)
+                    .expect("canonical mixed-label mate");
+                let rank = label_shared
+                    .rank_for(
+                        u32::from(edge.owner_vertex_id),
+                        u32::from(canonical.owner_vertex_id),
+                        edge.slot_index,
+                    )
+                    .expect("mixed-label source rank");
+                assert_eq!(
+                    label_shared.lookup(
+                        u32::from(edge.owner_vertex_id),
+                        u32::from(canonical.owner_vertex_id),
+                        rank,
+                    ),
+                    Some(canonical.slot_index)
+                );
+            }
+            assert!(label_shared.lookup(0, 1, u32::MAX).is_none());
+        }
+
         let (undirected, undirected_refs) = published_undirected_runtime_fixture();
         let pair_rank = UndirectedPairRankLookup::build(&undirected.identities)
             .expect("undirected pair-rank candidate");
