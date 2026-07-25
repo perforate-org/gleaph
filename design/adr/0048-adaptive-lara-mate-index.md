@@ -1085,6 +1085,16 @@ rank-indexed is 2,840 / 1.56M and 128 / 323.90K respectively. Sampled residual r
 on parallel-32 at B=32/64 but its bounded local scan is 1.26M instructions. These remain
 measurement-only values; the threshold gate and production layout accounting are not closed.
 
+Plan 0180 optimizes the integrated Published lookup without changing the compact blob format or
+the exact/fail-closed contract.  The runtime now caches one decoded leaf blob, validates packed
+source ordering once during decode, binary-searches packed mappings, and evaluates the selected
+bucket without cloning its mapping on every request.  The full persisted canbench sweep reports
+27.44M candidate versus 13.82M canonical instructions for directed-high, 75.76M versus 40.46M
+for parallel, and 26.39M versus 16.91M for undirected-high; heap and stable-memory deltas are
+zero.  Candidate runtime therefore remains slower than canonical scan, so all topologies remain
+Hold/ScanOnly and ordinary-caller activation or alias removal is not authorized.  This closes the
+optimization measurement slice, not the adoption gate.
+
 ## Related
 
 - [ADR 0001](0001-labeled-segment-slide.md): PMA leaf physical ownership and relocation.
