@@ -464,6 +464,10 @@ mixed-label buckets are evaluated independently. These are candidate precedences
 pair-rank, and block-permutation formats still require mutation maintenance, stale/rebuild
 handling, and stable-layout accounting before ordinary callers can activate them.
 
+Plan 0181 adds an owner-facing physical-slot reader for slab and overflow-log locations. The current
+Published bridge uses it only for singleton counterpart buckets; mixed-neighbor validation keeps a
+full scan because exact equal-neighbor count and rank cannot be derived from bucket degree alone.
+
 Plan 0163 confirms the self-loop shape boundary with isolated fixtures: directed self-loops have
 two orientation rows, whereas undirected self-loops have one row and zero mate metadata. Plan
 0164 adds a real isolated two-label fixture and a feature-gated physical slab/log location reader;

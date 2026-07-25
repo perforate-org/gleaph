@@ -163,6 +163,12 @@ The location-producing EdgeStore path derives a log-backed row's next logical sl
 existing stored degree. It must not rescan the slab or overflow-log chain for every scalar insert;
 exact-location capture and update-path traversal remain separate concerns.
 
+Plan 0181 adds an LARA-owned direct physical-slot reader for slab and overflow-log locations. The
+Published validation bridge uses it only when authoritative counterpart bucket metadata proves a
+singleton bucket; mixed-neighbor buckets retain the complete scan because bucket degree alone cannot
+prove equal-neighbor cardinality or rank. This is an exactness-preserving fast path, not a broad
+Published adoption decision.
+
 A GraphStore footprint probe that creates one source and 128 or 1,024 named directed edges
 reports a total stable-memory increase of 16 Wasm pages in both cases. This is only a
 MemoryManager allocation baseline and must not be divided by edge count. The alias index's raw

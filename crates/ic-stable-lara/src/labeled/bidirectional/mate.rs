@@ -304,6 +304,43 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
+    // A singleton counterpart bucket is fully proven by authoritative bucket metadata plus one
+    // physical-slot read: there cannot be another live row that changes either the count or rank.
+    // Mixed-neighbor buckets still use the complete scan below because degree alone cannot prove
+    // the equal-neighbor cardinality or rank.
+    if expected_matching == 1 && expected_rank == 0 {
+        let bucket = graph
+            .read_label_bucket_placement_info(mate.owner_vertex_id, mate.label_id)
+            .map_err(|error| MateLookupError::ReadFailed(error.to_string()))?
+            .ok_or_else(|| {
+                MateLookupError::ReadFailed("published counterpart bucket is missing".into())
+            })?;
+        if bucket.degree == 1 {
+            #[cfg(feature = "canbench-scopes")]
+            let _scope = canbench_rs::bench_scope("published_counterpart_direct_slot_validation");
+            let row = graph
+                .read_physical_edge_at_slot_for_label(
+                    mate.owner_vertex_id,
+                    mate.label_id,
+                    mate.slot_index,
+                )
+                .map_err(|error| MateLookupError::ReadFailed(error.to_string()))?
+                .ok_or_else(|| {
+                    MateLookupError::ReadFailed(
+                        "published counterpart is not a live singleton row".into(),
+                    )
+                })?;
+            if mate.owner_vertex_id != expected_neighbor
+                || row.neighbor_vid() != source.owner_vertex_id
+            {
+                return Err(MateLookupError::ReadFailed(
+                    "published singleton counterpart does not point back to source".into(),
+                ));
+            }
+            return Ok(());
+        }
+    }
+
     let mut seen = 0u32;
     let mut matching = 0u32;
     let mut candidate_rank = None;

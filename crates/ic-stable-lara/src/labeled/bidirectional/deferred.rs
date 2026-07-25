@@ -7423,6 +7423,81 @@ mod tests {
     }
 
     #[test]
+    fn published_singleton_counterpart_uses_direct_slot_validation() {
+        let graph = graph();
+        graph.push_vertex().unwrap();
+        graph.push_vertex().unwrap();
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(39);
+        graph
+            .insert_directed_edge(
+                source,
+                target,
+                label,
+                TestEdge(u32::from(target)),
+                TestEdge(u32::from(source)),
+            )
+            .unwrap();
+        let mut slots = Vec::new();
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, _| slots.push(slot))
+            .unwrap();
+        let mut mate_slots = Vec::new();
+        graph
+            .reverse()
+            .for_each_live_edge_slot_for_label(target, label, |slot, _| mate_slots.push(slot))
+            .unwrap();
+        let rows = MatePromotionRows {
+            inputs: MatePromotionInputs {
+                owner_vertex_id: source,
+                bucket_label_key: label,
+                live_entries: 1,
+                source_scan_rows: 1,
+                counterpart_scan_rows: 1,
+                sampled_stride: 16,
+                packed_width_bytes: 1,
+                min_scan_rows: 1,
+            },
+            source_slots: slots.clone(),
+            mate_slots,
+        };
+        let mut decision = MateLeafPromotionDecision::Promote {
+            mode: MatePromotionMode::Sampled { stride: 16 },
+            config: MateLeafPromotionConfig {
+                leaf_shared_overhead_bytes: 8,
+                max_encoded_blob_bytes: u64::MAX,
+                max_total_promotion_bytes: u64::MAX,
+                max_bytes_per_entry: 1 << 20,
+            },
+            bucket_ids: vec![(source, label)],
+            encoded_blob_bytes: 0,
+            total_promotion_bytes: 0,
+        };
+        test_finalize_decision_sizes(&mut decision, std::slice::from_ref(&rows));
+        graph
+            .rebuild_mate_leaf(
+                Orientation::Forward,
+                0,
+                &decision,
+                std::slice::from_ref(&rows),
+            )
+            .unwrap();
+        let slot = slots.first().copied().expect("singleton source row");
+        let edge = PhysicalEdgeRef {
+            orientation: Orientation::Forward,
+            owner_vertex_id: source,
+            label_id: label,
+            slot_index: slot,
+        };
+        let expected = graph.mate_of(edge).unwrap();
+        reset_canonical_mate_lookup_count();
+        assert_eq!(graph.published_mate_of(edge), Ok(expected));
+        assert_eq!(canonical_mate_lookup_count(), 0);
+    }
+
+    #[test]
     fn published_mate_lookup_uses_reverse_locator_row() {
         let graph = graph();
         for _ in 0..2 {
