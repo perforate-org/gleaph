@@ -198,6 +198,18 @@ impl AdoptionFixtureId {
             _ => None,
         }
     }
+
+    fn shape(self) -> FixtureShape {
+        match self {
+            Self::DirectedLow | Self::DirectedHigh => FixtureShape::Directed,
+            Self::UndirectedLow | Self::UndirectedHigh => FixtureShape::Undirected,
+            Self::DirectedSelfLoop => FixtureShape::DirectedSelfLoop,
+            Self::UndirectedSelfLoop => FixtureShape::UndirectedSelfLoop,
+            Self::Parallel => FixtureShape::Parallel,
+            Self::SparseSlots => FixtureShape::SparseSlots,
+            Self::MixedLabelsLow | Self::MixedLabelsHigh => FixtureShape::MixedLabels,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,6 +221,67 @@ pub(crate) struct AdoptionEvidenceRow {
     pub(crate) fallback_safe: bool,
     pub(crate) logical_bytes_pass: bool,
     pub(crate) runtime_pass: bool,
+}
+
+pub(crate) fn adoption_row_from_observation(
+    fixture_id: AdoptionFixtureId,
+    observation: CompressionPolicyObservation,
+    exact_results: bool,
+    fallback_safe: bool,
+) -> AdoptionEvidenceRow {
+    let disposition =
+        select_adoption_disposition(fixture_id.shape(), AccessProfile::Hot, Some(observation));
+    let has_candidate_evidence = match fixture_id.shape() {
+        FixtureShape::Undirected => {
+            observation.pair_rank_bytes.is_some() && observation.pair_rank_instructions.is_some()
+        }
+        FixtureShape::Directed
+        | FixtureShape::Parallel
+        | FixtureShape::SparseSlots
+        | FixtureShape::MixedLabels => {
+            observation.ranked_bytes != 0
+                || observation.shared_bytes.is_some()
+                || observation.compressed_bytes.is_some()
+        }
+        FixtureShape::DirectedSelfLoop | FixtureShape::UndirectedSelfLoop => true,
+    };
+    let candidate_passes = match disposition {
+        AdoptionDisposition::SharedOrientation => observation
+            .shared_bytes
+            .zip(observation.shared_instructions)
+            .is_some_and(|(bytes, instructions)| {
+                bytes != 0
+                    && bytes <= observation.alias_bytes
+                    && instructions <= observation.scan_instructions
+            }),
+        AdoptionDisposition::PairRank => observation
+            .pair_rank_bytes
+            .zip(observation.pair_rank_instructions)
+            .is_some_and(|(bytes, instructions)| {
+                bytes != 0
+                    && bytes <= observation.alias_bytes
+                    && instructions <= observation.scan_instructions
+            }),
+        AdoptionDisposition::RankIndexedPacked => {
+            Some((observation.ranked_bytes, observation.ranked_instructions)).is_some_and(
+                |(bytes, instructions)| {
+                    bytes != 0
+                        && bytes <= observation.alias_bytes
+                        && instructions <= observation.scan_instructions
+                },
+            )
+        }
+        AdoptionDisposition::ScanOnly | AdoptionDisposition::Deferred => false,
+    };
+    AdoptionEvidenceRow {
+        fixture_id,
+        disposition,
+        evidence_present: has_candidate_evidence,
+        exact_results,
+        fallback_safe,
+        logical_bytes_pass: candidate_passes,
+        runtime_pass: candidate_passes,
+    }
 }
 
 const REQUIRED_ADOPTION_FIXTURE_IDS: [AdoptionFixtureId; 10] = [
@@ -4829,6 +4902,44 @@ mod fixture_evidence_tests {
         assert!(rows.iter().any(|row| {
             matches!(row.disposition, AdoptionDisposition::ScanOnly) && row.evidence_present
         }));
+    }
+
+    #[test]
+    fn observation_constructor_uses_candidate_specific_metrics() {
+        let mut directed = observation();
+        directed.shared_bytes = Some(1_800);
+        directed.shared_instructions = Some(672_220);
+        let directed_row =
+            adoption_row_from_observation(AdoptionFixtureId::DirectedHigh, directed, true, true);
+        assert_eq!(
+            directed_row.disposition,
+            AdoptionDisposition::SharedOrientation
+        );
+        assert!(directed_row.evidence_present);
+        assert!(directed_row.logical_bytes_pass && directed_row.runtime_pass);
+
+        let mut undirected = observation();
+        undirected.pair_rank_bytes = Some(1_544);
+        undirected.pair_rank_instructions = Some(721_260);
+        let undirected_row = adoption_row_from_observation(
+            AdoptionFixtureId::UndirectedHigh,
+            undirected,
+            true,
+            true,
+        );
+        assert_eq!(undirected_row.disposition, AdoptionDisposition::PairRank);
+        assert!(undirected_row.logical_bytes_pass && undirected_row.runtime_pass);
+
+        undirected.pair_rank_bytes = Some(undirected.alias_bytes + 1);
+        let failed = adoption_row_from_observation(
+            AdoptionFixtureId::UndirectedHigh,
+            undirected,
+            true,
+            true,
+        );
+        assert_eq!(failed.disposition, AdoptionDisposition::ScanOnly);
+        assert!(failed.evidence_present);
+        assert!(!failed.logical_bytes_pass && !failed.runtime_pass);
     }
 
     #[test]
