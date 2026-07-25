@@ -228,13 +228,28 @@ pub(crate) fn aggregate_adoption_status(rows: &[AdoptionEvidenceRow]) -> Adoptio
     let total = rows.len() as u8;
     let ready = rows
         .iter()
-        .filter(|row| row.logical_bytes_pass && row.runtime_pass)
+        .filter(|row| {
+            row.logical_bytes_pass
+                && row.runtime_pass
+                && (!fixture_requires_candidate(row.fixture_id)
+                    || !matches!(row.disposition, AdoptionDisposition::ScanOnly))
+        })
         .count() as u8;
     if ready == total {
         AdoptionStatus::Adopt
     } else {
         AdoptionStatus::Partial { ready, total }
     }
+}
+
+const fn fixture_requires_candidate(fixture_id: AdoptionFixtureId) -> bool {
+    !matches!(
+        fixture_id,
+        AdoptionFixtureId::DirectedLow
+            | AdoptionFixtureId::UndirectedLow
+            | AdoptionFixtureId::DirectedSelfLoop
+            | AdoptionFixtureId::UndirectedSelfLoop
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4183,7 +4198,11 @@ mod fixture_evidence_tests {
             .into_iter()
             .map(|fixture_id| AdoptionEvidenceRow {
                 fixture_id,
-                disposition: AdoptionDisposition::ScanOnly,
+                disposition: if fixture_requires_candidate(fixture_id) {
+                    AdoptionDisposition::RankIndexedPacked
+                } else {
+                    AdoptionDisposition::ScanOnly
+                },
                 evidence_present: true,
                 exact_results: true,
                 fallback_safe: true,
@@ -4235,6 +4254,16 @@ mod fixture_evidence_tests {
 
         partial[2].disposition = AdoptionDisposition::Deferred;
         assert_eq!(aggregate_adoption_status(&partial), AdoptionStatus::Hold);
+
+        let mut no_candidate = complete_adoption_rows();
+        no_candidate[1].disposition = AdoptionDisposition::ScanOnly;
+        assert_eq!(
+            aggregate_adoption_status(&no_candidate),
+            AdoptionStatus::Partial {
+                ready: 9,
+                total: 10
+            }
+        );
     }
 
     #[test]

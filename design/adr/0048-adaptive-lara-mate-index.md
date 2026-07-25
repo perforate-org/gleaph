@@ -314,9 +314,10 @@ This matrix is a measurement contract only; ordinary callers remain on the canon
 
 Plan 0177 adds an aggregate status over the ten required fixture rows. `Adopt` requires one unique
 row for every stratum with exact parity, fail-closed fallback, and passing logical-byte/runtime
-gates. Missing or unsafe evidence yields `Hold`; complete but performance-failing evidence yields
-`Partial` and keeps the canonical path. The current evidence set does not authorize ordinary-caller
-activation.
+gates, and every non-deterministic high-degree row selects a non-`ScanOnly` candidate. Missing or
+unsafe evidence yields `Hold`; complete but performance-failing or candidate-missing evidence yields
+`Partial` and keeps the canonical path. The current evidence set does not authorize
+ordinary-caller activation.
 
 Packed arrays may reserve bounded geometric capacity. An insertion fitting the current width and
 capacity updates one packed word for each physical half. Sampled insertion updates a checkpoint

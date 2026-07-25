@@ -215,8 +215,9 @@ the replacement direction; ordinary-caller activation and alias removal remain p
 alias-vs-rank-indexed gate.
 
 Plan 0177 aggregates the ten required topology rows into one status: `Adopt` only when every row is
-unique, exact, fail-closed, and passes both logical-byte and runtime gates; incomplete or unsafe
-evidence is `Hold`, while complete rows with performance failures are `Partial`. The current
+unique, exact, fail-closed, and passes both logical-byte and runtime gates, with a non-`ScanOnly`
+candidate for every non-deterministic high-degree row; incomplete or unsafe evidence is `Hold`,
+while complete rows with performance or candidate failures are `Partial`. The current
 evidence remains non-authorizing, so ordinary callers continue to use the canonical/alias path.
 
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
