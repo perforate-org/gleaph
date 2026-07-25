@@ -74,6 +74,7 @@ pub use iter::{
     HybridOverflowEdgeReplay, LabeledEdgeInlineValueBatch, LabeledEdgeInlineValueBatchScratch,
     LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch,
 };
+pub(crate) use traverse::EdgeSlotState;
 
 /// Single-orientation multi-level labeled CSR graph.
 pub struct LabeledLaraGraph<E, M>

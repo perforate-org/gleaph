@@ -30,6 +30,14 @@ use super::{BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, LabeledSpanIter
 
 const EDGE_PAYLOAD_BATCH_TARGET_BYTES: usize = 2048;
 
+/// Result of reading a logical edge slot while preserving tombstone visibility.
+#[derive(Debug)]
+pub(crate) enum EdgeSlotState<E> {
+    Missing,
+    Tombstone,
+    Live(E),
+}
+
 fn bucket_hybrid_slab_inline_value_batch_eligible<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     src: VertexId,
@@ -1441,6 +1449,46 @@ where
         Ok(result)
     }
 
+    /// Reads one logical slot and distinguishes a tombstone from an absent slot.
+    pub(crate) fn read_edge_slot_state_for_label(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slot_index: u32,
+    ) -> Result<EdgeSlotState<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(EdgeSlotState::Missing);
+        }
+        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(EdgeSlotState::Missing);
+        };
+        if slot_index >= self.bucket_reserved_edge_slots(src, &bucket) {
+            return Ok(EdgeSlotState::Missing);
+        }
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
+            self.edges.overflow_log_chain_asc_indices(
+                self.payload_log_leaf(src),
+                bucket.overflow_log_head(),
+            )
+        });
+        let state = self.read_out_edge_topology_state_at_slot(
+            src,
+            &vertex,
+            bucket_index,
+            &bucket,
+            slot_index,
+            label_id,
+            overflow_chain.as_deref(),
+        )?;
+        Ok(state)
+    }
+
     /// Reads one physical edge location from a labeled bucket.
     ///
     /// Slab locations use the local slot index. Overflow-log locations use the high-bit encoding
@@ -1628,7 +1676,7 @@ where
             )
         });
         for slot_index in 0..logical_slots {
-            if let Some(edge) = self.read_out_edge_topology_at_slot(
+            if let EdgeSlotState::Live(edge) = self.read_out_edge_topology_state_at_slot(
                 src,
                 &vertex,
                 bucket_index,
@@ -1753,7 +1801,7 @@ where
             )
         });
         for slot_index in visit_order {
-            if let Some(edge) = self.read_out_edge_topology_at_slot(
+            if let EdgeSlotState::Live(edge) = self.read_out_edge_topology_state_at_slot(
                 src,
                 &vertex,
                 bucket_index,
@@ -1857,7 +1905,7 @@ where
         Ok(loaded)
     }
 
-    fn read_out_edge_topology_at_slot(
+    fn read_out_edge_topology_state_at_slot(
         &self,
         src: VertexId,
         _vertex: &LabeledVertex,
@@ -1866,16 +1914,16 @@ where
         slot_index: u32,
         label_id: BucketLabelKey,
         overflow_chain: Option<&[u32]>,
-    ) -> Result<Option<E>, LabeledOperationError>
+    ) -> Result<EdgeSlotState<E>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
         if slot_index >= self.bucket_reserved_edge_slots(src, bucket) {
-            return Ok(None);
+            return Ok(EdgeSlotState::Missing);
         }
         if bucket.overflow_log_head() < 0 {
             if slot_index >= bucket.stored_slots {
-                return Ok(None);
+                return Ok(EdgeSlotState::Missing);
             }
             let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
@@ -1885,9 +1933,9 @@ where
                 .with_slot_index(slot_index)
                 .with_label_id(label_id.raw());
             if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                return Ok(None);
+                return Ok(EdgeSlotState::Tombstone);
             }
-            return Ok(Some(edge));
+            return Ok(EdgeSlotState::Live(edge));
         }
 
         let slab_prefix = self.bucket_slab_prefix_slots(src, bucket);
@@ -1900,9 +1948,9 @@ where
                 .with_slot_index(slot_index)
                 .with_label_id(label_id.raw());
             if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                return Ok(None);
+                return Ok(EdgeSlotState::Tombstone);
             }
-            return Ok(Some(edge));
+            return Ok(EdgeSlotState::Live(edge));
         }
 
         let log_ordinal = slot_index
@@ -1920,13 +1968,13 @@ where
             }
         };
         let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
-            return Ok(None);
+            return Ok(EdgeSlotState::Missing);
         };
         let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-        if edge.is_tombstone_edge() {
-            return Ok(None);
+        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+            return Ok(EdgeSlotState::Tombstone);
         }
-        Ok(Some(
+        Ok(EdgeSlotState::Live(
             edge.with_slot_index(slot_index)
                 .with_label_id(label_id.raw()),
         ))
