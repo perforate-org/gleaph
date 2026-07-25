@@ -8,7 +8,10 @@ use super::mate_blob_prototype::MateBlob;
 use crate::lara::edge::free_span::FreeSpanStore;
 use crate::{CompositeInit, GrowFailed, classify_composite_init, safe_write};
 use ic_stable_structures::Memory;
-use std::{cell::Cell, fmt};
+use std::{
+    cell::{Cell, RefCell},
+    fmt,
+};
 
 const LOCATOR_MAGIC: [u8; 3] = *b"MLC";
 const BLOB_MAGIC: [u8; 3] = *b"MBB";
@@ -462,6 +465,8 @@ pub(crate) struct MateStorage<M: Memory> {
     locators: MateLocatorStore<M>,
     blobs: MateBlobByteStore<M>,
     free_spans: FreeSpanStore<M>,
+    // One decoded blob avoids re-reading/re-decoding the same leaf during a request-local run.
+    decoded_blob_cache: RefCell<Option<(u64, u64, MateBlob)>>,
 }
 
 #[cfg(test)]
@@ -571,12 +576,14 @@ impl<M: Memory> MateStorage<M> {
                 blobs: MateBlobByteStore::new(blobs)?,
                 free_spans: FreeSpanStore::new(free_spans, free_span_by_start)
                     .map_err(|_| MateStorageInitError::FreeSpan)?,
+                decoded_blob_cache: RefCell::new(None),
             }),
             CompositeInit::Reopen => Ok(Self {
                 locators: MateLocatorStore::init(locator, locator_rows)?,
                 blobs: MateBlobByteStore::init(blobs)?,
                 free_spans: FreeSpanStore::init(free_spans, free_span_by_start)
                     .map_err(|_| MateStorageInitError::FreeSpan)?,
+                decoded_blob_cache: RefCell::new(None),
             }),
         }?;
         storage.validate_references()?;
@@ -588,6 +595,7 @@ impl<M: Memory> MateStorage<M> {
         row: u64,
         encoded_blob: &[u8],
     ) -> Result<(), MateStorageInitError> {
+        self.decoded_blob_cache.borrow_mut().take();
         MateBlob::decode(encoded_blob).map_err(|_| MateStorageInitError::InvalidBlob)?;
         let old = self.locators.published_offset(row)?;
         let old_bytes = old.map(|start| self.blobs.read(start)).transpose()?;
@@ -667,13 +675,33 @@ impl<M: Memory> MateStorage<M> {
         let Some(offset) = self.locators.published_offset(row)? else {
             return Ok(None);
         };
+        if let Some((cached_row, cached_offset, blob)) = self.decoded_blob_cache.borrow().as_ref()
+            && *cached_row == row
+            && *cached_offset == offset
+        {
+            return Ok(blob
+                .buckets
+                .iter()
+                .find(|bucket| {
+                    bucket.owner_vertex_id == owner_vertex_id
+                        && bucket.bucket_label_key == bucket_label_key
+                })
+                .cloned());
+        }
         #[cfg(test)]
         PUBLISHED_BLOB_READS.with(|count| count.set(count.get().saturating_add(1)));
         let bytes = self.blobs.read(offset)?;
         let blob = MateBlob::decode(&bytes).map_err(|_| MateStorageInitError::InvalidBlob)?;
-        Ok(blob.buckets.into_iter().find(|bucket| {
-            bucket.owner_vertex_id == owner_vertex_id && bucket.bucket_label_key == bucket_label_key
-        }))
+        let result = blob
+            .buckets
+            .iter()
+            .find(|bucket| {
+                bucket.owner_vertex_id == owner_vertex_id
+                    && bucket.bucket_label_key == bucket_label_key
+            })
+            .cloned();
+        *self.decoded_blob_cache.borrow_mut() = Some((row, offset, blob));
+        Ok(result)
     }
 
     pub(crate) fn ensure_locator_rows(&self, row_count: u64) -> Result<(), MateStorageInitError> {
@@ -758,6 +786,7 @@ impl<M: Memory> MateStorage<M> {
         row: u64,
         relative_offset: u64,
     ) -> Result<(), MateStorageInitError> {
+        self.decoded_blob_cache.borrow_mut().take();
         let Some(start) = self.locators.published_offset(row)? else {
             return Err(MateStorageInitError::InvalidBlob);
         };
@@ -778,6 +807,7 @@ impl<M: Memory> MateStorage<M> {
         relative_offset: u64,
         value: u8,
     ) -> Result<(), MateStorageInitError> {
+        self.decoded_blob_cache.borrow_mut().take();
         let Some(start) = self.locators.published_offset(row)? else {
             return Err(MateStorageInitError::InvalidBlob);
         };
@@ -789,6 +819,7 @@ impl<M: Memory> MateStorage<M> {
     }
 
     pub(crate) fn begin_rebuild(&self, row: u64) -> Result<MateRebuildToken, MateStorageInitError> {
+        self.decoded_blob_cache.borrow_mut().take();
         let previous = self.locators.get_state(row)?;
         if matches!(previous, MateLocatorState::Rebuilding) {
             return Err(MateStorageInitError::RebuildAlreadyActive);
@@ -838,6 +869,7 @@ impl<M: Memory> MateStorage<M> {
     /// deliberately a trap boundary: a published locator must never be left pointing at a span
     /// that the free-span index failed to retire.
     pub(crate) fn clear_published(&self, row: u64) -> Result<(), MateStorageInitError> {
+        self.decoded_blob_cache.borrow_mut().take();
         let state = self.locators.get_state(row)?;
         let MateLocatorState::Published { blob_offset } = state else {
             return if matches!(state, MateLocatorState::Rebuilding) {
@@ -877,6 +909,7 @@ impl<M: Memory> MateStorage<M> {
         token: MateRebuildToken,
         encoded_blob: &[u8],
     ) -> Result<(), MateStorageInitError> {
+        self.decoded_blob_cache.borrow_mut().take();
         if MateBlob::decode(encoded_blob).is_err() {
             self.restore_rebuild_token(token)?;
             return Err(MateStorageInitError::InvalidBlob);

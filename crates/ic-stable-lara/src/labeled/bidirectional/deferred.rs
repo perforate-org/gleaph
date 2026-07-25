@@ -7564,6 +7564,43 @@ mod tests {
     }
 
     #[test]
+    fn published_runtime_reuses_decoded_blob_for_repeated_lookup() {
+        let graph = graph();
+        graph.push_vertex().unwrap();
+        graph.push_vertex().unwrap();
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(51);
+        for _ in 0..2 {
+            graph
+                .insert_directed_edge(source, target, label, TestEdge(1), TestEdge(0))
+                .unwrap();
+        }
+        let aggregate = graph
+            .enumerate_mate_leaf(Orientation::Forward, 0, enumeration_policy())
+            .unwrap();
+        graph.rebuild_mate_leaf_from_canonical(&aggregate).unwrap();
+
+        let mut source_slot = None;
+        graph
+            .forward()
+            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slot = Some(slot))
+            .unwrap();
+        let edge = PhysicalEdgeRef {
+            orientation: Orientation::Forward,
+            owner_vertex_id: source,
+            label_id: label,
+            slot_index: source_slot.expect("source slot"),
+        };
+        let expected = graph.mate_of(edge).unwrap();
+
+        reset_published_blob_read_count();
+        assert_eq!(graph.published_mate_of(edge), Ok(expected));
+        assert_eq!(graph.published_mate_of(edge), Ok(expected));
+        assert_eq!(published_blob_read_count(), 1);
+    }
+
+    #[test]
     fn swapped_published_locator_row_rejects_blob_and_falls_back() {
         let graph = graph();
         graph.push_vertex().unwrap();
