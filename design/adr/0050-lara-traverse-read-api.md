@@ -608,20 +608,53 @@ listed owners:
 3. the sidecar re-key observer contract is defined, even if legacy `mate` callers and
    `EDGE_ALIASES` removal are still pending.
 
-Once the substrate gate passes, implementation may start in an isolated replacement module. The
-implementation and validation sequence is:
+Once the substrate gate passes, implementation proceeds through the following phases. Each phase
+has an independently reviewable result and leaves the tree buildable if later phases are deferred.
 
-1. Add a temporary `traverse_next` module beside the existing `traverse` module. Implement the
-   ADR 0050 API there, with module-local tests covering bucket/bypass, tombstones, inline
-   properties, selected slots, forward/reverse reads, and corruption boundaries.
-2. Add a dedicated traversal benchmark module for the new surface. Benchmark fixtures must cover
-   dense, hybrid, sparse, bypass, selected-slot, and early-break paths before caller migration.
-3. Route newly written callers to `traverse_next`; existing callers may continue using `traverse`
-   while parity and benchmark gates are evaluated.
-4. Migrate existing forward/reverse `traverse` callers, Graph predicate scratch/replay paths,
-   offset wrappers, and the `mate.rs` singleton validation path to `traverse_next`.
-5. Delete the old `traverse` module and rename `traverse_next` to `traverse`, then update tests,
-   benchmarks, and documentation. The rename is a cleanup step, not a second API contract.
+#### Phase 0 — inventory and boundary freeze
+
+Inventory every `traverse` caller, including forward/reverse wrappers, selected-slot replay and
+scratch paths, offset/skip visitors, `mate.rs`, maintenance readers, tests, and benchmarks. Freeze
+the order, short-circuit, inline-property, corruption, and raw-location contracts in this ADR.
+No caller is changed in this phase.
+
+#### Phase 1 — isolated logical read module
+
+Add `traverse_next` beside `traverse`. Implement the canonical logical API and its typed adapters,
+but keep the old module authoritative for existing callers. Add module-local tests for bucket and
+default-label bypass, slab/overflow mixtures, tombstones, ascending/descending order, forward and
+reverse reads, selected slots, inline-property exact bytes, early break, and corruption fail-closed
+behavior. At the end of this phase, the new module is usable but not yet the crate-wide default.
+
+#### Phase 2 — dedicated benchmark and parity gate
+
+Add a dedicated benchmark module for `traverse_next`, covering dense, hybrid, sparse, bypass,
+reverse, selected-slot replay, inline-property batches, and early-break paths. Compare one
+deterministic baseline run with one candidate run under identical conditions; do not repeat an
+identical canbench invocation as a noise estimate. Record the artifact and investigate regressions
+over the stated threshold before proceeding.
+
+#### Phase 3 — enable ADR 0048 adoption on the new surface
+
+When Phases 1–2 pass, ADR 0048 may proceed with its ordinary-caller adoption work while the old
+`traverse` module remains in place. This is the non-circular hand-off: ADR 0048's substrate gate is
+needed for Phase 1, but completion of ADR 0048 alias removal is not required to build or validate
+`traverse_next`. ADR 0048 must use the new logical read surface for any caller it migrates and must
+not add a second traversal primitive.
+
+#### Phase 4 — migrate callers incrementally
+
+Route newly written callers to `traverse_next`, then migrate the inventory in bounded groups:
+forward/reverse wrappers, Graph predicate scratch/replay and inline-property paths, offset/skip
+visitors, and finally the `mate.rs` singleton validation path. Each group keeps its existing order,
+OFFSET, callback short-circuit, scratch lifetime, and error semantics, with focused tests and
+benchmark evidence before the old path is removed for that group.
+
+#### Phase 5 — remove and rename
+
+After all callers and ADR 0048's required adoption/alias gates pass, delete the old `traverse`
+module and rename `traverse_next` to `traverse`. Update module paths, tests, benchmarks, and
+documentation in the same change. The rename is a cleanup step, not a second API contract.
 
 Final activation additionally requires the following independently verifiable conditions:
 

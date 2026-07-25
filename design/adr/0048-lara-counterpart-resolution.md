@@ -5,6 +5,12 @@ Status: accepted
 Implementation status: partial implementation (live-only scan substrate)
 Adoption status: not activated
 
+Traversal dependency: ordinary-caller adoption may begin after ADR 0050 Phases 1–2 have produced
+the tested and benchmarked `traverse_next` read surface. This is a one-way hand-off: ADR 0048 uses
+that surface for migrated callers while the legacy `traverse` module remains available. ADR 0048
+does not wait for the final ADR 0050 module rename, and it must not introduce a second traversal
+primitive.
+
 ## Context
 
 Gleaph uses a physical adjacency location as edge identity:
