@@ -221,29 +221,32 @@ fn blob_mate_slot(bucket: &Bucket, source_slot: u32, rank: u32) -> Result<u32, M
                     "packed mapping length mismatch".into(),
                 ));
             }
-            let mut previous = None;
-            for entry in 0..entries {
+            let expected_rank = usize::try_from(rank)
+                .map_err(|_| MateLookupError::ReadFailed("packed rank overflow".into()))?;
+            let mut low = 0usize;
+            let mut high = entries;
+            while low < high {
+                let entry = low + (high - low) / 2;
                 let source = packed_slot(&bucket.mapping, width_bytes, entry * 2)
                     .ok_or_else(|| MateLookupError::ReadFailed("packed source truncated".into()))?;
-                let mate = packed_slot(&bucket.mapping, width_bytes, entry * 2 + 1)
-                    .ok_or_else(|| MateLookupError::ReadFailed("packed mate truncated".into()))?;
-                if previous.is_some_and(|prior| source <= prior) {
-                    return Err(MateLookupError::ReadFailed(
-                        "packed source slots are not strictly increasing".into(),
-                    ));
+                if source < source_slot {
+                    low = entry + 1;
+                } else {
+                    high = entry;
                 }
-                previous = Some(source);
+            }
+            if low < entries {
+                let source = packed_slot(&bucket.mapping, width_bytes, low * 2)
+                    .ok_or_else(|| MateLookupError::ReadFailed("packed source truncated".into()))?;
                 if source == source_slot {
-                    if entry
-                        != usize::try_from(rank).map_err(|_| {
-                            MateLookupError::ReadFailed("packed rank overflow".into())
-                        })?
-                    {
+                    if low != expected_rank {
                         return Err(MateLookupError::ReadFailed(
                             "packed source rank mismatch".into(),
                         ));
                     }
-                    return Ok(mate);
+                    return packed_slot(&bucket.mapping, width_bytes, low * 2 + 1).ok_or_else(
+                        || MateLookupError::ReadFailed("packed mate truncated".into()),
+                    );
                 }
             }
             Err(MateLookupError::ReadFailed(

@@ -109,6 +109,7 @@ pub(crate) enum DecodeError {
     BucketOrder,
     MappingOffset,
     MappingLengthMismatch,
+    PackedSourceOrder,
     TrailingBytes,
     CompactReservedBits,
     CompactFlags(u8),
@@ -140,6 +141,50 @@ fn read_u16(bytes: &[u8], offset: &mut usize) -> Result<u16, DecodeError> {
 
 fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, DecodeError> {
     Ok(u32::from_be_bytes(read(bytes, offset)?))
+}
+
+fn read_mapping_slot(mapping: &[u8], width: u8, index: usize) -> Result<u32, DecodeError> {
+    let width = usize::from(width);
+    let start = index
+        .checked_mul(width)
+        .ok_or(DecodeError::ArithmeticOverflow)?;
+    let end = start
+        .checked_add(width)
+        .ok_or(DecodeError::ArithmeticOverflow)?;
+    let bytes = mapping
+        .get(start..end)
+        .ok_or(DecodeError::MappingLengthMismatch)?;
+    let mut padded = [0u8; 4];
+    padded[4 - width..].copy_from_slice(bytes);
+    Ok(u32::from_be_bytes(padded))
+}
+
+fn validate_packed_source_order(
+    bytes: &[u8],
+    offset: usize,
+    entries: u32,
+    width: u8,
+) -> Result<(), DecodeError> {
+    let entries = usize::try_from(entries).map_err(|_| DecodeError::ArithmeticOverflow)?;
+    let mapping_len = entries
+        .checked_mul(usize::from(width))
+        .and_then(|value| value.checked_mul(2))
+        .ok_or(DecodeError::ArithmeticOverflow)?;
+    let end = offset
+        .checked_add(mapping_len)
+        .ok_or(DecodeError::ArithmeticOverflow)?;
+    let mapping = bytes
+        .get(offset..end)
+        .ok_or(DecodeError::MappingLengthMismatch)?;
+    let mut previous = None;
+    for entry in 0..entries {
+        let source = read_mapping_slot(mapping, width, entry * 2)?;
+        if previous.is_some_and(|prior| source <= prior) {
+            return Err(DecodeError::PackedSourceOrder);
+        }
+        previous = Some(source);
+    }
+    Ok(())
 }
 
 fn encode_compact_flags(mode: Mode) -> Result<u8, EncodeError> {
@@ -307,6 +352,9 @@ impl MateBlob {
             if end > bytes.len() {
                 return Err(DecodeError::MappingLengthMismatch);
             }
+            if let Mode::Packed { width_bytes } = mode {
+                validate_packed_source_order(bytes, mapping_offset, entry_count, width_bytes)?;
+            }
             entries.push((
                 owner_vertex_id,
                 bucket_label_key,
@@ -353,12 +401,26 @@ impl MateBlob {
 
 fn bucket(owner_vertex_id: u32, bucket_label_key: u16, entries: u32, mode: Mode) -> Bucket {
     let length = mode.mapping_bytes(entries).expect("fixture mapping length");
+    let mapping = match mode {
+        Mode::Packed { width_bytes } => {
+            let width = usize::from(width_bytes);
+            let mut mapping = Vec::with_capacity(length);
+            for entry in 0..entries {
+                let source = entry + 1;
+                let mate = entries - entry;
+                mapping.extend_from_slice(&source.to_be_bytes()[4 - width..]);
+                mapping.extend_from_slice(&mate.to_be_bytes()[4 - width..]);
+            }
+            mapping
+        }
+        Mode::Sampled { .. } => (0..length).map(|index| (index % 251) as u8).collect(),
+    };
     Bucket {
         owner_vertex_id,
         bucket_label_key,
         entries,
         mode,
-        mapping: (0..length).map(|index| (index % 251) as u8).collect(),
+        mapping,
     }
 }
 
@@ -434,6 +496,24 @@ fn compact_blob_rejects_reserved_flags_offsets_and_trailing_bytes() {
     let total = u32::try_from(trailing.len()).expect("compact fixture fits");
     trailing[4..8].copy_from_slice(&total.to_be_bytes());
     assert_eq!(MateBlob::decode(&trailing), Err(DecodeError::TrailingBytes));
+}
+
+#[test]
+fn compact_blob_rejects_unsorted_packed_source_slots() {
+    let blob = MateBlob {
+        buckets: vec![Bucket {
+            owner_vertex_id: 2,
+            bucket_label_key: 7,
+            entries: 2,
+            mode: Mode::Packed { width_bytes: 1 },
+            mapping: vec![2, 9, 1, 8],
+        }],
+    };
+    let encoded = blob.encode().expect("length-valid fixture encoding");
+    assert_eq!(
+        MateBlob::decode(&encoded),
+        Err(DecodeError::PackedSourceOrder)
+    );
 }
 
 #[test]
