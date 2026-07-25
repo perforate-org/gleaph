@@ -324,6 +324,13 @@ rows are connected as `ScanOnly`, while non-deterministic rows remain `Deferred`
 matched probe results are attached. Existing canbench summaries are not silently treated as
 connected adoption rows.
 
+Plan 0179 adds matched candidate-parity probes for directed, parallel, sparse-slot, mixed-label,
+and undirected fixtures. Directed, parallel, mixed-label, and undirected probes compare the
+candidate result with canonical `mate_of`; sparse-slot probes use the fixture's independent
+physical-identity relation because its high-bit overflow-log locations are not valid inputs to the
+slab-slot-only canonical `mate_of` API. This establishes the oracle boundary but does not attach
+runtime/byte snapshots to the typed inventory or authorize activation.
+
 Packed arrays may reserve bounded geometric capacity. An insertion fitting the current width and
 capacity updates one packed word for each physical half. Sampled insertion updates a checkpoint
 only when a stride boundary is crossed; otherwise it remains scan-backed. Width/capacity growth,

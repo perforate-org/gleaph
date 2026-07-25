@@ -224,6 +224,12 @@ The typed evidence inventory currently returns `Hold`: only deterministic low-de
 `ScanOnly` rows are connected, and non-deterministic rows remain `Deferred` until matched probe
 results are attached. Existing canbench summaries are not treated as adoption rows implicitly.
 
+Plan 0179's matched probes compare directed, parallel, mixed-label, and undirected candidates with
+canonical `mate_of`. Sparse-slot probes use the fixture physical-identity relation instead because
+high-bit overflow-log locations are measurement identities and are not accepted by the
+slab-slot-only canonical mate reader. These probes establish exactness coverage only; they do not
+connect benchmark snapshots to the typed inventory or activate ordinary callers.
+
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half
 Sampled bucket contributes `16 * ceil(n / K) + 10` bytes before blob headers, directories,
