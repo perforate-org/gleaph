@@ -4943,6 +4943,70 @@ mod fixture_evidence_tests {
     }
 
     #[test]
+    fn committed_probe_snapshots_populate_known_non_deterministic_rows() {
+        let mut directed = observation();
+        directed.alias_bytes = 2_304;
+        directed.scan_instructions = 13_720_000;
+        directed.ranked_bytes = 2_840;
+        directed.ranked_instructions = 1_560_000;
+        directed.shared_bytes = Some(1_800);
+        directed.shared_instructions = Some(672_220);
+        let directed_row =
+            adoption_row_from_observation(AdoptionFixtureId::DirectedHigh, directed, true, true);
+        assert_eq!(
+            directed_row.disposition,
+            AdoptionDisposition::SharedOrientation
+        );
+
+        let mut parallel = observation();
+        parallel.alias_bytes = 576;
+        parallel.scan_instructions = 43_724_263;
+        parallel.ranked_bytes = 128;
+        parallel.ranked_instructions = 323_900;
+        parallel.shared_bytes = Some(84);
+        parallel.shared_instructions = Some(175_430);
+        let parallel_row =
+            adoption_row_from_observation(AdoptionFixtureId::Parallel, parallel, true, true);
+        assert_eq!(
+            parallel_row.disposition,
+            AdoptionDisposition::SharedOrientation
+        );
+
+        let mut undirected = observation();
+        undirected.alias_bytes = 2_304;
+        undirected.scan_instructions = 17_302_087;
+        undirected.ranked_bytes = 1_560;
+        undirected.ranked_instructions = 945_735;
+        undirected.pair_rank_bytes = Some(1_544);
+        undirected.pair_rank_instructions = Some(721_260);
+        let undirected_row = adoption_row_from_observation(
+            AdoptionFixtureId::UndirectedHigh,
+            undirected,
+            true,
+            true,
+        );
+        assert_eq!(undirected_row.disposition, AdoptionDisposition::PairRank);
+
+        let mut mixed = observation();
+        mixed.alias_bytes = 144;
+        mixed.scan_instructions = 15_940_000;
+        mixed.ranked_bytes = 96;
+        mixed.ranked_instructions = 594_287;
+        mixed.shared_bytes = Some(52);
+        mixed.shared_instructions = Some(350_590);
+        let mixed_row =
+            adoption_row_from_observation(AdoptionFixtureId::MixedLabelsHigh, mixed, true, true);
+        assert_eq!(
+            mixed_row.disposition,
+            AdoptionDisposition::SharedOrientation
+        );
+        assert!(directed_row.logical_bytes_pass);
+        assert!(parallel_row.logical_bytes_pass);
+        assert!(undirected_row.logical_bytes_pass);
+        assert!(mixed_row.logical_bytes_pass);
+    }
+
+    #[test]
     fn corpus_is_seeded_and_deterministic() {
         let spec = FixtureSpec::required_matrix()[1];
         let corpus = build_request_corpus(spec, 7);
