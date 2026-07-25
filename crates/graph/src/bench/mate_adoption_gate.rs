@@ -4995,7 +4995,7 @@ mod fixture_evidence_tests {
         mixed.shared_bytes = Some(52);
         mixed.shared_instructions = Some(350_590);
         let mixed_row =
-            adoption_row_from_observation(AdoptionFixtureId::MixedLabelsHigh, mixed, true, true);
+            adoption_row_from_observation(AdoptionFixtureId::MixedLabelsLow, mixed, true, true);
         assert_eq!(
             mixed_row.disposition,
             AdoptionDisposition::SharedOrientation
@@ -5004,6 +5004,21 @@ mod fixture_evidence_tests {
         assert!(parallel_row.logical_bytes_pass);
         assert!(undirected_row.logical_bytes_pass);
         assert!(mixed_row.logical_bytes_pass);
+
+        let mut sparse = observation();
+        sparse.alias_bytes = 576;
+        sparse.scan_instructions = 45_590_000;
+        sparse.ranked_bytes = 128;
+        sparse.ranked_instructions = 300_350;
+        sparse.shared_bytes = Some(84);
+        sparse.shared_instructions = Some(175_430);
+        let sparse_row =
+            adoption_row_from_observation(AdoptionFixtureId::SparseSlots, sparse, true, true);
+        assert_eq!(
+            sparse_row.disposition,
+            AdoptionDisposition::SharedOrientation
+        );
+        assert!(sparse_row.logical_bytes_pass && sparse_row.runtime_pass);
     }
 
     #[test]
