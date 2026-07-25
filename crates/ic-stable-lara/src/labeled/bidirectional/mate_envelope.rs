@@ -4,7 +4,9 @@
 //! canonical adjacency, mutation maintenance, candidate selection, or ordinary reads.
 //!
 //! The production-shaped boundary is [`MateLocatorRecord`], [`MateLocatorStore`], and
-//! [`MatePayloadRegion`]. [`MateEnvelope`] and [`MateEnvelopeStore`] are retained only as a
+//! [`MatePayloadRegion`]. This module is still an isolated evidence fixture: its locator
+//! generation field measures an alternative fencing scheme and is not part of the selected
+//! production layout. [`MateEnvelope`] and [`MateEnvelopeStore`] are retained only as a
 //! self-contained validation fixture for the earlier envelope shape; they are not a second
 //! production storage owner and must not be wired into `MateStorage` callers.
 

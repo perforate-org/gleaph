@@ -352,9 +352,11 @@ The bidirectional LARA wrapper owns one shared `MateLeafLocatorStore`. Its dense
 n >= 2 Sampled or Packed blob: byte offset = n - 2
 ```
 
-No persistent generation, delta length, indexed-bucket count, or hotness is stored. The mode and
-checkpoint stride belong in the blob header, not the locator. Existing adjacency and PMA metadata
-remain authoritative for degree, liveness, and leaf geometry.
+No persistent generation, delta length, indexed-bucket count, or hotness is stored. Staleness is
+handled by hiding the locator before canonical mutation and revalidating the complete canonical
+leaf aggregate immediately before publication; a generation counter is therefore not part of the
+production contract. The mode and checkpoint stride belong in the blob header, not the locator.
+Existing adjacency and PMA metadata remain authoritative for degree, liveness, and leaf geometry.
 
 Implement `MateLeafLocatorStore` as a dedicated fixed-row stable vector modeled on `VertexStore`,
 `SegmentSpanMetaStore`, and `SegmentEdgeCountsStore`, not
@@ -1037,12 +1039,16 @@ This is a measurement decision only and does not authorize persistence or ordina
 Plan 0170 implements only an isolated codec and fixture-backed stable map for the persistence
 boundary; it does not allocate the production `MATE_*` regions or connect any caller. Canonical
 LARA adjacency remains the sole source of truth; derived mate state is owned per
-`(orientation, leaf, owner, label)` bucket. The production region has one fixed header containing
-magic and format version. Locator metadata owns candidate kind, lifecycle state, topology identity,
-canonical generation, cardinality, blob offset, and total length; each blob entry therefore carries
-only one bounded candidate payload without repeated magic/version framing. The proposed bounds
-are `MAX_MATE_BUCKET_ENTRIES = 65_535` and `MAX_MATE_BUCKET_PAYLOAD_BYTES = 2 MiB`; records
-exceeding either bound are rejected and remain `ScanOnly`.
+`(orientation, leaf, owner, label)` bucket. The selected production contract has one fixed region
+header and a lifecycle/offset locator; it does not persist a canonical generation. Staleness is
+prevented by lifecycle invalidation and complete canonical revalidation before publication. Each
+blob entry therefore carries only one bounded candidate payload without repeated magic/version
+framing. The proposed bounds are `MAX_MATE_BUCKET_ENTRIES = 65_535` and
+`MAX_MATE_BUCKET_PAYLOAD_BYTES = 2 MiB`; records exceeding either bound are rejected and remain
+`ScanOnly`.
+
+The earlier fixture variant included a generation field to measure an alternative fencing scheme.
+That field is experimental evidence only and is not part of the selected production layout.
 
 The fixture now models the alternative ownership with a fixed 32-byte region header, matching the
 existing LARA byte-store header convention, a 22-byte fixed locator value, and a separate raw
