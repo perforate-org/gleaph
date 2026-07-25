@@ -1,9 +1,9 @@
-# 0048. LARA-owned counterpart tables replace Graph edge aliases
+# 0048. LARA-owned counterpart resolution replaces Graph edge aliases
 
 Date: 2026-07-23  
-Status: accepted, not activated  
-Implementation status: partial  
-Adoption status: hold
+Status: accepted  
+Implementation status: planned replacement  
+Adoption status: not activated
 
 ## Context
 
@@ -13,9 +13,9 @@ Gleaph uses a physical adjacency location as edge identity:
 EdgeHandle = (owner_vertex_id, storage_label_id, slot_index)
 ```
 
-An edge row stores only its target vertex. Its label, owner, orientation, and slot are supplied by the containing Labeled LARA bucket and iterator.
+The persisted edge row stores only its target vertex. Its owner, label, orientation, and physical slot are supplied by the containing Labeled LARA bucket and iterator.
 
-A local logical edge has one or two physical entries:
+A local logical edge is represented physically as follows:
 
 | Logical edge                  | Physical entries                      | Canonical entry            |
 | ----------------------------- | ------------------------------------- | -------------------------- |
@@ -24,24 +24,25 @@ A local logical edge has one or two physical entries:
 | undirected `u -- v`, `u != v` | one forward entry at each endpoint    | entry owned by `max(u, v)` |
 | undirected self-loop `u -- u` | one forward entry                     | that entry                 |
 
-Graph currently stores an `EDGE_ALIASES` B-tree row for each non-self logical edge. Each row uses an 18-byte serialized key/value payload before B-tree node and allocator overhead.
+Graph currently stores an `EDGE_ALIASES` stable B-tree row for each non-self logical edge.
 
-The alias index has several structural problems:
+The alias index is structurally misplaced:
 
-- it duplicates a physical-slot relation already owned by LARA;
+- physical slot allocation and movement are owned by LARA;
+- alias rows duplicate a relation already implied by LARA adjacency order;
 - lookup is efficient only from alias to canonical;
 - canonical-to-counterpart lookup scans the alias map;
-- scalar insertion rediscovers slots that LARA already knew;
-- compaction and slot renumbering require Graph-level alias repair; and
-- adding a reverse alias index would at least double the serialized payload and consistency surface.
+- scalar insertion may rescan adjacency after LARA already determined the written slots;
+- slot-renumbering maintenance requires Graph-level alias repair; and
+- a second reverse index would further increase persistent bytes and consistency work.
 
-Counterpart resolution belongs to the bidirectional Labeled LARA boundary, which owns both physical projections, insertion order, slot allocation, compaction, and repair.
+Counterpart resolution belongs to the bidirectional Labeled LARA boundary, which owns both physical projections, their order, slot allocation, compaction, and repair.
 
 ## Decision
 
-### 1. LARA owns physical counterpart resolution
+### 1. LARA owns counterpart resolution
 
-Graph removes `EDGE_ALIASES` after the replacement path passes its activation gate.
+Graph removes `EDGE_ALIASES` after all callers use LARA counterpart APIs.
 
 The bidirectional Labeled LARA owner exposes:
 
@@ -57,9 +58,14 @@ fn counterpart_of(
 
 fn canonical_handle(
     edge: PhysicalEdgeRef,
-    kind: EdgeKind,
 ) -> Result<EdgeHandle, CounterpartLookupError>;
 ```
+
+The implementation uses `counterpart` consistently. Existing `mate` names in APIs, types, modules, tests, benchmarks, and documentation are renamed or removed.
+
+GraphStore retains canonical edge properties and derived-index events. It does not retain a physical counterpart map.
+
+### 2. Canonical ownership is derived by edge semantics
 
 Canonicalization is:
 
@@ -69,88 +75,122 @@ undirected u != v               -> entry owned by max(u, v)
 undirected self-loop u == v     -> the sole entry
 ```
 
-For an undirected self-loop, `counterpart_of` returns the input entry.
+A directed self-loop has distinct forward and reverse physical entries.
 
-GraphStore retains canonical edge properties and derived-index events. It does not retain a duplicate physical counterpart index.
+An undirected self-loop has one physical entry:
 
-### 2. Pair ordinal is the authoritative counterpart relation
+```text
+counterpart_of(edge) = edge
+canonical_handle(edge) = edge.handle
+```
 
-For every non-self logical relation, LARA defines two physical occurrence sequences.
+Edge kind and canonical ownership are derived inside LARA from authoritative bucket and relation metadata. Callers do not supply a second, potentially inconsistent edge-kind argument when LARA can determine it.
+
+### 3. Pair ordinal is the authoritative counterpart relation
+
+For every non-self logical relation, LARA defines two live physical occurrence sequences.
 
 #### Directed relation
 
-For logical relation:
+For:
 
 ```text
 (label, source, target)
 ```
 
-the sequences are:
+the two sequences are:
 
 ```text
-left  = live entries in Forward[source, label] targeting target
-right = live entries in Reverse[target, label] targeting source
+left:
+    live entries in Forward[source, label] targeting target
+
+right:
+    live entries in Reverse[target, label] targeting source
 ```
 
 #### Undirected relation
 
-For logical relation:
+For:
 
 ```text
 (label, low_endpoint, high_endpoint)
 ```
 
-the sequences are:
+the two sequences are:
 
 ```text
-left  = live entries in Forward[high_endpoint, label] targeting low_endpoint
-right = live entries in Forward[low_endpoint, label] targeting high_endpoint
+left:
+    live entries in Forward[high_endpoint, label] targeting low_endpoint
+
+right:
+    live entries in Forward[low_endpoint, label] targeting high_endpoint
 ```
 
-The entries in each sequence retain their logical insertion order. Their zero-based position within the sequence is the **pair ordinal**.
+The zero-based position of an entry in its equal-target live subsequence is its **pair ordinal**.
 
 For every non-self relation:
 
 ```text
 left.len == right.len
-left[k] and right[k] represent the same logical edge
+
+for every k:
+    left[k] and right[k] represent the same logical edge
 ```
 
-The pair ordinal is not persisted edge identity. It is the authoritative relation by which the two physical entries are joined.
+Pair ordinal is not a persistent logical edge identifier. It is the authoritative relation used to recover the counterpart physical entry.
 
-A directed self-loop follows the directed rule across separate forward and reverse sequences. An undirected self-loop has one physical entry and no pair ordinal join.
+### 4. Pair ordinal is defined only over live entries
 
-### 3. Pair order is a mandatory write invariant
-
-All scalar, batch, repair, and compaction paths preserve identical logical-edge order in both physical sequences of a relation.
-
-Other neighbors may be arbitrarily interleaved in either label bucket:
+Pair ordinal excludes tombstoned entries:
 
 ```text
-Forward[u, label]:
-    x, v:e0, y, v:e1, z, v:e2
-
-Counterpart bucket:
-    q, u:e0, u:e1, r, u:e2
+PairOrdinal is defined over the currently live equal-target subsequence.
+A tombstoned entry has no PairOrdinal.
 ```
 
-Only the equal-neighbor subsequences must have identical logical order.
+Logical deletion removes both physical halves from their live occurrence sequences within one no-await mutation boundary.
+
+Derived or cached lookup state must be invalidated before either live sequence changes.
+
+Compaction may remove tombstones and renumber slots, but it preserves the relative order of surviving entries in every relation.
+
+### 5. Logical commit order defines pair order
+
+“Insertion order” means deterministic logical commit order, not incidental physical write order.
+
+For each relation key, every mutation batch determines one logical edge order before projecting entries to its two physical sides.
+
+The rules are:
+
+```text
+scalar insert:
+    the inserted logical edge is the next relation entry
+
+input-order-preserving batch:
+    relation entries follow their order in the accepted batch input
+
+repair:
+    both sides are rebuilt from one authoritative logical order
+
+compaction:
+    surviving entries retain their existing logical order
+```
 
 Independent sorting or reordering of the two projections is forbidden.
 
-Compaction may change physical slots, but it preserves live pair order. A transformation that cannot prove this invariant must rebuild both projections from one shared logical-ordinal plan before publication.
+A projection-order mismatch is not an accepted alternate representation. It is an invariant failure requiring repair.
 
-Permutation metadata is not an accepted steady-state substitute for pair-order correctness.
+No persistent permutation metadata is introduced to legitimize mismatched projection order.
 
-### 4. Counterpart scan is the metadata-free canonical algorithm
+### 6. CounterpartScan is the canonical lookup algorithm
 
-Every bucket supports exact counterpart lookup without derived metadata.
+LARA resolves counterparts without persisted counterpart metadata.
 
 Given a physical entry:
 
-1. identify its logical relation and physical side;
-2. compute its pair ordinal by counting preceding live entries with the same target in the source label bucket;
-3. select the entry with the same ordinal from the counterpart label bucket.
+1. determine its relation and physical side;
+2. find its pair ordinal by counting preceding live entries with the same target in the source label bucket;
+3. select the live entry with the same ordinal from the opposite physical sequence.
 
 Conceptually:
 
@@ -160,21 +200,65 @@ let ordinal = source_bucket.rank_equal_target(
     edge.slot(),
 )?;
 
-let counterpart = counterpart_bucket.select_equal_target(
-    counterpart_target,
+let counterpart = opposite_bucket.select_equal_target(
+    opposite_target,
     ordinal,
 )?;
 ```
 
 This algorithm is called **CounterpartScan**.
 
-Its worst-case work is proportional to the scanned portions of the two label buckets. It is always exact and remains the recovery and validation path when derived metadata is absent, rebuilding, malformed, stale, or rejected.
+CounterpartScan is:
 
-Ordinary adjacency traversal does not read counterpart metadata.
+- exact for unique and parallel edges;
+- the source of truth for counterpart lookup;
+- independent of Graph aliases;
+- valid for directed and undirected relations;
+- the recovery path for repair and validation; and
+- free of persisted per-edge counterpart metadata.
 
-### 5. Exact insertion locations replace post-insert rediscovery
+Ordinary adjacency traversal does not perform counterpart lookup and is unaffected.
 
-LARA already determines the physical location written for every entry. Insert APIs return those locations directly.
+### 7. Singleton relations require no ordinal metadata
+
+For a relation with one live edge:
+
+```text
+relation cardinality = 1
+pair ordinal = 0
+```
+
+No persisted rank, ordinal, permutation, or logical edge identifier is required.
+
+CounterpartScan may use proven canonical structural facts to skip unnecessary rank work when uniqueness is already known.
+
+This ADR does not mandate a persistent per-relation cardinality index. Uniqueness may be established during the canonical scan or by future derived acceleration.
+
+The fact that a singleton relation has implicit ordinal zero does not by itself require any additional storage.
+
+### 8. CounterpartScan may use canonical local optimizations
+
+CounterpartScan is a correctness contract, not a requirement to materialize complete bucket vectors.
+
+Its implementation may use:
+
+- direct slab or overflow-log range traversal;
+- chunk prefetch;
+- early termination after the required ordinal is found;
+- descending or ascending iterators;
+- proven singleton shortcuts;
+- existing bucket degree and span metadata; and
+- heap-only temporary counters.
+
+These optimizations must not introduce persistent per-edge counterpart metadata or change pair-ordinal semantics.
+
+The implementation must not allocate a complete logical-slot vector for each lookup when direct range traversal is available.
+
+### 9. Insertion returns exact physical locations
+
+LARA already determines the physical slot written for each entry.
+
+Insert APIs return those locations directly:
 
 ```rust
 enum InsertedEdgeLocations {
@@ -188,258 +272,117 @@ enum InsertedEdgeLocations {
 }
 ```
 
-Batch insertion associates locations with bounded chunk-local logical ordinals.
+Batch insertion associates physical locations with bounded chunk-local logical ordinals.
 
-GraphStore must not scan adjacency to rediscover a newly inserted entry when LARA returned its exact location.
+Returned locations are internal heap data. They do not require returning one replicated handle per public batch element.
 
-The returned locations are internal heap data. They do not require a public replicated response containing one handle per inserted edge.
+GraphStore must not rescan adjacency to rediscover entries whose exact locations were returned by LARA.
 
-### 6. Optional acceleration uses sparse counterpart tables
+### 10. The bidirectional LARA owner is the mutation boundary
 
-LARA may publish a derived **CounterpartTable** for relations whose measured lookup cost justifies the persistent bytes.
+The bidirectional wrapper is the smallest owner that sees:
 
-A CounterpartTable is:
+- directed forward and reverse projections;
+- both forward halves of an undirected edge;
+- pair order;
+- physical slot allocation; and
+- compaction and repair.
 
-- owned by the canonical forward leaf;
-- shared by both physical sides of a logical relation;
-- sparse at both bucket and relation level;
-- omitted entirely when no relation in the leaf is accelerated; and
-- derived from canonical adjacency and pair order.
+Canonical single-orientation mutation methods are not exposed to GraphStore as general-purpose APIs.
 
-There is no separate forward and reverse counterpart index.
+GraphStore, batch insertion, deletion, inline-value update, compaction, and repair use owner-facing operations that preserve the pair-order invariant.
 
-Given either physical half, LARA derives:
+Read-only forward and reverse accessors may remain public.
 
-- the canonical relation key;
-- the canonical owner;
-- the canonical forward leaf;
-- the input side; and
-- the opposite side.
+### 11. Failure atomicity is based on canonical adjacency
 
-It then consults the single table owned by that canonical leaf.
+Counterpart correctness depends only on canonical adjacency and pair order.
 
-### 7. Counterpart tables are relation-aware
-
-Within an indexed canonical bucket, records are keyed by the opposite endpoint.
-
-A relation record has one of two forms.
-
-#### Unique relation
-
-A live relation with cardinality one has implicit pair ordinal zero:
+For a paired mutation:
 
 ```text
-Unique:
-    canonical_slot
-    counterpart_slot
+validate and reserve
+→ write both physical projections
+→ update mirrored payload state
+→ publish success
 ```
 
-It stores no rank, ordinal, permutation, or per-entry discriminator.
+A successful return must not expose only one live physical half.
 
-A unique relation may also be omitted entirely when scanning is cheaper than its record.
+Pre-write validation and capacity failures may return recoverable errors.
 
-#### Parallel relation
+An impossible post-write invariant failure traps so message rollback preserves atomicity.
 
-A relation with cardinality greater than one stores its two physical slot sequences in pair-ordinal order:
+No separate counterpart index participates in the canonical commit.
+
+### 12. Reverse repair restores exact pair order
+
+Reverse-adjacency repair must restore more than relation counts.
+
+For every repaired directed relation, it restores:
 
 ```text
-Parallel:
-    canonical_slots[k]
-    counterpart_slots[k]
+forward equal-target live sequence
+    ↔
+reverse equal-target live sequence
 ```
 
-The ordinal is implicit in the array position.
+with exact pair-ordinal correspondence.
 
-Within each side, slots follow bucket order and are therefore strictly ordered under LARA’s logical slot ordering. Lookup from either half:
+First-match association is forbidden for parallel edges.
 
-1. binary-searches the appropriate side’s slot sequence;
-2. obtains the pair ordinal from the found array index; and
-3. returns the slot at the same index in the opposite sequence.
+Repair derives both sides from one authoritative logical ordering plan.
 
-No persistent logical edge ID is introduced.
+For undirected relations, repair likewise preserves identical logical order in both endpoint projections.
 
-A relation missing from the table uses CounterpartScan.
-
-### 8. The index is sparse by relation, not merely by bucket
-
-Bucket degree alone does not determine counterpart-index value.
-
-A bucket with 1,024 different neighbors has different storage and lookup behavior from a bucket containing 1,024 parallel edges to one neighbor.
-
-Admission therefore considers relation-level shape, including:
-
-```text
-bucket live entries
-distinct target count
-unique relation count
-parallel relation count
-parallel entry count
-maximum relation cardinality
-observed counterpart requests
-measured scan instructions
-encoded table bytes
-rebuild cost
-read-to-update ratio
-```
-
-These values are derived during measurement or rebuild. They are not added to every persisted bucket row.
-
-A table may include only some relations from an indexed bucket. Unlisted relations remain canonical and use CounterpartScan.
-
-This ensures that metadata cost scales with accelerated relations rather than automatically with all graph edges.
-
-### 9. Slot sequences use the smallest valid width
-
-Slot values are packed using the smallest width that can encode the relation’s physical slot domain:
-
-| Width | Bytes per slot |
-| ----- | -------------: |
-| `U8`  |              1 |
-| `U16` |              2 |
-| `U24` |              3 |
-| `U32` |              4 |
-
-Canonical and counterpart sides may use independently selected widths when their slot domains differ.
-
-The production format must support LARA’s total logical slot ordering, including slab and overflow-log locations. It must not assume that an implementation-specific raw integer encoding is numerically ordered unless the codec proves that property.
-
-Compression may use bounded frame-of-reference or block encoding only when:
-
-- direct lookup remains bounded;
-- malformed input fails closed;
-- exact counterpart parity is validated;
-- encoded bytes improve on the uncompressed relation record; and
-- lookup instructions do not regress beyond the accepted gate.
-
-Compression algorithms are codec choices, not additional counterpart semantics.
-
-### 10. Remove obsolete acceleration modes
-
-The production design does not define the following former candidate modes:
-
-```text
-Sampled
-RankedPacked
-SharedOrientation
-PairRank
-BlockRankPermutation
-```
-
-Their useful ideas are absorbed as follows:
-
-- `PairRank` becomes the universal pair-ordinal invariant.
-- `RankedPacked` becomes the parallel relation’s pair-ordered slot sequences.
-- `SharedOrientation` becomes one counterpart table shared by both physical sides.
-- singleton rank elision is represented by `Unique`.
-- reordered projection exceptions are rejected or repaired rather than persisted.
-- checkpoint-only `Sampled` lookup is removed because it does not bound ordinary non-checkpoint resolution.
-
-Historical measurements for these candidates belong in a separate evidence document, not in the normative ADR.
-
-### 11. One locator row is stored per canonical forward leaf
-
-Counterpart metadata is owned by canonical forward leaves, not by orientation/leaf pairs.
-
-A fixed five-byte locator row identifies the current table blob for each canonical forward leaf:
-
-```text
-0      Empty: no published table; use CounterpartScan
-1      Rebuilding: table must not be read; use CounterpartScan
-n >= 2 Published: blob offset = n - 2
-```
-
-The locator does not store hotness, generation, mode, bucket count, or table length.
-
-The table blob is self-describing and contains:
-
-```text
-header
-sparse bucket directory
-sparse relation directory per indexed bucket
-unique and parallel relation payloads
-```
-
-If no relation in a leaf passes admission, no blob is allocated.
-
-The fixed locator store is a dedicated LARA fixed-row store using exact five-byte reads and writes. It is not added to `LabelBucket`, `LabeledVertex`, PMA node metadata, or edge rows.
-
-### 12. Counterpart blobs are replaceable derived state
-
-Variable-sized table blobs use a dedicated byte store and dedicated free-span indexes.
-
-Replacement follows copy-before-publish order:
-
-1. allocate a new span;
-2. encode the complete new blob;
-3. validate structure and canonical counterpart parity;
-4. publish the new locator; and
-5. retire the previous span.
-
-Replaced blobs do not shift later blobs and do not leak append-only stable memory.
-
-The locator, blob store, free-span store, and free-span-by-start index form one reopen-validated layout.
-
-A valid `Empty` locator is always a correct recoverable state.
-
-### 13. Mutation invalidates acceleration before canonical change
-
-Canonical adjacency and pair order are the source of truth. Counterpart tables never make an edge live.
-
-The bidirectional LARA owner is the mutation boundary. Single-orientation canonical mutation methods are not exposed to GraphStore.
-
-For a mutation affecting a published canonical leaf:
-
-```text
-invalidate
-reserve
-mutate canonical adjacency
-rebuild or schedule rebuild
-validate
-publish
-```
-
-More precisely:
-
-1. make the affected locator unavailable before the first canonical write;
-2. reserve all required canonical and derived storage;
-3. commit both physical projections while preserving pair order;
-4. rebuild the affected sparse table from canonical rows;
-5. validate relation cardinality, slot membership, order, and reciprocal mapping;
-6. publish the rebuilt blob or leave the locator `Empty`; and
-7. retire the old blob only after successful publication.
-
-A multi-step maintenance operation may expose `Rebuilding`. Reads seeing `Rebuilding` use CounterpartScan.
-
-A trap, interruption, decode error, capacity failure, or validation failure leaves no stale published table.
-
-### 14. Slot-preserving work requires no counterpart repair
-
-An ordinary leaf slide or rebalance that preserves physical `EdgeHandle` values requires no table change.
-
-Operations that renumber indexed slots invalidate and rebuild the affected canonical leaf table.
-
-GraphStore repairs canonical property keys only when canonical physical handles move. It no longer repairs alias keys or alias targets.
-
-Reverse-adjacency repair restores exact pair order and then rebuilds affected counterpart tables. First-match association is forbidden for parallel edges.
-
-### 15. GraphStore retains canonical sidecars
+### 13. GraphStore retains canonical sidecars only
 
 `EDGE_PROPERTIES` remains keyed by canonical physical `EdgeHandle`.
 
-Inline values remain mirrored physical payloads.
+Canonical property ownership is:
 
-Given either half of a logical edge:
+```text
+directed                         -> forward handle
+undirected u != v               -> max-owner handle
+undirected self-loop u == v     -> sole handle
+```
 
-- property access calls `canonical_handle`;
-- mirrored inline update calls `counterpart_of`;
-- logical deletion calls `counterpart_of`; and
-- an undirected self-loop updates or deletes its sole physical entry once.
+Given a non-canonical physical entry, GraphStore calls `canonical_handle`.
 
-Edge and payload slot spaces remain independent.
+Mirrored inline update and logical deletion call `counterpart_of`.
 
-Their association is bucket-local live ordinal, not numeric slot equality or log-entry index. Payload operations resolve the edge ordinal and apply the same ordinal to the corresponding payload sequence independently on both physical sides.
+An undirected self-loop updates or removes one physical entry once.
 
-### 16. Separate physical entries from mathematical degree
+### 14. Edge and payload slots remain separate domains
+
+Edge slots and inline-payload slots are not numerically paired.
+
+Their association is bucket-local live ordinal.
+
+For every inline-value operation, LARA:
+
+1. resolves the edge entry’s bucket-local live ordinal;
+2. applies that ordinal to the payload sequence;
+3. resolves the physical counterpart using `counterpart_of`;
+4. resolves the counterpart bucket’s payload ordinal independently; and
+5. updates or removes both mirrored values in one no-await commit.
+
+Edge-log indices, payload-log indices, blob positions, and physical slot numbers must not be assumed equal.
+
+Compaction may move edge and payload storage independently while preserving corresponding live sequence order.
+
+### 15. Slot-preserving movement requires no Graph repair
+
+A leaf slide or rebalance that preserves physical `EdgeHandle` values requires no counterpart or property-key repair.
+
+A slot-renumbering operation:
+
+- preserves pair order;
+- emits canonical slot moves;
+- lets GraphStore repair canonical property keys only for moved canonical entries; and
+- does not repair alias keys or alias targets because aliases are removed.
+
+### 16. Physical entry count and mathematical degree remain distinct
 
 An undirected self-loop is stored once.
 
@@ -457,295 +400,245 @@ physical entries = non-loop entries + self-loops
 degree           = non-loop incidences + 2 * self-loops
 ```
 
-Storage, capacity, scan-cost, and compaction logic use physical counts. Graph algorithms requesting mathematical degree add the second self-loop incidence logically.
+Storage, capacity, scan-cost, and compaction logic use physical counts.
+
+Graph algorithms requesting mathematical degree add the second self-loop incidence logically.
 
 ## Complexity
 
 Let:
 
-- `d₁` be the scanned source bucket length;
-- `d₂` be the scanned counterpart bucket length;
-- `r` be the number of indexed relation records in a bucket; and
-- `m` be the cardinality of the selected relation.
+- `d_source` be the scanned portion of the source label bucket;
+- `d_opposite` be the scanned portion of the opposite label bucket.
 
-### CounterpartScan
+CounterpartScan has:
 
 ```text
-time:  O(d₁ + d₂)
-space: 0 derived bytes
+time:
+    O(d_source + d_opposite)
+
+persistent counterpart metadata:
+    0 bytes per edge
+    0 bytes per relation
 ```
 
-The exact implementation may stop after the required rank or selection is reached.
+Implementations may terminate before scanning the full buckets.
 
-### Indexed unique relation
+For a proven singleton relation, the source ordinal is implicit zero, but the opposite entry may still require a target search.
 
-```text
-time:  O(log r)
-space: two packed slots plus sparse directory overhead
-```
-
-No ordinal metadata is stored.
-
-### Indexed parallel relation
-
-```text
-time:  O(log r + log m)
-space: two packed slot sequences plus sparse directory overhead
-```
-
-The relation arrays serve both physical lookup directions.
-
-### Mutation
-
-A canonical mutation invalidates the affected table before changing adjacency.
-
-An unchanged table record may eventually support bounded in-place updates when width, capacity, and ordering remain valid. The baseline contract permits rebuilding the affected leaf:
-
-```text
-rebuild time: O(indexed entries in the canonical leaf)
-```
-
-Admission accounts for this rebuild cost using measured read-to-update ratios.
-
-## Storage gate
-
-The current alias baseline is:
-
-```text
-18 serialized bytes per non-self logical edge
-```
-
-before B-tree node, allocator, and memory-manager overhead.
-
-Counterpart-table accounting includes:
-
-```text
-locator bytes
-blob header
-bucket directory
-relation directory
-unique records
-parallel slot sequences
-free-span metadata
-reserved capacity
-rebuild reserve
-```
-
-Allocator extent rounding and stable-memory page deltas are reported separately from logical bytes.
-
-A table is eligible only when its complete logical byte cost is smaller than the alias rows it replaces for the same covered logical edges.
-
-A table may not claim savings by charging its overhead to unrelated unindexed edges.
-
-Low-degree, cold, singleton-heavy, or directory-heavy shapes remain unindexed when the complete table would not save bytes.
-
-## Runtime and amortization gate
-
-Persistent acceleration is admitted only when all of the following pass:
-
-1. exact parity with CounterpartScan;
-2. malformed, truncated, out-of-range, and stale data fail closed;
-3. complete logical bytes are below the removed alias baseline;
-4. request-time instructions satisfy the bounded runtime target;
-5. rebuild cost is amortized by the measured read-to-update ratio; and
-6. the relation remains within the production codec’s cardinality and payload bounds.
-
-A missing measurement selects no table.
-
-A failing measurement selects no table.
-
-CounterpartScan remains the default, not a temporary error state.
+The purpose of this ADR is correctness, ownership, alias removal, and zero counterpart metadata—not a universal constant-time counterpart lookup guarantee.
 
 ## Stable layout
 
-The final design adds four LARA-owned logical regions:
+This ADR introduces no persistent counterpart-table layout.
 
-1. `COUNTERPART_LEAF_LOCATORS`
-2. `COUNTERPART_BLOBS`
-3. `COUNTERPART_FREE_SPANS`
-4. `COUNTERPART_FREE_SPAN_BY_START`
+It removes `EDGE_ALIASES` once all callers have migrated.
 
-`EDGE_ALIASES` is removed only after ordinary callers use the LARA counterpart APIs and every required workload stratum passes the activation gate.
+No stable-layout compatibility is required because the feature is not deployed. Existing development data may be recreated.
 
-There is no in-place migration from `EDGE_ALIASES` in the development layout. Production migration remains governed by ADR 0039.
+Any dormant `MATE_*`, `COUNTERPART_*`, sampled, packed, locator, blob, free-span, or measurement-only stable regions that exist solely for the superseded adaptive-index design are removed unless independently required by another accepted design.
 
-## Failure atomicity
+Production stable-memory evolution remains governed by ADR 0039.
 
-Counterpart tables are disposable derived state.
+## Implementation strategy
 
-The correctness rule is:
+Implementation proceeds as a destructive replacement, not a compatibility migration.
 
-```text
-canonical adjacency may exist without a table;
-a published table may never disagree with canonical adjacency.
-```
+### Phase 1: terminology and API boundary
 
-Publication validates:
+- rename `mate` to `counterpart`;
+- introduce final `PhysicalEdgeRef`;
+- expose `counterpart_of` and `canonical_handle`;
+- remove duplicate edge-kind inputs where LARA can derive semantics;
+- simplify `CounterpartLookupError`.
 
-- blob bounds and version;
-- directory ordering;
-- relation uniqueness;
-- cardinality;
-- slot width and range;
-- slot membership in the expected bucket;
-- strict side-sequence order;
-- equal side cardinality;
-- exact pair-ordinal correspondence; and
-- absence of trailing or overlapping payload ranges.
+### Phase 2: canonical scan
 
-Any failed check suppresses the table and uses CounterpartScan.
+- implement direct equal-target rank traversal;
+- implement direct equal-target select traversal;
+- support slab and overflow-log locations;
+- avoid per-lookup slot-vector materialization;
+- cover directed, undirected, and self-loop contracts.
+
+### Phase 3: exact write locations
+
+- return exact locations from scalar insertion;
+- return exact locations by logical ordinal from batch insertion;
+- remove post-insert adjacency rediscovery.
+
+### Phase 4: mutation ownership
+
+- make single-orientation canonical mutations crate-private;
+- route GraphStore and repair through bidirectional owner methods;
+- enforce pair-order preservation on every mutation path.
+
+### Phase 5: alias removal
+
+- migrate canonicalization, update, and deletion callers;
+- remove `EDGE_ALIASES`;
+- remove alias rebuild, repair, scan, and migration code;
+- remove alias-specific tests and benchmarks after replacement coverage exists.
+
+### Phase 6: cleanup
+
+- remove dormant adaptive counterpart-index substrates;
+- remove retired codecs, selectors, feature gates, fixtures, and production candidates;
+- keep historical measurements only in non-normative evidence documents when still useful.
 
 ## Alternatives considered
 
 ### Keep the one-way alias B-tree
 
-Rejected because canonical-to-counterpart operations scan the map, slot ownership remains outside LARA, and insertion rediscovery and repair remain duplicated.
+Rejected because it duplicates LARA physical ownership, canonical-to-counterpart lookup scans the map, and slot repair remains outside LARA.
 
 ### Add a reverse alias B-tree
 
-Rejected because it at least doubles the serialized per-edge payload and introduces another synchronous consistency surface.
+Rejected because it increases persistent bytes and creates another synchronous consistency surface.
 
-### Persist a logical edge ID in every edge row
+### Persist a logical edge ID in each physical row
 
-Rejected because it enlarges the four-byte traversal row and still requires an ID-to-location index.
+Rejected because it enlarges the four-byte traversal row and still requires ID-to-location lookup.
 
 ### Store a counterpart slot in every edge row
 
-Rejected because all traversal rows would pay for an operation used mainly by mutation and property access.
+Rejected because every traversal row would pay for an operation mainly needed by updates, deletes, and canonical property access.
 
-### Index every bucket entry
+### Retain adaptive counterpart tables in this ADR
 
-Rejected because unique-neighbor and cold buckets can consume more bytes than the alias representation. Counterpart tables are sparse by relation.
+Rejected because counterpart correctness and Graph alias removal do not depend on a derived accelerator.
 
-### Persist pair ordinals
+Combining ownership transfer, pair-order correctness, compression experiments, stable blob allocation, promotion policy, and runtime adoption made the previous design difficult to reason about and implement.
 
-Rejected because ordinal is determined by canonical equal-neighbor order. A unique relation has implicit ordinal zero, and a parallel record’s ordinal is implicit in array position.
+Adaptive acceleration requires separate evidence and a separate ADR.
 
-### Allow projection-order permutations
+### Allow reordered projections with permutation metadata
 
-Rejected because it creates a second pairing authority and increases mutation, repair, and validation complexity. Canonical pair order must be restored instead.
-
-### Keep checkpoint-only sampled lookup
-
-Rejected because non-checkpoint requests still require unbounded canonical fallback and the format does not provide a clear ordinary-lookup complexity bound.
-
-### Store one index per orientation
-
-Rejected because the two physical sides represent one logical relation. One canonical-owner table serves both directions.
+Rejected because it creates a second pairing authority. Both projections must preserve one logical relation order.
 
 ## Consequences
 
 Positive:
 
-- Graph’s per-edge alias B-tree is removed.
+- Graph’s per-edge alias index is removed.
+- Counterpart correctness belongs to LARA.
 - Four-byte edge rows remain unchanged.
-- Counterpart correctness requires no persistent logical edge ID.
-- Unique relations store no ordinal metadata.
-- Cold and unprofitable relations store no counterpart metadata.
-- Parallel relations use one shared pair-ordered representation for both directions.
-- Exact insertion locations remove post-insert adjacency rediscovery.
-- Counterpart ownership, invalidation, repair, and compaction remain inside LARA.
-- Ordinary traversal remains independent of counterpart metadata.
-- Published metadata can always be discarded and rebuilt from canonical adjacency.
+- No persistent counterpart metadata is required.
+- Unique and parallel edges are exact without logical edge IDs.
+- Exact insertion locations remove post-insert rediscovery.
+- Pair-order repair and compaction remain within one owner.
+- Ordinary adjacency traversal remains unchanged.
+- The implementation surface becomes substantially smaller than the superseded adaptive-index design.
+- Future acceleration can be evaluated against a stable, correct, metadata-free baseline.
 
-Costs and risks:
+Costs:
 
-- identical pair order across both projections becomes a mandatory write invariant;
-- indexed leaves require variable-sized blob allocation and reclamation;
-- relation directories add overhead that must be measured rather than amortized optimistically;
-- source-slot lookup depends on a proven logical slot ordering;
-- slot-renumbering operations rebuild affected tables;
-- alias removal remains blocked until ordinary-caller and production-layout measurements pass.
+- counterpart lookup may scan both relevant label buckets;
+- high-degree parallel relations may remain expensive;
+- pair-order preservation becomes a mandatory mutation invariant;
+- reverse repair must become pair-exact;
+- performance acceleration is deferred to a separate decision.
 
 ## Test contract
 
 Implementation covers:
 
-- directed fan-out, fan-in, and self-loops;
-- undirected canonical ownership and one-entry self-loops;
-- exact counterpart resolution from either physical side;
-- unique and parallel relations;
-- interleaved equal-target entries;
-- distinct inline values across parallel logical edges;
-- slab and overflow-log slot domains;
+- directed fan-out and fan-in;
+- directed self-loops with separate orientations;
+- undirected max-owner canonicalization;
+- one-entry undirected self-loops;
+- physical count versus mathematical degree;
+- singleton relations;
+- parallel relations;
+- equal-target entries interleaved with other targets;
+- distinct inline values on parallel edges;
+- exact update and deletion from either physical half;
+- slab and overflow-log source/counterpart combinations;
 - edge and payload sequences in different physical domains;
-- scalar and batch insertion returning exact physical locations;
-- identical pair order across all insertion paths;
-- CounterpartScan parity;
-- sparse bucket and sparse relation omission;
-- unique and parallel table records;
-- all slot widths;
-- table growth, removal, and rebuild;
-- slot-preserving rebalance;
-- slot-renumbering compaction;
-- reverse-adjacency repair;
+- scalar insertion returning exact locations;
+- batch insertion returning exact per-ordinal locations;
+- input-order-preserving pair order;
+- compaction preserving survivor order;
+- reverse repair restoring exact pair order;
 - canonical property-key repair;
-- malformed, truncated, overlapping, and out-of-range blobs;
-- reopen and partial-layout failure;
-- invalidation-before-mutation;
-- publication and old-span retirement failpoints; and
-- complete removal of Graph alias dependencies.
+- mutation rollback and trap atomicity;
+- absence of Graph alias dependencies; and
+- codebase-wide absence of active `mate` terminology.
+
+Property-based tests generate paired adjacency sequences with arbitrary interleaving and verify:
+
+```text
+counterpart_of(counterpart_of(edge)) == edge
+```
+
+for every live non-self physical entry.
+
+They also verify:
+
+```text
+canonical_handle(edge) == canonical_handle(counterpart_of(edge))
+```
+
+and exact logical-edge preservation across insertion, deletion, compaction, and repair.
 
 ## Benchmark contract
 
-Benchmarks compare:
+Canbench compares:
 
 ```text
-EDGE_ALIASES
+current EDGE_ALIASES
 CounterpartScan
-CounterpartTable Unique
-CounterpartTable Parallel
 ```
+
+during implementation, then removes the alias baseline after migration is complete.
 
 Workloads include:
 
-- low-degree and high-degree buckets;
-- all-unique neighbors;
-- mixed unique and parallel relations;
+- bucket degrees 1, 8, 32, 128, 1,024, and hub-sized cases;
+- all-unique targets;
 - one high-cardinality parallel relation;
+- mixed singleton and parallel relations;
 - directed and undirected relations;
-- directed and undirected self-loops;
 - mixed labels;
 - dense slab slots;
 - sparse overflow-log slots;
-- read-heavy, balanced, and write-heavy ratios; and
-- compaction and reverse-repair rebuilds.
+- scalar insertion;
+- batch insertion;
+- canonicalization;
+- inline update;
+- deletion;
+- compaction; and
+- reverse repair.
 
-Measurements report separately:
+Measurements report:
 
 ```text
-lookup instructions
-update and delete instructions
-insert instructions
-rebuild instructions
+instructions
 stable reads and writes
-logical serialized bytes
-allocator/free-span bytes
-stable-memory page deltas
+heap growth
+stable-memory growth
 ```
 
-Promotion is selected from end-to-end byte and amortized operation cost. No microbenchmark result alone activates alias removal.
+The benchmarks establish the baseline for a later adaptive counterpart-acceleration ADR.
 
-## Implementation status
+## Deferred decision
 
-| Capability                                   | State                                        |
-| -------------------------------------------- | -------------------------------------------- |
-| canonical CounterpartScan                    | implemented                                  |
-| exact internal insertion locations           | partially implemented                        |
-| owner-facing mutation invalidation           | implemented in current mate-index substrate  |
-| leaf blob storage and publication            | implemented in dormant predecessor substrate |
-| sparse relation-aware CounterpartTable       | not implemented                              |
-| canonical-forward single-locator ownership   | not implemented                              |
-| production table codec                       | not implemented                              |
-| ordinary-caller activation                   | deferred                                     |
-| `EDGE_ALIASES` removal                       | deferred                                     |
-| codebase-wide `mate` to `counterpart` rename | required                                     |
+A later ADR may introduce derived counterpart acceleration.
 
-Historical candidate measurements and superseded wire formats are maintained outside this ADR.
+That ADR must begin from the following constraints:
+
+- PairOrdinal remains the sole authoritative counterpart relation.
+- CounterpartScan remains the exact fallback.
+- Derived state must never define edge identity.
+- Relations that scan cheaply may store no metadata.
+- Singleton relations require no ordinal metadata.
+- Any stored locator must beat CounterpartScan under measured byte, runtime, and rebuild-amortization gates.
+- Production formats must be simple enough to justify their maintenance and failure-atomicity cost.
+
+No specific sampled, packed, shared-orientation, pair-rank, permutation, leaf-blob, or locator design is accepted by this ADR.
 
 ## Related
 
-- ADR 0001: Labeled segment slide and PMA ownership
+- ADR 0001: labeled segment slide and PMA ownership
 - ADR 0020: deferred LARA maintenance
 - ADR 0026: reverse-adjacency differential repair
 - ADR 0039: production stable-memory evolution
@@ -753,3 +646,4 @@ Historical candidate measurements and superseded wire formats are maintained out
 - ADR 0049: input-order-preserving batch mutations
 - LARA storage contract
 - LARA and Graph facade contract
+- labeled edge inline-value contract
