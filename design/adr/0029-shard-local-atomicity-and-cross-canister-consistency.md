@@ -89,6 +89,10 @@ distinction between a recoverable rejection and an invariant-violating trap:
 5. make retry converge on the same logical mutation rather than duplicate an edge or erase
    pre-existing derived state.
 
+The bidirectional LARA owner applies this boundary to paired scalar edge writes: after the first
+canonical half is written, a reverse-half failure or maintenance-intent admission failure is an
+invariant violation and traps. Such failures are not returned as recoverable `Err` values.
+
 The owner applies this rule at each nested boundary. LARA owns adjacency layout, allocation,
 relocation, and reopen invariants. `GraphStore` owns the co-update of canonical adjacency with
 same-canister reverse rows, edge aliases, edge properties, local indexes, and maintenance intent.

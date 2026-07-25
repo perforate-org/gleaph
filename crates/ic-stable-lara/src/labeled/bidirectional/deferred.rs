@@ -37,6 +37,42 @@ use ic_stable_vec_deque::{
 };
 use std::{borrow::Cow, fmt};
 
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_FAIL_NEXT_REVERSE_HALF: Cell<bool> = const { Cell::new(false) };
+    static TEST_FAIL_NEXT_POST_WRITE_MAINTENANCE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+fn test_fail_next_reverse_half() {
+    TEST_FAIL_NEXT_REVERSE_HALF.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+fn test_take_reverse_half_failure() -> bool {
+    TEST_FAIL_NEXT_REVERSE_HALF.with(|flag| flag.replace(false))
+}
+
+#[cfg(test)]
+fn test_fail_next_post_write_maintenance() {
+    TEST_FAIL_NEXT_POST_WRITE_MAINTENANCE.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+fn test_take_post_write_maintenance_failure() -> bool {
+    TEST_FAIL_NEXT_POST_WRITE_MAINTENANCE.with(|flag| flag.replace(false))
+}
+
+#[cfg(test)]
+fn test_post_write_maintenance_failure_result() -> Result<(), DeferredBidirectionalLabeledError> {
+    Err(DeferredBidirectionalLabeledError::MaintenanceDirtyBitmap(
+        BitmapError::LimitsExceeded { value: 1, max: 0 },
+    ))
+}
+
 /// Failure returned by the owner-facing mate leaf rebuild boundary.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum MateLeafRebuildError {
@@ -366,9 +402,18 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
         self.dirty
             .insert(key)
             .map_err(DeferredBidirectionalLabeledError::MaintenanceDirtyBitmap)?;
-        self.queue
-            .push_back(&item)
-            .map_err(DeferredBidirectionalLabeledError::MaintenanceQueue)?;
+        if let Err(error) = self.queue.push_back(&item) {
+            // The dirty bit is a deduplication promise: leaving it set without a queued item
+            // would permanently suppress the maintenance work. Restore it before returning the
+            // recoverable queue error; if that repair fails, the maintenance invariant is
+            // ambiguous and must trap.
+            self.dirty.clear(key).unwrap_or_else(|rollback| {
+                panic!(
+                    "maintenance dirty-key rollback failed after queue admission error: {rollback}"
+                )
+            });
+            return Err(DeferredBidirectionalLabeledError::MaintenanceQueue(error));
+        }
         Ok(true)
     }
 
@@ -1807,6 +1852,10 @@ where
     }
 
     /// Inserts one directed edge and returns the exact locations captured by both writes.
+    ///
+    /// All recoverable errors occur before the first canonical write. A failure while writing the
+    /// reverse half or admitting post-write maintenance is an invariant violation and traps so an
+    /// enclosing IC message can roll back the forward half as well.
     pub fn insert_directed_edge_with_locations(
         &self,
         src: VertexId,
@@ -1844,25 +1893,67 @@ where
                 forward_edge,
             )
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        let reverse_location = self
+        #[cfg(test)]
+        let reverse_result = if test_take_reverse_half_failure() {
+            Err(LabeledOperationError::InvalidDefaultBypass)
+        } else {
+            self.reverse
+                .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+                    dst,
+                    label_id,
+                    reverse_edge,
+                )
+        };
+        #[cfg(not(test))]
+        let reverse_result = self
             .reverse
             .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
                 dst,
                 label_id,
                 reverse_edge,
-            )
-            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+            );
+        let reverse_location = reverse_result.unwrap_or_else(|error| {
+            panic!("reverse half failed after directed forward canonical write: {error}")
+        });
+        #[cfg(test)]
+        if test_take_post_write_maintenance_failure() {
+            test_post_write_maintenance_failure_result().unwrap_or_else(|error| {
+                panic!(
+                    "post-write maintenance admission failed after directed canonical write: {error}"
+                )
+            });
+        }
         if forward_payload_compaction_needed {
-            self.mark_compact_payload_slab(Orientation::Forward)?;
+            self.mark_compact_payload_slab(Orientation::Forward)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "forward payload maintenance admission failed after directed canonical write: {error}"
+                    )
+                });
         }
         if reverse_payload_compaction_needed {
-            self.mark_compact_payload_slab(Orientation::Reverse)?;
+            self.mark_compact_payload_slab(Orientation::Reverse)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "reverse payload maintenance admission failed after directed canonical write: {error}"
+                    )
+                });
         }
         if self.forward.labeled_leaf_segment_is_dense(src) {
-            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, src)?;
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, src)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "forward dense maintenance admission failed after directed canonical write: {error}"
+                    )
+                });
         }
         if self.reverse.labeled_leaf_segment_is_dense(dst) {
-            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Reverse, dst)?;
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Reverse, dst)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "reverse dense maintenance admission failed after directed canonical write: {error}"
+                    )
+                });
         }
         Ok(ScalarInsertPair {
             forward: forward_location,
@@ -3647,6 +3738,10 @@ where
     }
 
     /// Inserts both undirected endpoint rows and returns their exact locations.
+    ///
+    /// All recoverable errors occur before the first canonical write. A failure while writing the
+    /// second endpoint or admitting post-write maintenance is an invariant violation and traps
+    /// so an enclosing IC message can roll back the first endpoint as well.
     pub fn insert_undirected_deferred_with_locations(
         &self,
         u: VertexId,
@@ -3686,24 +3781,56 @@ where
             .insert_edge_skip_leaf_cascade_deferred_payload_with_location(u, label_id, edge_uv)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         let reverse_location = if u != v {
-            Some(
+            #[cfg(test)]
+            let reverse_result = if test_take_reverse_half_failure() {
+                Err(LabeledOperationError::InvalidDefaultBypass)
+            } else {
                 self.forward
                     .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
                         v, label_id, edge_vu,
                     )
-                    .map_err(DeferredBidirectionalLabeledError::Forward)?,
-            )
+            };
+            #[cfg(not(test))]
+            let reverse_result = self
+                .forward
+                .insert_edge_skip_leaf_cascade_deferred_payload_with_location(v, label_id, edge_vu);
+            Some(reverse_result.unwrap_or_else(|error| {
+                panic!("undirected second half failed after first forward canonical write: {error}")
+            }))
         } else {
             None
         };
+        #[cfg(test)]
+        if test_take_post_write_maintenance_failure() {
+            test_post_write_maintenance_failure_result().unwrap_or_else(|error| {
+                panic!(
+                    "post-write maintenance admission failed after undirected canonical write: {error}"
+                )
+            });
+        }
         if u_payload_compaction_needed || (u != v && v_payload_compaction_needed) {
-            self.mark_compact_payload_slab(Orientation::Forward)?;
+            self.mark_compact_payload_slab(Orientation::Forward)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "undirected payload maintenance admission failed after canonical write: {error}"
+                    )
+                });
         }
         if self.forward.labeled_leaf_segment_is_dense(u) {
-            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, u)?;
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, u)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "undirected first-endpoint maintenance admission failed after canonical write: {error}"
+                    )
+                });
         }
         if u != v && self.forward.labeled_leaf_segment_is_dense(v) {
-            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, v)?;
+            self.mark_compact_dense_labeled_vertex_maintenance(Orientation::Forward, v)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "undirected second-endpoint maintenance admission failed after canonical write: {error}"
+                    )
+                });
         }
         Ok(ScalarInsertPair {
             forward: forward_location,
@@ -3806,7 +3933,7 @@ mod tests {
             BatchLocationMode, OneOrientationBatchEdge, OneOrientationBatchPlan,
             OneOrientationBucketRun,
         },
-        test_support::{labeled_lara_memories, vector_memory},
+        test_support::{FailpointMemory, labeled_lara_memories, vector_memory},
         traits::{CsrEdge, CsrEdgeTombstone},
     };
 

@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-07-17
-Anchor timestamp: 2026-07-17 10:50:05 UTC +0000
+Last updated: 2026-07-25
+Anchor timestamp: 2026-07-25 01:42:16 UTC +0000
 
 ## Status
 
@@ -46,6 +46,31 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-07-25-001 — Paired canonical edge writes expose recoverable post-write errors
+
+- **Status:** Resolved by Plan 0182
+- **Severity:** P1 canonical consistency risk
+- **Owner:** `ic-stable-lara` bidirectional owner and GraphStore paired mutation boundary
+- **Observed behavior:** The owner writes paired halves sequentially. The implementation traps on
+  reverse-half and post-write maintenance-admission failures, and dirty-key admission restores its
+  bitmap bit when queue append fails. Deterministic failure-injection tests cover directed,
+  undirected, and maintenance-queue paths.
+- **Expected or needed behavior:** After the first canonical half is written, the supported
+  paired-mutation boundary must either complete both halves and all required mutation intent, or
+  trap/rollback the whole message segment. A recoverable `Err` must not expose a partially updated
+  bidirectional graph to a caller that handles the result without trapping.
+- **Evidence:** `crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs`
+  (`insert_directed_edge_with_locations`, `insert_undirected_deferred_with_locations`) and
+  `design/adr/0029-shard-local-atomicity-and-cross-canister-consistency.md` § “Shard-local
+  preflight and commit discipline”. Graph reverse-adjacency tests intentionally inject and repair
+  forward-only and reverse-only states, proving that the state is observable when the paired
+  boundary is bypassed.
+- **Impact:** A lower-level caller or a handler that returns an ordinary error could leave forward
+  and reverse canonical adjacency out of sync, while the mate sidecar is already invalidated.
+- **Next decision:** Keep exact counterpart validation for repair and published lookup. Any future
+  mutation path must preserve the same preflight-then-trap boundary; a new recoverable post-write
+  error requires a separate atomicity design review.
 
 ### GAP-2026-07-17-001 — Dynamic instruction-budget headrooms lack measured acceptance criteria
 

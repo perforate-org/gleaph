@@ -195,7 +195,9 @@ repair, and batch paths use owner-facing wrappers so a forward/reverse mutation 
 invalidation. Batch commit invalidates all affected owner leaves before its first canonical write;
 repair-only one-orientation wrappers do the same and are not general-purpose paired-write APIs. This
 visibility split changes no read traversal or diagnostic API; it only removes direct mutation through
-an orientation handle.
+an orientation handle. Paired scalar writes likewise trap on impossible reverse-half or
+post-write maintenance-admission failures; recoverable errors are reserved for pre-write
+validation and capacity failures.
 
 The internal result distinguishes one-entry and two-entry cases:
 

@@ -181,7 +181,9 @@ provides the owner-facing wrappers used by GraphStore and repair code. This keep
 direct while making it impossible for a caller to mutate one orientation without going through the
 owner boundary that coordinates mate invalidation. Batch commit hides every affected owner leaf
 before the first canonical byte write; reverse-repair wrappers likewise invalidate before changing
-one orientation and are not general-purpose paired-write APIs.
+one orientation and are not general-purpose paired-write APIs. Paired scalar writes treat reverse
+half failures and post-write maintenance-admission failures as invariant violations and trap rather
+than returning a recoverable error after the first canonical half is written.
 
 [ADR 0048](../adr/0048-adaptive-lara-mate-index.md) places physical
 entry-to-entry pairing in bidirectional LARA rather than a Graph facade B-tree.
