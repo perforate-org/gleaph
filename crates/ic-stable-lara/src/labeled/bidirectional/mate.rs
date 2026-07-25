@@ -399,9 +399,13 @@ where
         }
 
         let blob_candidate = (|| {
-            let (neighbor, rank, source_count, row_count) = match edge.orientation {
-                Orientation::Forward => scan_rank(self.forward(), edge)?,
-                Orientation::Reverse => scan_rank(self.reverse(), edge)?,
+            let (neighbor, rank, source_count, row_count) = {
+                #[cfg(feature = "canbench-scopes")]
+                let _scope = canbench_rs::bench_scope("published_source_scan_rank");
+                match edge.orientation {
+                    Orientation::Forward => scan_rank(self.forward(), edge)?,
+                    Orientation::Reverse => scan_rank(self.reverse(), edge)?,
+                }
             };
             let bucket_result = self
                 .mate
@@ -410,6 +414,8 @@ where
                     u32::from(edge.owner_vertex_id),
                     edge.label_id.raw(),
                     |bucket| {
+                        #[cfg(feature = "canbench-scopes")]
+                        let _scope = canbench_rs::bench_scope("published_blob_lookup");
                         if bucket.entries != row_count {
                             return Err(MateLookupError::ReadFailed(
                                 "published entry count disagrees with canonical rows".into(),
@@ -418,7 +424,11 @@ where
                         if edge.label_id.is_undirected() && neighbor == edge.owner_vertex_id {
                             return Ok(edge);
                         }
-                        let mate_slot = blob_mate_slot(bucket, edge.slot_index, rank)?;
+                        let mate_slot = {
+                            #[cfg(feature = "canbench-scopes")]
+                            let _scope = canbench_rs::bench_scope("published_blob_mapping_lookup");
+                            blob_mate_slot(bucket, edge.slot_index, rank)?
+                        };
                         let (orientation, owner) = if edge.label_id.is_directed() {
                             match edge.orientation {
                                 Orientation::Forward => (Orientation::Reverse, neighbor),
@@ -437,14 +447,19 @@ where
                             Orientation::Forward => self.forward(),
                             Orientation::Reverse => self.reverse(),
                         };
-                        validate_blob_mate(
-                            counterpart_graph,
-                            edge,
-                            candidate,
-                            neighbor,
-                            source_count,
-                            rank,
-                        )?;
+                        {
+                            #[cfg(feature = "canbench-scopes")]
+                            let _scope =
+                                canbench_rs::bench_scope("published_counterpart_validation");
+                            validate_blob_mate(
+                                counterpart_graph,
+                                edge,
+                                candidate,
+                                neighbor,
+                                source_count,
+                                rank,
+                            )?;
+                        }
                         Ok(candidate)
                     },
                 )
