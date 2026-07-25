@@ -156,7 +156,12 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 
 ---
 
-## Bidirectional mate contract (accepted; four-region ownership wired, runtime dormant)
+## Bidirectional mate contract (current transitional implementation; not the target contract)
+
+The details in this section describe the currently wired, dormant maintenance substrate only.
+They are retained for upgrade/rollback and implementation-gap accounting; they are not an
+authoritative query or counterpart API. ADR 0048's metadata-free `CounterpartScan` and ADR 0050's
+logical-slot read surface are the target contracts for new work.
 
 The bidirectional owner rejects forward/reverse PMA segment-size or segment-count mismatches
 before opening the shared `(orientation, leaf)` locator namespace. Mate initialization errors
@@ -166,9 +171,10 @@ Plan 0141 adds bounded, read-only promotion admission and pure Sampled/Packed le
 The two mate data regions remain derived; the owner-facing failure-atomic publication boundary and
 mutation invalidation/rebuild scheduling are implemented. The existing durable maintenance queue
 deduplicates `(orientation, leaf)` rebuild work, and compaction work hides an affected row before
-processing it and requeues failed work. The validated Published Sampled/Packed runtime lookup
-primitive is implemented but dormant; ordinary canonical adjacency and `EDGE_ALIASES` callers
-remain unchanged until the adoption gate.
+processing it and requeues failed work. The older Published Sampled/Packed runtime lookup
+primitive is implemented but dormant; it is historical evidence for the adoption decision, not
+an activation dependency. Ordinary canonical adjacency and `EDGE_ALIASES` callers remain
+unchanged until the ADR 0048/0050 adoption gate.
 Owner construction preflights the four-region composite and compares its fresh/reopen state with
 the LARA sentinel regions before opening either orientation, so mixed fresh/reopen or partial mate
 state cannot leave a newly opened canonical adjacency owner behind. This check runs only during
@@ -185,52 +191,20 @@ one orientation and are not general-purpose paired-write APIs. Paired scalar wri
 half failures and post-write maintenance-admission failures as invariant violations and trap rather
 than returning a recoverable error after the first canonical half is written.
 
-[ADR 0048](../adr/0048-lara-counterpart-resolution.md) places physical
-entry-to-entry pairing in bidirectional LARA rather than a Graph facade B-tree.
-Adjacency order and equal-neighbor occurrence rank remain authoritative. Small
-or cold buckets resolve a mate by rank/select; selected PMA leaves may use a
-sampled checkpoint blob or full packed, derived mate blob. Ordinary adjacency
-scans do not read this metadata.
+[ADR 0048](../adr/0048-lara-counterpart-resolution.md) places physical entry-to-entry pairing in
+bidirectional LARA rather than a Graph facade B-tree. The target contract uses live `PairOrdinal`
+and metadata-free `CounterpartScan`; it does not introduce locator rows, packed mate blobs, or a
+derived counterpart index. `PhysicalEdgeRef` and `EdgeHandle` carry `LogicalEdgeSlot`; raw slab/log
+locations remain private to LARA.
 
-The only fixed addition is a dedicated five-byte locator row per orientation
-and leaf. It uses a custom fixed-row column modeled on `VertexStore`, rather
-than enlarging `LabelBucket`, `LabeledVertex`, `SegmentEdgeCounts`, or
-`SegmentSpanMeta`. Variable mate blobs use their own byte address space and a
-mate-specific instance of the existing `FreeSpanStore` implementation; edge,
-payload, and mate free ranges are never mixed.
+ADR 0050 defines the target labeled read surface around `LogicalEdgeSlot`, `visit_edges`,
+`visit_edges_at`, and explicit `EdgeWithInlineProperty<E>` results. Forward/outgoing and
+reverse/incoming bidirectional wrappers delegate to the same orientation-local primitives.
 
-Location capture returns exact physical locations by logical ordinal only when explicitly requested;
-aggregate-only insertion does not materialize them. Slot-preserving
-rebalance requires no mate repair. Slot-renumbering compaction rebuilds affected
-sampled/packed leaf blobs at the LARA boundary that publishes slot moves. Plan 0136 implements
-the dormant LARA-owned locator/blob/free-span storage foundation with fresh/reopen/partial-layout
-validation and publication-before-retirement ordering. Plan 0140 hardens the opt-in Graph facade
-ScanOnly bridge: it resolves exact canonical handles through LARA rank/select without reading or
-mutating `EDGE_ALIASES`; ordinary callers still use the alias compatibility path. The earlier
-source/mate Published runtime primitive is measurement-only and retired as an
-adoption candidate. Plan 0176 makes the measurement-only topology selector explicit: low-degree,
-cold, and self-loop buckets remain `ScanOnly`; undirected buckets can select only `PairRank`;
-and directed, parallel, sparse-slot, and mixed-label buckets require current exact,
-logical-byte, and bounded-runtime evidence before selecting SharedOrientation or rank-indexed
-Packed. Missing evidence is `Deferred`, never an implicit promotion. Rank-indexed Packed remains
-the replacement direction; ordinary-caller activation and alias removal remain planned behind the
-alias-vs-rank-indexed gate.
-
-Plan 0177 aggregates the ten required topology rows into one status: `Adopt` only when every row is
-unique, exact, fail-closed, and passes both logical-byte and runtime gates, with a non-`ScanOnly`
-candidate for every non-deterministic high-degree row; incomplete or unsafe evidence is `Hold`,
-while complete rows with performance or candidate failures are `Partial`. The current
-evidence remains non-authorizing, so ordinary callers continue to use the canonical/alias path.
-
-The typed evidence inventory currently returns `Hold`: only deterministic low-degree/self-loop
-`ScanOnly` rows are connected, and non-deterministic rows remain `Deferred` until matched probe
-results are attached. Existing canbench summaries are not treated as adoption rows implicitly.
-
-Plan 0179's matched probes compare directed, parallel, mixed-label, and undirected candidates with
-canonical `mate_of`. Sparse-slot probes use the fixture physical-identity relation instead because
-high-bit overflow-log locations are measurement identities and are not accepted by the
-slab-slot-only canonical mate reader. These probes establish exactness coverage only; they do not
-connect benchmark snapshots to the typed inventory or activate ordinary callers.
+The current implementation is not yet at that target: facade `EDGE_ALIASES`, `mate`-named paths,
+raw `u32` slot fields, and legacy physical-location readers remain active until the destructive
+replacement lands. Historical Plans 0136–0180 describe superseded adaptive or measurement
+experiments; they are evidence only and are not activation dependencies for ADR 0048 or ADR 0050.
 
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half
@@ -255,9 +229,10 @@ Sampled/Packed mapping formulas. Mode and width are per-bucket so a leaf may mix
 checked offset/length validation and
 round-trip/corruption tests for all planned modes, but does not allocate stable memory or publish a
 locator. Locator rows, free-span/rebuild reserve, node overhead, and MemoryManager extent rounding
-remain outside the serialized blob and outside any per-edge claim. The validated Published runtime
-primitive is implemented but dormant; ordinary-caller activation and alias replacement remain
-disabled pending a separate adoption decision.
+remain outside the serialized blob and outside any per-edge claim. The historical Published
+runtime fixture is implemented but dormant; it is evidence for a separate adoption decision, not
+an active runtime contract or ADR 0048/0050 dependency. Ordinary-caller activation and alias
+replacement remain disabled.
 
 Plan 0145 adds the owning-layer, side-effect-free policy/accounting harness used by the adoption
 gate. It freezes adaptive mode precedence, charges dense locator rows (including ScanOnly rows),
@@ -467,6 +442,9 @@ handling, and stable-layout accounting before ordinary callers can activate them
 Plan 0181 adds an owner-facing physical-slot reader for slab and overflow-log locations. The current
 Published bridge uses it only for singleton counterpart buckets; mixed-neighbor validation keeps a
 full scan because exact equal-neighbor count and rank cannot be derived from bucket degree alone.
+This is a transitional, crate-private implementation path, not the target query contract of ADR
+0048/0050. The bridge remains until `mate.rs` migrates singleton validation to the logical read
+surface; it must not become a Graph, Router, or graph-index identity API.
 
 Plan 0163 confirms the self-loop shape boundary with isolated fixtures: directed self-loops have
 two orientation rows, whereas undirected self-loops have one row and zero mate metadata. Plan
@@ -580,7 +558,8 @@ Use this when reviewing LARA PRs:
 - [lara-dgap-contract.md](./lara-dgap-contract.md) — DGAP mapping and labeled gap detail
 - [adr/0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — labeled physical migration
 - [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented**; one-orientation batch commit implemented (`plan/reserve/commit/rollback` boundary, opaque graph-bound reservation token consumed on rollback, payload allocation with tail rollback and free-list slack, pre-write fingerprint/geometry validation, success and adversarial tests including allocator free-list shape); **GraphStore clean-slab orchestration implemented** (`try_insert_batch_edges_clean_slab` reserve-all-then-commit with explicit `Unsupported` fallback to the scalar path, cross-orientation reservation rollback on partial failure, directed/reverse/undirected/self-loop tests, scalar-vs-batch canbench); **per-leaf overflow-log batch append implemented** (`reserve_one_orientation_batch` admits existing-bucket runs to the shared per-leaf edge/payload overflow logs, reserve checks log and payload-log capacity before any canonical write, commit appends entries in logical ordinal order and updates bucket heads/degree without changing stored_slots or vertex slab span, scalar fallback preserved for unsupported geometry); **Plans 0125/0128 pending-aware one-shot expansion implemented for existing-bucket runs** (one expansion per PMA leaf, adjacent free-span/tail growth, segment-count publication and rollback, preserved edge/payload-log fold, fixed-width payload span reuse or occupied-tail growth, edge and payload read-back/rollback coverage); **Plan 0129 internal physical-location results implemented** (LARA returns exact slab/overflow-log edge and payload locations keyed by ordinal and owner, GraphStore joins directed/reverse, undirected pair, and self-loop results without adjacency rediscovery); relocation, new buckets, persistent mate index, and public wire integration remain planned
-- [adr/0048-lara-counterpart-resolution.md](../adr/0048-lara-counterpart-resolution.md) — accepted physical-pairing design; Plans 0132, 0142, and 0143 add one-pass live-slot traversal, exact scalar location consumption, canonical read-only leaf enumeration, and mutation invalidation/rebuild scheduling for supported named buckets. The validated Published Sampled/Packed runtime lookup primitive is implemented but dormant. Alias removal is primarily a persistent-bytes optimization: the raw alias payload is 18 bytes per entry (excluding B-tree/allocator overhead), while MemoryManager page deltas are not per-edge measurements and ScanOnly instruction cost is only a guardrail. Plans 0147–0177 now provide isolated AliasOnly/ScanOnly/rank-indexed fixtures, topology-specific selector logic, compact-only storage, and aggregate adoption status. Ordinary-caller activation and alias removal remain deferred because the current evidence is non-authorizing
+- [adr/0048-lara-counterpart-resolution.md](../adr/0048-lara-counterpart-resolution.md) — accepted physical-pairing design; Plans 0132, 0142, and 0143 add one-pass live-slot traversal, exact scalar location consumption, canonical read-only leaf enumeration, and mutation invalidation/rebuild scheduling for supported named buckets. The Published Sampled/Packed lookup work described by the older plans is historical benchmark evidence only: it is superseded by ADR 0048's metadata-free `CounterpartScan` and is not an activation dependency or authoritative runtime contract. Alias removal is primarily a persistent-bytes optimization: the raw alias payload is 18 bytes per entry (excluding B-tree/allocator overhead), while MemoryManager page deltas are not per-edge measurements and ScanOnly instruction cost is only a guardrail. Plans 0147–0177 provide isolated AliasOnly/ScanOnly/rank-indexed fixtures, topology-specific selector logic, compact-only storage, and aggregate adoption status; these remain historical evidence and do not authorize ordinary-caller activation or alias removal
+- [adr/0050-lara-traverse-read-api.md](../adr/0050-lara-traverse-read-api.md) — planned canonical logical-slot traversal and explicit inline-property read contract; activation is gated on the ADR 0048 counterpart replacement and full forward/reverse caller migration
 - Plan 0180 reduces integrated Published request cost by reusing decoded blobs, validating packed ordering once, binary-searching packed mappings, and avoiding per-request bucket mapping clones. The full persisted sweep still measures the candidate slower than canonical scan for directed-high, parallel, and undirected-high, with zero heap/stable-memory deltas; all topologies remain Hold/ScanOnly and this is not an activation decision.
 - [adr/0049-input-order-preserving-batch-graph-mutations.md](../adr/0049-input-order-preserving-batch-graph-mutations.md) — **planned after ADR 0048 completion**; retains ADR 0045's implemented placement/reservation/commit substrate but replaces its unshipped unordered public contract with one input-order-preserving edge-insertion batch API. V1 admits exactly one Graph shard and one Graph request for the complete public batch; array position is the sole request-local logical ordinal. The unresolved public item contains opaque endpoint ids, catalog names, and canonical value bytes, while Router alone constructs the resolved Graph envelope. Router persists one exact replay envelope and exhaustive target progress; deterministic post-reservation/no-dispatch admission failures become bounded typed terminal failures, while registry availability, shard-binding, and compatible-release capability failures remain bounded typed same-key-retryable diagnostics. Graph journal lookup precedes mutable catalog/schema/routing validation so exact completed replay remains stable; Ordered journal identity admits only completed/no-continuation state, and its receipt carries at most 2,048 sorted unique hot-forward vertices. Every Router lifecycle record has one logical encoded-size bound while retaining the measured physical `Bound::Unbounded` stable-map allocation strategy. It rejects globally unique/constrained initial properties, a logical edge spanning two shards, or otherwise shard-local items resolving to multiple shards before active ordered payload persistence or Graph dispatch. Property-bearing batches require exact physical location capture plus an exact logical-ordinal-to-canonical-handle join so GraphStore can publish canonical sidecars and derived events atomically; property-free aggregate batches may omit it. Ordered receipts count logical input edges rather than physical projections, sidecars, or derived events. Separate public/Graph-request fingerprints, complete Router/Graph request-kind identities, unambiguous logical-ordinal/physical-side location keys, one merged physical run per orientation/bucket, and a full release-set fresh reset are required. Vertex insertion, existing value/property update, combined vertex/edge public batches, cross-shard logical edges, and multi-shard public batches remain absent in v1; no ADR 0049 public API, replacement V1 layout, or per-edge stable sequence field is implemented yet
 - [lara-labeled-migration-tests.md](./lara-labeled-migration-tests.md) — phase test gates (A–E)

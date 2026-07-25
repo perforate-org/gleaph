@@ -2,7 +2,7 @@
 
 Date: 2026-07-23  
 Status: accepted  
-Implementation status: planned replacement  
+Implementation status: partial implementation (live-only scan substrate)
 Adoption status: not activated
 
 ## Context
@@ -10,10 +10,12 @@ Adoption status: not activated
 Gleaph uses a physical adjacency location as edge identity:
 
 ```text
-EdgeHandle = (owner_vertex_id, storage_label_id, slot_index)
+EdgeHandle = (owner_vertex_id, storage_label_id, LogicalEdgeSlot)
 ```
 
-The persisted edge row stores only its target vertex. Its owner, label, orientation, and physical slot are supplied by the containing Labeled LARA bucket and iterator.
+The persisted edge row stores only its target vertex. Its owner, label, orientation, and logical
+slot are supplied by the containing Labeled LARA bucket and iterator; raw slab/log locations stay
+inside LARA.
 
 A local logical edge is represented physically as follows:
 
@@ -44,9 +46,18 @@ Counterpart resolution belongs to the bidirectional Labeled LARA boundary, which
 
 Graph removes `EDGE_ALIASES` after all callers use LARA counterpart APIs.
 
-The bidirectional Labeled LARA owner exposes:
+The bidirectional Labeled LARA owner exposes these final internal types:
 
 ```rust
+#[repr(transparent)]
+pub struct LogicalEdgeSlot(u32);
+
+pub struct EdgeHandle {
+    owner_vertex_id: VertexId,
+    label_id: BucketLabelKey,
+    slot: LogicalEdgeSlot,
+}
+
 struct PhysicalEdgeRef {
     orientation: LabeledOrientation,
     handle: EdgeHandle,
@@ -64,6 +75,12 @@ fn canonical_handle(
 The implementation uses `counterpart` consistently. Existing `mate` names in APIs, types, modules, tests, benchmarks, and documentation are renamed or removed.
 
 GraphStore retains canonical edge properties and derived-index events. It does not retain a physical counterpart map.
+
+`LogicalEdgeSlot` is the only slot type accepted by `EdgeHandle` and `PhysicalEdgeRef`. Raw slab
+offsets and overflow-log entry encodings are storage-internal values and are never accepted by
+counterpart APIs. Graph, Router, and graph-index may encode a logical slot as their existing wire
+`u32` field at an explicit adapter boundary, but those wire fields are not alternate constructors
+for `EdgeHandle`. This ADR has no compatibility alias for the previous raw-slot shape.
 
 ### 2. Canonical ownership is derived by edge semantics
 
@@ -371,9 +388,10 @@ Edge-log indices, payload-log indices, blob positions, and physical slot numbers
 
 Compaction may move edge and payload storage independently while preserving corresponding live sequence order.
 
-### 15. Slot-preserving movement requires no Graph repair
+### 15. Logical-slot-preserving movement requires no Graph repair
 
-A leaf slide or rebalance that preserves physical `EdgeHandle` values requires no counterpart or property-key repair.
+A leaf slide or rebalance that preserves the logical slot in an `EdgeHandle` requires no
+counterpart or property-key repair.
 
 A slot-renumbering operation:
 
@@ -538,9 +556,12 @@ Costs:
 - reverse repair must become pair-exact;
 - performance acceleration is deferred to a separate decision.
 
-## Test contract
+## Planned validation contract
 
-Implementation covers:
+The following checks are required before implementation status can change from `planned
+replacement` or adoption can change from `not activated`. They describe the target contract only;
+none of these bullets asserts that the current repository already provides the counterpart API,
+batch-location return values, alias removal, or the associated tests.
 
 - directed fan-out and fan-in;
 - directed self-loops with separate orientations;

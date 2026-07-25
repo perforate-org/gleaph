@@ -1,7 +1,7 @@
 # Labeled edge inline value storage
 
-Last updated: 2026-07-23
-Anchor timestamp: 2026-07-23 01:02:26 UTC +0000
+Last updated: 2026-07-25
+Anchor timestamp: 2026-07-25 13:11:03 UTC +0000
 
 ## Overview
 
@@ -204,7 +204,7 @@ existing sidecar properties are removed. Invalid input therefore cannot leave a 
 edge, a stale payload, or a torn sidecar record.
 - **Mirrored update.** `GraphStore::update_edge_inline_value_at_handle` and the edge-profile commit
   currently synchronize forward/reverse and undirected aliases. ADR 0048 replaces that lookup with
-  bidirectional LARA `mate_of`, so updates address the exact parallel-edge mate; an undirected
+  bidirectional LARA `counterpart_of`, so updates address the exact parallel-edge counterpart; an undirected
   self-loop has one physical entry and is updated once. Until ADR 0048 is implemented, the existing
   facade alias path remains active.
 - **Absence not represented.** `REMOVE e.inline_property` is rejected. There is no null/presence
@@ -265,5 +265,6 @@ Log-backed payload entries are an ordered suffix of the bucket-local live-value 
 
 - [inline-value-first-traversal.md](./inline-value-first-traversal.md)
 - [lara-and-facade.md](./lara-and-facade.md)
+- [ADR 0050: LARA labeled traverse read API consolidation](../adr/0050-lara-traverse-read-api.md)
 - [ADR 0016: Overflow log tombstones and `src` field layout review](../adr/0016-overflow-log-tombstones-and-src-fields.md)
 - `crates/ic-stable-lara/src/lara/edge_inline_value/`

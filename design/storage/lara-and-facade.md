@@ -2,8 +2,8 @@
 
 **Status:** Implemented (facade); Partially Implemented (LARA labeled physical layer — see [lara-dgap-contract.md](./lara-dgap-contract.md)). Failure-atomic stable mutations for `EdgeStore::grow_segment_tree_to` and `LabeledLaraGraph::promote_bypass_to_bucket_mode` are implemented.
 
-Last updated: 2026-07-23
-Anchor timestamp: 2026-07-23 01:02:26 UTC +0000
+Last updated: 2026-07-25
+Anchor timestamp: 2026-07-25 13:11:03 UTC +0000
 
 ## Purpose
 
@@ -36,8 +36,10 @@ flowchart TB
 - PMA segment density, weighted rebalance, segment relocation (DGAP-aligned core)
 - `FreeSpanStore` for retired segment physical blocks (core LARA — see [lara.md](./lara.md))
 - Labeled graphs, bidirectional deferred views
-- **Planned (ADR 0048):** exact physical mate resolution, pair-rank enforcement,
-  returned insert locations, and adaptive leaf-owned mate acceleration
+- **Planned (ADR 0048):** exact counterpart resolution, PairOrdinal enforcement, and returned
+  insert locations
+- **Planned (ADR 0050):** canonical logical-slot traversal, selected-slot reads, and explicit
+  inline-property reads
 - **Remote/external edge** insertion at storage level (no shard routing semantics)
 
 LARA does not know `GlobalVertexId` or GQL.
@@ -70,23 +72,22 @@ LARA does not know `GlobalVertexId` or GQL.
 Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR tombstone). Router
 `resolve_shard` maps `ShardId` → canister for federation routing only.
 
-## Edge identity and mate ownership
+## Edge identity and counterpart ownership
 
-Physical `EdgeHandle { owner_vertex_id, label_id, slot_index }` remains edge
-identity. Canonical sidecars remain GraphStore-owned: directed edges use the
-forward handle; non-self undirected edges use the forward handle owned by the
-larger vertex id; an undirected self-loop has one forward entry and that entry is
-canonical.
+**Current implementation (before ADR 0048/0050 adoption):** Graph-side `EdgeHandle` and related
+wire/index records carry an owner, label, and raw `u32` slot field. `EDGE_ALIASES` and the existing
+`mate`-named paths remain active, and current code may still use raw-slot readers.
 
-The current implementation uses the facade `EDGE_ALIASES` B-tree to map a reverse
-or second undirected entry to the canonical handle. [ADR 0048](../adr/0048-lara-counterpart-resolution.md)
-accepts its replacement with bidirectional LARA `mate_of` / `canonical_handle`
-APIs. Small or cold buckets use exact occurrence-rank scans, while selected
-leaves use a packed derived mate index. LARA insertion returns exact physical
-locations, so GraphStore no longer rediscovers them by matching-neighbor scans.
+**Target contract:** ADR 0048 makes `LogicalEdgeSlot` the only slot accepted by LARA
+`EdgeHandle`/`PhysicalEdgeRef`; raw slab/log locations remain inside LARA. Counterpart resolution is
+owned by bidirectional LARA through `counterpart_of` and `canonical_handle`, using live
+`PairOrdinal`. ADR 0050 consolidates labeled traversal around the same logical slot and provides
+the `visit_edges`/selected-slot APIs. Graph, Router, and graph-index encode logical slots into
+existing wire `u32` fields only at explicit adapters.
 
-This ownership change is planned, not implemented. Until it lands, the facade
-alias store and its repair path remain required by current code.
+GraphStore continues to own canonical sidecars during the replacement. `EDGE_ALIASES` is removed
+only after all callers adopt ADR 0048. The target architecture has no packed derived mate index;
+exact rank/select scanning remains the source of truth.
 
 ## Indexes (local vs global)
 
@@ -107,6 +108,7 @@ alias store and its repair path remain required by current code.
 - [labeled-edge-inline-values.md](./labeled-edge-inline-values.md)
 - [inline-value-first-traversal.md](./inline-value-first-traversal.md)
 - [ADR 0048](../adr/0048-lara-counterpart-resolution.md)
+- [ADR 0050](../adr/0050-lara-traverse-read-api.md)
 - [federation/model.md](../federation/model.md)
 - [index/property-index.md](../index/property-index.md)
 - [execution/pipeline.md](../execution/pipeline.md)
