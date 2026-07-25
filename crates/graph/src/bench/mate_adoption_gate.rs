@@ -270,6 +270,41 @@ const fn fixture_requires_candidate(fixture_id: AdoptionFixtureId) -> bool {
     )
 }
 
+/// Inventory of rows currently connected to the typed gate. Existing canbench output that has not
+/// been converted into a matched row remains explicitly Deferred rather than being inferred.
+pub(crate) fn current_adoption_evidence_inventory() -> Vec<AdoptionEvidenceRow> {
+    REQUIRED_ADOPTION_FIXTURE_IDS
+        .into_iter()
+        .map(|fixture_id| {
+            if fixture_requires_candidate(fixture_id) {
+                AdoptionEvidenceRow {
+                    fixture_id,
+                    disposition: AdoptionDisposition::Deferred,
+                    evidence_present: false,
+                    exact_results: false,
+                    fallback_safe: false,
+                    logical_bytes_pass: false,
+                    runtime_pass: false,
+                }
+            } else {
+                AdoptionEvidenceRow {
+                    fixture_id,
+                    disposition: AdoptionDisposition::ScanOnly,
+                    evidence_present: true,
+                    exact_results: true,
+                    fallback_safe: true,
+                    logical_bytes_pass: true,
+                    runtime_pass: true,
+                }
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn current_adoption_status() -> AdoptionStatus {
+    aggregate_adoption_status(&current_adoption_evidence_inventory())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestStratum {
     ScanOnly,
@@ -4781,6 +4816,19 @@ mod fixture_evidence_tests {
             assert!(AdoptionFixtureId::from_fixture_id(spec.id).is_some());
         }
         assert_eq!(AdoptionFixtureId::from_fixture_id("unknown_topology"), None);
+    }
+
+    #[test]
+    fn current_evidence_inventory_is_explicitly_hold_until_rows_are_connected() {
+        let rows = current_adoption_evidence_inventory();
+        assert_eq!(rows.len(), REQUIRED_ADOPTION_FIXTURE_IDS.len());
+        assert_eq!(current_adoption_status(), AdoptionStatus::Hold);
+        assert!(rows.iter().any(|row| {
+            matches!(row.disposition, AdoptionDisposition::Deferred) && !row.evidence_present
+        }));
+        assert!(rows.iter().any(|row| {
+            matches!(row.disposition, AdoptionDisposition::ScanOnly) && row.evidence_present
+        }));
     }
 
     #[test]

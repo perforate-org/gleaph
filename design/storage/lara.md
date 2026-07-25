@@ -220,6 +220,10 @@ candidate for every non-deterministic high-degree row; incomplete or unsafe evid
 while complete rows with performance or candidate failures are `Partial`. The current
 evidence remains non-authorizing, so ordinary callers continue to use the canonical/alias path.
 
+The typed evidence inventory currently returns `Hold`: only deterministic low-degree/self-loop
+`ScanOnly` rows are connected, and non-deterministic rows remain `Deferred` until matched probe
+results are attached. Existing canbench summaries are not treated as adoption rows implicitly.
+
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half
 Sampled bucket contributes `16 * ceil(n / K) + 10` bytes before blob headers, directories,

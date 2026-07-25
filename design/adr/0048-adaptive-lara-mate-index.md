@@ -319,6 +319,11 @@ unsafe evidence yields `Hold`; complete but performance-failing or candidate-mis
 `Partial` and keeps the canonical path. The current evidence set does not authorize
 ordinary-caller activation.
 
+The current typed evidence inventory is intentionally `Hold`: deterministic low-degree/self-loop
+rows are connected as `ScanOnly`, while non-deterministic rows remain `Deferred` until their
+matched probe results are attached. Existing canbench summaries are not silently treated as
+connected adoption rows.
+
 Packed arrays may reserve bounded geometric capacity. An insertion fitting the current width and
 capacity updates one packed word for each physical half. Sampled insertion updates a checkpoint
 only when a stride boundary is crossed; otherwise it remains scan-backed. Width/capacity growth,
