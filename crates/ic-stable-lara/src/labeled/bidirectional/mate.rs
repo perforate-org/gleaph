@@ -403,47 +403,54 @@ where
                 Orientation::Forward => scan_rank(self.forward(), edge)?,
                 Orientation::Reverse => scan_rank(self.reverse(), edge)?,
             };
-            let bucket = self
+            let bucket_result = self
                 .mate
-                .published_bucket(row, u32::from(edge.owner_vertex_id), edge.label_id.raw())
-                .map_err(|error| MateLookupError::ReadFailed(error.to_string()))?
-                .ok_or_else(|| MateLookupError::ReadFailed("published bucket is missing".into()))?;
-            if bucket.entries != row_count {
-                return Err(MateLookupError::ReadFailed(
-                    "published entry count disagrees with canonical rows".into(),
-                ));
-            }
-            if edge.label_id.is_undirected() && neighbor == edge.owner_vertex_id {
-                return Ok(edge);
-            }
-            let mate_slot = blob_mate_slot(&bucket, edge.slot_index, rank)?;
-            let (orientation, owner) = if edge.label_id.is_directed() {
-                match edge.orientation {
-                    Orientation::Forward => (Orientation::Reverse, neighbor),
-                    Orientation::Reverse => (Orientation::Forward, neighbor),
-                }
-            } else {
-                (Orientation::Forward, neighbor)
-            };
-            let candidate = PhysicalEdgeRef {
-                orientation,
-                owner_vertex_id: owner,
-                label_id: edge.label_id,
-                slot_index: mate_slot,
-            };
-            let counterpart_graph = match candidate.orientation {
-                Orientation::Forward => self.forward(),
-                Orientation::Reverse => self.reverse(),
-            };
-            validate_blob_mate(
-                counterpart_graph,
-                edge,
-                candidate,
-                neighbor,
-                source_count,
-                rank,
-            )?;
-            Ok(candidate)
+                .with_published_bucket(
+                    row,
+                    u32::from(edge.owner_vertex_id),
+                    edge.label_id.raw(),
+                    |bucket| {
+                        if bucket.entries != row_count {
+                            return Err(MateLookupError::ReadFailed(
+                                "published entry count disagrees with canonical rows".into(),
+                            ));
+                        }
+                        if edge.label_id.is_undirected() && neighbor == edge.owner_vertex_id {
+                            return Ok(edge);
+                        }
+                        let mate_slot = blob_mate_slot(bucket, edge.slot_index, rank)?;
+                        let (orientation, owner) = if edge.label_id.is_directed() {
+                            match edge.orientation {
+                                Orientation::Forward => (Orientation::Reverse, neighbor),
+                                Orientation::Reverse => (Orientation::Forward, neighbor),
+                            }
+                        } else {
+                            (Orientation::Forward, neighbor)
+                        };
+                        let candidate = PhysicalEdgeRef {
+                            orientation,
+                            owner_vertex_id: owner,
+                            label_id: edge.label_id,
+                            slot_index: mate_slot,
+                        };
+                        let counterpart_graph = match candidate.orientation {
+                            Orientation::Forward => self.forward(),
+                            Orientation::Reverse => self.reverse(),
+                        };
+                        validate_blob_mate(
+                            counterpart_graph,
+                            edge,
+                            candidate,
+                            neighbor,
+                            source_count,
+                            rank,
+                        )?;
+                        Ok(candidate)
+                    },
+                )
+                .map_err(|error| MateLookupError::ReadFailed(error.to_string()))?;
+            bucket_result
+                .ok_or_else(|| MateLookupError::ReadFailed("published bucket is missing".into()))?
         })();
         blob_candidate.or_else(|_| self.mate_of(edge))
     }

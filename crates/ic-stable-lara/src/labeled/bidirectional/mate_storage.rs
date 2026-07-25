@@ -672,6 +672,18 @@ impl<M: Memory> MateStorage<M> {
         owner_vertex_id: u32,
         bucket_label_key: u16,
     ) -> Result<Option<super::mate_blob_prototype::Bucket>, MateStorageInitError> {
+        self.with_published_bucket(row, owner_vertex_id, bucket_label_key, |bucket| {
+            bucket.clone()
+        })
+    }
+
+    pub(crate) fn with_published_bucket<R>(
+        &self,
+        row: u64,
+        owner_vertex_id: u32,
+        bucket_label_key: u16,
+        f: impl FnOnce(&super::mate_blob_prototype::Bucket) -> R,
+    ) -> Result<Option<R>, MateStorageInitError> {
         let Some(offset) = self.locators.published_offset(row)? else {
             return Ok(None);
         };
@@ -686,7 +698,7 @@ impl<M: Memory> MateStorage<M> {
                     bucket.owner_vertex_id == owner_vertex_id
                         && bucket.bucket_label_key == bucket_label_key
                 })
-                .cloned());
+                .map(f));
         }
         #[cfg(test)]
         PUBLISHED_BLOB_READS.with(|count| count.set(count.get().saturating_add(1)));
@@ -699,7 +711,7 @@ impl<M: Memory> MateStorage<M> {
                 bucket.owner_vertex_id == owner_vertex_id
                     && bucket.bucket_label_key == bucket_label_key
             })
-            .cloned();
+            .map(f);
         *self.decoded_blob_cache.borrow_mut() = Some((row, offset, blob));
         Ok(result)
     }
