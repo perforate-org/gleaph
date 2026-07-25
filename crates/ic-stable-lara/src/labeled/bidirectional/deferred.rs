@@ -3972,6 +3972,109 @@ mod tests {
         sized_graph(128)
     }
 
+    #[test]
+    fn maintenance_queue_append_failure_rolls_back_dirty_key() {
+        let queue_memory = FailpointMemory::new();
+        let dirty_memory = FailpointMemory::new();
+        let queue = BidirectionalMaintenanceQueue::new(queue_memory.clone(), dirty_memory)
+            .expect("maintenance queue");
+
+        for leaf in 0..20_000 {
+            let item = MaintenanceWorkItem::MateLeafRebuild {
+                orientation: Orientation::Forward,
+                leaf,
+            };
+            queue_memory.fail_at_grow(queue_memory.grow_count().saturating_add(1));
+            match queue.mark_dirty(item) {
+                Err(DeferredBidirectionalLabeledError::MaintenanceQueue(_)) => {
+                    assert!(!queue.dirty.contains(work_item_key(item)));
+                    return;
+                }
+                Ok(_) => queue_memory.fail_never(),
+                Err(error) => panic!("unexpected maintenance admission error: {error}"),
+            }
+        }
+        panic!("queue never reached a growth boundary");
+    }
+
+    #[test]
+    fn paired_directed_post_write_failures_trap() {
+        let directed_reverse_graph = graph();
+        directed_reverse_graph.push_vertex().expect("source");
+        directed_reverse_graph.push_vertex().expect("target");
+        let label = BucketLabelKey::UNLABELED_DIRECTED;
+
+        test_fail_next_reverse_half();
+        let reverse_failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            directed_reverse_graph.insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+        }));
+        assert!(reverse_failure.is_err());
+
+        let directed_maintenance_graph = graph();
+        directed_maintenance_graph.push_vertex().expect("source");
+        directed_maintenance_graph.push_vertex().expect("target");
+        test_fail_next_post_write_maintenance();
+        let maintenance_failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            directed_maintenance_graph.insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+        }));
+        assert!(maintenance_failure.is_err());
+    }
+
+    #[test]
+    fn paired_undirected_post_write_failures_trap() {
+        let label = BucketLabelKey::undirected_from_index(2);
+
+        let undirected_reverse_graph = graph();
+        undirected_reverse_graph
+            .push_vertex()
+            .expect("first endpoint");
+        undirected_reverse_graph
+            .push_vertex()
+            .expect("second endpoint");
+        test_fail_next_reverse_half();
+        let reverse_failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            undirected_reverse_graph.insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+        }));
+        assert!(reverse_failure.is_err());
+
+        let undirected_maintenance_graph = graph();
+        undirected_maintenance_graph
+            .push_vertex()
+            .expect("first endpoint");
+        undirected_maintenance_graph
+            .push_vertex()
+            .expect("second endpoint");
+        test_fail_next_post_write_maintenance();
+        let maintenance_failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            undirected_maintenance_graph.insert_undirected_deferred(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+        }));
+        assert!(maintenance_failure.is_err());
+    }
+
     fn enumeration_policy() -> MateLeafEnumerationPolicy {
         MateLeafEnumerationPolicy {
             config: MateLeafPromotionConfig {
@@ -6190,6 +6293,100 @@ mod tests {
         returned_slots.sort_unstable();
         live_slot_ids.sort_unstable();
         assert_eq!(returned_slots, live_slot_ids);
+    }
+
+    #[test]
+    fn logical_slot_reader_handles_slab_and_overflow_locations() {
+        let graph = valued_bidirectional_graph();
+        graph.push_vertex().unwrap();
+        graph.push_vertex().unwrap();
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(14);
+        graph
+            .ensure_directed_edge_inline_value_width(source, target, label, 2)
+            .unwrap();
+
+        let mut locations = Vec::new();
+        for value in 0..300u16 {
+            let bytes = value.to_le_bytes();
+            let pair = graph
+                .insert_directed_edge_with_locations(
+                    source,
+                    target,
+                    label,
+                    PayloadTestEdge::with_bytes(u32::from(target), &bytes),
+                    PayloadTestEdge::with_bytes(u32::from(source), &bytes),
+                )
+                .unwrap();
+            locations.push(pair.forward.expect("forward location").logical_slot);
+        }
+        for slot in locations {
+            let row = graph
+                .forward()
+                .read_out_edge_slot_for_label(source, label, slot)
+                .unwrap()
+                .expect("live physical slot");
+            assert_eq!(row.neighbor_vid(), target);
+        }
+        assert!(
+            graph
+                .forward()
+                .read_out_edge_slot_for_label(source, label, u32::MAX)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(feature = "adoption-fixtures")]
+    #[test]
+    fn direct_physical_slot_reader_handles_overflow_log_locations() {
+        let graph = valued_bidirectional_graph();
+        graph.push_vertex().unwrap();
+        graph.push_vertex().unwrap();
+        let source = VertexId::from(0);
+        let target = VertexId::from(1);
+        let label = BucketLabelKey::directed_from_index(15);
+        graph
+            .ensure_directed_edge_inline_value_width(source, target, label, 2)
+            .unwrap();
+        for value in 0..300u16 {
+            let bytes = value.to_le_bytes();
+            graph
+                .insert_directed_edge_with_locations(
+                    source,
+                    target,
+                    label,
+                    PayloadTestEdge::with_bytes(u32::from(target), &bytes),
+                    PayloadTestEdge::with_bytes(u32::from(source), &bytes),
+                )
+                .unwrap();
+        }
+        let mut physical = Vec::new();
+        graph
+            .forward()
+            .for_each_live_physical_edge_location_for_label(source, label, |slot, edge| {
+                physical.push((slot, edge.neighbor_vid()))
+            })
+            .unwrap();
+        let (slot, neighbor) = physical
+            .iter()
+            .find(|(slot, _)| *slot & 0x8000_0000 != 0)
+            .copied()
+            .expect("overflow physical location");
+        let row = graph
+            .forward()
+            .read_physical_edge_at_slot_for_label(source, label, slot)
+            .unwrap()
+            .expect("live overflow physical slot");
+        assert_eq!(row.neighbor_vid(), neighbor);
+        assert!(
+            graph
+                .forward()
+                .read_physical_edge_at_slot_for_label(source, label, u32::MAX)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

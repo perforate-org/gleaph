@@ -1416,6 +1416,93 @@ where
         self.read_out_edge_slots_for_label_with_replay(src, label_id, slots, order, None, visit)
     }
 
+    /// Reads one topology-only edge at its physical bucket slot.
+    ///
+    /// The slot may identify either a slab position or an overflow-log location. Missing,
+    /// deleted, tombstone, and out-of-range slots return `Ok(None)`; storage failures remain
+    /// errors. This keeps the slab/log encoding behind the LARA owner boundary.
+    pub fn read_out_edge_slot_for_label(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slot: u32,
+    ) -> Result<Option<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let mut result = None;
+        self.read_out_edge_slots_for_label(
+            src,
+            label_id,
+            std::slice::from_ref(&slot),
+            OutEdgeOrder::Ascending,
+            |edge| result = Some(edge),
+        )?;
+        Ok(result)
+    }
+
+    /// Reads one physical edge location from a labeled bucket.
+    ///
+    /// Slab locations use the local slot index. Overflow-log locations use the high-bit encoding
+    /// returned by the physical-location iterator. The method validates that an overflow entry
+    /// belongs to this bucket before exposing it and returns `Ok(None)` for missing or deleted
+    /// locations.
+    pub fn read_physical_edge_at_slot_for_label(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        physical_slot: u32,
+    ) -> Result<Option<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(None);
+        }
+        let BucketSearch::Found { bucket, .. } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(None);
+        };
+        if physical_slot & 0x8000_0000 == 0 {
+            if physical_slot >= bucket.stored_slots {
+                return Ok(None);
+            }
+            let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(physical_slot))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let edge = self.edges.read_slot(edge_slot);
+            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                return Ok(None);
+            }
+            return Ok(Some(
+                edge.with_slot_index(physical_slot)
+                    .with_label_id(label_id.raw()),
+            ));
+        }
+
+        if bucket.overflow_log_head() < 0 {
+            return Ok(None);
+        }
+        let log_index = physical_slot & 0x7fff_ffff;
+        let leaf = self.payload_log_leaf(src);
+        let belongs_to_bucket = self
+            .edges
+            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head())
+            .into_iter()
+            .any(|entry| entry == log_index);
+        if !belongs_to_bucket {
+            return Ok(None);
+        }
+        let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_index);
+        if edge.is_tombstone_edge() {
+            return Ok(None);
+        }
+        Ok(Some(
+            edge.with_slot_index(physical_slot)
+                .with_label_id(label_id.raw()),
+        ))
+    }
+
     /// Visits live edges for one label together with their exact local slot.
     ///
     /// This is intentionally a storage-facing scan primitive: the slot comes
