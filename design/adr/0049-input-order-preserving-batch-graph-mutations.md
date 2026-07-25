@@ -256,15 +256,15 @@ variant names are semantic names such as `PlanExecution` and
 own version envelope only if it later becomes an independent encode/decode
 boundary with a separately supported compatibility lifecycle.
 
-| Independent boundary | Sole outer envelope | Directly nested V1 schema |
-|---|---|---|
-| Public ingress | `OrderedEdgeBatchPublicRequest::V1` | public request, items, and properties |
-| Router → Graph canonical call | `OrderedEdgeBatchGraphRequest::V1` | resolved request, items, and properties |
-| Graph canonical response | `GraphOrderedEdgeBatchResult::V1` | result and receipt payloads |
-| Graph retirement response | `OrderedMutationRetirementAck::V1` | acknowledgement and receipt payload |
-| Router stable record | `RouterMutationRecord::V1` | identity, payload, progress, diagnostics, failures, and receipt payload |
-| Graph stable journal | `GraphMutationJournalEntry::V1` | identity, retirement, progress, and receipt fields |
-| Graph journal wire read | `GraphMutationJournalEntryWire::V1` | identity, projected retirement, progress, and receipt fields |
+| Independent boundary          | Sole outer envelope                 | Directly nested V1 schema                                               |
+| ----------------------------- | ----------------------------------- | ----------------------------------------------------------------------- |
+| Public ingress                | `OrderedEdgeBatchPublicRequest::V1` | public request, items, and properties                                   |
+| Router → Graph canonical call | `OrderedEdgeBatchGraphRequest::V1`  | resolved request, items, and properties                                 |
+| Graph canonical response      | `GraphOrderedEdgeBatchResult::V1`   | result and receipt payloads                                             |
+| Graph retirement response     | `OrderedMutationRetirementAck::V1`  | acknowledgement and receipt payload                                     |
+| Router stable record          | `RouterMutationRecord::V1`          | identity, payload, progress, diagnostics, failures, and receipt payload |
+| Graph stable journal          | `GraphMutationJournalEntry::V1`     | identity, retirement, progress, and receipt fields                      |
+| Graph journal wire read       | `GraphMutationJournalEntryWire::V1` | identity, projected retirement, progress, and receipt fields            |
 
 The request-level resolved tables are the only Graph-envelope definitions of
 label/property names, ids, inline profiles, and inline schemas. Items reference
@@ -459,11 +459,11 @@ Adding a stable sequence id to every edge is outside this ADR.
 
 Graph expands input edges once:
 
-| Logical input | Physical projections |
-| --- | --- |
-| directed `u -> v` | forward `(u, v, ordinal)` and reverse `(v, u, ordinal)` |
-| undirected `u -- v`, `u != v` | two forward halves carrying the same ordinal |
-| undirected self-loop `u -- u` | one forward half carrying the ordinal |
+| Logical input                 | Physical projections                                    |
+| ----------------------------- | ------------------------------------------------------- |
+| directed `u -> v`             | forward `(u, v, ordinal)` and reverse `(v, u, ordinal)` |
+| undirected `u -- v`, `u != v` | two forward halves carrying the same ordinal            |
+| undirected self-loop `u -- u` | one forward half carrying the ordinal                   |
 
 Each physical bucket receives the stable input subsequence that projects to it.
 Physical bucket processing order may differ between orientations and leaves,
@@ -685,19 +685,19 @@ after all sidecars and derived events have been committed.
 ADR 0049 does not claim that the current optimized planner supports every scalar
 geometry. The first public version has this admission matrix:
 
-| Input geometry | v1 behavior |
-| --- | --- |
-| existing named labeled buckets on supported slab/log/expansion/relocation paths | optimized merged physical plan |
-| mixed directed, undirected non-self-loop, and undirected self-loop items | optimized when every projected bucket is supported; the shape mix alone is never a rejection reason |
-| one undirected forward bucket receiving both endpoint roles | optimized only through one merged physical run and one reservation |
-| a new named labeled bucket | whole-request ordered scalar fallback |
-| default/unlabeled bypass or labeled promotion from default storage | whole-request ordered scalar fallback |
-| any other scalar-supported but optimized-unsupported geometry | whole-request ordered scalar fallback |
-| duplicate/parallel logical targets before section 9's activation gate | pre-write rejection |
-| any initial property governed by a global unique or constrained-property rule | whole-public-request pre-dispatch rejection in v1 |
-| one logical edge whose endpoints resolve to different Graph shards | whole-public-request pre-dispatch rejection in v1 |
-| otherwise shard-local edges resolving to more than one Graph shard | whole-public-request pre-dispatch rejection in v1 |
-| geometry not covered by either a proven optimized path or proven scalar fallback | pre-write rejection |
+| Input geometry                                                                   | v1 behavior                                                                                         |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| existing named labeled buckets on supported slab/log/expansion/relocation paths  | optimized merged physical plan                                                                      |
+| mixed directed, undirected non-self-loop, and undirected self-loop items         | optimized when every projected bucket is supported; the shape mix alone is never a rejection reason |
+| one undirected forward bucket receiving both endpoint roles                      | optimized only through one merged physical run and one reservation                                  |
+| a new named labeled bucket                                                       | whole-request ordered scalar fallback                                                               |
+| default/unlabeled bypass or labeled promotion from default storage               | whole-request ordered scalar fallback                                                               |
+| any other scalar-supported but optimized-unsupported geometry                    | whole-request ordered scalar fallback                                                               |
+| duplicate/parallel logical targets before section 9's activation gate            | pre-write rejection                                                                                 |
+| any initial property governed by a global unique or constrained-property rule    | whole-public-request pre-dispatch rejection in v1                                                   |
+| one logical edge whose endpoints resolve to different Graph shards               | whole-public-request pre-dispatch rejection in v1                                                   |
+| otherwise shard-local edges resolving to more than one Graph shard               | whole-public-request pre-dispatch rejection in v1                                                   |
+| geometry not covered by either a proven optimized path or proven scalar fallback | pre-write rejection                                                                                 |
 
 The whole request is classified before allocator or canonical mutation. Graph
 does not optimize a supported prefix and then fall back for the remainder.
@@ -1283,13 +1283,13 @@ Pre-dispatch failure has two exhaustive outcomes:
 
 The owner and outcome of every registry/capability gate are fixed as follows:
 
-| Pre-envelope condition | Classification and same-key behavior |
-|---|---|
-| Logical graph, label, or property name is absent or conflicts with its catalog; endpoint/value semantics are invalid | Deterministic admission failure; store the exact `terminal_failure` |
-| Registry or owning-canister lookup rejects, traps, times out, or is otherwise unavailable | Transient dependency failure; clear/expire the lease, retain routing state, and allow same-key retry |
-| The logical graph exists but its shard-owner binding is absent, stale, changes during resolution, or no longer matches the resolved target | Transient routing failure; do not freeze or dispatch the candidate envelope, and allow same-key resolution against one later live binding |
-| The resolved target does not advertise the exact ordered-batch capability, canonical encoding version, or fresh V1 layout required by this ADR | Transient deployment incompatibility; retain no active envelope and allow same-key retry after a compatible release set is installed |
-| The request deterministically resolves to more than one target, contains a cross-shard edge, violates schema/constraint policy, or exceeds a post-resolution bound | Deterministic admission failure; store the exact `terminal_failure` |
+| Pre-envelope condition                                                                                                                                             | Classification and same-key behavior                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Logical graph, label, or property name is absent or conflicts with its catalog; endpoint/value semantics are invalid                                               | Deterministic admission failure; store the exact `terminal_failure`                                                                       |
+| Registry or owning-canister lookup rejects, traps, times out, or is otherwise unavailable                                                                          | Transient dependency failure; clear/expire the lease, retain routing state, and allow same-key retry                                      |
+| The logical graph exists but its shard-owner binding is absent, stale, changes during resolution, or no longer matches the resolved target                         | Transient routing failure; do not freeze or dispatch the candidate envelope, and allow same-key resolution against one later live binding |
+| The resolved target does not advertise the exact ordered-batch capability, canonical encoding version, or fresh V1 layout required by this ADR                     | Transient deployment incompatibility; retain no active envelope and allow same-key retry after a compatible release set is installed      |
+| The request deterministically resolves to more than one target, contains a cross-shard edge, violates schema/constraint policy, or exceeds a post-resolution bound | Deterministic admission failure; store the exact `terminal_failure`                                                                       |
 
 Capability absence is not converted into a request-specific terminal result
 because deployment state can change without changing public request identity.
@@ -1442,18 +1442,18 @@ while the system has accepted no persistent production data.
 
 When ADR 0049 is activated:
 
-| ADR 0045 area | ADR 0049 treatment |
-| --- | --- |
-| logical ordinals and physical intent expansion | retain and strengthen |
-| full-leaf occupancy and capacity projection | retain |
-| slab/log/expansion/relocation planning | retain |
-| reserve/commit/rollback atomicity | retain |
-| exact physical-location capture | retain as conditional internal mode; mandatory when any initial edge property is present |
+| ADR 0045 area                                  | ADR 0049 treatment                                                                                     |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| logical ordinals and physical intent expansion | retain and strengthen                                                                                  |
+| full-leaf occupancy and capacity projection    | retain                                                                                                 |
+| slab/log/expansion/relocation planning         | retain                                                                                                 |
+| reserve/commit/rollback atomicity              | retain                                                                                                 |
+| exact physical-location capture                | retain as conditional internal mode; mandatory when any initial edge property is present               |
 | size-bounded Graph request and durable receipt | replace with single-request V1 admission and the replacement Graph journal V1 order-sensitive identity |
-| unordered public semantics | supersede |
-| independent projection reordering freedom | supersede |
-| scalar-only ordered mutation assumption | supersede |
-| unordered duplicate/update policy | replace with ordered edge-insert parallel policy; non-edge public operations are absent in v1 |
+| unordered public semantics                     | supersede                                                                                              |
+| independent projection reordering freedom      | supersede                                                                                              |
+| scalar-only ordered mutation assumption        | supersede                                                                                              |
+| unordered duplicate/update policy              | replace with ordered edge-insert parallel policy; non-edge public operations are absent in v1          |
 
 ADR 0045 remains the decision history for the physical batch substrate. It is
 not rewritten as though unfinished unordered product behavior shipped.
@@ -1939,6 +1939,6 @@ and split invariant ownership. Rejected.
 - [ADR 0044](0044-router-bulk-mutation-key.md): durable bulk identity.
 - [ADR 0045](0045-unordered-batch-graph-mutations-and-lara-placement.md): retained physical batch substrate and superseded future unordered contract.
 - [ADR 0047](0047-shared-typed-graph-bulk-envelope.md): shared typed Graph bulk envelope.
-- [ADR 0048](0048-adaptive-lara-mate-index.md): prerequisite physical pair rank and adaptive mate ownership.
+- [ADR 0048](0048-lara-counterpart-resolution.md): prerequisite physical pair rank and adaptive mate ownership.
 - [LARA storage contract](../storage/lara.md).
 - [Bulk ingest finalize](../storage/bulk-ingest-finalize.md).

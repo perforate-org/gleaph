@@ -86,7 +86,7 @@ checked by `check_reverse_adjacency` is always restored regardless.
 
 ## Accepted successor direction
 
-[ADR 0048](0048-adaptive-lara-mate-index.md) accepts removal of the facade
+[ADR 0048](0048-lara-counterpart-resolution.md) accepts removal of the facade
 `EDGE_ALIASES` B-tree in favor of pair-rank resolution plus adaptive packed mate
 acceleration owned by bidirectional LARA. That design is not implemented yet, so
 the decision and code above remain the current repair contract.

@@ -48,13 +48,13 @@ LARA does not know `GlobalVertexId` or GQL.
 
 **Crate:** `gleaph-graph` — `facade/store.rs`, `facade/stable/*`
 
-| Store | Role |
-|-------|------|
-| Vertex/edge properties | Property values by `PropertyId` (names on router) |
-| `EDGE_ALIASES` | Current derived implementation; planned removal by ADR 0048 |
-| Label catalogs | Vertex/edge labels by id |
-| `metadata` | `FederationRouting`, graph name |
-| `edge_pending` (ephemeral) | Federated edge property index ops → graph-index |
+| Store                      | Role                                                        |
+| -------------------------- | ----------------------------------------------------------- |
+| Vertex/edge properties     | Property values by `PropertyId` (names on router)           |
+| `EDGE_ALIASES`             | Current derived implementation; planned removal by ADR 0048 |
+| Label catalogs             | Vertex/edge labels by id                                    |
+| `metadata`                 | `FederationRouting`, graph name                             |
+| `edge_pending` (ephemeral) | Federated edge property index ops → graph-index             |
 
 **Removed:** `remote_vertex_refs`, `remote_forward_in`, `peer_graph_canisters` stable regions.
 
@@ -62,10 +62,10 @@ LARA does not know `GlobalVertexId` or GQL.
 
 ## Identity on shard
 
-| Mode | Global key |
-|------|------------|
-| Federated | `GlobalVertexId { shard_id, local_vertex_id }` derived from routing + local dense id |
-| Standalone | `GlobalVertexId { shard_id: 0, local_vertex_id }` |
+| Mode       | Global key                                                                           |
+| ---------- | ------------------------------------------------------------------------------------ |
+| Federated  | `GlobalVertexId { shard_id, local_vertex_id }` derived from routing + local dense id |
+| Standalone | `GlobalVertexId { shard_id: 0, local_vertex_id }`                                    |
 
 Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR tombstone). Router
 `resolve_shard` maps `ShardId` → canister for federation routing only.
@@ -79,7 +79,7 @@ larger vertex id; an undirected self-loop has one forward entry and that entry i
 canonical.
 
 The current implementation uses the facade `EDGE_ALIASES` B-tree to map a reverse
-or second undirected entry to the canonical handle. [ADR 0048](../adr/0048-adaptive-lara-mate-index.md)
+or second undirected entry to the canonical handle. [ADR 0048](../adr/0048-lara-counterpart-resolution.md)
 accepts its replacement with bidirectional LARA `mate_of` / `canonical_handle`
 APIs. Small or cold buckets use exact occurrence-rank scans, while selected
 leaves use a packed derived mate index. LARA insertion returns exact physical
@@ -90,10 +90,10 @@ alias store and its repair path remain required by current code.
 
 ## Indexes (local vs global)
 
-| Index | Location | Scope |
-|-------|----------|-------|
+| Index                      | Location             | Scope                         |
+| -------------------------- | -------------------- | ----------------------------- |
 | Property equality (vertex) | graph-index canister | All shards, `shard_id` in hit |
-| Edge equality | graph stable | Per shard |
+| Edge equality              | graph stable         | Per shard                     |
 
 ## Writes and vertex existence
 
@@ -106,7 +106,7 @@ alias store and its repair path remain required by current code.
 - [lara-dgap-contract.md](./lara-dgap-contract.md)
 - [labeled-edge-inline-values.md](./labeled-edge-inline-values.md)
 - [inline-value-first-traversal.md](./inline-value-first-traversal.md)
-- [ADR 0048](../adr/0048-adaptive-lara-mate-index.md)
+- [ADR 0048](../adr/0048-lara-counterpart-resolution.md)
 - [federation/model.md](../federation/model.md)
 - [index/property-index.md](../index/property-index.md)
 - [execution/pipeline.md](../execution/pipeline.md)

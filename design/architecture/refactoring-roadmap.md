@@ -59,18 +59,18 @@ The graph `GraphStore` layout (`crates/graph/src/facade/store.rs` with `facade/s
 
 The refactor should first identify who owns each fact and invariant, then reshape code around that ownership. Reducing duplicate code is useful only when it also reduces duplicate knowledge.
 
-| Domain fact | Source of truth |
-|-------------|-----------------|
-| Vertex and canonical edge existence | `gleaph-graph` / LARA-backed graph storage |
-| Canonical edge identity | `owner_vertex_id`, `label_id`, `edge_slot_index` |
-| Edge payload bytes | Labeled LARA payload slab/log/blob stores |
-| Vertex and edge property values | Graph property stores |
-| Property and label names in federated planning | Router catalogs |
-| Router placement | Router placement maps |
-| Global property postings | `graph-index` property postings |
-| Global vertex label postings | `graph-index` label postings |
-| Local edge equality postings | Graph shard local edge equality store |
-| Label telemetry | Router aggregate state derived from graph shard events |
+| Domain fact                                    | Source of truth                                        |
+| ---------------------------------------------- | ------------------------------------------------------ |
+| Vertex and canonical edge existence            | `gleaph-graph` / LARA-backed graph storage             |
+| Canonical edge identity                        | `owner_vertex_id`, `label_id`, `edge_slot_index`       |
+| Edge payload bytes                             | Labeled LARA payload slab/log/blob stores              |
+| Vertex and edge property values                | Graph property stores                                  |
+| Property and label names in federated planning | Router catalogs                                        |
+| Router placement                               | Router placement maps                                  |
+| Global property postings                       | `graph-index` property postings                        |
+| Global vertex label postings                   | `graph-index` label postings                           |
+| Local edge equality postings                   | Graph shard local edge equality store                  |
+| Label telemetry                                | Router aggregate state derived from graph shard events |
 
 ### Canonical and derived state must be separated
 
@@ -137,10 +137,10 @@ Vertex and edge properties are separate stores with similar value encoding and v
 
 The desired direction is an internal property entity model:
 
-| Entity | Identity |
-|--------|----------|
-| Vertex | `VertexId` |
-| Edge | `owner_vertex_id`, `label_id`, `edge_slot_index` |
+| Entity | Identity                                         |
+| ------ | ------------------------------------------------ |
+| Vertex | `VertexId`                                       |
+| Edge   | `owner_vertex_id`, `label_id`, `edge_slot_index` |
 
 Physical stable keys may remain separate until migration is justified. The important refactor is centralizing value validation, persisted encoding, sortable index-key encoding, and posting-event generation.
 
@@ -332,7 +332,7 @@ Goal: make derived state safe to optimize, rebuild, and validate.
 
 **Progress:** Edge equality postings and edge aliases have consistency checks + full rebuild from canonical state (`facade/derived_state/`). Label postings backfill was already implemented (`label_backfill.rs`). Sync vs backfill lag documented in [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
 
-This remains the implemented state. [ADR 0048](../adr/0048-adaptive-lara-mate-index.md)
+This remains the implemented state. [ADR 0048](../adr/0048-lara-counterpart-resolution.md)
 accepts a planned successor in which bidirectional LARA pair-rank resolution and
 adaptive packed mate blobs replace the facade edge-alias store; the Phase 5
 rebuild contract remains required until that implementation lands.
@@ -411,15 +411,15 @@ Phase 8 closed with **zero further consolidation** (retain P2/P4; P1/P3 executed
 
 #### 8a — Benchmark suite (ADR 0007 §6)
 
-| Bench | Crate | Purpose | Status |
-|-------|-------|---------|--------|
-| `bench_layout_memory_manager_cold_touch_{5,21,42}` | graph-kernel | VM count at cold init | **Done** |
-| `bench_layout_router_three_catalog_intern_6vm` | graph-kernel | P2 six-region catalog baseline | **Done** |
-| `bench_layout_graph_stable_reopen_touch` | graph | Post-upgrade facade re-init | **Done** |
-| `bench_layout_router_stable_reopen_touch` | router | Post-upgrade facade re-init | **Done** |
-| `bench_layout_edge_weight_profile_read` | graph | Edge profile read path | **Done** |
-| `bench_layout_index_posting_insert_64` | graph-index | Posting/backfill hot path | **Done** |
-| Grouped catalog prototype vs 6 VM | graph-kernel or router | P2 merge gate | **N/A** (retain without prototype) |
+| Bench                                              | Crate                  | Purpose                        | Status                             |
+| -------------------------------------------------- | ---------------------- | ------------------------------ | ---------------------------------- |
+| `bench_layout_memory_manager_cold_touch_{5,21,42}` | graph-kernel           | VM count at cold init          | **Done**                           |
+| `bench_layout_router_three_catalog_intern_6vm`     | graph-kernel           | P2 six-region catalog baseline | **Done**                           |
+| `bench_layout_graph_stable_reopen_touch`           | graph                  | Post-upgrade facade re-init    | **Done**                           |
+| `bench_layout_router_stable_reopen_touch`          | router                 | Post-upgrade facade re-init    | **Done**                           |
+| `bench_layout_edge_weight_profile_read`            | graph                  | Edge profile read path         | **Done**                           |
+| `bench_layout_index_posting_insert_64`             | graph-index            | Posting/backfill hot path      | **Done**                           |
+| Grouped catalog prototype vs 6 VM                  | graph-kernel or router | P2 merge gate                  | **N/A** (retain without prototype) |
 
 Run: `canbench layout` per crate; persist with `canbench --persist` when baselines change.
 
@@ -427,12 +427,12 @@ Run: `canbench layout` per crate; persist with `canbench --persist` when baselin
 
 For each consolidation candidate P1–P4, record **merge / retain / defer** with canbench citation:
 
-| ID | Candidate | Decision (2026-06-15) |
-|----|-----------|-------------------------|
-| P1 | Retire `EDGE_WEIGHT_PROFILES` | **Retired** (2026-06-12) — dev policy; facade repacked to 42 regions |
-| P2 | Router catalog VM grouping | **Retain** |
-| P3 | Label stats delta seq + log | **Done** (2026-06-15) — repacked per [ADR 0015](../adr/0015-label-stats-projection-log.md); router projection cursor at region 17 |
-| P4 | Router backfill cursor merge | **Retain** |
+| ID  | Candidate                     | Decision (2026-06-15)                                                                                                             |
+| --- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| P1  | Retire `EDGE_WEIGHT_PROFILES` | **Retired** (2026-06-12) — dev policy; facade repacked to 42 regions                                                              |
+| P2  | Router catalog VM grouping    | **Retain**                                                                                                                        |
+| P3  | Label stats delta seq + log   | **Done** (2026-06-15) — repacked per [ADR 0015](../adr/0015-label-stats-projection-log.md); router projection cursor at region 17 |
+| P4  | Router backfill cursor merge  | **Retain**                                                                                                                        |
 
 #### 8c — Optional consolidation patches
 
@@ -499,12 +499,12 @@ Validation sequence:
 
 Phases 0–8 are **complete**.
 
-| Stream | When | Content |
-|--------|------|---------|
-| **Ongoing** | Phase 9 | Tests + canbench on every boundary PR |
-| **Optional** | Phase 8c follow-ups | P2 grouped-catalog prototype only if product revisits merge |
-| **Deferred** | Federation ADR | ADR 0006 step 6+ (`RemoteVertexId`, `GROUP_SIZE`, peer expand) — blocked on product |
-| **Independent** | Feature epics | bulk-ingest finalize (P0–P3 done), inline-value-first traversal, executor gaps — not Phase numbers |
+| Stream          | When                | Content                                                                                            |
+| --------------- | ------------------- | -------------------------------------------------------------------------------------------------- |
+| **Ongoing**     | Phase 9             | Tests + canbench on every boundary PR                                                              |
+| **Optional**    | Phase 8c follow-ups | P2 grouped-catalog prototype only if product revisits merge                                        |
+| **Deferred**    | Federation ADR      | ADR 0006 step 6+ (`RemoteVertexId`, `GROUP_SIZE`, peer expand) — blocked on product                |
+| **Independent** | Feature epics       | bulk-ingest finalize (P0–P3 done), inline-value-first traversal, executor gaps — not Phase numbers |
 
 Phase 8 closed with **retain** on P2/P4 and executed repacks on P1/P3; that is the recorded outcome.
 
