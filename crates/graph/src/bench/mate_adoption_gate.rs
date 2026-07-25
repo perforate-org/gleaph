@@ -223,6 +223,26 @@ pub(crate) struct AdoptionEvidenceRow {
     pub(crate) runtime_pass: bool,
 }
 
+/// Result of a matched candidate probe.  The probe owns the exactness and fallback claims;
+/// callers must not manufacture an adoption row from a canbench total alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MatchedAdoptionProbe {
+    pub(crate) observation: CompressionPolicyObservation,
+    pub(crate) exact_results: bool,
+    pub(crate) fallback_safe: bool,
+}
+
+impl MatchedAdoptionProbe {
+    pub(crate) fn into_row(self, fixture_id: AdoptionFixtureId) -> AdoptionEvidenceRow {
+        adoption_row_from_observation(
+            fixture_id,
+            self.observation,
+            self.exact_results,
+            self.fallback_safe,
+        )
+    }
+}
+
 pub(crate) fn adoption_row_from_observation(
     fixture_id: AdoptionFixtureId,
     observation: CompressionPolicyObservation,
@@ -4940,6 +4960,45 @@ mod fixture_evidence_tests {
         assert_eq!(failed.disposition, AdoptionDisposition::ScanOnly);
         assert!(failed.evidence_present);
         assert!(!failed.logical_bytes_pass && !failed.runtime_pass);
+    }
+
+    #[test]
+    fn matched_probe_owns_exactness_and_fallback_claims() {
+        let mut candidate = observation();
+        candidate.shared_bytes = Some(1_800);
+        candidate.shared_instructions = Some(672_220);
+        let row = MatchedAdoptionProbe {
+            observation: candidate,
+            exact_results: true,
+            fallback_safe: true,
+        }
+        .into_row(AdoptionFixtureId::DirectedHigh);
+        assert!(row.evidence_present);
+        assert!(row.exact_results && row.fallback_safe);
+        assert_eq!(row.disposition, AdoptionDisposition::SharedOrientation);
+
+        let unsafe_row = MatchedAdoptionProbe {
+            observation: candidate,
+            exact_results: true,
+            fallback_safe: false,
+        }
+        .into_row(AdoptionFixtureId::DirectedHigh);
+        assert!(!unsafe_row.fallback_safe);
+        assert_eq!(
+            aggregate_adoption_status(&[
+                unsafe_row,
+                AdoptionEvidenceRow {
+                    fixture_id: AdoptionFixtureId::DirectedLow,
+                    disposition: AdoptionDisposition::ScanOnly,
+                    evidence_present: true,
+                    exact_results: true,
+                    fallback_safe: true,
+                    logical_bytes_pass: true,
+                    runtime_pass: true,
+                },
+            ]),
+            AdoptionStatus::Hold
+        );
     }
 
     #[test]
