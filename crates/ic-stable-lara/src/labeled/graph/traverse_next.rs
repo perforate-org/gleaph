@@ -886,15 +886,15 @@ where
             );
         }
 
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        let mut iter =
-            self.labeled_bucket_span_iter(owner, order, &vertex, &[bucket], 0, bucket_index, true)?;
-
         if bucket.overflow_log_head() >= 0 {
             return self.visit_hybrid_out_inline_value_batches_for_bucket_next(
                 owner, label, &bucket, order, scratch, &mut visit,
             );
         }
+
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let mut iter =
+            self.labeled_bucket_span_iter(owner, order, &vertex, &[bucket], 0, bucket_index, true)?;
 
         let width = usize::from(bucket.inline_value_byte_width());
         let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
@@ -1151,9 +1151,10 @@ where
                     crate::labeled::invariants::inline_value_byte_offset_at_slot(bucket, ordinal)?;
                 let value = scratch.io_payload_slice_mut(width);
                 self.values.read_bytes(offset, value);
-                let value = scratch.io_payload_bytes[..width].to_vec();
                 scratch.slot_indices.push(slot);
-                scratch.values.extend_from_slice(&value);
+                scratch
+                    .values
+                    .extend_from_slice(&scratch.io_payload_bytes[..width]);
             }
             if !scratch.slot_indices.is_empty()
                 && let ControlFlow::Break(value) = visit(LabeledPayloadValueBatch {
@@ -1199,19 +1200,33 @@ where
                 OutEdgeOrder::Ascending => {
                     let first = start_ordinal + remaining - take;
                     for ordinal in first..first + take {
-                        let payload =
-                            self.read_bucket_payload_for_slot(owner, bucket, ordinal, log_chain)?;
+                        self.read_bucket_payload_for_slot_into(
+                            owner,
+                            bucket,
+                            ordinal,
+                            log_chain,
+                            &mut scratch.io_payload_bytes,
+                        )?;
                         scratch.slot_indices.push(ordinal);
-                        scratch.values.extend_from_slice(&payload);
+                        scratch
+                            .values
+                            .extend_from_slice(&scratch.io_payload_bytes[..width]);
                     }
                 }
                 OutEdgeOrder::Descending => {
                     let high = start_ordinal + remaining;
                     for ordinal in (high - take..high).rev() {
-                        let payload =
-                            self.read_bucket_payload_for_slot(owner, bucket, ordinal, log_chain)?;
+                        self.read_bucket_payload_for_slot_into(
+                            owner,
+                            bucket,
+                            ordinal,
+                            log_chain,
+                            &mut scratch.io_payload_bytes,
+                        )?;
                         scratch.slot_indices.push(ordinal);
-                        scratch.values.extend_from_slice(&payload);
+                        scratch
+                            .values
+                            .extend_from_slice(&scratch.io_payload_bytes[..width]);
                     }
                 }
             }
@@ -1383,10 +1398,17 @@ where
         while i < slots_and_ordinals.len() {
             let (_, ordinal) = slots_and_ordinals[i];
             if ordinal >= slab_slots {
-                let payload =
-                    self.read_bucket_payload_for_slot(owner, bucket, ordinal, log_chain)?;
+                self.read_bucket_payload_for_slot_into(
+                    owner,
+                    bucket,
+                    ordinal,
+                    log_chain,
+                    &mut scratch.io_payload_bytes,
+                )?;
                 scratch.slot_indices.push(slots_and_ordinals[i].0);
-                scratch.values.extend_from_slice(&payload);
+                scratch
+                    .values
+                    .extend_from_slice(&scratch.io_payload_bytes[..width]);
                 i += 1;
                 continue;
             }
@@ -1410,7 +1432,6 @@ where
             let offset = crate::labeled::invariants::inline_value_byte_offset_at_slot(bucket, low)?;
             let bytes = scratch.io_payload_slice_mut(byte_len);
             self.values.read_bytes(offset, bytes);
-            let bytes = scratch.io_payload_bytes[..byte_len].to_vec();
             for &(slot, ordinal) in &slots_and_ordinals[i..end] {
                 let value_index = usize::try_from(ordinal.saturating_sub(low))
                     .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
@@ -1420,7 +1441,7 @@ where
                 scratch.slot_indices.push(slot);
                 scratch
                     .values
-                    .extend_from_slice(&bytes[start..start + width]);
+                    .extend_from_slice(&scratch.io_payload_bytes[start..start + width]);
             }
             i = end;
         }
