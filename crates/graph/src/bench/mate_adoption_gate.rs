@@ -2342,7 +2342,7 @@ fn real_sparse_slot_identities_for_bench() -> Vec<ic_stable_lara::adoption_fixtu
 #[cfg(feature = "canbench")]
 fn real_sparse_scan_refs_for_bench() -> (
     ic_stable_lara::adoption_fixture::SparseSlotPublishedFixture,
-    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) {
     let fixture = ic_stable_lara::adoption_fixture::build_sparse_slot_published_fixture(64)
         .expect("real sparse-slot fixture");
@@ -2352,11 +2352,11 @@ fn real_sparse_scan_refs_for_bench() -> (
         .graph
         .forward()
         .for_each_live_edge_slot_for_label(ic_stable_lara::VertexId::from(0), label, |slot, _| {
-            refs.push(ic_stable_lara::labeled::PhysicalEdgeRef {
+            refs.push(ic_stable_lara::labeled::CanonicalEdgeOccurrence {
                 orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
                 owner_vertex_id: ic_stable_lara::VertexId::from(0),
                 label_id: label,
-                slot_index: slot,
+                slot_index: slot.into(),
             })
         })
         .expect("sparse forward scan");
@@ -2364,11 +2364,11 @@ fn real_sparse_scan_refs_for_bench() -> (
         .graph
         .reverse()
         .for_each_live_edge_slot_for_label(ic_stable_lara::VertexId::from(1), label, |slot, _| {
-            refs.push(ic_stable_lara::labeled::PhysicalEdgeRef {
+            refs.push(ic_stable_lara::labeled::CanonicalEdgeOccurrence {
                 orientation: ic_stable_lara::labeled::LabeledOrientation::Reverse,
                 owner_vertex_id: ic_stable_lara::VertexId::from(1),
                 label_id: label,
-                slot_index: slot,
+                slot_index: slot.into(),
             })
         })
         .expect("sparse reverse scan");
@@ -2380,7 +2380,7 @@ fn real_mixed_scan_refs_for_bench(
     edges_per_label: u32,
 ) -> (
     ic_stable_lara::adoption_fixture::MixedLabelPublishedFixture,
-    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) {
     let fixture =
         ic_stable_lara::adoption_fixture::build_mixed_label_published_fixture(2, edges_per_label)
@@ -2396,11 +2396,11 @@ fn real_mixed_scan_refs_for_bench(
                 ic_stable_lara::VertexId::from(0),
                 label,
                 |slot, _| {
-                    refs.push(ic_stable_lara::labeled::PhysicalEdgeRef {
+                    refs.push(ic_stable_lara::labeled::CanonicalEdgeOccurrence {
                         orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
                         owner_vertex_id: ic_stable_lara::VertexId::from(0),
                         label_id: label,
-                        slot_index: slot,
+                        slot_index: slot.into(),
                     })
                 },
             )
@@ -3656,13 +3656,13 @@ fn bench_mate_adoption_rank_lookup_real_sparse_slots() -> canbench_rs::BenchResu
 #[cfg(feature = "canbench")]
 fn bench_real_scan_lookup(
     fixture: ic_stable_lara::adoption_fixture::SparseSlotPublishedFixture,
-    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    refs: Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) -> canbench_rs::BenchResult {
     bench_fn(|| {
         let mut checksum = 0u64;
         for edge in refs.iter().cycle().take(1024) {
             let mate = fixture.graph.mate_of(*edge).expect("sparse scan mate");
-            checksum = checksum.wrapping_add(u64::from(mate.slot_index));
+            checksum = checksum.wrapping_add(u64::from(mate.slot_index.raw()));
         }
         black_box(checksum);
     })
@@ -3678,13 +3678,13 @@ fn bench_mate_scan_lookup_real_sparse_slots() -> canbench_rs::BenchResult {
 #[cfg(feature = "canbench")]
 fn bench_real_mixed_scan_lookup(
     fixture: ic_stable_lara::adoption_fixture::MixedLabelPublishedFixture,
-    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    refs: Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) -> canbench_rs::BenchResult {
     bench_fn(|| {
         let mut checksum = 0u64;
         for edge in refs.iter().cycle().take(1024) {
             let mate = fixture.graph.mate_of(*edge).expect("mixed scan mate");
-            checksum = checksum.wrapping_add(u64::from(mate.slot_index));
+            checksum = checksum.wrapping_add(u64::from(mate.slot_index.raw()));
         }
         black_box(checksum);
     })
@@ -3700,7 +3700,7 @@ fn bench_mate_scan_lookup_real_mixed_labels() -> canbench_rs::BenchResult {
 #[cfg(feature = "canbench")]
 fn published_directed_runtime_fixture() -> (
     ic_stable_lara::adoption_fixture::PublishedFixture,
-    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) {
     published_directed_runtime_fixture_with_logical_edges(128)
 }
@@ -3709,7 +3709,7 @@ fn published_directed_runtime_fixture() -> (
 fn build_alias_reverse_probe() -> (
     ic_stable_lara::adoption_fixture::PublishedFixture,
     crate::facade::stable::edge_alias::EdgeAliasIndex<ic_stable_structures::VectorMemory>,
-    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) {
     let (fixture, _) = published_directed_runtime_fixture();
     let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
@@ -3752,11 +3752,11 @@ fn build_alias_reverse_probe() -> (
         );
     }
     for identity in fixture.identities.iter().filter(|row| row.orientation == 0) {
-        canonical_refs.push(ic_stable_lara::labeled::PhysicalEdgeRef {
+        canonical_refs.push(ic_stable_lara::labeled::CanonicalEdgeOccurrence {
             orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
             owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
             label_id: label,
-            slot_index: identity.slot,
+            slot_index: identity.slot.into(),
         });
     }
     (fixture, aliases, canonical_refs)
@@ -3773,7 +3773,7 @@ fn bench_mate_adoption_alias_reverse_lookup_directed_high() -> canbench_rs::Benc
             if let Some((vertex, slot)) = aliases.find_alias_for_canonical(
                 reference.owner_vertex_id,
                 label.raw(),
-                reference.slot_index,
+                reference.slot_index.raw(),
             ) {
                 checksum = checksum
                     .saturating_add(u64::from(vertex))
@@ -3795,7 +3795,7 @@ fn bench_mate_adoption_alias_miss_canonical_fallback_directed_high() -> canbench
                 .graph
                 .mate_of(*reference)
                 .expect("canonical fallback");
-            checksum = checksum.saturating_add(u64::from(mate.slot_index));
+            checksum = checksum.saturating_add(u64::from(mate.slot_index.raw()));
         }
         black_box(checksum);
     })
@@ -3806,7 +3806,7 @@ fn published_directed_runtime_fixture_with_logical_edges(
     logical_edges: u32,
 ) -> (
     ic_stable_lara::adoption_fixture::PublishedFixture,
-    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) {
     // The fixture type owns a mate-capable graph so the same canonical rows can also support the
     // retired-path comparison.  These scan-only benches call `mate_of` exclusively; no published
@@ -3827,16 +3827,18 @@ fn published_directed_runtime_fixture_with_logical_edges(
     let refs = fixture
         .identities
         .iter()
-        .map(|identity| ic_stable_lara::labeled::PhysicalEdgeRef {
-            orientation: if identity.orientation == 0 {
-                ic_stable_lara::labeled::LabeledOrientation::Forward
-            } else {
-                ic_stable_lara::labeled::LabeledOrientation::Reverse
+        .map(
+            |identity| ic_stable_lara::labeled::CanonicalEdgeOccurrence {
+                orientation: if identity.orientation == 0 {
+                    ic_stable_lara::labeled::LabeledOrientation::Forward
+                } else {
+                    ic_stable_lara::labeled::LabeledOrientation::Reverse
+                },
+                owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
+                label_id: directed_label,
+                slot_index: identity.slot.into(),
             },
-            owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
-            label_id: directed_label,
-            slot_index: identity.slot,
-        })
+        )
         .collect();
     (fixture, refs)
 }
@@ -3844,14 +3846,14 @@ fn published_directed_runtime_fixture_with_logical_edges(
 #[cfg(feature = "canbench")]
 fn bench_scan_runtime_lookup_count(
     fixture: ic_stable_lara::adoption_fixture::PublishedFixture,
-    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    refs: Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
     count: usize,
 ) -> canbench_rs::BenchResult {
     bench_fn(|| {
         let mut checksum = 0u64;
         for edge in refs.iter().cycle().take(count) {
             let mate = fixture.graph.mate_of(*edge).expect("canonical mate");
-            checksum = checksum.saturating_add(u64::from(mate.slot_index));
+            checksum = checksum.saturating_add(u64::from(mate.slot_index.raw()));
         }
         black_box(checksum);
     })
@@ -3860,7 +3862,7 @@ fn bench_scan_runtime_lookup_count(
 #[cfg(feature = "canbench")]
 fn bench_scan_runtime_single_ref(
     fixture: ic_stable_lara::adoption_fixture::PublishedFixture,
-    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    refs: Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
     index: usize,
 ) -> canbench_rs::BenchResult {
     let edge = refs[index];
@@ -3868,7 +3870,7 @@ fn bench_scan_runtime_single_ref(
         let mut checksum = 0u64;
         for _ in 0..1024 {
             let mate = fixture.graph.mate_of(edge).expect("canonical mate");
-            checksum = checksum.saturating_add(u64::from(mate.slot_index));
+            checksum = checksum.saturating_add(u64::from(mate.slot_index.raw()));
         }
         black_box(checksum);
     })
@@ -3877,7 +3879,7 @@ fn bench_scan_runtime_single_ref(
 #[cfg(feature = "canbench")]
 fn published_parallel_runtime_fixture() -> (
     ic_stable_lara::adoption_fixture::PublishedFixture,
-    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) {
     published_parallel_runtime_fixture_with_edges(32)
 }
@@ -3887,7 +3889,7 @@ fn published_parallel_runtime_fixture_with_edges(
     logical_edges: u32,
 ) -> (
     ic_stable_lara::adoption_fixture::PublishedFixture,
-    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) {
     assert!(logical_edges > 0);
     let edges = (0..logical_edges).map(|_| (0, 1)).collect::<Vec<_>>();
@@ -3897,16 +3899,18 @@ fn published_parallel_runtime_fixture_with_edges(
     let refs = fixture
         .identities
         .iter()
-        .map(|identity| ic_stable_lara::labeled::PhysicalEdgeRef {
-            orientation: if identity.orientation == 0 {
-                ic_stable_lara::labeled::LabeledOrientation::Forward
-            } else {
-                ic_stable_lara::labeled::LabeledOrientation::Reverse
+        .map(
+            |identity| ic_stable_lara::labeled::CanonicalEdgeOccurrence {
+                orientation: if identity.orientation == 0 {
+                    ic_stable_lara::labeled::LabeledOrientation::Forward
+                } else {
+                    ic_stable_lara::labeled::LabeledOrientation::Reverse
+                },
+                owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
+                label_id: label,
+                slot_index: identity.slot.into(),
             },
-            owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
-            label_id: label,
-            slot_index: identity.slot,
-        })
+        )
         .collect();
     (fixture, refs)
 }
@@ -3914,7 +3918,7 @@ fn published_parallel_runtime_fixture_with_edges(
 #[cfg(feature = "canbench")]
 fn published_undirected_runtime_fixture() -> (
     ic_stable_lara::adoption_fixture::PublishedFixture,
-    Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
 ) {
     let vertex_count = 64u32;
     let edges = (0..vertex_count)
@@ -3932,12 +3936,14 @@ fn published_undirected_runtime_fixture() -> (
     let refs = fixture
         .identities
         .iter()
-        .map(|identity| ic_stable_lara::labeled::PhysicalEdgeRef {
-            orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
-            owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
-            label_id: label,
-            slot_index: identity.slot,
-        })
+        .map(
+            |identity| ic_stable_lara::labeled::CanonicalEdgeOccurrence {
+                orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
+                owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
+                label_id: label,
+                slot_index: identity.slot.into(),
+            },
+        )
         .collect();
     (fixture, refs)
 }
@@ -3945,7 +3951,7 @@ fn published_undirected_runtime_fixture() -> (
 #[cfg(feature = "canbench")]
 fn bench_runtime_lookup(
     fixture: ic_stable_lara::adoption_fixture::PublishedFixture,
-    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    refs: Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
     published: bool,
 ) -> canbench_rs::BenchResult {
     bench_runtime_lookup_count(fixture, refs, published, 1024)
@@ -3954,7 +3960,7 @@ fn bench_runtime_lookup(
 #[cfg(feature = "canbench")]
 fn bench_runtime_lookup_count(
     fixture: ic_stable_lara::adoption_fixture::PublishedFixture,
-    refs: Vec<ic_stable_lara::labeled::PhysicalEdgeRef>,
+    refs: Vec<ic_stable_lara::labeled::CanonicalEdgeOccurrence>,
     published: bool,
     count: usize,
 ) -> canbench_rs::BenchResult {
@@ -3967,7 +3973,7 @@ fn bench_runtime_lookup_count(
                 fixture.graph.mate_of(*edge)
             }
             .expect("runtime mate");
-            checksum = checksum.saturating_add(u64::from(mate.slot_index));
+            checksum = checksum.saturating_add(u64::from(mate.slot_index.raw()));
         }
         black_box(checksum);
     })
@@ -5016,7 +5022,7 @@ mod fixture_evidence_tests {
                 .rank_for(
                     u32::from(edge.owner_vertex_id),
                     u32::from(canonical.owner_vertex_id),
-                    edge.slot_index,
+                    edge.slot_index.raw(),
                 )
                 .expect("shared source rank");
             assert_eq!(
@@ -5025,7 +5031,7 @@ mod fixture_evidence_tests {
                     u32::from(canonical.owner_vertex_id),
                     rank,
                 ),
-                Some(canonical.slot_index)
+                Some(canonical.slot_index.raw())
             );
         }
         assert!(shared.lookup(0, 1, u32::MAX).is_none());
@@ -5043,7 +5049,7 @@ mod fixture_evidence_tests {
                 .rank_for(
                     u32::from(edge.owner_vertex_id),
                     u32::from(canonical.owner_vertex_id),
-                    edge.slot_index,
+                    edge.slot_index.raw(),
                 )
                 .expect("parallel source rank");
             assert_eq!(
@@ -5052,7 +5058,7 @@ mod fixture_evidence_tests {
                     u32::from(canonical.owner_vertex_id),
                     rank,
                 ),
-                Some(canonical.slot_index)
+                Some(canonical.slot_index.raw())
             );
         }
         assert!(parallel_shared.lookup(0, 1, u32::MAX).is_none());
@@ -5063,7 +5069,7 @@ mod fixture_evidence_tests {
             .expect("sparse shared candidate");
         let sparse_label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
         for identity in &sparse.identities {
-            let edge = ic_stable_lara::labeled::PhysicalEdgeRef {
+            let edge = ic_stable_lara::labeled::CanonicalEdgeOccurrence {
                 orientation: if identity.orientation == 0 {
                     ic_stable_lara::labeled::LabeledOrientation::Forward
                 } else {
@@ -5071,7 +5077,7 @@ mod fixture_evidence_tests {
                 },
                 owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
                 label_id: sparse_label,
-                slot_index: identity.slot,
+                slot_index: identity.slot.into(),
             };
             // The canonical mate scan intentionally addresses slab slots only. Sparse fixture
             // identities retain overflow-log locations (high-bit slots), so the independent
@@ -5108,7 +5114,7 @@ mod fixture_evidence_tests {
                 .rank_for(
                     u32::from(edge.owner_vertex_id),
                     identity.target,
-                    edge.slot_index,
+                    edge.slot_index.raw(),
                 )
                 .expect("sparse source rank");
             assert_eq!(
@@ -5142,7 +5148,7 @@ mod fixture_evidence_tests {
                 .iter()
                 .filter(|identity| identity.label == label_raw)
             {
-                let edge = ic_stable_lara::labeled::PhysicalEdgeRef {
+                let edge = ic_stable_lara::labeled::CanonicalEdgeOccurrence {
                     orientation: if identity.orientation == 0 {
                         ic_stable_lara::labeled::LabeledOrientation::Forward
                     } else {
@@ -5150,7 +5156,7 @@ mod fixture_evidence_tests {
                     },
                     owner_vertex_id: ic_stable_lara::VertexId::from(identity.owner),
                     label_id: label,
-                    slot_index: identity.slot,
+                    slot_index: identity.slot.into(),
                 };
                 let canonical = mixed
                     .graph
@@ -5160,7 +5166,7 @@ mod fixture_evidence_tests {
                     .rank_for(
                         u32::from(edge.owner_vertex_id),
                         u32::from(canonical.owner_vertex_id),
-                        edge.slot_index,
+                        edge.slot_index.raw(),
                     )
                     .expect("mixed-label source rank");
                 assert_eq!(
@@ -5169,7 +5175,7 @@ mod fixture_evidence_tests {
                         u32::from(canonical.owner_vertex_id),
                         rank,
                     ),
-                    Some(canonical.slot_index)
+                    Some(canonical.slot_index.raw())
                 );
             }
             assert!(label_shared.lookup(0, 1, u32::MAX).is_none());
@@ -5189,7 +5195,7 @@ mod fixture_evidence_tests {
                 .filter(|identity| {
                     identity.owner == u32::from(edge.owner_vertex_id)
                         && identity.target == u32::from(canonical.owner_vertex_id)
-                        && identity.slot <= edge.slot_index
+                        && identity.slot <= edge.slot_index.raw()
                 })
                 .count()
                 .checked_sub(1)
@@ -5200,7 +5206,7 @@ mod fixture_evidence_tests {
                     u32::from(canonical.owner_vertex_id),
                     rank,
                 ),
-                Some(canonical.slot_index)
+                Some(canonical.slot_index.raw())
             );
         }
         assert!(pair_rank.lookup(0, 1, u32::MAX).is_none());
@@ -5574,7 +5580,7 @@ mod fixture_evidence_tests {
             assert_eq!(refs.len(), (logical_edges as usize) * 2);
             for edge in refs.iter().take(8) {
                 let canonical = fixture.graph.mate_of(*edge).expect("canonical mate");
-                assert!(canonical.slot_index < logical_edges);
+                assert!(canonical.slot_index.raw() < logical_edges);
             }
         }
     }
