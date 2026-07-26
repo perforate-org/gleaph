@@ -237,26 +237,6 @@ where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
-        let mut visit = visit;
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            if label_id != self.bypass_storage_label_for(&vertex) {
-                return Ok(());
-            }
-            return self
-                .edges
-                .visit_out_edges(
-                    &self.vertices,
-                    src,
-                    None,
-                    None,
-                    None::<&mut dyn FnMut(&[u8]) -> bool>,
-                    |_| true,
-                    |edge| visit(edge.with_label_id(label_id.raw())),
-                )
-                .map_err(Into::into);
-        }
         self.for_each_edges_for_label_ordered(src, label_id, OutEdgeOrder::Descending, visit)
     }
 
@@ -266,13 +246,12 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
-        let mut visit = visit;
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
@@ -300,20 +279,17 @@ where
                 }
             };
         }
-        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
-            return Ok(());
-        };
-        if bucket.degree() == 0 {
-            return Ok(());
-        }
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _bench_scope = bench_scope("labeled_for_each_edges_for_label");
-        for edge in
-            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, true)?
-        {
-            visit(edge?);
-        }
+        let _ = self.visit_edges_with_inline_property(src, label_id, order, |_slot, item| {
+            let edge = item
+                .edge
+                .with_stored_inline_value_bytes(
+                    item.inline_property.width,
+                    item.inline_property.bytes(),
+                )
+                .with_label_id(label_id.raw());
+            visit(edge);
+            ControlFlow::<()>::Continue(())
+        })?;
         Ok(())
     }
 
@@ -323,13 +299,12 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
-        let mut visit = visit;
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
@@ -357,20 +332,10 @@ where
                 }
             };
         }
-        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
-            return Ok(());
-        };
-        if bucket.degree() == 0 {
-            return Ok(());
-        }
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _bench_scope = bench_scope("labeled_for_each_edges_for_label_topology");
-        for edge in
-            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, false)?
-        {
-            visit(edge?);
-        }
+        let _ = self.visit_edges(src, label_id, order, |_slot, edge| {
+            visit(edge.with_label_id(label_id.raw()));
+            ControlFlow::<()>::Continue(())
+        })?;
         Ok(())
     }
 
@@ -415,20 +380,10 @@ where
                 }
             };
         }
-        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
-            return Ok(());
-        };
-        if bucket.degree() == 0 {
-            return Ok(());
-        }
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _bench_scope = bench_scope("labeled_for_each_edges_for_label_topology");
-        for edge in
-            self.labeled_bucket_span_iter(src, order, &vertex, &[bucket], 0, bucket_index, false)?
-        {
-            visit(edge?);
-        }
+        let _ = self.visit_edges(src, label_id, order, |_slot, edge| {
+            visit(edge.with_label_id(label_id.raw()));
+            ControlFlow::<()>::Continue(())
+        })?;
         Ok(())
     }
 
