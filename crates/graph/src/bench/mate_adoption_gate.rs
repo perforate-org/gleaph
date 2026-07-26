@@ -18,6 +18,7 @@ use ic_stable_lara::traits::CsrEdge;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::hint::black_box;
+use std::ops::ControlFlow;
 
 pub(crate) const POLICY_VERSION: &str = "1.0";
 pub(crate) const SAMPLED_STRIDE: u8 = 32;
@@ -2351,26 +2352,40 @@ fn real_sparse_scan_refs_for_bench() -> (
     fixture
         .graph
         .forward()
-        .for_each_live_edge_slot_for_label(ic_stable_lara::VertexId::from(0), label, |slot, _| {
-            refs.push(ic_stable_lara::labeled::CanonicalEdgeOccurrence {
-                orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
-                owner_vertex_id: ic_stable_lara::VertexId::from(0),
-                label_id: label,
-                slot_index: slot.into(),
-            })
-        })
+        .visit_edge_slots(
+            ic_stable_lara::VertexId::from(0),
+            label,
+            ic_stable_lara::labeled::OutEdgeOrder::Descending,
+            |slot| {
+                refs.push(ic_stable_lara::labeled::CanonicalEdgeOccurrence {
+                    orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
+                    owner_vertex_id: ic_stable_lara::VertexId::from(0),
+                    label_id: label,
+                    slot_index: slot,
+                });
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .map(|_| ())
         .expect("sparse forward scan");
     fixture
         .graph
         .reverse()
-        .for_each_live_edge_slot_for_label(ic_stable_lara::VertexId::from(1), label, |slot, _| {
-            refs.push(ic_stable_lara::labeled::CanonicalEdgeOccurrence {
-                orientation: ic_stable_lara::labeled::LabeledOrientation::Reverse,
-                owner_vertex_id: ic_stable_lara::VertexId::from(1),
-                label_id: label,
-                slot_index: slot.into(),
-            })
-        })
+        .visit_edge_slots(
+            ic_stable_lara::VertexId::from(1),
+            label,
+            ic_stable_lara::labeled::OutEdgeOrder::Descending,
+            |slot| {
+                refs.push(ic_stable_lara::labeled::CanonicalEdgeOccurrence {
+                    orientation: ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                    owner_vertex_id: ic_stable_lara::VertexId::from(1),
+                    label_id: label,
+                    slot_index: slot,
+                });
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .map(|_| ())
         .expect("sparse reverse scan");
     (fixture, refs)
 }
@@ -2392,18 +2407,21 @@ fn real_mixed_scan_refs_for_bench(
         fixture
             .graph
             .forward()
-            .for_each_live_edge_slot_for_label(
+            .visit_edge_slots(
                 ic_stable_lara::VertexId::from(0),
                 label,
-                |slot, _| {
+                ic_stable_lara::labeled::OutEdgeOrder::Descending,
+                |slot| {
                     refs.push(ic_stable_lara::labeled::CanonicalEdgeOccurrence {
                         orientation: ic_stable_lara::labeled::LabeledOrientation::Forward,
                         owner_vertex_id: ic_stable_lara::VertexId::from(0),
                         label_id: label,
-                        slot_index: slot.into(),
-                    })
+                        slot_index: slot,
+                    });
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .expect("mixed forward scan");
     }
     (fixture, refs)

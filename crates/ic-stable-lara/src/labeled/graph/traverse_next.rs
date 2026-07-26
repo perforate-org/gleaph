@@ -456,6 +456,23 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
+    /// Visits every live logical slot for one label in the requested order.
+    ///
+    /// This is the slot-only counterpart to [`Self::visit_edges`]; the edge value
+    /// is not materialized and inline-property bytes are not read.
+    pub fn visit_edge_slots<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: impl FnMut(BucketEntryPosition) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.visit_edges(owner, label, order, |slot, _edge| visit(slot))
+    }
+
     /// Visits a bounded window of live edges for one label in the requested order.
     ///
     /// For dense, tombstone-free label buckets this bulk-reads the topology slab
