@@ -542,7 +542,7 @@ fn element_id_returns_graph_kernel_bytes_for_vertices_and_edges() {
     assert_eq!(edge_global.owner_vertex_id, u32::from(edge.owner_vertex_id));
     assert_eq!(
         edge_global.edge_slot_index,
-        EdgeSlotIndex::from_raw(edge.slot_index)
+        EdgeSlotIndex::from_raw(edge.slot_index.raw())
     );
 }
 
@@ -631,14 +631,14 @@ fn shortest_path_binds_opaque_path_ids() {
     assert_eq!(ab_global.owner_vertex_id, u32::from(ab.owner_vertex_id));
     assert_eq!(
         ab_global.edge_slot_index,
-        EdgeSlotIndex::from_raw(ab.slot_index)
+        EdgeSlotIndex::from_raw(ab.slot_index.raw())
     );
     assert_path_vertex_local(&store, &elements[2], b);
     let bc_global = decoded_edge_global(&elements[3]);
     assert_eq!(bc_global.owner_vertex_id, u32::from(bc.owner_vertex_id));
     assert_eq!(
         bc_global.edge_slot_index,
-        EdgeSlotIndex::from_raw(bc.slot_index)
+        EdgeSlotIndex::from_raw(bc.slot_index.raw())
     );
     assert_path_vertex_local(&store, &elements[4], c);
 }
@@ -2027,7 +2027,7 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
             let handle = EdgeHandle {
                 owner_vertex_id: VertexId::from(detour),
                 label_id: ic_stable_lara::BucketLabelKey::from_raw(edge.label_id),
-                slot_index: edge.edge_slot_index.raw(),
+                slot_index: edge.edge_slot_index.raw().into(),
             };
             let record = store
                 .find_outgoing_edge_record(handle)

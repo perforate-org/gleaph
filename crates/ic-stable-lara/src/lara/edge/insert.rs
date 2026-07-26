@@ -7,7 +7,7 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-use super::scan_iter::{OutEdgeSlabIter, leaf_segment};
+use super::iter::{OutEdgeSlabIter, leaf_segment};
 use super::{DeleteTarget, EdgeLayout, EdgeStore, InsertLocation};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {

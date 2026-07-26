@@ -15,4 +15,4 @@ pub use deferred::{
     DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver,
     EdgeSlotMoveObserver, MateStorageInitError, MateStorageMemories, Orientation, ScalarInsertPair,
 };
-pub use mate::{MateLookupError, PhysicalEdgeRef};
+pub use mate::{CanonicalEdgeOccurrence, MateLookupError};

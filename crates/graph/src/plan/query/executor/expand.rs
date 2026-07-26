@@ -108,7 +108,7 @@ pub(crate) fn edge_binding_handle_for_scanned_expand(
     Ok(EdgeHandle {
         owner_vertex_id,
         label_id: LaraLabelId::from_raw(edge.label_id),
-        slot_index: edge.edge_slot_index.raw(),
+        slot_index: edge.edge_slot_index.raw().into(),
     })
 }
 
@@ -123,7 +123,7 @@ pub(crate) fn edge_binding_for_expand(
     let handle = EdgeHandle {
         owner_vertex_id,
         label_id: LaraLabelId::from_raw(edge.label_id),
-        slot_index: edge.edge_slot_index.raw(),
+        slot_index: edge.edge_slot_index.raw().into(),
     };
     let record = store
         .find_outgoing_edge_record(handle)
@@ -335,7 +335,7 @@ fn edge_matches_indexed_equality(
     let handle = EdgeHandle {
         owner_vertex_id,
         label_id,
-        slot_index: edge_slot_index.raw(),
+        slot_index: edge_slot_index.raw().into(),
     };
     let Some(actual) = store.edge_property(handle, property_id) else {
         return Ok(false);
@@ -455,11 +455,11 @@ pub(crate) fn edge_matches_stream_filter(
                 let canonical = store.canonical_edge_handle(EdgeHandle {
                     owner_vertex_id,
                     label_id,
-                    slot_index: edge_slot_index.raw(),
+                    slot_index: edge_slot_index.raw().into(),
                 });
                 return Ok(slots.contains(&equality_index_slot_key(
                     canonical.owner_vertex_id,
-                    canonical.slot_index,
+                    canonical.slot_index.raw(),
                 )));
             }
             Ok(false)
@@ -479,12 +479,12 @@ pub(crate) fn edge_matches_stream_filter(
                 let canonical = store.canonical_edge_handle(EdgeHandle {
                     owner_vertex_id,
                     label_id,
-                    slot_index: edge_slot_index.raw(),
+                    slot_index: edge_slot_index.raw().into(),
                 });
                 return Ok(slots.contains(&(
                     u32::from(canonical.owner_vertex_id),
                     canonical.label_id.raw(),
-                    canonical.slot_index,
+                    canonical.slot_index.raw(),
                 )));
             }
             Ok(false)
@@ -496,7 +496,7 @@ pub(crate) fn edge_matches_stream_filter(
             let handle = EdgeHandle {
                 owner_vertex_id,
                 label_id,
-                slot_index: edge_slot_index.raw(),
+                slot_index: edge_slot_index.raw().into(),
             };
             let Some(actual) = store.edge_property(handle, *property_id) else {
                 return Ok(false);

@@ -999,7 +999,7 @@ fn seed_initial_rows(
             let handle = EdgeHandle {
                 owner_vertex_id: VertexId::from(posting.owner_vertex_id),
                 label_id: LaraLabelId::from_raw(posting.label_id),
-                slot_index: posting.slot_index,
+                slot_index: posting.slot_index.into(),
             };
             let Some(edge) = store
                 .find_outgoing_edge_record(handle)

@@ -213,6 +213,17 @@ impl<M: Memory> LabelBucketStore<M> {
         Some(LabelBucket::read_from(&bytes))
     }
 
+    #[cfg(test)]
+    pub(crate) fn write_label_bucket_slot_for_test(
+        &self,
+        slot: u64,
+        bucket: LabelBucket,
+    ) -> Result<(), crate::GrowFailed> {
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        self.slab.write_slot(slot, &bytes)
+    }
+
     /// Reads `count` consecutive bucket slots starting at `start_slot`.
     pub(crate) fn read_label_bucket_slots_contiguous(
         &self,

@@ -413,26 +413,37 @@ where
         slot_index: u32,
         log_chains: Option<&Vec<u32>>,
     ) -> Result<Vec<u8>, LabeledOperationError> {
+        let mut buf = Vec::new();
+        self.read_bucket_payload_for_slot_into(src, bucket, slot_index, log_chains, &mut buf)?;
+        Ok(buf)
+    }
+
+    pub(super) fn read_bucket_payload_for_slot_into(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+        slot_index: u32,
+        log_chains: Option<&Vec<u32>>,
+        buf: &mut Vec<u8>,
+    ) -> Result<(), LabeledOperationError> {
         let width = bucket.inline_value_byte_width();
+        buf.resize(usize::from(width), 0);
         if width == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         if bucket.inline_value_log_head() < 0 {
-            let mut buf = vec![0u8; usize::from(width)];
             let offset =
                 super::super::invariants::inline_value_byte_offset_at_slot(bucket, slot_index)?;
-            self.values.read_bytes(offset, &mut buf);
-            return Ok(buf);
+            self.values.read_bytes(offset, buf);
+            return Ok(());
         }
-
         let log_len = u32::from(bucket.inline_value_log_len());
         let slab_payload_slots = bucket.inline_value_slab_slots();
         if slot_index < slab_payload_slots {
-            let mut buf = vec![0u8; usize::from(width)];
             let offset =
                 super::super::invariants::inline_value_byte_offset_at_slot(bucket, slot_index)?;
-            self.values.read_bytes(offset, &mut buf);
-            return Ok(buf);
+            self.values.read_bytes(offset, buf);
+            return Ok(());
         }
         let asc_log_index = slot_index
             .checked_sub(slab_payload_slots)
@@ -442,7 +453,6 @@ where
                 InlineValueLogReadError::MissingAscLogIndex { asc_log_index },
             ));
         }
-        let mut buf = vec![0u8; usize::from(width)];
         if let Some(payload_chain) = log_chains {
             self.values
                 .read_payload_log_chain_entry(
@@ -450,7 +460,7 @@ where
                     payload_chain,
                     asc_log_index,
                     width,
-                    &mut buf,
+                    buf,
                 )
                 .map_err(LabeledOperationError::from)?;
         } else {
@@ -459,10 +469,10 @@ where
                 bucket.inline_value_log_head(),
                 asc_log_index,
                 width,
-                &mut buf,
+                buf,
             )?;
         }
-        Ok(buf)
+        Ok(())
     }
 
     pub(super) fn write_edge_inline_value_to_log(

@@ -7,7 +7,11 @@
 use super::mate_blob_prototype::{Bucket, Mode};
 use super::mate_storage::MateLocatorState;
 use super::{DeferredBidirectionalLabeledLaraGraph, Orientation};
-use crate::{VertexId, labeled::BucketLabelKey, traits::CsrEdgeTombstone};
+use crate::{
+    VertexId,
+    labeled::{BucketEntryPosition, BucketLabelKey},
+    traits::CsrEdgeTombstone,
+};
 use ic_stable_structures::Memory;
 use std::fmt;
 
@@ -29,32 +33,32 @@ pub(crate) fn canonical_mate_lookup_count() -> u32 {
     CANONICAL_MATE_LOOKUPS.with(Cell::get)
 }
 
-/// A physical edge location together with the orientation that owns its row.
+/// A canonical edge occurrence together with the orientation that owns its bucket row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PhysicalEdgeRef {
+pub struct CanonicalEdgeOccurrence {
     /// Forward outgoing or reverse incoming orientation.
     pub orientation: Orientation,
     /// Vertex owning the label bucket row.
     pub owner_vertex_id: VertexId,
     /// Storage label of the bucket containing the row.
     pub label_id: BucketLabelKey,
-    /// Live slot index inside the label row.
-    pub slot_index: u32,
+    /// Bucket entry position, including tombstone positions, inside the label row.
+    pub slot_index: BucketEntryPosition,
 }
 
 /// Fail-closed errors returned by scan-only mate resolution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MateLookupError {
-    /// The requested physical slot is not live in the declared bucket.
-    SourceNotFound(PhysicalEdgeRef),
+    /// The requested bucket entry position is not live in the declared bucket.
+    SourceNotFound(CanonicalEdgeOccurrence),
     /// The counterpart bucket has no matching occurrence at the source rank.
-    MateNotFound(PhysicalEdgeRef),
-    /// A physical source was observed more than once during selection.
-    AmbiguousSource(PhysicalEdgeRef),
+    MateNotFound(CanonicalEdgeOccurrence),
+    /// A canonical source occurrence was observed more than once during selection.
+    AmbiguousSource(CanonicalEdgeOccurrence),
     /// The two projections disagree about the number of live equal-neighbor rows.
     InconsistentRelation {
-        /// Source physical reference.
-        source: PhysicalEdgeRef,
+        /// Source canonical occurrence.
+        source: CanonicalEdgeOccurrence,
         /// Owner vertex of the counterpart bucket.
         counterpart_owner: VertexId,
         /// Number of matching source rows.
@@ -62,8 +66,8 @@ pub enum MateLookupError {
         /// Number of matching counterpart rows.
         counterpart_count: u32,
     },
-    /// The reference uses an impossible orientation for its bucket kind.
-    InvalidOrientation(PhysicalEdgeRef),
+    /// The occurrence uses an impossible orientation for its bucket kind.
+    InvalidOrientation(CanonicalEdgeOccurrence),
     /// The underlying LARA scan failed.
     ReadFailed(String),
 }
@@ -93,7 +97,7 @@ impl std::error::Error for MateLookupError {}
 
 fn scan_rank<E, M>(
     graph: &crate::labeled::LabeledLaraGraph<E, M>,
-    edge: PhysicalEdgeRef,
+    edge: CanonicalEdgeOccurrence,
 ) -> Result<(VertexId, u32, u32, u32), MateLookupError>
 where
     E: CsrEdgeTombstone,
@@ -107,14 +111,14 @@ where
         .map_err(|err| MateLookupError::ReadFailed(err.to_string()))?;
     let source_neighbor = rows
         .iter()
-        .find(|(slot, _)| *slot == edge.slot_index)
+        .find(|(slot, _)| *slot == edge.slot_index.raw())
         .map(|(_, neighbor)| *neighbor);
     let Some(source_neighbor) = source_neighbor else {
         return Err(MateLookupError::SourceNotFound(edge));
     };
     if rows
         .iter()
-        .filter(|(slot, _)| *slot == edge.slot_index)
+        .filter(|(slot, _)| *slot == edge.slot_index.raw())
         .count()
         != 1
     {
@@ -130,9 +134,9 @@ where
         if neighbor != source_neighbor {
             continue;
         }
-        if slot == edge.slot_index {
+        if slot == edge.slot_index.raw() {
             seen = true;
-        } else if slot > edge.slot_index {
+        } else if slot > edge.slot_index.raw() {
             greater = greater
                 .checked_add(1)
                 .ok_or_else(|| MateLookupError::ReadFailed("source rank overflow".into()))?;
@@ -157,7 +161,7 @@ fn select_rank<E, M>(
     label: BucketLabelKey,
     neighbor: VertexId,
     rank: u32,
-) -> Result<(PhysicalEdgeRef, u32), MateLookupError>
+) -> Result<(CanonicalEdgeOccurrence, u32), MateLookupError>
 where
     E: CsrEdgeTombstone,
     M: Memory,
@@ -180,20 +184,20 @@ where
         .and_then(|index| matching_slots.get(index).copied())
         .map(|slot| {
             (
-                PhysicalEdgeRef {
+                CanonicalEdgeOccurrence {
                     orientation: Orientation::Forward,
                     owner_vertex_id: owner,
                     label_id: label,
-                    slot_index: slot,
+                    slot_index: BucketEntryPosition::new(slot),
                 },
                 count,
             )
         })
-        .ok_or(MateLookupError::MateNotFound(PhysicalEdgeRef {
+        .ok_or(MateLookupError::MateNotFound(CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: owner,
             label_id: label,
-            slot_index: u32::MAX,
+            slot_index: BucketEntryPosition::new(u32::MAX),
         }))
 }
 
@@ -278,7 +282,10 @@ fn blob_mate_slot(bucket: &Bucket, source_slot: u32, rank: u32) -> Result<u32, M
     }
 }
 
-fn canonical_from_mate(source: PhysicalEdgeRef, mate: PhysicalEdgeRef) -> PhysicalEdgeRef {
+fn canonical_from_mate(
+    source: CanonicalEdgeOccurrence,
+    mate: CanonicalEdgeOccurrence,
+) -> CanonicalEdgeOccurrence {
     if source.label_id.is_directed() {
         return match source.orientation {
             Orientation::Forward => source,
@@ -294,8 +301,8 @@ fn canonical_from_mate(source: PhysicalEdgeRef, mate: PhysicalEdgeRef) -> Physic
 
 fn validate_blob_mate<E, M>(
     graph: &crate::labeled::LabeledLaraGraph<E, M>,
-    source: PhysicalEdgeRef,
-    mate: PhysicalEdgeRef,
+    source: CanonicalEdgeOccurrence,
+    mate: CanonicalEdgeOccurrence,
     expected_neighbor: VertexId,
     expected_matching: u32,
     expected_rank: u32,
@@ -322,7 +329,7 @@ where
                 .read_physical_edge_at_slot_for_label(
                     mate.owner_vertex_id,
                     mate.label_id,
-                    mate.slot_index,
+                    mate.slot_index.raw(),
                 )
                 .map_err(|error| MateLookupError::ReadFailed(error.to_string()))?
                 .ok_or_else(|| {
@@ -346,14 +353,14 @@ where
     let mut candidate_rank = None;
     graph
         .for_each_live_edge_slot_for_label(mate.owner_vertex_id, mate.label_id, |slot, row| {
-            if slot == mate.slot_index {
+            if slot == mate.slot_index.raw() {
                 seen = seen.saturating_add(1);
                 if row.neighbor_vid() != source.owner_vertex_id {
                     seen = u32::MAX;
                 }
             }
             if row.neighbor_vid() == source.owner_vertex_id {
-                if slot == mate.slot_index {
+                if slot == mate.slot_index.raw() {
                     candidate_rank = Some(matching);
                 }
                 matching = matching.saturating_add(1);
@@ -419,8 +426,8 @@ where
     #[doc(hidden)]
     pub fn published_mate_of(
         &self,
-        edge: PhysicalEdgeRef,
-    ) -> Result<PhysicalEdgeRef, MateLookupError> {
+        edge: CanonicalEdgeOccurrence,
+    ) -> Result<CanonicalEdgeOccurrence, MateLookupError> {
         let canonical_fallback = || self.mate_of(edge);
         let leaf = u32::from(edge.owner_vertex_id) / self.forward().segment_size().max(1);
         let row = match self.mate_leaf_row(edge.orientation, leaf) {
@@ -464,7 +471,7 @@ where
                         let mate_slot = {
                             #[cfg(feature = "canbench-scopes")]
                             let _scope = canbench_rs::bench_scope("published_blob_mapping_lookup");
-                            blob_mate_slot(bucket, edge.slot_index, rank)?
+                            blob_mate_slot(bucket, edge.slot_index.raw(), rank)?
                         };
                         let (orientation, owner) = if edge.label_id.is_directed() {
                             match edge.orientation {
@@ -474,11 +481,11 @@ where
                         } else {
                             (Orientation::Forward, neighbor)
                         };
-                        let candidate = PhysicalEdgeRef {
+                        let candidate = CanonicalEdgeOccurrence {
                             orientation,
                             owner_vertex_id: owner,
                             label_id: edge.label_id,
-                            slot_index: mate_slot,
+                            slot_index: BucketEntryPosition::new(mate_slot),
                         };
                         let counterpart_graph = match candidate.orientation {
                             Orientation::Forward => self.forward(),
@@ -508,7 +515,10 @@ where
     }
 
     /// Resolves the exact paired physical entry by equal-neighbor occurrence rank.
-    pub fn mate_of(&self, edge: PhysicalEdgeRef) -> Result<PhysicalEdgeRef, MateLookupError> {
+    pub fn mate_of(
+        &self,
+        edge: CanonicalEdgeOccurrence,
+    ) -> Result<CanonicalEdgeOccurrence, MateLookupError> {
         #[cfg(test)]
         CANONICAL_MATE_LOOKUPS.with(|count| count.set(count.get().saturating_add(1)));
         if edge.label_id.is_undirected() && matches!(edge.orientation, Orientation::Reverse) {
@@ -569,7 +579,7 @@ where
                 counterpart_count,
             });
         }
-        Ok(PhysicalEdgeRef {
+        Ok(CanonicalEdgeOccurrence {
             orientation: counterpart_orientation,
             ..mate
         })
@@ -578,8 +588,8 @@ where
     /// Resolves the canonical physical entry for an edge without persistent metadata.
     pub fn canonical_handle(
         &self,
-        edge: PhysicalEdgeRef,
-    ) -> Result<PhysicalEdgeRef, MateLookupError> {
+        edge: CanonicalEdgeOccurrence,
+    ) -> Result<CanonicalEdgeOccurrence, MateLookupError> {
         let mate = self.mate_of(edge)?;
         Ok(canonical_from_mate(edge, mate))
     }
@@ -588,8 +598,8 @@ where
     #[doc(hidden)]
     pub fn published_canonical_handle(
         &self,
-        edge: PhysicalEdgeRef,
-    ) -> Result<PhysicalEdgeRef, MateLookupError> {
+        edge: CanonicalEdgeOccurrence,
+    ) -> Result<CanonicalEdgeOccurrence, MateLookupError> {
         let mate = self.published_mate_of(edge)?;
         Ok(canonical_from_mate(edge, mate))
     }

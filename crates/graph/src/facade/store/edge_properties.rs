@@ -17,7 +17,7 @@ impl GraphStore {
             properties.get(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
-                handle.slot_index,
+                handle.slot_index.raw(),
                 property_id,
             )
         })
@@ -46,7 +46,7 @@ impl GraphStore {
             properties.properties_for_edge(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
-                handle.slot_index,
+                handle.slot_index.raw(),
             )
         })
     }
@@ -143,7 +143,7 @@ impl GraphStore {
             properties.for_each_property_for_edge(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
-                handle.slot_index,
+                handle.slot_index.raw(),
                 |property_id, value| {
                     let name = self
                         .property_name(property_id)

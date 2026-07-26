@@ -3142,7 +3142,7 @@ fn federated_neighbor_hit_preserves_remote_inline_value_bytes() {
         neighbor_local_vertex_id: 2,
         anchor_local_vertex_id: 3,
         label_id_raw: 0,
-        slot_index: 4,
+        slot_index: 4u32,
         inline_value_bytes: vec![42, 0],
     };
     let binding = EdgeBinding::from_federated_neighbor_hit(&hit);

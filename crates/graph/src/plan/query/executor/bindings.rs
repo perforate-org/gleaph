@@ -67,7 +67,7 @@ fn edge_handle_from_federated_hit_wire(hit: &FederatedExpandNeighbor) -> EdgeHan
     EdgeHandle {
         owner_vertex_id,
         label_id,
-        slot_index: hit.slot_index,
+        slot_index: hit.slot_index.into(),
     }
 }
 
@@ -85,7 +85,7 @@ fn edge_handle_for_federated_hit(
         let at_anchor = EdgeHandle {
             owner_vertex_id: anchor,
             label_id: wire.label_id,
-            slot_index: wire.slot_index,
+            slot_index: wire.slot_index.raw().into(),
         };
         if store
             .find_outgoing_edge_record(at_anchor)?
@@ -97,7 +97,7 @@ fn edge_handle_for_federated_hit(
             let at_neighbor = EdgeHandle {
                 owner_vertex_id: neighbor,
                 label_id: wire.label_id,
-                slot_index: wire.slot_index,
+                slot_index: wire.slot_index.raw().into(),
             };
             if store.find_outgoing_edge_record(at_neighbor)?.is_some() {
                 return Ok(at_neighbor);

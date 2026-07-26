@@ -63,8 +63,12 @@ mod remove;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod traverse;
+mod traverse_next;
+
+pub use traverse_next::BucketEntryPosition;
 mod values;
 
+pub(crate) use crate::traverse::EdgeSlotState;
 pub use bucket::{LabelBucketPlacementInfo, LeafBucketPlacementStats};
 pub use error::{InitError, LabeledOperationError, OutEdgeOrder};
 pub use insert::{ScalarInsertLocation, ScalarInsertStorage};
@@ -74,7 +78,6 @@ pub use iter::{
     HybridOverflowEdgeReplay, LabeledEdgeInlineValueBatch, LabeledEdgeInlineValueBatchScratch,
     LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch,
 };
-pub(crate) use traverse::EdgeSlotState;
 
 /// Single-orientation multi-level labeled CSR graph.
 pub struct LabeledLaraGraph<E, M>

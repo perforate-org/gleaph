@@ -5,133 +5,9 @@ use crate::{VertexId, traits::CsrEdge};
 use ic_stable_structures::Memory;
 use std::{iter::FusedIterator, num::NonZero};
 
-use super::log::HeaderV1 as LogHeaderV1;
 use super::{
     EdgeStore, INLINE_EDGE_BYTES, OUT_EDGE_SLAB_CHUNK_SLOTS, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES,
 };
-
-/// Descending scan for a **log-backed** row without prefetching every live log edge into a `Vec`.
-///
-/// Same logical order as [`OutEdgesIter`]: scan the core-LARA overflow log chain (newest first),
-/// then walk the slab prefix in descending slot order, skipping tombstoned slab slots.
-pub(crate) struct LogBackedDescIter<'a, E: CsrEdge, M: Memory> {
-    pub(super) store: &'a EdgeStore<E, M>,
-    pub(super) leaf: u32,
-    pub(super) next_log: i32,
-    pub(super) remaining_log: u32,
-    pub(super) base_slot_start: u64,
-    pub(super) remaining_slab: u32,
-    pub(super) yield_remaining: u32,
-    pub(super) log_header: LogHeaderV1,
-    pub(super) log_table: Option<Vec<u8>>,
-    pub(super) slab_chunk: Option<OutEdgeSlabChunk>,
-    pub(super) deleted_slab_offsets: Vec<u32>,
-    pub(super) sorted_slab_deletes: bool,
-    pub(super) next_log_slot: u32,
-}
-
-impl<'a, E, M> LogBackedDescIter<'a, E, M>
-where
-    E: CsrEdge,
-    M: Memory,
-{
-    fn decode_slab_slot(&mut self, slot_idx: u32) -> E {
-        out_edge_slab_decode_slot(
-            self.store,
-            self.base_slot_start,
-            &mut self.slab_chunk,
-            slot_idx,
-        )
-    }
-}
-
-impl<'a, E, M> Iterator for LogBackedDescIter<'a, E, M>
-where
-    E: CsrEdge,
-    M: Memory,
-{
-    type Item = E;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.yield_remaining == 0 {
-            return None;
-        }
-        if self.next_log >= 0 {
-            if self.log_table.is_none() {
-                let mut buf = Vec::new();
-                self.store
-                    .log
-                    .read_segment_entry_table_into(&self.log_header, self.leaf, &mut buf);
-                self.log_table = Some(buf);
-            }
-            let log_table_sl = self
-                .log_table
-                .as_ref()
-                .and_then(|b| (!b.is_empty()).then_some(b.as_slice()));
-            while self.next_log >= 0 {
-                if self.remaining_log == 0 {
-                    self.next_log = -1;
-                    break;
-                }
-                self.remaining_log -= 1;
-                let log_idx = self.next_log as u32;
-                let (prev, edge) = self.store.read_log_edge_from_table_or_store(
-                    &self.log_header,
-                    self.leaf,
-                    log_idx,
-                    log_table_sl,
-                );
-                self.next_log = prev;
-                if edge.is_deleted_slot() {
-                    self.next_log_slot = self.next_log_slot.saturating_sub(1);
-                    continue;
-                }
-                self.yield_remaining -= 1;
-                let slot = self.next_log_slot;
-                self.next_log_slot = self.next_log_slot.saturating_sub(1);
-                return Some(edge.with_slot_index(slot));
-            }
-        }
-        if !self.sorted_slab_deletes {
-            self.sorted_slab_deletes = true;
-            self.deleted_slab_offsets.sort_unstable();
-        }
-        while self.remaining_slab > 0 {
-            self.remaining_slab -= 1;
-            let slot_idx = self.remaining_slab;
-            if self.deleted_slab_offsets.binary_search(&slot_idx).is_ok() {
-                continue;
-            }
-            let edge = self.decode_slab_slot(slot_idx);
-            if edge.is_deleted_slot() {
-                continue;
-            }
-            self.yield_remaining -= 1;
-            return Some(edge);
-        }
-        self.yield_remaining = 0;
-        None
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let n = usize::try_from(self.yield_remaining).unwrap_or(usize::MAX);
-        (n, Some(n))
-    }
-}
-
-impl<E, M> ExactSizeIterator for LogBackedDescIter<'_, E, M>
-where
-    E: CsrEdge,
-    M: Memory,
-{
-}
-
-impl<E, M> FusedIterator for LogBackedDescIter<'_, E, M>
-where
-    E: CsrEdge,
-    M: Memory,
-{
-}
 
 #[inline]
 pub(super) fn leaf_segment(vid: VertexId, segment_size: u32) -> u32 {
@@ -337,7 +213,7 @@ impl<'a, E: CsrEdge, M: Memory> OutEdgeSlabIter<'a, E, M> {
                 continue;
             }
             self.yield_remaining -= 1;
-            return Some((slot_idx, edge));
+            return Some((slot_idx, edge.with_slot_index(slot_idx)));
         }
         debug_assert_eq!(
             self.yield_remaining, 0,
@@ -386,10 +262,10 @@ impl<E: CsrEdge, M: Memory> FusedIterator for OutEdgeSlabIter<'_, E, M> {}
 /// overflow log from the chain head first (each step follows the `prev` link), then live slab
 /// slots **high index to low** (skipping tombstoned slots).
 ///
-/// Log-backed rows **prefetch** the overflow chain at construction (same classification as the
-/// historical lazy walk): live log edges are buffered in head-first order, and log delete entries
-/// populate a sorted slab-offset list so the slab phase can skip masked slots without
-/// decoding them.
+/// Log-backed rows **prefetch** the overflow chain at construction: live log edges are buffered in
+/// head-first order, and log delete entries populate a sorted slab-offset list so the slab phase
+/// can skip masked slots without decoding them. This is the single canonical descending path;
+/// there is no separate log-backed iterator with different read semantics.
 ///
 /// This is **not** the same order as [`EdgeStore::asc_out_edges`] (slot /
 /// materialization order). Prefer this iterator for hot contiguous reads; use `asc_out_edges`
@@ -496,7 +372,7 @@ where
             self.next_log_slot = self.next_log_slot.saturating_sub(1);
             if let Some(edge) = edge {
                 self.yield_remaining -= 1;
-                return Some((slot, edge));
+                return Some((slot, edge.with_slot_index(slot)));
             }
         }
 
@@ -511,7 +387,7 @@ where
                 continue;
             }
             self.yield_remaining -= 1;
-            return Some((slot_idx, edge));
+            return Some((slot_idx, edge.with_slot_index(slot_idx)));
         }
         debug_assert_eq!(
             self.yield_remaining, 0,
@@ -632,8 +508,9 @@ where
 /// [`EdgeStore::asc_out_edges`]).
 ///
 /// Slab slots scan low→high with fixed-size forward prefetch chunks. When a row has an overflow
-/// log, the constructor folds log entries old→new into insertion/deletion caches; iteration then
-/// streams live slab slots first and cached inserted log edges last.
+/// log, the constructor validates and folds log entries old→new into insertion/deletion caches;
+/// iteration then streams live slab slots first and cached inserted log edges last. The same
+/// iterator type is used by labeled and unlabeled callers, so slot metadata and order stay aligned.
 pub struct AscOutEdgesIter<'a, E: CsrEdge, M: Memory> {
     pub(super) store: &'a EdgeStore<E, M>,
     pub(super) base_slot_start: u64,
@@ -759,14 +636,12 @@ where
     }
 }
 
-impl<'a, E, M> Iterator for AscOutEdgesIter<'a, E, M>
+impl<E, M> AscOutEdgesIter<'_, E, M>
 where
     E: CsrEdge,
     M: Memory,
 {
-    type Item = E;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    pub(crate) fn next_with_slot(&mut self) -> Option<(u32, E)> {
         if self.remaining == 0 {
             return None;
         }
@@ -781,22 +656,31 @@ where
                 continue;
             }
             self.remaining = self.remaining.checked_sub(1)?;
-            return Some(edge);
+            return Some((slot_idx, edge.with_slot_index(slot_idx)));
         }
         for edge in self.inserted_log_entries.by_ref() {
             let slot = self.next_inserted_log_slot;
             self.next_inserted_log_slot = self.next_inserted_log_slot.checked_add(1)?;
             if let Some(edge) = edge {
                 self.remaining = self.remaining.checked_sub(1)?;
-                return Some(edge.with_slot_index(slot));
+                return Some((slot, edge.with_slot_index(slot)));
             }
         }
-        debug_assert_eq!(
-            self.remaining, 0,
-            "asc scan ended before yielding all logical edges"
-        );
+        debug_assert_eq!(self.remaining, 0);
         self.remaining = 0;
         None
+    }
+}
+
+impl<'a, E, M> Iterator for AscOutEdgesIter<'a, E, M>
+where
+    E: CsrEdge,
+    M: Memory,
+{
+    type Item = E;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_with_slot().map(|(_, edge)| edge)
     }
 
     fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {

@@ -8,7 +8,7 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::counts::SegmentEdgeCounts;
-use super::scan_iter::leaf_segment;
+use super::iter::leaf_segment;
 use super::span_meta::{SPAN_PHYSICAL_UNASSIGNED, SegmentSpanMeta};
 use super::{EdgeLayout, EdgeStore};
 

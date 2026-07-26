@@ -1,5 +1,6 @@
 //! Labeled graph `traverse` implementation.
 
+use crate::traverse::EdgeSlotState;
 use crate::{
     VertexId,
     labeled::{
@@ -20,6 +21,7 @@ use crate::{
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
+use std::ops::ControlFlow;
 
 use super::error::LabeledOperationError;
 use super::iter::{
@@ -29,14 +31,6 @@ use super::iter::{
 use super::{BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, LabeledSpanIter, OutEdgeOrder};
 
 const EDGE_PAYLOAD_BATCH_TARGET_BYTES: usize = 2048;
-
-/// Result of reading a logical edge slot while preserving tombstone visibility.
-#[derive(Debug)]
-pub(crate) enum EdgeSlotState<E> {
-    Missing,
-    Tombstone,
-    Live(E),
-}
 
 fn bucket_hybrid_slab_inline_value_batch_eligible<E, M>(
     graph: &LabeledLaraGraph<E, M>,
@@ -470,7 +464,7 @@ where
         Ok(())
     }
 
-    fn out_edges_iter_for_label_ordered_with_payload(
+    pub(super) fn out_edges_iter_for_label_ordered_with_payload(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -1129,6 +1123,7 @@ where
         E: CsrEdgeTombstone,
         Visit: for<'b> FnMut(LabeledEdgeInlineValueBatch<'b, E>),
     {
+        scratch.reset_stop();
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
@@ -1489,7 +1484,7 @@ where
         Ok(state)
     }
 
-    /// Reads one physical edge location from a labeled bucket.
+    /// Reads one canonical edge occurrence from a labeled bucket.
     ///
     /// Slab locations use the local slot index. Overflow-log locations use the high-bit encoding
     /// returned by the physical-location iterator. The method validates that an overflow entry
@@ -1655,16 +1650,44 @@ where
         E: CsrEdgeTombstone,
         Visit: FnMut(u32, E),
     {
+        let _ = self.for_each_live_edge_slot_for_label_direct_with_control_flow::<(), _>(
+            src,
+            label_id,
+            logical_slots,
+            OutEdgeOrder::Ascending,
+            0,
+            |slot, edge| {
+                visit(slot, edge);
+                ControlFlow::Continue(())
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Streams live logical slots and stops the storage scan when the visitor breaks.
+    pub(super) fn for_each_live_edge_slot_for_label_direct_with_control_flow<B, Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        logical_slots: u32,
+        order: OutEdgeOrder,
+        skip_live: u32,
+        mut visit: Visit,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(u32, E) -> ControlFlow<B>,
+    {
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
-            return Ok(());
+            return Ok(ControlFlow::Continue(()));
         }
         let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
-            return Ok(());
+            return Ok(ControlFlow::Continue(()));
         };
         if bucket.degree() == 0 {
-            return Ok(());
+            return Ok(ControlFlow::Continue(()));
         }
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
@@ -1675,7 +1698,18 @@ where
                 bucket.overflow_log_head(),
             )
         });
-        for slot_index in 0..logical_slots {
+        let skip_live = if bucket.degree() == logical_slots {
+            skip_live.min(logical_slots)
+        } else {
+            0
+        };
+        let slot_indices: Box<dyn Iterator<Item = u32>> = match order {
+            OutEdgeOrder::Ascending => Box::new(skip_live..logical_slots),
+            OutEdgeOrder::Descending => {
+                Box::new((0..logical_slots.saturating_sub(skip_live)).rev())
+            }
+        };
+        for slot_index in slot_indices {
             if let EdgeSlotState::Live(edge) = self.read_out_edge_topology_state_at_slot(
                 src,
                 &vertex,
@@ -1684,11 +1718,12 @@ where
                 slot_index,
                 label_id,
                 overflow_chain.as_deref(),
-            )? {
-                visit(slot_index, edge);
+            )? && let ControlFlow::Break(value) = visit(slot_index, edge)
+            {
+                return Ok(ControlFlow::Break(value));
             }
         }
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Like [`Self::read_out_edge_slots_for_label`], but may reuse hybrid overflow replay cached
@@ -1716,7 +1751,7 @@ where
         )
     }
 
-    fn read_out_edge_slots_for_label_with_replay_and_slot<Visit>(
+    pub(super) fn read_out_edge_slots_for_label_with_replay_and_slot<Visit>(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -2078,6 +2113,9 @@ where
                 order,
                 dense,
             );
+            if scratch.stop_requested.get() {
+                return Ok(());
+            }
             remaining -= take;
         }
         Ok(())
@@ -2140,6 +2178,9 @@ where
                     .into_overflow_desc_parts();
                 scratch.clear();
                 for edge_opt in log_entries {
+                    if scratch.stop_requested.get() {
+                        return Ok(());
+                    }
                     if scratch.edges.len() >= batch_edges {
                         emit_edge_inline_value_batch(
                             scratch,
@@ -2150,6 +2191,9 @@ where
                             false,
                         );
                         scratch.clear();
+                        if scratch.stop_requested.get() {
+                            return Ok(());
+                        }
                     }
                     let Some(edge) = edge_opt else {
                         next_log_slot = next_log_slot.saturating_sub(1);
@@ -2211,6 +2255,9 @@ where
                 )?;
                 scratch.clear();
                 for edge_opt in inserted_log_entries {
+                    if scratch.stop_requested.get() {
+                        return Ok(());
+                    }
                     if scratch.edges.len() >= batch_edges {
                         emit_edge_inline_value_batch(
                             scratch,
@@ -2221,6 +2268,9 @@ where
                             false,
                         );
                         scratch.clear();
+                        if scratch.stop_requested.get() {
+                            return Ok(());
+                        }
                     }
                     let Some(edge) = edge_opt else {
                         next_inserted_log_slot = next_inserted_log_slot.saturating_add(1);
@@ -2276,6 +2326,9 @@ where
         let mut iter =
             self.labeled_bucket_span_iter(src, order, vertex, &[bucket], 0, bucket_index, true)?;
         loop {
+            if scratch.stop_requested.get() {
+                return Ok(());
+            }
             scratch.clear();
             scratch.edges.reserve(batch_edges);
             scratch.inline_value_bytes.reserve(batch_edges * width);
@@ -2300,6 +2353,9 @@ where
                 order,
                 false,
             );
+            if scratch.stop_requested.get() {
+                return Ok(());
+            }
         }
     }
 

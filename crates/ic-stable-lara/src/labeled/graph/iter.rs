@@ -13,7 +13,7 @@ use crate::{
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_structures::Memory;
-use std::{iter::FusedIterator, num::NonZero};
+use std::{cell::Cell, iter::FusedIterator, num::NonZero, rc::Rc};
 
 use super::{LabeledLaraGraph, LabeledOperationError, OutEdgeOrder};
 
@@ -28,6 +28,7 @@ pub struct LabeledEdgeInlineValueBatchScratch<E> {
     pub(super) io_edge_bytes: Vec<u8>,
     /// Reusable bulk-read buffer for contiguous payload slab IO.
     pub(super) io_inline_value_bytes: Vec<u8>,
+    pub(super) stop_requested: Rc<Cell<bool>>,
 }
 
 impl<E> Default for LabeledEdgeInlineValueBatchScratch<E> {
@@ -37,6 +38,7 @@ impl<E> Default for LabeledEdgeInlineValueBatchScratch<E> {
             inline_value_bytes: Vec::new(),
             io_edge_bytes: Vec::new(),
             io_inline_value_bytes: Vec::new(),
+            stop_requested: Rc::new(Cell::new(false)),
         }
     }
 }
@@ -46,6 +48,10 @@ impl<E> LabeledEdgeInlineValueBatchScratch<E> {
     pub fn clear(&mut self) {
         self.edges.clear();
         self.inline_value_bytes.clear();
+    }
+
+    pub(super) fn reset_stop(&mut self) {
+        self.stop_requested.set(false);
     }
 
     pub(super) fn io_edge_slice_mut(&mut self, len: usize) -> &mut [u8] {

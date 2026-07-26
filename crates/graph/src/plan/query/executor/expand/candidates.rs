@@ -1007,12 +1007,12 @@ fn expand_candidates_via_equality_index(
                     let canonical = store.canonical_edge_handle(EdgeHandle {
                         owner_vertex_id: src_id,
                         label_id: LaraLabelId::from_raw(edge.label_id),
-                        slot_index: edge.edge_slot_index.raw(),
+                        slot_index: edge.edge_slot_index.raw().into(),
                     });
                     if !in_slots.contains(&(
                         u32::from(canonical.owner_vertex_id),
                         canonical.label_id.raw(),
-                        canonical.slot_index,
+                        canonical.slot_index.raw(),
                     )) {
                         return;
                     }
@@ -1039,12 +1039,12 @@ fn expand_candidates_via_equality_index(
                     let canonical = store.canonical_edge_handle(EdgeHandle {
                         owner_vertex_id: src_id,
                         label_id: LaraLabelId::from_raw(edge.label_id),
-                        slot_index: edge.edge_slot_index.raw(),
+                        slot_index: edge.edge_slot_index.raw().into(),
                     });
                     if !in_slots.contains(&(
                         u32::from(canonical.owner_vertex_id),
                         canonical.label_id.raw(),
-                        canonical.slot_index,
+                        canonical.slot_index.raw(),
                     )) {
                         return;
                     }

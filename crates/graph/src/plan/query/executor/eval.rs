@@ -1027,7 +1027,7 @@ impl QueryExprEvaluator<'_> {
                     &self.element_id_key,
                     local_shard_id(self.store),
                     edge.handle.owner_vertex_id,
-                    EdgeSlotIndex::from_raw(edge.handle.slot_index),
+                    EdgeSlotIndex::from_raw(edge.handle.slot_index.raw()),
                 )?)),
                 Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
                     expression: format!(
@@ -1275,7 +1275,7 @@ fn edge_to_value(
         ),
         (
             "edge_slot_index".to_owned(),
-            Value::Uint64(u64::from(handle.slot_index)),
+            Value::Uint64(u64::from(handle.slot_index.raw())),
         ),
         (
             "payload".to_owned(),
@@ -3192,7 +3192,7 @@ mod tests {
         let handle = EdgeHandle {
             owner_vertex_id: VertexId::from(1u32),
             label_id: ic_stable_lara::labeled::BucketLabelKey::from_raw(7),
-            slot_index: 0,
+            slot_index: 0.into(),
         };
         let edge = Edge {
             target: gleaph_graph_kernel::entry::VertexRef::local(VertexId::from(2u32)),

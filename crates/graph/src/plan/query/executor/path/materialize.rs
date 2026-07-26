@@ -152,7 +152,7 @@ fn edge_path_element(
             key,
             shard_id,
             handle.owner_vertex_id,
-            EdgeSlotIndex::from_raw(handle.slot_index),
+            EdgeSlotIndex::from_raw(handle.slot_index.raw()),
         )
         .to_bytes()
         .into()

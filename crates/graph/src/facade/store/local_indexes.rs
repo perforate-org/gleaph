@@ -23,7 +23,7 @@ impl GraphStore {
     ) {
         if alias.owner_vertex_id == canonical.owner_vertex_id
             && alias.label_id == canonical.label_id
-            && alias.slot_index == canonical.slot_index
+            && alias.slot_index.raw() == canonical.slot_index.raw()
         {
             return;
         }
@@ -35,7 +35,7 @@ impl GraphStore {
                 alias.label_id.raw(),
                 alias_slot_key,
                 canonical.owner_vertex_id,
-                canonical.slot_index,
+                canonical.slot_index.raw(),
             );
         });
     }
@@ -66,12 +66,12 @@ impl GraphStore {
         edge_pending::enqueue_removals_for_edge(
             handle.owner_vertex_id,
             handle.label_id.raw(),
-            handle.slot_index,
+            handle.slot_index.raw(),
         );
         self.commit_remove_edge_alias_entries(
             handle.owner_vertex_id,
             handle.label_id.raw(),
-            handle.slot_index,
+            handle.slot_index.raw(),
         );
     }
 
@@ -122,8 +122,8 @@ impl GraphStore {
                     aliases.move_alias_key(
                         owner_vertex_id,
                         label_id,
-                        edge_alias_slot_key(moved.old_slot_index, true),
-                        edge_alias_slot_key(moved.new_slot_index, true),
+                        edge_alias_slot_key(moved.old_slot_index.into(), true),
+                        edge_alias_slot_key(moved.new_slot_index.into(), true),
                     );
                 });
             }

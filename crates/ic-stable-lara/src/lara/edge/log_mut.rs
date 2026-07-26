@@ -7,8 +7,8 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
+use super::iter::leaf_segment;
 use super::log::HeaderV1 as LogHeaderV1;
-use super::scan_iter::leaf_segment;
 use super::{DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {

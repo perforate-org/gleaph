@@ -89,10 +89,10 @@ pub(super) const OUT_EDGE_SLAB_CHUNK_SLOTS: u32 = 32;
 mod error;
 mod init;
 mod insert;
+mod iter;
 mod log_mut;
 mod row_layout;
 mod scan;
-mod scan_iter;
 mod slab;
 mod span;
 mod targets;
@@ -101,9 +101,9 @@ mod test_support;
 mod visit_window;
 
 pub use error::InitError;
-pub(crate) use scan_iter::OutEdgeSlabIter;
-pub use scan_iter::{AscOutEdgesIter, OutEdgesIter};
-pub(crate) use scan_iter::{OutOverflowAscParts, OutOverflowDescParts};
+pub(crate) use iter::OutEdgeSlabIter;
+pub use iter::{AscOutEdgesIter, OutEdgesIter};
+pub(crate) use iter::{OutOverflowAscParts, OutOverflowDescParts};
 pub(crate) use targets::{DeleteTarget, EdgeLayout, InsertLocation};
 pub(crate) use visit_window::OutEdgeVisitWindow;
 

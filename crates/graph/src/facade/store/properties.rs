@@ -65,7 +65,7 @@ impl GraphStore {
             properties.get(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
-                handle.slot_index,
+                handle.slot_index.raw(),
                 property_id,
             )
         });
@@ -73,7 +73,7 @@ impl GraphStore {
             properties.set(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
-                handle.slot_index,
+                handle.slot_index.raw(),
                 property_id,
                 value.clone(),
             )
@@ -81,7 +81,7 @@ impl GraphStore {
         dispatch_property_index_ops(PropertyValueChange::edge(
             handle.owner_vertex_id,
             handle.label_id.raw(),
-            handle.slot_index,
+            handle.slot_index.raw(),
             property_id,
             prev.as_ref(),
             Some(&value),
@@ -100,7 +100,7 @@ impl GraphStore {
             properties.get(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
-                handle.slot_index,
+                handle.slot_index.raw(),
                 property_id,
             )
         });
@@ -108,7 +108,7 @@ impl GraphStore {
             properties.remove(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
-                handle.slot_index,
+                handle.slot_index.raw(),
                 property_id,
             )
         });
@@ -116,7 +116,7 @@ impl GraphStore {
             dispatch_property_index_ops(PropertyValueChange::edge(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
-                handle.slot_index,
+                handle.slot_index.raw(),
                 property_id,
                 Some(old),
                 None,
@@ -132,7 +132,7 @@ impl GraphStore {
             store.remove_all_for_edge(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
-                handle.slot_index,
+                handle.slot_index.raw(),
             );
         });
     }

@@ -56,7 +56,7 @@ fn collect_expected_aliases(
                     label_id: label.raw(),
                     alias_slot_key: edge_alias_slot_key(reverse.slot_index, true),
                     canonical_vertex_id: u32::from(source),
-                    canonical_slot_index: canonical.slot_index,
+                    canonical_slot_index: canonical.slot_index.raw(),
                 });
             }
         })?;
@@ -81,9 +81,9 @@ fn collect_expected_aliases(
             expected.insert(ExpectedEdgeAlias {
                 alias_vertex_id: u32::from(neighbor),
                 label_id: label.raw(),
-                alias_slot_key: alias.slot_index,
+                alias_slot_key: alias.slot_index.raw(),
                 canonical_vertex_id: u32::from(owner),
-                canonical_slot_index: canonical.slot_index,
+                canonical_slot_index: canonical.slot_index.raw(),
             });
         })?;
     }

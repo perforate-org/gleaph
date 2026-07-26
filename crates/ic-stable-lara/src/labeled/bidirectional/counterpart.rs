@@ -1,13 +1,13 @@
-//! Persistence-free physical counterpart resolution for bidirectional labeled LARA.
+//! Persistence-free canonical counterpart occurrence resolution for bidirectional labeled LARA.
 //!
 //! The adjacency rows remain the source of truth.  This module derives a counterpart by
 //! selecting the same live equal-neighbor occurrence rank in the counterpart bucket; it does
 //! not allocate or persist an index.
 
-use super::Orientation;
+use super::{Orientation, mate::CanonicalEdgeOccurrence};
 use crate::{
     VertexId,
-    labeled::{BucketLabelKey, LabeledLaraGraph, graph::EdgeSlotState},
+    labeled::{BucketEntryPosition, BucketLabelKey, LabeledLaraGraph, graph::EdgeSlotState},
     traits::CsrEdgeTombstone,
 };
 use ic_stable_structures::Memory;
@@ -27,18 +27,18 @@ pub(crate) fn canonical_counterpart_lookup_count() -> u32 {
     CANONICAL_COUNTERPART_LOOKUPS.with(Cell::get)
 }
 
-/// Canonical physical edge identity without orientation.
+/// Canonical edge handle without orientation.
 ///
-/// This is the stable sidecar key used by Graph for canonical properties and derived indexes.
-/// The physical row itself additionally has an orientation determined by its containing bucket.
+/// This identifies the canonical sidecar occurrence used by Graph for properties and derived indexes.
+/// It carries no raw slab or overflow-log location; the containing bucket supplies orientation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeHandle {
     /// Vertex owning the label bucket row.
     pub owner_vertex_id: VertexId,
     /// Storage label of the bucket containing the row.
     pub label_id: BucketLabelKey,
-    /// Live slot index inside the label row.
-    pub slot_index: u32,
+    /// Bucket entry position, including tombstone positions, inside the label row.
+    pub slot_index: BucketEntryPosition,
 }
 
 impl EdgeHandle {
@@ -46,7 +46,7 @@ impl EdgeHandle {
     pub const fn at_slot(
         owner_vertex_id: VertexId,
         label_id: BucketLabelKey,
-        slot_index: u32,
+        slot_index: BucketEntryPosition,
     ) -> Self {
         Self {
             owner_vertex_id,
@@ -56,21 +56,8 @@ impl EdgeHandle {
     }
 }
 
-/// A physical edge location together with the orientation that owns its row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PhysicalEdgeRef {
-    /// Forward outgoing or reverse incoming orientation.
-    pub orientation: Orientation,
-    /// Vertex owning the label bucket row.
-    pub owner_vertex_id: VertexId,
-    /// Storage label of the bucket containing the row.
-    pub label_id: BucketLabelKey,
-    /// Live slot index inside the label row.
-    pub slot_index: u32,
-}
-
-impl PhysicalEdgeRef {
-    /// The canonical handle for this physical row.
+impl CanonicalEdgeOccurrence {
+    /// Return the canonical sidecar handle for this occurrence.
     pub fn handle(self) -> EdgeHandle {
         EdgeHandle {
             owner_vertex_id: self.owner_vertex_id,
@@ -90,18 +77,18 @@ pub struct PairOrdinal(pub u32);
 /// Fail-closed errors returned by live-only counterpart resolution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CounterpartLookupError {
-    /// The requested physical slot is not present in the declared bucket.
-    SourceNotFound(PhysicalEdgeRef),
+    /// The requested bucket entry position is not present in the declared bucket.
+    SourceNotFound(CanonicalEdgeOccurrence),
     /// The requested row is tombstoned; only live rows have a PairOrdinal.
-    SourceNotLive(PhysicalEdgeRef),
+    SourceNotLive(CanonicalEdgeOccurrence),
     /// The counterpart bucket has no matching occurrence at the source rank.
-    CounterpartNotFound(PhysicalEdgeRef),
-    /// A physical source was observed more than once during selection.
-    AmbiguousSource(PhysicalEdgeRef),
+    CounterpartNotFound(CanonicalEdgeOccurrence),
+    /// A canonical source occurrence was observed more than once during selection.
+    AmbiguousSource(CanonicalEdgeOccurrence),
     /// The two projections disagree about the number of live equal-neighbor rows.
     InconsistentRelation {
-        /// Source physical reference.
-        source: PhysicalEdgeRef,
+        /// Source canonical occurrence.
+        source: CanonicalEdgeOccurrence,
         /// Owner vertex of the counterpart bucket.
         counterpart_owner: VertexId,
         /// Number of matching source rows.
@@ -109,8 +96,8 @@ pub enum CounterpartLookupError {
         /// Number of matching counterpart rows.
         counterpart_count: u32,
     },
-    /// The reference uses an impossible orientation for its bucket kind.
-    InvalidOrientation(PhysicalEdgeRef),
+    /// The occurrence uses an impossible orientation for its bucket kind.
+    InvalidOrientation(CanonicalEdgeOccurrence),
     /// The underlying LARA scan failed.
     ReadFailed(String),
 }
@@ -144,14 +131,14 @@ impl std::error::Error for CounterpartLookupError {}
 /// Computes the equal-target PairOrdinal of a live source row using streaming scans.
 fn scan_pair_ordinal<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    edge: PhysicalEdgeRef,
+    edge: CanonicalEdgeOccurrence,
 ) -> Result<(VertexId, PairOrdinal, u32), CounterpartLookupError>
 where
     E: CsrEdgeTombstone,
     M: Memory,
 {
     let target = match graph
-        .read_edge_slot_state_for_label(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+        .read_edge_slot_state_for_label(edge.owner_vertex_id, edge.label_id, edge.slot_index.raw())
         .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
     {
         EdgeSlotState::Live(row) => row.neighbor_vid(),
@@ -167,7 +154,7 @@ where
             if row.neighbor_vid() != target {
                 return;
             }
-            if slot == edge.slot_index {
+            if slot == edge.slot_index.raw() {
                 passed_source = true;
             } else if !passed_source {
                 ordinal = ordinal.saturating_add(1);
@@ -189,7 +176,7 @@ fn select_counterpart<E, M>(
     label: BucketLabelKey,
     source_owner: VertexId,
     ordinal: PairOrdinal,
-) -> Result<(PhysicalEdgeRef, u32), CounterpartLookupError>
+) -> Result<(CanonicalEdgeOccurrence, u32), CounterpartLookupError>
 where
     E: CsrEdgeTombstone,
     M: Memory,
@@ -210,29 +197,29 @@ where
 
     let Some(slot) = candidate else {
         return Err(CounterpartLookupError::CounterpartNotFound(
-            PhysicalEdgeRef {
+            CanonicalEdgeOccurrence {
                 orientation: Orientation::Forward,
                 owner_vertex_id: owner,
                 label_id: label,
-                slot_index: u32::MAX,
+                slot_index: BucketEntryPosition::new(u32::MAX),
             },
         ));
     };
 
     Ok((
-        PhysicalEdgeRef {
+        CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: owner,
             label_id: label,
-            slot_index: slot,
+            slot_index: BucketEntryPosition::new(slot),
         },
         matching,
     ))
 }
-/// Determines canonical ownership from a physical reference and its resolved counterpart.
+/// Determines canonical ownership from a canonical occurrence and its resolved counterpart.
 pub fn canonical_from_counterpart(
-    source: PhysicalEdgeRef,
-    counterpart: PhysicalEdgeRef,
+    source: CanonicalEdgeOccurrence,
+    counterpart: CanonicalEdgeOccurrence,
 ) -> EdgeHandle {
     if source.label_id.is_directed() {
         return match source.orientation {
@@ -255,8 +242,8 @@ pub fn canonical_from_counterpart(
 pub fn counterpart_of<E, M>(
     forward: &LabeledLaraGraph<E, M>,
     reverse: &LabeledLaraGraph<E, M>,
-    edge: PhysicalEdgeRef,
-) -> Result<PhysicalEdgeRef, CounterpartLookupError>
+    edge: CanonicalEdgeOccurrence,
+) -> Result<CanonicalEdgeOccurrence, CounterpartLookupError>
 where
     E: CsrEdgeTombstone,
     M: Memory,
@@ -311,7 +298,7 @@ where
         });
     }
 
-    Ok(PhysicalEdgeRef {
+    Ok(CanonicalEdgeOccurrence {
         orientation: counterpart_orientation,
         ..counterpart
     })
@@ -321,7 +308,7 @@ where
 pub fn canonical_handle<E, M>(
     forward: &LabeledLaraGraph<E, M>,
     reverse: &LabeledLaraGraph<E, M>,
-    edge: PhysicalEdgeRef,
+    edge: CanonicalEdgeOccurrence,
 ) -> Result<EdgeHandle, CounterpartLookupError>
 where
     E: CsrEdgeTombstone,
@@ -400,7 +387,7 @@ mod tests {
         src: u32,
         tgt: u32,
         label: BucketLabelKey,
-    ) -> (PhysicalEdgeRef, PhysicalEdgeRef) {
+    ) -> (CanonicalEdgeOccurrence, CanonicalEdgeOccurrence) {
         forward
             .insert_edge(VertexId::from(src), label, TestEdge { target: tgt })
             .unwrap();
@@ -414,17 +401,17 @@ mod tests {
             find_slot_for_target(reverse, VertexId::from(tgt), label, VertexId::from(src))
                 .expect("reverse edge inserted");
         (
-            PhysicalEdgeRef {
+            CanonicalEdgeOccurrence {
                 orientation: Orientation::Forward,
                 owner_vertex_id: VertexId::from(src),
                 label_id: label,
-                slot_index: fwd_slot,
+                slot_index: BucketEntryPosition::new(fwd_slot),
             },
-            PhysicalEdgeRef {
+            CanonicalEdgeOccurrence {
                 orientation: Orientation::Reverse,
                 owner_vertex_id: VertexId::from(tgt),
                 label_id: label,
-                slot_index: rev_slot,
+                slot_index: BucketEntryPosition::new(rev_slot),
             },
         )
     }
@@ -434,7 +421,7 @@ mod tests {
         a: u32,
         b: u32,
         label: BucketLabelKey,
-    ) -> PhysicalEdgeRef {
+    ) -> CanonicalEdgeOccurrence {
         let (high, low) = if a > b { (a, b) } else { (b, a) };
         forward
             .insert_edge(VertexId::from(high), label, TestEdge { target: low })
@@ -444,11 +431,11 @@ mod tests {
             .unwrap();
         let slot = find_slot_for_target(forward, VertexId::from(high), label, VertexId::from(low))
             .expect("high-owner edge inserted");
-        PhysicalEdgeRef {
+        CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: VertexId::from(high),
             label_id: label,
-            slot_index: slot,
+            slot_index: BucketEntryPosition::new(slot),
         }
     }
 
@@ -473,6 +460,30 @@ mod tests {
             canonical_handle(&forward, &reverse, rev).unwrap(),
             fwd.handle()
         );
+    }
+
+    #[test]
+    fn reverse_occurrence_reads_from_incoming_bucket_with_exact_slot() {
+        let label = directed_label(12);
+        let (forward, reverse) = two_sided_graphs(label);
+        push_both_vertices(&forward, &reverse, 3);
+        let (fwd, rev) = insert_directed(&forward, &reverse, 1, 2, label);
+
+        let mut seen = Vec::new();
+        let _ = reverse
+            .visit_edges::<()>(
+                rev.owner_vertex_id,
+                rev.label_id,
+                crate::labeled::OutEdgeOrder::Ascending,
+                |slot, edge| {
+                    seen.push((slot, edge.target));
+                    std::ops::ControlFlow::Continue(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(seen, vec![(rev.slot_index, 1)]);
+        assert_eq!(counterpart_of(&forward, &reverse, rev).unwrap(), fwd);
     }
 
     #[test]
@@ -521,11 +532,11 @@ mod tests {
             find_slot_for_target(&forward, VertexId::from(5), label, VertexId::from(5))
                 .expect("self-loop inserted")
         };
-        let edge = PhysicalEdgeRef {
+        let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: VertexId::from(5),
             label_id: label,
-            slot_index: slot,
+            slot_index: BucketEntryPosition::new(slot),
         };
 
         assert_eq!(counterpart_of(&forward, &reverse, edge).unwrap(), edge);
@@ -587,7 +598,7 @@ mod tests {
             .compact_vertex_edge_span(VertexId::from(1), 0)
             .unwrap();
         forward
-            .remove_edge_at_slot(fwd.owner_vertex_id, fwd.label_id, fwd.slot_index)
+            .remove_edge_at_slot(fwd.owner_vertex_id, fwd.label_id, fwd.slot_index.raw())
             .unwrap();
 
         let err = counterpart_of(&forward, &reverse, fwd).unwrap_err();
@@ -605,7 +616,7 @@ mod tests {
             .remove_edge_at_slot(
                 first.1.owner_vertex_id,
                 first.1.label_id,
-                first.1.slot_index,
+                first.1.slot_index.raw(),
             )
             .unwrap();
 
@@ -626,14 +637,30 @@ mod tests {
         let label = directed_label(1);
         let (forward, reverse) = two_sided_graphs(label);
         push_both_vertices(&forward, &reverse, 2);
-        let edge = PhysicalEdgeRef {
+        let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: VertexId::from(1),
             label_id: label,
-            slot_index: 0,
+            slot_index: BucketEntryPosition::new(0),
         };
         let err = counterpart_of(&forward, &reverse, edge).unwrap_err();
         assert!(matches!(err, CounterpartLookupError::SourceNotFound(_)));
+    }
+
+    #[test]
+    fn impossible_logical_slot_mapping_fails_closed() {
+        let label = directed_label(2);
+        let (forward, reverse) = two_sided_graphs(label);
+        push_both_vertices(&forward, &reverse, 2);
+        let edge = CanonicalEdgeOccurrence {
+            orientation: Orientation::Forward,
+            owner_vertex_id: VertexId::from(1),
+            label_id: label,
+            slot_index: BucketEntryPosition::new(u32::MAX),
+        };
+
+        let err = counterpart_of(&forward, &reverse, edge).unwrap_err();
+        assert_eq!(err, CounterpartLookupError::SourceNotFound(edge));
     }
 
     #[test]
@@ -649,11 +676,11 @@ mod tests {
             .unwrap();
         let slot = find_slot_for_target(&forward, VertexId::from(1), label, VertexId::from(2))
             .expect("edge inserted");
-        let edge = PhysicalEdgeRef {
+        let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Reverse,
             owner_vertex_id: VertexId::from(1),
             label_id: label,
-            slot_index: slot,
+            slot_index: BucketEntryPosition::new(slot),
         };
         let err = counterpart_of(&forward, &reverse, edge).unwrap_err();
         assert!(matches!(err, CounterpartLookupError::InvalidOrientation(_)));

@@ -43,7 +43,7 @@ fn edge_binding_from_posting(
     let handle = EdgeHandle {
         owner_vertex_id,
         label_id: LaraLabelId::from_raw(label_id),
-        slot_index,
+        slot_index: slot_index.into(),
     };
     let Some(edge) = store.find_outgoing_edge_record(handle)? else {
         return Ok(None);

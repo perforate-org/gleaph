@@ -194,7 +194,7 @@ mod tests {
                 .iter()
                 .any(|edge| {
                     edge.neighbor_vid() == target
-                        && edge.edge_slot_index.raw() == directed.slot_index
+                        && edge.edge_slot_index.raw() == directed.slot_index.raw()
                         && store.find_forward_edge_bucket_label(source, edge).unwrap()
                             == Some(LaraLabelId::from_raw(
                                 directed_label.pack(EdgeDirectedness::Directed).raw(),
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(undirected.owner_vertex_id, target);
         assert!(store.undirected_edges(target).unwrap().iter().any(|edge| {
             edge.neighbor_vid() == source
-                && edge.edge_slot_index.raw() == undirected.slot_index
+                && edge.edge_slot_index.raw() == undirected.slot_index.raw()
                 && store
                     .find_forward_edge_bucket_label(target, edge)
                     .map(|l| l.map(|id| TaggedEdgeLabelId::from_raw(id.raw())))

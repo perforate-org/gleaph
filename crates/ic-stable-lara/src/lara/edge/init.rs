@@ -294,7 +294,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lara::edge::scan_iter::leaf_segment;
+    use crate::lara::edge::iter::leaf_segment;
     use crate::test_support::{FailpointMemory, TestEdge, vector_memory};
     use crate::{VectorMemory, VertexId};
 

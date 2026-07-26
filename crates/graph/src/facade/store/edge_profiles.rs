@@ -49,7 +49,7 @@ impl GraphStore {
             .ok_or(GraphStoreError::EdgeNotFound {
                 owner_vertex_id: forward.owner_vertex_id,
                 label_id: forward.label_id,
-                slot_index: forward.slot_index,
+                slot_index: forward.slot_index.raw(),
             })?;
         let new_edge = edge.with_inline_value_bytes(inline_value_bytes);
 
@@ -58,7 +58,7 @@ impl GraphStore {
                 graph.update_forward_edge_inline_value_at_slot(
                     forward.owner_vertex_id,
                     forward.label_id,
-                    forward.slot_index,
+                    forward.slot_index.raw(),
                     new_edge.clone(),
                 )
             })
@@ -77,7 +77,7 @@ impl GraphStore {
                             graph.update_reverse_edge_inline_value_at_slot(
                                 reverse.owner_vertex_id,
                                 reverse.label_id,
-                                reverse.slot_index,
+                                reverse.slot_index.raw(),
                                 new_edge.clone(),
                             )
                         })
@@ -96,7 +96,7 @@ impl GraphStore {
                         graph.update_forward_edge_inline_value_at_slot(
                             alias.owner_vertex_id,
                             alias.label_id,
-                            alias.slot_index,
+                            alias.slot_index.raw(),
                             new_edge.clone(),
                         )
                     })
@@ -109,7 +109,7 @@ impl GraphStore {
                     graph.update_reverse_edge_inline_value_at_slot(
                         reverse.owner_vertex_id,
                         reverse.label_id,
-                        reverse.slot_index,
+                        reverse.slot_index.raw(),
                         new_edge.clone(),
                     )
                 })
@@ -119,7 +119,7 @@ impl GraphStore {
             return Err(GraphStoreError::EdgeNotFound {
                 owner_vertex_id: handle.owner_vertex_id,
                 label_id: handle.label_id,
-                slot_index: handle.slot_index,
+                slot_index: handle.slot_index.raw(),
             });
         }
 

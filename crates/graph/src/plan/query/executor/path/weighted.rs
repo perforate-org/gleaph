@@ -332,7 +332,8 @@ type WeightedHopCostCache = IntMap<u64, IntMap<u64, WeightedCost>>;
 
 #[inline]
 fn weighted_hop_cache_outer_key(edge: &EdgeBinding) -> u64 {
-    u64::from(u32::from(edge.handle.owner_vertex_id)) << 32 | u64::from(edge.handle.slot_index)
+    u64::from(u32::from(edge.handle.owner_vertex_id)) << 32
+        | u64::from(edge.handle.slot_index.raw())
 }
 
 fn weighted_hop_cache_value_key(edge: &EdgeBinding) -> u64 {

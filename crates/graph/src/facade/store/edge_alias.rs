@@ -4,7 +4,7 @@ use super::super::stable::{EDGE_ALIASES, GRAPH};
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
-    labeled::{LabeledOrientation, MateLookupError, PhysicalEdgeRef},
+    labeled::{CanonicalEdgeOccurrence, LabeledOrientation, MateLookupError},
     traits::CsrEdge,
 };
 
@@ -103,7 +103,7 @@ impl GraphStore {
                 aliases.get(
                     handle.owner_vertex_id,
                     handle.label_id.raw(),
-                    handle.slot_index,
+                    handle.slot_index.raw(),
                 )
             })
             .map(|canonical| {
@@ -154,18 +154,18 @@ impl GraphStore {
     ) -> Result<EdgeHandle, MateLookupError> {
         GRAPH
             .with_borrow(|graph| {
-                graph.canonical_handle(PhysicalEdgeRef {
+                graph.canonical_handle(CanonicalEdgeOccurrence {
                     orientation,
                     owner_vertex_id: handle.owner_vertex_id,
                     label_id: handle.label_id,
-                    slot_index: handle.slot_index,
+                    slot_index: handle.slot_index.raw().into(),
                 })
             })
             .map(|canonical| {
                 EdgeHandle::at_slot(
                     canonical.owner_vertex_id,
                     canonical.label_id,
-                    canonical.slot_index,
+                    canonical.slot_index.raw(),
                 )
             })
     }
@@ -179,14 +179,16 @@ impl GraphStore {
     ) -> Result<EdgeHandle, MateLookupError> {
         GRAPH
             .with_borrow(|graph| {
-                graph.published_canonical_handle(PhysicalEdgeRef {
+                graph.published_canonical_handle(CanonicalEdgeOccurrence {
                     orientation,
                     owner_vertex_id: handle.owner_vertex_id,
                     label_id: handle.label_id,
-                    slot_index: handle.slot_index,
+                    slot_index: handle.slot_index.raw().into(),
                 })
             })
-            .map(|mate| EdgeHandle::at_slot(mate.owner_vertex_id, mate.label_id, mate.slot_index))
+            .map(|mate| {
+                EdgeHandle::at_slot(mate.owner_vertex_id, mate.label_id, mate.slot_index.raw())
+            })
     }
 
     pub(super) fn remove_reverse_edge_for_canonical_directed(
@@ -243,7 +245,7 @@ impl GraphStore {
                 .find_alias_for_canonical(
                     canonical.owner_vertex_id,
                     canonical.label_id.raw(),
-                    canonical.slot_index,
+                    canonical.slot_index.raw(),
                 )
                 .map(|(vertex_id, slot_key)| {
                     let (slot_index, reverse_in) = edge_alias_slot_key_parts(slot_key);

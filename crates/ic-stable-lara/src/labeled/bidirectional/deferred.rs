@@ -3928,7 +3928,7 @@ mod tests {
         published_blob_read_count, reset_published_blob_read_count,
     };
     use crate::{
-        labeled::PhysicalEdgeRef,
+        labeled::CanonicalEdgeOccurrence,
         labeled::graph::batch_write::{
             BatchLocationMode, OneOrientationBatchEdge, OneOrientationBatchPlan,
             OneOrientationBucketRun,
@@ -6012,6 +6012,73 @@ mod tests {
         assert_eq!(weights_from(VertexId::from(1)), vec![10]);
     }
 
+    #[test]
+    fn reverse_parallel_edges_preserve_ordinal_and_inline_bytes() {
+        let graph = valued_bidirectional_graph();
+        graph.push_vertex().unwrap();
+        graph.push_vertex().unwrap();
+        let source = VertexId::from(0);
+        let hub = VertexId::from(1);
+        let road = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_directed_edge_inline_value_width(source, hub, road, 2u16)
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                source,
+                hub,
+                road,
+                PayloadTestEdge::with_bytes(u32::from(hub), &10u16.to_le_bytes()),
+                PayloadTestEdge::with_bytes(u32::from(source), &10u16.to_le_bytes()),
+            )
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                source,
+                hub,
+                road,
+                PayloadTestEdge::with_bytes(u32::from(hub), &20u16.to_le_bytes()),
+                PayloadTestEdge::with_bytes(u32::from(source), &20u16.to_le_bytes()),
+            )
+            .unwrap();
+
+        let mut scratch = crate::labeled::LabeledPayloadValueBatchScratch::default();
+        let mut slots = Vec::new();
+        let mut payloads = Vec::new();
+        graph
+            .visit_in_inline_value_batches_for_label(
+                hub,
+                road,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| {
+                    slots.extend_from_slice(batch.slot_indices);
+                    let width = usize::from(batch.byte_width);
+                    payloads.extend(batch.values.chunks_exact(width).map(|bytes| bytes.to_vec()));
+                },
+            )
+            .unwrap();
+        let mut edges = Vec::new();
+        graph
+            .read_in_edge_slots_for_label(hub, road, &slots, OutEdgeOrder::Ascending, |edge| {
+                edges.push(edge)
+            })
+            .unwrap();
+        let rows: Vec<_> = slots
+            .into_iter()
+            .zip(edges)
+            .zip(payloads)
+            .map(|((slot, edge), bytes)| (slot, edge.neighbor_vid(), bytes))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (0, source, 10u16.to_le_bytes().to_vec()),
+                (1, source, 20u16.to_le_bytes().to_vec()),
+            ]
+        );
+    }
+
     /// Proves the reverse payload-first phase-2 read actually reuses the phase-1 replay: many edges
     /// point into one hub, so the hub's reverse bucket is an overflow-log hybrid. Reading the
     /// in-edge slots with the captured replay must avoid the overflow-log chain rebuild (0), while a
@@ -6188,16 +6255,16 @@ mod tests {
         assert_eq!(source_slots.len(), 3);
         assert_eq!(reverse_slots.len(), 3);
         for (rank, source_slot) in source_slots.into_iter().enumerate() {
-            let source_ref = PhysicalEdgeRef {
+            let source_ref = CanonicalEdgeOccurrence {
                 orientation: Orientation::Forward,
                 owner_vertex_id: source,
                 label_id: label,
-                slot_index: source_slot,
+                slot_index: crate::labeled::BucketEntryPosition::new(source_slot),
             };
             let mate = graph.mate_of(source_ref).unwrap();
             assert_eq!(mate.orientation, Orientation::Reverse);
             assert_eq!(mate.owner_vertex_id, target);
-            assert_eq!(mate.slot_index, reverse_slots[rank]);
+            assert_eq!(mate.slot_index.raw(), reverse_slots[rank]);
             assert_eq!(graph.canonical_handle(mate).unwrap(), source_ref);
         }
     }
@@ -6792,11 +6859,11 @@ mod tests {
             .for_each_live_edge_slot_for_label(low, label, |slot, _| low_slots.push(slot))
             .unwrap();
         let low_slot = low_slots[0];
-        let low_ref = PhysicalEdgeRef {
+        let low_ref = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: low,
             label_id: label,
-            slot_index: low_slot,
+            slot_index: crate::labeled::BucketEntryPosition::new(low_slot),
         };
         let high_ref = graph.mate_of(low_ref).unwrap();
         assert_eq!(high_ref.owner_vertex_id, high);
@@ -6818,11 +6885,11 @@ mod tests {
             .for_each_live_edge_slot_for_label(self_loop, label, |slot, _| self_slots.push(slot))
             .unwrap();
         let self_slot = self_slots[0];
-        let self_ref = PhysicalEdgeRef {
+        let self_ref = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: self_loop,
             label_id: label,
-            slot_index: self_slot,
+            slot_index: crate::labeled::BucketEntryPosition::new(self_slot),
         };
         assert_eq!(graph.mate_of(self_ref).unwrap(), self_ref);
     }
@@ -6843,17 +6910,17 @@ mod tests {
                 TestEdge(0),
             )
             .unwrap();
-        let missing = PhysicalEdgeRef {
+        let missing = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: VertexId::from(0),
             label_id: label,
-            slot_index: u32::MAX,
+            slot_index: crate::labeled::BucketEntryPosition::new(u32::MAX),
         };
         assert!(matches!(
             graph.mate_of(missing),
             Err(crate::labeled::MateLookupError::SourceNotFound(_))
         ));
-        let invalid = PhysicalEdgeRef {
+        let invalid = CanonicalEdgeOccurrence {
             orientation: Orientation::Reverse,
             ..missing
         };
@@ -6899,11 +6966,11 @@ mod tests {
             .for_each_live_edge_slot_for_label(source, label, |slot, _| remaining_slots.push(slot))
             .unwrap();
         let remaining_slot = remaining_slots[0];
-        let source_ref = PhysicalEdgeRef {
+        let source_ref = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: remaining_slot,
+            slot_index: crate::labeled::BucketEntryPosition::new(remaining_slot),
         };
         assert!(matches!(
             graph.mate_of(source_ref),
@@ -6944,11 +7011,11 @@ mod tests {
             .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
             .unwrap();
         let source_slot = source_slots[0];
-        let source_ref = PhysicalEdgeRef {
+        let source_ref = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: source_slot,
+            slot_index: crate::labeled::BucketEntryPosition::new(source_slot),
         };
         assert_eq!(
             graph.mate_of(source_ref).unwrap().orientation,
@@ -7409,11 +7476,11 @@ mod tests {
             .for_each_live_edge_slot_for_label(source, label, |slot, _| slots.push(slot))
             .unwrap();
         for slot in slots {
-            let edge = PhysicalEdgeRef {
+            let edge = CanonicalEdgeOccurrence {
                 orientation: Orientation::Forward,
                 owner_vertex_id: source,
                 label_id: label,
-                slot_index: slot,
+                slot_index: crate::labeled::BucketEntryPosition::new(slot),
             };
             let expected = graph.mate_of(edge).unwrap();
             reset_canonical_mate_lookup_count();
@@ -7485,11 +7552,11 @@ mod tests {
             )
             .unwrap();
         let slot = slots.first().copied().expect("singleton source row");
-        let edge = PhysicalEdgeRef {
+        let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: slot,
+            slot_index: crate::labeled::BucketEntryPosition::new(slot),
         };
         let expected = graph.mate_of(edge).unwrap();
         reset_canonical_mate_lookup_count();
@@ -7527,11 +7594,11 @@ mod tests {
             .for_each_live_edge_slot_for_label(target, label, |slot, _| slots.push(slot))
             .unwrap();
         for slot in slots {
-            let edge = PhysicalEdgeRef {
+            let edge = CanonicalEdgeOccurrence {
                 orientation: Orientation::Reverse,
                 owner_vertex_id: target,
                 label_id: label,
-                slot_index: slot,
+                slot_index: crate::labeled::BucketEntryPosition::new(slot),
             };
             let expected = graph.mate_of(edge).unwrap();
             reset_canonical_mate_lookup_count();
@@ -7571,11 +7638,11 @@ mod tests {
                 .for_each_live_edge_slot_for_label(owner, label, |slot, _| slots.push(slot))
                 .unwrap();
             for slot in slots {
-                let edge = PhysicalEdgeRef {
+                let edge = CanonicalEdgeOccurrence {
                     orientation: Orientation::Forward,
                     owner_vertex_id: owner,
                     label_id: label,
-                    slot_index: slot,
+                    slot_index: crate::labeled::BucketEntryPosition::new(slot),
                 };
                 assert_eq!(
                     nonself_graph.published_mate_of(edge),
@@ -7611,11 +7678,11 @@ mod tests {
             .for_each_live_edge_slot_for_label(VertexId::from(0), label, |slot, _| slots.push(slot))
             .unwrap();
         for slot in slots {
-            let edge = PhysicalEdgeRef {
+            let edge = CanonicalEdgeOccurrence {
                 orientation: Orientation::Forward,
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                slot_index: slot,
+                slot_index: crate::labeled::BucketEntryPosition::new(slot),
             };
             assert_eq!(self_graph.published_mate_of(edge), Ok(edge));
         }
@@ -7684,22 +7751,22 @@ mod tests {
             .into_iter()
             .map(|rank| (rank, source_slots[rank]))
         {
-            let edge = PhysicalEdgeRef {
+            let edge = CanonicalEdgeOccurrence {
                 orientation: Orientation::Forward,
                 owner_vertex_id: source,
                 label_id: label,
-                slot_index: slot,
+                slot_index: crate::labeled::BucketEntryPosition::new(slot),
             };
             let expected = graph.mate_of(edge).unwrap();
             reset_canonical_mate_lookup_count();
             assert_eq!(graph.published_mate_of(edge), Ok(expected));
             assert_eq!(canonical_mate_lookup_count(), 0, "checkpoint rank {rank}");
         }
-        let edge = PhysicalEdgeRef {
+        let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: source_slots[1],
+            slot_index: crate::labeled::BucketEntryPosition::new(source_slots[1]),
         };
         let expected = graph.mate_of(edge).unwrap();
         reset_canonical_mate_lookup_count();
@@ -7712,11 +7779,11 @@ mod tests {
             .mate
             .test_write_published_blob_byte(0, 30, rows.mate_slots[16] as u8)
             .unwrap();
-        let checkpoint = PhysicalEdgeRef {
+        let checkpoint = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: rows.source_slots[0],
+            slot_index: crate::labeled::BucketEntryPosition::new(rows.source_slots[0]),
         };
         let expected = graph.mate_of(checkpoint).unwrap();
         reset_canonical_mate_lookup_count();
@@ -7784,11 +7851,11 @@ mod tests {
                 .rebuild_mate_leaf(Orientation::Forward, 0, &decision, &rows)
                 .unwrap();
             for row in &rows {
-                let edge = PhysicalEdgeRef {
+                let edge = CanonicalEdgeOccurrence {
                     orientation: Orientation::Forward,
                     owner_vertex_id: source,
                     label_id: row.inputs.bucket_label_key,
-                    slot_index: row.source_slots[1],
+                    slot_index: crate::labeled::BucketEntryPosition::new(row.source_slots[1]),
                 };
                 let expected = graph.mate_of(edge).unwrap();
                 reset_canonical_mate_lookup_count();
@@ -7835,11 +7902,11 @@ mod tests {
             .forward()
             .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
             .unwrap();
-        let edge = PhysicalEdgeRef {
+        let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: source_slots[0],
+            slot_index: crate::labeled::BucketEntryPosition::new(source_slots[0]),
         };
         let expected = graph.mate_of(edge);
         reset_canonical_mate_lookup_count();
@@ -7880,11 +7947,11 @@ mod tests {
             })
             .unwrap();
         let source_slot = source_slot.expect("published source");
-        let source_ref = PhysicalEdgeRef {
+        let source_ref = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: source_slot,
+            slot_index: crate::labeled::BucketEntryPosition::new(source_slot),
         };
         let expected = graph.mate_of(source_ref);
         reset_canonical_mate_lookup_count();
@@ -7909,11 +7976,11 @@ mod tests {
                 .insert_directed_edge(source, target, label, TestEdge(1), TestEdge(0))
                 .unwrap();
         }
-        let invalid = PhysicalEdgeRef {
+        let invalid = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: VertexId::from(u32::MAX),
             label_id: label,
-            slot_index: 0,
+            slot_index: crate::labeled::BucketEntryPosition::new(0),
         };
         let expected = graph.mate_of(invalid);
         reset_canonical_mate_lookup_count();
@@ -7940,11 +8007,11 @@ mod tests {
             .forward()
             .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slot = Some(slot))
             .unwrap();
-        let edge = PhysicalEdgeRef {
+        let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: source_slot.expect("source slot"),
+            slot_index: crate::labeled::BucketEntryPosition::new(source_slot.expect("source slot")),
         };
         let expected = graph.mate_of(edge);
 
@@ -7985,11 +8052,11 @@ mod tests {
             .forward()
             .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slot = Some(slot))
             .unwrap();
-        let edge = PhysicalEdgeRef {
+        let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: source_slot.expect("source slot"),
+            slot_index: crate::labeled::BucketEntryPosition::new(source_slot.expect("source slot")),
         };
         let expected = graph.mate_of(edge).unwrap();
 
@@ -8027,11 +8094,13 @@ mod tests {
             .reverse()
             .for_each_live_edge_slot_for_label(target, label, |slot, _| reverse_slot = Some(slot))
             .unwrap();
-        let edge = PhysicalEdgeRef {
+        let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Reverse,
             owner_vertex_id: target,
             label_id: label,
-            slot_index: reverse_slot.expect("reverse slot"),
+            slot_index: crate::labeled::BucketEntryPosition::new(
+                reverse_slot.expect("reverse slot"),
+            ),
         };
         let expected = graph.mate_of(edge);
         reset_canonical_mate_lookup_count();
@@ -8086,11 +8155,11 @@ mod tests {
             .mate
             .test_write_published_blob_byte(0, 23, reverse_slots[1] as u8)
             .unwrap();
-        let source_ref = PhysicalEdgeRef {
+        let source_ref = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
             owner_vertex_id: source,
             label_id: label,
-            slot_index: source_slots[0],
+            slot_index: crate::labeled::BucketEntryPosition::new(source_slots[0]),
         };
         let expected = graph.mate_of(source_ref);
         reset_canonical_mate_lookup_count();

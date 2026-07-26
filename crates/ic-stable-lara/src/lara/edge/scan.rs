@@ -7,9 +7,7 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-use super::scan_iter::{
-    AscOutEdgesIter, LogBackedDescIter, OutEdgeSlabChunk, OutEdgeSlabIter, leaf_segment,
-};
+use super::iter::{AscOutEdgesIter, OutEdgeSlabChunk, OutEdgeSlabIter, leaf_segment};
 use super::{
     DeleteTarget, EdgeStore, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, OutEdgeVisitWindow, OutEdgesIter,
 };
@@ -68,7 +66,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(());
         }
 
-        let walk = self.log_backed_desc_edges_iter(vertices, vid)?;
+        let walk = self.out_edges_iter(vertices, vid)?;
         for edge in walk {
             if matches(&edge) && !window.emit_edge(edge, &mut visit) {
                 return Ok(());
@@ -104,7 +102,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return Ok(None);
         }
 
-        let walk = self.log_backed_desc_edges_iter(vertices, vid)?;
+        let walk = self.out_edges_iter(vertices, vid)?;
         for edge in walk {
             if matches(&edge) {
                 return Ok(Some(edge));
@@ -124,60 +122,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let v = vertices.get_in_range(vid)?;
         Ok(v.degree() > 0)
-    }
-
-    pub(crate) fn log_backed_desc_edges_iter<V, A>(
-        &self,
-        vertices: &A,
-        vid: VertexId,
-    ) -> Result<LogBackedDescIter<'_, E, M>, LaraOperationError>
-    where
-        V: CsrVertex + CsrVertexTombstoneScan,
-        A: VertexAccess<V>,
-    {
-        let edge_layout = self.edge_layout();
-        let v = vertices.get_in_range(vid)?;
-        let v_ord = u32::from(vid);
-        let log_owner = vertices.log_leaf_vertex(vid);
-        let on_slab = self.on_slab_edges_with_layout(&edge_layout, vertices, v_ord, &v)?;
-        let stored = v.stored_degree();
-        let slab_count = on_slab.min(stored);
-        let nbytes_slab = (slab_count as usize)
-            .checked_mul(E::BYTES)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let slab_chunk = if nbytes_slab >= OUT_EDGE_SLAB_PREFETCH_MIN_BYTES {
-            Some(OutEdgeSlabChunk {
-                buf: Vec::new(),
-                chunk_low: 0,
-                chunk_high: 0,
-            })
-        } else {
-            None
-        };
-        let log_header = self.log.header();
-        let leaf = leaf_segment(log_owner, edge_layout.segment_size);
-        let reserved_log_slots = u32::try_from(
-            self.overflow_log_chain_asc_indices(leaf, v.log_head())
-                .len(),
-        )
-        .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-        Ok(LogBackedDescIter {
-            store: self,
-            leaf,
-            next_log: v.log_head(),
-            remaining_log: log_header.max_log_entries,
-            base_slot_start: v.base_slot_start(),
-            remaining_slab: slab_count,
-            yield_remaining: v.degree(),
-            log_header,
-            log_table: None,
-            slab_chunk,
-            deleted_slab_offsets: Vec::new(),
-            sorted_slab_deletes: false,
-            next_log_slot: slab_count
-                .saturating_add(reserved_log_slots)
-                .saturating_sub(1),
-        })
     }
 
     pub(crate) fn out_edges_iter<V, A>(

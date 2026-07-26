@@ -1625,7 +1625,8 @@ mod tests {
                 .iter()
                 .any(|candidate| {
                     candidate.neighbor_vid() == b
-                        && candidate.edge_slot_index == EdgeSlotIndex::from_raw(edge.slot_index)
+                        && candidate.edge_slot_index
+                            == EdgeSlotIndex::from_raw(edge.slot_index.raw())
                 })
         );
     }
@@ -2932,7 +2933,7 @@ mod tests {
             store.edge_properties(EdgeHandle {
                 owner_vertex_id: a,
                 label_id: LaraLabelId::from_raw(0),
-                slot_index: 1,
+                slot_index: 1.into(),
             }),
             Vec::<(PropertyId, Value)>::new()
         );
@@ -2986,7 +2987,7 @@ mod tests {
             store.edge_properties(EdgeHandle {
                 owner_vertex_id: owner,
                 label_id: LaraLabelId::from_raw(0),
-                slot_index: 1,
+                slot_index: 1.into(),
             }),
             Vec::<(PropertyId, Value)>::new()
         );

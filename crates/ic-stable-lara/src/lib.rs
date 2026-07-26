@@ -68,6 +68,7 @@ pub mod lara;
 pub mod log_head;
 pub mod slab_index;
 pub mod traits;
+pub mod traverse;
 mod types;
 
 pub use bidirectional::{

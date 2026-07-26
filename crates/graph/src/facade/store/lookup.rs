@@ -21,7 +21,7 @@ impl GraphStore {
                     handle.owner_vertex_id,
                     handle.label_id,
                     |edge| {
-                        if edge.edge_slot_index.raw() == handle.slot_index {
+                        if edge.edge_slot_index.raw() == handle.slot_index.raw() {
                             found = Some((edge, handle.label_id));
                         }
                     },
@@ -39,7 +39,7 @@ impl GraphStore {
         GRAPH
             .with_borrow(|graph| {
                 graph.for_each_in_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
-                    if edge.edge_slot_index.raw() == handle.slot_index {
+                    if edge.edge_slot_index.raw() == handle.slot_index.raw() {
                         found = Some((edge, handle.label_id));
                     }
                 })

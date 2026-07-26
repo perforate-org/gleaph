@@ -75,13 +75,13 @@ impl GraphStore {
             graph.remove_forward_edge_at_slot_with_move(
                 canonical.owner_vertex_id,
                 canonical.label_id,
-                canonical.slot_index,
+                canonical.slot_index.raw(),
             )
         })?;
         let removal = removal.ok_or(GraphStoreError::EdgeNotFound {
             owner_vertex_id: canonical.owner_vertex_id,
             label_id: canonical.label_id,
-            slot_index: canonical.slot_index,
+            slot_index: canonical.slot_index.raw(),
         })?;
         Self::apply_edge_slot_moves(
             LabeledOrientation::Forward,
@@ -147,7 +147,7 @@ impl GraphStore {
                 neighbor,
                 canonical.owner_vertex_id,
                 canonical.label_id,
-                canonical.slot_index,
+                canonical.slot_index.raw(),
             )?;
         }
         self.drain_deferred_maintenance()

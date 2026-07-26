@@ -660,7 +660,7 @@ mod tests {
         let handle = EdgeHandle {
             owner_vertex_id: VertexId::from(0),
             label_id: LaraLabelId::from_raw(wire.raw()),
-            slot_index: 0,
+            slot_index: 0.into(),
         };
         let w = decode_traversal_edge_weight(handle, 2, &[9, 0]).expect("decode");
         assert_eq!(w, 9.0);

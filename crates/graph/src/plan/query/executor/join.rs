@@ -234,7 +234,7 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
         PlanBinding::Edge(e) => {
             hasher.write_u8(2);
             hasher.write_u32(u32::from(e.handle.owner_vertex_id));
-            hasher.write_u32(e.handle.slot_index);
+            hasher.write_u32(e.handle.slot_index.raw());
             hasher.write_u64(u64::try_from(e.inline_value_len()).unwrap_or(u64::MAX));
             hasher.write(e.inline_value_bytes_slice());
         }
@@ -243,7 +243,7 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
             hasher.write_usize(edges.len());
             for edge in edges.iter() {
                 hasher.write_u32(u32::from(edge.handle.owner_vertex_id));
-                hasher.write_u32(edge.handle.slot_index);
+                hasher.write_u32(edge.handle.slot_index.raw());
                 hasher.write_u64(u64::try_from(edge.inline_value_len()).unwrap_or(u64::MAX));
                 hasher.write(edge.inline_value_bytes_slice());
             }
