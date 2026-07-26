@@ -2269,6 +2269,49 @@ where
             .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
+    /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the forward store.
+    pub fn skip_then_visit_each_forward_out_edge_for_label<Visit, Err>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        offset_remaining: &mut usize,
+        mut visit: Visit,
+    ) -> Result<Result<bool, Err>, DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(E) -> Result<bool, Err>,
+    {
+        let mut remaining = *offset_remaining;
+        let flow = self
+            .forward
+            .visit_edges(src, label_id, OutEdgeOrder::Descending, |_slot, edge| {
+                if remaining > 0 {
+                    remaining -= 1;
+                    return ControlFlow::<Result<bool, Err>>::Continue(());
+                }
+                match visit(edge.with_label_id(label_id.raw())) {
+                    Ok(false) => ControlFlow::Continue(()),
+                    Ok(true) => ControlFlow::Break(Ok(true)),
+                    Err(error) => ControlFlow::Break(Err(error)),
+                }
+            })
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        match flow {
+            ControlFlow::Continue(()) => {
+                *offset_remaining = remaining;
+                Ok(Ok(false))
+            }
+            ControlFlow::Break(Ok(true)) => {
+                *offset_remaining = 0;
+                Ok(Ok(true))
+            }
+            ControlFlow::Break(Err(error)) => {
+                *offset_remaining = 0;
+                Ok(Err(error))
+            }
+            _ => unreachable!(),
+        }
+    }
+
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_by_directedness`] on the forward store.
     pub fn skip_then_visit_each_forward_out_edge_by_directedness<Visit, Err>(
         &self,
@@ -2291,21 +2334,48 @@ where
     }
 
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the reverse store.
+    /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the reverse store.
     pub fn skip_then_visit_each_reverse_out_edge_for_label<Visit, Err>(
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
         offset_remaining: &mut usize,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<Result<bool, Err>, DeferredBidirectionalLabeledError>
     where
         Visit: FnMut(E) -> Result<bool, Err>,
     {
-        self.reverse
-            .skip_then_visit_each_out_edge_for_label(dst, label_id, offset_remaining, visit)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
+        let mut remaining = *offset_remaining;
+        let flow = self
+            .reverse
+            .visit_edges(dst, label_id, OutEdgeOrder::Descending, |_slot, edge| {
+                if remaining > 0 {
+                    remaining -= 1;
+                    return ControlFlow::<Result<bool, Err>>::Continue(());
+                }
+                match visit(edge.with_label_id(label_id.raw())) {
+                    Ok(false) => ControlFlow::Continue(()),
+                    Ok(true) => ControlFlow::Break(Ok(true)),
+                    Err(error) => ControlFlow::Break(Err(error)),
+                }
+            })
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        match flow {
+            ControlFlow::Continue(()) => {
+                *offset_remaining = remaining;
+                Ok(Ok(false))
+            }
+            ControlFlow::Break(Ok(true)) => {
+                *offset_remaining = 0;
+                Ok(Ok(true))
+            }
+            ControlFlow::Break(Err(error)) => {
+                *offset_remaining = 0;
+                Ok(Err(error))
+            }
+            _ => unreachable!(),
+        }
     }
-
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_by_directedness`] on the reverse store.
     pub fn skip_then_visit_each_reverse_out_edge_by_directedness<Visit, Err>(
         &self,
