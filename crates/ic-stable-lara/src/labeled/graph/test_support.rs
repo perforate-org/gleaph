@@ -1,5 +1,7 @@
 //! Shared fixtures for labeled graph tests.
 
+use std::ops::ControlFlow;
+
 pub use super::error::LabeledOperationError;
 pub use super::iter::LabeledEdgeInlineValueBatchScratch;
 pub use super::{LabeledLaraGraph, OutEdgeOrder};
@@ -464,22 +466,24 @@ pub fn exercise_labeled_hub_scan_paths(
             .for_each_edges_for_label_unchecked(hub, label, |_| ())
             .unwrap();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 hub,
                 label,
                 OutEdgeOrder::Ascending,
                 &mut payload_scratch,
-                |_| (),
+                |_| ControlFlow::<()>::Continue(()),
             )
+            .map(|_| ())
             .unwrap();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 hub,
                 label,
                 OutEdgeOrder::Descending,
                 &mut payload_scratch,
-                |_| (),
+                |_| ControlFlow::<()>::Continue(()),
             )
+            .map(|_| ())
             .unwrap();
     }
 }

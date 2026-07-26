@@ -1038,14 +1038,15 @@ fn bench_labeled_payload_log_scan_8b_inline_overflow() -> canbench_rs::BenchResu
     bench_fn(|| {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
             let mut byte_count = 0usize;
-            graph
-                .visit_out_inline_value_batches_for_label(
+            let _ = graph
+                .visit_out_inline_value_batches_for_label_next(
                     vid,
                     label,
                     OutEdgeOrder::Descending,
                     &mut scratch,
                     |batch| {
                         byte_count = byte_count.saturating_add(batch.values.len());
+                        ControlFlow::<()>::Continue(())
                     },
                 )
                 .expect("payload batches");

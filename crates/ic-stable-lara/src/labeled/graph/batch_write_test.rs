@@ -17,6 +17,7 @@ mod tests {
     use crate::labeled::graph::{LabeledLaraGraph, OutEdgeOrder};
     use crate::labeled::record::LabeledVertex;
     use crate::lara::edge_inline_value::force_payload_allocation_error_after;
+    use std::ops::ControlFlow;
     use std::panic::AssertUnwindSafe;
 
     fn segment16_payload_graph() -> LabeledLaraGraph<PayloadTestEdge, crate::VectorMemory> {
@@ -77,7 +78,7 @@ mod tests {
         let mut scratch = LabeledEdgeInlineValueBatchScratch::<PayloadTestEdge>::default();
         let mut out: Vec<Vec<u8>> = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 src,
                 label_id,
                 OutEdgeOrder::Ascending,
@@ -87,8 +88,10 @@ mod tests {
                     for chunk in batch.inline_value_bytes.chunks(width) {
                         out.push(chunk.to_vec());
                     }
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         out
     }

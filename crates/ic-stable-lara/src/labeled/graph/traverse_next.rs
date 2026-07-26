@@ -30,6 +30,11 @@ mod bench;
 
 use super::{BucketSearch, LabeledLaraGraph, OutEdgeOrder, error::LabeledOperationError};
 
+use super::iter::{
+    HybridOverflowEdgeReplay, LabeledEdgeInlineValueBatch, LabeledEdgeInlineValueBatchScratch,
+    LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch,
+};
+
 #[derive(Clone, Copy, Debug)]
 pub struct LabeledTraversalRequest {
     pub(crate) owner: VertexId,
@@ -75,6 +80,14 @@ impl InlinePropertyBytes {
 }
 
 /// A live edge row together with its exact inline-property bytes.
+/// Target payload bytes per batch; matches the legacy traverse batch sizing.
+const EDGE_PAYLOAD_BATCH_TARGET_BYTES: usize = 2048;
+
+#[inline]
+fn slab_slot_deleted(slot: u32, deleted_slab_offsets: &[u32]) -> bool {
+    deleted_slab_offsets.binary_search(&slot).is_ok()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgeWithInlineProperty<E> {
     /// The topology-only edge row.
@@ -787,6 +800,808 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
+    /// Visits outgoing payload value bytes for one label in batches.
+    pub(crate) fn visit_out_inline_value_batches_for_label_next<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        mut visit: impl FnMut(LabeledPayloadValueBatch<'_>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        // A phase-1 call always resets the cached replay so a stale replay from a previous
+        // `(owner, label)` can never survive an early return and be reused by a later phase 2.
+        scratch.hybrid_overflow_replay.clear();
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        if vertex.is_default_edge_labeled() {
+            if label != self.bypass_storage_label_for(&vertex) {
+                return Ok(ControlFlow::Continue(()));
+            }
+            // Default-label bypass edges have no inline values; emit nothing.
+            return Ok(ControlFlow::Continue(()));
+        }
+        let BucketSearch::Found {
+            slot: bucket_slot,
+            bucket,
+        } = self.find_bucket(owner, &vertex, label)?
+        else {
+            return Ok(ControlFlow::Continue(()));
+        };
+        if bucket.degree() == 0 || bucket.inline_value_byte_width() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        if crate::labeled::invariants::bucket_dense_inline_value_batch_eligible(&bucket) {
+            return self.visit_dense_out_inline_value_batches_for_bucket_next(
+                owner, label, &bucket, order, scratch, &mut visit,
+            );
+        }
+
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let mut iter =
+            self.labeled_bucket_span_iter(owner, order, &vertex, &[bucket], 0, bucket_index, true)?;
+
+        if bucket.overflow_log_head() >= 0 {
+            return self.visit_hybrid_out_inline_value_batches_for_bucket_next(
+                owner, label, &bucket, order, scratch, &mut visit,
+            );
+        }
+
+        let width = usize::from(bucket.inline_value_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        loop {
+            scratch.clear();
+            scratch.slot_indices.reserve(batch_edges);
+            scratch.values.reserve(batch_edges * width);
+            for _ in 0..batch_edges {
+                let Some(result) = iter.next_with_slot() else {
+                    break;
+                };
+                let (slot, edge) = result?;
+                scratch.slot_indices.push(slot);
+                scratch
+                    .values
+                    .extend_from_slice(edge.edge_inline_value_bytes());
+            }
+            if scratch.slot_indices.is_empty() {
+                return Ok(ControlFlow::Continue(()));
+            }
+            if let ControlFlow::Break(value) = visit(LabeledPayloadValueBatch {
+                label_id: label,
+                byte_width: bucket.inline_value_byte_width(),
+                order,
+                slot_indices: &scratch.slot_indices,
+                values: &scratch.values,
+                dense: false,
+            }) {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+    }
+
+    fn visit_hybrid_out_inline_value_batches_for_bucket_next<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        bucket: &LabelBucket,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut impl FnMut(LabeledPayloadValueBatch<'_>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
+        let payload_slab_slots = bucket.inline_value_slab_slots();
+        let log_chains = self.bucket_payload_log_chain_opt(owner, bucket);
+
+        if order == OutEdgeOrder::Descending {
+            let prefetched = self.edges.prefetch_overflow_log_replay_desc(
+                self.payload_log_leaf(owner),
+                bucket.overflow_log_head(),
+            )?;
+            let reserved_log_slots = u32::try_from(prefetched.0.len())
+                .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
+            let reserved = bucket.stored_slots.saturating_add(reserved_log_slots);
+            // If the bucket has tombstones in the overflow log, fall back to the sparse
+            // iterator path so we emit only live edges and their values.
+            if reserved != bucket.degree() {
+                return self.visit_sparse_out_inline_value_batches_for_bucket_next(
+                    owner, label, bucket, order, scratch, visit,
+                );
+            }
+            let deleted_slab_offsets = prefetched.1.clone();
+            let edge_slab_slots = slab_slots;
+            let value_slab_slots = payload_slab_slots.min(edge_slab_slots);
+            let _ = self.visit_dense_out_inline_value_batches_for_slab_prefix_next(
+                bucket,
+                value_slab_slots,
+                &deleted_slab_offsets,
+                order,
+                scratch,
+                visit,
+                false,
+                true,
+            )?;
+            let _ = self.visit_payload_log_ordinals_in_edge_slab_next(
+                owner,
+                bucket,
+                value_slab_slots,
+                edge_slab_slots,
+                order,
+                scratch,
+                visit,
+                log_chains.as_ref(),
+            )?;
+            let _ = self.emit_hybrid_overflow_log_inline_values_desc_next(
+                owner,
+                bucket,
+                prefetched,
+                order,
+                scratch,
+                visit,
+                log_chains.as_ref(),
+            )?;
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        let prefetched = self.edges.prefetch_overflow_log_inserted_tags_asc(
+            self.payload_log_leaf(owner),
+            bucket.overflow_log_head(),
+        )?;
+        let reserved_log_slots =
+            u32::try_from(prefetched.0.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
+        let reserved = bucket.stored_slots.saturating_add(reserved_log_slots);
+        if reserved != bucket.degree() {
+            return self.visit_sparse_out_inline_value_batches_for_bucket_next(
+                owner, label, bucket, order, scratch, visit,
+            );
+        }
+        let deleted_slab_offsets = prefetched.1.clone();
+        let edge_slab_slots = slab_slots;
+        let value_slab_slots = payload_slab_slots.min(edge_slab_slots);
+        let _ = self.visit_dense_out_inline_value_batches_for_slab_prefix_next(
+            bucket,
+            value_slab_slots,
+            &deleted_slab_offsets,
+            order,
+            scratch,
+            visit,
+            false,
+            true,
+        )?;
+        let _ = self.visit_payload_log_ordinals_in_edge_slab_next(
+            owner,
+            bucket,
+            value_slab_slots,
+            edge_slab_slots,
+            order,
+            scratch,
+            visit,
+            log_chains.as_ref(),
+        )?;
+        let _ = self.emit_hybrid_overflow_log_inline_values_asc_next(
+            owner,
+            bucket,
+            prefetched,
+            order,
+            scratch,
+            visit,
+            log_chains.as_ref(),
+        )?;
+        Ok(ControlFlow::Continue(()))
+    }
+
+    fn visit_dense_out_inline_value_batches_for_slab_prefix_next<B>(
+        &self,
+        bucket: &LabelBucket,
+        scan_slots: u32,
+        deleted_slab_offsets: &[u32],
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut impl FnMut(LabeledPayloadValueBatch<'_>) -> ControlFlow<B>,
+        _dense: bool,
+        omit_edge_slab_reads: bool,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if scan_slots == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let width = usize::from(bucket.inline_value_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let label_id = bucket.bucket_label_key();
+        let mut ordered: Vec<(u32, u32)> = (0..scan_slots)
+            .filter(|slot| {
+                if slab_slot_deleted(*slot, deleted_slab_offsets) {
+                    return false;
+                }
+                if omit_edge_slab_reads {
+                    return true;
+                }
+                let edge = self.edges.read_slot(bucket.edge_start() + u64::from(*slot));
+                !edge.is_deleted_slot() && !edge.is_tombstone_edge()
+            })
+            .enumerate()
+            .map(|(ordinal, slot)| {
+                u32::try_from(ordinal)
+                    .map(|ordinal| (slot, ordinal))
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)
+            })
+            .collect::<Result<_, _>>()?;
+        if matches!(order, OutEdgeOrder::Descending) {
+            ordered.reverse();
+        }
+        for chunk in ordered.chunks(batch_edges) {
+            scratch.clear();
+            for &(slot, ordinal) in chunk {
+                let offset =
+                    crate::labeled::invariants::inline_value_byte_offset_at_slot(bucket, ordinal)?;
+                let mut value = vec![0u8; width];
+                self.values.read_bytes(offset, &mut value);
+                scratch.slot_indices.push(slot);
+                scratch.values.extend_from_slice(&value);
+            }
+            if !scratch.slot_indices.is_empty()
+                && let ControlFlow::Break(value) = visit(LabeledPayloadValueBatch {
+                    label_id,
+                    byte_width: bucket.inline_value_byte_width(),
+                    order,
+                    slot_indices: &scratch.slot_indices,
+                    values: &scratch.values,
+                    dense: false,
+                })
+            {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
+    fn visit_payload_log_ordinals_in_edge_slab_next<B>(
+        &self,
+        owner: VertexId,
+        bucket: &LabelBucket,
+        start_ordinal: u32,
+        end_ordinal: u32,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut impl FnMut(LabeledPayloadValueBatch<'_>) -> ControlFlow<B>,
+        log_chain: Option<&Vec<u32>>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if start_ordinal >= end_ordinal {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let width = usize::from(bucket.inline_value_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let label_id = bucket.bucket_label_key();
+        let mut remaining = end_ordinal - start_ordinal;
+        while remaining > 0 {
+            let take = remaining.min(batch_edges as u32);
+            scratch.clear();
+            match order {
+                OutEdgeOrder::Ascending => {
+                    let first = start_ordinal + remaining - take;
+                    for ordinal in first..first + take {
+                        let payload =
+                            self.read_bucket_payload_for_slot(owner, bucket, ordinal, log_chain)?;
+                        scratch.slot_indices.push(ordinal);
+                        scratch.values.extend_from_slice(&payload);
+                    }
+                }
+                OutEdgeOrder::Descending => {
+                    let high = start_ordinal + remaining;
+                    for ordinal in (high - take..high).rev() {
+                        let payload =
+                            self.read_bucket_payload_for_slot(owner, bucket, ordinal, log_chain)?;
+                        scratch.slot_indices.push(ordinal);
+                        scratch.values.extend_from_slice(&payload);
+                    }
+                }
+            }
+            if !scratch.slot_indices.is_empty()
+                && let ControlFlow::Break(value) = visit(LabeledPayloadValueBatch {
+                    label_id,
+                    byte_width: bucket.inline_value_byte_width(),
+                    order,
+                    slot_indices: &scratch.slot_indices,
+                    values: &scratch.values,
+                    dense: false,
+                })
+            {
+                return Ok(ControlFlow::Break(value));
+            }
+            remaining -= take;
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
+    fn emit_hybrid_overflow_log_inline_values_desc_next<B>(
+        &self,
+        owner: VertexId,
+        bucket: &LabelBucket,
+        prefetched: (Vec<Option<u32>>, Vec<u32>, Vec<u8>),
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut impl FnMut(LabeledPayloadValueBatch<'_>) -> ControlFlow<B>,
+        log_chains: Option<&Vec<u32>>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let leaf = self.payload_log_leaf(owner);
+        let (mut replay_entries, mut deleted_slab_offsets, log_table) = prefetched;
+        deleted_slab_offsets.sort_unstable();
+        let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
+        let label_id = bucket.bucket_label_key();
+        let width = usize::from(bucket.inline_value_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let reserved_log_slots = u32::try_from(replay_entries.len())
+            .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
+        let mut next_log_slot = slab_slots
+            .saturating_add(reserved_log_slots)
+            .saturating_sub(1);
+        let mut next_payload_ordinal = bucket.degree().saturating_sub(1);
+
+        let mut live_slots = Vec::with_capacity(replay_entries.len());
+        for &log_entry in &replay_entries {
+            if log_entry.is_none() {
+                next_log_slot = next_log_slot.saturating_sub(1);
+                continue;
+            }
+            let slot = next_log_slot;
+            next_log_slot = next_log_slot.saturating_sub(1);
+            live_slots.push((slot, next_payload_ordinal));
+            next_payload_ordinal = next_payload_ordinal.saturating_sub(1);
+        }
+        for chunk in live_slots.chunks(batch_edges) {
+            scratch.clear();
+            self.append_ordered_payload_ordinals_next(owner, bucket, chunk, log_chains, scratch)?;
+            if !scratch.slot_indices.is_empty()
+                && let ControlFlow::Break(value) = visit(LabeledPayloadValueBatch {
+                    label_id,
+                    byte_width: bucket.inline_value_byte_width(),
+                    order,
+                    slot_indices: &scratch.slot_indices,
+                    values: &scratch.values,
+                    dense: false,
+                })
+            {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+        let replay = &mut scratch.hybrid_overflow_replay;
+        replay.clear();
+        replay.src = owner;
+        replay.leaf = leaf;
+        replay.label_id = label_id;
+        replay.slab_slots = slab_slots;
+        replay.degree = bucket.degree();
+        replay.stored_slots = bucket.stored_slots;
+        replay.overflow_log_head = bucket.overflow_log_head();
+        replay.edge_start = bucket.edge_start();
+        replay.deleted_slab_offsets = deleted_slab_offsets.clone();
+        replay.log_table = log_table;
+        replay_entries.reverse();
+        replay.log_indices_by_slot = replay_entries;
+        Ok(ControlFlow::Continue(()))
+    }
+
+    fn emit_hybrid_overflow_log_inline_values_asc_next<B>(
+        &self,
+        owner: VertexId,
+        bucket: &LabelBucket,
+        prefetched: (Vec<Option<u32>>, Vec<u32>, Vec<u8>),
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut impl FnMut(LabeledPayloadValueBatch<'_>) -> ControlFlow<B>,
+        log_chains: Option<&Vec<u32>>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let leaf = self.payload_log_leaf(owner);
+        let (inserted_entries, deleted_slab_offsets, log_table) = prefetched;
+        let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
+        let label_id = bucket.bucket_label_key();
+        let width = usize::from(bucket.inline_value_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let mut next_inserted_log_slot = slab_slots;
+        let mut next_payload_ordinal = slab_slots
+            .saturating_sub(u32::try_from(deleted_slab_offsets.len()).unwrap_or(u32::MAX));
+
+        let mut live_slots = Vec::with_capacity(inserted_entries.len());
+        for &log_entry in &inserted_entries {
+            if log_entry.is_none() {
+                next_inserted_log_slot = next_inserted_log_slot.saturating_add(1);
+                continue;
+            }
+            let slot = next_inserted_log_slot;
+            next_inserted_log_slot = next_inserted_log_slot.saturating_add(1);
+            live_slots.push((slot, next_payload_ordinal));
+            next_payload_ordinal = next_payload_ordinal.saturating_add(1);
+        }
+        for chunk in live_slots.chunks(batch_edges) {
+            scratch.clear();
+            self.append_ordered_payload_ordinals_next(owner, bucket, chunk, log_chains, scratch)?;
+            if !scratch.slot_indices.is_empty()
+                && let ControlFlow::Break(value) = visit(LabeledPayloadValueBatch {
+                    label_id,
+                    byte_width: bucket.inline_value_byte_width(),
+                    order,
+                    slot_indices: &scratch.slot_indices,
+                    values: &scratch.values,
+                    dense: false,
+                })
+            {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+        let replay = &mut scratch.hybrid_overflow_replay;
+        replay.clear();
+        replay.src = owner;
+        replay.leaf = leaf;
+        replay.label_id = label_id;
+        replay.slab_slots = slab_slots;
+        replay.degree = bucket.degree();
+        replay.stored_slots = bucket.stored_slots;
+        replay.overflow_log_head = bucket.overflow_log_head();
+        replay.edge_start = bucket.edge_start();
+        replay.deleted_slab_offsets = deleted_slab_offsets.clone();
+        replay.log_table = log_table;
+        replay.log_indices_by_slot = inserted_entries;
+        Ok(ControlFlow::Continue(()))
+    }
+
+    fn append_ordered_payload_ordinals_next(
+        &self,
+        owner: VertexId,
+        bucket: &LabelBucket,
+        slots_and_ordinals: &[(u32, u32)],
+        log_chain: Option<&Vec<u32>>,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+    ) -> Result<(), LabeledOperationError> {
+        let width = usize::from(bucket.inline_value_byte_width());
+        let slab_slots = bucket.inline_value_slab_slots();
+        let mut i = 0usize;
+        while i < slots_and_ordinals.len() {
+            let (_, ordinal) = slots_and_ordinals[i];
+            if ordinal >= slab_slots {
+                let payload =
+                    self.read_bucket_payload_for_slot(owner, bucket, ordinal, log_chain)?;
+                scratch.slot_indices.push(slots_and_ordinals[i].0);
+                scratch.values.extend_from_slice(&payload);
+                i += 1;
+                continue;
+            }
+
+            let mut end = i + 1;
+            while end < slots_and_ordinals.len() {
+                let previous = slots_and_ordinals[end - 1].1;
+                let next = slots_and_ordinals[end].1;
+                if next >= slab_slots || previous.abs_diff(next) != 1 {
+                    break;
+                }
+                end += 1;
+            }
+            let first = slots_and_ordinals[i].1;
+            let last = slots_and_ordinals[end - 1].1;
+            let low = first.min(last);
+            let count = end - i;
+            let byte_len = count
+                .checked_mul(width)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let offset = crate::labeled::invariants::inline_value_byte_offset_at_slot(bucket, low)?;
+            let mut bytes = vec![0u8; byte_len];
+            self.values.read_bytes(offset, &mut bytes);
+            for &(slot, ordinal) in &slots_and_ordinals[i..end] {
+                let value_index = usize::try_from(ordinal.saturating_sub(low))
+                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                let start = value_index
+                    .checked_mul(width)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                scratch.slot_indices.push(slot);
+                scratch
+                    .values
+                    .extend_from_slice(&bytes[start..start + width]);
+            }
+            i = end;
+        }
+        Ok(())
+    }
+
+    fn visit_sparse_out_inline_value_batches_for_bucket_next<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        bucket: &LabelBucket,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut impl FnMut(LabeledPayloadValueBatch<'_>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let vertex = self.vertices.get(owner);
+        let bucket_slot = match self.find_bucket(owner, &vertex, label)? {
+            BucketSearch::Found { slot, .. } => slot,
+            BucketSearch::Missing { .. } => return Ok(ControlFlow::Continue(())),
+        };
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let mut iter = self.labeled_bucket_span_iter(
+            owner,
+            order,
+            &self.vertices.get(owner),
+            &[*bucket],
+            0,
+            bucket_index,
+            true,
+        )?;
+        let width = usize::from(bucket.inline_value_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        loop {
+            scratch.clear();
+            scratch.slot_indices.reserve(batch_edges);
+            scratch.values.reserve(batch_edges * width);
+            for _ in 0..batch_edges {
+                let Some(result) = iter.next_with_slot() else {
+                    break;
+                };
+                let (slot, edge) = result?;
+                scratch.slot_indices.push(slot);
+                scratch
+                    .values
+                    .extend_from_slice(edge.edge_inline_value_bytes());
+            }
+            if scratch.slot_indices.is_empty() {
+                return Ok(ControlFlow::Continue(()));
+            }
+            if let ControlFlow::Break(value) = visit(LabeledPayloadValueBatch {
+                label_id: label,
+                byte_width: bucket.inline_value_byte_width(),
+                order,
+                slot_indices: &scratch.slot_indices,
+                values: &scratch.values,
+                dense: false,
+            }) {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+    }
+
+    fn visit_dense_out_inline_value_batches_for_bucket_next<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        bucket: &LabelBucket,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut impl FnMut(LabeledPayloadValueBatch<'_>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let degree = bucket.degree();
+        let width = usize::from(bucket.inline_value_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let payload_bytes = self.read_bucket_payload_span(owner, bucket, 0, degree)?;
+        let mut remaining = degree;
+        while remaining > 0 {
+            let take = remaining.min(batch_edges as u32);
+            let first_slot = match order {
+                OutEdgeOrder::Descending => remaining - take,
+                OutEdgeOrder::Ascending => degree - remaining,
+            };
+            scratch.clear();
+            scratch.slot_indices.reserve(take as usize);
+            scratch.values.reserve(take as usize * width);
+            match order {
+                OutEdgeOrder::Ascending => {
+                    for i in 0..take as usize {
+                        let slot = first_slot + i as u32;
+                        let value_off = i * width;
+                        scratch.slot_indices.push(slot);
+                        scratch
+                            .values
+                            .extend_from_slice(&payload_bytes[value_off..value_off + width]);
+                    }
+                }
+                OutEdgeOrder::Descending => {
+                    for i in (0..take as usize).rev() {
+                        let slot = first_slot + i as u32;
+                        let value_off = i * width;
+                        scratch.slot_indices.push(slot);
+                        scratch
+                            .values
+                            .extend_from_slice(&payload_bytes[value_off..value_off + width]);
+                    }
+                }
+            }
+            if !scratch.slot_indices.is_empty()
+                && let ControlFlow::Break(value) = visit(LabeledPayloadValueBatch {
+                    label_id: label,
+                    byte_width: bucket.inline_value_byte_width(),
+                    order,
+                    slot_indices: &scratch.slot_indices,
+                    values: &scratch.values,
+                    dense: true,
+                })
+            {
+                return Ok(ControlFlow::Break(value));
+            }
+            remaining -= take;
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
+    /// Visits outgoing edges and their parallel inline-value bytes for one label in batches.
+    pub(crate) fn visit_out_edge_inline_value_batches_for_label_next<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<E>,
+        mut visit: impl FnMut(LabeledEdgeInlineValueBatch<'_, E>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        if vertex.is_default_edge_labeled() {
+            if label != self.bypass_storage_label_for(&vertex) {
+                return Ok(ControlFlow::Continue(()));
+            }
+            // Default-label bypass edges have no inline values; emit nothing.
+            return Ok(ControlFlow::Continue(()));
+        }
+        let BucketSearch::Found {
+            slot: bucket_slot,
+            bucket,
+        } = self.find_bucket(owner, &vertex, label)?
+        else {
+            return Ok(ControlFlow::Continue(()));
+        };
+        if bucket.degree() == 0 || bucket.inline_value_byte_width() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        if crate::labeled::invariants::bucket_dense_inline_value_batch_eligible(&bucket) {
+            return self.visit_dense_out_edge_inline_value_batches_for_bucket_next(
+                owner, label, &bucket, order, scratch, &mut visit,
+            );
+        }
+
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let mut iter =
+            self.labeled_bucket_span_iter(owner, order, &vertex, &[bucket], 0, bucket_index, true)?;
+
+        let width = usize::from(bucket.inline_value_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        loop {
+            scratch.clear();
+            scratch.edges.reserve(batch_edges);
+            scratch.inline_value_bytes.reserve(batch_edges * width);
+            for _ in 0..batch_edges {
+                let Some(result) = iter.next_with_slot() else {
+                    break;
+                };
+                let (_slot, edge) = result?;
+                scratch
+                    .inline_value_bytes
+                    .extend_from_slice(edge.edge_inline_value_bytes());
+                scratch.edges.push(edge);
+            }
+            if scratch.edges.is_empty() {
+                return Ok(ControlFlow::Continue(()));
+            }
+            if let ControlFlow::Break(value) = visit(LabeledEdgeInlineValueBatch {
+                label_id: label,
+                byte_width: bucket.inline_value_byte_width(),
+                order,
+                edges: &scratch.edges,
+                inline_value_bytes: &scratch.inline_value_bytes,
+                dense: false,
+            }) {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+    }
+
+    fn visit_dense_out_edge_inline_value_batches_for_bucket_next<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        bucket: &LabelBucket,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<E>,
+        visit: &mut impl FnMut(LabeledEdgeInlineValueBatch<'_, E>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let degree = bucket.degree();
+        let width = usize::from(bucket.inline_value_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let edge_bytes_len =
+            (degree as usize)
+                .checked_mul(E::BYTES)
+                .ok_or(LabeledOperationError::from(
+                    LaraOperationError::CollectAllocationOverflow,
+                ))?;
+        let mut raw_edges = vec![0u8; edge_bytes_len];
+        self.edges
+            .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
+        let payload_bytes = self.read_bucket_payload_span(owner, bucket, 0, degree)?;
+        let mut remaining = degree;
+        while remaining > 0 {
+            let take = remaining.min(batch_edges as u32);
+            let first_slot = match order {
+                OutEdgeOrder::Descending => remaining - take,
+                OutEdgeOrder::Ascending => degree - remaining,
+            };
+            scratch.clear();
+            scratch.edges.reserve(take as usize);
+            scratch.inline_value_bytes.reserve(take as usize * width);
+            match order {
+                OutEdgeOrder::Ascending => {
+                    for i in 0..take as usize {
+                        let slot = first_slot + i as u32;
+                        let edge_off = i * E::BYTES;
+                        let value_off = i * width;
+                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
+                            .with_slot_index(slot)
+                            .with_label_id(label.raw());
+                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                            continue;
+                        }
+                        scratch.edges.push(edge);
+                        scratch
+                            .inline_value_bytes
+                            .extend_from_slice(&payload_bytes[value_off..value_off + width]);
+                    }
+                }
+                OutEdgeOrder::Descending => {
+                    for i in (0..take as usize).rev() {
+                        let slot = first_slot + i as u32;
+                        let edge_off = i * E::BYTES;
+                        let value_off = i * width;
+                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
+                            .with_slot_index(slot)
+                            .with_label_id(label.raw());
+                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                            continue;
+                        }
+                        scratch.edges.push(edge);
+                        scratch
+                            .inline_value_bytes
+                            .extend_from_slice(&payload_bytes[value_off..value_off + width]);
+                    }
+                }
+            }
+            if !scratch.edges.is_empty()
+                && let ControlFlow::Break(value) = visit(LabeledEdgeInlineValueBatch {
+                    label_id: label,
+                    byte_width: bucket.inline_value_byte_width(),
+                    order,
+                    edges: &scratch.edges,
+                    inline_value_bytes: &scratch.inline_value_bytes,
+                    dense: true,
+                })
+            {
+                return Ok(ControlFlow::Break(value));
+            }
+            remaining -= take;
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
     /// Visits a selected set of logical slots for one label in the requested order.
     pub(crate) fn visit_edges_at<B>(
         &self,
@@ -809,7 +1624,7 @@ where
         label: BucketLabelKey,
         slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
-        replay: Option<&super::iter::HybridOverflowEdgeReplay>,
+        replay: Option<&HybridOverflowEdgeReplay>,
         mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where

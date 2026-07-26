@@ -1982,7 +1982,7 @@ mod tests {
         let mut asc_slots = Vec::new();
         let mut asc = Vec::new();
         graph
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Ascending,
@@ -2000,8 +2000,10 @@ mod tests {
                             .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(asc_slots, vec![0, 1, 2]);
         assert_eq!(asc, vec![10, 20, 30]);
@@ -2009,7 +2011,7 @@ mod tests {
         let mut desc_slots = Vec::new();
         let mut desc = Vec::new();
         graph
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
@@ -2025,8 +2027,10 @@ mod tests {
                             .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(desc_slots, vec![2, 1, 0]);
         assert_eq!(desc, vec![30, 20, 10]);
@@ -2056,19 +2060,23 @@ mod tests {
         let mut value_scratch = LabeledPayloadValueBatchScratch::default();
         let mut from_values = Vec::new();
         graph
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
                 &mut value_scratch,
-                |batch| from_values.extend_from_slice(batch.values),
+                |batch| {
+                    from_values.extend_from_slice(batch.values);
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
 
         let mut batch_scratch = LabeledEdgeInlineValueBatchScratch::default();
         let mut from_batches = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
@@ -2076,8 +2084,10 @@ mod tests {
                 |batch| {
                     assert!(batch.dense);
                     from_batches.extend_from_slice(batch.inline_value_bytes);
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(from_values, from_batches);
     }
@@ -2136,7 +2146,7 @@ mod tests {
         let mut from_batches = Vec::new();
         let mut batch_scratch = LabeledEdgeInlineValueBatchScratch::default();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
@@ -2146,8 +2156,10 @@ mod tests {
                         saw_dense_slab_batch = true;
                     }
                     from_batches.extend_from_slice(batch.inline_value_bytes);
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert!(
             !saw_dense_slab_batch,
@@ -2255,15 +2267,17 @@ mod tests {
         let mut from_values = Vec::new();
         let mut scratch = LabeledPayloadValueBatchScratch::default();
         graph
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
                 &mut scratch,
                 |batch| {
                     from_values.extend_from_slice(batch.values);
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(from_span, from_values);
     }
@@ -2289,7 +2303,7 @@ mod tests {
         let mut value_scratch = LabeledPayloadValueBatchScratch::default();
         let mut match_slots = Vec::new();
         graph
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
@@ -2304,8 +2318,10 @@ mod tests {
                             match_slots.push(*slot);
                         }
                     }
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert!(!match_slots.is_empty());
 
@@ -2331,7 +2347,7 @@ mod tests {
         let mut batch_scratch = LabeledEdgeInlineValueBatchScratch::default();
         let mut combined = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
@@ -2348,8 +2364,10 @@ mod tests {
                             combined.push(edge.target);
                         }
                     }
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(two_phase, combined);
     }
@@ -2386,7 +2404,7 @@ mod tests {
         let mut values = Vec::new();
         let mut scratch = LabeledPayloadValueBatchScratch::default();
         graph
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Ascending,
@@ -2401,8 +2419,10 @@ mod tests {
                             .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
 
         assert_eq!(slots, (0..34).collect::<Vec<_>>());
@@ -2563,7 +2583,7 @@ mod tests {
         let mut value_scratch = LabeledPayloadValueBatchScratch::default();
         let mut match_slots = Vec::new();
         graph
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
@@ -2578,8 +2598,10 @@ mod tests {
                             match_slots.push(*slot);
                         }
                     }
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(match_slots, vec![2, 1]);
 
@@ -2606,7 +2628,7 @@ mod tests {
         let mut batch_scratch = LabeledEdgeInlineValueBatchScratch::default();
         let mut combined = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
@@ -2623,8 +2645,10 @@ mod tests {
                             combined.push(edge.target);
                         }
                     }
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(two_phase, combined);
     }
@@ -2708,7 +2732,7 @@ mod tests {
         let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
         let mut asc = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Ascending,
@@ -2724,8 +2748,10 @@ mod tests {
                             .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(asc, vec![10, 20, 30]);
         let mut from_iter = Vec::new();
@@ -2753,7 +2779,7 @@ mod tests {
 
         let mut desc = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
@@ -2768,8 +2794,10 @@ mod tests {
                             .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(desc, vec![30, 20, 10]);
     }
@@ -2804,7 +2832,7 @@ mod tests {
         let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
         let mut tiny_bytes = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 tiny,
                 OutEdgeOrder::Ascending,
@@ -2813,14 +2841,16 @@ mod tests {
                     assert_eq!(batch.label_id, tiny);
                     assert_eq!(batch.byte_width, 1u16);
                     tiny_bytes.extend_from_slice(batch.inline_value_bytes);
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(tiny_bytes, vec![7]);
 
         let mut wide_bytes = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 wide,
                 OutEdgeOrder::Ascending,
@@ -2829,8 +2859,10 @@ mod tests {
                     assert_eq!(batch.label_id, wide);
                     assert_eq!(batch.byte_width, 16u16);
                     wide_bytes.extend_from_slice(batch.inline_value_bytes);
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(wide_bytes, vec![9; 16]);
     }
@@ -2881,13 +2913,17 @@ mod tests {
         let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
         let mut from_batches = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
                 &mut scratch,
-                |batch| from_batches.extend_from_slice(batch.inline_value_bytes),
+                |batch| {
+                    from_batches.extend_from_slice(batch.inline_value_bytes);
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(from_batches, from_iter);
     }
@@ -3010,7 +3046,7 @@ mod tests {
         let mut values = Vec::new();
         let mut scratch = LabeledPayloadValueBatchScratch::default();
         graph
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Ascending,
@@ -3024,8 +3060,10 @@ mod tests {
                             .iter()
                             .map(|b| u16::from_le_bytes([b[0], b[1]])),
                     );
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
 
         assert_eq!(values, (2..=33).collect::<Vec<_>>());
@@ -3361,12 +3399,12 @@ mod tests {
 
         let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
         let err = graph
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_value_batches_for_label_next(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
                 &mut scratch,
-                |_| {},
+                |_| ControlFlow::<()>::Continue(()),
             )
             .expect_err("payload batch traversal must report corrupt payload log");
         assert!(
@@ -3378,7 +3416,10 @@ mod tests {
     #[test]
     fn find_out_edge_predicate_sees_attached_payload() {
         let graph = inline_value_test_graph();
-        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .push_vertex(LabeledVertex::default())
+            .map(|_| ())
+            .unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
             .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), road, 2u16)

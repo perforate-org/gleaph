@@ -2122,13 +2122,17 @@ where
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
         scratch: &mut crate::labeled::LabeledPayloadValueBatchScratch,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         Visit: for<'b> FnMut(crate::labeled::LabeledPayloadValueBatch<'b>),
     {
         self.forward
-            .visit_out_inline_value_batches_for_label(src, label_id, order, scratch, visit)
+            .visit_out_inline_value_batches_for_label_next(src, label_id, order, scratch, |batch| {
+                visit(batch);
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2194,13 +2198,23 @@ where
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
         scratch: &mut crate::labeled::LabeledEdgeInlineValueBatchScratch<E>,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         Visit: for<'b> FnMut(crate::labeled::LabeledEdgeInlineValueBatch<'b, E>),
     {
         self.forward
-            .visit_out_edge_inline_value_batches_for_label(src, label_id, order, scratch, visit)
+            .visit_out_edge_inline_value_batches_for_label_next(
+                src,
+                label_id,
+                order,
+                scratch,
+                |batch| {
+                    visit(batch);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2211,13 +2225,17 @@ where
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
         scratch: &mut crate::labeled::LabeledPayloadValueBatchScratch,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         Visit: for<'b> FnMut(crate::labeled::LabeledPayloadValueBatch<'b>),
     {
         self.reverse
-            .visit_out_inline_value_batches_for_label(dst, label_id, order, scratch, visit)
+            .visit_out_inline_value_batches_for_label_next(dst, label_id, order, scratch, |batch| {
+                visit(batch);
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -2286,13 +2304,23 @@ where
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
         scratch: &mut crate::labeled::LabeledEdgeInlineValueBatchScratch<E>,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         Visit: for<'b> FnMut(crate::labeled::LabeledEdgeInlineValueBatch<'b, E>),
     {
         self.reverse
-            .visit_out_edge_inline_value_batches_for_label(dst, label_id, order, scratch, visit)
+            .visit_out_edge_inline_value_batches_for_label_next(
+                dst,
+                label_id,
+                order,
+                scratch,
+                |batch| {
+                    visit(batch);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the forward store.
