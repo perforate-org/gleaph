@@ -20,7 +20,7 @@ use crate::{
     traits::{CsrEdge, CsrEdgeTombstone},
 };
 use ic_stable_structures::Memory;
-use std::{cell::Cell, ops::ControlFlow};
+use std::ops::ControlFlow;
 
 use crate::traverse::iter::{try_visit_indexed, visit_indexed};
 use crate::traverse::{Traversal, TraversalOrder, TraversalRequest, TraversalWindow};
@@ -29,23 +29,6 @@ use crate::traverse::{Traversal, TraversalOrder, TraversalRequest, TraversalWind
 mod bench;
 
 use super::{BucketSearch, LabeledLaraGraph, OutEdgeOrder, error::LabeledOperationError};
-
-#[derive(Debug)]
-enum LabeledWindowBreak<B> {
-    LimitReached,
-    Visitor(B),
-}
-
-fn finish_labeled_window<B>(
-    result: Result<ControlFlow<LabeledWindowBreak<B>>, LabeledOperationError>,
-) -> Result<ControlFlow<B>, LabeledOperationError> {
-    match result? {
-        ControlFlow::Continue(()) | ControlFlow::Break(LabeledWindowBreak::LimitReached) => {
-            Ok(ControlFlow::Continue(()))
-        }
-        ControlFlow::Break(LabeledWindowBreak::Visitor(value)) => Ok(ControlFlow::Break(value)),
-    }
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct LabeledTraversalRequest {
@@ -471,6 +454,191 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
+    /// Visits a bounded window of live edges for one label in the requested order.
+    ///
+    /// For dense, tombstone-free label buckets this bulk-reads the topology slab
+    /// and applies the offset/limit directly, avoiding the per-slot round trips
+    /// that the generic sparse path pays.
+    pub(crate) fn visit_edges_window<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        window: TraversalWindow,
+        mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if window.is_empty() {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        if vertex.is_default_edge_labeled() {
+            if label != self.bypass_storage_label_for(&vertex) {
+                return Ok(ControlFlow::Continue(()));
+            }
+            let mut offset = window.offset;
+            let mut remaining = window.limit;
+            return match order {
+                OutEdgeOrder::Ascending => {
+                    let mut iter = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
+                    while let Some((slot, edge)) = iter.next_with_slot() {
+                        if offset != 0 {
+                            offset -= 1;
+                            continue;
+                        }
+                        if let ControlFlow::Break(value) =
+                            visit(BucketEntryPosition::new(slot), edge)
+                        {
+                            return Ok(ControlFlow::Break(value));
+                        }
+                        if let Some(remaining) = remaining.as_mut() {
+                            *remaining -= 1;
+                            if *remaining == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(ControlFlow::Continue(()))
+                }
+                OutEdgeOrder::Descending => {
+                    let mut iter = self.edges.out_edges_iter(&self.vertices, owner)?;
+                    while let Some((slot, edge)) = iter.next_with_slot() {
+                        if offset != 0 {
+                            offset -= 1;
+                            continue;
+                        }
+                        if let ControlFlow::Break(value) =
+                            visit(BucketEntryPosition::new(slot), edge)
+                        {
+                            return Ok(ControlFlow::Break(value));
+                        }
+                        if let Some(remaining) = remaining.as_mut() {
+                            *remaining -= 1;
+                            if *remaining == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(ControlFlow::Continue(()))
+                }
+            };
+        }
+
+        let BucketSearch::Found {
+            slot: bucket_slot,
+            bucket,
+        } = self.find_bucket(owner, &vertex, label)?
+        else {
+            return Ok(ControlFlow::Continue(()));
+        };
+        if bucket.degree() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        // Dense, tombstone-free fast path: bulk-read the slab and apply offset/limit.
+        if bucket.overflow_log_head() < 0
+            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+        {
+            let degree = bucket.degree();
+            let edge_bytes_len =
+                (degree as usize)
+                    .checked_mul(E::BYTES)
+                    .ok_or(LabeledOperationError::from(
+                        LaraOperationError::CollectAllocationOverflow,
+                    ))?;
+            let mut raw_edges = vec![0u8; edge_bytes_len];
+            self.edges
+                .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
+
+            let offset = window.offset.min(degree);
+            let limit = window
+                .limit
+                .map(|l| l.min(degree - offset))
+                .unwrap_or(degree - offset);
+
+            match order {
+                OutEdgeOrder::Ascending => {
+                    let mut visited = 0u32;
+                    for slot in offset..degree {
+                        if visited >= limit {
+                            break;
+                        }
+                        let off = slot as usize * E::BYTES;
+                        let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                            .with_slot_index(slot)
+                            .with_label_id(label.raw());
+                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                            continue;
+                        }
+                        if let ControlFlow::Break(value) =
+                            visit(BucketEntryPosition::new(slot), edge)
+                        {
+                            return Ok(ControlFlow::Break(value));
+                        }
+                        visited += 1;
+                    }
+                }
+                OutEdgeOrder::Descending => {
+                    let start = degree.saturating_sub(offset + limit);
+                    let end = degree.saturating_sub(offset);
+                    let mut visited = 0u32;
+                    for slot in (start..end).rev() {
+                        if visited >= limit {
+                            break;
+                        }
+                        let off = slot as usize * E::BYTES;
+                        let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                            .with_slot_index(slot)
+                            .with_label_id(label.raw());
+                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                            continue;
+                        }
+                        if let ControlFlow::Break(value) =
+                            visit(BucketEntryPosition::new(slot), edge)
+                        {
+                            return Ok(ControlFlow::Break(value));
+                        }
+                        visited += 1;
+                    }
+                }
+            }
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        // Sparse path: skip `offset` live rows via the span iterator, then take `limit`.
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let mut iter = self.labeled_bucket_span_iter(
+            owner,
+            order,
+            &vertex,
+            &[bucket],
+            0,
+            bucket_index,
+            false,
+        )?;
+        if iter.try_advance_by(window.offset as usize).is_err() {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let mut remaining = window.limit;
+        while let Some(result) = iter.next_with_slot() {
+            let (slot, edge) = result?;
+            if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
+                return Ok(ControlFlow::Break(value));
+            }
+            if let Some(remaining) = remaining.as_mut() {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    break;
+                }
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
     pub(crate) fn visit_edges_with_inline_property<B>(
         &self,
         owner: VertexId,
@@ -837,77 +1005,19 @@ where
         &self,
         request: &Self::Request,
         window: TraversalWindow,
-        mut visit: impl FnMut(Self::Slot, Self::Edge) -> ControlFlow<B>,
+        visit: impl FnMut(Self::Slot, Self::Edge) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, Self::Error> {
         if window.is_empty() {
             return Ok(ControlFlow::Continue(()));
         }
-
-        let offset = Cell::new(window.offset);
-        let mut remaining = window.limit;
-        let mut window_visit = |slot: BucketEntryPosition, edge: E| {
-            if offset.get() != 0 {
-                offset.set(offset.get() - 1);
-                return ControlFlow::Continue(());
-            }
-            match visit(slot, edge) {
-                ControlFlow::Break(value) => ControlFlow::Break(LabeledWindowBreak::Visitor(value)),
-                ControlFlow::Continue(()) => match remaining.as_mut() {
-                    Some(remaining) => {
-                        *remaining -= 1;
-                        if *remaining == 0 {
-                            ControlFlow::Break(LabeledWindowBreak::LimitReached)
-                        } else {
-                            ControlFlow::Continue(())
-                        }
-                    }
-                    None => ControlFlow::Continue(()),
-                },
-            }
-        };
-
-        self.ensure_vertex(request.owner)?;
-        let vertex = self.vertices.get(request.owner);
-        let result = if vertex.is_default_edge_labeled() {
-            LabeledLaraGraph::visit_edges(
-                self,
-                request.owner,
-                request.label,
-                request.order,
-                &mut window_visit,
-            )
-        } else {
-            let placement = self.read_label_bucket_placement_info(request.owner, request.label)?;
-            let (logical_slots, skip_live) = match placement {
-                Some(info) => {
-                    let logical_slots = info
-                        .stored_edge_slots
-                        .checked_add(info.edge_overflow_log_len)
-                        .ok_or(LabeledOperationError::from(
-                            LaraOperationError::CollectAllocationOverflow,
-                        ))?;
-                    let skip_live = if info.degree == logical_slots {
-                        window.offset
-                    } else {
-                        0
-                    };
-                    (logical_slots, skip_live)
-                }
-                None => (0, 0),
-            };
-            if skip_live != 0 {
-                offset.set(0);
-            }
-            self.for_each_live_edge_slot_for_label_direct_with_control_flow(
-                request.owner,
-                request.label,
-                logical_slots,
-                request.order,
-                skip_live,
-                |slot, edge| window_visit(BucketEntryPosition::new(slot), edge),
-            )
-        };
-        finish_labeled_window(result)
+        LabeledLaraGraph::visit_edges_window(
+            self,
+            request.owner,
+            request.label,
+            request.order,
+            window,
+            visit,
+        )
     }
 
     fn visit_edges_with_inline_property<B>(
