@@ -1231,7 +1231,7 @@ where
 mod tests {
     use super::super::test_support::*;
     use super::super::{BucketSearch, *};
-    use crate::VertexId;
+    use crate::{VertexId, traverse::BucketEntryPosition};
     use std::ops::ControlFlow;
 
     /// Move `road` off the payload-slab tail, then update its last edge.  The
@@ -2311,13 +2311,21 @@ mod tests {
 
         let mut two_phase = Vec::new();
         graph
-            .read_out_edge_slots_for_label(
+            .visit_edges_at(
                 VertexId::from(0),
                 road,
-                &match_slots,
+                &match_slots
+                    .iter()
+                    .copied()
+                    .map(BucketEntryPosition::new)
+                    .collect::<Vec<_>>(),
                 OutEdgeOrder::Descending,
-                |edge| two_phase.push(edge.target),
+                |_slot, edge| {
+                    two_phase.push(edge.target);
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
 
         let mut batch_scratch = LabeledEdgeInlineValueBatchScratch::default();
@@ -2424,37 +2432,57 @@ mod tests {
 
         let mut asc = Vec::new();
         graph
-            .read_out_edge_slots_for_label(
+            .visit_edges_at(
                 VertexId::from(0),
                 road,
-                &[0, 1, 2],
+                &[
+                    BucketEntryPosition::new(0),
+                    BucketEntryPosition::new(1),
+                    BucketEntryPosition::new(2),
+                ],
                 OutEdgeOrder::Ascending,
-                |edge| asc.push(edge.target),
+                |_slot, edge| {
+                    asc.push(edge.target);
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(asc, vec![1, 2, 3]);
 
         let mut desc = Vec::new();
         graph
-            .read_out_edge_slots_for_label(
+            .visit_edges_at(
                 VertexId::from(0),
                 road,
-                &[0, 1, 2],
+                &[
+                    BucketEntryPosition::new(0),
+                    BucketEntryPosition::new(1),
+                    BucketEntryPosition::new(2),
+                ],
                 OutEdgeOrder::Descending,
-                |edge| desc.push(edge.target),
+                |_slot, edge| {
+                    desc.push(edge.target);
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(desc, vec![3, 2, 1]);
 
         let mut subset = Vec::new();
         graph
-            .read_out_edge_slots_for_label(
+            .visit_edges_at(
                 VertexId::from(0),
                 road,
-                &[2, 0],
+                &[BucketEntryPosition::new(2), BucketEntryPosition::new(0)],
                 OutEdgeOrder::Descending,
-                |edge| subset.push(edge.target),
+                |_slot, edge| {
+                    subset.push(edge.target);
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(subset, vec![3, 1]);
     }
@@ -2495,13 +2523,21 @@ mod tests {
         let slots: Vec<u32> = from_foreach.iter().map(|(slot, _)| *slot).collect();
         let mut from_read = Vec::new();
         graph
-            .read_out_edge_slots_for_label(
+            .visit_edges_at(
                 VertexId::from(0),
                 road,
-                &slots,
+                &slots
+                    .iter()
+                    .copied()
+                    .map(BucketEntryPosition::new)
+                    .collect::<Vec<_>>(),
                 OutEdgeOrder::Descending,
-                |edge| from_read.push((edge.edge_slot_index_raw(), edge.target)),
+                |_slot, edge| {
+                    from_read.push((edge.edge_slot_index_raw(), edge.target));
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(from_read, from_foreach);
     }
@@ -2549,13 +2585,21 @@ mod tests {
 
         let mut two_phase = Vec::new();
         graph
-            .read_out_edge_slots_for_label(
+            .visit_edges_at(
                 VertexId::from(0),
                 road,
-                &match_slots,
+                &match_slots
+                    .iter()
+                    .copied()
+                    .map(BucketEntryPosition::new)
+                    .collect::<Vec<_>>(),
                 OutEdgeOrder::Descending,
-                |edge| two_phase.push(edge.target),
+                |_slot, edge| {
+                    two_phase.push(edge.target);
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(two_phase, vec![3, 2]);
 
@@ -2622,13 +2666,20 @@ mod tests {
 
         let mut read = Vec::new();
         graph
-            .read_out_edge_slots_for_label(
+            .visit_edges_at(
                 VertexId::from(0),
                 road,
-                &[first.0, last.0],
+                &[
+                    BucketEntryPosition::new(first.0),
+                    BucketEntryPosition::new(last.0),
+                ],
                 OutEdgeOrder::Ascending,
-                |edge| read.push((edge.edge_slot_index_raw(), edge.target)),
+                |_slot, edge| {
+                    read.push((edge.edge_slot_index_raw(), edge.target));
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(read, vec![first, last]);
     }
