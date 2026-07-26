@@ -9,11 +9,12 @@ use super::mate_storage::MateLocatorState;
 use super::{DeferredBidirectionalLabeledLaraGraph, Orientation};
 use crate::{
     VertexId,
-    labeled::{BucketEntryPosition, BucketLabelKey},
+    labeled::{BucketEntryPosition, BucketLabelKey, OutEdgeOrder},
     traits::CsrEdgeTombstone,
 };
 use ic_stable_structures::Memory;
 use std::fmt;
+use std::ops::ControlFlow;
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -105,9 +106,16 @@ where
 {
     let mut rows = Vec::new();
     graph
-        .for_each_live_edge_slot_for_label_desc(edge.owner_vertex_id, edge.label_id, |slot, row| {
-            rows.push((slot, row.neighbor_vid()));
-        })
+        .visit_edges(
+            edge.owner_vertex_id,
+            edge.label_id,
+            OutEdgeOrder::Descending,
+            |slot, row| {
+                rows.push((slot.raw(), row.neighbor_vid()));
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .map(|_| ())
         .map_err(|err| MateLookupError::ReadFailed(err.to_string()))?;
     let source_neighbor = rows
         .iter()
@@ -168,11 +176,13 @@ where
 {
     let mut matching_slots = Vec::new();
     graph
-        .for_each_live_edge_slot_for_label_desc(owner, label, |slot, row| {
+        .visit_edges(owner, label, OutEdgeOrder::Descending, |slot, row| {
             if row.neighbor_vid() == neighbor {
-                matching_slots.push(slot);
+                matching_slots.push(slot.raw());
             }
+            ControlFlow::<()>::Continue(())
         })
+        .map(|_| ())
         .map_err(|err| MateLookupError::ReadFailed(err.to_string()))?;
     let count = u32::try_from(matching_slots.len())
         .map_err(|_| MateLookupError::ReadFailed("counterpart rank overflow".into()))?;
@@ -326,11 +336,7 @@ where
             #[cfg(feature = "canbench-scopes")]
             let _scope = canbench_rs::bench_scope("published_counterpart_direct_slot_validation");
             let row = graph
-                .read_physical_edge_at_slot_for_label(
-                    mate.owner_vertex_id,
-                    mate.label_id,
-                    mate.slot_index.raw(),
-                )
+                .read_edge(mate.owner_vertex_id, mate.label_id, mate.slot_index)
                 .map_err(|error| MateLookupError::ReadFailed(error.to_string()))?
                 .ok_or_else(|| {
                     MateLookupError::ReadFailed(
@@ -352,20 +358,28 @@ where
     let mut matching = 0u32;
     let mut candidate_rank = None;
     graph
-        .for_each_live_edge_slot_for_label(mate.owner_vertex_id, mate.label_id, |slot, row| {
-            if slot == mate.slot_index.raw() {
-                seen = seen.saturating_add(1);
-                if row.neighbor_vid() != source.owner_vertex_id {
-                    seen = u32::MAX;
+        .visit_edges(
+            mate.owner_vertex_id,
+            mate.label_id,
+            OutEdgeOrder::Ascending,
+            |slot, row| {
+                let slot_raw = slot.raw();
+                if slot_raw == mate.slot_index.raw() {
+                    seen = seen.saturating_add(1);
+                    if row.neighbor_vid() != source.owner_vertex_id {
+                        seen = u32::MAX;
+                    }
                 }
-            }
-            if row.neighbor_vid() == source.owner_vertex_id {
-                if slot == mate.slot_index.raw() {
-                    candidate_rank = Some(matching);
+                if row.neighbor_vid() == source.owner_vertex_id {
+                    if slot_raw == mate.slot_index.raw() {
+                        candidate_rank = Some(matching);
+                    }
+                    matching = matching.saturating_add(1);
                 }
-                matching = matching.saturating_add(1);
-            }
-        })
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .map(|_| ())
         .map_err(|error| MateLookupError::ReadFailed(error.to_string()))?;
     if seen != 1 || mate.owner_vertex_id != expected_neighbor {
         return Err(MateLookupError::ReadFailed(

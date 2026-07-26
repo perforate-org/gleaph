@@ -7,8 +7,12 @@ use super::{
     DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, Orientation,
     deferred::MateLeafRebuildError,
 };
-use crate::{VertexId, labeled::BucketLabelKey};
+use crate::{
+    VertexId,
+    labeled::{BucketLabelKey, OutEdgeOrder},
+};
 use std::fmt;
+use std::ops::ControlFlow;
 
 use super::mate_promotion::{
     MateLeafPromotionConfig, MateLeafPromotionDecision, MateLeafPromotionPlan,
@@ -308,9 +312,11 @@ where
             }
             let mut source = Vec::new();
             source_graph
-                .for_each_live_edge_slot_for_label(owner, label, |slot, edge| {
-                    source.push((slot, edge.neighbor_vid()));
+                .visit_edges(owner, label, OutEdgeOrder::Ascending, |slot, edge| {
+                    source.push((slot.raw(), edge.neighbor_vid()));
+                    ControlFlow::<()>::Continue(())
                 })
+                .map(|_| ())
                 .map_err(|error| match orientation {
                     Orientation::Forward => graph_error(
                         orientation,
@@ -345,9 +351,16 @@ where
                 neighbor_order.push(*neighbor);
                 let mut counterpart_rows = Vec::new();
                 counterpart_graph
-                    .for_each_live_edge_slot_for_label(*neighbor, label, |mate_slot, edge| {
-                        counterpart_rows.push((mate_slot, edge.neighbor_vid()));
-                    })
+                    .visit_edges(
+                        *neighbor,
+                        label,
+                        OutEdgeOrder::Ascending,
+                        |mate_slot, edge| {
+                            counterpart_rows.push((mate_slot.raw(), edge.neighbor_vid()));
+                            ControlFlow::<()>::Continue(())
+                        },
+                    )
+                    .map(|_| ())
                     .map_err(|error| match counterpart_orientation {
                         Orientation::Forward => graph_error(
                             orientation,
