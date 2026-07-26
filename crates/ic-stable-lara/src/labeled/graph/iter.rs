@@ -436,6 +436,7 @@ where
 {
     type Item = Result<E, LabeledOperationError>;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.next_with_slot()
             .map(|result| result.map(|(_, edge)| edge))
@@ -447,6 +448,7 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    #[inline]
     pub(crate) fn next_with_slot(&mut self) -> Option<Result<(u32, E), LabeledOperationError>> {
         let edge = match &mut self.kind {
             LabeledBucketScanKind::Desc { iter } => iter.next_with_slot()?,
@@ -500,6 +502,7 @@ where
 {
     type Item = Result<E, LabeledOperationError>;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Empty => None,
@@ -550,6 +553,7 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    #[inline]
     pub(crate) fn next_with_slot(&mut self) -> Option<Result<(u32, E), LabeledOperationError>> {
         match self {
             Self::Empty => None,

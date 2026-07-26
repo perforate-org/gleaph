@@ -335,6 +335,7 @@ where
         self.deleted_slab_offsets.binary_search(&slot_idx).is_ok()
     }
 
+    #[inline]
     fn decode_slab_slot(&mut self, slot_idx: u32) -> E {
         out_edge_slab_decode_slot(
             self.store,
@@ -361,6 +362,7 @@ where
 {
     /// Returns the canonical logical slot explicitly, without relying on the edge type's
     /// optional slot annotation support.
+    #[inline]
     pub(crate) fn next_with_slot(&mut self) -> Option<(u32, E)> {
         if self.yield_remaining == 0 {
             return None;
@@ -616,6 +618,7 @@ where
         }
     }
 
+    #[inline]
     fn decode_slab_slot(&mut self, slot_idx: u32) -> E {
         out_edge_slab_decode_slot_asc(
             self.store,
@@ -641,6 +644,7 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    #[inline]
     pub(crate) fn next_with_slot(&mut self) -> Option<(u32, E)> {
         if self.remaining == 0 {
             return None;
