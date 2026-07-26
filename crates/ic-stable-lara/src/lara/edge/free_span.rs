@@ -1137,6 +1137,7 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(())
     }
 
+    #[inline]
     fn read_record(&self, id: SpanId) -> SpanRecord {
         let off = record_offset(id);
         SpanRecord {
@@ -1183,6 +1184,7 @@ impl<M: Memory> FreeSpanStore<M> {
         self.write_record(rec, id)
     }
 
+    #[inline]
     fn read_bin_head(&self, bin: usize) -> SpanId {
         crate::read_u64(
             &self.store,
@@ -1199,6 +1201,7 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(())
     }
 
+    #[inline]
     fn read_record_slots(&self) -> u64 {
         crate::read_u64(&self.store, Address::from(OFFSET_RECORD_SLOTS))
     }
@@ -1208,6 +1211,7 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(())
     }
 
+    #[inline]
     fn read_active_count(&self) -> u64 {
         crate::read_u64(&self.store, Address::from(OFFSET_ACTIVE_COUNT))
     }

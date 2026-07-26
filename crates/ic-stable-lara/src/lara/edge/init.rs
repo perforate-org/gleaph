@@ -223,6 +223,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     }
 
     /// Returns the cached edge-store header.
+    #[inline]
     pub fn header(&self) -> EdgeHeaderV1 {
         self.header.get()
     }
@@ -233,16 +234,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     }
 
     /// Returns the segment edge-count store.
+    #[inline]
     pub fn counts_store(&self) -> &SegmentEdgeCountsStore<E, M> {
         &self.counts
     }
 
     /// Returns the segment span-metadata store.
+    #[inline]
     pub fn span_meta_store(&self) -> &SegmentSpanMetaStore<M> {
         &self.span_meta
     }
 
     /// Returns the free-span index for retired slab ranges.
+    #[inline]
     pub fn free_span_store(&self) -> &FreeSpanStore<M> {
         &self.free_spans
     }

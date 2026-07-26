@@ -128,6 +128,7 @@ pub(crate) trait VertexAccess<V: CsrVertex> {
         id
     }
 
+    #[inline]
     fn get_in_range(&self, id: VertexId) -> Result<V, VertexAccessError> {
         if u32::from(id) >= self.len() {
             return Err(VertexAccessError::OutOfRange);

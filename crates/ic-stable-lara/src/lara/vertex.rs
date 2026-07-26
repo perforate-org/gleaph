@@ -464,6 +464,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     /// Reads the vertex row for `id`.
     ///
     /// Panics if `id >= self.len()`.
+    #[inline]
     pub fn get(&self, id: VertexId) -> V {
         let index = u64::from(id);
         assert!(index < u64::from(self.len()));
@@ -482,6 +483,7 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
     /// Replaces the vertex row for `id`.
     ///
     /// Panics if `id >= self.len()`.
+    #[inline]
     pub(crate) fn set(&self, id: VertexId, item: &V) {
         let index = u64::from(id);
         assert!(index < u64::from(self.len()));

@@ -124,6 +124,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(v.degree() > 0)
     }
 
+    #[inline]
     pub(crate) fn out_edges_iter<V, A>(
         &self,
         vertices: &A,
@@ -233,6 +234,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.out_edges_iter(vertices, vid)
     }
 
+    #[inline]
     pub(crate) fn asc_out_edges_iter<V, A>(
         &self,
         vertices: &A,
