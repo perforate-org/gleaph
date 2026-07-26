@@ -13,17 +13,17 @@ primitive.
 
 ## Context
 
-Gleaph uses a physical adjacency location as edge identity:
+Gleaph identifies a canonical adjacency occurrence by its owner, label, and tombstone-inclusive bucket position:
 
 ```text
-EdgeHandle = (owner_vertex_id, storage_label_id, LogicalEdgeSlot)
+EdgeHandle = (owner_vertex_id, storage_label_id, BucketEntryPosition)
 ```
 
 The persisted edge row stores only its target vertex. Its owner, label, orientation, and logical
 slot are supplied by the containing Labeled LARA bucket and iterator; raw slab/log locations stay
 inside LARA.
 
-A local logical edge is represented physically as follows:
+A canonical adjacency occurrence is represented at the LARA boundary as follows:
 
 | Logical edge                  | Physical entries                      | Canonical entry            |
 | ----------------------------- | ------------------------------------- | -------------------------- |
@@ -56,37 +56,39 @@ The bidirectional Labeled LARA owner exposes these final internal types:
 
 ```rust
 #[repr(transparent)]
-pub struct LogicalEdgeSlot(u32);
+pub struct BucketEntryPosition(u32);
 
 pub struct EdgeHandle {
     owner_vertex_id: VertexId,
     label_id: BucketLabelKey,
-    slot: LogicalEdgeSlot,
+    slot: BucketEntryPosition,
 }
 
-struct PhysicalEdgeRef {
+struct CanonicalEdgeOccurrence {
     orientation: LabeledOrientation,
     handle: EdgeHandle,
 }
 
 fn counterpart_of(
-    edge: PhysicalEdgeRef,
-) -> Result<PhysicalEdgeRef, CounterpartLookupError>;
+    edge: CanonicalEdgeOccurrence,
+) -> Result<CanonicalEdgeOccurrence, CounterpartLookupError>;
 
 fn canonical_handle(
-    edge: PhysicalEdgeRef,
+    edge: CanonicalEdgeOccurrence,
 ) -> Result<EdgeHandle, CounterpartLookupError>;
 ```
 
 The implementation uses `counterpart` consistently. Existing `mate` names in APIs, types, modules, tests, benchmarks, and documentation are renamed or removed.
 
-GraphStore retains canonical edge properties and derived-index events. It does not retain a physical counterpart map.
+GraphStore retains canonical edge properties and derived-index events. It does not retain a canonical counterpart occurrence map.
 
-`LogicalEdgeSlot` is the only slot type accepted by `EdgeHandle` and `PhysicalEdgeRef`. Raw slab
-offsets and overflow-log entry encodings are storage-internal values and are never accepted by
-counterpart APIs. Graph, Router, and graph-index may encode a logical slot as their existing wire
-`u32` field at an explicit adapter boundary, but those wire fields are not alternate constructors
-for `EdgeHandle`. This ADR has no compatibility alias for the previous raw-slot shape.
+`BucketEntryPosition` is the single slot type accepted by `EdgeHandle` and
+`CanonicalEdgeOccurrence`. Graph-kernel's `EdgeSlotIndex` is an alias for this same row-local
+logical position, not an alternate slot domain. Raw slab offsets and overflow-log entry encodings are
+storage-internal values and are never accepted by counterpart APIs. Raw `u32` values appear only at
+explicit wire/stable-key codec boundaries. The Graph alias codec rejects logical slots with bit 31
+set before adding its transitional reverse-in marker. This ADR has no compatibility alias for the
+previous raw-slot shape.
 
 ### 2. Canonical ownership is derived by edge semantics
 
@@ -286,11 +288,11 @@ Insert APIs return those locations directly:
 ```rust
 enum InsertedEdgeLocations {
     SelfLoop {
-        canonical: PhysicalEdgeRef,
+        canonical: CanonicalEdgeOccurrence,
     },
     Pair {
-        canonical: PhysicalEdgeRef,
-        counterpart: PhysicalEdgeRef,
+        canonical: CanonicalEdgeOccurrence,
+        counterpart: CanonicalEdgeOccurrence,
     },
 }
 ```
@@ -360,7 +362,7 @@ For undirected relations, repair likewise preserves identical logical order in b
 
 ### 13. GraphStore retains canonical sidecars only
 
-`EDGE_PROPERTIES` remains keyed by canonical physical `EdgeHandle`.
+`EDGE_PROPERTIES` remains keyed by the canonical sidecar `EdgeHandle`; its position is a `BucketEntryPosition`, not a raw slab/log location.
 
 Canonical property ownership is:
 
@@ -386,7 +388,7 @@ For every inline-value operation, LARA:
 
 1. resolves the edge entry’s bucket-local live ordinal;
 2. applies that ordinal to the payload sequence;
-3. resolves the physical counterpart using `counterpart_of`;
+3. resolves the canonical counterpart occurrence using `counterpart_of`;
 4. resolves the counterpart bucket’s payload ordinal independently; and
 5. updates or removes both mirrored values in one no-await commit.
 
@@ -471,7 +473,7 @@ Implementation proceeds as a destructive replacement, not a compatibility migrat
 ### Phase 1: terminology and API boundary
 
 - rename `mate` to `counterpart`;
-- introduce final `PhysicalEdgeRef`;
+- introduce final `CanonicalEdgeOccurrence`;
 - expose `counterpart_of` and `canonical_handle`;
 - remove duplicate edge-kind inputs where LARA can derive semantics;
 - simplify `CounterpartLookupError`.
@@ -519,7 +521,7 @@ Rejected because it duplicates LARA physical ownership, canonical-to-counterpart
 
 Rejected because it increases persistent bytes and creates another synchronous consistency surface.
 
-### Persist a logical edge ID in each physical row
+### Persist a logical edge ID in each canonical edge occurrence
 
 Rejected because it enlarges the four-byte traversal row and still requires ID-to-location lookup.
 

@@ -1,8 +1,8 @@
 # 0050. LARA labeled traverse read API consolidation
 
 Date: 2026-07-25
-Status: planned
-Implementation status: not started (API integration over the existing traversal substrate)
+Status: partially implemented
+Implementation status: Phase 1/2 substrate implemented in `labeled::graph::traverse_next`; caller migration, reverse facade adoption, and legacy removal remain pending
 Adoption status: not activated
 
 ## Context
@@ -78,10 +78,10 @@ The canonical labeled read surface uses a typed bucket-local logical slot:
 
 ```rust
 #[repr(transparent)]
-pub struct LogicalEdgeSlot(u32);
+pub struct BucketEntryPosition(u32);
 ```
 
-`LogicalEdgeSlot` is:
+`BucketEntryPosition` is:
 
 - the slot returned by canonical labeled scans;
 - the slot stored in `EdgeHandle`;
@@ -93,7 +93,7 @@ pub struct LogicalEdgeSlot(u32);
 - distinct from ADR 0048's `PairOrdinal`, which is computed only over the currently live
   equal-target subsequence.
 
-`LogicalEdgeSlot` is a **query-time location**, not a stable logical edge identifier. It is valid
+`BucketEntryPosition` is a **query-time location**, not a stable logical edge identifier. It is valid
 only within the read or mutation boundary that produced it. The current federation contract has
 the same rule: `GlobalEdgeId` and encoded edge IDs are query-time handles and are not stable across
 compaction. No generation or row fingerprint is added to this API because that would change the
@@ -114,30 +114,32 @@ path for:
 - edge-property posting keys and pending re-key operations; and
 - legacy `EDGE_ALIASES` keys and canonical targets until ADR 0048 phase 5 removes aliases.
 
-No read API may retain a `LogicalEdgeSlot` across that move boundary. If a caller needs the edge
+No read API may retain a `BucketEntryPosition` across that move boundary. If a caller needs the edge
 after compaction, it must consume the moved handle or re-resolve it from canonical adjacency. The
 move path, rather than a generation catalog or second slot-to-edge catalog, remains the source of
 truth.
 
-### 1.1 Existing slot types and storage-key boundaries
+### 1.1 One logical-slot type and separate storage-key boundaries
 
-`LogicalEdgeSlot` is the LARA-owned slot type because `ic-stable-lara` must not depend on
-`gleaph-graph-kernel`. At the Graph boundary, the existing
-[`EdgeSlotIndex`](../../crates/graph-kernel/src/entry/edge/id.rs) remains the Graph-facing wrapper
-for the same `(owner, label, logical extent position)` value. The adapter between these types is
-explicit and is the only place where a raw `u32` may cross the boundary. Graph `EdgeHandle` must
-not retain an untyped `u32` slot field after the migration.
+`BucketEntryPosition` is the single canonical row-local logical-slot type. It is defined in the
+crate-level `traverse` module and is reused by labeled traversal, `CanonicalEdgeOccurrence`,
+Graph `EdgeHandle`, and Graph-kernel `EdgeSlotIndex`. The latter is only a domain alias for the
+same type; it is not a second slot representation.
 
-The reverse-in alias tag (`0x8000_0000`) is a storage-key encoding, not part of the logical-slot
-namespace. A `LogicalEdgeSlot` must never be passed directly to that encoder. While aliases remain
-in the transitional implementation, alias keys use an explicit `(EdgeSlotIndex, direction)`
-adapter/key representation; no `LogicalEdgeSlot` range restriction is introduced merely to fit the
-legacy high-bit encoding. Alias removal is still governed by ADR 0048.
+Raw `u32` conversion is confined to wire and stable-key boundaries (`raw`, `from_raw`, and the
+explicit key codecs). LARA physical slab offsets, overflow-log entry indices, and inline-payload
+ordinals remain separate types/domains and must not be converted through this logical-slot type.
 
-ADR 0048's phrase "physical edge identity" means the identity of one persisted adjacency occurrence
+The label MSB encodes directedness. The reverse-in alias marker (`0x8000_0000`) is unrelated: it
+is a transitional Graph alias-key orientation encoding used to distinguish a reverse/incoming row
+from a forward/outgoing row carrying the same directed label. It is never part of
+`BucketEntryPosition`, `CanonicalEdgeOccurrence`, or `EdgeHandle`; new traversal/counterpart code
+uses the explicit orientation field. Alias removal remains governed by ADR 0048. The current Graph alias codec validates that a logical slot has bit 31 clear before encoding; only the codec may set that bit for the transitional reverse-in marker.
+
+ADR 0048's phrase "canonical edge occurrence" means the identity of one persisted adjacency occurrence
 at the LARA boundary. It does **not** mean a raw slab offset or overflow-log entry index.
 
-The existing `PhysicalEdgeRef` name belongs to ADR 0048 and remains the logical counterpart
+The existing `CanonicalEdgeOccurrence` name belongs to ADR 0048 and remains the logical counterpart
 occurrence `(orientation, owner, label, logical slot)`. This ADR does not redefine it. Raw storage
 geometry uses separate diagnostic/storage types:
 
@@ -167,7 +169,7 @@ pub(crate) struct StorageEdgeRef {
 }
 ```
 
-`StorageEdgeLocation` is not a substitute for `LogicalEdgeSlot` or ADR 0048's `PhysicalEdgeRef`.
+`StorageEdgeLocation` is not a substitute for `BucketEntryPosition` or ADR 0048's `CanonicalEdgeOccurrence`.
 The location enum alone is not globally meaningful. Its fields are constructed by LARA, not by
 callers. LARA validates that the owner/label, slab absolute/local pair, or overflow-log leaf/entry
 belongs to the selected bucket before returning it. A mismatched owner, label, leaf, or bucket
@@ -240,7 +242,7 @@ confused with other edge payload or property-store concepts.
 
 Ascending and descending traversal use `OutEdgeOrder`. Direction is not encoded in method names.
 
-The order applies to `LogicalEdgeSlot`, including edges whose bytes currently reside in an overflow
+The order applies to `BucketEntryPosition`, including edges whose bytes currently reside in an overflow
 log. Raw physical-location enumeration has its own storage-defined order and is not covered by
 `OutEdgeOrder`.
 
@@ -263,6 +265,8 @@ value to carry it without merging storage and caller error types.
 
 ### 6. Canonical general-purpose read surface
 
+The crate-level `Traversal` trait is the shared contract for every LARA implementation. Its associated `Request`, `Slot`, `EdgeState`, `EdgeWithInlineProperty`, `Replay`, and `Error` types allow normal, labeled, bidirectional, and deferred backends to expose the same logical operations. `Edge` is bounded by the existing `CsrEdge` trait; storage codec and payload behavior therefore remain single-sourced. The trait includes point reads, state reads, inline-property reads, full visits, selected-slot visits, and replay-aware selected-slot visits. The isolated labeled implementation is the first adapter; other backends are added against this contract.
+
 The smallest general-purpose surface is:
 
 ```rust
@@ -270,21 +274,21 @@ pub(crate) fn read_edge(
     &self,
     owner: VertexId,
     label: BucketLabelKey,
-    slot: LogicalEdgeSlot,
+    slot: BucketEntryPosition,
 ) -> Result<Option<E>, LabeledOperationError>;
 
 pub(crate) fn read_edge_with_inline_property(
     &self,
     owner: VertexId,
     label: BucketLabelKey,
-    slot: LogicalEdgeSlot,
+    slot: BucketEntryPosition,
 ) -> Result<Option<EdgeWithInlineProperty<E>>, LabeledOperationError>;
 
 pub(crate) fn read_edge_state(
     &self,
     owner: VertexId,
     label: BucketLabelKey,
-    slot: LogicalEdgeSlot,
+    slot: BucketEntryPosition,
 ) -> Result<EdgeSlotState<E>, LabeledOperationError>;
 
 pub(crate) fn visit_edges<B>(
@@ -292,7 +296,7 @@ pub(crate) fn visit_edges<B>(
     owner: VertexId,
     label: BucketLabelKey,
     order: OutEdgeOrder,
-    visit: impl FnMut(LogicalEdgeSlot, E) -> ControlFlow<B>,
+    visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>, LabeledOperationError>;
 
 pub(crate) fn visit_edges_with_inline_property<B>(
@@ -300,9 +304,61 @@ pub(crate) fn visit_edges_with_inline_property<B>(
     owner: VertexId,
     label: BucketLabelKey,
     order: OutEdgeOrder,
-    visit: impl FnMut(LogicalEdgeSlot, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
+    visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>, LabeledOperationError>;
 ```
+
+The execution surface also exposes a reusable window without putting paging state into the
+request object:
+
+```rust
+pub struct TraversalWindow {
+    pub offset: u32,
+    pub limit: Option<u32>,
+}
+
+fn visit_edges_window<B>(
+    &self,
+    request: &Self::Request,
+    window: TraversalWindow,
+    visit: impl FnMut(Self::Slot, Self::Edge) -> ControlFlow<B>,
+) -> Result<ControlFlow<B>, Self::Error>;
+
+fn visit_edges_with_inline_property_window<B>(
+    &self,
+    request: &Self::Request,
+    window: TraversalWindow,
+    visit: impl FnMut(Self::Slot, Self::EdgeWithInlineProperty) -> ControlFlow<B>,
+) -> Result<ControlFlow<B>, Self::Error>;
+```
+
+`TraversalRequest` remains the identity of the logical edge set (owner, label, direction, and
+order). `TraversalWindow` is execution-time control: `offset` skips matching live rows in request
+order and `limit` bounds delivered rows; `None` is unbounded. Reaching the limit is normal
+`ControlFlow::Continue(())`, while a visitor `Break` propagates unchanged. A zero limit invokes no
+visitor. Implementations may override the default window adapter to skip storage rows efficiently,
+but must preserve these semantics. The labeled adapter may jump directly to the offset when the bucket has no tombstones (live degree equals logical extent); sparse/tombstoned buckets still inspect rows to count live matches. Selected-slot/replay APIs keep their own explicit slot set and
+are not implicitly windowed, preventing paging state from becoming part of replay identity or being
+applied twice by property-first Graph execution.
+
+GQL `OFFSET`/`LIMIT` may use this capability only when the planner proves that traversal order is
+the result order and no later sort, distinct, aggregation, or other row-expanding operation changes
+cardinality. Otherwise Graph continues to apply the window at the row-execution boundary.
+
+#### Known gap: tombstone-aware offset acceleration
+
+The current contract does not introduce persistent tombstone-count, live-count, bitmap, or
+rank/select metadata. A sparse or tombstone-bearing bucket may therefore inspect logical rows while
+counting live matches for `TraversalWindow.offset`; only a proven dense bucket may jump directly to
+the offset. This is an intentional scope boundary, not a claim that the scan cost is optimal.
+
+Persistent interval summaries and live-bitmaps are a future research/implementation topic. Candidate
+designs include fixed-width logical-slot block summaries, hierarchical live-count directories, and
+bitmap rank/select structures. Any future implementation must first establish its update,
+compaction/rebuild, stable-memory, overflow, forward/reverse, corruption, and benchmark contracts.
+It must remain derived metadata owned by LARA and must never change `BucketEntryPosition` identity or
+allow an unverified summary to skip a live edge. Until that work has an accepted design and measured
+benefit, the existing dense fast path plus exact sparse scan remains authoritative.
 
 There is no separate full-bucket `Vec` API. A caller that needs materialization collects
 `visit_edges` output explicitly, making the allocation visible at the caller.
@@ -359,7 +415,7 @@ graph.visit_edges(owner, label, order, |slot, edge| {
 ```
 
 The requested ordinal in this composition is a **matching ordinal**: a zero-based position among
-rows accepted by the caller's predicate. It is not a `LogicalEdgeSlot` and it is not ADR 0048's
+rows accepted by the caller's predicate. It is not a `BucketEntryPosition` and it is not ADR 0048's
 `PairOrdinal`. A third live edge to the same target is identified by counting matching rows with
 that target; CounterpartScan remains the owner of the authoritative `PairOrdinal` relation.
 
@@ -381,9 +437,9 @@ pub(crate) fn visit_edges_at<B>(
     &self,
     owner: VertexId,
     label: BucketLabelKey,
-    slots: &[LogicalEdgeSlot],
+    slots: &[BucketEntryPosition],
     order: OutEdgeOrder,
-    visit: impl FnMut(LogicalEdgeSlot, E) -> ControlFlow<B>,
+    visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>, LabeledOperationError>;
 ```
 
@@ -402,10 +458,10 @@ pub(crate) fn visit_edges_at_with_replay<B>(
     &self,
     owner: VertexId,
     label: BucketLabelKey,
-    slots: &[LogicalEdgeSlot],
+    slots: &[BucketEntryPosition],
     order: OutEdgeOrder,
     replay: Option<&HybridOverflowEdgeReplay>,
-    visit: impl FnMut(LogicalEdgeSlot, E) -> ControlFlow<B>,
+    visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>, LabeledOperationError>;
 ```
 
@@ -462,6 +518,11 @@ The following remain private:
 - `labeled_bucket_span_iter`; and
 - dense/hybrid/sparse implementation selection.
 
+The LARA edge layer has one canonical descending iterator, `OutEdgesIter`, for both labeled and
+unlabeled callers. It reads overflow-log entries newest-first and then scans the slab in descending
+chunks. A separate log-backed descending iterator is not maintained. Ascending callers use the
+shared `AscOutEdgesIter`, which preserves slab/log slot metadata and materialization order.
+
 ### 9a. Raw storage locations have one explicit internal reader
 
 Raw locations are not a second traversal identity. The replacement API is crate-visible only to
@@ -492,14 +553,14 @@ Its contract is fixed and deliberately narrower than `visit_edges`:
   validation path; adoption fixtures use the same crate-visible method and do not define another
   raw-location API.
 
-While this ADR remains `not started`, the existing Plan 0181 crate-private physical-slot reader
+While adoption remains `not activated`, the existing Plan 0181 crate-private physical-slot reader
 and singleton counterpart bridge are a transitional implementation path. They are retained until
-the `mate.rs` singleton validation path is migrated to `read_edge(LogicalEdgeSlot)`. They are not
+the `mate.rs` singleton validation path is migrated to `read_edge(BucketEntryPosition)`. They are not
 the target query contract and must not become a Graph, Router, or graph-index identity API.
 
 The existing `read_physical_edge_at_slot_for_label` and
 `for_each_live_physical_edge_location_for_label` methods are deleted, not renamed compatibility
-surfaces. `mate.rs` uses `read_edge(LogicalEdgeSlot)` for logical validation; maintenance uses the
+surfaces. `mate.rs` uses `read_edge(BucketEntryPosition)` for logical validation; maintenance uses the
 reader above only when it must inspect storage geometry.
 
 ### 10. Default-label bypass follows the same logical contract
@@ -549,7 +610,7 @@ above.
 
 ### A. Minimum change: typed slots plus a small canonical facade
 
-Add `LogicalEdgeSlot`, keep existing optimized implementations behind the facade, migrate callers,
+Add `BucketEntryPosition`, keep existing optimized implementations behind the facade, migrate callers,
 then remove superseded names.
 
 Benefits:
@@ -588,10 +649,10 @@ Adoption is phased. The temporary module, its tests, and its benchmark module ar
 new work during migration; the legacy `traverse` module remains authoritative only for callers not
 yet migrated. The final rename happens only after all callers and validation gates pass.
 
-ADR 0048 remains the owner of `PhysicalEdgeRef`, `EdgeHandle`, `PairOrdinal`, and counterpart
+ADR 0048 remains the owner of `CanonicalEdgeOccurrence`, `EdgeHandle`, `PairOrdinal`, and counterpart
 resolution. ADR 0023 remains the owner of sidecar/index re-key after `EdgeSlotMove`. This ADR only
 specifies the read-side conversion boundary: LARA converts storage positions to
-`LogicalEdgeSlot`; Graph, Router, and graph-index convert that typed value to their existing
+`BucketEntryPosition`; Graph, Router, and graph-index convert that typed value to their existing
 internal or wire `u32` fields at explicit adapters. The wire types (`GlobalEdgeId`,
 `FederatedExpandNeighbor`, `LocalEdgePosting`, and `EdgePostingKey`) are not silently treated as
 stable identities.
@@ -602,7 +663,7 @@ ADR 0050 depends only on the ADR 0048 **substrate gate**, not on completion of t
 0048 caller migration. The substrate gate is satisfied when the following contracts exist in the
 listed owners:
 
-1. `counterpart.rs` exposes the typed `LogicalEdgeSlot`, `PhysicalEdgeRef`, `EdgeHandle`,
+1. `counterpart.rs` exposes the typed `BucketEntryPosition`, `CanonicalEdgeOccurrence`, `EdgeHandle`,
    `PairOrdinal`, and live-only `CounterpartScan` contracts;
 2. paired mutation emits `EdgeSlotMove` through the LARA owner; and
 3. the sidecar re-key observer contract is defined, even if legacy `mate` callers and
@@ -620,27 +681,31 @@ No caller is changed in this phase.
 
 #### Phase 1 — isolated logical read module
 
-Add `traverse_next` beside `traverse`. Implement the canonical logical API and its typed adapters,
-but keep the old module authoritative for existing callers. Add module-local tests for bucket and
-default-label bypass, slab/overflow mixtures, tombstones, ascending/descending order, forward and
-reverse reads, selected slots, inline-property exact bytes, early break, and corruption fail-closed
-behavior. At the end of this phase, the new module is usable but not yet the crate-wide default.
+Add the crate-level `traverse` module with `TraversalRequest`, `Traversal`, and
+`traverse::iter` visitor drivers. Keep slab/log decoding in `lara::edge::iter`; the new module must
+not depend on storage layout. Connect the existing labeled `traverse_next` implementation through
+typed adapters, while the old labeled `traverse` remains authoritative for unmigrated callers.
+Add module-local tests for bucket and default-label bypass, slab/overflow mixtures, tombstones,
+ascending/descending order, forward and reverse reads, selected slots, inline-property exact bytes,
+early break, and corruption fail-closed behavior. At the end of this phase, the common contract and
+driver are usable but not yet the crate-wide default.
 
 #### Phase 2 — dedicated benchmark and parity gate
 
-Add a dedicated benchmark module for `traverse_next`, covering dense, hybrid, sparse, bypass,
-reverse, selected-slot replay, inline-property batches, and early-break paths. Compare one
-deterministic baseline run with one candidate run under identical conditions; do not repeat an
-identical canbench invocation as a noise estimate. Record the artifact and investigate regressions
-over the stated threshold before proceeding.
+Add a dedicated benchmark module for the new `traverse` surface, covering dense, hybrid, sparse, bypass,
+reverse, selected-slot replay, inline-property batches, and early-break paths. During the isolated
+substrate phase, persist one deterministic artifact per benchmark family to prove registration and
+reproducibility. The strict baseline/candidate comparison is deferred to the activation gate, when
+caller migration makes the comparison meaningful; do not repeat an identical canbench invocation as
+a noise estimate.
 
 #### Phase 3 — enable ADR 0048 adoption on the new surface
 
 When Phases 1–2 pass, ADR 0048 may proceed with its ordinary-caller adoption work while the old
-`traverse` module remains in place. This is the non-circular hand-off: ADR 0048's substrate gate is
-needed for Phase 1, but completion of ADR 0048 alias removal is not required to build or validate
-`traverse_next`. ADR 0048 must use the new logical read surface for any caller it migrates and must
-not add a second traversal primitive.
+labeled `traverse` implementation remains in place. This is the non-circular hand-off: ADR 0048's
+substrate gate is needed for Phase 1, but completion of ADR 0048 alias removal is not required to
+build or validate the new common module. ADR 0048 must use the new logical read surface for any
+caller it migrates and must not add a second traversal primitive.
 
 #### Phase 4 — migrate callers incrementally
 
@@ -660,7 +725,7 @@ Final activation additionally requires the following independently verifiable co
 
 - the two old physical-location methods in the legacy traversal module
   are deleted;
-- `mate.rs` singleton validation uses `read_edge(LogicalEdgeSlot)`;
+- `mate.rs` singleton validation uses `read_edge(BucketEntryPosition)`;
 - the crate-visible `visit_storage_edge_locations` visitor has the contract above and is the only
   raw-location reader used by LARA maintenance or in-crate adoption tests;
 - every forward and reverse single-label caller in the migration table is migrated;
@@ -692,8 +757,8 @@ mapping for the known single-label read families is:
 | `for_each_in_edges_for_label` | reverse `visit_edges` descending |
 | `for_each_in_edges_for_label_ordered` | reverse `visit_edges` with `OutEdgeOrder` |
 | `for_each_in_edges_for_label_topology_ordered` | reverse `visit_edges` |
-| `read_out_edge_slot_for_label` | `read_edge(LogicalEdgeSlot)` |
-| `read_edge_slot_state_for_label` | `read_edge_state(LogicalEdgeSlot)` |
+| `read_out_edge_slot_for_label` | `read_edge(BucketEntryPosition)` |
+| `read_edge_slot_state_for_label` | `read_edge_state(BucketEntryPosition)` |
 | `read_out_edge_slots_for_label` | `visit_edges_at` |
 | `read_out_edge_slots_for_label_with_replay` | `visit_edges_at` plus replay/scratch |
 | `read_out_edge_slots_for_label_reusing_inline_value_scratch` | `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve payload attachment |
@@ -717,7 +782,7 @@ this table.
 The migration also has to make the following boundary decisions explicit before any old method is
 removed:
 
-1. `EdgeHandle` values containing a `LogicalEdgeSlot` are query-time location keys, not generation-
+1. `EdgeHandle` values containing a `BucketEntryPosition` are query-time location keys, not generation-
    checked stable IDs. The existing `EdgeSlotMove` observer path must re-key properties, postings,
    and legacy aliases before compaction is reported complete. Callers must re-resolve after the
    boundary; generation-based stale-handle rejection is not part of this ADR.
@@ -733,7 +798,7 @@ removed:
    (`read_out_edge_slots_for_label_reusing_inline_value_scratch` and its incoming twin) and all
    `skip_then_visit_each_*` wrappers are activation-gate callers. Input-slice order is not a
    separate contract; an input-order API would require a distinct future capability.
-4. Storage-location reads must use `StorageEdgeRef` (not ADR 0048's `PhysicalEdgeRef`) with owner
+4. Storage-location reads must use `StorageEdgeRef` (not ADR 0048's `CanonicalEdgeOccurrence`) with owner
    and label context, and validate that context against the addressed slab/log owner. The existing
    high-bit `u32` encoding may remain an internal implementation detail only; it is not the public
    raw-location contract. The production `mate.rs` singleton fast path migrates to the logical
@@ -788,7 +853,7 @@ The test matrix covers:
 - default-label bypass point and visitor reads for slab, overflow, live, tombstone, wrong-label,
   out-of-range, ascending, and descending cases, including the zero-width inline-property rule;
 - parallel edges used by CounterpartScan; and
-- compile-time separation between `LogicalEdgeSlot`, ADR 0048's `PhysicalEdgeRef`, and
+- compile-time separation between `BucketEntryPosition`, ADR 0048's `CanonicalEdgeOccurrence`, and
   `StorageEdgeLocation`.
 
 Tests must assert that topology-only reads do not access inline-property storage where the existing
@@ -807,10 +872,11 @@ Focused canbench comparisons cover at least:
 - edge-attached and property-first batched inline-property paths.
 
 The migration must not introduce full-bucket allocation into streaming or selected-slot paths.
-Each gate records the affected crate, benchmark name/pattern, git revision, Rust/profile/features,
-workload parameters, machine/runtime identity, command line, and persisted baseline artifact. Since
-canbench instruction counts are deterministic for a fixed code and condition, each comparison uses
-one baseline run and one candidate run with exactly the same pattern and build settings; repeating
+Each activation gate records the affected crate, benchmark name/pattern, git revision, Rust/profile/features,
+workload parameters, machine/runtime identity, command line, and persisted baseline artifact. During
+the isolated substrate phase, a persisted deterministic artifact is sufficient to prove that the
+new benchmark surface is registered and reproducible. At activation, each comparison uses one
+baseline run and one candidate run with exactly the same pattern and build settings; repeating
 identical runs is not a noise-reduction method. A regression greater than 5% versus the checked-in
 baseline requires investigation and an explicit justification in this ADR. Final benchmark
 artifacts are updated only by running the affected crate's unfiltered `canbench --persist`.
@@ -828,7 +894,7 @@ Positive:
 
 Costs:
 
-- `LogicalEdgeSlot` propagates through LARA and Graph-facing internal types;
+- `BucketEntryPosition` propagates through LARA and Graph-facing internal types;
 - the inline-property naming migration touches APIs, types, tests, benchmarks, and documentation;
 - inline-property reads return an explicit wrapper/byte buffer rather than relying on an optional
   edge-record mutation hook;
@@ -840,7 +906,7 @@ Costs:
 
 The implementation patch must check and update:
 
-- ADR 0048, preserving `PhysicalEdgeRef` as the logical counterpart occurrence and keeping raw
+- ADR 0048, preserving `CanonicalEdgeOccurrence` as the canonical adjacency occurrence and keeping raw
   storage locations separate;
 - ADR 0008, confirming that default-label bypass rows have zero inline-property width;
 - ADR 0023, confirming the move/re-key obligations for property, posting, and alias sidecars;

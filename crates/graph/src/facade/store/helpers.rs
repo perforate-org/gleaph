@@ -11,6 +11,7 @@ use ic_stable_lara::{
         LabeledOrientation,
     },
     traits::CsrEdge,
+    traverse::BucketEntryPosition,
 };
 
 use super::GraphStore;
@@ -22,7 +23,13 @@ use super::handle::EdgeHandle;
 const EDGE_ALIAS_REVERSE_IN_TAG: u32 = 1 << 31;
 
 #[inline]
-pub(crate) fn edge_alias_slot_key(slot_index: u32, reverse_in: bool) -> u32 {
+pub(crate) fn edge_alias_slot_key(slot_index: BucketEntryPosition, reverse_in: bool) -> u32 {
+    let slot_index = slot_index.raw();
+    assert_eq!(
+        slot_index & EDGE_ALIAS_REVERSE_IN_TAG,
+        0,
+        "logical edge slot exceeds the alias codec range"
+    );
     if reverse_in {
         slot_index | EDGE_ALIAS_REVERSE_IN_TAG
     } else {
@@ -80,7 +87,7 @@ impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
         self.store.clear_edge_sidecars(EdgeHandle {
             owner_vertex_id: owner,
             label_id: LaraLabelId::from_raw(edge.label_id),
-            slot_index: edge.edge_slot_index.raw(),
+            slot_index: edge.edge_slot_index.raw().into(),
         });
     }
 
@@ -91,7 +98,7 @@ impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
         self.store.clear_edge_sidecars(EdgeHandle {
             owner_vertex_id: edge.neighbor_vid(),
             label_id: LaraLabelId::from_raw(edge.label_id),
-            slot_index: edge.edge_slot_index.raw(),
+            slot_index: edge.edge_slot_index.raw().into(),
         });
     }
 

@@ -668,7 +668,8 @@ fn directed_reverse_alias_does_not_require_matching_slot_index() {
         .expect("reverse lookup")
         .expect("reverse edge");
     assert_ne!(
-        reverse.slot_index, canonical.slot_index,
+        reverse.slot_index.raw(),
+        canonical.slot_index.raw(),
         "test setup should force forward/reverse slot skew"
     );
     assert_eq!(store.canonical_reverse_in_edge_handle(reverse), canonical);
@@ -736,7 +737,7 @@ fn unvalued_parallel_directed_inserts_align_reverse_alias_slot() {
     let second = store
         .insert_directed_edge(source, target, Some(label_id))
         .expect("second edge");
-    assert_ne!(first.slot_index, second.slot_index);
+    assert_ne!(first.slot_index.raw(), second.slot_index.raw());
     assert_eq!(store.directed_in_edges(target).expect("in before").len(), 2);
 
     store.delete_edge_by_handle(first).expect("delete first");
@@ -772,7 +773,7 @@ fn valued_parallel_insert_returns_handles_for_each_value() {
         .insert_directed_edge_with_inline_value_bytes(source, target, Some(label_id), &[2, 0])
         .expect("second edge");
 
-    assert_ne!(first.slot_index, second.slot_index);
+    assert_ne!(first.slot_index.raw(), second.slot_index.raw());
     let mut values_by_slot = BTreeMap::new();
     store
         .for_each_directed_out_edges_for_label_unchecked(source, label_id, |edge| {
@@ -782,8 +783,8 @@ fn valued_parallel_insert_returns_handles_for_each_value() {
             );
         })
         .expect("out edges");
-    assert_eq!(values_by_slot[&first.slot_index], vec![1, 0]);
-    assert_eq!(values_by_slot[&second.slot_index], vec![2, 0]);
+    assert_eq!(values_by_slot[&first.slot_index.raw()], vec![1, 0]);
+    assert_eq!(values_by_slot[&second.slot_index.raw()], vec![2, 0]);
 }
 
 #[test]
@@ -806,6 +807,12 @@ fn lookup_edge_record_at_handle_includes_stored_inline_value_bytes() {
         .expect("lookup")
         .expect("edge record");
     assert_eq!(edge.inline_value_bytes(), &[4, 0]);
+}
+
+#[test]
+#[should_panic(expected = "logical edge slot exceeds the alias codec range")]
+fn alias_codec_rejects_reserved_high_bit_slot() {
+    let _ = edge_alias_slot_key(EdgeSlotIndex::from_raw(1 << 31), false);
 }
 
 /// Regression: vertex `a` is target of `s->a` (reverse-IN alias) and source of `a->mid`
@@ -871,7 +878,7 @@ fn valued_insert_after_delete_returns_handle_for_new_edge() {
         .directed_out_edges(source)
         .expect("out edges")
         .into_iter()
-        .find(|edge| edge.edge_slot_index.raw() == replacement.slot_index)
+        .find(|edge| edge.edge_slot_index.raw() == replacement.slot_index.raw())
         .expect("replacement edge record");
     assert_eq!(edge.inline_value_bytes(), &[9, 0]);
     assert_eq!(edge.neighbor_vid(), target_a);
@@ -920,7 +927,7 @@ fn edge_label_lookup_uses_edge_label_annotation() {
         .undirected_edges(source)
         .expect("undirected edges")
         .into_iter()
-        .find(|edge| edge.edge_slot_index.raw() == undirected.slot_index)
+        .find(|edge| edge.edge_slot_index.raw() == undirected.slot_index.raw())
         .expect("inserted undirected edge");
 
     assert_eq!(
@@ -948,14 +955,14 @@ fn inserts_vertices_and_edges_through_facade() {
 
     assert_eq!(directed.owner_vertex_id, source);
     assert_eq!(
-        EdgeSlotIndex::from_raw(directed.slot_index),
+        EdgeSlotIndex::from_raw(directed.slot_index.raw()),
         EdgeSlotIndex::from_raw(0)
     );
 
     let out_edges = store.directed_out_edges(source).expect("read out edges");
     assert!(out_edges.iter().any(|edge| {
         edge.target == VertexRef::local(target)
-            && edge.edge_slot_index.raw() == directed.slot_index
+            && edge.edge_slot_index.raw() == directed.slot_index.raw()
             && !store.edge_is_undirected(source, edge).unwrap()
     }));
 
@@ -965,7 +972,7 @@ fn inserts_vertices_and_edges_through_facade() {
 
     assert_eq!(undirected.owner_vertex_id, target);
     assert_eq!(
-        EdgeSlotIndex::from_raw(undirected.slot_index),
+        EdgeSlotIndex::from_raw(undirected.slot_index.raw()),
         EdgeSlotIndex::from_raw(0)
     );
 
@@ -974,7 +981,7 @@ fn inserts_vertices_and_edges_through_facade() {
         .expect("read target out edges");
     assert!(target_out_edges.iter().any(|edge| {
         edge.target == VertexRef::local(source)
-            && edge.edge_slot_index.raw() == undirected.slot_index
+            && edge.edge_slot_index.raw() == undirected.slot_index.raw()
             && store.edge_is_undirected(target, edge).unwrap()
     }));
 }
