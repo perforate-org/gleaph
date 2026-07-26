@@ -341,6 +341,64 @@ where
         }))
     }
 
+    /// Visits every live edge in a dense, tombstone-free label bucket by bulk-reading the
+    /// topology slab in one call.
+    fn visit_dense_label_bucket_edges<B>(
+        &self,
+        _owner: VertexId,
+        label: BucketLabelKey,
+        bucket: &LabelBucket,
+        order: OutEdgeOrder,
+        mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let degree = bucket.degree();
+        if degree == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let edge_bytes_len =
+            (degree as usize)
+                .checked_mul(E::BYTES)
+                .ok_or(LabeledOperationError::from(
+                    LaraOperationError::CollectAllocationOverflow,
+                ))?;
+        let mut raw_edges = vec![0u8; edge_bytes_len];
+        self.edges
+            .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
+        match order {
+            OutEdgeOrder::Ascending => {
+                for slot in 0..degree {
+                    let off = slot as usize * E::BYTES;
+                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                        .with_slot_index(slot)
+                        .with_label_id(label.raw());
+                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                        continue;
+                    }
+                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+            }
+            OutEdgeOrder::Descending => {
+                for slot in (0..degree).rev() {
+                    let off = slot as usize * E::BYTES;
+                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                        .with_slot_index(slot)
+                        .with_label_id(label.raw());
+                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                        continue;
+                    }
+                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
     /// Visits every live edge for one label in the requested order.
     pub(crate) fn visit_edges<B>(
         &self,
@@ -378,6 +436,21 @@ where
                     })
                 }
             };
+        }
+        let BucketSearch::Found {
+            slot: _bucket_slot,
+            bucket,
+        } = self.find_bucket(owner, &vertex, label)?
+        else {
+            return Ok(ControlFlow::Continue(()));
+        };
+        if bucket.degree() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        if bucket.overflow_log_head() < 0
+            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+        {
+            return self.visit_dense_label_bucket_edges(owner, label, &bucket, order, visit);
         }
         let Some(info) = self.read_label_bucket_placement_info(owner, label)? else {
             return Ok(ControlFlow::Continue(()));
@@ -460,11 +533,12 @@ where
                 LaraOperationError::CollectAllocationOverflow,
             ))?;
 
-        // Fast path for dense, tombstone-free buckets: use the legacy dense slab reader to
-        // bulk-read topology, and bulk-read the payload span when the bucket carries inline
-        // values. This avoids per-slot `read_slot` round-trips and preserves the performance
-        // contract of `for_each_edges_for_label_ordered` for hot dense scans.
+        // Fast path for dense, tombstone-free buckets: bulk-read the topology slab in one
+        // call, and bulk-read the payload span when the bucket carries inline values. This
+        // avoids per-slot `read_slot` round-trips and preserves the performance contract of
+        // `for_each_edges_for_label_ordered` for hot dense scans.
         if bucket.inline_value_log_head() < 0
+            && bucket.overflow_log_head() < 0
             && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
             && bucket.degree() > 0
         {
@@ -473,51 +547,33 @@ where
             } else {
                 Vec::new()
             };
-            let mut ordinal = match order {
-                OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
-                OutEdgeOrder::Ascending => 0,
-            };
-            let flow = self.for_each_live_edge_slot_for_label_direct_with_control_flow(
+            return self.visit_dense_label_bucket_edges(
                 owner,
                 label,
-                logical_slots,
+                &bucket,
                 order,
-                0,
                 |slot, edge| {
+                    let raw_slot = slot.raw();
                     let inline_property = if width == 0 {
                         InlinePropertyBytes::empty()
                     } else {
                         let start =
-                            usize::try_from(ordinal).unwrap_or(usize::MAX) * usize::from(width);
+                            usize::try_from(raw_slot).unwrap_or(usize::MAX) * usize::from(width);
                         let end = start + usize::from(width);
                         InlinePropertyBytes {
                             width,
                             bytes: payload_bytes[start..end].to_vec(),
                         }
                     };
-                    match visit(
-                        BucketEntryPosition::new(slot),
+                    visit(
+                        slot,
                         EdgeWithInlineProperty {
                             edge,
                             inline_property,
                         },
-                    ) {
-                        ControlFlow::Continue(()) => {
-                            match order {
-                                OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
-                                OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
-                            }
-                            ControlFlow::Continue(())
-                        }
-                        ControlFlow::Break(value) => ControlFlow::Break(Ok(value)),
-                    }
+                    )
                 },
             );
-            return match flow? {
-                ControlFlow::Continue(()) => Ok(ControlFlow::Continue(())),
-                ControlFlow::Break(Ok(value)) => Ok(ControlFlow::Break(value)),
-                ControlFlow::Break(Err(error)) => Err(error),
-            };
         }
 
         let mut ordinal = match order {
