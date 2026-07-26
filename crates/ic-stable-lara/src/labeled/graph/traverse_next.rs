@@ -65,6 +65,7 @@ pub struct InlinePropertyBytes {
 
 impl InlinePropertyBytes {
     /// Creates an empty zero-width inline-property value.
+    #[inline]
     pub fn empty() -> Self {
         Self {
             width: 0,
@@ -326,6 +327,7 @@ where
 
     /// Visits every live edge in a dense, tombstone-free label bucket by bulk-reading the
     /// topology slab in one call.
+    #[inline]
     fn visit_dense_label_bucket_edges<B>(
         &self,
         _owner: VertexId,

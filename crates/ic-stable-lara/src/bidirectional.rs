@@ -307,6 +307,7 @@ where
     }
 
     /// All directed outgoing edges at `src` in ascending slot order.
+    #[inline]
     pub fn directed_out_edges(&self, src: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
         let mut edges = Vec::new();
         self.for_each_directed_out_edges(src, OutEdgeOrder::Ascending, |edge| edges.push(edge))?;
@@ -314,6 +315,7 @@ where
     }
 
     /// All directed incoming edges at `dst` in ascending slot order.
+    #[inline]
     pub fn directed_in_edges(&self, dst: VertexId) -> Result<Vec<E>, BidirectionalLaraError> {
         let mut edges = Vec::new();
         self.for_each_directed_in_edges(dst, OutEdgeOrder::Ascending, |edge| edges.push(edge))?;
@@ -328,6 +330,7 @@ where
     }
 
     /// Visits directed forward outgoing edges in `order`.
+    #[inline]
     pub fn for_each_directed_out_edges<Visit>(
         &self,
         src: VertexId,
@@ -370,6 +373,7 @@ where
     }
 
     /// Visits directed incoming edges at `dst` in `order` (reverse store).
+    #[inline]
     pub fn for_each_directed_in_edges<Visit>(
         &self,
         dst: VertexId,

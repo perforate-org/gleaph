@@ -423,6 +423,7 @@ where
     /// `start_slot` and `slot_count` refer to bucket-local live ordinals (not physical slots).
     /// The caller must guarantee the bucket is dense and tombstone-free, i.e.
     /// `reserved_edge_slots == degree`.
+    #[inline]
     pub(super) fn read_bucket_payload_span(
         &self,
         _src: VertexId,

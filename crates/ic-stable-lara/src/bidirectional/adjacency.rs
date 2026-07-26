@@ -30,6 +30,7 @@ fn edge_matches_filter<E: CsrEdge>(edge: &E, filter: OutEdgeDirectednessFilter) 
     }
 }
 
+#[inline]
 pub(crate) fn for_each_lara_out_filtered<E, V, M, Visit>(
     store: &LaraGraph<E, V, M>,
     src: VertexId,

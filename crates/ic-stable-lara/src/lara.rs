@@ -387,6 +387,7 @@ where
     }
 
     /// Descending-scan iterator (same contract as [`Self::out_edges_iter`]).
+    #[inline]
     pub fn desc_out_edges_iter(
         &self,
         src: VertexId,
@@ -397,6 +398,7 @@ where
     /// Ascending CSR slot / materialization order (same sequence as [`Self::asc_out_edges`]).
     ///
     /// Slab-only rows stream slot-by-slot; log-backed rows materialize once then iterate.
+    #[inline]
     pub fn asc_out_edges_iter(
         &self,
         src: VertexId,
