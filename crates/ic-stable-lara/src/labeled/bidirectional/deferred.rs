@@ -2301,17 +2301,29 @@ where
         let mut remaining = *offset_remaining;
         let flow = self
             .forward
-            .visit_edges(src, label_id, OutEdgeOrder::Descending, |_slot, edge| {
-                if remaining > 0 {
-                    remaining -= 1;
-                    return ControlFlow::<Result<bool, Err>>::Continue(());
-                }
-                match visit(edge.with_label_id(label_id.raw())) {
-                    Ok(false) => ControlFlow::Continue(()),
-                    Ok(true) => ControlFlow::Break(Ok(true)),
-                    Err(error) => ControlFlow::Break(Err(error)),
-                }
-            })
+            .visit_edges_with_inline_property(
+                src,
+                label_id,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    if remaining > 0 {
+                        remaining -= 1;
+                        return ControlFlow::<Result<bool, Err>>::Continue(());
+                    }
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(label_id.raw());
+                    match visit(edge) {
+                        Ok(false) => ControlFlow::Continue(()),
+                        Ok(true) => ControlFlow::Break(Ok(true)),
+                        Err(error) => ControlFlow::Break(Err(error)),
+                    }
+                },
+            )
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         match flow {
             ControlFlow::Continue(()) => {
@@ -2366,17 +2378,29 @@ where
         let mut remaining = *offset_remaining;
         let flow = self
             .reverse
-            .visit_edges(dst, label_id, OutEdgeOrder::Descending, |_slot, edge| {
-                if remaining > 0 {
-                    remaining -= 1;
-                    return ControlFlow::<Result<bool, Err>>::Continue(());
-                }
-                match visit(edge.with_label_id(label_id.raw())) {
-                    Ok(false) => ControlFlow::Continue(()),
-                    Ok(true) => ControlFlow::Break(Ok(true)),
-                    Err(error) => ControlFlow::Break(Err(error)),
-                }
-            })
+            .visit_edges_with_inline_property(
+                dst,
+                label_id,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    if remaining > 0 {
+                        remaining -= 1;
+                        return ControlFlow::<Result<bool, Err>>::Continue(());
+                    }
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(label_id.raw());
+                    match visit(edge) {
+                        Ok(false) => ControlFlow::Continue(()),
+                        Ok(true) => ControlFlow::Break(Ok(true)),
+                        Err(error) => ControlFlow::Break(Err(error)),
+                    }
+                },
+            )
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         match flow {
             ControlFlow::Continue(()) => {
