@@ -1430,12 +1430,17 @@ where
             };
             let mut source_rows = Vec::new();
             source_graph
-                .for_each_live_edge_slot_for_label(
+                .visit_edges(
                     row.inputs.owner_vertex_id,
                     row.inputs.bucket_label_key,
-                    |slot, edge| source_rows.push((slot, edge.neighbor_vid())),
+                    OutEdgeOrder::Ascending,
+                    |slot, edge| {
+                        source_rows.push((slot.raw(), edge.neighbor_vid()));
+                        ControlFlow::<()>::Continue(())
+                    },
                 )
-                .map_err(|_| MateBlobBuildError::CanonicalMismatch)?;
+                .map_err(|_| MateBlobBuildError::CanonicalMismatch)
+                .map(|_| ())?;
             let expected_source_slots = source_rows
                 .iter()
                 .map(|(slot, _)| *slot)
@@ -1463,16 +1468,19 @@ where
                     };
                     let mut matching = Vec::new();
                     counterpart_graph
-                        .for_each_live_edge_slot_for_label(
+                        .visit_edges(
                             *neighbor,
                             row.inputs.bucket_label_key,
+                            OutEdgeOrder::Ascending,
                             |mate_slot, mate_edge| {
                                 if mate_edge.neighbor_vid() == row.inputs.owner_vertex_id {
-                                    matching.push(mate_slot);
+                                    matching.push(mate_slot.raw());
                                 }
+                                ControlFlow::<()>::Continue(())
                             },
                         )
-                        .map_err(|_| MateBlobBuildError::CanonicalMismatch)?;
+                        .map_err(|_| MateBlobBuildError::CanonicalMismatch)
+                        .map(|_| ())?;
                     let rank = source_rows[..index]
                         .iter()
                         .filter(|(_, prior_neighbor)| *prior_neighbor == *neighbor)

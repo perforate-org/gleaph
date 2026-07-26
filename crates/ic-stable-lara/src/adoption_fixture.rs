@@ -3,6 +3,7 @@
 //! This module is not part of the production stable layout. It owns a fresh in-memory manager,
 //! allocates usable `MemoryId`s from 254 downward, and exposes only exact physical identities.
 
+use crate::labeled::bidirectional::mate_ranked_prototype::{RankedBlob, RankedBucket};
 use crate::{
     BidirectionalLaraGraph, Vertex, VertexId,
     labeled::{
@@ -17,8 +18,6 @@ use ic_stable_structures::{
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
 };
 use std::collections::BTreeMap;
-
-use crate::labeled::bidirectional::mate_ranked_prototype::{RankedBlob, RankedBucket};
 
 /// In-memory virtual region used by one measurement fixture.
 pub type FixtureMemory = VirtualMemory<DefaultMemoryImpl>;
@@ -589,8 +588,7 @@ pub fn build_mixed_label_published_fixture(
     for owner in 0..vertex_count {
         for label in labels {
             graph
-                .forward()
-                .for_each_edges_for_label(VertexId::from(owner), label, |edge| {
+                .for_each_out_edges_for_label(VertexId::from(owner), label, |edge| {
                     identities.push(LabeledPhysicalIdentity {
                         owner,
                         target: u32::from(edge.neighbor_vid()),
@@ -601,8 +599,7 @@ pub fn build_mixed_label_published_fixture(
                 })
                 .map_err(|error| format!("mixed-label forward identity scan failed: {error}"))?;
             graph
-                .reverse()
-                .for_each_edges_for_label(VertexId::from(owner), label, |edge| {
+                .for_each_in_edges_for_label(VertexId::from(owner), label, |edge| {
                     identities.push(LabeledPhysicalIdentity {
                         owner,
                         target: u32::from(edge.neighbor_vid()),
@@ -1025,6 +1022,7 @@ pub fn build_scan_only_undirected_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ops::ControlFlow;
 
     #[test]
     fn alias_fixture_has_exact_forward_reverse_rows() {
@@ -1141,9 +1139,16 @@ mod tests {
         let mut slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(VertexId::from(0), label, |slot, _| {
-                slots.push(slot);
-            })
+            .visit_edges(
+                VertexId::from(0),
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, _| {
+                    slots.push(slot.raw());
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .expect("scan");
         assert_eq!(slots, (1..=8).collect::<Vec<_>>());
 

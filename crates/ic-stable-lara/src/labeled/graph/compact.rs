@@ -2511,6 +2511,7 @@ mod tests {
         reset_labeled_leaf_release_test_metrics,
     };
     use crate::VertexId;
+    use std::ops::ControlFlow;
 
     #[test]
     fn leaf_vertex_positions_use_resident_edge_slots_only() {
@@ -2580,12 +2581,16 @@ mod tests {
 
         let mut descending = Vec::new();
         graph
-            .for_each_edges_for_label_ordered(
+            .visit_edges(
                 VertexId::from(FAR_VID),
                 label,
                 OutEdgeOrder::Descending,
-                |edge| descending.push(edge.target),
+                |_slot, edge| {
+                    descending.push(edge.target);
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .expect("descending read over overflow-log bucket must succeed");
         assert_eq!(
             descending.len(),
