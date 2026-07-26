@@ -10,7 +10,7 @@ use crate::{
         edge::{AscOutEdgesIter, OutEdgeSlabIter, OutEdgesIter},
         operation_error::LaraOperationError,
     },
-    traits::{CsrEdge, CsrVertex},
+    traits::{CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
 use std::{cell::Cell, iter::FusedIterator, num::NonZero, rc::Rc};
@@ -199,14 +199,14 @@ pub struct LabeledEdgeInlineValueBatch<'a, E> {
 /// payload storage. Use `collect::<Result<Vec<_>, _>>()` when materializing rows. For paging or
 /// OFFSET-style traversal, prefer [`LabeledOutEdgesIter::try_advance_by`] over
 /// [`Iterator::nth`] or [`Iterator::skip`] so skipped rows do not read payload bytes.
-pub struct LabeledOutEdgesIter<'a, E: CsrEdge, M: Memory> {
+pub struct LabeledOutEdgesIter<'a, E: CsrEdgeTombstone, M: Memory> {
     pub(super) graph: &'a LabeledLaraGraph<E, M>,
     pub(super) src: VertexId,
     pub(super) order: OutEdgeOrder,
     pub(super) kind: LabeledOutEdgesIterKind<'a, E, M>,
 }
 
-pub(super) enum LabeledOutEdgesIterKind<'a, E: CsrEdge, M: Memory> {
+pub(super) enum LabeledOutEdgesIterKind<'a, E: CsrEdgeTombstone, M: Memory> {
     Empty,
     BypassDesc {
         label_id: BucketLabelKey,
@@ -226,7 +226,7 @@ pub(super) enum LabeledOutEdgesIterKind<'a, E: CsrEdge, M: Memory> {
 }
 
 #[doc(hidden)]
-pub struct LabeledBucketScan<'a, E: CsrEdge, M: Memory> {
+pub struct LabeledBucketScan<'a, E: CsrEdgeTombstone, M: Memory> {
     graph: &'a LabeledLaraGraph<E, M>,
     src: VertexId,
     vertex: LabeledVertex,
@@ -239,19 +239,19 @@ pub struct LabeledBucketScan<'a, E: CsrEdge, M: Memory> {
     kind: LabeledBucketScanKind<'a, E, M>,
 }
 
-pub(super) enum LabeledBucketScanKind<'a, E: CsrEdge, M: Memory> {
+pub(super) enum LabeledBucketScanKind<'a, E: CsrEdgeTombstone, M: Memory> {
     Desc { iter: OutEdgesIter<'a, E, M> },
     Asc { iter: AscOutEdgesIter<'a, E, M> },
 }
 
-pub enum LabeledSpanIter<'a, E: CsrEdge, M: Memory> {
+pub enum LabeledSpanIter<'a, E: CsrEdgeTombstone, M: Memory> {
     Empty,
     Scan(LabeledBucketScan<'a, E, M>),
 }
 
 impl<'a, E, M> Iterator for LabeledOutEdgesIter<'a, E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     type Item = Result<E, LabeledOperationError>;
@@ -329,14 +329,14 @@ where
 
 impl<'a, E, M> FusedIterator for LabeledOutEdgesIter<'a, E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
 }
 
 impl<'a, E, M> LabeledOutEdgesIter<'a, E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     pub(super) fn empty(
@@ -440,7 +440,7 @@ where
 
 impl<E, M> Iterator for LabeledBucketScan<'_, E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     type Item = Result<E, LabeledOperationError>;
@@ -454,7 +454,7 @@ where
 
 impl<E, M> LabeledBucketScan<'_, E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     #[inline]
@@ -506,7 +506,7 @@ where
 
 impl<E, M> Iterator for LabeledSpanIter<'_, E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     type Item = Result<E, LabeledOperationError>;
@@ -532,7 +532,7 @@ where
 
 impl<E, M> LabeledBucketScan<'_, E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     pub fn try_advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
@@ -559,7 +559,7 @@ where
 
 impl<E, M> LabeledSpanIter<'_, E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
     #[inline]
@@ -633,7 +633,7 @@ where
 
 impl<E, M> FusedIterator for LabeledSpanIter<'_, E, M>
 where
-    E: CsrEdge,
+    E: CsrEdgeTombstone,
     M: Memory,
 {
 }

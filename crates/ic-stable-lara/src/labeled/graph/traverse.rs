@@ -386,7 +386,12 @@ where
         })?;
         Ok(())
     }
-
+}
+impl<E, M> LabeledLaraGraph<E, M>
+where
+    E: CsrEdgeTombstone,
+    M: Memory,
+{
     pub(super) fn out_edges_iter_for_label_ordered(
         &self,
         src: VertexId,
@@ -550,41 +555,6 @@ where
         }
     }
 
-    pub(crate) fn skip_then_visit_each_out_edge_by_directedness<Visit, Err>(
-        &self,
-        src: VertexId,
-        directedness: BucketDirectedness,
-        offset_remaining: &mut usize,
-        mut visit: Visit,
-    ) -> Result<Result<bool, Err>, LabeledOperationError>
-    where
-        Visit: FnMut(E) -> Result<bool, Err>,
-    {
-        let skip = *offset_remaining;
-        let mut it =
-            self.out_edges_by_directedness_iter(src, directedness, OutEdgeOrder::Descending)?;
-        match it.try_advance_by(skip)? {
-            Ok(()) => {
-                *offset_remaining = 0;
-            }
-            Err(nz) => {
-                *offset_remaining = nz.get();
-                return Ok(Ok(false));
-            }
-        }
-        loop {
-            let Some(edge) = it.next() else {
-                return Ok(Ok(false));
-            };
-            let edge = edge?;
-            match visit(edge) {
-                Ok(false) => continue,
-                Ok(true) => return Ok(Ok(true)),
-                Err(e) => return Ok(Err(e)),
-            }
-        }
-    }
-
     /// Visits outgoing edges for one label without checking that `src` is in range.
     pub fn for_each_edges_for_label_unchecked<Visit>(
         &self,
@@ -622,6 +592,41 @@ where
             visit(edge?.with_label_id(label_id.raw()));
         }
         Ok(())
+    }
+
+    pub(crate) fn skip_then_visit_each_out_edge_by_directedness<Visit, Err>(
+        &self,
+        src: VertexId,
+        directedness: BucketDirectedness,
+        offset_remaining: &mut usize,
+        mut visit: Visit,
+    ) -> Result<Result<bool, Err>, LabeledOperationError>
+    where
+        Visit: FnMut(E) -> Result<bool, Err>,
+    {
+        let skip = *offset_remaining;
+        let mut it =
+            self.out_edges_by_directedness_iter(src, directedness, OutEdgeOrder::Descending)?;
+        match it.try_advance_by(skip)? {
+            Ok(()) => {
+                *offset_remaining = 0;
+            }
+            Err(nz) => {
+                *offset_remaining = nz.get();
+                return Ok(Ok(false));
+            }
+        }
+        loop {
+            let Some(edge) = it.next() else {
+                return Ok(Ok(false));
+            };
+            let edge = edge?;
+            match visit(edge) {
+                Ok(false) => continue,
+                Ok(true) => return Ok(Ok(true)),
+                Err(e) => return Ok(Err(e)),
+            }
+        }
     }
 
     pub(super) fn visit_label_out_edges_inner<Match, Visit>(
