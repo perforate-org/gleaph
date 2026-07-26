@@ -58,14 +58,22 @@ pub use crate::traverse::BucketEntryPosition;
 
 /// Exact inline-property bytes for one live edge row.
 ///
-/// Width zero is represented by an empty `bytes` vector and is a valid value;
-/// callers must not treat it as a missing property.
+/// Width zero is represented by an empty byte slice and is a valid value;
+/// callers must not treat it as a missing property.  Small payloads (up to
+/// 16 bytes) are stored inline to avoid per-edge heap allocations during
+/// sparse traversals; larger payloads fall back to a heap vector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InlinePropertyBytes {
     /// Declared byte width of the inline property for this edge's label bucket.
     pub width: u16,
-    /// Exact byte contents of the inline property, or empty when `width == 0`.
-    pub bytes: Vec<u8>,
+    storage: InlinePropertyBytesStorage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InlinePropertyBytesStorage {
+    Empty,
+    Inline { len: u8, buf: [u8; 16] },
+    Heap(Vec<u8>),
 }
 
 impl InlinePropertyBytes {
@@ -74,7 +82,51 @@ impl InlinePropertyBytes {
     pub fn empty() -> Self {
         Self {
             width: 0,
-            bytes: Vec::new(),
+            storage: InlinePropertyBytesStorage::Empty,
+        }
+    }
+
+    /// Creates an inline-property value from a borrowed byte slice.
+    #[inline]
+    pub fn from_bytes(width: u16, bytes: &[u8]) -> Self {
+        if bytes.is_empty() {
+            return Self::empty();
+        }
+        if bytes.len() <= 16 {
+            let mut buf = [0u8; 16];
+            buf[..bytes.len()].copy_from_slice(bytes);
+            Self {
+                width,
+                storage: InlinePropertyBytesStorage::Inline {
+                    len: bytes.len() as u8,
+                    buf,
+                },
+            }
+        } else {
+            Self {
+                width,
+                storage: InlinePropertyBytesStorage::Heap(bytes.to_vec()),
+            }
+        }
+    }
+
+    /// Returns the exact byte contents of the inline property.
+    #[inline]
+    pub fn bytes(&self) -> &[u8] {
+        match &self.storage {
+            InlinePropertyBytesStorage::Empty => &[],
+            InlinePropertyBytesStorage::Inline { len, buf } => &buf[..*len as usize],
+            InlinePropertyBytesStorage::Heap(bytes) => bytes.as_slice(),
+        }
+    }
+
+    /// Consumes the value and returns the bytes as a vector.
+    #[inline]
+    pub fn into_vec(self) -> Vec<u8> {
+        match self.storage {
+            InlinePropertyBytesStorage::Empty => Vec::new(),
+            InlinePropertyBytesStorage::Inline { len, buf } => buf[..len as usize].to_vec(),
+            InlinePropertyBytesStorage::Heap(bytes) => bytes,
         }
     }
 }
@@ -758,10 +810,7 @@ where
                         let start =
                             usize::try_from(raw_slot).unwrap_or(usize::MAX) * usize::from(width);
                         let end = start + usize::from(width);
-                        InlinePropertyBytes {
-                            width,
-                            bytes: payload_bytes[start..end].to_vec(),
-                        }
+                        InlinePropertyBytes::from_bytes(width, &payload_bytes[start..end])
                     };
                     visit(
                         slot,
@@ -782,10 +831,7 @@ where
             let inline_property = if width == 0 {
                 InlinePropertyBytes::empty()
             } else {
-                InlinePropertyBytes {
-                    width,
-                    bytes: edge.edge_inline_value_bytes().to_vec(),
-                }
+                InlinePropertyBytes::from_bytes(width, edge.edge_inline_value_bytes())
             };
             if let ControlFlow::Break(value) = visit(
                 BucketEntryPosition::new(slot),
@@ -916,15 +962,17 @@ where
             let deleted_slab_offsets = prefetched.1.clone();
             let edge_slab_slots = slab_slots;
             let value_slab_slots = payload_slab_slots.min(edge_slab_slots);
-            let _ = self.visit_dense_out_inline_value_batches_for_slab_prefix_next(
+            // Descending order: overflow log entries have the highest logical slots,
+            // followed by edge-slab entries whose payload lives in the overflow log,
+            // followed by the dense payload-slab prefix.
+            let _ = self.emit_hybrid_overflow_log_inline_values_desc_next(
+                owner,
                 bucket,
-                value_slab_slots,
-                &deleted_slab_offsets,
+                prefetched,
                 order,
                 scratch,
                 visit,
-                false,
-                true,
+                log_chains.as_ref(),
             )?;
             let _ = self.visit_payload_log_ordinals_in_edge_slab_next(
                 owner,
@@ -936,14 +984,15 @@ where
                 visit,
                 log_chains.as_ref(),
             )?;
-            let _ = self.emit_hybrid_overflow_log_inline_values_desc_next(
-                owner,
+            let _ = self.visit_dense_out_inline_value_batches_for_slab_prefix_next(
                 bucket,
-                prefetched,
+                value_slab_slots,
+                &deleted_slab_offsets,
                 order,
                 scratch,
                 visit,
-                log_chains.as_ref(),
+                false,
+                true,
             )?;
             return Ok(ControlFlow::Continue(()));
         }
@@ -1015,6 +1064,66 @@ where
         let width = usize::from(bucket.inline_value_byte_width());
         let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
         let label_id = bucket.bucket_label_key();
+
+        // Fast path: when the caller has already verified the edge slab is live and
+        // there are no tombstone offsets to skip, bulk-read the contiguous payload
+        // span and slice it into batches. This matches the legacy hybrid batch path
+        // and avoids per-slot stable-memory round-trips.
+        if omit_edge_slab_reads && deleted_slab_offsets.is_empty() {
+            let mut remaining = scan_slots;
+            while remaining > 0 {
+                let take = remaining.min(batch_edges as u32);
+                let first_ordinal = match order {
+                    OutEdgeOrder::Descending => remaining - take,
+                    OutEdgeOrder::Ascending => scan_slots - remaining,
+                };
+                scratch.clear();
+                scratch.slot_indices.reserve(take as usize);
+                scratch.values.reserve(take as usize * width);
+                let offset = crate::labeled::invariants::inline_value_byte_offset_at_slot(
+                    bucket,
+                    first_ordinal,
+                )?;
+                let byte_len = take as usize * width;
+                let mut raw_values = vec![0u8; byte_len];
+                self.values.read_bytes(offset, &mut raw_values);
+                match order {
+                    OutEdgeOrder::Ascending => {
+                        for i in 0..take as usize {
+                            let ordinal = first_ordinal + i as u32;
+                            scratch.slot_indices.push(ordinal);
+                            scratch
+                                .values
+                                .extend_from_slice(&raw_values[i * width..(i + 1) * width]);
+                        }
+                    }
+                    OutEdgeOrder::Descending => {
+                        for i in (0..take as usize).rev() {
+                            let ordinal = first_ordinal + i as u32;
+                            scratch.slot_indices.push(ordinal);
+                            scratch
+                                .values
+                                .extend_from_slice(&raw_values[i * width..(i + 1) * width]);
+                        }
+                    }
+                }
+                if !scratch.slot_indices.is_empty()
+                    && let ControlFlow::Break(value) = visit(LabeledPayloadValueBatch {
+                        label_id,
+                        byte_width: bucket.inline_value_byte_width(),
+                        order,
+                        slot_indices: &scratch.slot_indices,
+                        values: &scratch.values,
+                        dense: false,
+                    })
+                {
+                    return Ok(ControlFlow::Break(value));
+                }
+                remaining -= take;
+            }
+            return Ok(ControlFlow::Continue(()));
+        }
+
         let mut ordered: Vec<(u32, u32)> = (0..scan_slots)
             .filter(|slot| {
                 if slab_slot_deleted(*slot, deleted_slab_offsets) {
@@ -1786,7 +1895,7 @@ where
                 edge_inline_value_width: u16::try_from(bytes.len()).unwrap_or(u16::MAX),
             });
         }
-        Ok(InlinePropertyBytes { width, bytes })
+        Ok(InlinePropertyBytes::from_bytes(width, &bytes))
     }
 }
 
@@ -2104,7 +2213,7 @@ mod tests {
             |_slot, item| {
                 inline_targets.push(item.edge.target);
                 assert_eq!(item.inline_property.width, 0);
-                assert!(item.inline_property.bytes.is_empty());
+                assert!(item.inline_property.bytes().is_empty());
                 ControlFlow::Continue(())
             },
         )
@@ -2277,7 +2386,7 @@ mod tests {
                     rows.push((
                         slot.raw(),
                         item.edge.target,
-                        item.inline_property.bytes.clone(),
+                        item.inline_property.bytes().to_vec(),
                     ));
                     ControlFlow::Continue(())
                 },
@@ -2347,7 +2456,7 @@ mod tests {
                 assert_eq!(with_prop.edge.target, edge.target);
                 assert_eq!(with_prop.inline_property.width, 4);
                 let expected = (edge.target * 7).to_le_bytes().to_vec();
-                assert_eq!(with_prop.inline_property.bytes, expected);
+                assert_eq!(with_prop.inline_property.bytes(), expected);
                 seen += 1;
                 ControlFlow::Continue(())
             })
@@ -2363,7 +2472,7 @@ mod tests {
                 OutEdgeOrder::Descending,
                 |_slot, item| {
                     let expected = (item.edge.target * 7).to_le_bytes().to_vec();
-                    assert_eq!(item.inline_property.bytes, expected);
+                    assert_eq!(item.inline_property.bytes(), expected);
                     streamed += 1;
                     ControlFlow::Continue(())
                 },
@@ -2382,7 +2491,7 @@ mod tests {
                 |_slot, item| {
                     assert_eq!(item.inline_property.width, 4);
                     assert_eq!(
-                        item.inline_property.bytes,
+                        item.inline_property.bytes(),
                         &(item.edge.target * 7).to_le_bytes()[..]
                     );
                     stopped_after += 1;
@@ -2401,7 +2510,7 @@ mod tests {
                 |_slot, item| {
                     assert_eq!(item.inline_property.width, 4);
                     assert_eq!(
-                        item.inline_property.bytes,
+                        item.inline_property.bytes(),
                         &(item.edge.target * 7).to_le_bytes()[..]
                     );
                     resumed += 1;
@@ -2445,7 +2554,7 @@ mod tests {
                 ascending.push((
                     slot.raw(),
                     item.edge.target,
-                    item.inline_property.bytes.clone(),
+                    item.inline_property.bytes().to_vec(),
                 ));
                 ControlFlow::<()>::Continue(())
             },
@@ -2473,7 +2582,7 @@ mod tests {
                 descending.push((
                     slot.raw(),
                     item.edge.target,
-                    item.inline_property.bytes.clone(),
+                    item.inline_property.bytes().to_vec(),
                 ));
                 ControlFlow::<()>::Continue(())
             },
@@ -2524,7 +2633,7 @@ mod tests {
                 ascending.push((
                     slot.raw(),
                     item.edge.target,
-                    item.inline_property.bytes.clone(),
+                    item.inline_property.bytes().to_vec(),
                 ));
                 ControlFlow::<()>::Continue(())
             },
@@ -2552,7 +2661,7 @@ mod tests {
                 descending.push((
                     slot.raw(),
                     item.edge.target,
-                    item.inline_property.bytes.clone(),
+                    item.inline_property.bytes().to_vec(),
                 ));
                 ControlFlow::<()>::Continue(())
             },
@@ -2581,7 +2690,7 @@ mod tests {
             .unwrap()
             .expect("live row");
         assert_eq!(item.inline_property.width, 0);
-        assert!(item.inline_property.bytes.is_empty());
+        assert!(item.inline_property.bytes().is_empty());
     }
 
     #[test]

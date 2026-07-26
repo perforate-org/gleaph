@@ -734,7 +734,7 @@ fn bench_labeled_for_each_edges_for_label_48_x51() -> canbench_rs::BenchResult {
                             .edge
                             .with_stored_inline_value_bytes(
                                 item.inline_property.width,
-                                &item.inline_property.bytes,
+                                item.inline_property.bytes(),
                             )
                             .with_label_id(label.raw());
                         count += usize::from(edge.neighbor_vid().0 > 0);
@@ -766,7 +766,7 @@ fn bench_labeled_for_each_edges_for_label_24_x51() -> canbench_rs::BenchResult {
                             .edge
                             .with_stored_inline_value_bytes(
                                 item.inline_property.width,
-                                &item.inline_property.bytes,
+                                item.inline_property.bytes(),
                             )
                             .with_label_id(label.raw());
                         count += usize::from(edge.neighbor_vid().0 > 0);
@@ -1305,7 +1305,7 @@ fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResul
                             .edge
                             .with_stored_inline_value_bytes(
                                 item.inline_property.width,
-                                &item.inline_property.bytes,
+                                item.inline_property.bytes(),
                             )
                             .with_label_id(label.raw());
                         count += usize::from(edge.inline_value_len > 0);

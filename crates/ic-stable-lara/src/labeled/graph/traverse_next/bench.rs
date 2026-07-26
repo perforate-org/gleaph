@@ -571,9 +571,9 @@ fn bench_traverse_next_visit_edges_with_inline_property() -> canbench_rs::BenchR
                 OutEdgeOrder::Ascending,
                 |_slot, item| {
                     count += u32::from(
-                        item.inline_property.width == item.inline_property.bytes.len() as u16,
+                        item.inline_property.width == item.inline_property.bytes().len() as u16,
                     );
-                    black_box(&item.inline_property.bytes);
+                    black_box(item.inline_property.bytes());
                     std::ops::ControlFlow::<()>::Continue(())
                 },
             )

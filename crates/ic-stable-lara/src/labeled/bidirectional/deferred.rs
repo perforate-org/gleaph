@@ -1990,7 +1990,7 @@ where
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
                     visit(edge);
@@ -2019,7 +2019,7 @@ where
                     .edge
                     .with_stored_inline_value_bytes(
                         item.inline_property.width,
-                        &item.inline_property.bytes,
+                        item.inline_property.bytes(),
                     )
                     .with_label_id(label_id.raw());
                 visit(edge);
@@ -2350,7 +2350,7 @@ where
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
                     match visit(edge) {
@@ -2453,7 +2453,7 @@ where
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
                     match visit(edge) {
@@ -2613,7 +2613,7 @@ where
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
                     visit(edge);
@@ -2642,7 +2642,7 @@ where
                     .edge
                     .with_stored_inline_value_bytes(
                         item.inline_property.width,
-                        &item.inline_property.bytes,
+                        item.inline_property.bytes(),
                     )
                     .with_label_id(label_id.raw());
                 visit(edge);
@@ -2696,7 +2696,7 @@ where
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
                     visit(edge);
@@ -2728,7 +2728,7 @@ where
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
                     visit(edge);
@@ -6711,7 +6711,7 @@ mod tests {
                 label,
                 OutEdgeOrder::Ascending,
                 |slot, item| {
-                    live_slots.push((slot.raw(), item.inline_property.bytes.clone()));
+                    live_slots.push((slot.raw(), item.inline_property.bytes().to_vec()));
                     ControlFlow::<()>::Continue(())
                 },
             )

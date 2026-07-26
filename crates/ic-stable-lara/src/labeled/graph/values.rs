@@ -1572,7 +1572,7 @@ mod tests {
                             .edge
                             .with_stored_inline_value_bytes(
                                 item.inline_property.width,
-                                &item.inline_property.bytes,
+                                item.inline_property.bytes(),
                             )
                             .with_label_id(valued.raw());
                         let bytes = edge.edge_inline_value_bytes();
@@ -1644,7 +1644,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     edges.push(edge);
@@ -1716,7 +1716,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 2 {
@@ -1763,7 +1763,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 2 {
@@ -1817,7 +1817,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 2 {
@@ -1883,7 +1883,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 2 {
@@ -1940,7 +1940,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 2 {
@@ -2132,7 +2132,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     from_span.extend_from_slice(edge.edge_inline_value_bytes());
@@ -2254,7 +2254,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     from_span.extend_from_slice(edge.edge_inline_value_bytes());
@@ -2765,7 +2765,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     let bytes = edge.edge_inline_value_bytes();
@@ -2900,7 +2900,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     from_iter.extend_from_slice(edge.edge_inline_value_bytes());
@@ -2960,7 +2960,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(default.raw());
                     if edge.inline_value_len == 2 {
@@ -3110,7 +3110,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 2 {
@@ -3183,7 +3183,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 2 && edge.target == 2 {
@@ -3226,7 +3226,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == WIDTH {
@@ -3298,7 +3298,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == WIDTH {
@@ -3478,7 +3478,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 4 {
@@ -3678,7 +3678,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 2 {
@@ -3763,7 +3763,7 @@ mod tests {
                         .edge
                         .with_stored_inline_value_bytes(
                             item.inline_property.width,
-                            &item.inline_property.bytes,
+                            item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
                     if edge.inline_value_len == 2 {
@@ -3813,7 +3813,7 @@ mod tests {
                     .edge
                     .with_stored_inline_value_bytes(
                         item.inline_property.width,
-                        &item.inline_property.bytes,
+                        item.inline_property.bytes(),
                     )
                     .with_label_id(road.raw());
                 let bytes = edge.edge_inline_value_bytes();
