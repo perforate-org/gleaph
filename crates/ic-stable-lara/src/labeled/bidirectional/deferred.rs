@@ -4441,12 +4441,20 @@ mod tests {
         let mut source_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let mut mate_slots = Vec::new();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| mate_slots.push(slot))
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                mate_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let rows = MatePromotionRows {
             inputs: MatePromotionInputs {
@@ -6542,12 +6550,20 @@ mod tests {
         let mut source_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let mut reverse_slots = Vec::new();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| reverse_slots.push(slot))
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                reverse_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         assert_eq!(source_slots.len(), 3);
         assert_eq!(reverse_slots.len(), 3);
@@ -6586,16 +6602,30 @@ mod tests {
         let mut forward_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(VertexId::from(0), label, |slot, edge| {
-                forward_slots.push((slot, edge.neighbor_vid()));
-            })
+            .visit_edges(
+                VertexId::from(0),
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, edge| {
+                    forward_slots.push((slot.raw(), edge.neighbor_vid()));
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         let mut reverse_slots = Vec::new();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(VertexId::from(1), label, |slot, edge| {
-                reverse_slots.push((slot, edge.neighbor_vid()));
-            })
+            .visit_edges(
+                VertexId::from(1),
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, edge| {
+                    reverse_slots.push((slot.raw(), edge.neighbor_vid()));
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         assert_eq!(
             forward_slots,
@@ -6644,9 +6674,16 @@ mod tests {
         let mut live_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, edge| {
-                live_slots.push((slot, edge.edge_inline_value_bytes().to_vec()));
-            })
+            .visit_edges_with_inline_property(
+                source,
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, item| {
+                    live_slots.push((slot.raw(), item.inline_property.bytes.clone()));
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         assert_eq!(live_slots.len(), locations.len());
         let mut returned_slots = locations
@@ -6780,12 +6817,20 @@ mod tests {
         let mut source_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let mut mate_slots = Vec::new();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| mate_slots.push(slot))
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                mate_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let inputs = MatePromotionInputs {
             owner_vertex_id: source,
@@ -6921,12 +6966,20 @@ mod tests {
         let mut source_slots = Vec::new();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| source_slots.push(slot))
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let mut mate_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| mate_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                mate_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let inputs = MatePromotionInputs {
             owner_vertex_id: target,
@@ -7003,16 +7056,30 @@ mod tests {
         let mut first_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(VertexId::from(0), label, |slot, _| {
-                first_slots.push(slot)
-            })
+            .visit_edges(
+                VertexId::from(0),
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, _| {
+                    first_slots.push(slot.raw());
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         let mut self_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(VertexId::from(2), label, |slot, _| {
-                self_slots.push(slot)
-            })
+            .visit_edges(
+                VertexId::from(2),
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, _| {
+                    self_slots.push(slot.raw());
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         let first_inputs = MatePromotionInputs {
             owner_vertex_id: VertexId::from(0),
@@ -7032,9 +7099,16 @@ mod tests {
             let mut slots = Vec::new();
             graph
                 .forward()
-                .for_each_live_edge_slot_for_label(VertexId::from(1), label, |slot, _| {
-                    slots.push(slot)
-                })
+                .visit_edges(
+                    VertexId::from(1),
+                    label,
+                    OutEdgeOrder::Ascending,
+                    |slot, _| {
+                        slots.push(slot.raw());
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map(|_| ())
                 .unwrap();
             slots
         };
@@ -7153,7 +7227,11 @@ mod tests {
         let mut low_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(low, label, |slot, _| low_slots.push(slot))
+            .visit_edges(low, label, OutEdgeOrder::Ascending, |slot, _| {
+                low_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let low_slot = low_slots[0];
         let low_ref = CanonicalEdgeOccurrence {
@@ -7179,7 +7257,11 @@ mod tests {
         let mut self_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(self_loop, label, |slot, _| self_slots.push(slot))
+            .visit_edges(self_loop, label, OutEdgeOrder::Ascending, |slot, _| {
+                self_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let self_slot = self_slots[0];
         let self_ref = CanonicalEdgeOccurrence {
@@ -7250,7 +7332,11 @@ mod tests {
         let mut source_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let source_slot = source_slots[0];
         graph
@@ -7260,7 +7346,11 @@ mod tests {
         let mut remaining_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| remaining_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                remaining_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let remaining_slot = remaining_slots[0];
         let source_ref = CanonicalEdgeOccurrence {
@@ -7305,7 +7395,11 @@ mod tests {
         let mut source_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let source_slot = source_slots[0];
         let source_ref = CanonicalEdgeOccurrence {
@@ -7392,9 +7486,11 @@ mod tests {
         let mut expected_mate_slots = Vec::new();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| {
-                expected_mate_slots.push(slot)
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                expected_mate_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
             })
+            .map(|_| ())
             .unwrap();
         let before_out = graph.directed_out_edges(source).unwrap();
         let before_in = graph.directed_in_edges(target).unwrap();
@@ -7770,7 +7866,11 @@ mod tests {
         let mut slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         for slot in slots {
             let edge = CanonicalEdgeOccurrence {
@@ -7806,12 +7906,20 @@ mod tests {
         let mut slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let mut mate_slots = Vec::new();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| mate_slots.push(slot))
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                mate_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let rows = MatePromotionRows {
             inputs: MatePromotionInputs {
@@ -7888,7 +7996,11 @@ mod tests {
         let mut slots = Vec::new();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| slots.push(slot))
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         for slot in slots {
             let edge = CanonicalEdgeOccurrence {
@@ -7932,7 +8044,11 @@ mod tests {
             let mut slots = Vec::new();
             nonself_graph
                 .forward()
-                .for_each_live_edge_slot_for_label(owner, label, |slot, _| slots.push(slot))
+                .visit_edges(owner, label, OutEdgeOrder::Ascending, |slot, _| {
+                    slots.push(slot.raw());
+                    ControlFlow::<()>::Continue(())
+                })
+                .map(|_| ())
                 .unwrap();
             for slot in slots {
                 let edge = CanonicalEdgeOccurrence {
@@ -7972,7 +8088,16 @@ mod tests {
         let mut slots = Vec::new();
         self_graph
             .forward()
-            .for_each_live_edge_slot_for_label(VertexId::from(0), label, |slot, _| slots.push(slot))
+            .visit_edges(
+                VertexId::from(0),
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, _| {
+                    slots.push(slot.raw());
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         for slot in slots {
             let edge = CanonicalEdgeOccurrence {
@@ -8002,11 +8127,19 @@ mod tests {
         let mut mate_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| mate_slots.push(slot))
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                mate_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let rows = MatePromotionRows {
             inputs: MatePromotionInputs {
@@ -8107,13 +8240,19 @@ mod tests {
             let mut mate_slots = Vec::new();
             graph
                 .forward()
-                .for_each_live_edge_slot_for_label(source, *label, |slot, _| {
-                    source_slots.push(slot)
+                .visit_edges(source, *label, OutEdgeOrder::Ascending, |slot, _| {
+                    source_slots.push(slot.raw());
+                    ControlFlow::<()>::Continue(())
                 })
+                .map(|_| ())
                 .unwrap();
             graph
                 .reverse()
-                .for_each_live_edge_slot_for_label(target, *label, |slot, _| mate_slots.push(slot))
+                .visit_edges(target, *label, OutEdgeOrder::Ascending, |slot, _| {
+                    mate_slots.push(slot.raw());
+                    ControlFlow::<()>::Continue(())
+                })
+                .map(|_| ())
                 .unwrap();
             rows.push(MatePromotionRows {
                 inputs: MatePromotionInputs {
@@ -8197,7 +8336,11 @@ mod tests {
         let mut source_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
@@ -8239,9 +8382,11 @@ mod tests {
         let mut source_slot = None;
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| {
-                source_slot = Some(slot);
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slot = Some(slot.raw());
+                ControlFlow::<()>::Continue(())
             })
+            .map(|_| ())
             .unwrap();
         let source_slot = source_slot.expect("published source");
         let source_ref = CanonicalEdgeOccurrence {
@@ -8302,7 +8447,11 @@ mod tests {
         let mut source_slot = None;
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slot = Some(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slot = Some(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
@@ -8347,7 +8496,11 @@ mod tests {
         let mut source_slot = None;
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slot = Some(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slot = Some(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Forward,
@@ -8389,7 +8542,11 @@ mod tests {
         let mut reverse_slot = None;
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| reverse_slot = Some(slot))
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                reverse_slot = Some(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         let edge = CanonicalEdgeOccurrence {
             orientation: Orientation::Reverse,
@@ -8433,11 +8590,19 @@ mod tests {
         let mut reverse_slots = Vec::new();
         graph
             .forward()
-            .for_each_live_edge_slot_for_label(source, label, |slot, _| source_slots.push(slot))
+            .visit_edges(source, label, OutEdgeOrder::Ascending, |slot, _| {
+                source_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         graph
             .reverse()
-            .for_each_live_edge_slot_for_label(target, label, |slot, _| reverse_slots.push(slot))
+            .visit_edges(target, label, OutEdgeOrder::Ascending, |slot, _| {
+                reverse_slots.push(slot.raw());
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .unwrap();
         assert!(source_slots.len() >= 2 && reverse_slots.len() >= 2);
         let published = graph
