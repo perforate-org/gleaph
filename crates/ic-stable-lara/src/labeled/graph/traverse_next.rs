@@ -1085,25 +1085,24 @@ where
                     first_ordinal,
                 )?;
                 let byte_len = take as usize * width;
-                let mut raw_values = vec![0u8; byte_len];
-                self.values.read_bytes(offset, &mut raw_values);
+                let raw_values = scratch.io_payload_slice_mut(byte_len);
+                self.values.read_bytes(offset, raw_values);
+                // Copy out the slice values into the public batch buffers so the borrow
+                // of the reusable IO buffer can end before the visitor callback runs.
+                scratch
+                    .values
+                    .extend_from_slice(&scratch.io_payload_bytes[..byte_len]);
                 match order {
                     OutEdgeOrder::Ascending => {
                         for i in 0..take as usize {
                             let ordinal = first_ordinal + i as u32;
                             scratch.slot_indices.push(ordinal);
-                            scratch
-                                .values
-                                .extend_from_slice(&raw_values[i * width..(i + 1) * width]);
                         }
                     }
                     OutEdgeOrder::Descending => {
                         for i in (0..take as usize).rev() {
                             let ordinal = first_ordinal + i as u32;
                             scratch.slot_indices.push(ordinal);
-                            scratch
-                                .values
-                                .extend_from_slice(&raw_values[i * width..(i + 1) * width]);
                         }
                     }
                 }
@@ -1150,8 +1149,9 @@ where
             for &(slot, ordinal) in chunk {
                 let offset =
                     crate::labeled::invariants::inline_value_byte_offset_at_slot(bucket, ordinal)?;
-                let mut value = vec![0u8; width];
-                self.values.read_bytes(offset, &mut value);
+                let value = scratch.io_payload_slice_mut(width);
+                self.values.read_bytes(offset, value);
+                let value = scratch.io_payload_bytes[..width].to_vec();
                 scratch.slot_indices.push(slot);
                 scratch.values.extend_from_slice(&value);
             }
@@ -1408,8 +1408,9 @@ where
                 .checked_mul(width)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let offset = crate::labeled::invariants::inline_value_byte_offset_at_slot(bucket, low)?;
-            let mut bytes = vec![0u8; byte_len];
-            self.values.read_bytes(offset, &mut bytes);
+            let bytes = scratch.io_payload_slice_mut(byte_len);
+            self.values.read_bytes(offset, bytes);
+            let bytes = scratch.io_payload_bytes[..byte_len].to_vec();
             for &(slot, ordinal) in &slots_and_ordinals[i..end] {
                 let value_index = usize::try_from(ordinal.saturating_sub(low))
                     .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;

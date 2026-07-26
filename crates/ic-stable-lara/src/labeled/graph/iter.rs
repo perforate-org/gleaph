@@ -136,6 +136,8 @@ pub struct LabeledPayloadValueBatchScratch {
     pub values: Vec<u8>,
     /// Populated by hybrid overflow payload phase 1 for phase-2 slot reads.
     pub hybrid_overflow_replay: HybridOverflowEdgeReplay,
+    /// Reusable bulk-read buffer for contiguous payload slab IO.
+    pub(super) io_payload_bytes: Vec<u8>,
 }
 
 impl LabeledPayloadValueBatchScratch {
@@ -149,6 +151,13 @@ impl LabeledPayloadValueBatchScratch {
     pub fn clear_all(&mut self) {
         self.clear();
         self.hybrid_overflow_replay.clear();
+    }
+
+    pub(super) fn io_payload_slice_mut(&mut self, len: usize) -> &mut [u8] {
+        if self.io_payload_bytes.len() < len {
+            self.io_payload_bytes.resize(len, 0);
+        }
+        &mut self.io_payload_bytes[..len]
     }
 }
 
