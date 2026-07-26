@@ -3832,7 +3832,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)?
         {
             self.forward
-                .for_each_edges_for_label(vid, label_id, |edge| {
+                .visit_edges(vid, label_id, OutEdgeOrder::Descending, |_slot, edge| {
                     if edge.neighbor_vid() != vid {
                         if label_id.is_undirected() {
                             affected_forward.insert(edge.neighbor_vid());
@@ -3840,7 +3840,9 @@ where
                             affected_reverse.insert(edge.neighbor_vid());
                         }
                     }
+                    ControlFlow::<()>::Continue(())
                 })
+                .map(|_| ())
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
         }
         for label_id in self
@@ -3849,11 +3851,13 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)?
         {
             self.reverse
-                .for_each_edges_for_label(vid, label_id, |edge| {
+                .visit_edges(vid, label_id, OutEdgeOrder::Descending, |_slot, edge| {
                     if edge.neighbor_vid() != vid {
                         affected_forward.insert(edge.neighbor_vid());
                     }
+                    ControlFlow::<()>::Continue(())
                 })
+                .map(|_| ())
                 .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         }
         for owner in &affected_forward {
