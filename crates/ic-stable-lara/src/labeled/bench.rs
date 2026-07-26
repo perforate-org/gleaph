@@ -18,6 +18,7 @@ use crate::{
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use canbench_rs::{bench, bench_fn};
+use std::ops::ControlFlow;
 use std::{cell::Cell, hint::black_box};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -690,7 +691,11 @@ fn bench_labeled_mixed_label_hub_scan_33x50() -> canbench_rs::BenchResult {
                 .expect("bucket");
             let label = bucket.bucket_label_key();
             graph
-                .for_each_edges_for_label(hub, label, |_| count += 1)
+                .visit_edges(hub, label, OutEdgeOrder::Descending, |_slot, _edge| {
+                    count += 1;
+                    ControlFlow::<()>::Continue(())
+                })
+                .map(|_| ())
                 .expect("for_each");
         }
         black_box(count);
@@ -720,9 +725,23 @@ fn bench_labeled_for_each_edges_for_label_48_x51() -> canbench_rs::BenchResult {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
             let mut count = 0usize;
             graph
-                .for_each_edges_for_label(vid, label, |edge| {
-                    count += usize::from(edge.neighbor_vid().0 > 0);
-                })
+                .visit_edges_with_inline_property(
+                    vid,
+                    label,
+                    OutEdgeOrder::Descending,
+                    |_slot, item| {
+                        let edge = item
+                            .edge
+                            .with_stored_inline_value_bytes(
+                                item.inline_property.width,
+                                &item.inline_property.bytes,
+                            )
+                            .with_label_id(label.raw());
+                        count += usize::from(edge.neighbor_vid().0 > 0);
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map(|_| ())
                 .expect("for_each");
             black_box(count);
         }
@@ -738,9 +757,23 @@ fn bench_labeled_for_each_edges_for_label_24_x51() -> canbench_rs::BenchResult {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
             let mut count = 0usize;
             graph
-                .for_each_edges_for_label(vid, label, |edge| {
-                    count += usize::from(edge.neighbor_vid().0 > 0);
-                })
+                .visit_edges_with_inline_property(
+                    vid,
+                    label,
+                    OutEdgeOrder::Descending,
+                    |_slot, item| {
+                        let edge = item
+                            .edge
+                            .with_stored_inline_value_bytes(
+                                item.inline_property.width,
+                                &item.inline_property.bytes,
+                            )
+                            .with_label_id(label.raw());
+                        count += usize::from(edge.neighbor_vid().0 > 0);
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map(|_| ())
                 .expect("for_each");
             black_box(count);
         }
@@ -1262,9 +1295,23 @@ fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResul
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
             let mut count = 0usize;
             graph
-                .for_each_edges_for_label(vid, label, |edge| {
-                    count += usize::from(edge.inline_value_len > 0);
-                })
+                .visit_edges_with_inline_property(
+                    vid,
+                    label,
+                    OutEdgeOrder::Descending,
+                    |_slot, item| {
+                        let edge = item
+                            .edge
+                            .with_stored_inline_value_bytes(
+                                item.inline_property.width,
+                                &item.inline_property.bytes,
+                            )
+                            .with_label_id(label.raw());
+                        count += usize::from(edge.inline_value_len > 0);
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map(|_| ())
                 .expect("for_each");
             black_box(count);
         }
@@ -1293,7 +1340,11 @@ fn bench_labeled_direct_unlink_log_fold_maintenance() -> canbench_rs::BenchResul
         compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
         let mut count = 0usize;
         graph
-            .for_each_edges_for_label(vid, label, |_| count += 1)
+            .visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, _edge| {
+                count += 1;
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .expect("for_each");
         black_box(count);
     })
@@ -1317,7 +1368,11 @@ fn bench_labeled_stage2_hub_delete_half_then_compact_1024() -> canbench_rs::Benc
         compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
         let mut count = 0usize;
         graph
-            .for_each_edges_for_label(vid, label, |_| count += 1)
+            .visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, _edge| {
+                count += 1;
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .expect("for_each");
         black_box(count);
     })
@@ -1345,7 +1400,11 @@ fn bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024() -> canbench_
         compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
         let mut count = 0usize;
         graph
-            .for_each_edges_for_label(vid, label, |_| count += 1)
+            .visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, _edge| {
+                count += 1;
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .expect("for_each");
         black_box(count);
     })
@@ -1640,7 +1699,11 @@ macro_rules! stage2b_crossover_benches {
                 compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
                 let mut count = 0usize;
                 graph
-                    .for_each_edges_for_label(vid, label, |_| count += 1)
+                    .visit_edges(vid, label, OutEdgeOrder::Descending, |_slot, _edge| {
+                        count += 1;
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .map(|_| ())
                     .expect("for_each");
                 black_box(count);
             })
