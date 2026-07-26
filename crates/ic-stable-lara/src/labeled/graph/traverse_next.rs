@@ -460,16 +460,19 @@ where
                 LaraOperationError::CollectAllocationOverflow,
             ))?;
 
-        // Fast path for dense, tombstone-free buckets: read the entire payload span once,
-        // then attach bytes to each edge without per-row ordinal resolution or storage calls.
-        // This preserves the legacy `for_each_edges_for_label_ordered` dense batch semantics.
-        if width > 0
-            && bucket.inline_value_log_head() < 0
+        // Fast path for dense, tombstone-free buckets: use the legacy dense slab reader to
+        // bulk-read topology, and bulk-read the payload span when the bucket carries inline
+        // values. This avoids per-slot `read_slot` round-trips and preserves the performance
+        // contract of `for_each_edges_for_label_ordered` for hot dense scans.
+        if bucket.inline_value_log_head() < 0
             && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
             && bucket.degree() > 0
         {
-            let payload_slots = bucket.degree();
-            let payload_bytes = self.read_bucket_payload_span(owner, &bucket, 0, payload_slots)?;
+            let payload_bytes = if width > 0 {
+                self.read_bucket_payload_span(owner, &bucket, 0, bucket.degree())?
+            } else {
+                Vec::new()
+            };
             let mut ordinal = match order {
                 OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
                 OutEdgeOrder::Ascending => 0,
@@ -481,10 +484,17 @@ where
                 order,
                 0,
                 |slot, edge| {
-                    let start = usize::try_from(ordinal).unwrap_or(usize::MAX) * usize::from(width);
-                    let end = start + usize::from(width);
-                    let bytes = payload_bytes[start..end].to_vec();
-                    let inline_property = InlinePropertyBytes { width, bytes };
+                    let inline_property = if width == 0 {
+                        InlinePropertyBytes::empty()
+                    } else {
+                        let start =
+                            usize::try_from(ordinal).unwrap_or(usize::MAX) * usize::from(width);
+                        let end = start + usize::from(width);
+                        InlinePropertyBytes {
+                            width,
+                            bytes: payload_bytes[start..end].to_vec(),
+                        }
+                    };
                     match visit(
                         BucketEntryPosition::new(slot),
                         EdgeWithInlineProperty {
