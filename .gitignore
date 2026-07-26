@@ -4,6 +4,7 @@ target/
 .claude/
 .cursor/
 .zed/
+plans/
 
 node_modules/
 .pnpm-store/
