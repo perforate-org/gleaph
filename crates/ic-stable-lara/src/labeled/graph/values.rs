@@ -1232,6 +1232,7 @@ mod tests {
     use super::super::test_support::*;
     use super::super::{BucketSearch, *};
     use crate::VertexId;
+    use std::ops::ControlFlow;
 
     /// Move `road` off the payload-slab tail, then update its last edge.  The
     /// update must use the independent payload log; this keeps log-oriented
@@ -1562,10 +1563,24 @@ mod tests {
 
             let mut observed = Vec::new();
             graph
-                .for_each_edges_for_label(src, valued, |edge| {
-                    let bytes = edge.edge_inline_value_bytes();
-                    observed.push((edge.target, u16::from_le_bytes([bytes[0], bytes[1]])));
-                })
+                .visit_edges_with_inline_property(
+                    src,
+                    valued,
+                    OutEdgeOrder::Descending,
+                    |_slot, item| {
+                        let edge = item
+                            .edge
+                            .with_stored_inline_value_bytes(
+                                item.inline_property.width,
+                                &item.inline_property.bytes,
+                            )
+                            .with_label_id(valued.raw());
+                        let bytes = edge.edge_inline_value_bytes();
+                        observed.push((edge.target, u16::from_le_bytes([bytes[0], bytes[1]])));
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map(|_| ())
                 .unwrap();
             observed.sort_unstable_by_key(|(target, _)| *target);
             assert_eq!(
@@ -1620,9 +1635,23 @@ mod tests {
         }
         let mut edges = Vec::new();
         graph
-            .for_each_edges_for_label_unchecked(VertexId::from(0), road, |edge| {
-                edges.push(edge);
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    edges.push(edge);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         assert_eq!(edges.len(), 2);
         let mut weights: Vec<u16> = edges
@@ -1678,12 +1707,26 @@ mod tests {
             .unwrap();
         let mut weights = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    let b = edge.edge_inline_value_bytes();
-                    weights.push(u16::from_le_bytes([b[0], b[1]]));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 2 {
+                        let b = edge.edge_inline_value_bytes();
+                        weights.push(u16::from_le_bytes([b[0], b[1]]));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         weights.sort_unstable();
         assert_eq!(weights, vec![1, 100]);
@@ -1711,12 +1754,26 @@ mod tests {
             .unwrap();
         let mut weights = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    let b = edge.edge_inline_value_bytes();
-                    weights.push(u16::from_le_bytes([b[0], b[1]]));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 2 {
+                        let b = edge.edge_inline_value_bytes();
+                        weights.push(u16::from_le_bytes([b[0], b[1]]));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         weights.sort_unstable();
         assert_eq!(weights, vec![3, 7, 11]);
@@ -1751,12 +1808,26 @@ mod tests {
             .unwrap();
         let mut weights = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    let b = edge.edge_inline_value_bytes();
-                    weights.push(u16::from_le_bytes([b[0], b[1]]));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 2 {
+                        let b = edge.edge_inline_value_bytes();
+                        weights.push(u16::from_le_bytes([b[0], b[1]]));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         assert_eq!(weights, vec![42]);
     }
@@ -1803,12 +1874,26 @@ mod tests {
 
         let mut weights = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    let b = edge.edge_inline_value_bytes();
-                    weights.push(u16::from_le_bytes([b[0], b[1]]));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 2 {
+                        let b = edge.edge_inline_value_bytes();
+                        weights.push(u16::from_le_bytes([b[0], b[1]]));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         weights.sort_unstable();
         let mut expected: Vec<u16> = (1..=31u32)
@@ -1846,12 +1931,26 @@ mod tests {
         );
         let mut weights = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    let b = edge.edge_inline_value_bytes();
-                    weights.push(u16::from_le_bytes([b[0], b[1]]));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 2 {
+                        let b = edge.edge_inline_value_bytes();
+                        weights.push(u16::from_le_bytes([b[0], b[1]]));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         weights.sort_unstable();
         let expected: Vec<u16> = (1..=203u16).collect();
@@ -2014,9 +2113,23 @@ mod tests {
 
         let mut from_span = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                from_span.extend_from_slice(edge.edge_inline_value_bytes());
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    from_span.extend_from_slice(edge.edge_inline_value_bytes());
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
 
         let mut saw_dense_slab_batch = false;
@@ -2120,9 +2233,23 @@ mod tests {
 
         let mut from_span = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                from_span.extend_from_slice(edge.edge_inline_value_bytes());
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    from_span.extend_from_slice(edge.edge_inline_value_bytes());
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
 
         let mut from_values = Vec::new();
@@ -2352,12 +2479,17 @@ mod tests {
 
         let mut from_foreach = Vec::new();
         graph
-            .for_each_edges_for_label_topology_ordered(
+            .visit_edges(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
-                |edge| from_foreach.push((edge.edge_slot_index_raw(), edge.target)),
+                |slot, edge| {
+                    let edge = edge.with_label_id(road.raw()).with_slot_index(slot.raw());
+                    from_foreach.push((edge.edge_slot_index_raw(), edge.target));
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
 
         let slots: Vec<u32> = from_foreach.iter().map(|(slot, _)| *slot).collect();
@@ -2473,12 +2605,17 @@ mod tests {
 
         let mut from_foreach = Vec::new();
         graph
-            .for_each_edges_for_label_topology_ordered(
+            .visit_edges(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Ascending,
-                |edge| from_foreach.push((edge.edge_slot_index_raw(), edge.target)),
+                |slot, edge| {
+                    let edge = edge.with_label_id(road.raw()).with_slot_index(slot.raw());
+                    from_foreach.push((edge.edge_slot_index_raw(), edge.target));
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
         let first = from_foreach.first().copied().expect("first edge");
         let last = from_foreach.last().copied().expect("last edge");
@@ -2542,15 +2679,24 @@ mod tests {
         assert_eq!(asc, vec![10, 20, 30]);
         let mut from_iter = Vec::new();
         graph
-            .for_each_edges_for_label_ordered(
+            .visit_edges_with_inline_property(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Ascending,
-                |edge| {
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
                     let bytes = edge.edge_inline_value_bytes();
                     from_iter.push(u16::from_le_bytes([bytes[0], bytes[1]]));
+                    ControlFlow::<()>::Continue(())
                 },
             )
+            .map(|_| ())
             .unwrap();
         assert_eq!(asc, from_iter);
 
@@ -2662,12 +2808,23 @@ mod tests {
 
         let mut from_iter = Vec::new();
         graph
-            .for_each_edges_for_label_ordered(
+            .visit_edges_with_inline_property(
                 VertexId::from(0),
                 road,
                 OutEdgeOrder::Descending,
-                |edge| from_iter.extend_from_slice(edge.edge_inline_value_bytes()),
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    from_iter.extend_from_slice(edge.edge_inline_value_bytes());
+                    ControlFlow::<()>::Continue(())
+                },
             )
+            .map(|_| ())
             .unwrap();
 
         let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
@@ -2707,12 +2864,26 @@ mod tests {
         );
         let mut weights = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), default, |edge| {
-                if edge.inline_value_len == 2 {
-                    let b = edge.edge_inline_value_bytes();
-                    weights.push(u16::from_le_bytes([b[0], b[1]]));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                default,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(default.raw());
+                    if edge.inline_value_len == 2 {
+                        let b = edge.edge_inline_value_bytes();
+                        weights.push(u16::from_le_bytes([b[0], b[1]]));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         assert_eq!(weights, vec![42]);
     }
@@ -2841,14 +3012,28 @@ mod tests {
 
         let mut values = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    values.push((edge.target, {
-                        let b = edge.edge_inline_value_bytes();
-                        u16::from_le_bytes([b[0], b[1]])
-                    }));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 2 {
+                        values.push((edge.target, {
+                            let b = edge.edge_inline_value_bytes();
+                            u16::from_le_bytes([b[0], b[1]])
+                        }));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         values.sort_unstable();
         assert_eq!(values, vec![(2, 20), (3, 30), (4, 40)]);
@@ -2900,12 +3085,26 @@ mod tests {
 
         let mut weights = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 && edge.target == 2 {
-                    let b = edge.edge_inline_value_bytes();
-                    weights.push(u16::from_le_bytes([b[0], b[1]]));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 2 && edge.target == 2 {
+                        let b = edge.edge_inline_value_bytes();
+                        weights.push(u16::from_le_bytes([b[0], b[1]]));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         assert!(weights.contains(&200), "newest insert weight: {weights:?}");
     }
@@ -2929,11 +3128,25 @@ mod tests {
             .unwrap();
         let mut seen = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == WIDTH {
-                    seen.push(edge.edge_inline_value_bytes().to_vec());
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == WIDTH {
+                        seen.push(edge.edge_inline_value_bytes().to_vec());
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         assert_eq!(seen, vec![payload]);
     }
@@ -2987,11 +3200,25 @@ mod tests {
 
         let mut seen = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == WIDTH {
-                    seen.push(edge.edge_inline_value_bytes().to_vec());
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == WIDTH {
+                        seen.push(edge.edge_inline_value_bytes().to_vec());
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         assert_eq!(seen.len(), 34);
         assert!(seen.iter().all(|v| v == &payload));
@@ -3028,7 +3255,12 @@ mod tests {
         );
 
         let err = graph
-            .for_each_edges_for_label(VertexId::from(0), road, |_| {})
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, _item| ControlFlow::<()>::Continue(()),
+            )
             .expect_err("corrupt payload log must not be converted to zero payload");
         assert!(
             matches!(err, LabeledOperationError::PayloadLogRead(_)),
@@ -3145,13 +3377,27 @@ mod tests {
         }
         let mut costs = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 4 {
-                    costs.push(i32::from_le_bytes(
-                        edge.edge_inline_value_bytes().try_into().unwrap(),
-                    ));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 4 {
+                        costs.push(i32::from_le_bytes(
+                            edge.edge_inline_value_bytes().try_into().unwrap(),
+                        ));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         costs.sort_unstable();
         assert_eq!(costs, vec![100, 200, 300]);
@@ -3331,14 +3577,28 @@ mod tests {
 
         let mut values = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    values.push((edge.target, {
-                        let b = edge.edge_inline_value_bytes();
-                        u16::from_le_bytes([b[0], b[1]])
-                    }));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 2 {
+                        values.push((edge.target, {
+                            let b = edge.edge_inline_value_bytes();
+                            u16::from_le_bytes([b[0], b[1]])
+                        }));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         values.sort_unstable();
         assert_eq!(values, vec![(2, 20), (3, 30)]);
@@ -3402,14 +3662,28 @@ mod tests {
 
         let mut values = Vec::new();
         graph
-            .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    values.push((edge.target, {
-                        let b = edge.edge_inline_value_bytes();
-                        u16::from_le_bytes([b[0], b[1]])
-                    }));
-                }
-            })
+            .visit_edges_with_inline_property(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(road.raw());
+                    if edge.inline_value_len == 2 {
+                        values.push((edge.target, {
+                            let b = edge.edge_inline_value_bytes();
+                            u16::from_le_bytes([b[0], b[1]])
+                        }));
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         values.sort_unstable();
         assert_eq!(values, vec![(2, 20), (3, 30)]);
@@ -3442,10 +3716,19 @@ mod tests {
 
         let mut values = Vec::new();
         graph
-            .for_each_edges_for_label(src, road, |edge| {
+            .visit_edges_with_inline_property(src, road, OutEdgeOrder::Descending, |_slot, item| {
+                let edge = item
+                    .edge
+                    .with_stored_inline_value_bytes(
+                        item.inline_property.width,
+                        &item.inline_property.bytes,
+                    )
+                    .with_label_id(road.raw());
                 let bytes = edge.edge_inline_value_bytes();
                 values.push((edge.target, u16::from_le_bytes([bytes[0], bytes[1]])));
+                ControlFlow::<()>::Continue(())
             })
+            .map(|_| ())
             .unwrap();
         values.sort_unstable();
         assert_eq!(values, vec![(1, 10), (3, 30)]);
