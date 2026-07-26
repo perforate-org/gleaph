@@ -1,4 +1,4 @@
-//! Stable map for edge inline value overflow payloads wider than 8 bytes.
+//! Stable map for edge inline property bytes overflow bodies wider than 8 bytes.
 
 use super::blob_id::EdgeInlinePropertyBytesBlobId;
 use super::blob_store::BlobStoreError;
@@ -51,7 +51,7 @@ impl Storable for EdgeInlinePropertyBytesBlobId {
     }
 }
 
-/// Stable btree backing large overflow-log edge inline values.
+/// Stable btree backing large overflow-log edge inline property bytes.
 pub struct EdgeInlinePropertyBytesBlobMap<M: Memory> {
     inner: RefCell<StableBTreeMap<EdgeInlinePropertyBytesBlobId, BlobBytes, M>>,
 }

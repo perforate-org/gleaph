@@ -1,4 +1,4 @@
-//! External blob storage for payload overflow log entries wider than 8 bytes.
+//! External blob storage for inline property bytes overflow log entries wider than 8 bytes.
 
 use super::blob_id::EdgeInlinePropertyBytesBlobId;
 use std::fmt;
@@ -6,21 +6,21 @@ use std::fmt;
 /// Errors returned by edge-inline-value blob storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlobStoreError {
-    /// The requested blob payload exceeds the blob store's representable size.
+    /// The requested blob inline property bytes exceeds the blob store's representable size.
     ValueTooLarge,
 }
 
 impl fmt::Display for BlobStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ValueTooLarge => write!(f, "edge inline value blob is too large"),
+            Self::ValueTooLarge => write!(f, "edge inline property bytes blob is too large"),
         }
     }
 }
 
 impl std::error::Error for BlobStoreError {}
 
-/// Store for edge inline value bytes keyed by overflow log site.
+/// Store for edge inline property bytes keyed by overflow log site.
 pub trait EdgeInlinePropertyBytesBlobStore {
     /// Stores `bytes` under `id`.
     fn put_blob(
@@ -33,7 +33,7 @@ pub trait EdgeInlinePropertyBytesBlobStore {
     /// Deletes the blob under `id` if present.
     fn drop_blob(&mut self, id: EdgeInlinePropertyBytesBlobId);
 
-    /// Deletes the blob associated with one payload overflow-log site.
+    /// Deletes the blob associated with one inline property bytes overflow-log site.
     #[inline]
     fn drop_log_site(&mut self, leaf: u32, entry_idx: u32) {
         self.drop_blob(EdgeInlinePropertyBytesBlobId::from_log_site(

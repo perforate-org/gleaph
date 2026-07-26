@@ -35,11 +35,11 @@ const FWD_EDGE_FREE_SPANS: MemoryId = MemoryId::new(8);
 const FWD_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(9);
 
 // --- Labeled graph: forward payload (5 memories) ---
-const FWD_PAYLOAD_SLAB: MemoryId = MemoryId::new(10);
-const FWD_PAYLOAD_FREE_SPANS: MemoryId = MemoryId::new(11);
-const FWD_PAYLOAD_FREE_SPAN_BY_START: MemoryId = MemoryId::new(12);
-const FWD_PAYLOAD_LOG: MemoryId = MemoryId::new(13);
-const FWD_PAYLOAD_BLOBS: MemoryId = MemoryId::new(14);
+const FWD_INLINE_PROPERTY_BYTES_SLAB: MemoryId = MemoryId::new(10);
+const FWD_INLINE_PROPERTY_BYTES_FREE_SPANS: MemoryId = MemoryId::new(11);
+const FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(12);
+const FWD_INLINE_PROPERTY_BYTES_LOG: MemoryId = MemoryId::new(13);
+const FWD_INLINE_PROPERTY_BYTES_BLOBS: MemoryId = MemoryId::new(14);
 
 // --- Labeled graph: reverse orientation (10 memories) ---
 const REV_VERTICES: MemoryId = MemoryId::new(15);
@@ -54,11 +54,11 @@ const REV_EDGE_FREE_SPANS: MemoryId = MemoryId::new(23);
 const REV_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(24);
 
 // --- Labeled graph: reverse payload (5 memories) ---
-const REV_PAYLOAD_SLAB: MemoryId = MemoryId::new(25);
-const REV_PAYLOAD_FREE_SPANS: MemoryId = MemoryId::new(26);
-const REV_PAYLOAD_FREE_SPAN_BY_START: MemoryId = MemoryId::new(27);
-const REV_PAYLOAD_LOG: MemoryId = MemoryId::new(28);
-const REV_PAYLOAD_BLOBS: MemoryId = MemoryId::new(29);
+const REV_INLINE_PROPERTY_BYTES_SLAB: MemoryId = MemoryId::new(25);
+const REV_INLINE_PROPERTY_BYTES_FREE_SPANS: MemoryId = MemoryId::new(26);
+const REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(27);
+const REV_INLINE_PROPERTY_BYTES_LOG: MemoryId = MemoryId::new(28);
+const REV_INLINE_PROPERTY_BYTES_BLOBS: MemoryId = MemoryId::new(29);
 
 // --- LARA maintenance (2 memories) ---
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(30);
@@ -108,7 +108,7 @@ const GRAPH_INITIAL_BUCKET_CAPACITY: u64 = 1 << 10;
 /// Initial edge-slot capacity for each labeled orientation (grows as needed).
 const GRAPH_INITIAL_EDGE_CAPACITY: u64 = 1 << 12;
 /// Initial inline-payload byte capacity for each labeled orientation (grows as needed).
-const GRAPH_INITIAL_PAYLOAD_BYTES: u64 = 1 << 16;
+const GRAPH_INITIAL_INLINE_PROPERTY_BYTES: u64 = 1 << 16;
 /// Default policy for regions not listed in `GRAPH_MEMORY_MANAGER_POLICIES`.
 #[cfg(all(
     any(feature = "canbench_uniform_4", feature = "canbench_standard_manager"),
@@ -152,17 +152,17 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     // LARA adjacency and overflow logs: PMA/relocation hot path.
     (FWD_EDGES, 16),
     (FWD_EDGE_LOG, 16),
-    // Edge-local inline values: larger variable-width payload domains.
-    (FWD_PAYLOAD_SLAB, 32),
-    (FWD_PAYLOAD_LOG, 32),
-    (FWD_PAYLOAD_BLOBS, 32),
+    // Edge-local inline property bytes: larger variable-width inline property bytes domains.
+    (FWD_INLINE_PROPERTY_BYTES_SLAB, 32),
+    (FWD_INLINE_PROPERTY_BYTES_LOG, 32),
+    (FWD_INLINE_PROPERTY_BYTES_BLOBS, 32),
     (REV_VERTICES, 8),
     (REV_BUCKETS, 8),
     (REV_EDGES, 16),
     (REV_EDGE_LOG, 16),
-    (REV_PAYLOAD_SLAB, 32),
-    (REV_PAYLOAD_LOG, 32),
-    (REV_PAYLOAD_BLOBS, 32),
+    (REV_INLINE_PROPERTY_BYTES_SLAB, 32),
+    (REV_INLINE_PROPERTY_BYTES_LOG, 32),
+    (REV_INLINE_PROPERTY_BYTES_BLOBS, 32),
     // Label sidecars and value-bearing facade stores.
     (VERTEX_LABEL_SETS, 8),
     (VERTEX_PROPERTIES, 64),
@@ -247,11 +247,11 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_SPAN_META)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPANS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_PAYLOAD_SLAB)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_PAYLOAD_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_PAYLOAD_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_PAYLOAD_LOG)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_PAYLOAD_BLOBS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_SLAB)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPANS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_LOG)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_BLOBS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_VERTICES)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKETS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPANS)),
@@ -262,11 +262,11 @@ pub(crate) fn init_graph() -> StableGraph {
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_SPAN_META)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPANS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_PAYLOAD_SLAB)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_PAYLOAD_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_PAYLOAD_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_PAYLOAD_LOG)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_PAYLOAD_BLOBS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_SLAB)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPANS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_LOG)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_BLOBS)),
         MateStorageMemories::new(
             MEMORY_MANAGER.with(|m| m.borrow().get(MATE_LEAF_LOCATORS)),
             MEMORY_MANAGER.with(|m| m.borrow().get(MATE_BLOBS)),
@@ -278,7 +278,7 @@ pub(crate) fn init_graph() -> StableGraph {
         InitialCapacities {
             bucket_slots: GRAPH_INITIAL_BUCKET_CAPACITY,
             edge_slots: GRAPH_INITIAL_EDGE_CAPACITY,
-            inline_property_bytes: GRAPH_INITIAL_PAYLOAD_BYTES,
+            inline_property_bytes: GRAPH_INITIAL_INLINE_PROPERTY_BYTES,
         },
         GRAPH_DEFAULT_EDGE_LABEL,
         DeferredConfig::default(),
@@ -332,19 +332,31 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
             9,
             FWD_EDGE_FREE_SPAN_BY_START,
         ),
-        ("fwd_inline_property_bytes_slab", 10, FWD_PAYLOAD_SLAB),
+        (
+            "fwd_inline_property_bytes_slab",
+            10,
+            FWD_INLINE_PROPERTY_BYTES_SLAB,
+        ),
         (
             "fwd_inline_property_bytes_free_spans",
             11,
-            FWD_PAYLOAD_FREE_SPANS,
+            FWD_INLINE_PROPERTY_BYTES_FREE_SPANS,
         ),
         (
             "fwd_inline_property_bytes_free_span_by_start",
             12,
-            FWD_PAYLOAD_FREE_SPAN_BY_START,
+            FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START,
         ),
-        ("fwd_inline_property_bytes_log", 13, FWD_PAYLOAD_LOG),
-        ("fwd_inline_property_bytes_blobs", 14, FWD_PAYLOAD_BLOBS),
+        (
+            "fwd_inline_property_bytes_log",
+            13,
+            FWD_INLINE_PROPERTY_BYTES_LOG,
+        ),
+        (
+            "fwd_inline_property_bytes_blobs",
+            14,
+            FWD_INLINE_PROPERTY_BYTES_BLOBS,
+        ),
         ("rev_vertices", 15, REV_VERTICES),
         ("rev_buckets", 16, REV_BUCKETS),
         ("rev_bucket_free_spans", 17, REV_BUCKET_FREE_SPANS),
@@ -363,19 +375,31 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
             24,
             REV_EDGE_FREE_SPAN_BY_START,
         ),
-        ("rev_inline_property_bytes_slab", 25, REV_PAYLOAD_SLAB),
+        (
+            "rev_inline_property_bytes_slab",
+            25,
+            REV_INLINE_PROPERTY_BYTES_SLAB,
+        ),
         (
             "rev_inline_property_bytes_free_spans",
             26,
-            REV_PAYLOAD_FREE_SPANS,
+            REV_INLINE_PROPERTY_BYTES_FREE_SPANS,
         ),
         (
             "rev_inline_property_bytes_free_span_by_start",
             27,
-            REV_PAYLOAD_FREE_SPAN_BY_START,
+            REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START,
         ),
-        ("rev_inline_property_bytes_log", 28, REV_PAYLOAD_LOG),
-        ("rev_inline_property_bytes_blobs", 29, REV_PAYLOAD_BLOBS),
+        (
+            "rev_inline_property_bytes_log",
+            28,
+            REV_INLINE_PROPERTY_BYTES_LOG,
+        ),
+        (
+            "rev_inline_property_bytes_blobs",
+            29,
+            REV_INLINE_PROPERTY_BYTES_BLOBS,
+        ),
         ("maintenance_queue", 30, MAINTENANCE_QUEUE),
         ("dirty_work_items", 31, DIRTY_WORK_ITEMS),
         ("vertex_label_sets", 32, VERTEX_LABEL_SETS),

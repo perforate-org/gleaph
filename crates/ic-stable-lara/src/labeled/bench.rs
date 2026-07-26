@@ -395,7 +395,7 @@ const CONVERGING_HUB_EXPAND_CALLS: u32 = 51;
 
 /// Same-label overflow hub used by ADR 0016 inline-property-log and tombstone benches.
 const OVERFLOW_LOG_HUB_EDGES: u32 = 48;
-const PAYLOAD_LOG_INLINE_WIDTH: u16 = 8;
+const INLINE_PROPERTY_BYTES_LOG_INLINE_WIDTH: u16 = 8;
 
 fn seed_overflow_inline_property_hub(
     graph: &LabeledLaraGraph<InlinePropertyBenchEdge, crate::VectorMemory>,
@@ -1038,8 +1038,11 @@ fn bench_labeled_deferred_maintenance_compact_vertex_span_1() -> canbench_rs::Be
 #[bench(raw)]
 fn bench_labeled_inline_property_bytes_log_scan_8b_inline_overflow() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 20);
-    let (vid, label) =
-        seed_overflow_inline_property_hub(&graph, OVERFLOW_LOG_HUB_EDGES, PAYLOAD_LOG_INLINE_WIDTH);
+    let (vid, label) = seed_overflow_inline_property_hub(
+        &graph,
+        OVERFLOW_LOG_HUB_EDGES,
+        INLINE_PROPERTY_BYTES_LOG_INLINE_WIDTH,
+    );
     let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
     bench_fn(|| {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {

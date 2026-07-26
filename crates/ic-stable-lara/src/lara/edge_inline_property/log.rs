@@ -1,4 +1,4 @@
-//! Per-segment overflow log for edge payload bytes.
+//! Per-segment overflow log for edge inline property bytes.
 //!
 //! Each entry stores `prev` (4 bytes) and an 8-byte inline cell. Liveness is encoded in the paired
 //! edge overflow log tombstone contract at the same `(leaf_segment, entry_idx)`.
@@ -7,26 +7,25 @@ use crate::{GrowFailed, read_i32, read_u32, safe_write, types::Address, write_i3
 use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt};
 
-use super::cell::PAYLOAD_LOG_CELL_BYTES;
+use super::cell::INLINE_PROPERTY_BYTES_LOG_CELL_BYTES;
 
-/// Magic bytes that identify a LARA payload overflow-log memory.
-pub const MAGIC: [u8; 3] = *b"LVL";
+/// Magic bytes that identify a LARA inline property bytes overflow-log memory.
+pub const MAGIC: [u8; 3] = *b"LIL";
 /// Current overflow-log layout version.
 pub const LAYOUT_VERSION: u8 = 1;
 const HEADER_SIZE: u64 = 32;
 const INLINE_LOG_ENTRY_BYTES: usize = 16;
-/// Payload cell bytes per payload overflow log entry.
-pub const PAYLOAD_BYTES: usize = PAYLOAD_LOG_CELL_BYTES;
+/// Inline property bytes log cell bytes per overflow log entry.
 
 /// Default per-segment overflow-log capacity (matches edge log).
 pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;
 
-/// Persisted V1 payload overflow-log header.
+/// Persisted V1 inline property bytes overflow-log header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeaderV1 {
     /// Header magic bytes.
     pub magic: [u8; 3],
-    /// Payload-log layout version.
+    /// Inline property bytes log layout version.
     pub version: u8,
     /// Number of edge segments represented by the log.
     pub segment_count: u32,
@@ -37,29 +36,29 @@ pub struct HeaderV1 {
 }
 
 impl HeaderV1 {
-    /// Creates a payload-log header for `segment_count` segments.
+    /// Creates a inline-property-bytes-log header for `segment_count` segments.
     pub fn new(segment_count: u32) -> Self {
         Self {
             magic: MAGIC,
             version: LAYOUT_VERSION,
             segment_count,
             max_log_entries: DEFAULT_MAX_LOG_ENTRIES,
-            stride: PAYLOAD_LOG_ENTRY_STRIDE as u32,
+            stride: INLINE_PROPERTY_BYTES_LOG_ENTRY_STRIDE as u32,
         }
     }
 }
 
-/// Errors returned when reopening a persisted payload overflow log.
+/// Errors returned when reopening a persisted inline property bytes overflow log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
-    /// The payload-log header had unexpected magic bytes.
+    /// The inline-property-bytes-log header had unexpected magic bytes.
     BadMagic {
         /// Magic bytes read from stable memory.
         actual: [u8; 3],
     },
-    /// The payload-log layout version is not supported.
+    /// The inline-property-bytes-log layout version is not supported.
     IncompatibleVersion(u8),
-    /// The payload-log memory could not be allocated or was empty on reopen.
+    /// The inline-property-bytes-log memory could not be allocated or was empty on reopen.
     OutOfMemory,
     /// The persisted entry stride does not match this implementation.
     StrideMismatch {
@@ -74,14 +73,20 @@ impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadMagic { actual } => {
-                write!(f, "bad payload log magic {actual:?}, expected {MAGIC:?}")
+                write!(
+                    f,
+                    "bad inline property bytes log magic {actual:?}, expected {MAGIC:?}"
+                )
             }
-            Self::IncompatibleVersion(v) => write!(f, "unsupported payload log layout version {v}"),
-            Self::OutOfMemory => write!(f, "failed to allocate payload log metadata"),
+            Self::IncompatibleVersion(v) => write!(
+                f,
+                "unsupported inline property bytes log layout version {v}"
+            ),
+            Self::OutOfMemory => write!(f, "failed to allocate inline property bytes log metadata"),
             Self::StrideMismatch { expected, actual } => {
                 write!(
                     f,
-                    "payload log entry stride mismatch: expected {expected}, got {actual}"
+                    "inline property bytes log entry stride mismatch: expected {expected}, got {actual}"
                 )
             }
         }
@@ -98,7 +103,7 @@ pub struct InlinePropertyBytesLogStore<M: Memory> {
 }
 
 impl<M: Memory> InlinePropertyBytesLogStore<M> {
-    /// Creates a new payload overflow log with `header`.
+    /// Creates a new inline property bytes overflow log with `header`.
     pub fn new(memory: M, header: HeaderV1) -> Result<Self, GrowFailed> {
         let store = Self {
             memory,
@@ -109,7 +114,7 @@ impl<M: Memory> InlinePropertyBytesLogStore<M> {
         Ok(store)
     }
 
-    /// Reopens an existing payload overflow log.
+    /// Reopens an existing inline property bytes overflow log.
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Err(InitError::OutOfMemory);
@@ -127,7 +132,7 @@ impl<M: Memory> InlinePropertyBytesLogStore<M> {
         if header.version != LAYOUT_VERSION {
             return Err(InitError::IncompatibleVersion(header.version));
         }
-        let expected = PAYLOAD_LOG_ENTRY_STRIDE as u32;
+        let expected = INLINE_PROPERTY_BYTES_LOG_ENTRY_STRIDE as u32;
         if header.stride != expected {
             return Err(InitError::StrideMismatch {
                 expected,
@@ -150,7 +155,7 @@ impl<M: Memory> InlinePropertyBytesLogStore<M> {
     }
 
     #[inline]
-    /// Returns the cached payload-log header.
+    /// Returns the cached inline-property-bytes-log header.
     pub fn header(&self) -> HeaderV1 {
         self.header_mirror.get()
     }
@@ -183,12 +188,13 @@ impl<M: Memory> InlinePropertyBytesLogStore<M> {
         out: &mut [u8],
     ) -> i32 {
         debug_assert!(
-            out.len() >= PAYLOAD_BYTES,
-            "payload log read buffer too small"
+            out.len() >= INLINE_PROPERTY_BYTES_LOG_CELL_BYTES,
+            "inline property bytes log read buffer too small"
         );
         let off = entry_offset(h, leaf_segment, entry_idx);
         let prev = read_i32(&self.memory, Address::from(off));
-        self.memory.read(off + 4, &mut out[..PAYLOAD_BYTES]);
+        self.memory
+            .read(off + 4, &mut out[..INLINE_PROPERTY_BYTES_LOG_CELL_BYTES]);
         prev
     }
 
@@ -198,21 +204,21 @@ impl<M: Memory> InlinePropertyBytesLogStore<M> {
         leaf_segment: u32,
         entry_idx: u32,
         prev: i32,
-        payload: &[u8; PAYLOAD_BYTES],
+        inline_property_bytes: &[u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES],
     ) -> Result<(), GrowFailed> {
         let off = entry_offset(h, leaf_segment, entry_idx);
-        let entry_len = PAYLOAD_LOG_ENTRY_STRIDE;
+        let entry_len = INLINE_PROPERTY_BYTES_LOG_ENTRY_STRIDE;
         let mut bytes = [0u8; INLINE_LOG_ENTRY_BYTES];
         bytes[0..4].copy_from_slice(&prev.to_le_bytes());
-        bytes[4..4 + PAYLOAD_BYTES].copy_from_slice(payload);
+        bytes[4..4 + INLINE_PROPERTY_BYTES_LOG_CELL_BYTES].copy_from_slice(inline_property_bytes);
         safe_write(&self.memory, off, &bytes[..entry_len])
     }
 
-    /// Clears the payload overflow-log entries for `leaf_segment`.
+    /// Clears the inline property bytes overflow-log entries for `leaf_segment`.
     pub fn release_segment(&self, leaf_segment: u32) -> Result<(), GrowFailed> {
         let h = self.header();
         let idx = self.read_idx_with_header(&h, leaf_segment);
-        let stride = PAYLOAD_LOG_ENTRY_STRIDE;
+        let stride = INLINE_PROPERTY_BYTES_LOG_ENTRY_STRIDE;
         let zeros = [0u8; INLINE_LOG_ENTRY_BYTES];
         for i in 0..idx.max(0) as u32 {
             safe_write(
@@ -274,7 +280,7 @@ impl<M: Memory> InlinePropertyBytesLogStore<M> {
     }
 }
 
-pub const PAYLOAD_LOG_ENTRY_STRIDE: usize = 4 + PAYLOAD_BYTES;
+pub const INLINE_PROPERTY_BYTES_LOG_ENTRY_STRIDE: usize = 4 + INLINE_PROPERTY_BYTES_LOG_CELL_BYTES;
 
 #[inline]
 fn idx_offset(h: &HeaderV1, leaf_segment: u32) -> u64 {
@@ -283,14 +289,16 @@ fn idx_offset(h: &HeaderV1, leaf_segment: u32) -> u64 {
 
 #[inline]
 fn segment_block_size(h: &HeaderV1) -> u64 {
-    4 + u64::from(h.max_log_entries).saturating_mul(PAYLOAD_LOG_ENTRY_STRIDE as u64)
+    4 + u64::from(h.max_log_entries).saturating_mul(INLINE_PROPERTY_BYTES_LOG_ENTRY_STRIDE as u64)
 }
 
 #[inline]
 fn entry_offset(h: &HeaderV1, leaf_segment: u32, entry_idx: u32) -> u64 {
     idx_offset(h, leaf_segment)
         .saturating_add(4)
-        .saturating_add(u64::from(entry_idx).saturating_mul(PAYLOAD_LOG_ENTRY_STRIDE as u64))
+        .saturating_add(
+            u64::from(entry_idx).saturating_mul(INLINE_PROPERTY_BYTES_LOG_ENTRY_STRIDE as u64),
+        )
 }
 
 #[inline]

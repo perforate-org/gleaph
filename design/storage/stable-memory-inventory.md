@@ -158,11 +158,11 @@ existing stable memory.
 | 7        | `FWD_EDGE_SPAN_META`             | Edge span metadata                                                                                      | maintenance | —       |
 | 8        | `FWD_EDGE_FREE_SPANS`            | Retired edge physical spans                                                                             | maintenance | —       |
 | 9        | `FWD_EDGE_FREE_SPAN_BY_START`    | Edge free-span index                                                                                    | maintenance | —       |
-| 10       | `FWD_PAYLOAD_SLAB`               | Dense labeled edge inline property bytes prefix, independently allocated/relocated from edge slab                | canonical   | —       |
-| 11       | `FWD_PAYLOAD_FREE_SPANS`         | Inline property bytes free spans                                                                                      | maintenance | —       |
-| 12       | `FWD_PAYLOAD_FREE_SPAN_BY_START` | Inline property bytes free-span index                                                                                 | maintenance | —       |
-| 13       | `FWD_PAYLOAD_LOG`                | Ordered inline-property suffix log, independently folded from edge log                                     | canonical   | —       |
-| 14       | `FWD_PAYLOAD_BLOBS`              | Large inline property bytes blobs                                                                                     | canonical   | —       |
+| 10       | `FWD_INLINE_PROPERTY_BYTES_SLAB`               | Dense labeled edge inline property bytes prefix, independently allocated/relocated from edge slab                | canonical   | —       |
+| 11       | `FWD_INLINE_PROPERTY_BYTES_FREE_SPANS`         | Inline property bytes free spans                                                                                      | maintenance | —       |
+| 12       | `FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START` | Inline property bytes free-span index                                                                                 | maintenance | —       |
+| 13       | `FWD_INLINE_PROPERTY_BYTES_LOG`                | Ordered inline-property suffix log, independently folded from edge log                                     | canonical   | —       |
+| 14       | `FWD_INLINE_PROPERTY_BYTES_BLOBS`              | Large inline property bytes blobs                                                                                     | canonical   | —       |
 
 ### Reverse orientation (derived adjacency + payloads)
 
@@ -175,10 +175,10 @@ existing stable memory.
 | 20       | `REV_EDGES`                                                                | Reverse edge slab                                                                     | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
 | 21       | `REV_EDGE_LOG`                                                             | Reverse edge log                                                                      | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
 | 22–24    | `REV_EDGE_SPAN_META`, `REV_EDGE_FREE_SPANS`, `REV_EDGE_FREE_SPAN_BY_START` | Reverse edge maintenance                                                              | maintenance | —                                                                         |
-| 25       | `REV_PAYLOAD_SLAB`                                                         | Reverse inline property bytes prefix, independently allocated/relocated from reverse edge slab | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
-| 26–27    | `REV_PAYLOAD_FREE_SPANS`, `REV_PAYLOAD_FREE_SPAN_BY_START`                 | Reverse inline property bytes maintenance                                                           | maintenance | —                                                                         |
-| 28       | `REV_PAYLOAD_LOG`                                                          | Reverse ordered inline property bytes suffix log, independently folded from reverse edge log   | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
-| 29       | `REV_PAYLOAD_BLOBS`                                                        | Reverse inline property bytes blobs                                                                 | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
+| 25       | `REV_INLINE_PROPERTY_BYTES_SLAB`                                                         | Reverse inline property bytes prefix, independently allocated/relocated from reverse edge slab | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
+| 26–27    | `REV_INLINE_PROPERTY_BYTES_FREE_SPANS`, `REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START`                 | Reverse inline property bytes free-span maintenance                                                           | maintenance | —                                                                         |
+| 28       | `REV_INLINE_PROPERTY_BYTES_LOG`                                                          | Reverse ordered inline property bytes suffix log, independently folded from reverse edge log   | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
+| 29       | `REV_INLINE_PROPERTY_BYTES_BLOBS`                                                        | Reverse inline property bytes blobs                                                                 | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
 
 ### LARA maintenance
 

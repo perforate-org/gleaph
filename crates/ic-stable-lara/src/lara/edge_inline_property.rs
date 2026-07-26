@@ -1,4 +1,4 @@
-//! Log-backed byte CSR for per-label edge inline values (separate from target rows).
+//! Log-backed byte CSR for per-label edge inline property bytes (separate from target rows).
 
 mod blob_id;
 mod blob_store;
@@ -8,9 +8,11 @@ mod log;
 
 use crate::lara::edge::free_span::{FreeSpan, FreeSpanStore};
 use crate::lara::edge_inline_property::blobs::EdgeInlinePropertyBytesBlobMap;
-use crate::lara::edge_inline_property::cell::inline_property_bytes_log_uses_blob;
+use crate::lara::edge_inline_property::cell::{
+    INLINE_PROPERTY_BYTES_LOG_CELL_BYTES, inline_property_bytes_log_uses_blob,
+};
 use crate::lara::edge_inline_property::log::{
-    HeaderV1 as InlineValueLogHeaderV1, InlinePropertyBytesLogStore, PAYLOAD_BYTES,
+    HeaderV1 as InlinePropertyBytesLogHeaderV1, InlinePropertyBytesLogStore,
 };
 use crate::slab_index::{byte_exclusive_end_fits, byte_offset_fits, checked_add_byte_offset};
 use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
@@ -21,7 +23,7 @@ pub use blob_id::EdgeInlinePropertyBytesBlobId;
 pub use blob_store::{
     BlobStoreError, EdgeInlinePropertyBytesBlobStore, NoopEdgeInlinePropertyBytesBlobStore,
 };
-pub use cell::InlineValueLogCell;
+pub use cell::InlinePropertyBytesLogCell;
 pub use log::{
     InitError as InlinePropertyBytesLogInitError,
     InlinePropertyBytesLogStore as ValueOverflowLogStore,
@@ -29,7 +31,7 @@ pub use log::{
 
 #[cfg(test)]
 thread_local! {
-    /// Number of successful payload slab allocations (`append_byte_span` or
+    /// Number of successful inline property bytes slab allocations (`append_byte_span` or
     /// `grow_byte_span_in_place`) to allow before the next allocation returns a
     /// synthetic `GrowFailed`.  `u32::MAX` means no forced error.  Used by the
     /// batch-write reserve rollback tests to prove that a partially-grown tail
@@ -38,7 +40,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-/// Force the payload allocator to fail after `successful_allocations` successful
+/// Force the inline property bytes allocator to fail after `successful_allocations` successful
 /// calls to `append_byte_span` or `grow_byte_span_in_place`.
 pub(crate) fn force_inline_property_bytes_allocation_error_after(successful_allocations: u32) {
     FORCE_PAYLOAD_ALLOC_ERROR_AFTER.with(|c| c.set(successful_allocations));
@@ -62,7 +64,7 @@ fn take_forced_inline_property_bytes_allocation_error() -> bool {
 
 /// Magic bytes for the value byte slab.
 pub const MAGIC: [u8; 3] = *b"LVG";
-/// Current payload slab layout version.
+/// Current inline property bytes slab layout version.
 pub const LAYOUT_VERSION: u8 = 1;
 /// Persisted header size in bytes.
 pub const HEADER_SIZE: u64 = 64;
@@ -88,7 +90,7 @@ pub struct HeaderV1 {
 }
 
 impl HeaderV1 {
-    /// Creates a V1 payload-slab header with the given byte capacity.
+    /// Creates a V1 inline-property-bytes-slab header with the given byte capacity.
     pub fn new(byte_capacity: u64) -> Self {
         Self {
             magic: MAGIC,
@@ -99,25 +101,25 @@ impl HeaderV1 {
     }
 }
 
-/// Errors when reopening a payload slab.
+/// Errors when reopening an inline property bytes slab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
-    /// The payload slab header had unexpected magic bytes.
+    /// The inline property bytes slab header had unexpected magic bytes.
     BadMagic {
         /// Magic bytes read from stable memory.
         actual: [u8; 3],
     },
-    /// The payload slab layout version is not supported.
+    /// The inline property bytes slab layout version is not supported.
     IncompatibleVersion(u8),
-    /// The payload slab header or backing memory layout is invalid.
+    /// The inline property bytes slab header or backing memory layout is invalid.
     InvalidLayout,
     /// The configured byte capacity exceeds the supported address space.
     ByteCapacityOverflow,
-    /// The payload free-span index could not be reopened.
+    /// The inline property bytes slab free-span index could not be reopened.
     FreeSpansInvalid,
-    /// The payload overflow log could not be reopened.
+    /// The inline property bytes overflow log could not be reopened.
     PayloadLog(log::InitError),
-    /// The payload overflow-log segment count does not match the edge store.
+    /// The inline property bytes overflow-log segment count does not match the edge store.
     PayloadLogLayoutMismatch,
     /// The backing memories are partially initialized (some regions are empty
     /// while others are populated), so the store must not be reopened or recreated.
@@ -127,19 +129,26 @@ pub enum InitError {
 impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadMagic { actual } => write!(f, "bad payload slab magic {actual:?}"),
-            Self::IncompatibleVersion(v) => write!(f, "unsupported payload slab version {v}"),
-            Self::InvalidLayout => write!(f, "invalid payload slab layout"),
+            Self::BadMagic { actual } => {
+                write!(f, "bad inline property bytes slab magic {actual:?}")
+            }
+            Self::IncompatibleVersion(v) => {
+                write!(f, "unsupported inline property bytes slab version {v}")
+            }
+            Self::InvalidLayout => write!(f, "invalid inline property bytes slab layout"),
             Self::ByteCapacityOverflow => write!(f, "value byte_capacity exceeds 40-bit space"),
             Self::FreeSpansInvalid => write!(f, "value free-span init failed"),
-            Self::PayloadLog(e) => write!(f, "payload log init failed: {e}"),
+            Self::PayloadLog(e) => write!(f, "inline property bytes log init failed: {e}"),
             Self::PayloadLogLayoutMismatch => {
-                write!(f, "payload log segment_count does not match edge store")
+                write!(
+                    f,
+                    "inline property bytes log segment_count does not match edge store"
+                )
             }
             Self::PartialLayout => {
                 write!(
                     f,
-                    "payload store memories are partially initialized; refusing to reopen"
+                    "inline property bytes store memories are partially initialized; refusing to reopen"
                 )
             }
         }
@@ -148,23 +157,23 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// Errors returned while writing one payload overflow-log entry.
+/// Errors returned while writing one inline property bytes overflow-log entry.
 #[derive(Debug, PartialEq, Eq)]
 pub enum InlinePropertyBytesLogWriteError {
     /// Stable memory could not grow or write the value-log entry.
     Grow(GrowFailed),
-    /// External blob storage rejected the payload.
+    /// External blob storage rejected the inline property bytes.
     Blob(BlobStoreError),
-    /// The payload overflow-log segment is full.
+    /// The inline property bytes overflow-log segment is full.
     SegmentLogFull,
 }
 
 impl fmt::Display for InlinePropertyBytesLogWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Grow(err) => write!(f, "payload log write failed: {err}"),
+            Self::Grow(err) => write!(f, "inline property bytes log write failed: {err}"),
             Self::Blob(err) => write!(f, "value blob write failed: {err}"),
-            Self::SegmentLogFull => write!(f, "payload log segment is full"),
+            Self::SegmentLogFull => write!(f, "inline property bytes log segment is full"),
         }
     }
 }
@@ -191,33 +200,33 @@ impl From<BlobStoreError> for InlinePropertyBytesLogWriteError {
     }
 }
 
-/// Errors returned while reading one payload overflow-log entry.
+/// Errors returned while reading one inline property bytes overflow-log entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InlinePropertyBytesLogReadError {
-    /// Caller-provided output buffer is smaller than the expected edge-inline-value width.
+    /// Caller-provided output buffer is smaller than the expected edge-inline-property-bytes width.
     OutputTooSmall {
-        /// Expected edge-inline-value byte width.
+        /// Expected edge-inline-property-bytes byte width.
         width: u16,
         /// Actual output buffer length.
         out_len: usize,
     },
-    /// Inline cell tag/payload cannot represent the expected width.
+    /// Inline cell tag cannot represent the expected width.
     InvalidInlineCell {
-        /// Expected edge-inline-value byte width.
+        /// Expected edge-inline-property-bytes byte width.
         width: u16,
     },
-    /// Blob-tagged value-log entry has no corresponding blob payload.
+    /// Blob-tagged log entry has no corresponding inline property bytes blob.
     MissingBlob {
         /// Value-log leaf segment.
         leaf_segment: u32,
         /// Value-log entry index inside the segment.
         entry_idx: u32,
     },
-    /// Blob payload length does not match the expected edge-inline-value width.
+    /// Inline property bytes blob length does not match the expected edge-inline-property-bytes width.
     BlobWidthMismatch {
-        /// Expected edge-inline-value byte width.
+        /// Expected edge-inline-property-bytes byte width.
         expected: u16,
-        /// Actual blob payload length.
+        /// Actual inline property bytes blob length.
         actual: usize,
     },
     /// Requested ascending log-chain index is outside the materialized chain.
@@ -232,10 +241,13 @@ impl fmt::Display for InlinePropertyBytesLogReadError {
         match self {
             Self::OutputTooSmall { width, out_len } => write!(
                 f,
-                "payload log read output too small: width {width}, output length {out_len}"
+                "inline property bytes log read output too small: width {width}, output length {out_len}"
             ),
             Self::InvalidInlineCell { width } => {
-                write!(f, "invalid inline payload log cell for width {width}")
+                write!(
+                    f,
+                    "invalid inline property bytes log cell for width {width}"
+                )
             }
             Self::MissingBlob {
                 leaf_segment,
@@ -249,7 +261,10 @@ impl fmt::Display for InlinePropertyBytesLogReadError {
                 "value blob width mismatch: expected {expected} bytes, got {actual}"
             ),
             Self::MissingAscLogIndex { asc_log_index } => {
-                write!(f, "payload log ascending index {asc_log_index} is missing")
+                write!(
+                    f,
+                    "inline property bytes log ascending index {asc_log_index} is missing"
+                )
             }
         }
     }
@@ -257,14 +272,14 @@ impl fmt::Display for InlinePropertyBytesLogReadError {
 
 impl std::error::Error for InlinePropertyBytesLogReadError {}
 
-/// Stable byte slab for edge inline values.
+/// Stable byte slab for edge inline property bytes.
 #[derive(Clone, Debug)]
 pub struct PayloadByteSlabStore<M: Memory> {
     memory: M,
 }
 
 impl<M: Memory> PayloadByteSlabStore<M> {
-    /// Creates a new payload byte slab with `header`.
+    /// Creates a new inline property bytes slab with `header`.
     pub fn new(memory: M, header: HeaderV1) -> Result<Self, GrowFailed> {
         let store = Self { memory };
         store.grow_for_header(&header)?;
@@ -272,7 +287,7 @@ impl<M: Memory> PayloadByteSlabStore<M> {
         Ok(store)
     }
 
-    /// Reopens an existing payload byte slab.
+    /// Reopens an existing inline property bytes slab.
     pub fn init(memory: M) -> Result<Self, InitError> {
         if memory.size() == 0 {
             return Err(InitError::InvalidLayout);
@@ -298,12 +313,12 @@ impl<M: Memory> PayloadByteSlabStore<M> {
         self.memory
     }
 
-    /// Reads and validates the persisted payload-slab header.
+    /// Reads and validates the persisted inline-property-bytes-slab header.
     pub fn header(&self) -> Result<HeaderV1, InitError> {
         self.read_header()
     }
 
-    /// Persists `h` as the payload-slab header.
+    /// Persists `h` as the inline-property-bytes-slab header.
     pub(crate) fn write_header(&self, h: &HeaderV1) {
         self.memory.write(0, &h.magic);
         self.memory.write(3, &[h.version]);
@@ -337,12 +352,12 @@ impl<M: Memory> PayloadByteSlabStore<M> {
         Ok(())
     }
 
-    /// Reads bytes from the payload slab at `offset`.
+    /// Reads bytes from the inline property bytes slab at `offset`.
     pub fn read_bytes(&self, offset: u64, out: &mut [u8]) {
         self.memory.read(byte_offset(offset), out);
     }
 
-    /// Writes bytes to the payload slab at `offset`, growing stable memory if needed.
+    /// Writes bytes to the inline property bytes slab at `offset`, growing stable memory if needed.
     pub(crate) fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         safe_write(&self.memory, byte_offset(offset), bytes)
     }
@@ -372,7 +387,7 @@ impl<M: Memory> PayloadByteSlabStore<M> {
     }
 }
 
-/// Combined stable edge-inline-value storage for labeled graphs.
+/// Combined stable edge-inline-property-bytes storage for labeled graphs.
 pub struct EdgeInlinePropertyBytesStore<M: Memory> {
     slab: PayloadByteSlabStore<M>,
     log: InlinePropertyBytesLogStore<M>,
@@ -381,10 +396,10 @@ pub struct EdgeInlinePropertyBytesStore<M: Memory> {
     header: Cell<HeaderV1>,
 }
 
-/// Payload-slab accounting derived from the payload allocator owner.
+/// Inline-property-bytes-slab accounting derived from the inline property bytes allocator owner.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InlinePropertyBytesAllocatorStats {
-    /// Backing payload-slab capacity in bytes.
+    /// Backing inline-property-bytes-slab capacity in bytes.
     pub byte_capacity: u64,
     /// Exclusive end of the append-only occupied slab prefix.
     pub slab_occupied_tail: u64,
@@ -397,7 +412,7 @@ pub struct InlinePropertyBytesAllocatorStats {
 }
 
 impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
-    /// Creates a new edge-inline-value store over empty stable memories.
+    /// Creates a new edge-inline-property-bytes store over empty stable memories.
     pub fn new(
         slab_memory: M,
         inline_property_bytes_log: M,
@@ -417,7 +432,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         let slab = PayloadByteSlabStore::new(slab_memory, header)?;
         let log = InlinePropertyBytesLogStore::new(
             inline_property_bytes_log,
-            InlineValueLogHeaderV1::new(segment_count),
+            InlinePropertyBytesLogHeaderV1::new(segment_count),
         )?;
         let blobs = EdgeInlinePropertyBytesBlobMap::init(value_blobs);
         let free_spans = FreeSpanStore::new(free_spans, free_span_by_start)?;
@@ -430,7 +445,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         })
     }
 
-    /// Reopens an edge-inline-value store, initializing empty payload memories when needed.
+    /// Reopens an edge-inline-property-bytes store, initializing empty inline property bytes memories when needed.
     pub fn init(
         slab_memory: M,
         inline_property_bytes_log: M,
@@ -440,9 +455,9 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         byte_capacity: u64,
         edge_segment_count: u32,
     ) -> Result<Self, InitError> {
-        // The payload slab, overflow log, and free-span pair must move together.
+        // The inline property bytes slab, overflow log, and free-span pair must move together.
         // `value_blobs` is asymmetric: on reopen it may be empty (a populated
-        // store with no wide-payload blobs) or populated, but on a fresh create
+        // store with no wide-inline-property-bytes blobs) or populated, but on a fresh create
         // it must be empty. A populated blob region alongside empty required
         // regions is partial loss.
         match crate::classify_composite_init([
@@ -468,7 +483,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         let log = if inline_property_bytes_log.size() == 0 {
             InlinePropertyBytesLogStore::new(
                 inline_property_bytes_log,
-                InlineValueLogHeaderV1::new(edge_segment_count),
+                InlinePropertyBytesLogHeaderV1::new(edge_segment_count),
             )
             .map_err(|_| InitError::InvalidLayout)?
         } else {
@@ -522,9 +537,9 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
     pub(crate) fn sweep_inline_property_bytes_log_chain(
         &self,
         leaf_segment: u32,
-        payload_chain: &[u32],
+        inline_property_bytes_chain: &[u32],
     ) {
-        for &entry_idx in payload_chain {
+        for &entry_idx in inline_property_bytes_chain {
             self.blobs.drop_log_site(leaf_segment, entry_idx);
             self.clear_inline_property_bytes_log_cell(leaf_segment, entry_idx);
         }
@@ -534,21 +549,21 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         &self,
         leaf_segment: u32,
         entry_idx: u32,
-    ) -> InlineValueLogCell {
-        let mut payload = [0u8; PAYLOAD_BYTES];
+    ) -> InlinePropertyBytesLogCell {
+        let mut inline_property_bytes = [0u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
         let h = self.log.header();
         self.log
-            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut payload);
-        InlineValueLogCell::from_bytes(payload)
+            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut inline_property_bytes);
+        InlinePropertyBytesLogCell::from_bytes(inline_property_bytes)
     }
 
     pub(crate) fn clear_inline_property_bytes_log_cell(&self, leaf_segment: u32, entry_idx: u32) {
         let h = self.log.header();
-        let mut scratch = [0u8; PAYLOAD_BYTES];
+        let mut scratch = [0u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
         let prev = self
             .log
             .read_entry_with_header(&h, leaf_segment, entry_idx, &mut scratch);
-        let zeros = [0u8; PAYLOAD_BYTES];
+        let zeros = [0u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
         let _ = self
             .log
             .write_entry_with_header(&h, leaf_segment, entry_idx, prev, &zeros);
@@ -566,11 +581,11 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         let cell = if inline_property_bytes_log_uses_blob(width) {
             let id = EdgeInlinePropertyBytesBlobId::from_log_site(leaf_segment, entry_idx);
             self.blobs.put_blob(id, inline_property_bytes)?;
-            InlineValueLogCell::EMPTY
+            InlinePropertyBytesLogCell::EMPTY
         } else {
             let w = usize::from(width);
             debug_assert_eq!(inline_property_bytes.len(), w);
-            InlineValueLogCell::inline(width, inline_property_bytes)
+            InlinePropertyBytesLogCell::inline(width, inline_property_bytes)
         };
         let h = self.log.header();
         self.log.write_entry_with_header(
@@ -639,7 +654,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         debug_assert_eq!(
             inline_property_bytes.len() % w,
             0,
-            "payload byte count must be a multiple of width"
+            "inline property bytes count must be a multiple of width"
         );
         let count = inline_property_bytes.len() / w;
         let h = self.log.header();
@@ -654,9 +669,9 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
             let cell = if inline_property_bytes_log_uses_blob(width) {
                 let id = EdgeInlinePropertyBytesBlobId::from_log_site(leaf_segment, entry_idx);
                 self.blobs.put_blob(id, bytes)?;
-                InlineValueLogCell::EMPTY
+                InlinePropertyBytesLogCell::EMPTY
             } else {
-                InlineValueLogCell::inline(width, bytes)
+                InlinePropertyBytesLogCell::inline(width, bytes)
             };
             self.log
                 .write_entry_with_header(&h, leaf_segment, entry_idx, prev, cell.as_bytes())?;
@@ -727,7 +742,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         let mut cur = log_head;
         while cur >= 0 {
             chain.push(cur as u32);
-            let mut scratch = [0u8; PAYLOAD_BYTES];
+            let mut scratch = [0u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
             let h = self.log.header();
             let prev = self
                 .log
@@ -738,16 +753,16 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         chain
     }
 
-    /// Reads payload bytes using a precomputed oldest-to-newest chain (avoids rebuilding per call).
+    /// Reads inline property bytess using a precomputed oldest-to-newest chain (avoids rebuilding per call).
     pub(crate) fn read_inline_property_bytes_log_chain_entry(
         &self,
         leaf_segment: u32,
-        payload_chain: &[u32],
+        inline_property_bytes_chain: &[u32],
         asc_log_index: u32,
         width: u16,
         out: &mut [u8],
     ) -> Result<(), InlinePropertyBytesLogReadError> {
-        let Some(&entry_idx) = payload_chain.get(asc_log_index as usize) else {
+        let Some(&entry_idx) = inline_property_bytes_chain.get(asc_log_index as usize) else {
             return Err(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index });
         };
         self.read_inline_property_bytes_log_entry(leaf_segment, entry_idx, width, out)
@@ -775,12 +790,12 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         )
     }
 
-    /// Returns the cached payload-slab header.
+    /// Returns the cached inline-property-bytes-slab header.
     pub fn header(&self) -> HeaderV1 {
         self.header.get()
     }
 
-    /// Returns the current payload byte capacity.
+    /// Returns the current inline property bytes capacity.
     pub fn byte_capacity(&self) -> u64 {
         self.header().byte_capacity
     }
@@ -801,7 +816,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         self.free_spans.spans()
     }
 
-    /// Sets the payload byte capacity to `end`.
+    /// Sets the inline property bytes capacity to `end`.
     pub(crate) fn set_byte_capacity(&self, end: u64) -> Result<(), GrowFailed> {
         self.slab.set_byte_capacity(end)?;
         let mut h = self.header();
@@ -822,13 +837,13 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         self.header.set(h);
     }
 
-    /// Reads bytes from the payload slab.
+    /// Reads bytes from the inline property bytes slab.
     pub fn read_bytes(&self, offset: u64, out: &mut [u8]) {
         debug_assert!(byte_offset_fits(offset));
         self.slab.read_bytes(offset, out);
     }
 
-    /// Writes bytes to the payload slab.
+    /// Writes bytes to the inline property bytes slab.
     pub(crate) fn write_bytes(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         if bytes.is_empty() {
             return Ok(());
@@ -850,7 +865,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         Ok(())
     }
 
-    /// Reads one fixed-width payload slot.
+    /// Reads one fixed-width inline property bytes slot.
     pub fn read_value_slot(&self, offset: u64, width: u16, out: &mut [u8]) {
         debug_assert_eq!(out.len(), usize::from(width));
         if width == 0 {
@@ -859,7 +874,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         self.read_bytes(offset, out);
     }
 
-    /// Writes one fixed-width payload slot.
+    /// Writes one fixed-width inline property bytes slot.
     pub(crate) fn write_inline_property_bytes_slot(
         &self,
         offset: u64,
@@ -873,7 +888,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         self.write_bytes(offset, bytes)
     }
 
-    /// Writes an arbitrary byte range to the payload slab.
+    /// Writes an arbitrary byte range to the inline property bytes slab.
     pub(crate) fn write_range(&self, offset: u64, bytes: &[u8]) -> Result<(), GrowFailed> {
         self.write_bytes(offset, bytes)
     }
@@ -892,7 +907,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         self.append_byte_span(len)
     }
 
-    /// Takes a payload free-span prefix at an exact byte offset.
+    /// Takes an inline property bytes free-span prefix at an exact byte offset.
     pub(crate) fn allocate_byte_span_at(&self, offset: u64, len: u64) -> Result<bool, GrowFailed> {
         if len == 0 {
             return Ok(true);
@@ -1058,15 +1073,15 @@ mod tests {
     #[test]
     fn inline_property_bytes_log_blob_round_trips_wide_inline_property_bytes() {
         let store = test_store();
-        let payload = vec![0xABu8; 100];
+        let inline_property_bytes = vec![0xABu8; 100];
         store
-            .write_inline_property_bytes_log_entry(0, 0, -1, 100, &payload)
+            .write_inline_property_bytes_log_entry(0, 0, -1, 100, &inline_property_bytes)
             .expect("write");
         let mut out = vec![0u8; 100];
         store
             .read_inline_property_bytes_log_entry(0, 0, 100, &mut out)
             .expect("read");
-        assert_eq!(out, payload);
+        assert_eq!(out, inline_property_bytes);
     }
 
     #[test]
@@ -1258,7 +1273,7 @@ mod tests {
             1,
         )
         .expect("store");
-        // Slab, free-span pair populated, payload log wiped (miswired region).
+        // Slab, free-span pair populated, inline property bytes log wiped (miswired region).
         assert!(matches!(
             EdgeInlinePropertyBytesStore::init(slab, mem(), blobs, free_spans, by_start, 1024, 1),
             Err(InitError::PartialLayout)
@@ -1291,7 +1306,7 @@ mod tests {
     #[test]
     fn init_rejects_fresh_when_only_blob_region_populated() {
         let blobs = mem();
-        // Required regions empty, but a wide-payload blob region survived: this
+        // Required regions empty, but a wide-inline-property-bytes blob region survived: this
         // is partial loss, not a fresh create.
         crate::safe_write(&blobs, 0, &[1]).expect("populate blob region");
         assert!(matches!(
@@ -1318,7 +1333,7 @@ mod tests {
         )
         .expect("store");
         // Reopen with an empty blob region: valid for a store that never wrote a
-        // wide-payload blob.
+        // wide-inline-property-bytes blob.
         assert!(
             EdgeInlinePropertyBytesStore::init(slab, log, mem(), free_spans, by_start, 1024, 1)
                 .is_ok()
@@ -1332,7 +1347,7 @@ mod tests {
         let blobs = mem();
         let free_spans = mem();
         let by_start = mem();
-        // Fully populate every region with a payload-log segment_count of 2.
+        // Fully populate every region with a inline-property-bytes-log segment_count of 2.
         EdgeInlinePropertyBytesStore::new(
             slab.clone(),
             log.clone(),

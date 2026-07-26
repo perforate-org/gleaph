@@ -1,6 +1,6 @@
-//! Stable identity for edge inline values stored outside the 8-byte payload overflow log cell.
+//! Stable identity for edge inline property bytes stored outside the 8-byte inline property bytes overflow log cell.
 
-/// Opaque key for a large edge inline value tied to one payload overflow log slot.
+/// Opaque key for a edge inline property bytes tied to one inline property bytes overflow log slot.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgeInlinePropertyBytesBlobId(u64);
