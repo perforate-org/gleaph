@@ -201,10 +201,17 @@ ADR 0050 defines the target labeled read surface around `BucketEntryPosition`, `
 `visit_edges_at`, and explicit `EdgeWithInlineProperty<E>` results. Forward/outgoing and
 reverse/incoming bidirectional wrappers delegate to the same orientation-local primitives.
 
-The current implementation is not yet at that target: facade `EDGE_ALIASES`, `mate`-named paths,
-raw `u32` slot fields, and legacy physical-location readers remain active until the destructive
-replacement lands. Historical Plans 0136–0180 describe superseded adaptive or measurement
-experiments; they are evidence only and are not activation dependencies for ADR 0048 or ADR 0050.
+The implementation is now partially at that target. `CounterpartScan` in
+`ic-stable-lara/src/labeled/bidirectional/counterpart.rs` has been migrated onto the ADR 0050
+`traverse_next` logical-slot surface (`read_edge_state`, `visit_edges`, typed `BucketEntryPosition`,
+and `ControlFlow` early termination). The first bounded Graph ordinary-caller group — the
+scan-only canonical-edge-handle helper in `crates/graph/src/facade/store/edge_alias.rs` — consumes
+`counterpart::canonical_handle` and no longer calls the legacy labeled traversal methods. All
+remaining Graph sidecar lookup paths, `EDGE_ALIASES`, `mate`-named paths, raw `u32` slot fields,
+and legacy physical-location readers remain active transitional state until the later Plan 0183
+mutation, Plan 0184 caller-migration, and alias-removal slices land. Historical Plans 0136–0180
+describe superseded adaptive or measurement experiments; they are evidence only and are not
+activation dependencies for ADR 0048 or ADR 0050.
 
 Plan 0133 establishes the logical byte accounting used before any persistent replacement:
 the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half

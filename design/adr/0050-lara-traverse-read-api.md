@@ -2,8 +2,8 @@
 
 Date: 2026-07-25
 Status: partially implemented
-Implementation status: Phase 1/2 substrate implemented in `labeled::graph::traverse_next`; caller migration, reverse facade adoption, and legacy removal remain pending
-Adoption status: not activated
+Implementation status: Phase 1/2 substrate implemented in `labeled::graph::traverse_next`; CounterpartScan now consumes `read_edge_state` and `visit_edges`; first bounded Graph caller group (scan-only canonicalization) migrated; remaining reverse-facade, sidecar, and alias callers remain pending
+Adoption status: partially activated (CounterpartScan + first Graph scan-only caller)
 
 ## Context
 

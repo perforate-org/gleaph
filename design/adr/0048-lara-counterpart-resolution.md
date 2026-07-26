@@ -2,8 +2,8 @@
 
 Date: 2026-07-23  
 Status: accepted  
-Implementation status: partial implementation (live-only scan substrate)
-Adoption status: not activated
+Implementation status: CounterpartScan production reads migrated to the ADR 0050 `traverse_next` logical-slot surface; first bounded Graph scan-only canonicalization caller group migrated; remaining sidecar lookup paths and alias map remain transitional
+Adoption status: partially activated (scan-only Graph canonicalization)
 
 Traversal dependency: ordinary-caller adoption may begin after ADR 0050 Phases 1–2 have produced
 the tested and benchmarked `traverse_next` read surface. This is a one-way hand-off: ADR 0048 uses

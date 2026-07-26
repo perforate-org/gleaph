@@ -4,6 +4,7 @@ use super::super::stable::{EDGE_ALIASES, GRAPH};
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
+    bidirectional::counterpart::{self, CounterpartLookupError},
     labeled::{CanonicalEdgeOccurrence, LabeledOrientation, MateLookupError},
     traits::CsrEdge,
 };
@@ -143,23 +144,28 @@ impl GraphStore {
         self.canonical_edge_handle(handle)
     }
 
-    /// Resolves a canonical handle through bidirectional LARA's persistence-free
-    /// rank/select path.  The alias map remains the authoritative compatibility
-    /// path for existing callers; this helper is intentionally opt-in for the
-    /// ScanOnly comparison and future consumer wiring.
+    /// Resolves a canonical handle through ADR 0048 CounterpartScan on the
+    /// ADR 0050 `traverse_next` logical-slot surface.  The alias map remains the
+    /// authoritative compatibility path for existing callers; this helper is the
+    /// first bounded ordinary-caller group migrated onto the persistence-free
+    /// rank/select path.
     pub(crate) fn scan_only_canonical_edge_handle(
         &self,
         handle: EdgeHandle,
         orientation: LabeledOrientation,
-    ) -> Result<EdgeHandle, MateLookupError> {
+    ) -> Result<EdgeHandle, CounterpartLookupError> {
         GRAPH
             .with_borrow(|graph| {
-                graph.canonical_handle(CanonicalEdgeOccurrence {
-                    orientation,
-                    owner_vertex_id: handle.owner_vertex_id,
-                    label_id: handle.label_id,
-                    slot_index: handle.slot_index.raw().into(),
-                })
+                counterpart::canonical_handle(
+                    graph.forward(),
+                    graph.reverse(),
+                    CanonicalEdgeOccurrence {
+                        orientation,
+                        owner_vertex_id: handle.owner_vertex_id,
+                        label_id: handle.label_id,
+                        slot_index: handle.slot_index.raw().into(),
+                    },
+                )
             })
             .map(|canonical| {
                 EdgeHandle::at_slot(

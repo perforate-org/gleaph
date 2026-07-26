@@ -36,10 +36,12 @@ flowchart TB
 - PMA segment density, weighted rebalance, segment relocation (DGAP-aligned core)
 - `FreeSpanStore` for retired segment physical blocks (core LARA — see [lara.md](./lara.md))
 - Labeled graphs, bidirectional deferred views
-- **Planned (ADR 0048):** exact counterpart resolution, PairOrdinal enforcement, and returned
-  insert locations
-- **Planned (ADR 0050):** canonical logical-slot traversal, selected-slot reads, and explicit
-  inline-property reads
+- **Partially implemented (ADR 0048):** `CounterpartScan` is now live on the ADR 0050 logical-slot
+  surface (`read_edge_state`, `visit_edges`, typed `BucketEntryPosition`); returned insert locations
+  and the remaining mutation/alias-removal work are still pending
+- **Partially implemented (ADR 0050):** canonical logical-slot traversal (`visit_edges`) and
+  selected-slot reads are active and used by CounterpartScan; the broader forward/reverse facade
+  migration and legacy removal remain pending
 - **Remote/external edge** insertion at storage level (no shard routing semantics)
 
 LARA does not know `GlobalVertexId` or GQL.
@@ -74,9 +76,11 @@ Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR
 
 ## Edge identity and counterpart ownership
 
-**Current implementation (before ADR 0048/0050 adoption):** Graph-side `EdgeHandle` and related
-wire/index records carry an owner, label, and raw `u32` slot field. `EDGE_ALIASES` and the existing
-`mate`-named paths remain active, and current code may still use raw-slot readers.
+**Current transitional implementation:** Graph-side `EdgeHandle` and related wire/index records
+carry an owner, label, and logical `BucketEntryPosition` slot. `EDGE_ALIASES` and the existing
+`mate`-named paths remain active for sidecar lookup paths and other pending callers. The first
+bounded Graph ordinary-caller group — the scan-only canonical-edge-handle helper in
+`edge_alias.rs` — has migrated to LARA `counterpart::canonical_handle` on the ADR 0050 read surface.
 
 **Target contract:** ADR 0048 makes `BucketEntryPosition` the only slot accepted by LARA
 `EdgeHandle`/`CanonicalEdgeOccurrence`; raw slab/log locations remain inside LARA. Counterpart resolution is

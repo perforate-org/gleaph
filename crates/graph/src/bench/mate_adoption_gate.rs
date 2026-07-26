@@ -4577,7 +4577,7 @@ mod fixture_evidence_tests {
                     owner: identity.owner,
                     target: identity.target,
                     orientation: identity.orientation,
-                    slot: identity.slot as u32,
+                    slot: identity.slot,
                 },
             )
             .collect::<Vec<_>>();
@@ -4597,7 +4597,7 @@ mod fixture_evidence_tests {
                     owner: identity.owner,
                     target: identity.target,
                     orientation: identity.orientation,
-                    slot: identity.slot as u32,
+                    slot: identity.slot,
                 },
             )
             .collect::<Vec<_>>();

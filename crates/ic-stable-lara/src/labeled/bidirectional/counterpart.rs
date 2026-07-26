@@ -7,11 +7,14 @@
 use super::{Orientation, mate::CanonicalEdgeOccurrence};
 use crate::{
     VertexId,
-    labeled::{BucketEntryPosition, BucketLabelKey, LabeledLaraGraph, graph::EdgeSlotState},
+    labeled::{
+        BucketEntryPosition, BucketLabelKey, LabeledLaraGraph, OutEdgeOrder, graph::EdgeSlotState,
+    },
     traits::CsrEdgeTombstone,
 };
 use ic_stable_structures::Memory;
 use std::fmt;
+use std::ops::ControlFlow;
 
 use std::cell::Cell;
 
@@ -128,8 +131,40 @@ impl fmt::Display for CounterpartLookupError {
 
 impl std::error::Error for CounterpartLookupError {}
 
-/// Computes the equal-target PairOrdinal of a live source row using streaming scans.
+/// Computes the equal-target PairOrdinal of a live source row, stopping immediately
+/// after passing the source edge. This is the fast path for normal reads.
 fn scan_pair_ordinal<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    edge: CanonicalEdgeOccurrence,
+) -> Result<(VertexId, PairOrdinal), CounterpartLookupError>
+where
+    E: CsrEdgeTombstone,
+    M: Memory,
+{
+    let target = match graph
+        .read_edge_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+        .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
+    {
+        EdgeSlotState::Live(row) => row.neighbor_vid(),
+        EdgeSlotState::Tombstone => return Err(CounterpartLookupError::SourceNotLive(edge)),
+        EdgeSlotState::Missing => return Err(CounterpartLookupError::SourceNotFound(edge)),
+    };
+
+    let ordinal = graph
+        .count_preceding_live_edges_with_neighbor(
+            edge.owner_vertex_id,
+            edge.label_id,
+            edge.slot_index,
+            target,
+        )
+        .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?;
+
+    Ok((target, PairOrdinal(ordinal)))
+}
+
+/// Computes the equal-target PairOrdinal of a live source row and also counts the
+/// total number of matching rows. This is the verified path that scans to the end.
+fn scan_pair_ordinal_verified<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     edge: CanonicalEdgeOccurrence,
 ) -> Result<(VertexId, PairOrdinal, u32), CounterpartLookupError>
@@ -138,7 +173,7 @@ where
     M: Memory,
 {
     let target = match graph
-        .read_edge_slot_state_for_label(edge.owner_vertex_id, edge.label_id, edge.slot_index.raw())
+        .read_edge_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
         .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
     {
         EdgeSlotState::Live(row) => row.neighbor_vid(),
@@ -149,18 +184,24 @@ where
     let mut ordinal = 0u32;
     let mut total = 0u32;
     let mut passed_source = false;
-    graph
-        .for_each_live_edge_slot_for_label(edge.owner_vertex_id, edge.label_id, |slot, row| {
-            if row.neighbor_vid() != target {
-                return;
-            }
-            if slot == edge.slot_index.raw() {
-                passed_source = true;
-            } else if !passed_source {
-                ordinal = ordinal.saturating_add(1);
-            }
-            total = total.saturating_add(1);
-        })
+    let _ = graph
+        .visit_edges::<()>(
+            edge.owner_vertex_id,
+            edge.label_id,
+            OutEdgeOrder::Ascending,
+            |slot, row| {
+                if row.neighbor_vid() != target {
+                    return ControlFlow::Continue(());
+                }
+                if slot == edge.slot_index {
+                    passed_source = true;
+                } else if !passed_source {
+                    ordinal = ordinal.saturating_add(1);
+                }
+                total = total.saturating_add(1);
+                ControlFlow::Continue(())
+            },
+        )
         .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?;
 
     if !passed_source {
@@ -169,8 +210,42 @@ where
     Ok((target, PairOrdinal(ordinal), total))
 }
 
-/// Selects the live row at `ordinal` from the counterpart bucket's equal-neighbor subsequence.
+/// Selects the live row at `ordinal` from the counterpart bucket's equal-neighbor
+/// subsequence, stopping immediately after the match is found.
 fn select_counterpart<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    owner: VertexId,
+    label: BucketLabelKey,
+    source_owner: VertexId,
+    ordinal: PairOrdinal,
+) -> Result<CanonicalEdgeOccurrence, CounterpartLookupError>
+where
+    E: CsrEdgeTombstone,
+    M: Memory,
+{
+    let slot = graph
+        .select_live_edge_by_neighbor_ordinal(owner, label, source_owner, ordinal.0)
+        .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
+        .ok_or_else(|| {
+            CounterpartLookupError::CounterpartNotFound(CanonicalEdgeOccurrence {
+                orientation: Orientation::Forward,
+                owner_vertex_id: owner,
+                label_id: label,
+                slot_index: BucketEntryPosition::new(u32::MAX),
+            })
+        })?;
+
+    Ok(CanonicalEdgeOccurrence {
+        orientation: Orientation::Forward,
+        owner_vertex_id: owner,
+        label_id: label,
+        slot_index: slot,
+    })
+}
+
+/// Selects the live row at `ordinal` and counts the total matching rows. This is the
+/// verified path that scans to the end.
+fn select_counterpart_verified<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     owner: VertexId,
     label: BucketLabelKey,
@@ -182,16 +257,17 @@ where
     M: Memory,
 {
     let mut matching = 0u32;
-    let mut candidate: Option<u32> = None;
-    graph
-        .for_each_live_edge_slot_for_label(owner, label, |slot, row| {
+    let mut candidate: Option<BucketEntryPosition> = None;
+    let _ = graph
+        .visit_edges::<()>(owner, label, OutEdgeOrder::Ascending, |slot, row| {
             if row.neighbor_vid() != source_owner {
-                return;
+                return ControlFlow::Continue(());
             }
             if matching == ordinal.0 {
                 candidate = Some(slot);
             }
             matching = matching.saturating_add(1);
+            ControlFlow::Continue(())
         })
         .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?;
 
@@ -211,7 +287,7 @@ where
             orientation: Orientation::Forward,
             owner_vertex_id: owner,
             label_id: label,
-            slot_index: BucketEntryPosition::new(slot),
+            slot_index: slot,
         },
         matching,
     ))
@@ -239,6 +315,10 @@ pub fn canonical_from_counterpart(
 }
 
 /// Resolves the exact paired physical entry by equal-neighbor occurrence rank.
+///
+/// This fast path stops as soon as the counterpart is identified. It does not
+/// verify that the two projections agree on total matching-row cardinality; use
+/// [`counterpart_of_verified`] when that invariant check is required.
 pub fn counterpart_of<E, M>(
     forward: &LabeledLaraGraph<E, M>,
     reverse: &LabeledLaraGraph<E, M>,
@@ -260,7 +340,111 @@ where
         Orientation::Reverse => reverse,
     };
 
-    let (target, pair_ordinal, source_count) = scan_pair_ordinal(source_graph, edge)?;
+    // Read the source row once. Every resolution path needs the live target vertex.
+    let target = match source_graph
+        .read_edge_state(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+        .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
+    {
+        EdgeSlotState::Live(row) => row.neighbor_vid(),
+        EdgeSlotState::Tombstone => return Err(CounterpartLookupError::SourceNotLive(edge)),
+        EdgeSlotState::Missing => return Err(CounterpartLookupError::SourceNotFound(edge)),
+    };
+
+    let (counterpart_orientation, counterpart_owner) = if edge.label_id.is_directed() {
+        match edge.orientation {
+            Orientation::Forward => (Orientation::Reverse, target),
+            Orientation::Reverse => (Orientation::Forward, target),
+        }
+    } else {
+        (Orientation::Forward, target)
+    };
+
+    let counterpart_graph = match counterpart_orientation {
+        Orientation::Forward => forward,
+        Orientation::Reverse => reverse,
+    };
+
+    // Directed singleton fast path: PairOrdinal is 0 and the counterpart must be
+    // the single live edge at slot 0 of the opposite orientation. This avoids the
+    // streaming rank/select work for the common single-edge case.
+    if edge.label_id.is_directed() {
+        let is_singleton = source_graph
+            .label_bucket_is_singleton(edge.owner_vertex_id, edge.label_id, edge.slot_index)
+            .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?;
+        if is_singleton {
+            let slot0 = BucketEntryPosition::new(0);
+            return match counterpart_graph
+                .read_edge_state(counterpart_owner, edge.label_id, slot0)
+                .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
+            {
+                EdgeSlotState::Live(row) if row.neighbor_vid() == edge.owner_vertex_id => {
+                    Ok(CanonicalEdgeOccurrence {
+                        orientation: counterpart_orientation,
+                        owner_vertex_id: counterpart_owner,
+                        label_id: edge.label_id,
+                        slot_index: slot0,
+                    })
+                }
+                _ => Err(CounterpartLookupError::CounterpartNotFound(edge)),
+            };
+        }
+    }
+
+    // Undirected self-loop is its own counterpart.
+    if edge.label_id.is_undirected() && target == edge.owner_vertex_id {
+        return Ok(edge);
+    }
+
+    let pair_ordinal = source_graph
+        .count_preceding_live_edges_with_neighbor(
+            edge.owner_vertex_id,
+            edge.label_id,
+            edge.slot_index,
+            target,
+        )
+        .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?;
+
+    let counterpart = select_counterpart(
+        counterpart_graph,
+        counterpart_owner,
+        edge.label_id,
+        edge.owner_vertex_id,
+        PairOrdinal(pair_ordinal),
+    )?;
+
+    Ok(CanonicalEdgeOccurrence {
+        orientation: counterpart_orientation,
+        ..counterpart
+    })
+}
+
+/// Resolves the exact paired physical entry and also verifies that the source and
+/// counterpart projections agree on the total number of live equal-neighbor rows.
+///
+/// This scans both buckets to completion and therefore costs more than the fast
+/// [`counterpart_of`] path. Use it for repair, validation, and invariant checks.
+pub fn counterpart_of_verified<E, M>(
+    forward: &LabeledLaraGraph<E, M>,
+    reverse: &LabeledLaraGraph<E, M>,
+    edge: CanonicalEdgeOccurrence,
+) -> Result<CanonicalEdgeOccurrence, CounterpartLookupError>
+where
+    E: CsrEdgeTombstone,
+    M: Memory,
+{
+    #[cfg(test)]
+    CANONICAL_COUNTERPART_LOOKUPS.with(|count| count.set(count.get().saturating_add(1)));
+
+    if edge.label_id.is_undirected() && matches!(edge.orientation, Orientation::Reverse) {
+        return Err(CounterpartLookupError::InvalidOrientation(edge));
+    }
+
+    let source_graph = match edge.orientation {
+        Orientation::Forward => forward,
+        Orientation::Reverse => reverse,
+    };
+
+    let (target, pair_ordinal, source_count) = scan_pair_ordinal_verified(source_graph, edge)?;
 
     // Undirected self-loop is its own counterpart.
     if edge.label_id.is_undirected() && target == edge.owner_vertex_id {
@@ -281,7 +465,7 @@ where
         Orientation::Reverse => reverse,
     };
 
-    let (counterpart, counterpart_count) = select_counterpart(
+    let (counterpart, counterpart_count) = select_counterpart_verified(
         counterpart_graph,
         counterpart_owner,
         edge.label_id,
@@ -315,6 +499,20 @@ where
     M: Memory,
 {
     let counterpart = counterpart_of(forward, reverse, edge)?;
+    Ok(canonical_from_counterpart(edge, counterpart))
+}
+
+/// Resolves the canonical physical entry and verifies projection cardinality.
+pub fn canonical_handle_verified<E, M>(
+    forward: &LabeledLaraGraph<E, M>,
+    reverse: &LabeledLaraGraph<E, M>,
+    edge: CanonicalEdgeOccurrence,
+) -> Result<EdgeHandle, CounterpartLookupError>
+where
+    E: CsrEdgeTombstone,
+    M: Memory,
+{
+    let counterpart = counterpart_of_verified(forward, reverse, edge)?;
     Ok(canonical_from_counterpart(edge, counterpart))
 }
 
@@ -371,12 +569,18 @@ mod tests {
         target: VertexId,
     ) -> Option<u32> {
         let mut found = None;
-        graph
-            .for_each_live_edge_slot_for_label(owner, label, |slot, row| {
-                if row.neighbor_vid() == target {
-                    found = Some(slot);
-                }
-            })
+        let _ = graph
+            .visit_edges::<()>(
+                owner,
+                label,
+                crate::labeled::OutEdgeOrder::Ascending,
+                |slot, edge| {
+                    if edge.neighbor_vid() == target {
+                        found = Some(slot.raw());
+                    }
+                    ControlFlow::Continue(())
+                },
+            )
             .unwrap();
         found
     }
@@ -620,7 +824,7 @@ mod tests {
             )
             .unwrap();
 
-        let err = counterpart_of(&forward, &reverse, first.0).unwrap_err();
+        let err = counterpart_of_verified(&forward, &reverse, first.0).unwrap_err();
         assert!(matches!(
             err,
             CounterpartLookupError::InconsistentRelation {
@@ -684,5 +888,69 @@ mod tests {
         };
         let err = counterpart_of(&forward, &reverse, edge).unwrap_err();
         assert!(matches!(err, CounterpartLookupError::InvalidOrientation(_)));
+    }
+
+    #[test]
+    fn counterpart_of_is_involution_for_directed_and_undirected() {
+        let dir_label = directed_label(50);
+        let (fwd, rev) = two_sided_graphs(dir_label);
+        push_both_vertices(&fwd, &rev, 4);
+        let (d1, d2) = insert_directed(&fwd, &rev, 1, 2, dir_label);
+        assert_eq!(
+            counterpart_of(&fwd, &rev, counterpart_of(&fwd, &rev, d1).unwrap()).unwrap(),
+            d1
+        );
+        assert_eq!(
+            counterpart_of(&fwd, &rev, counterpart_of(&fwd, &rev, d2).unwrap()).unwrap(),
+            d2
+        );
+
+        let und_label = undirected_label(51);
+        let (uf, _ur) = two_sided_graphs(und_label);
+        push_both_vertices(&uf, &_ur, 4);
+        let high = insert_undirected(&uf, 1, 2, und_label);
+        let low = counterpart_of(&uf, &_ur, high).unwrap();
+        assert_eq!(counterpart_of(&uf, &_ur, low).unwrap(), high);
+    }
+
+    #[test]
+    fn many_parallel_directed_edges_resolve_across_slab_overflow_boundary() {
+        const N: u32 = 64;
+        let label = directed_label(60);
+        let (forward, reverse) = two_sided_graphs(label);
+        push_both_vertices(&forward, &reverse, N + 2);
+        let mut fwd_refs = Vec::new();
+        let mut rev_refs = Vec::new();
+        for _ in 0..N {
+            let (fwd, rev) = insert_directed(&forward, &reverse, 1, 2, label);
+            fwd_refs.push(fwd);
+            rev_refs.push(rev);
+        }
+        for (fwd, rev) in fwd_refs.iter().zip(&rev_refs) {
+            assert_eq!(counterpart_of(&forward, &reverse, *fwd).unwrap(), *rev);
+            assert_eq!(counterpart_of(&forward, &reverse, *rev).unwrap(), *fwd);
+        }
+    }
+
+    #[test]
+    fn undirected_parallel_edges_keep_pair_order_and_canonical_owner() {
+        let label = undirected_label(61);
+        let (forward, reverse) = two_sided_graphs(label);
+        push_both_vertices(&forward, &reverse, 4);
+        let mut high_refs = Vec::new();
+        let mut low_refs = Vec::new();
+        for _ in 0..5 {
+            let high = insert_undirected(&forward, 1, 2, label);
+            let low = counterpart_of(&forward, &reverse, high).unwrap();
+            high_refs.push(high);
+            low_refs.push(low);
+            assert_eq!(
+                canonical_handle(&forward, &reverse, low).unwrap(),
+                high.handle()
+            );
+        }
+        for (high, low) in high_refs.iter().zip(&low_refs) {
+            assert_eq!(counterpart_of(&forward, &reverse, *low).unwrap(), *high);
+        }
     }
 }

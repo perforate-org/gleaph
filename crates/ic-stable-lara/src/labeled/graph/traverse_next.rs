@@ -172,6 +172,179 @@ where
         self.read_edge_state_internal(owner, label, slot)
     }
 
+    /// Counts live edges with `neighbor` that precede `before_slot` in ascending
+    /// bucket-local slot order. Used by CounterpartScan to compute a source row's
+    /// PairOrdinal without materializing the whole bucket.
+    pub(crate) fn count_preceding_live_edges_with_neighbor(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        before_slot: BucketEntryPosition,
+        neighbor: VertexId,
+    ) -> Result<u32, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        if vertex.is_default_edge_labeled() {
+            if label != self.bypass_storage_label_for(&vertex) {
+                return Ok(0);
+            }
+            // Fast path: bypass rows store all live edges at slot 0..degree-1 in ascending order.
+            // A singleton relation can only have PairOrdinal 0.
+            if vertex.degree() == 1 {
+                return Ok(0);
+            }
+            let mut count = 0u32;
+            let mut iter = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
+            while let Some((slot, edge)) = iter.next_with_slot() {
+                if slot >= before_slot.raw() {
+                    break;
+                }
+                if edge.neighbor_vid() == neighbor {
+                    count = count.saturating_add(1);
+                }
+            }
+            return Ok(count);
+        }
+        let Some(info) = self.read_label_bucket_placement_info(owner, label)? else {
+            return Ok(0);
+        };
+        // Fast path: a singleton relation has PairOrdinal 0, so there are no preceding matches.
+        if info.degree == 1 {
+            return Ok(0);
+        }
+        let logical_slots = info
+            .stored_edge_slots
+            .checked_add(info.edge_overflow_log_len)
+            .ok_or(LabeledOperationError::from(
+                LaraOperationError::CollectAllocationOverflow,
+            ))?;
+        let mut count = 0u32;
+        let _ = self.for_each_live_edge_slot_for_label_direct_with_control_flow(
+            owner,
+            label,
+            logical_slots,
+            OutEdgeOrder::Ascending,
+            0,
+            |slot, edge| {
+                if slot >= before_slot.raw() {
+                    return ControlFlow::Break(());
+                }
+                if edge.neighbor_vid() == neighbor {
+                    count = count.saturating_add(1);
+                }
+                ControlFlow::Continue(())
+            },
+        )?;
+        Ok(count)
+    }
+
+    /// Returns true when the label bucket (or bypass row) for `owner` contains
+    /// exactly one live edge and the requested slot is that edge's logical slot 0.
+    ///
+    /// Used by CounterpartScan as a fast-path guard: a singleton directed relation
+    /// has PairOrdinal 0 and its counterpart must live at slot 0 of the opposite
+    /// orientation, so no rank/select traversal is required.
+    pub(crate) fn label_bucket_is_singleton(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        slot: BucketEntryPosition,
+    ) -> Result<bool, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        M: Memory,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        if vertex.is_default_edge_labeled() {
+            if label != self.bypass_storage_label_for(&vertex) {
+                return Ok(false);
+            }
+            return Ok(vertex.degree() == 1 && slot.raw() == 0);
+        }
+        match self.read_label_bucket_placement_info(owner, label)? {
+            Some(info) => Ok(info.degree == 1 && slot.raw() == 0),
+            None => Ok(false),
+        }
+    }
+
+    /// Selects the k-th live edge (0-based) whose neighbor equals `neighbor` in ascending
+    /// bucket-local slot order. Used by CounterpartScan to select the counterpart row by
+    /// PairOrdinal without materializing the whole bucket.
+    pub(crate) fn select_live_edge_by_neighbor_ordinal(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        neighbor: VertexId,
+        ordinal: u32,
+    ) -> Result<Option<BucketEntryPosition>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        if vertex.is_default_edge_labeled() {
+            if label != self.bypass_storage_label_for(&vertex) {
+                return Ok(None);
+            }
+            let mut matching = 0u32;
+            let mut iter = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
+            while let Some((slot, edge)) = iter.next_with_slot() {
+                if edge.neighbor_vid() != neighbor {
+                    continue;
+                }
+                if matching == ordinal {
+                    return Ok(Some(BucketEntryPosition::new(slot)));
+                }
+                matching = matching.saturating_add(1);
+            }
+            return Ok(None);
+        }
+        let Some(info) = self.read_label_bucket_placement_info(owner, label)? else {
+            return Ok(None);
+        };
+        // Fast path: a singleton relation's only live edge must be the requested one.
+        if info.degree == 1 && ordinal == 0 {
+            if let EdgeSlotState::Live(edge) =
+                self.read_edge_state(owner, label, BucketEntryPosition::new(0))?
+                && edge.neighbor_vid() == neighbor
+            {
+                return Ok(Some(BucketEntryPosition::new(0)));
+            }
+            return Ok(None);
+        }
+        let logical_slots = info
+            .stored_edge_slots
+            .checked_add(info.edge_overflow_log_len)
+            .ok_or(LabeledOperationError::from(
+                LaraOperationError::CollectAllocationOverflow,
+            ))?;
+        let mut matching = 0u32;
+        let mut selected: Option<BucketEntryPosition> = None;
+        let _ = self.for_each_live_edge_slot_for_label_direct_with_control_flow(
+            owner,
+            label,
+            logical_slots,
+            OutEdgeOrder::Ascending,
+            0,
+            |slot, edge| {
+                if edge.neighbor_vid() != neighbor {
+                    return ControlFlow::Continue(());
+                }
+                if matching == ordinal {
+                    selected = Some(BucketEntryPosition::new(slot));
+                    return ControlFlow::Break(());
+                }
+                matching = matching.saturating_add(1);
+                ControlFlow::Continue(())
+            },
+        )?;
+        Ok(selected)
+    }
+
     /// Reads one live edge row with its exact inline-property bytes.
     pub(crate) fn read_edge_with_inline_property(
         &self,

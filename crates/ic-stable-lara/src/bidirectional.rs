@@ -28,6 +28,7 @@ use ic_stable_structures::Memory;
 use std::fmt;
 
 pub use crate::labeled::OutEdgeOrder;
+pub use crate::labeled::bidirectional::counterpart;
 pub use adjacency::FilteredOutEdgesIter;
 pub use deferred::{
     BidirectionalMaintenanceReport, DeferredBidirectionalLara, DeferredBidirectionalLaraError,
