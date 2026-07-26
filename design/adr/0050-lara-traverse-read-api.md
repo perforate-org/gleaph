@@ -24,17 +24,17 @@ Examples include:
 - `read_out_edge_slot_for_label` and `read_edge_slot_state_for_label`;
 - `read_out_edge_slots_for_label` and its replay-aware variant;
 - `read_physical_edge_at_slot_for_label` and the adoption-fixture physical-location iterator; and
-- the `visit_*_inline_value_batches_for_*` family.
+- the `visit_*_inline_property_batches_for_*` family.
 
 The duplication makes it difficult to identify the cheapest correct primitive. More importantly,
 several APIs use `u32` for two different slot domains, and the word `topology` currently means
 "live edge row without inline-value reads" in some call sites rather than "raw stored cell".
 
 The property-model terminology is also changing. The target term is **inline property**. Existing
-implementation identifiers such as `inline_value`, `payload`, and
-`with_stored_inline_value_bytes` remain the current code vocabulary until the separate naming
-migration lands. New public or crate-public read APIs defined by this ADR use `inline_property`;
-internal adapters may temporarily call existing inline-value storage helpers.
+implementation identifiers now use `inline_property` and `inline_property_bytes`; historical
+`inline_value` and `payload` names in this area have been superseded by ADR 0051. New public or
+crate-public read APIs defined by this ADR use `inline_property`; internal adapters call renamed
+inline-property storage helpers.
 
 ## Problem
 
@@ -217,7 +217,7 @@ pub struct EdgeWithInlineProperty<E> {
 ```
 
 LARA constructs `InlinePropertyBytes` and enforces `bytes.len() == width`. Width zero is a valid
-value and is represented by an empty byte vector. `CsrEdge::with_stored_inline_value_bytes` may be
+value and is represented by an empty byte vector. `CsrEdge::with_stored_inline_property_bytes` may be
 used as an internal optimization, but it is not the contract and its default no-op implementation
 must never be able to hide a missing property read.
 
@@ -234,9 +234,9 @@ the condition to `Missing`. Width zero performs no property read and returns an 
 Boolean `attach_payload`/`attach_inline_property` flags are private implementation details and are
 not exposed in the consolidated surface.
 
-The target term `inline_property` is used even while the implementation delegates to existing
-`inline_value` helpers. `payload` is not used in new API names because it is broader and can be
-confused with other edge payload or property-store concepts.
+The target term `inline_property` is used consistently. `payload` is not used in new API names
+because it is broader and can be confused with other edge inline property bytes or property-store
+concepts.
 
 ### 4. Order is an argument
 
@@ -761,17 +761,17 @@ mapping for the known single-label read families is:
 | `read_edge_slot_state_for_label` | `read_edge_state(BucketEntryPosition)` |
 | `read_out_edge_slots_for_label` | `visit_edges_at` |
 | `read_out_edge_slots_for_label_with_replay` | `visit_edges_at` plus replay/scratch |
-| `read_out_edge_slots_for_label_reusing_inline_value_scratch` | `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve payload attachment |
+| `read_out_edge_slots_for_label_reusing_inline_property_scratch` | `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve payload attachment |
 | `read_in_edge_slots_for_label` | reverse `visit_edges_at` |
 | `read_in_edge_slots_for_label_with_replay` | reverse `visit_edges_at` plus replay/scratch |
-| `read_in_edge_slots_for_label_reusing_inline_value_scratch` | reverse `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve payload attachment |
+| `read_in_edge_slots_for_label_reusing_inline_property_scratch` | reverse `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve payload attachment |
 | `read_physical_edge_at_slot_for_label` | remove; migrate `mate` to logical read |
 | `for_each_live_physical_edge_location_for_label` | physical-location visitor |
-| `visit_out_edge_inline_value_batches_for_label` | forward inline-property batch capability |
-| `visit_in_edge_inline_value_batches_for_label` | reverse inline-property batch capability |
-| `visit_out_inline_value_batches_for_label` | forward inline-property batch capability |
-| `visit_in_inline_value_batches_for_label` | reverse inline-property batch capability |
-| `visit_*_inline_value_batches_for_*` | inline-property batch capability |
+| `visit_out_edge_inline_property_batches_for_label` | forward inline-property batch capability |
+| `visit_in_edge_inline_property_batches_for_label` | reverse inline-property batch capability |
+| `visit_out_inline_property_batches_for_label` | forward inline-property batch capability |
+| `visit_in_inline_property_batches_for_label` | reverse inline-property batch capability |
+| `visit_*_inline_property_batches_for_*` | inline-property batch capability |
 | `skip_then_visit_each_out_edge_for_label`, `skip_then_visit_each_directed_out_edge`, `skip_then_visit_each_undirected_edge` | `visit_edges` with an explicit offset/ordinal skip policy; preserve order, callback short-circuit, and global OFFSET semantics |
 | `skip_then_visit_each_in_edge_for_label`, `skip_then_visit_each_directed_in_edge` | reverse `visit_edges` with the same explicit offset/ordinal skip policy and short-circuit contract |
 
@@ -795,7 +795,7 @@ removed:
    requested slots to the canonical `OutEdgeOrder` (sort then deduplicate), while preserving the
    inline-property scratch/replay lifetime, callback short-circuit, and whether OFFSET is applied
    before or during traversal. The Graph predicate path
-   (`read_out_edge_slots_for_label_reusing_inline_value_scratch` and its incoming twin) and all
+   (`read_out_edge_slots_for_label_reusing_inline_property_scratch` and its incoming twin) and all
    `skip_then_visit_each_*` wrappers are activation-gate callers. Input-slice order is not a
    separate contract; an input-order API would require a distinct future capability.
 4. Storage-location reads must use `StorageEdgeRef` (not ADR 0048's `CanonicalEdgeOccurrence`) with owner
@@ -910,14 +910,13 @@ The implementation patch must check and update:
   storage locations separate;
 - ADR 0008, confirming that default-label bypass rows have zero inline-property width;
 - ADR 0023, confirming the move/re-key obligations for property, posting, and alias sidecars;
-- `design/storage/labeled-edge-inline-values.md`, when its terminology is renamed;
+- `design/storage/labeled-edge-inline-propertys.md`, when its terminology is renamed;
 - `design/storage/lara.md`, for the canonical labeled read boundary;
 - `design/storage/lara-and-facade.md`, if facade names or visibility change; and
 - Graph execution documentation for property-first selected-slot reads.
 
-Until implementation lands, this ADR is intentionally ahead of the code. Existing
-`inline_value`/`payload` identifiers remain implemented terminology and are not evidence that the
-new API has been adopted.
+This ADR is now aligned with the implemented code. Historical `inline_value`/`payload`
+identifiers in older revisions have been superseded by ADR 0051.
 
 ## Out of scope
 

@@ -22,7 +22,7 @@ use super::batch_placement::{
     BatchEdgeInput, BatchEdgeIntent, BatchEdgeIntentRole, BatchPlacementError, BatchPlacementKey,
 };
 use super::store::helpers::{
-    build_edge_to, build_edge_to_with_inline_value_bytes, edge_storage_label, lara_label,
+    build_edge_to, build_edge_to_with_inline_property_bytes, edge_storage_label, lara_label,
 };
 
 /// Result of attempting a clean-slab batch edge insert through GraphStore.
@@ -38,7 +38,7 @@ pub(crate) enum BatchEdgeInsertResult {
         /// Aggregate edge slab slots written across all orientations.
         edge_slots_written: u64,
         /// Aggregate payload slab slots written across all orientations.
-        payload_slots_written: u64,
+        inline_property_bytes_slots_written: u64,
         /// Paired physical locations keyed by the logical input ordinal.
         locations: Option<Vec<BatchEdgePhysicalLocation>>,
         /// True when at least one orientation used pending-aware leaf expansion.
@@ -100,9 +100,9 @@ impl BatchEdgeInsertResult {
     pub(crate) fn total_payload_slots(&self) -> Option<u64> {
         match self {
             Self::Committed {
-                payload_slots_written,
+                inline_property_bytes_slots_written,
                 ..
-            } => Some(*payload_slots_written),
+            } => Some(*inline_property_bytes_slots_written),
             Self::Unsupported { .. } => None,
         }
     }
@@ -138,7 +138,7 @@ impl GraphStore {
     ) {
         let storage = lara_label(edge_storage_label(Some(label), false));
         self.with_graph_mut(|g| {
-            g.ensure_directed_edge_inline_value_width(src, dst, storage, width)
+            g.ensure_directed_edge_inline_property_width(src, dst, storage, width)
                 .expect("ensure directed buckets");
         });
     }
@@ -154,7 +154,7 @@ impl GraphStore {
     ) {
         let storage = lara_label(edge_storage_label(Some(label), true));
         self.with_graph_mut(|g| {
-            g.ensure_undirected_edge_inline_value_width(a, b, storage, width)
+            g.ensure_undirected_edge_inline_property_width(a, b, storage, width)
                 .expect("ensure undirected buckets");
         });
     }
@@ -280,9 +280,9 @@ impl GraphStore {
             .iter()
             .map(|(_, result)| u64::from(result.edge_slots_written))
             .sum();
-        let payload_slots_written = results
+        let inline_property_bytes_slots_written = results
             .iter()
-            .map(|(_, result)| u64::from(result.payload_slots_written))
+            .map(|(_, result)| u64::from(result.inline_property_bytes_slots_written))
             .sum();
         let locations = location_mode.captures().then(|| {
             join_physical_locations(edges, &intents, &results)
@@ -291,7 +291,7 @@ impl GraphStore {
 
         Ok(BatchEdgeInsertResult::Committed {
             edge_slots_written,
-            payload_slots_written,
+            inline_property_bytes_slots_written,
             locations,
             used_expansion,
         })
@@ -317,7 +317,7 @@ impl GraphStore {
                 ),
                 owner_vertex_id: intent.owner_vertex_id,
                 storage_label: intent.storage_label,
-                inline_value_width: intent.inline_value_width,
+                inline_property_width: intent.inline_property_width,
             };
             let edge = encode_edge(intent)?;
             let entry = OneOrientationBatchEdge {
@@ -382,12 +382,12 @@ impl GraphStore {
 }
 
 fn encode_intent_edge(intent: &BatchEdgeIntent) -> Result<Edge, BatchPlacementError> {
-    if intent.inline_value_width == 0 {
+    if intent.inline_property_width == 0 {
         Ok(build_edge_to(intent.neighbor_vertex_id))
     } else {
-        Ok(build_edge_to_with_inline_value_bytes(
+        Ok(build_edge_to_with_inline_property_bytes(
             intent.neighbor_vertex_id,
-            &intent.inline_value_bytes,
+            &intent.inline_property_bytes,
         ))
     }
 }
@@ -503,7 +503,7 @@ fn runs_from_map<E: CsrEdge>(
         .map(|(key, edges)| OneOrientationBucketRun {
             owner_vertex_id: key.owner_vertex_id,
             label_id: key.storage_label,
-            inline_value_width: key.inline_value_width,
+            inline_property_width: key.inline_property_width,
             edges,
         })
         .collect()
@@ -514,12 +514,12 @@ mod tests {
     use super::super::batch_placement::BatchEdgeInput;
     use super::super::store::helpers::{edge_storage_label, lara_label};
     use super::*;
-    use crate::test_labels::install_test_edge_inline_value_profile;
+    use crate::test_labels::install_test_edge_inline_property_profile;
     use gleaph_graph_kernel::entry::EdgeLabelId;
     use ic_stable_lara::VertexId;
     use ic_stable_lara::labeled::batch_write::OneOrientationBatchLocation;
     use ic_stable_lara::lara::edge::free_span::FreeSpanAllocatorStats;
-    use ic_stable_lara::lara::edge_inline_value::PayloadAllocatorStats;
+    use ic_stable_lara::lara::edge_inline_property::InlinePropertyBytesAllocatorStats;
 
     fn fresh_store() -> GraphStore {
         GraphStore::new()
@@ -543,7 +543,7 @@ mod tests {
             target_vertex_id: target,
             catalog_label: label,
             directed,
-            inline_value_bytes: bytes,
+            inline_property_bytes: bytes,
         }
     }
 
@@ -552,11 +552,11 @@ mod tests {
     }
 
     fn install_width(label: EdgeLabelId, width: u16) {
-        install_test_edge_inline_value_profile(
+        install_test_edge_inline_property_profile(
             label,
-            gleaph_graph_kernel::entry::EdgeInlineValueProfile {
+            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
                 byte_width: width,
-                encoding: gleaph_graph_kernel::entry::EdgeInlineValueEncoding::RawBytes,
+                encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawBytes,
             },
         );
     }
@@ -567,8 +567,8 @@ mod tests {
         reverse_edge_capacity: u64,
         forward_edge_free: FreeSpanAllocatorStats,
         reverse_edge_free: FreeSpanAllocatorStats,
-        forward_payload: PayloadAllocatorStats,
-        reverse_payload: PayloadAllocatorStats,
+        forward_payload: InlinePropertyBytesAllocatorStats,
+        reverse_payload: InlinePropertyBytesAllocatorStats,
     }
 
     fn allocator_snapshot(store: &GraphStore) -> AllocatorSnapshot {
@@ -623,11 +623,11 @@ mod tests {
             locations.as_ref().expect("capture locations").as_slice(),
             [BatchEdgePhysicalLocation::Directed {
                 forward: OneOrientationPhysicalLocation::Slab {
-                    payload_byte_offset: Some(_),
+                    inline_property_bytes_offset: Some(_),
                     ..
                 },
                 reverse: OneOrientationPhysicalLocation::Slab {
-                    payload_byte_offset: Some(_),
+                    inline_property_bytes_offset: Some(_),
                     ..
                 },
                 ..
@@ -643,12 +643,12 @@ mod tests {
 
         for edge in store.directed_out_edges(source).expect("out") {
             if edge.label_id == label_raw {
-                assert_eq!(edge.edge_inline_value_bytes(), payload.as_slice());
+                assert_eq!(edge.edge_inline_property_bytes(), payload.as_slice());
             }
         }
         for edge in store.directed_in_edges(target).expect("in") {
             if edge.label_id == label_raw {
-                assert_eq!(edge.edge_inline_value_bytes(), payload.as_slice());
+                assert_eq!(edge.edge_inline_property_bytes(), payload.as_slice());
             }
         }
     }
@@ -1206,14 +1206,14 @@ mod tests {
             owner_vertex_id: forward.owner_vertex_id,
             location: OneOrientationPhysicalLocation::Slab {
                 edge_slot: 10,
-                payload_byte_offset: None,
+                inline_property_bytes_offset: None,
             },
         };
         let result = OneOrientationBatchResult {
             edge_slots_written: 1,
             edge_log_entries_written: 0,
-            payload_slots_written: 0,
-            payload_log_entries_written: 0,
+            inline_property_bytes_slots_written: 0,
+            inline_property_bytes_log_entries_written: 0,
             locations: Some(vec![location]),
         };
         assert!(matches!(

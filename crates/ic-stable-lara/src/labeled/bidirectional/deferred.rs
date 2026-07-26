@@ -208,9 +208,9 @@ pub enum MaintenanceWorkItem {
         anchor_bucket_index: u32,
         resume_bucket_index: u32,
     },
-    /// Compact the payload slab when aggregate free space is fragmented.
-    CompactPayloadSlab {
-        /// Orientation whose payload slab should be compacted.
+    /// Compact the inline property bytes slab when aggregate free space is fragmented.
+    CompactInlinePropertyBytesSlab {
+        /// Orientation whose inline property bytes slab should be compacted.
         orientation: Orientation,
     },
     /// Incrementally remove all incident edges of a deleted vertex, one edge per
@@ -292,7 +292,7 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
             b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
             b[8..12].copy_from_slice(&removed_edges.to_le_bytes());
         }
-        MaintenanceWorkItem::CompactPayloadSlab { orientation } => {
+        MaintenanceWorkItem::CompactInlinePropertyBytesSlab { orientation } => {
             b[0] = 6;
             b[1] = match orientation {
                 Orientation::Forward => 0,
@@ -352,7 +352,7 @@ impl Storable for MaintenanceWorkItem {
                 vid,
                 removed_edges: u32::from_le_bytes(b[8..12].try_into().unwrap()),
             },
-            6 => Self::CompactPayloadSlab { orientation },
+            6 => Self::CompactInlinePropertyBytesSlab { orientation },
             7 => Self::MateLeafRebuild {
                 orientation,
                 leaf: u32::from_le_bytes(b[4..8].try_into().unwrap()),
@@ -521,7 +521,7 @@ fn work_item_key(item: MaintenanceWorkItem) -> u32 {
             };
             0xA000_0000 | anchor_bucket_index ^ (u32::from(vid) << 1) ^ orient
         }
-        MaintenanceWorkItem::CompactPayloadSlab { orientation } => match orientation {
+        MaintenanceWorkItem::CompactInlinePropertyBytesSlab { orientation } => match orientation {
             Orientation::Forward => 0x6000_0000,
             Orientation::Reverse => 0x6000_0001,
         },
@@ -652,10 +652,10 @@ where
     if candidate.neighbor_vid() != neighbor {
         return false;
     }
-    let width = expected.edge_inline_value_byte_width();
+    let width = expected.edge_inline_property_byte_width();
     if width != 0 {
-        return candidate.edge_inline_value_byte_width() == width
-            && candidate.edge_inline_value_bytes() == expected.edge_inline_value_bytes();
+        return candidate.edge_inline_property_byte_width() == width
+            && candidate.edge_inline_property_bytes() == expected.edge_inline_property_bytes();
     }
     candidate.edge_slot_index_raw() == expected.edge_slot_index_raw()
 }
@@ -678,11 +678,11 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
-        forward_inline_value_slab: M,
-        forward_payload_free_spans: M,
-        forward_payload_free_span_by_start: M,
-        forward_payload_log: M,
-        forward_payload_blobs: M,
+        forward_inline_property_bytes_slab: M,
+        forward_inline_property_bytes_free_spans: M,
+        forward_inline_property_bytes_free_span_by_start: M,
+        forward_inline_property_bytes_log: M,
+        forward_inline_property_bytes_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -693,11 +693,11 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
-        reverse_inline_value_slab: M,
-        reverse_payload_free_spans: M,
-        reverse_payload_free_span_by_start: M,
-        reverse_payload_log: M,
-        reverse_payload_blobs: M,
+        reverse_inline_property_bytes_slab: M,
+        reverse_inline_property_bytes_free_spans: M,
+        reverse_inline_property_bytes_free_span_by_start: M,
+        reverse_inline_property_bytes_log: M,
+        reverse_inline_property_bytes_blobs: M,
         mate_memories: MateStorageMemories<M>,
         maintenance_queue: M,
         dirty_work_items: M,
@@ -715,11 +715,11 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
-            forward_inline_value_slab,
-            forward_payload_free_spans,
-            forward_payload_free_span_by_start,
-            forward_payload_log,
-            forward_payload_blobs,
+            forward_inline_property_bytes_slab,
+            forward_inline_property_bytes_free_spans,
+            forward_inline_property_bytes_free_span_by_start,
+            forward_inline_property_bytes_log,
+            forward_inline_property_bytes_blobs,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -730,11 +730,11 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
-            reverse_inline_value_slab,
-            reverse_payload_free_spans,
-            reverse_payload_free_span_by_start,
-            reverse_payload_log,
-            reverse_payload_blobs,
+            reverse_inline_property_bytes_slab,
+            reverse_inline_property_bytes_free_spans,
+            reverse_inline_property_bytes_free_span_by_start,
+            reverse_inline_property_bytes_log,
+            reverse_inline_property_bytes_blobs,
             mate_memories,
             maintenance_queue,
             dirty_work_items,
@@ -757,11 +757,11 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
-        forward_inline_value_slab: M,
-        forward_payload_free_spans: M,
-        forward_payload_free_span_by_start: M,
-        forward_payload_log: M,
-        forward_payload_blobs: M,
+        forward_inline_property_bytes_slab: M,
+        forward_inline_property_bytes_free_spans: M,
+        forward_inline_property_bytes_free_span_by_start: M,
+        forward_inline_property_bytes_log: M,
+        forward_inline_property_bytes_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -772,11 +772,11 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
-        reverse_inline_value_slab: M,
-        reverse_payload_free_spans: M,
-        reverse_payload_free_span_by_start: M,
-        reverse_payload_log: M,
-        reverse_payload_blobs: M,
+        reverse_inline_property_bytes_slab: M,
+        reverse_inline_property_bytes_free_spans: M,
+        reverse_inline_property_bytes_free_span_by_start: M,
+        reverse_inline_property_bytes_log: M,
+        reverse_inline_property_bytes_blobs: M,
         mate_memories: MateStorageMemories<M>,
         maintenance_queue: M,
         dirty_work_items: M,
@@ -799,10 +799,10 @@ where
                 forward_edge_span_meta.size(),
                 forward_edge_free_spans.size(),
                 forward_edge_free_span_by_start.size(),
-                forward_inline_value_slab.size(),
-                forward_payload_free_spans.size(),
-                forward_payload_free_span_by_start.size(),
-                forward_payload_log.size(),
+                forward_inline_property_bytes_slab.size(),
+                forward_inline_property_bytes_free_spans.size(),
+                forward_inline_property_bytes_free_span_by_start.size(),
+                forward_inline_property_bytes_log.size(),
             ],
             &[
                 reverse_vertices.size(),
@@ -815,13 +815,13 @@ where
                 reverse_edge_span_meta.size(),
                 reverse_edge_free_spans.size(),
                 reverse_edge_free_span_by_start.size(),
-                reverse_inline_value_slab.size(),
-                reverse_payload_free_spans.size(),
-                reverse_payload_free_span_by_start.size(),
-                reverse_payload_log.size(),
+                reverse_inline_property_bytes_slab.size(),
+                reverse_inline_property_bytes_free_spans.size(),
+                reverse_inline_property_bytes_free_span_by_start.size(),
+                reverse_inline_property_bytes_log.size(),
             ],
-            forward_payload_blobs.size(),
-            reverse_payload_blobs.size(),
+            forward_inline_property_bytes_blobs.size(),
+            reverse_inline_property_bytes_blobs.size(),
             &mate_memories,
         )?;
         let forward = LabeledLaraGraph::new(
@@ -835,11 +835,11 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
-            forward_inline_value_slab,
-            forward_payload_free_spans,
-            forward_payload_free_span_by_start,
-            forward_payload_log,
-            forward_payload_blobs,
+            forward_inline_property_bytes_slab,
+            forward_inline_property_bytes_free_spans,
+            forward_inline_property_bytes_free_span_by_start,
+            forward_inline_property_bytes_log,
+            forward_inline_property_bytes_blobs,
             capacities,
             default_label,
         )?;
@@ -854,11 +854,11 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
-            reverse_inline_value_slab,
-            reverse_payload_free_spans,
-            reverse_payload_free_span_by_start,
-            reverse_payload_log,
-            reverse_payload_blobs,
+            reverse_inline_property_bytes_slab,
+            reverse_inline_property_bytes_free_spans,
+            reverse_inline_property_bytes_free_span_by_start,
+            reverse_inline_property_bytes_log,
+            reverse_inline_property_bytes_blobs,
             capacities,
             default_label,
         )?;
@@ -895,11 +895,11 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
-        forward_inline_value_slab: M,
-        forward_payload_free_spans: M,
-        forward_payload_free_span_by_start: M,
-        forward_payload_log: M,
-        forward_payload_blobs: M,
+        forward_inline_property_bytes_slab: M,
+        forward_inline_property_bytes_free_spans: M,
+        forward_inline_property_bytes_free_span_by_start: M,
+        forward_inline_property_bytes_log: M,
+        forward_inline_property_bytes_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -910,11 +910,11 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
-        reverse_inline_value_slab: M,
-        reverse_payload_free_spans: M,
-        reverse_payload_free_span_by_start: M,
-        reverse_payload_log: M,
-        reverse_payload_blobs: M,
+        reverse_inline_property_bytes_slab: M,
+        reverse_inline_property_bytes_free_spans: M,
+        reverse_inline_property_bytes_free_span_by_start: M,
+        reverse_inline_property_bytes_log: M,
+        reverse_inline_property_bytes_blobs: M,
         mate_memories: MateStorageMemories<M>,
         maintenance_queue: M,
         dirty_work_items: M,
@@ -932,11 +932,11 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
-            forward_inline_value_slab,
-            forward_payload_free_spans,
-            forward_payload_free_span_by_start,
-            forward_payload_log,
-            forward_payload_blobs,
+            forward_inline_property_bytes_slab,
+            forward_inline_property_bytes_free_spans,
+            forward_inline_property_bytes_free_span_by_start,
+            forward_inline_property_bytes_log,
+            forward_inline_property_bytes_blobs,
             reverse_vertices,
             reverse_buckets,
             reverse_bucket_free_spans,
@@ -947,11 +947,11 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
-            reverse_inline_value_slab,
-            reverse_payload_free_spans,
-            reverse_payload_free_span_by_start,
-            reverse_payload_log,
-            reverse_payload_blobs,
+            reverse_inline_property_bytes_slab,
+            reverse_inline_property_bytes_free_spans,
+            reverse_inline_property_bytes_free_span_by_start,
+            reverse_inline_property_bytes_log,
+            reverse_inline_property_bytes_blobs,
             mate_memories,
             maintenance_queue,
             dirty_work_items,
@@ -974,11 +974,11 @@ where
         forward_edge_span_meta: M,
         forward_edge_free_spans: M,
         forward_edge_free_span_by_start: M,
-        forward_inline_value_slab: M,
-        forward_payload_free_spans: M,
-        forward_payload_free_span_by_start: M,
-        forward_payload_log: M,
-        forward_payload_blobs: M,
+        forward_inline_property_bytes_slab: M,
+        forward_inline_property_bytes_free_spans: M,
+        forward_inline_property_bytes_free_span_by_start: M,
+        forward_inline_property_bytes_log: M,
+        forward_inline_property_bytes_blobs: M,
         reverse_vertices: M,
         reverse_buckets: M,
         reverse_bucket_free_spans: M,
@@ -989,11 +989,11 @@ where
         reverse_edge_span_meta: M,
         reverse_edge_free_spans: M,
         reverse_edge_free_span_by_start: M,
-        reverse_inline_value_slab: M,
-        reverse_payload_free_spans: M,
-        reverse_payload_free_span_by_start: M,
-        reverse_payload_log: M,
-        reverse_payload_blobs: M,
+        reverse_inline_property_bytes_slab: M,
+        reverse_inline_property_bytes_free_spans: M,
+        reverse_inline_property_bytes_free_span_by_start: M,
+        reverse_inline_property_bytes_log: M,
+        reverse_inline_property_bytes_blobs: M,
         mate_memories: MateStorageMemories<M>,
         maintenance_queue: M,
         dirty_work_items: M,
@@ -1016,10 +1016,10 @@ where
                 forward_edge_span_meta.size(),
                 forward_edge_free_spans.size(),
                 forward_edge_free_span_by_start.size(),
-                forward_inline_value_slab.size(),
-                forward_payload_free_spans.size(),
-                forward_payload_free_span_by_start.size(),
-                forward_payload_log.size(),
+                forward_inline_property_bytes_slab.size(),
+                forward_inline_property_bytes_free_spans.size(),
+                forward_inline_property_bytes_free_span_by_start.size(),
+                forward_inline_property_bytes_log.size(),
             ],
             &[
                 reverse_vertices.size(),
@@ -1032,13 +1032,13 @@ where
                 reverse_edge_span_meta.size(),
                 reverse_edge_free_spans.size(),
                 reverse_edge_free_span_by_start.size(),
-                reverse_inline_value_slab.size(),
-                reverse_payload_free_spans.size(),
-                reverse_payload_free_span_by_start.size(),
-                reverse_payload_log.size(),
+                reverse_inline_property_bytes_slab.size(),
+                reverse_inline_property_bytes_free_spans.size(),
+                reverse_inline_property_bytes_free_span_by_start.size(),
+                reverse_inline_property_bytes_log.size(),
             ],
-            forward_payload_blobs.size(),
-            reverse_payload_blobs.size(),
+            forward_inline_property_bytes_blobs.size(),
+            reverse_inline_property_bytes_blobs.size(),
             &mate_memories,
         )?;
         let forward = LabeledLaraGraph::init(
@@ -1052,11 +1052,11 @@ where
             forward_edge_span_meta,
             forward_edge_free_spans,
             forward_edge_free_span_by_start,
-            forward_inline_value_slab,
-            forward_payload_free_spans,
-            forward_payload_free_span_by_start,
-            forward_payload_log,
-            forward_payload_blobs,
+            forward_inline_property_bytes_slab,
+            forward_inline_property_bytes_free_spans,
+            forward_inline_property_bytes_free_span_by_start,
+            forward_inline_property_bytes_log,
+            forward_inline_property_bytes_blobs,
             capacities,
             default_label,
         )
@@ -1072,11 +1072,11 @@ where
             reverse_edge_span_meta,
             reverse_edge_free_spans,
             reverse_edge_free_span_by_start,
-            reverse_inline_value_slab,
-            reverse_payload_free_spans,
-            reverse_payload_free_span_by_start,
-            reverse_payload_log,
-            reverse_payload_blobs,
+            reverse_inline_property_bytes_slab,
+            reverse_inline_property_bytes_free_spans,
+            reverse_inline_property_bytes_free_span_by_start,
+            reverse_inline_property_bytes_log,
+            reverse_inline_property_bytes_blobs,
             capacities,
             default_label,
         )
@@ -1137,8 +1137,8 @@ where
     fn preflight_owner_state(
         forward_lara_sizes: &[u64],
         reverse_lara_sizes: &[u64],
-        forward_payload_blobs_size: u64,
-        reverse_payload_blobs_size: u64,
+        forward_inline_property_bytes_blobs_size: u64,
+        reverse_inline_property_bytes_blobs_size: u64,
         memories: &MateStorageMemories<M>,
     ) -> Result<u64, DeferredBidirectionalLabeledError> {
         let sizes = [
@@ -1168,7 +1168,10 @@ where
                 MateStorageInitError::OwnerLayoutMismatch,
             ));
         }
-        if !forward_any && (forward_payload_blobs_size != 0 || reverse_payload_blobs_size != 0) {
+        if !forward_any
+            && (forward_inline_property_bytes_blobs_size != 0
+                || reverse_inline_property_bytes_blobs_size != 0)
+        {
             return Err(DeferredBidirectionalLabeledError::Mate(
                 MateStorageInitError::OwnerLayoutMismatch,
             ));
@@ -1284,12 +1287,12 @@ where
     ///
     /// The affected mate leaf is hidden before the canonical schema mutation. This method is
     /// intentionally a repair boundary, not a general-purpose single-orientation write API.
-    pub fn repair_ensure_orientation_inline_value_width(
+    pub fn repair_ensure_orientation_inline_property_width(
         &self,
         orientation: super::Orientation,
         src: VertexId,
         label_id: BucketLabelKey,
-        inline_value_byte_width: u16,
+        inline_property_byte_width: u16,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         E: CsrEdgeTombstone,
@@ -1298,11 +1301,19 @@ where
         match orientation {
             super::Orientation::Forward => self
                 .forward
-                .ensure_label_bucket_inline_value_byte_width(src, label_id, inline_value_byte_width)
+                .ensure_label_bucket_inline_property_byte_width(
+                    src,
+                    label_id,
+                    inline_property_byte_width,
+                )
                 .map_err(DeferredBidirectionalLabeledError::Forward),
             super::Orientation::Reverse => self
                 .reverse
-                .ensure_label_bucket_inline_value_byte_width(src, label_id, inline_value_byte_width)
+                .ensure_label_bucket_inline_property_byte_width(
+                    src,
+                    label_id,
+                    inline_property_byte_width,
+                )
                 .map_err(DeferredBidirectionalLabeledError::Reverse),
         }
     }
@@ -1716,13 +1727,13 @@ where
             .map(|_| ())
     }
 
-    /// Enqueues payload-only compaction for one orientation.
-    pub fn mark_compact_payload_slab(
+    /// Enqueues inline-property-bytes-only compaction for one orientation.
+    pub fn mark_compact_inline_property_bytes_slab(
         &self,
         orientation: Orientation,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.maintenance
-            .mark_dirty(MaintenanceWorkItem::CompactPayloadSlab { orientation })
+            .mark_dirty(MaintenanceWorkItem::CompactInlinePropertyBytesSlab { orientation })
             .map(|_| ())
     }
 
@@ -1757,71 +1768,90 @@ where
         label_id: BucketLabelKey,
         forward_edge: E,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
-        let payload_compaction_needed = forward_edge.edge_inline_value_byte_width() != 0
-            && self
-                .forward
-                .payload_compaction_needed(u64::from(forward_edge.edge_inline_value_byte_width()))
-                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        let inline_property_bytes_compaction_needed =
+            forward_edge.edge_inline_property_byte_width() != 0
+                && self
+                    .forward
+                    .inline_property_bytes_compaction_needed(u64::from(
+                        forward_edge.edge_inline_property_byte_width(),
+                    ))
+                    .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
         self.forward
             .insert_edge_skip_leaf_cascade_deferred_payload(src, label_id, forward_edge)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        if payload_compaction_needed {
-            self.mark_compact_payload_slab(Orientation::Forward)?;
+        if inline_property_bytes_compaction_needed {
+            self.mark_compact_inline_property_bytes_slab(Orientation::Forward)?;
         }
         Ok(())
     }
 
-    /// Ensures forward/reverse label buckets declare `inline_value_byte_width` for a directed insert.
-    pub fn ensure_directed_edge_inline_value_width(
+    /// Ensures forward/reverse label buckets declare `inline_property_byte_width` for a directed insert.
+    pub fn ensure_directed_edge_inline_property_width(
         &self,
         src: VertexId,
         dst: VertexId,
         label_id: BucketLabelKey,
-        inline_value_byte_width: u16,
+        inline_property_byte_width: u16,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
         self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
         self.forward
-            .ensure_label_bucket_inline_value_byte_width(src, label_id, inline_value_byte_width)
+            .ensure_label_bucket_inline_property_byte_width(
+                src,
+                label_id,
+                inline_property_byte_width,
+            )
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.reverse
-            .ensure_label_bucket_inline_value_byte_width(dst, label_id, inline_value_byte_width)
+            .ensure_label_bucket_inline_property_byte_width(
+                dst,
+                label_id,
+                inline_property_byte_width,
+            )
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         Ok(())
     }
 
-    /// Ensures the forward out-adjacency label bucket declares `inline_value_byte_width`.
-    pub fn ensure_forward_edge_inline_value_width(
+    /// Ensures the forward out-adjacency label bucket declares `inline_property_byte_width`.
+    pub fn ensure_forward_edge_inline_property_width(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
-        inline_value_byte_width: u16,
+        inline_property_byte_width: u16,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
         self.forward
-            .ensure_label_bucket_inline_value_byte_width(src, label_id, inline_value_byte_width)
+            .ensure_label_bucket_inline_property_byte_width(
+                src,
+                label_id,
+                inline_property_byte_width,
+            )
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Ensures both undirected forward-store endpoint buckets declare `inline_value_byte_width`.
-    pub fn ensure_undirected_edge_inline_value_width(
+    /// Ensures both undirected forward-store endpoint buckets declare `inline_property_byte_width`.
+    pub fn ensure_undirected_edge_inline_property_width(
         &self,
         u: VertexId,
         v: VertexId,
         label_id: BucketLabelKey,
-        inline_value_byte_width: u16,
+        inline_property_byte_width: u16,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         self.invalidate_mate_leaf_for_vertex(Orientation::Forward, u)?;
         if u != v {
             self.invalidate_mate_leaf_for_vertex(Orientation::Forward, v)?;
         }
         self.forward
-            .ensure_label_bucket_inline_value_byte_width(u, label_id, inline_value_byte_width)
+            .ensure_label_bucket_inline_property_byte_width(u, label_id, inline_property_byte_width)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         if u != v {
             self.forward
-                .ensure_label_bucket_inline_value_byte_width(v, label_id, inline_value_byte_width)
+                .ensure_label_bucket_inline_property_byte_width(
+                    v,
+                    label_id,
+                    inline_property_byte_width,
+                )
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
         }
         Ok(())
@@ -1883,16 +1913,22 @@ where
         self.reverse
             .prepare_labeled_edge_capacity_for_insert(dst, label_id)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?;
-        let forward_payload_compaction_needed = forward_edge.edge_inline_value_byte_width() != 0
-            && self
-                .forward
-                .payload_compaction_needed(u64::from(forward_edge.edge_inline_value_byte_width()))
-                .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        let reverse_payload_compaction_needed = reverse_edge.edge_inline_value_byte_width() != 0
-            && self
-                .reverse
-                .payload_compaction_needed(u64::from(reverse_edge.edge_inline_value_byte_width()))
-                .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        let forward_inline_property_bytes_compaction_needed =
+            forward_edge.edge_inline_property_byte_width() != 0
+                && self
+                    .forward
+                    .inline_property_bytes_compaction_needed(u64::from(
+                        forward_edge.edge_inline_property_byte_width(),
+                    ))
+                    .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        let reverse_inline_property_bytes_compaction_needed =
+            reverse_edge.edge_inline_property_byte_width() != 0
+                && self
+                    .reverse
+                    .inline_property_bytes_compaction_needed(u64::from(
+                        reverse_edge.edge_inline_property_byte_width(),
+                    ))
+                    .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         let forward_location = self
             .forward
             .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
@@ -1931,16 +1967,16 @@ where
                 )
             });
         }
-        if forward_payload_compaction_needed {
-            self.mark_compact_payload_slab(Orientation::Forward)
+        if forward_inline_property_bytes_compaction_needed {
+            self.mark_compact_inline_property_bytes_slab(Orientation::Forward)
                 .unwrap_or_else(|error| {
                     panic!(
                         "forward payload maintenance admission failed after directed canonical write: {error}"
                     )
                 });
         }
-        if reverse_payload_compaction_needed {
-            self.mark_compact_payload_slab(Orientation::Reverse)
+        if reverse_inline_property_bytes_compaction_needed {
+            self.mark_compact_inline_property_bytes_slab(Orientation::Reverse)
                 .unwrap_or_else(|error| {
                     panic!(
                         "reverse payload maintenance admission failed after directed canonical write: {error}"
@@ -1988,7 +2024,7 @@ where
                 |_slot, item| {
                     let edge = item
                         .edge
-                        .with_stored_inline_value_bytes(
+                        .with_stored_inline_property_bytes(
                             item.inline_property.width,
                             item.inline_property.bytes(),
                         )
@@ -2017,7 +2053,7 @@ where
             .visit_edges_with_inline_property(src, label_id, order, |_slot, item| {
                 let edge = item
                     .edge
-                    .with_stored_inline_value_bytes(
+                    .with_stored_inline_property_bytes(
                         item.inline_property.width,
                         item.inline_property.bytes(),
                     )
@@ -2071,67 +2107,73 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Returns whether forward `(src, label_id)` supports dense payload-only phase 1.
-    pub fn out_bucket_dense_inline_value_batch_eligible(
+    /// Returns whether forward `(src, label_id)` supports dense inline-property-bytes-only phase 1.
+    pub fn out_bucket_dense_inline_property_batch_eligible(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
     ) -> Result<bool, DeferredBidirectionalLabeledError> {
         self.forward
-            .out_bucket_dense_inline_value_batch_eligible(src, label_id)
+            .out_bucket_dense_inline_property_batch_eligible(src, label_id)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Returns whether forward predicate expand may use payload-first phase 1 + phase 2.
-    pub fn out_bucket_inline_value_first_predicate_eligible(
+    /// Returns whether forward predicate expand may use inline-property-bytes-first phase 1 + phase 2.
+    pub fn out_bucket_inline_property_bytes_first_predicate_eligible(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
     ) -> Result<bool, DeferredBidirectionalLabeledError> {
         self.forward
-            .out_bucket_inline_value_first_predicate_eligible(src, label_id)
+            .out_bucket_inline_property_bytes_first_predicate_eligible(src, label_id)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Returns whether reverse `(dst, label_id)` supports dense payload-only phase 1.
-    pub fn in_bucket_dense_inline_value_batch_eligible(
+    /// Returns whether reverse `(dst, label_id)` supports dense inline-property-bytes-only phase 1.
+    pub fn in_bucket_dense_inline_property_batch_eligible(
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
     ) -> Result<bool, DeferredBidirectionalLabeledError> {
         self.reverse
-            .out_bucket_dense_inline_value_batch_eligible(dst, label_id)
+            .out_bucket_dense_inline_property_batch_eligible(dst, label_id)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
-    /// Returns whether reverse predicate expand may use payload-first phase 1 + phase 2.
-    pub fn in_bucket_inline_value_first_predicate_eligible(
+    /// Returns whether reverse predicate expand may use inline-property-bytes-first phase 1 + phase 2.
+    pub fn in_bucket_inline_property_bytes_first_predicate_eligible(
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
     ) -> Result<bool, DeferredBidirectionalLabeledError> {
         self.reverse
-            .out_bucket_inline_value_first_predicate_eligible(dst, label_id)
+            .out_bucket_inline_property_bytes_first_predicate_eligible(dst, label_id)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
     /// Visits forward outgoing payload bytes for one label in `order` (dense, hybrid, and sparse).
-    pub fn visit_out_inline_value_batches_for_label<Visit>(
+    pub fn visit_out_inline_property_batches_for_label<Visit>(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
-        scratch: &mut crate::labeled::LabeledPayloadValueBatchScratch,
+        scratch: &mut crate::labeled::LabeledInlinePropertyValueBatchScratch,
         mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(crate::labeled::LabeledPayloadValueBatch<'b>),
+        Visit: for<'b> FnMut(crate::labeled::LabeledInlinePropertyValueBatch<'b>),
     {
         self.forward
-            .visit_out_inline_value_batches_for_label_next(src, label_id, order, scratch, |batch| {
-                visit(batch);
-                ControlFlow::<()>::Continue(())
-            })
+            .visit_out_inline_property_batches_for_label_next(
+                src,
+                label_id,
+                order,
+                scratch,
+                |batch| {
+                    visit(batch);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
             .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
@@ -2192,19 +2234,19 @@ where
     }
 
     /// Visits forward outgoing edges and parallel value bytes for one label in `order`.
-    pub fn visit_out_edge_inline_value_batches_for_label<Visit>(
+    pub fn visit_out_edge_inline_property_batches_for_label<Visit>(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
-        scratch: &mut crate::labeled::LabeledEdgeInlineValueBatchScratch<E>,
+        scratch: &mut crate::labeled::LabeledEdgeInlinePropertyBatchScratch<E>,
         mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(crate::labeled::LabeledEdgeInlineValueBatch<'b, E>),
+        Visit: for<'b> FnMut(crate::labeled::LabeledEdgeInlinePropertyBatch<'b, E>),
     {
         self.forward
-            .visit_out_edge_inline_value_batches_for_label_next(
+            .visit_out_edge_inline_property_batches_for_label_next(
                 src,
                 label_id,
                 order,
@@ -2219,22 +2261,28 @@ where
     }
 
     /// Visits reverse outgoing payload bytes for one label in `order` (dense, hybrid, and sparse).
-    pub fn visit_in_inline_value_batches_for_label<Visit>(
+    pub fn visit_in_inline_property_batches_for_label<Visit>(
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
-        scratch: &mut crate::labeled::LabeledPayloadValueBatchScratch,
+        scratch: &mut crate::labeled::LabeledInlinePropertyValueBatchScratch,
         mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(crate::labeled::LabeledPayloadValueBatch<'b>),
+        Visit: for<'b> FnMut(crate::labeled::LabeledInlinePropertyValueBatch<'b>),
     {
         self.reverse
-            .visit_out_inline_value_batches_for_label_next(dst, label_id, order, scratch, |batch| {
-                visit(batch);
-                ControlFlow::<()>::Continue(())
-            })
+            .visit_out_inline_property_batches_for_label_next(
+                dst,
+                label_id,
+                order,
+                scratch,
+                |batch| {
+                    visit(batch);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
             .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
@@ -2267,7 +2315,7 @@ where
     }
 
     /// Like [`Self::read_in_edge_slots_for_label`], reusing hybrid overflow replay from the reverse
-    /// phase-1 scan (`visit_in_inline_value_batches_for_label`). Mirrors the forward
+    /// phase-1 scan (`visit_in_inline_property_batches_for_label`). Mirrors the forward
     /// [`Self::read_out_edge_slots_for_label_with_replay`] contract on reverse orientation.
     pub fn read_in_edge_slots_for_label_with_replay<Visit>(
         &self,
@@ -2298,19 +2346,19 @@ where
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the forward store.
     /// Visits reverse outgoing edges (incoming edges in the public graph view) and parallel
     /// value bytes for one label in `order`.
-    pub fn visit_in_edge_inline_value_batches_for_label<Visit>(
+    pub fn visit_in_edge_inline_property_batches_for_label<Visit>(
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
         order: OutEdgeOrder,
-        scratch: &mut crate::labeled::LabeledEdgeInlineValueBatchScratch<E>,
+        scratch: &mut crate::labeled::LabeledEdgeInlinePropertyBatchScratch<E>,
         mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(crate::labeled::LabeledEdgeInlineValueBatch<'b, E>),
+        Visit: for<'b> FnMut(crate::labeled::LabeledEdgeInlinePropertyBatch<'b, E>),
     {
         self.reverse
-            .visit_out_edge_inline_value_batches_for_label_next(
+            .visit_out_edge_inline_property_batches_for_label_next(
                 dst,
                 label_id,
                 order,
@@ -2348,7 +2396,7 @@ where
                     }
                     let edge = item
                         .edge
-                        .with_stored_inline_value_bytes(
+                        .with_stored_inline_property_bytes(
                             item.inline_property.width,
                             item.inline_property.bytes(),
                         )
@@ -2451,7 +2499,7 @@ where
                     }
                     let edge = item
                         .edge
-                        .with_stored_inline_value_bytes(
+                        .with_stored_inline_property_bytes(
                             item.inline_property.width,
                             item.inline_property.bytes(),
                         )
@@ -2611,7 +2659,7 @@ where
                 |_slot, item| {
                     let edge = item
                         .edge
-                        .with_stored_inline_value_bytes(
+                        .with_stored_inline_property_bytes(
                             item.inline_property.width,
                             item.inline_property.bytes(),
                         )
@@ -2640,7 +2688,7 @@ where
             .visit_edges_with_inline_property(dst, label_id, order, |_slot, item| {
                 let edge = item
                     .edge
-                    .with_stored_inline_value_bytes(
+                    .with_stored_inline_property_bytes(
                         item.inline_property.width,
                         item.inline_property.bytes(),
                     )
@@ -2694,7 +2742,7 @@ where
                 |_slot, item| {
                     let edge = item
                         .edge
-                        .with_stored_inline_value_bytes(
+                        .with_stored_inline_property_bytes(
                             item.inline_property.width,
                             item.inline_property.bytes(),
                         )
@@ -2726,7 +2774,7 @@ where
                 |_slot, item| {
                     let edge = item
                         .edge
-                        .with_stored_inline_value_bytes(
+                        .with_stored_inline_property_bytes(
                             item.inline_property.width,
                             item.inline_property.bytes(),
                         )
@@ -2871,7 +2919,7 @@ where
     }
 
     /// Updates the edge-inline-value payload for one forward-out edge at `slot_index`.
-    pub fn update_forward_edge_inline_value_at_slot(
+    pub fn update_forward_edge_inline_property_at_slot(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -2890,12 +2938,12 @@ where
         }
         self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
         self.forward
-            .update_edge_inline_value_at_slot(src, label_id, slot_index, edge)
+            .update_edge_inline_property_at_slot(src, label_id, slot_index, edge)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
     /// Updates the edge-inline-value payload for one reverse-store out edge at `slot_index`.
-    pub fn update_reverse_edge_inline_value_at_slot(
+    pub fn update_reverse_edge_inline_property_at_slot(
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
@@ -2914,7 +2962,7 @@ where
         }
         self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
         self.reverse
-            .update_edge_inline_value_at_slot(dst, label_id, slot_index, edge)
+            .update_edge_inline_property_at_slot(dst, label_id, slot_index, edge)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -3218,12 +3266,12 @@ where
                     }
                 }
                 MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
-                MaintenanceWorkItem::CompactPayloadSlab { orientation } => {
+                MaintenanceWorkItem::CompactInlinePropertyBytesSlab { orientation } => {
                     let graph = match orientation {
                         Orientation::Forward => &self.forward,
                         Orientation::Reverse => &self.reverse,
                     };
-                    match graph.compact_payload_slab() {
+                    match graph.compact_inline_property_bytes_slab() {
                         Ok(result) => {
                             if result.moved_spans > 0 {
                                 report.work.rebalanced_segments =
@@ -3233,7 +3281,9 @@ where
                         }
                         Err(_) => {
                             stalled = true;
-                            Some(MaintenanceWorkItem::CompactPayloadSlab { orientation })
+                            Some(MaintenanceWorkItem::CompactInlinePropertyBytesSlab {
+                                orientation,
+                            })
                         }
                     }
                 }
@@ -3695,7 +3745,7 @@ where
     /// by neighbor identity across directed label buckets.
     ///
     /// A reverse-store record only carries `dst`'s reverse slot, which does not
-    /// match `src`'s forward slot, so a payload-free directed edge cannot be located
+    /// match `src`'s forward slot, so a inline-property-bytes-free directed edge cannot be located
     /// by the `edge`-identity removal used elsewhere (it would match by slot and
     /// silently fail, spinning the purge). Because `dst` is being deleted every
     /// `src -> dst` edge is removed eventually, so draining an arbitrary parallel
@@ -4079,15 +4129,21 @@ where
                 .prepare_labeled_edge_capacity_for_insert(v, label_id)
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
         }
-        let u_payload_compaction_needed = edge_uv.edge_inline_value_byte_width() != 0
+        let u_inline_property_bytes_compaction_needed = edge_uv.edge_inline_property_byte_width()
+            != 0
             && self
                 .forward
-                .payload_compaction_needed(u64::from(edge_uv.edge_inline_value_byte_width()))
+                .inline_property_bytes_compaction_needed(u64::from(
+                    edge_uv.edge_inline_property_byte_width(),
+                ))
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        let v_payload_compaction_needed = edge_vu.edge_inline_value_byte_width() != 0
+        let v_inline_property_bytes_compaction_needed = edge_vu.edge_inline_property_byte_width()
+            != 0
             && self
                 .forward
-                .payload_compaction_needed(u64::from(edge_vu.edge_inline_value_byte_width()))
+                .inline_property_bytes_compaction_needed(u64::from(
+                    edge_vu.edge_inline_property_byte_width(),
+                ))
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
         let forward_location = self
             .forward
@@ -4121,8 +4177,10 @@ where
                 )
             });
         }
-        if u_payload_compaction_needed || (u != v && v_payload_compaction_needed) {
-            self.mark_compact_payload_slab(Orientation::Forward)
+        if u_inline_property_bytes_compaction_needed
+            || (u != v && v_inline_property_bytes_compaction_needed)
+        {
+            self.mark_compact_inline_property_bytes_slab(Orientation::Forward)
                 .unwrap_or_else(|error| {
                     panic!(
                         "undirected payload maintenance admission failed after canonical write: {error}"
@@ -4665,7 +4723,7 @@ mod tests {
     }
 
     #[test]
-    fn mate_owner_preflight_allows_reopen_without_payload_blobs() {
+    fn mate_owner_preflight_allows_reopen_without_inline_property_bytes_blobs() {
         let locator = vector_memory();
         let blobs = vector_memory();
         let free_spans = vector_memory();
@@ -5844,19 +5902,19 @@ mod tests {
     }
 
     #[test]
-    fn payload_compaction_work_item_round_trips_and_runs_once() {
+    fn inline_property_bytes_compaction_work_item_round_trips_and_runs_once() {
         use ic_stable_structures::Storable;
-        let item = MaintenanceWorkItem::CompactPayloadSlab {
+        let item = MaintenanceWorkItem::CompactInlinePropertyBytesSlab {
             orientation: Orientation::Reverse,
         };
         assert_eq!(MaintenanceWorkItem::from_bytes(item.to_bytes()), item);
 
         let graph = graph();
         graph
-            .mark_compact_payload_slab(Orientation::Forward)
+            .mark_compact_inline_property_bytes_slab(Orientation::Forward)
             .unwrap();
         graph
-            .mark_compact_payload_slab(Orientation::Forward)
+            .mark_compact_inline_property_bytes_slab(Orientation::Forward)
             .unwrap();
         assert_eq!(graph.maintenance_queue_len(), 1);
         graph
@@ -5988,14 +6046,14 @@ mod tests {
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct PayloadTestEdge {
+    struct InlinePropertyTestEdge {
         target: u32,
         slot_index: u32,
         value: [u8; 8],
-        inline_value_len: u16,
+        inline_property_len: u16,
     }
 
-    impl PayloadTestEdge {
+    impl InlinePropertyTestEdge {
         fn with_bytes(target: u32, bytes: &[u8]) -> Self {
             let mut value = [0u8; 8];
             let len = bytes.len().min(8);
@@ -6004,12 +6062,12 @@ mod tests {
                 target,
                 slot_index: 0,
                 value,
-                inline_value_len: u16::try_from(len).expect("test payload fits u16 width"),
+                inline_property_len: u16::try_from(len).expect("test payload fits u16 width"),
             }
         }
     }
 
-    impl CsrEdge for PayloadTestEdge {
+    impl CsrEdge for InlinePropertyTestEdge {
         const BYTES: usize = 4;
 
         fn read_from(bytes: &[u8]) -> Self {
@@ -6017,7 +6075,7 @@ mod tests {
                 target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
                 slot_index: 0,
                 value: [0u8; 8],
-                inline_value_len: 0,
+                inline_property_len: 0,
             }
         }
 
@@ -6040,19 +6098,19 @@ mod tests {
             Self { slot_index, ..self }
         }
 
-        fn edge_inline_value_byte_width(&self) -> u16 {
-            self.inline_value_len
+        fn edge_inline_property_byte_width(&self) -> u16 {
+            self.inline_property_len
         }
 
-        fn edge_inline_value_bytes(&self) -> &[u8] {
-            &self.value[..usize::from(self.inline_value_len)]
+        fn edge_inline_property_bytes(&self) -> &[u8] {
+            &self.value[..usize::from(self.inline_property_len)]
         }
 
-        fn with_stored_inline_value_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
+        fn with_stored_inline_property_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
             self.value = [0u8; 8];
             let len = usize::from(width).min(bytes.len()).min(8);
             self.value[..len].copy_from_slice(&bytes[..len]);
-            self.inline_value_len = width;
+            self.inline_property_len = width;
             self
         }
 
@@ -6061,19 +6119,19 @@ mod tests {
         }
     }
 
-    impl CsrEdgeTombstone for PayloadTestEdge {
+    impl CsrEdgeTombstone for InlinePropertyTestEdge {
         fn tombstone_edge() -> Self {
             Self {
                 target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
                 slot_index: 0,
                 value: [0u8; 8],
-                inline_value_len: 0,
+                inline_property_len: 0,
             }
         }
     }
 
     fn valued_bidirectional_graph()
-    -> DeferredBidirectionalLabeledLaraGraph<PayloadTestEdge, VectorMemory> {
+    -> DeferredBidirectionalLabeledLaraGraph<InlinePropertyTestEdge, VectorMemory> {
         let (
             fv,
             fb,
@@ -6154,15 +6212,15 @@ mod tests {
     }
 
     #[test]
-    fn bidirectional_parallel_edge_inline_values_survive_diamond_insert() {
+    fn bidirectional_parallel_edge_inline_propertys_survive_diamond_insert() {
         let graph = valued_bidirectional_graph();
         for _ in 0..4 {
             graph.push_vertex().unwrap();
         }
         let road = BucketLabelKey::directed_from_index(2);
-        let rev = |src: u32| PayloadTestEdge::with_bytes(src, &0u16.to_le_bytes());
+        let rev = |src: u32| InlinePropertyTestEdge::with_bytes(src, &0u16.to_le_bytes());
         graph
-            .ensure_directed_edge_inline_value_width(
+            .ensure_directed_edge_inline_property_width(
                 VertexId::from(0),
                 VertexId::from(2),
                 road,
@@ -6170,7 +6228,7 @@ mod tests {
             )
             .unwrap();
         graph
-            .ensure_directed_edge_inline_value_width(
+            .ensure_directed_edge_inline_property_width(
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
@@ -6178,7 +6236,7 @@ mod tests {
             )
             .unwrap();
         graph
-            .ensure_directed_edge_inline_value_width(
+            .ensure_directed_edge_inline_property_width(
                 VertexId::from(1),
                 VertexId::from(2),
                 road,
@@ -6190,7 +6248,7 @@ mod tests {
                 VertexId::from(0),
                 VertexId::from(2),
                 road,
-                PayloadTestEdge::with_bytes(2, &10u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(2, &10u16.to_le_bytes()),
                 rev(0),
             )
             .unwrap();
@@ -6199,7 +6257,7 @@ mod tests {
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                PayloadTestEdge::with_bytes(1, &5u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(1, &5u16.to_le_bytes()),
                 rev(0),
             )
             .unwrap();
@@ -6208,15 +6266,15 @@ mod tests {
                 VertexId::from(1),
                 VertexId::from(2),
                 road,
-                PayloadTestEdge::with_bytes(2, &1u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(2, &1u16.to_le_bytes()),
                 rev(1),
             )
             .unwrap();
         let mut weights = Vec::new();
         graph
             .for_each_out_edges_for_label_unchecked(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    let b = edge.edge_inline_value_bytes();
+                if edge.inline_property_len == 2 {
+                    let b = edge.edge_inline_property_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -6226,27 +6284,27 @@ mod tests {
     }
 
     #[test]
-    fn remove_directed_deferred_uses_edge_inline_value_to_select_parallel_edge() {
+    fn remove_directed_deferred_uses_edge_inline_property_to_select_parallel_edge() {
         let graph = valued_bidirectional_graph();
         for _ in 0..2 {
             graph.push_vertex().unwrap();
         }
         let road = BucketLabelKey::directed_from_index(2);
         graph
-            .ensure_directed_edge_inline_value_width(
+            .ensure_directed_edge_inline_property_width(
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
                 2u16,
             )
             .unwrap();
-        let rev = |src: u32| PayloadTestEdge::with_bytes(src, &0u16.to_le_bytes());
+        let rev = |src: u32| InlinePropertyTestEdge::with_bytes(src, &0u16.to_le_bytes());
         graph
             .insert_directed_edge(
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                PayloadTestEdge::with_bytes(1, &10u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(1, &10u16.to_le_bytes()),
                 rev(0),
             )
             .unwrap();
@@ -6255,7 +6313,7 @@ mod tests {
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                PayloadTestEdge::with_bytes(1, &20u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 rev(0),
             )
             .unwrap();
@@ -6265,7 +6323,7 @@ mod tests {
                 .remove_directed_deferred(
                     VertexId::from(0),
                     VertexId::from(1),
-                    PayloadTestEdge::with_bytes(1, &20u16.to_le_bytes()),
+                    InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 )
                 .unwrap()
         );
@@ -6273,8 +6331,8 @@ mod tests {
         let mut weights = Vec::new();
         graph
             .for_each_out_edges_for_label_unchecked(VertexId::from(0), road, |edge| {
-                if edge.inline_value_len == 2 {
-                    let b = edge.edge_inline_value_bytes();
+                if edge.inline_property_len == 2 {
+                    let b = edge.edge_inline_property_bytes();
                     weights.push(u16::from_le_bytes([b[0], b[1]]));
                 }
             })
@@ -6290,7 +6348,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_undirected_deferred_uses_edge_inline_value_to_select_parallel_edge() {
+    fn remove_undirected_deferred_uses_edge_inline_property_to_select_parallel_edge() {
         let graph = valued_bidirectional_graph();
         for _ in 0..2 {
             graph.push_vertex().unwrap();
@@ -6298,19 +6356,19 @@ mod tests {
         let road = BucketLabelKey::undirected_from_index(2);
         graph
             .forward()
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         graph
             .forward()
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(1), road, 2u16)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(1), road, 2u16)
             .unwrap();
         graph
             .insert_undirected_deferred(
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                PayloadTestEdge::with_bytes(1, &10u16.to_le_bytes()),
-                PayloadTestEdge::with_bytes(0, &10u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(1, &10u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(0, &10u16.to_le_bytes()),
             )
             .unwrap();
         graph
@@ -6318,8 +6376,8 @@ mod tests {
                 VertexId::from(0),
                 VertexId::from(1),
                 road,
-                PayloadTestEdge::with_bytes(1, &20u16.to_le_bytes()),
-                PayloadTestEdge::with_bytes(0, &20u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(0, &20u16.to_le_bytes()),
             )
             .unwrap();
 
@@ -6328,7 +6386,7 @@ mod tests {
                 .remove_undirected_deferred(
                     VertexId::from(0),
                     VertexId::from(1),
-                    PayloadTestEdge::with_bytes(1, &20u16.to_le_bytes()),
+                    InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 )
                 .unwrap()
         );
@@ -6337,8 +6395,8 @@ mod tests {
             let mut weights = Vec::new();
             graph
                 .for_each_undirected_edges(vertex, OutEdgeOrder::Ascending, |edge| {
-                    if edge.inline_value_len == 2 {
-                        let b = edge.edge_inline_value_bytes();
+                    if edge.inline_property_len == 2 {
+                        let b = edge.edge_inline_property_bytes();
                         weights.push(u16::from_le_bytes([b[0], b[1]]));
                     }
                 })
@@ -6358,15 +6416,15 @@ mod tests {
         let hub = VertexId::from(1);
         let road = BucketLabelKey::directed_from_index(2);
         graph
-            .ensure_directed_edge_inline_value_width(source, hub, road, 2u16)
+            .ensure_directed_edge_inline_property_width(source, hub, road, 2u16)
             .unwrap();
         graph
             .insert_directed_edge(
                 source,
                 hub,
                 road,
-                PayloadTestEdge::with_bytes(u32::from(hub), &10u16.to_le_bytes()),
-                PayloadTestEdge::with_bytes(u32::from(source), &10u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(u32::from(hub), &10u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(u32::from(source), &10u16.to_le_bytes()),
             )
             .unwrap();
         graph
@@ -6374,16 +6432,16 @@ mod tests {
                 source,
                 hub,
                 road,
-                PayloadTestEdge::with_bytes(u32::from(hub), &20u16.to_le_bytes()),
-                PayloadTestEdge::with_bytes(u32::from(source), &20u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(u32::from(hub), &20u16.to_le_bytes()),
+                InlinePropertyTestEdge::with_bytes(u32::from(source), &20u16.to_le_bytes()),
             )
             .unwrap();
 
-        let mut scratch = crate::labeled::LabeledPayloadValueBatchScratch::default();
+        let mut scratch = crate::labeled::LabeledInlinePropertyValueBatchScratch::default();
         let mut slots = Vec::new();
-        let mut payloads = Vec::new();
+        let mut inline_property_values = Vec::new();
         graph
-            .visit_in_inline_value_batches_for_label(
+            .visit_in_inline_property_batches_for_label(
                 hub,
                 road,
                 OutEdgeOrder::Ascending,
@@ -6391,7 +6449,8 @@ mod tests {
                 |batch| {
                     slots.extend_from_slice(batch.slot_indices);
                     let width = usize::from(batch.byte_width);
-                    payloads.extend(batch.values.chunks_exact(width).map(|bytes| bytes.to_vec()));
+                    inline_property_values
+                        .extend(batch.values.chunks_exact(width).map(|bytes| bytes.to_vec()));
                 },
             )
             .unwrap();
@@ -6404,7 +6463,7 @@ mod tests {
         let rows: Vec<_> = slots
             .into_iter()
             .zip(edges)
-            .zip(payloads)
+            .zip(inline_property_values)
             .map(|((slot, edge), bytes)| (slot, edge.neighbor_vid(), bytes))
             .collect();
         assert_eq!(
@@ -6416,11 +6475,11 @@ mod tests {
         );
     }
 
-    /// Proves the reverse payload-first phase-2 read actually reuses the phase-1 replay: many edges
+    /// Proves the reverse inline-property-bytes-first phase-2 read actually reuses the phase-1 replay: many edges
     /// point into one hub, so the hub's reverse bucket is an overflow-log hybrid. Reading the
     /// in-edge slots with the captured replay must avoid the overflow-log chain rebuild (0), while a
     /// no-replay read takes the sparse fallback (>= 1) — both returning the same incoming edges. This
-    /// guards `read_in_edge_slots_for_label_with_replay`, which the incoming payload-first expand
+    /// guards `read_in_edge_slots_for_label_with_replay`, which the incoming inline-property-bytes-first expand
     /// executor depends on.
     #[test]
     fn read_in_edge_slots_for_label_with_replay_reuses_reverse_replay() {
@@ -6436,24 +6495,24 @@ mod tests {
         for src in 1..=SOURCES {
             let bytes = (src as u16).to_le_bytes();
             graph
-                .ensure_directed_edge_inline_value_width(VertexId::from(src), hub, road, 2u16)
+                .ensure_directed_edge_inline_property_width(VertexId::from(src), hub, road, 2u16)
                 .unwrap();
             graph
                 .insert_directed_edge(
                     VertexId::from(src),
                     hub,
                     road,
-                    PayloadTestEdge::with_bytes(u32::from(hub), &bytes),
-                    PayloadTestEdge::with_bytes(src, &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(hub), &bytes),
+                    InlinePropertyTestEdge::with_bytes(src, &bytes),
                 )
                 .unwrap();
         }
 
         // Phase 1: capture the reverse hybrid replay and the slot order it emits for the hub.
-        let mut scratch = crate::labeled::LabeledPayloadValueBatchScratch::default();
+        let mut scratch = crate::labeled::LabeledInlinePropertyValueBatchScratch::default();
         let mut slots = Vec::new();
         graph
-            .visit_in_inline_value_batches_for_label(
+            .visit_in_inline_property_batches_for_label(
                 hub,
                 road,
                 OutEdgeOrder::Ascending,
@@ -6503,7 +6562,7 @@ mod tests {
     }
 
     #[test]
-    fn directed_inline_value_adjacent_reverse_hub_stays_writable_after_skew() {
+    fn directed_inline_property_adjacent_reverse_hub_stays_writable_after_skew() {
         let graph = valued_bidirectional_graph();
         for _ in 0..3 {
             graph.push_vertex().unwrap();
@@ -6515,15 +6574,17 @@ mod tests {
         for edge_index in 0..2_000u32 {
             let bytes = 1u16.to_le_bytes();
             graph
-                .ensure_directed_edge_inline_value_width(hub, noise_dst, road, 2)
-                .unwrap_or_else(|error| panic!("noise payload schema {edge_index}: {error:?}"));
+                .ensure_directed_edge_inline_property_width(hub, noise_dst, road, 2)
+                .unwrap_or_else(|error| {
+                    panic!("noise inline property schema {edge_index}: {error:?}")
+                });
             graph
                 .insert_directed_edge(
                     hub,
                     noise_dst,
                     road,
-                    PayloadTestEdge::with_bytes(u32::from(noise_dst), &bytes),
-                    PayloadTestEdge::with_bytes(u32::from(hub), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(noise_dst), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(hub), &bytes),
                 )
                 .unwrap_or_else(|error| panic!("noise edge {edge_index}: {error:?}"));
         }
@@ -6531,15 +6592,17 @@ mod tests {
         for edge_index in 0..100u32 {
             let bytes = 7u16.to_le_bytes();
             graph
-                .ensure_directed_edge_inline_value_width(hub, target_dst, road, 2)
-                .unwrap_or_else(|error| panic!("target payload schema {edge_index}: {error:?}"));
+                .ensure_directed_edge_inline_property_width(hub, target_dst, road, 2)
+                .unwrap_or_else(|error| {
+                    panic!("target inline property schema {edge_index}: {error:?}")
+                });
             graph
                 .insert_directed_edge(
                     hub,
                     target_dst,
                     road,
-                    PayloadTestEdge::with_bytes(u32::from(target_dst), &bytes),
-                    PayloadTestEdge::with_bytes(u32::from(hub), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(target_dst), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(hub), &bytes),
                 )
                 .unwrap_or_else(|error| panic!("target edge {edge_index}: {error:?}"));
         }
@@ -6564,7 +6627,7 @@ mod tests {
         let target = VertexId::from(1);
         let label = BucketLabelKey::directed_from_index(7);
         graph
-            .ensure_directed_edge_inline_value_width(source, target, label, 1)
+            .ensure_directed_edge_inline_property_width(source, target, label, 1)
             .unwrap();
         for value in 1..=3u8 {
             graph
@@ -6572,8 +6635,8 @@ mod tests {
                     source,
                     target,
                     label,
-                    PayloadTestEdge::with_bytes(u32::from(target), &[value]),
-                    PayloadTestEdge::with_bytes(u32::from(source), &[value]),
+                    InlinePropertyTestEdge::with_bytes(u32::from(target), &[value]),
+                    InlinePropertyTestEdge::with_bytes(u32::from(source), &[value]),
                 )
                 .unwrap();
         }
@@ -6670,7 +6733,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_payload_parallel_overflow_locations_match_live_slots() {
+    fn scalar_inline_property_parallel_overflow_locations_match_live_slots() {
         let graph = valued_bidirectional_graph();
         graph.push_vertex().unwrap();
         graph.push_vertex().unwrap();
@@ -6678,7 +6741,7 @@ mod tests {
         let target = VertexId::from(1);
         let label = BucketLabelKey::directed_from_index(13);
         graph
-            .ensure_directed_edge_inline_value_width(source, target, label, 2)
+            .ensure_directed_edge_inline_property_width(source, target, label, 2)
             .unwrap();
 
         let mut locations = Vec::new();
@@ -6689,8 +6752,8 @@ mod tests {
                     source,
                     target,
                     label,
-                    PayloadTestEdge::with_bytes(u32::from(target), &bytes),
-                    PayloadTestEdge::with_bytes(u32::from(source), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(target), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(source), &bytes),
                 )
                 .unwrap();
             locations.push(pair.forward.expect("named forward location"));
@@ -6700,7 +6763,7 @@ mod tests {
             locations.iter().any(
                 |location| location.storage == crate::labeled::ScalarInsertStorage::OverflowLog
             ),
-            "parallel payload inserts must exercise overflow-log location capture"
+            "parallel inline property bytes inserts must exercise overflow-log location capture"
         );
 
         let mut live_slots = Vec::new();
@@ -6737,7 +6800,7 @@ mod tests {
         let target = VertexId::from(1);
         let label = BucketLabelKey::directed_from_index(14);
         graph
-            .ensure_directed_edge_inline_value_width(source, target, label, 2)
+            .ensure_directed_edge_inline_property_width(source, target, label, 2)
             .unwrap();
 
         let mut locations = Vec::new();
@@ -6748,8 +6811,8 @@ mod tests {
                     source,
                     target,
                     label,
-                    PayloadTestEdge::with_bytes(u32::from(target), &bytes),
-                    PayloadTestEdge::with_bytes(u32::from(source), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(target), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(source), &bytes),
                 )
                 .unwrap();
             locations.push(pair.forward.expect("forward location").logical_slot);
@@ -6781,7 +6844,7 @@ mod tests {
         let target = VertexId::from(1);
         let label = BucketLabelKey::directed_from_index(15);
         graph
-            .ensure_directed_edge_inline_value_width(source, target, label, 2)
+            .ensure_directed_edge_inline_property_width(source, target, label, 2)
             .unwrap();
         for value in 0..300u16 {
             let bytes = value.to_le_bytes();
@@ -6790,8 +6853,8 @@ mod tests {
                     source,
                     target,
                     label,
-                    PayloadTestEdge::with_bytes(u32::from(target), &bytes),
-                    PayloadTestEdge::with_bytes(u32::from(source), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(target), &bytes),
+                    InlinePropertyTestEdge::with_bytes(u32::from(source), &bytes),
                 )
                 .unwrap();
         }
@@ -6832,7 +6895,7 @@ mod tests {
         let target = VertexId::from(1);
         let label = BucketLabelKey::directed_from_index(17);
         graph
-            .ensure_directed_edge_inline_value_width(source, target, label, 1)
+            .ensure_directed_edge_inline_property_width(source, target, label, 1)
             .unwrap();
         for value in 1..=2u8 {
             graph
@@ -6840,8 +6903,8 @@ mod tests {
                     source,
                     target,
                     label,
-                    PayloadTestEdge::with_bytes(u32::from(target), &[value]),
-                    PayloadTestEdge::with_bytes(u32::from(source), &[value]),
+                    InlinePropertyTestEdge::with_bytes(u32::from(target), &[value]),
+                    InlinePropertyTestEdge::with_bytes(u32::from(source), &[value]),
                 )
                 .unwrap();
         }
@@ -7532,10 +7595,16 @@ mod tests {
         let before_queue = graph.maintenance_queue_len();
         let before_edge_allocator = graph.forward().edges().allocator_stats();
         let before_edge_free_spans = graph.forward().edges().free_byte_spans();
-        let before_payload = graph.forward().payload_storage_stats().unwrap();
+        let before_stats = graph
+            .forward()
+            .inline_property_bytes_storage_stats()
+            .unwrap();
         let before_reverse_edge_allocator = graph.reverse().edges().allocator_stats();
         let before_reverse_edge_free_spans = graph.reverse().edges().free_byte_spans();
-        let before_reverse_payload = graph.reverse().payload_storage_stats().unwrap();
+        let before_reverse_stats = graph
+            .reverse()
+            .inline_property_bytes_storage_stats()
+            .unwrap();
         let before_mate = graph.mate.test_snapshot();
         let before_region_pages = region_memories
             .iter()
@@ -7608,8 +7677,11 @@ mod tests {
             graph.forward().edges().free_byte_spans()
         );
         assert_eq!(
-            before_payload,
-            graph.forward().payload_storage_stats().unwrap()
+            before_stats,
+            graph
+                .forward()
+                .inline_property_bytes_storage_stats()
+                .unwrap()
         );
         assert_eq!(
             before_reverse_edge_allocator,
@@ -7620,8 +7692,11 @@ mod tests {
             graph.reverse().edges().free_byte_spans()
         );
         assert_eq!(
-            before_reverse_payload,
-            graph.reverse().payload_storage_stats().unwrap()
+            before_reverse_stats,
+            graph
+                .reverse()
+                .inline_property_bytes_storage_stats()
+                .unwrap()
         );
         assert_eq!(
             before_region_pages,
@@ -8753,7 +8828,7 @@ mod tests {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: source,
                 label_id: label,
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: source,
@@ -8767,7 +8842,7 @@ mod tests {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: target,
                 label_id: label,
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: target,
@@ -8892,7 +8967,7 @@ mod tests {
         ));
 
         graph
-            .ensure_directed_edge_inline_value_width(source, target, label, 0)
+            .ensure_directed_edge_inline_property_width(source, target, label, 0)
             .unwrap();
 
         assert_eq!(

@@ -6,7 +6,7 @@ use gleaph_graph_kernel::index::IndexedPropertyKind;
 use gleaph_graph_kernel::federation::IndexPurgeKind;
 
 use crate::edge_index_direction::direction_tag;
-use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
+use crate::facade::stable::ROUTER_EDGE_INLINE_PROPERTY_PROFILES;
 use crate::facade::stable::index_name_catalog::{intern_index_name, lookup_index_name_id};
 use crate::facade::stable::indexed_catalog::{
     create_named_index, drop_named_index, edge_index_uses_property_label, is_property_registered,
@@ -82,7 +82,7 @@ async fn create_index(
     // the same (label, property) owns the only valid read source for that property; a sidecar edge
     // index would be semantically stale because payload mutations do not maintain postings.
     if target.kind == IndexedPropertyKind::Edge
-        && ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|store| {
+        && ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|store| {
             store
                 .get_record(graph_id, EdgeLabelId::from_raw(label_id))
                 .is_some_and(|record| {
@@ -312,7 +312,7 @@ mod tests {
             EdgeDirection::PointingRight
         ));
     }
-    use crate::facade::stable::edge_inline_value_profiles::InlineScalarType;
+    use crate::facade::stable::edge_inline_property_profiles::InlineScalarType;
 
     #[test]
     fn edge_index_create_rejects_inline_scalar_property() {
@@ -423,7 +423,7 @@ mod tests {
                 graph_id,
                 "AFFINITY",
                 "stats",
-                vec![crate::edge_inline_value_ddl::InlineEdgeStructField {
+                vec![crate::edge_inline_property_ddl::InlineEdgeStructField {
                     name: "score".into(),
                     scalar_type: InlineScalarType::F32,
                 }],
@@ -480,7 +480,7 @@ mod tests {
                 graph_id,
                 "AFFINITY",
                 "stats",
-                vec![crate::edge_inline_value_ddl::InlineEdgeStructField {
+                vec![crate::edge_inline_property_ddl::InlineEdgeStructField {
                     name: "score".into(),
                     scalar_type: InlineScalarType::F32,
                 }],

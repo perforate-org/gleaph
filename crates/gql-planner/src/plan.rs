@@ -451,7 +451,7 @@ pub enum PlanOp {
         /// binding the far endpoint), instead of scanning all incident edges.
         indexed_edge_equality: Option<(Str, ScanValue)>,
         /// When set, fixed-label expand filters by the label's edge inline value bytes.
-        edge_inline_value_predicate: Option<EdgeInlineValuePredicate>,
+        edge_inline_property_predicate: Option<EdgeInlinePropertyPredicate>,
         /// When set, fixed-label expand filters by SIMD vector scoring over edge inline values.
         edge_inline_vector_predicate: Option<EdgeInlineVectorPredicate>,
         edge_property_projection: Option<Rc<[Str]>>,
@@ -487,7 +487,7 @@ pub enum PlanOp {
         /// When set, same indexed edge-property path as [`PlanOp::Expand`].
         indexed_edge_equality: Option<(Str, ScanValue)>,
         /// When set, same edge inline value predicate path as [`PlanOp::Expand`].
-        edge_inline_value_predicate: Option<EdgeInlineValuePredicate>,
+        edge_inline_property_predicate: Option<EdgeInlinePropertyPredicate>,
         /// When set, same edge inline vector predicate path as [`PlanOp::Expand`].
         edge_inline_vector_predicate: Option<EdgeInlineVectorPredicate>,
         /// Predicates evaluated on the destination node during expansion.
@@ -1195,7 +1195,7 @@ pub enum ScanValue {
 
 /// A comparison that can be evaluated directly against fixed-width edge inline value bytes.
 #[derive(Clone, Debug, PartialEq)]
-pub struct EdgeInlineValuePredicate {
+pub struct EdgeInlinePropertyPredicate {
     pub op: CmpOp,
     pub value: ScanValue,
 }
@@ -1587,7 +1587,7 @@ mod property_uses_tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: None,
-                edge_inline_value_predicate: None,
+                edge_inline_property_predicate: None,
                 edge_inline_vector_predicate: None,
                 edge_property_projection: None,
                 dst_property_projection: None,

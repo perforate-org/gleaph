@@ -22,7 +22,7 @@ use canbench_rs::bench_scope;
 
 use super::search::path_search_contains_vertex;
 use gleaph_graph_kernel::entry::Edge;
-use ic_stable_lara::labeled::LabeledEdgeInlineValueBatchScratch;
+use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
 
 use super::{
     PathSearchNode, ShortestExpandOptions, ShortestFixedLabelExpand, ShortestPathSearchResult,
@@ -40,7 +40,7 @@ use crate::plan::query::executor::expand::{
 use crate::plan::query::executor::{EdgeSequenceOrder, PlanBinding};
 use crate::plan::query::gleaph_weight;
 use crate::plan::query::row::PlanRow;
-use gleaph_graph_kernel::entry::EdgeInlineValue;
+use gleaph_graph_kernel::entry::EdgeInlinePropertyBytes;
 
 /// Pre-validates `COST BY e.property` for a concrete edge label.
 ///
@@ -338,8 +338,8 @@ fn weighted_hop_cache_outer_key(edge: &EdgeBinding) -> u64 {
 
 fn weighted_hop_cache_value_key(edge: &EdgeBinding) -> u64 {
     let mut hasher = RapidHasher::default();
-    hasher.write_u64(u64::try_from(edge.inline_value_len()).unwrap_or(u64::MAX));
-    hasher.write(edge.inline_value_bytes_slice());
+    hasher.write_u64(u64::try_from(edge.inline_property_len()).unwrap_or(u64::MAX));
+    hasher.write(edge.inline_property_bytes_slice());
     hasher.finish()
 }
 
@@ -471,7 +471,7 @@ pub(crate) fn weighted_shortest_paths_between(
         None
     };
     let mut candidates = Vec::new();
-    let mut payload_scratch = LabeledEdgeInlineValueBatchScratch::<Edge>::default();
+    let mut payload_scratch = LabeledEdgeInlinePropertyBatchScratch::<Edge>::default();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,
@@ -520,12 +520,12 @@ pub(crate) fn weighted_shortest_paths_between(
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _expand_scope = bench_scope("weighted_shortest_expand");
             let base_cost = entry.cost.clone();
-            prep.expand_inline_value_batches(store, current, &mut payload_scratch, |batch| {
+            prep.expand_inline_property_batches(store, current, &mut payload_scratch, |batch| {
                 let width = usize::from(batch.byte_width);
                 for (edge, payload) in batch
                     .edges
                     .iter()
-                    .zip(batch.inline_value_bytes.chunks_exact(width))
+                    .zip(batch.inline_property_bytes.chunks_exact(width))
                 {
                     let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
                         continue;
@@ -537,7 +537,7 @@ pub(crate) fn weighted_shortest_paths_between(
                             handle: edge_binding_handle_for_scanned_expand(
                                 store, current, direction, edge,
                             )?,
-                            inline_value: EdgeInlineValue::EMPTY,
+                            inline_property: EdgeInlinePropertyBytes::EMPTY,
                         })
                     } else {
                         None
@@ -728,7 +728,7 @@ fn weighted_shortest_k_paths_between(
         prepare_inline_property_cost(cost_expr, edge_var, execution, label_id)?;
     let use_hop_cost_cache = direct_gleaph_weight_decoder.is_none();
     let mut candidates = Vec::new();
-    let mut payload_scratch = LabeledEdgeInlineValueBatchScratch::<Edge>::default();
+    let mut payload_scratch = LabeledEdgeInlinePropertyBatchScratch::<Edge>::default();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,
@@ -756,12 +756,12 @@ fn weighted_shortest_k_paths_between(
             prepared_inline_cost,
         ) {
             let base_cost = entry.cost.clone();
-            prep.expand_inline_value_batches(store, current, &mut payload_scratch, |batch| {
+            prep.expand_inline_property_batches(store, current, &mut payload_scratch, |batch| {
                 let width = usize::from(batch.byte_width);
                 for (edge, payload) in batch
                     .edges
                     .iter()
-                    .zip(batch.inline_value_bytes.chunks_exact(width))
+                    .zip(batch.inline_property_bytes.chunks_exact(width))
                 {
                     let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
                         continue;
@@ -771,7 +771,7 @@ fn weighted_shortest_k_paths_between(
                             handle: edge_binding_handle_for_scanned_expand(
                                 store, current, direction, edge,
                             )?,
-                            inline_value: EdgeInlineValue::EMPTY,
+                            inline_property: EdgeInlinePropertyBytes::EMPTY,
                         })
                     } else {
                         None
@@ -1066,6 +1066,6 @@ pub(crate) fn decode_direct_gleaph_weight_hop_cost(
 ) -> Result<WeightedCost, PlanQueryError> {
     decode_direct_gleaph_weight_hop_cost_from_payload(
         decoder,
-        edge_binding.inline_value_bytes_slice(),
+        edge_binding.inline_property_bytes_slice(),
     )
 }

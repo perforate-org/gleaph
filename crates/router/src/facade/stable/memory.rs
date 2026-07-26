@@ -4,7 +4,7 @@
 //! MemoryIds are grouped by [`StableMemoryClass`] / inventory domain:
 //! auth → registry → runtime config → idempotency → catalog → telemetry → maintenance.
 
-use super::edge_inline_value_profiles::EdgeInlineValueProfileStore;
+use super::edge_inline_property_profiles::EdgeInlinePropertyProfileStore;
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::bidirectional_catalog::DenseIndexNamePolicy;
 use gleaph_graph_kernel::bidirectional_catalog::{
@@ -77,7 +77,7 @@ const ROUTER_INDEX_NAME_BY_ID: MemoryId = MemoryId::new(18);
 // --- catalog: index planner + edge inline value + graph type ---
 const ROUTER_NAMED_INDEXES: MemoryId = MemoryId::new(19);
 const ROUTER_INDEXED_PROPERTY_SET: MemoryId = MemoryId::new(20);
-const ROUTER_EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(21);
+const ROUTER_EDGE_INLINE_PROPERTY_PROFILES: MemoryId = MemoryId::new(21);
 const ROUTER_GRAPH_TYPE_DEFINITIONS: MemoryId = MemoryId::new(22);
 const ROUTER_GRAPH_SCHEMA_BINDINGS: MemoryId = MemoryId::new(23);
 const ROUTER_GRAPH_TYPE_BY_NAME: MemoryId = MemoryId::new(24);
@@ -232,7 +232,7 @@ pub(crate) type StableIndexNameCatalog =
     GraphScopedNameCatalog<IndexNameId, Memory, Memory, DenseIndexNamePolicy>;
 pub(crate) type StableNamedIndexMap = BTreeMap<NamedIndexKey, IndexDefRecord, Memory>;
 pub(crate) type StableIndexedPropertySet = BTreeSet<IndexedPropertyKey, Memory>;
-pub(crate) type StableEdgeInlineValueProfileStore = EdgeInlineValueProfileStore<Memory>;
+pub(crate) type StableEdgeInlinePropertyProfileStore = EdgeInlinePropertyProfileStore<Memory>;
 pub(crate) type StableGqlGraphCatalog = GraphCatalog<Memory, Memory>;
 pub(crate) type StableGraphTypeNameCatalog =
     BidirectionalCatalog<GraphTypeId, Memory, Memory, SparseFromOnePolicy>;
@@ -308,7 +308,7 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_INDEX_NAME_BY_ID, 2),
     (ROUTER_NAMED_INDEXES, 8),
     (ROUTER_INDEXED_PROPERTY_SET, 4),
-    (ROUTER_EDGE_PAYLOAD_PROFILES, 8),
+    (ROUTER_EDGE_INLINE_PROPERTY_PROFILES, 8),
     (ROUTER_GRAPH_TYPE_DEFINITIONS, 8),
     (ROUTER_GRAPH_SCHEMA_BINDINGS, 8),
     (ROUTER_GRAPH_TYPE_BY_NAME, 2),
@@ -433,9 +433,9 @@ pub(crate) fn init_indexed_property_set() -> StableIndexedPropertySet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEXED_PROPERTY_SET)))
 }
 
-pub(crate) fn init_edge_inline_value_profiles() -> StableEdgeInlineValueProfileStore {
-    EdgeInlineValueProfileStore::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_PAYLOAD_PROFILES)),
+pub(crate) fn init_edge_inline_property_profiles() -> StableEdgeInlinePropertyProfileStore {
+    EdgeInlinePropertyProfileStore::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_INLINE_PROPERTY_PROFILES)),
     )
 }
 

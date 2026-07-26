@@ -55,8 +55,8 @@ pub enum MaintenanceWorkItem {
         /// Next label-bucket index to compact.
         resume_bucket_index: u32,
     },
-    /// Compact the payload slab when aggregate free space is fragmented.
-    CompactPayloadSlab,
+    /// Compact the inline property bytes slab when aggregate free space is fragmented.
+    CompactInlinePropertyBytesSlab,
 }
 
 #[cfg(test)]
@@ -65,7 +65,7 @@ mod tests {
     use crate::{
         labeled::{
             BucketLabelKey,
-            graph::{LabeledLaraGraph, test_support::PayloadTestEdge},
+            graph::{LabeledLaraGraph, test_support::InlinePropertyTestEdge},
         },
         test_support::{labeled_lara_memories, vector_memory},
     };
@@ -132,7 +132,7 @@ mod tests {
         graph_with_segment_size(32)
     }
 
-    fn payload_graph() -> DeferredLabeledLaraGraph<PayloadTestEdge, crate::VectorMemory> {
+    fn payload_graph() -> DeferredLabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
         let (
             vertices,
             buckets,
@@ -144,10 +144,10 @@ mod tests {
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            inline_value_slab,
+            inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            payload_log,
+            inline_property_bytes_log,
             value_blobs,
         ) = labeled_lara_memories();
         let inner = LabeledLaraGraph::new_with_segment_size(
@@ -161,10 +161,10 @@ mod tests {
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            inline_value_slab,
+            inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            payload_log,
+            inline_property_bytes_log,
             value_blobs,
             crate::labeled::InitialCapacities::uniform(1024),
             BucketLabelKey::from_raw(1),
@@ -708,11 +708,11 @@ mod tests {
     }
 
     #[test]
-    fn payload_compaction_maintenance_is_deduplicated_and_consumed() {
-        let encoded = MaintenanceWorkItem::CompactPayloadSlab.into_bytes();
+    fn inline_property_bytes_compaction_maintenance_is_deduplicated_and_consumed() {
+        let encoded = MaintenanceWorkItem::CompactInlinePropertyBytesSlab.into_bytes();
         assert_eq!(
             MaintenanceWorkItem::from_bytes(Cow::Owned(encoded)),
-            MaintenanceWorkItem::CompactPayloadSlab
+            MaintenanceWorkItem::CompactInlinePropertyBytesSlab
         );
 
         let graph = graph();
@@ -721,8 +721,8 @@ mod tests {
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .unwrap();
 
-        graph.mark_compact_payload_slab().unwrap();
-        graph.mark_compact_payload_slab().unwrap();
+        graph.mark_compact_inline_property_bytes_slab().unwrap();
+        graph.mark_compact_inline_property_bytes_slab().unwrap();
         assert_eq!(graph.maintenance_queue_len(), 1);
 
         let budget = MaintenanceBudget {
@@ -739,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_compaction_queue_survives_reopen() {
+    fn inline_property_bytes_compaction_queue_survives_reopen() {
         let (
             vertices,
             buckets,
@@ -751,10 +751,10 @@ mod tests {
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            inline_value_slab,
+            inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            payload_log,
+            inline_property_bytes_log,
             value_blobs,
         ) = labeled_lara_memories();
         let inner = LabeledLaraGraph::<TestEdge, _>::new(
@@ -768,10 +768,10 @@ mod tests {
             edge_span_meta.clone(),
             edge_free_spans.clone(),
             edge_free_span_by_start.clone(),
-            inline_value_slab.clone(),
+            inline_property_bytes_slab.clone(),
             value_free_spans.clone(),
             value_free_span_by_start.clone(),
-            payload_log.clone(),
+            inline_property_bytes_log.clone(),
             value_blobs.clone(),
             crate::labeled::InitialCapacities::uniform(1024),
             BucketLabelKey::from_raw(1),
@@ -779,7 +779,7 @@ mod tests {
         .unwrap();
         let queue_memory = vector_memory();
         let graph = DeferredLabeledLaraGraph::new(inner, queue_memory.clone()).unwrap();
-        graph.mark_compact_payload_slab().unwrap();
+        graph.mark_compact_inline_property_bytes_slab().unwrap();
         assert_eq!(graph.maintenance_queue_len(), 1);
         drop(graph);
 
@@ -794,10 +794,10 @@ mod tests {
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            inline_value_slab,
+            inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            payload_log,
+            inline_property_bytes_log,
             value_blobs,
             queue_memory,
             crate::labeled::InitialCapacities::uniform(1024),
@@ -817,10 +817,10 @@ mod tests {
     }
 
     #[test]
-    fn failed_payload_compaction_is_requeued_for_retry() {
+    fn failed_inline_property_bytes_compaction_is_requeued_for_retry() {
         let graph = graph();
-        crate::labeled::graph::force_next_payload_compaction_error();
-        graph.mark_compact_payload_slab().unwrap();
+        crate::labeled::graph::force_next_inline_property_bytes_compaction_error();
+        graph.mark_compact_inline_property_bytes_slab().unwrap();
 
         let budget = MaintenanceBudget {
             max_instructions: 0,
@@ -838,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_payload_compaction_preserves_values_and_reclaims_holes() {
+    fn deferred_inline_property_bytes_compaction_preserves_values_and_reclaims_holes() {
         let graph = payload_graph();
         let src = graph
             .inner()
@@ -849,10 +849,14 @@ mod tests {
             let bytes = vec![target as u8; usize::from(width)];
             graph
                 .inner()
-                .ensure_label_bucket_inline_value_byte_width(src, label, width)
+                .ensure_label_bucket_inline_property_byte_width(src, label, width)
                 .unwrap();
             graph
-                .insert_edge(src, label, PayloadTestEdge::with_bytes(target, &bytes))
+                .insert_edge(
+                    src,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &bytes),
+                )
                 .unwrap();
         }
         for (label, target) in [(2, 0), (4, 2)] {
@@ -874,21 +878,37 @@ mod tests {
         }
 
         let target_label = BucketLabelKey::from_raw(5);
-        let before_target = graph.inner().payload_storage_stats().unwrap();
+        let before_target = graph.inner().inline_property_bytes_storage_stats().unwrap();
         assert_eq!(
             before_target.free_bytes, 6,
             "before target: {before_target:?}"
         );
-        assert!(graph.inner().payload_compaction_needed(6).unwrap());
+        assert!(
+            graph
+                .inner()
+                .inline_property_bytes_compaction_needed(6)
+                .unwrap()
+        );
         graph
             .inner()
-            .ensure_label_bucket_inline_value_byte_width(src, target_label, 6)
+            .ensure_label_bucket_inline_property_byte_width(src, target_label, 6)
             .unwrap();
         graph
-            .insert_edge(src, target_label, PayloadTestEdge::with_bytes(3, &[3u8; 6]))
+            .insert_edge(
+                src,
+                target_label,
+                InlinePropertyTestEdge::with_bytes(3, &[3u8; 6]),
+            )
             .unwrap();
         assert!(graph.maintenance_queue_len() > 0);
-        assert_eq!(graph.inner().payload_storage_stats().unwrap().free_bytes, 6);
+        assert_eq!(
+            graph
+                .inner()
+                .inline_property_bytes_storage_stats()
+                .unwrap()
+                .free_bytes,
+            6
+        );
 
         while graph.maintenance_queue_len() > 0 {
             graph.maintenance(MaintenanceBudget {
@@ -900,10 +920,15 @@ mod tests {
                 max_delete_edge_steps: None,
             });
         }
-        let after = graph.inner().payload_storage_stats().unwrap();
+        let after = graph.inner().inline_property_bytes_storage_stats().unwrap();
         assert_eq!(after.free_bytes, 6, "unexpected payload stats: {after:?}");
         assert_eq!(after.largest_free_span, after.free_bytes);
-        assert!(!graph.inner().payload_compaction_needed(6).unwrap());
+        assert!(
+            !graph
+                .inner()
+                .inline_property_bytes_compaction_needed(6)
+                .unwrap()
+        );
         assert_eq!(
             graph
                 .inner()
@@ -964,7 +989,7 @@ impl Storable for MaintenanceWorkItem {
                 bytes[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
                 bytes[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
             }
-            Self::CompactPayloadSlab => {
+            Self::CompactInlinePropertyBytesSlab => {
                 bytes[0] = 5;
             }
         }
@@ -991,7 +1016,7 @@ impl Storable for MaintenanceWorkItem {
                 anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
                 resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
             },
-            5 => Self::CompactPayloadSlab,
+            5 => Self::CompactInlinePropertyBytesSlab,
             _ => Self::CompactLabelBucketVertexSegment { vid },
         }
     }
@@ -1076,10 +1101,10 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
-        inline_value_slab: M,
+        inline_property_bytes_slab: M,
         value_free_spans: M,
         value_free_span_by_start: M,
-        payload_log: M,
+        inline_property_bytes_log: M,
         value_blobs: M,
         queue_memory: M,
         capacities: crate::labeled::InitialCapacities,
@@ -1096,10 +1121,10 @@ where
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            inline_value_slab,
+            inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            payload_log,
+            inline_property_bytes_log,
             value_blobs,
             capacities,
             default_label,
@@ -1127,16 +1152,18 @@ where
         label_id: crate::labeled::BucketLabelKey,
         edge: E,
     ) -> Result<(), DeferredError> {
-        let payload_compaction_needed = edge.edge_inline_value_byte_width() != 0
+        let inline_property_bytes_compaction_needed = edge.edge_inline_property_byte_width() != 0
             && self
                 .inner
-                .payload_compaction_needed(u64::from(edge.edge_inline_value_byte_width()))
+                .inline_property_bytes_compaction_needed(u64::from(
+                    edge.edge_inline_property_byte_width(),
+                ))
                 .map_err(DeferredError::Inner)?;
         self.inner
             .insert_edge_skip_leaf_cascade_deferred_payload(src, label_id, edge)
             .map_err(DeferredError::Inner)?;
-        if payload_compaction_needed {
-            self.mark_compact_payload_slab()?;
+        if inline_property_bytes_compaction_needed {
+            self.mark_compact_inline_property_bytes_slab()?;
         }
         self.maybe_enqueue_dense_vertex_maintenance(src)
     }
@@ -1176,7 +1203,7 @@ where
             MaintenanceWorkItem::CompactVertexEdgeAndValueSpan { vid: queued, .. } => queued == vid,
             MaintenanceWorkItem::CompactLabelBucketVertexSegment { .. }
             | MaintenanceWorkItem::CompactVertexValueSpan { .. }
-            | MaintenanceWorkItem::CompactPayloadSlab => false,
+            | MaintenanceWorkItem::CompactInlinePropertyBytesSlab => false,
         })
     }
 
@@ -1191,19 +1218,19 @@ where
         })
     }
 
-    fn payload_compaction_pending(&self) -> bool {
+    fn inline_property_bytes_compaction_pending(&self) -> bool {
         self.queue
             .iter()
-            .any(|item| matches!(item, MaintenanceWorkItem::CompactPayloadSlab))
+            .any(|item| matches!(item, MaintenanceWorkItem::CompactInlinePropertyBytesSlab))
     }
 
-    /// Enqueues payload-only compaction, deduplicated across the graph.
-    pub fn mark_compact_payload_slab(&self) -> Result<(), DeferredError> {
-        if self.payload_compaction_pending() {
+    /// Enqueues inline-property-bytes-only compaction, deduplicated across the graph.
+    pub fn mark_compact_inline_property_bytes_slab(&self) -> Result<(), DeferredError> {
+        if self.inline_property_bytes_compaction_pending() {
             return Ok(());
         }
         self.queue
-            .push_back(&MaintenanceWorkItem::CompactPayloadSlab)
+            .push_back(&MaintenanceWorkItem::CompactInlinePropertyBytesSlab)
             .map_err(DeferredError::QueueGrow)?;
         Ok(())
     }
@@ -1389,8 +1416,8 @@ where
                     }
                 }
                 MaintenanceWorkItem::CompactVertexValueSpan { .. } => None,
-                MaintenanceWorkItem::CompactPayloadSlab => {
-                    match self.inner.compact_payload_slab() {
+                MaintenanceWorkItem::CompactInlinePropertyBytesSlab => {
+                    match self.inner.compact_inline_property_bytes_slab() {
                         Ok(result) => {
                             if result.moved_spans > 0 {
                                 report.rebalanced_segments =
@@ -1400,7 +1427,7 @@ where
                         }
                         Err(_) => {
                             stalled = true;
-                            Some(MaintenanceWorkItem::CompactPayloadSlab)
+                            Some(MaintenanceWorkItem::CompactInlinePropertyBytesSlab)
                         }
                     }
                 }

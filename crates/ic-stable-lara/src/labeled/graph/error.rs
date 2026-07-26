@@ -5,8 +5,9 @@ use crate::{
     labeled::record::LabeledVertexFieldError,
     lara::{
         edge::InitError as EdgeInitError,
-        edge_inline_value::{
-            InitError as ValueInitError, InlineValueLogReadError, InlineValueLogWriteError,
+        edge_inline_property::{
+            InitError as ValueInitError, InlinePropertyBytesLogReadError,
+            InlinePropertyBytesLogWriteError,
         },
         operation_error::LaraOperationError,
         vertex::InitError as VertexInitError,
@@ -27,17 +28,17 @@ pub enum LabeledOperationError {
     /// Underlying LARA store operation failed.
     Store(LaraOperationError),
     /// Reading an edge-inline-value overflow-log entry failed.
-    PayloadLogRead(InlineValueLogReadError),
+    InlinePropertyBytesLogRead(InlinePropertyBytesLogReadError),
     /// Writing an edge-inline-value overflow-log entry failed.
-    PayloadLogWrite(InlineValueLogWriteError),
+    InlinePropertyBytesLogWrite(InlinePropertyBytesLogWriteError),
     /// A default-label bypass was requested for a row that cannot use it.
     InvalidDefaultBypass,
-    /// An edge inline value byte width did not match the label bucket payload schema.
-    PayloadByteWidthMismatch {
+    /// An edge inline value byte width did not match the label bucket inline property schema.
+    InlinePropertyBytesWidthMismatch {
         /// Payload byte width declared by the label bucket.
         bucket_width: u16,
         /// Payload byte width carried by the edge.
-        edge_inline_value_width: u16,
+        edge_inline_property_width: u16,
     },
     /// Vertex row fields are inconsistent with labeled bucket-mode limits.
     InvalidVertexRow(LabeledVertexFieldError),
@@ -50,18 +51,18 @@ impl fmt::Display for LabeledOperationError {
                 write!(f, "vertex {vid} out of range (len={len})")
             }
             Self::Store(err) => write!(f, "{err}"),
-            Self::PayloadLogRead(err) => write!(f, "{err}"),
-            Self::PayloadLogWrite(err) => write!(f, "{err}"),
+            Self::InlinePropertyBytesLogRead(err) => write!(f, "{err}"),
+            Self::InlinePropertyBytesLogWrite(err) => write!(f, "{err}"),
             Self::InvalidDefaultBypass => write!(
                 f,
                 "default-label bypass requires exactly one default adjacency label"
             ),
-            Self::PayloadByteWidthMismatch {
+            Self::InlinePropertyBytesWidthMismatch {
                 bucket_width,
-                edge_inline_value_width,
+                edge_inline_property_width,
             } => write!(
                 f,
-                "edge inline value byte width {edge_inline_value_width} does not match label bucket payload byte width {bucket_width}"
+                "edge inline value byte width {edge_inline_property_width} does not match label bucket payload byte width {bucket_width}"
             ),
             Self::InvalidVertexRow(err) => write!(f, "invalid labeled vertex row: {err:?}"),
         }
@@ -72,11 +73,11 @@ impl std::error::Error for LabeledOperationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Store(err) => Some(err),
-            Self::PayloadLogRead(err) => Some(err),
-            Self::PayloadLogWrite(err) => Some(err),
+            Self::InlinePropertyBytesLogRead(err) => Some(err),
+            Self::InlinePropertyBytesLogWrite(err) => Some(err),
             Self::VertexOutOfRange { .. }
             | Self::InvalidDefaultBypass
-            | Self::PayloadByteWidthMismatch { .. }
+            | Self::InlinePropertyBytesWidthMismatch { .. }
             | Self::InvalidVertexRow(_) => None,
         }
     }
@@ -117,11 +118,11 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             }
             crate::labeled::record::LabelBucketFieldError::ReservedTopBitSet
             | crate::labeled::record::LabelBucketFieldError::OverflowLogHeadOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::PayloadOffsetOverflow
-            | crate::labeled::record::LabelBucketFieldError::PayloadLogHeadOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::PayloadLogLenOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::PayloadLogStateMismatch
-            | crate::labeled::record::LabelBucketFieldError::PayloadStateWithoutSchema => {
+            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesOffsetOverflow
+            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogHeadOutOfRange
+            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange
+            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogStateMismatch
+            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema => {
                 Self::CollectAllocationOverflow
             }
         }
@@ -140,15 +141,15 @@ impl From<crate::GrowFailed> for LabeledOperationError {
     }
 }
 
-impl From<InlineValueLogReadError> for LabeledOperationError {
-    fn from(value: InlineValueLogReadError) -> Self {
-        Self::PayloadLogRead(value)
+impl From<InlinePropertyBytesLogReadError> for LabeledOperationError {
+    fn from(value: InlinePropertyBytesLogReadError) -> Self {
+        Self::InlinePropertyBytesLogRead(value)
     }
 }
 
-impl From<InlineValueLogWriteError> for LabeledOperationError {
-    fn from(value: InlineValueLogWriteError) -> Self {
-        Self::PayloadLogWrite(value)
+impl From<InlinePropertyBytesLogWriteError> for LabeledOperationError {
+    fn from(value: InlinePropertyBytesLogWriteError) -> Self {
+        Self::InlinePropertyBytesLogWrite(value)
     }
 }
 
@@ -162,7 +163,7 @@ pub enum InitError {
     /// The edge subsystem could not be reopened.
     Edges(EdgeInitError),
     /// The edge-inline-value byte slab could not be reopened.
-    Payloads(ValueInitError),
+    InlinePropertyBytes(ValueInitError),
     /// The graph-owned memories are partially initialized (some regions are empty
     /// while others are populated), so the graph must not be reopened or recreated.
     PartialLayout,
@@ -174,7 +175,9 @@ impl fmt::Display for InitError {
             Self::Vertices(e) => write!(f, "vertex init failed: {e}"),
             Self::Buckets(e) => write!(f, "bucket init failed: {e}"),
             Self::Edges(e) => write!(f, "edge init failed: {e}"),
-            Self::Payloads(e) => write!(f, "payload slab init failed: {e}"),
+            Self::InlinePropertyBytes(e) => {
+                write!(f, "inline property bytes slab init failed: {e}")
+            }
             Self::PartialLayout => {
                 write!(
                     f,

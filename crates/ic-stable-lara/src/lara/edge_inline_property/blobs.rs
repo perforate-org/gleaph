@@ -1,6 +1,6 @@
 //! Stable map for edge inline value overflow payloads wider than 8 bytes.
 
-use super::blob_id::EdgeInlineValueBlobId;
+use super::blob_id::EdgeInlinePropertyBytesBlobId;
 use super::blob_store::BlobStoreError;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
@@ -30,7 +30,7 @@ impl Storable for BlobBytes {
     }
 }
 
-impl Storable for EdgeInlineValueBlobId {
+impl Storable for EdgeInlinePropertyBytesBlobId {
     const BOUND: Bound = Bound::Bounded {
         max_size: 8,
         is_fixed_size: true,
@@ -45,16 +45,18 @@ impl Storable for EdgeInlineValueBlobId {
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        EdgeInlineValueBlobId::from_raw(u64::from_le_bytes(bytes.as_ref().try_into().unwrap()))
+        EdgeInlinePropertyBytesBlobId::from_raw(u64::from_le_bytes(
+            bytes.as_ref().try_into().unwrap(),
+        ))
     }
 }
 
 /// Stable btree backing large overflow-log edge inline values.
-pub struct EdgeInlineValueBlobMap<M: Memory> {
-    inner: RefCell<StableBTreeMap<EdgeInlineValueBlobId, BlobBytes, M>>,
+pub struct EdgeInlinePropertyBytesBlobMap<M: Memory> {
+    inner: RefCell<StableBTreeMap<EdgeInlinePropertyBytesBlobId, BlobBytes, M>>,
 }
 
-impl<M: Memory> EdgeInlineValueBlobMap<M> {
+impl<M: Memory> EdgeInlinePropertyBytesBlobMap<M> {
     pub fn init(memory: M) -> Self {
         Self {
             inner: RefCell::new(StableBTreeMap::init(memory)),
@@ -66,8 +68,12 @@ impl<M: Memory> EdgeInlineValueBlobMap<M> {
     }
 }
 
-impl<M: Memory> EdgeInlineValueBlobMap<M> {
-    pub fn put_blob(&self, id: EdgeInlineValueBlobId, bytes: &[u8]) -> Result<(), BlobStoreError> {
+impl<M: Memory> EdgeInlinePropertyBytesBlobMap<M> {
+    pub fn put_blob(
+        &self,
+        id: EdgeInlinePropertyBytesBlobId,
+        bytes: &[u8],
+    ) -> Result<(), BlobStoreError> {
         if bytes.len() > usize::from(u16::MAX) {
             return Err(BlobStoreError::ValueTooLarge);
         }
@@ -77,7 +83,7 @@ impl<M: Memory> EdgeInlineValueBlobMap<M> {
         Ok(())
     }
 
-    pub fn get_blob(&self, id: EdgeInlineValueBlobId, out: &mut Vec<u8>) -> bool {
+    pub fn get_blob(&self, id: EdgeInlinePropertyBytesBlobId, out: &mut Vec<u8>) -> bool {
         let Some(blob) = self.inner.borrow().get(&id) else {
             return false;
         };
@@ -86,12 +92,14 @@ impl<M: Memory> EdgeInlineValueBlobMap<M> {
         true
     }
 
-    pub fn drop_blob(&self, id: EdgeInlineValueBlobId) {
+    pub fn drop_blob(&self, id: EdgeInlinePropertyBytesBlobId) {
         self.inner.borrow_mut().remove(&id);
     }
 
     pub fn drop_log_site(&self, leaf: u32, entry_idx: u32) {
-        self.drop_blob(EdgeInlineValueBlobId::from_log_site(leaf, entry_idx));
+        self.drop_blob(EdgeInlinePropertyBytesBlobId::from_log_site(
+            leaf, entry_idx,
+        ));
     }
 
     pub fn drain_leaf_segment(&self, leaf: u32, high_water_entry_idx: u32) {

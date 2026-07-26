@@ -7,7 +7,9 @@
 
 use crate::facade::{BatchEdgeInput, GraphStore};
 use canbench_rs::bench;
-use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile, EdgeLabelId};
+use gleaph_graph_kernel::entry::{
+    EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
+};
 use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
 use std::hint::black_box;
 
@@ -24,16 +26,16 @@ fn label_id(name: &str) -> EdgeLabelId {
 
 fn install_width_profile(label: EdgeLabelId, width: u16) {
     let encoding = match width {
-        0 => EdgeInlineValueEncoding::RawU8,
-        1 => EdgeInlineValueEncoding::RawU8,
-        2 => EdgeInlineValueEncoding::RawU16,
-        4 => EdgeInlineValueEncoding::RawU32,
-        8 => EdgeInlineValueEncoding::RawU64,
-        _ => EdgeInlineValueEncoding::RawBytes,
+        0 => EdgeInlinePropertyEncoding::RawU8,
+        1 => EdgeInlinePropertyEncoding::RawU8,
+        2 => EdgeInlinePropertyEncoding::RawU16,
+        4 => EdgeInlinePropertyEncoding::RawU32,
+        8 => EdgeInlinePropertyEncoding::RawU64,
+        _ => EdgeInlinePropertyEncoding::RawBytes,
     };
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: width,
             encoding,
         },
@@ -70,7 +72,7 @@ fn build_directed_input(
                 target_vertex_id: vertices[target],
                 catalog_label: Some(label),
                 directed: true,
-                inline_value_bytes: value.clone(),
+                inline_property_bytes: value.clone(),
             }
         })
         .collect()
@@ -104,7 +106,7 @@ fn build_undirected_input(
                 target_vertex_id: vertices[b],
                 catalog_label: Some(label),
                 directed: false,
-                inline_value_bytes: value.clone(),
+                inline_property_bytes: value.clone(),
             }
         })
         .collect()
@@ -128,7 +130,7 @@ fn build_self_loop_input(
             target_vertex_id: vertices[i],
             catalog_label: Some(label),
             directed: false,
-            inline_value_bytes: value.clone(),
+            inline_property_bytes: value.clone(),
         })
         .collect()
 }
@@ -152,7 +154,7 @@ fn build_fan_out_input(
             target_vertex_id: vertices[i + 1],
             catalog_label: Some(label),
             directed: true,
-            inline_value_bytes: value.clone(),
+            inline_property_bytes: value.clone(),
         })
         .collect()
 }
@@ -184,7 +186,7 @@ fn bench_batch_plan_directed_128_width_8_existing() -> canbench_rs::BenchResult 
         // Seed a few edges so the planner must read existing bucket occupancy.
         for i in 0..8 {
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     vertices[0],
                     vertices[1 + (i % 31)],
                     Some(label),
@@ -267,7 +269,7 @@ fn setup_128_directed_edges(width: u16) -> (GraphStore, EdgeLabelId, Vec<BatchEd
             target_vertex_id: t,
             catalog_label: Some(label),
             directed: true,
-            inline_value_bytes: payload.clone(),
+            inline_property_bytes: payload.clone(),
         })
         .collect();
     (store, label, input)
@@ -341,11 +343,11 @@ fn bench_scalar_directed_128_width_8() -> canbench_rs::BenchResult {
         let _scope = canbench_rs::bench_scope("scalar_directed_128_w8");
         for edge in &input {
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     edge.source_vertex_id,
                     edge.target_vertex_id,
                     Some(label),
-                    &edge.inline_value_bytes,
+                    &edge.inline_property_bytes,
                 )
                 .expect("scalar insert");
         }

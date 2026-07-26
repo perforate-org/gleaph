@@ -1,8 +1,8 @@
 //! Federated label and property resolution catalogs (ADR 0018 graph-scoped vocabulary).
 
 use super::super::stable::{
-    ROUTER_CONSTRAINT_NAME_CATALOG, ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_PAYLOAD_PROFILES,
-    ROUTER_PROPERTY_CATALOG, ROUTER_VERTEX_LABEL_CATALOG,
+    ROUTER_CONSTRAINT_NAME_CATALOG, ROUTER_EDGE_INLINE_PROPERTY_PROFILES,
+    ROUTER_EDGE_LABEL_CATALOG, ROUTER_PROPERTY_CATALOG, ROUTER_VERTEX_LABEL_CATALOG,
 };
 use crate::facade::auth;
 use crate::facade::stable::constraint_catalog::{
@@ -11,8 +11,8 @@ use crate::facade::stable::constraint_catalog::{
 use crate::facade::stable::constraint_name_catalog::{
     intern_constraint_name, lookup_constraint_name_id,
 };
-use crate::facade::stable::edge_inline_value_profiles::{
-    EdgeInlineValueProfileStoreError, InlineScalarType, InlineStructLayout,
+use crate::facade::stable::edge_inline_property_profiles::{
+    EdgeInlinePropertyProfileStoreError, InlineScalarType, InlineStructLayout,
 };
 use crate::facade::stable::graph_catalog::{
     catalog_error_to_router, list_live_shards_for_graph_id, resolve_registered_graph_id,
@@ -24,7 +24,7 @@ use crate::types::{EdgeLabelId, PropertyId, VertexLabelId};
 use candid::Principal;
 use gleaph_gql::type_check::collect_graph_type_vocabulary;
 use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan, PropertyUseIntent};
-use gleaph_graph_kernel::entry::{EdgeInlineValueProfile, GraphId};
+use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, GraphId};
 use gleaph_graph_kernel::plan_exec::{
     ResolvedEdgeLabel, ResolvedInlineSchema, ResolvedLabelTable, ResolvedProperty,
     ResolvedPropertyTable, ResolvedVertexLabel,
@@ -32,7 +32,7 @@ use gleaph_graph_kernel::plan_exec::{
 
 use super::{RouterStore, validate_metadata_name};
 
-fn map_edge_inline_value_profile_err(err: EdgeInlineValueProfileStoreError) -> RouterError {
+fn map_edge_inline_property_profile_err(err: EdgeInlinePropertyProfileStoreError) -> RouterError {
     RouterError::InvalidArgument(err.to_string())
 }
 
@@ -73,27 +73,27 @@ impl RouterStore {
         let id = ROUTER_EDGE_LABEL_CATALOG
             .with_borrow_mut(|catalog| catalog.get_or_insert(graph_id, name))
             .map_err(|e| catalog_error_to_router(e, "edge label"))?;
-        Self::commit_ensure_edge_label_inline_value_profile_default(graph_id, id)?;
+        Self::commit_ensure_edge_label_inline_property_profile_default(graph_id, id)?;
         Ok(id)
     }
 
-    pub(super) fn commit_ensure_edge_label_inline_value_profile_default(
+    pub(super) fn commit_ensure_edge_label_inline_property_profile_default(
         graph_id: GraphId,
         id: EdgeLabelId,
     ) -> Result<(), RouterError> {
-        ROUTER_EDGE_PAYLOAD_PROFILES
-            .with_borrow_mut(|store| store.insert_if_absent_no_inline_value(graph_id, id))
-            .map_err(map_edge_inline_value_profile_err)
+        ROUTER_EDGE_INLINE_PROPERTY_PROFILES
+            .with_borrow_mut(|store| store.insert_if_absent_no_inline_property(graph_id, id))
+            .map_err(map_edge_inline_property_profile_err)
     }
 
-    pub(super) fn commit_set_edge_label_inline_value_profile(
+    pub(super) fn commit_set_edge_label_inline_property_profile(
         graph_id: GraphId,
         id: EdgeLabelId,
-        profile: EdgeInlineValueProfile,
+        profile: EdgeInlinePropertyProfile,
     ) -> Result<(), RouterError> {
-        ROUTER_EDGE_PAYLOAD_PROFILES
+        ROUTER_EDGE_INLINE_PROPERTY_PROFILES
             .with_borrow_mut(|store| store.insert_unnamed_profile_profile(graph_id, id, profile))
-            .map_err(map_edge_inline_value_profile_err)
+            .map_err(map_edge_inline_property_profile_err)
     }
 
     pub(crate) fn commit_set_edge_label_inline_scalar_schema(
@@ -111,11 +111,11 @@ impl RouterStore {
         let existing_property_id = self.lookup_property_id(graph_id, property_name).ok();
 
         if let Some(label_id) = existing_label_id
-            && let Some(existing) = ROUTER_EDGE_PAYLOAD_PROFILES
+            && let Some(existing) = ROUTER_EDGE_INLINE_PROPERTY_PROFILES
                 .with_borrow(|store| store.get_record(graph_id, label_id))
         {
             if let Some(property_id) = existing_property_id
-                    && let crate::facade::stable::edge_inline_value_profiles::EdgeInlineValueSchemaRecord::InlineScalar {
+                    && let crate::facade::stable::edge_inline_property_profiles::EdgeInlinePropertySchemaRecord::InlineScalar {
                         property_id: existing_pid,
                         scalar_type: existing_st,
                         ..
@@ -133,7 +133,7 @@ impl RouterStore {
                     "edge label {edge_label_name} already has an inline struct schema"
                 )));
             }
-            if existing.profile() != EdgeInlineValueProfile::no_inline_value() {
+            if existing.profile() != EdgeInlinePropertyProfile::no_inline_property() {
                 return Err(RouterError::Conflict(format!(
                     "edge label {edge_label_name} has a legacy unnamed payload profile; inline schema is incompatible"
                 )));
@@ -167,11 +167,11 @@ impl RouterStore {
         // --- commit: idempotent intern + schema record write ---
         let label_id = Self::commit_intern_edge_label_name(graph_id, edge_label_name)?;
         let property_id = Self::commit_intern_property_name(graph_id, property_name)?;
-        ROUTER_EDGE_PAYLOAD_PROFILES
+        ROUTER_EDGE_INLINE_PROPERTY_PROFILES
             .with_borrow_mut(|store| {
                 store.set_inline_scalar_schema(graph_id, label_id, property_id, scalar_type)
             })
-            .map_err(map_edge_inline_value_profile_err)
+            .map_err(map_edge_inline_property_profile_err)
     }
 
     pub(crate) fn commit_set_edge_label_inline_struct_schema(
@@ -179,9 +179,9 @@ impl RouterStore {
         graph_id: GraphId,
         edge_label_name: &str,
         property_name: &str,
-        fields: Vec<crate::edge_inline_value_ddl::InlineEdgeStructField>,
+        fields: Vec<crate::edge_inline_property_ddl::InlineEdgeStructField>,
     ) -> Result<(), RouterError> {
-        use crate::edge_inline_value_ddl::InlineEdgeStructField;
+        use crate::edge_inline_property_ddl::InlineEdgeStructField;
         validate_metadata_name(edge_label_name)?;
         validate_metadata_name(property_name)?;
 
@@ -196,7 +196,7 @@ impl RouterStore {
             .collect();
         let layout = InlineStructLayout::from_fields_with_record_bound(
             declared,
-            crate::facade::stable::edge_inline_value_profiles::MAX_INLINE_STRUCT_RECORD_BYTES,
+            crate::facade::stable::edge_inline_property_profiles::MAX_INLINE_STRUCT_RECORD_BYTES,
         )
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
 
@@ -205,11 +205,11 @@ impl RouterStore {
         let existing_property_id = self.lookup_property_id(graph_id, property_name).ok();
 
         if let Some(label_id) = existing_label_id
-            && let Some(existing) = ROUTER_EDGE_PAYLOAD_PROFILES
+            && let Some(existing) = ROUTER_EDGE_INLINE_PROPERTY_PROFILES
                 .with_borrow(|store| store.get_record(graph_id, label_id))
         {
             match existing {
-                crate::facade::stable::edge_inline_value_profiles::EdgeInlineValueSchemaRecord::InlineStruct {
+                crate::facade::stable::edge_inline_property_profiles::EdgeInlinePropertySchemaRecord::InlineStruct {
                     property_id: existing_pid,
                     field_specs: ref existing_specs,
                 } if let Some(property_id) = existing_property_id
@@ -217,18 +217,18 @@ impl RouterStore {
                     && existing_specs == layout.field_specs() => {
                     return Ok(());
                 }
-                crate::facade::stable::edge_inline_value_profiles::EdgeInlineValueSchemaRecord::InlineStruct { .. } => {
+                crate::facade::stable::edge_inline_property_profiles::EdgeInlinePropertySchemaRecord::InlineStruct { .. } => {
                     return Err(RouterError::Conflict(format!(
                         "edge label {edge_label_name} already has an inline struct schema"
                     )));
                 }
-                crate::facade::stable::edge_inline_value_profiles::EdgeInlineValueSchemaRecord::InlineScalar { .. } => {
+                crate::facade::stable::edge_inline_property_profiles::EdgeInlinePropertySchemaRecord::InlineScalar { .. } => {
                     return Err(RouterError::Conflict(format!(
                         "edge label {edge_label_name} already has an inline scalar schema"
                     )));
                 }
-                crate::facade::stable::edge_inline_value_profiles::EdgeInlineValueSchemaRecord::UnnamedProfile { profile } => {
-                    if profile != EdgeInlineValueProfile::no_inline_value() {
+                crate::facade::stable::edge_inline_property_profiles::EdgeInlinePropertySchemaRecord::UnnamedProfile { profile } => {
+                    if profile != EdgeInlinePropertyProfile::no_inline_property() {
                         return Err(RouterError::Conflict(format!(
                             "edge label {edge_label_name} has a legacy unnamed payload profile; inline schema is incompatible"
                         )));
@@ -264,19 +264,19 @@ impl RouterStore {
         // --- commit: idempotent intern + schema record write ---
         let label_id = Self::commit_intern_edge_label_name(graph_id, edge_label_name)?;
         let property_id = Self::commit_intern_property_name(graph_id, property_name)?;
-        ROUTER_EDGE_PAYLOAD_PROFILES
+        ROUTER_EDGE_INLINE_PROPERTY_PROFILES
             .with_borrow_mut(|store| {
                 store.set_inline_struct_schema(graph_id, label_id, property_id, layout)
             })
-            .map_err(map_edge_inline_value_profile_err)
+            .map_err(map_edge_inline_property_profile_err)
     }
 
-    fn lookup_edge_inline_value_profile_and_inline_schema(
+    fn lookup_edge_inline_property_profile_and_inline_schema(
         &self,
         graph_id: GraphId,
         id: EdgeLabelId,
-    ) -> (EdgeInlineValueProfile, Option<ResolvedInlineSchema>) {
-        ROUTER_EDGE_PAYLOAD_PROFILES
+    ) -> (EdgeInlinePropertyProfile, Option<ResolvedInlineSchema>) {
+        ROUTER_EDGE_INLINE_PROPERTY_PROFILES
             .with_borrow(|store| store.get_profile_and_inline_schema(graph_id, id))
     }
 
@@ -328,19 +328,19 @@ impl RouterStore {
         Self::commit_intern_property_name(graph_id, name)
     }
 
-    pub fn admin_set_edge_label_inline_value_profile(
+    pub fn admin_set_edge_label_inline_property_profile(
         &self,
         caller: Principal,
         logical_graph_name: &str,
         name: &str,
-        profile: EdgeInlineValueProfile,
+        profile: EdgeInlinePropertyProfile,
     ) -> Result<(), RouterError> {
         auth::require_admin(&caller)?;
         validate_metadata_name(logical_graph_name)?;
         validate_metadata_name(name)?;
         let graph_id = resolve_registered_graph_id(logical_graph_name)?;
         let id = self.lookup_edge_label_id(graph_id, name)?;
-        Self::commit_set_edge_label_inline_value_profile(graph_id, id, profile)
+        Self::commit_set_edge_label_inline_property_profile(graph_id, id, profile)
     }
 
     pub fn lookup_vertex_label_id(
@@ -564,7 +564,7 @@ impl RouterStore {
                 };
                 if !out.edge.iter().any(|entry| entry.name == name.as_ref()) {
                     let (profile, inline_schema) =
-                        self.lookup_edge_inline_value_profile_and_inline_schema(graph_id, id);
+                        self.lookup_edge_inline_property_profile_and_inline_schema(graph_id, id);
                     out.edge.push(ResolvedEdgeLabel::with_inline_schema(
                         name.to_string(),
                         id,
@@ -583,7 +583,7 @@ impl RouterStore {
         graph_id: GraphId,
         table: &mut ResolvedLabelTable,
     ) -> Result<(), RouterError> {
-        let fusion_ids = ROUTER_EDGE_PAYLOAD_PROFILES
+        let fusion_ids = ROUTER_EDGE_INLINE_PROPERTY_PROFILES
             .with_borrow(|store| store.label_ids_with_nonzero_payload(graph_id));
         for id in fusion_ids {
             if table.edge.iter().any(|entry| entry.id == id) {
@@ -591,7 +591,7 @@ impl RouterStore {
             }
             let name = self.reverse_edge_label_name(graph_id, id)?;
             let (profile, inline_schema) =
-                self.lookup_edge_inline_value_profile_and_inline_schema(graph_id, id);
+                self.lookup_edge_inline_property_profile_and_inline_schema(graph_id, id);
             table.edge.push(ResolvedEdgeLabel::with_inline_schema(
                 name,
                 id,

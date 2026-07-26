@@ -7,7 +7,7 @@
 //! under identical build settings.
 
 use crate::labeled::{
-    BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, LabeledPayloadValueBatchScratch,
+    BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, LabeledInlinePropertyValueBatchScratch,
     LabeledVertex, MateStorageMemories, OutEdgeOrder,
     graph::LabeledLaraGraph,
     graph::traverse_next::{BucketEntryPosition, LabeledTraversalRequest},
@@ -97,15 +97,15 @@ impl CsrEdge for PayloadBenchEdge {
         }
     }
 
-    fn edge_inline_value_byte_width(&self) -> u16 {
+    fn edge_inline_property_byte_width(&self) -> u16 {
         INLINE_VALUE_WIDTH
     }
 
-    fn edge_inline_value_bytes(&self) -> &[u8] {
+    fn edge_inline_property_bytes(&self) -> &[u8] {
         &self.payload
     }
 
-    fn with_stored_inline_value_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
+    fn with_stored_inline_property_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
         let len = usize::from(width).min(bytes.len()).min(8);
         self.payload = [0u8; 8];
         self.payload[..len].copy_from_slice(&bytes[..len]);
@@ -137,10 +137,10 @@ fn payload_bench_graph(
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        inline_value_slab,
+        inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        payload_log,
+        inline_property_bytes_log,
         value_blob,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
@@ -154,10 +154,10 @@ fn payload_bench_graph(
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        inline_value_slab,
+        inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        payload_log,
+        inline_property_bytes_log,
         value_blob,
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         default_label,
@@ -180,10 +180,10 @@ fn bench_graph(
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        inline_value_slab,
+        inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        payload_log,
+        inline_property_bytes_log,
         value_blob,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
@@ -197,10 +197,10 @@ fn bench_graph(
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        inline_value_slab,
+        inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        payload_log,
+        inline_property_bytes_log,
         value_blob,
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         default_label,
@@ -297,7 +297,7 @@ fn bench_traverse_next_visit_in_edges_hybrid_inline_property() -> canbench_rs::B
     graph.push_vertex().unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
-        .ensure_directed_edge_inline_value_width(src, dst, label, INLINE_VALUE_WIDTH)
+        .ensure_directed_edge_inline_property_width(src, dst, label, INLINE_VALUE_WIDTH)
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         let value = u64::from(i).to_le_bytes();
@@ -313,10 +313,10 @@ fn bench_traverse_next_visit_in_edges_hybrid_inline_property() -> canbench_rs::B
         black_box(value);
     }
     bench_fn(|| {
-        let mut scratch = LabeledPayloadValueBatchScratch::default();
+        let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
         let mut count = 0u32;
         graph
-            .visit_in_inline_value_batches_for_label(
+            .visit_in_inline_property_batches_for_label(
                 dst,
                 label,
                 OutEdgeOrder::Descending,
@@ -483,7 +483,7 @@ fn bench_traverse_next_visit_edges_hybrid() -> canbench_rs::BenchResult {
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
-        .ensure_label_bucket_inline_value_byte_width(src, label, INLINE_VALUE_WIDTH)
+        .ensure_label_bucket_inline_property_byte_width(src, label, INLINE_VALUE_WIDTH)
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
@@ -509,16 +509,16 @@ fn bench_traverse_next_visit_edges_at_with_replay() -> canbench_rs::BenchResult 
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
-        .ensure_label_bucket_inline_value_byte_width(src, label, INLINE_VALUE_WIDTH)
+        .ensure_label_bucket_inline_property_byte_width(src, label, INLINE_VALUE_WIDTH)
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
             .insert_edge_skip_leaf_cascade(src, label, PayloadBenchEdge::new(i + 10, u64::from(i)))
             .unwrap();
     }
-    let mut scratch = LabeledPayloadValueBatchScratch::default();
+    let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
     graph
-        .visit_out_inline_value_batches_for_label(
+        .visit_out_inline_property_batches_for_label(
             src,
             label,
             OutEdgeOrder::Ascending,
@@ -555,7 +555,7 @@ fn bench_traverse_next_visit_edges_with_inline_property() -> canbench_rs::BenchR
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
-        .ensure_label_bucket_inline_value_byte_width(src, label, INLINE_VALUE_WIDTH)
+        .ensure_label_bucket_inline_property_byte_width(src, label, INLINE_VALUE_WIDTH)
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
@@ -593,7 +593,7 @@ fn bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture()
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
-        .ensure_label_bucket_inline_value_byte_width(src, label, INLINE_VALUE_WIDTH)
+        .ensure_label_bucket_inline_property_byte_width(src, label, INLINE_VALUE_WIDTH)
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
@@ -604,8 +604,8 @@ fn bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture()
         let mut count = 0u32;
         graph
             .for_each_edges_for_label_ordered(src, label, OutEdgeOrder::Ascending, |edge| {
-                count += u32::from(edge.edge_inline_value_byte_width() == INLINE_VALUE_WIDTH);
-                black_box(edge.edge_inline_value_bytes());
+                count += u32::from(edge.edge_inline_property_byte_width() == INLINE_VALUE_WIDTH);
+                black_box(edge.edge_inline_property_bytes());
             })
             .unwrap();
         black_box(count);
@@ -619,7 +619,7 @@ fn bench_traverse_next_property_first_then_selected() -> canbench_rs::BenchResul
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
-        .ensure_label_bucket_inline_value_byte_width(src, label, INLINE_VALUE_WIDTH)
+        .ensure_label_bucket_inline_property_byte_width(src, label, INLINE_VALUE_WIDTH)
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
@@ -627,10 +627,10 @@ fn bench_traverse_next_property_first_then_selected() -> canbench_rs::BenchResul
             .unwrap();
     }
     bench_fn(|| {
-        let mut scratch = LabeledPayloadValueBatchScratch::default();
+        let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
         let mut selected = Vec::new();
         graph
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_property_batches_for_label(
                 src,
                 label,
                 OutEdgeOrder::Ascending,

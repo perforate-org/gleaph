@@ -3,7 +3,7 @@
 use std::ops::ControlFlow;
 
 pub use super::error::LabeledOperationError;
-pub use super::iter::LabeledEdgeInlineValueBatchScratch;
+pub use super::iter::LabeledEdgeInlinePropertyBatchScratch;
 pub use super::{LabeledLaraGraph, OutEdgeOrder};
 pub use crate::labeled::{MAX_VERTEX_LABEL_BUCKETS, record::LabeledVertexFieldError};
 use crate::labeled::{bucket_label_key::BucketLabelKey, record::LabeledVertex};
@@ -169,14 +169,14 @@ pub fn flag_tombstone_graph() -> LabeledLaraGraph<FlagTombstoneEdge, crate::Vect
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PayloadTestEdge {
+pub struct InlinePropertyTestEdge {
     pub target: u32,
     pub slot_index: u32,
     pub value: Vec<u8>,
-    pub inline_value_len: u16,
+    pub inline_property_len: u16,
 }
 
-impl PayloadTestEdge {
+impl InlinePropertyTestEdge {
     pub fn with_bytes(target: u32, bytes: &[u8]) -> Self {
         let len = u16::try_from(bytes.len()).expect("test value fits u16");
         let mut value = vec![0u8; bytes.len()];
@@ -185,7 +185,7 @@ impl PayloadTestEdge {
             target,
             slot_index: 0,
             value,
-            inline_value_len: len,
+            inline_property_len: len,
         }
     }
 
@@ -194,7 +194,7 @@ impl PayloadTestEdge {
     }
 }
 
-impl CsrEdge for PayloadTestEdge {
+impl CsrEdge for InlinePropertyTestEdge {
     const BYTES: usize = 4;
 
     fn read_from(bytes: &[u8]) -> Self {
@@ -202,7 +202,7 @@ impl CsrEdge for PayloadTestEdge {
             target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
             slot_index: 0,
             value: Vec::new(),
-            inline_value_len: 0,
+            inline_property_len: 0,
         }
     }
 
@@ -229,40 +229,41 @@ impl CsrEdge for PayloadTestEdge {
         self.slot_index
     }
 
-    fn edge_inline_value_byte_width(&self) -> u16 {
-        self.inline_value_len
+    fn edge_inline_property_byte_width(&self) -> u16 {
+        self.inline_property_len
     }
 
-    fn edge_inline_value_bytes(&self) -> &[u8] {
-        &self.value[..usize::from(self.inline_value_len)]
+    fn edge_inline_property_bytes(&self) -> &[u8] {
+        &self.value[..usize::from(self.inline_property_len)]
     }
 
-    fn with_stored_inline_value_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
+    fn with_stored_inline_property_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
         let len = usize::from(width).min(bytes.len());
         self.value = bytes[..len].to_vec();
-        self.inline_value_len = u16::try_from(len).expect("test value width fits u16");
+        self.inline_property_len = u16::try_from(len).expect("test value width fits u16");
         self
     }
 }
 
-impl CsrEdgeTombstone for PayloadTestEdge {
+impl CsrEdgeTombstone for InlinePropertyTestEdge {
     fn tombstone_edge() -> Self {
         Self {
             target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
             slot_index: 0,
             value: Vec::new(),
-            inline_value_len: 0,
+            inline_property_len: 0,
         }
     }
 }
 
-pub fn inline_value_test_graph() -> LabeledLaraGraph<PayloadTestEdge, crate::VectorMemory> {
-    inline_value_test_graph_with_capacity(256)
+pub fn inline_property_test_graph() -> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory>
+{
+    inline_property_test_graph_with_capacity(256)
 }
 
-pub fn inline_value_test_graph_with_capacity(
+pub fn inline_property_test_graph_with_capacity(
     elem_capacity: u64,
-) -> LabeledLaraGraph<PayloadTestEdge, crate::VectorMemory> {
+) -> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
     LabeledLaraGraph::new_with_segment_size(
         mem(),
         mem(),
@@ -456,7 +457,7 @@ pub fn exercise_labeled_hub_scan_paths(
         .iter_out_edges_undirected_only(hub, OutEdgeOrder::Descending)
         .unwrap();
 
-    let mut payload_scratch = LabeledEdgeInlineValueBatchScratch::default();
+    let mut payload_scratch = LabeledEdgeInlinePropertyBatchScratch::default();
     for offset in 0..vertex.degree() {
         let slot = vertex.base_slot_start().saturating_add(u64::from(offset));
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
@@ -466,7 +467,7 @@ pub fn exercise_labeled_hub_scan_paths(
             .for_each_edges_for_label_unchecked(hub, label, |_| ())
             .unwrap();
         graph
-            .visit_out_edge_inline_value_batches_for_label_next(
+            .visit_out_edge_inline_property_batches_for_label_next(
                 hub,
                 label,
                 OutEdgeOrder::Ascending,
@@ -476,7 +477,7 @@ pub fn exercise_labeled_hub_scan_paths(
             .map(|_| ())
             .unwrap();
         graph
-            .visit_out_edge_inline_value_batches_for_label_next(
+            .visit_out_edge_inline_property_batches_for_label_next(
                 hub,
                 label,
                 OutEdgeOrder::Descending,

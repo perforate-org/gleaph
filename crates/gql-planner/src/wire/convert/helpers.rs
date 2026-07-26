@@ -4,7 +4,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
 
 use crate::plan::{
-    ConditionalScanCandidate, EdgeInlineValuePredicate, EdgeInlineVectorPredicate, EdgeLabelRef,
+    ConditionalScanCandidate, EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, EdgeLabelRef,
     EdgeVectorMetric, IndexScanSpec, NodeLabelRef, RemovePlanItem, ScanValue, ShortestMode, Str,
     VarLenSpec, YieldColumn,
 };
@@ -12,7 +12,7 @@ use crate::plan::{
 use rkyv::rancor;
 
 use super::types::{
-    ConditionalScanCandidateWire, EdgeInlineValuePredicateWire, EdgeInlineVectorPredicateWire,
+    ConditionalScanCandidateWire, EdgeInlinePropertyPredicateWire, EdgeInlineVectorPredicateWire,
     IndexScanSpecWire, RemovePlanItemWire, ScanValueWire, ShortestModeWire, VarLenSpecWire,
     YieldColumnWire,
 };
@@ -98,12 +98,12 @@ pub(super) fn decode_scan_value(v: &ScanValueWire) -> Result<ScanValue, String> 
     })
 }
 
-pub(super) fn encode_edge_inline_value_predicate(
-    v: &Option<EdgeInlineValuePredicate>,
-) -> Result<Option<EdgeInlineValuePredicateWire>, String> {
+pub(super) fn encode_edge_inline_property_predicate(
+    v: &Option<EdgeInlinePropertyPredicate>,
+) -> Result<Option<EdgeInlinePropertyPredicateWire>, String> {
     v.as_ref()
         .map(|pred| {
-            Ok(EdgeInlineValuePredicateWire {
+            Ok(EdgeInlinePropertyPredicateWire {
                 op: cmp_op_to_wire(pred.op),
                 value: encode_scan_value(&pred.value)?,
             })
@@ -111,12 +111,12 @@ pub(super) fn encode_edge_inline_value_predicate(
         .transpose()
 }
 
-pub(super) fn decode_edge_inline_value_predicate(
-    v: &Option<EdgeInlineValuePredicateWire>,
-) -> Result<Option<EdgeInlineValuePredicate>, String> {
+pub(super) fn decode_edge_inline_property_predicate(
+    v: &Option<EdgeInlinePropertyPredicateWire>,
+) -> Result<Option<EdgeInlinePropertyPredicate>, String> {
     v.as_ref()
         .map(|pred| {
-            Ok(EdgeInlineValuePredicate {
+            Ok(EdgeInlinePropertyPredicate {
                 op: cmp_op_from_wire(pred.op)?,
                 value: decode_scan_value(&pred.value)?,
             })

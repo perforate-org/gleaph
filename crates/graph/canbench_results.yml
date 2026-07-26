@@ -957,14 +957,14 @@ benches:
         instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
-  bench_graph_expand_inline_value_skewed_200a_24b:
+  bench_graph_expand_inline_property_skewed_200a_24b:
     total:
       calls: 1
       instructions: 607834
       heap_increase: 1
       stable_memory_increase: 68
     scopes:
-      expand_inline_value_skewed_200a_24b:
+      expand_inline_property_skewed_200a_24b:
         calls: 1
         instructions: 606216
         heap_increase: 1
@@ -989,14 +989,14 @@ benches:
         instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
-  bench_graph_expand_inline_value_skewed_2k_a_100b:
+  bench_graph_expand_inline_property_skewed_2k_a_100b:
     total:
       calls: 1
       instructions: 2388892
       heap_increase: 2
       stable_memory_increase: 68
     scopes:
-      expand_inline_value_skewed_2k_a_100b:
+      expand_inline_property_skewed_2k_a_100b:
         calls: 1
         instructions: 2387345
         heap_increase: 2
@@ -1590,14 +1590,14 @@ benches:
         instructions: 814
         heap_increase: 0
         stable_memory_increase: 0
-  bench_graph_inline_value_first_incoming_log_backed_selective_match:
+  bench_graph_inline_property_bytes_first_incoming_log_backed_selective_match:
     total:
       calls: 1
       instructions: 585825
       heap_increase: 1
       stable_memory_increase: 68
     scopes:
-      inline_value_first_incoming_log_backed_selective_match:
+      inline_property_bytes_first_incoming_log_backed_selective_match:
         calls: 1
         instructions: 584278
         heap_increase: 1
@@ -1622,14 +1622,14 @@ benches:
         instructions: 718
         heap_increase: 0
         stable_memory_increase: 0
-  bench_graph_inline_value_first_log_backed_selective_match:
+  bench_graph_inline_property_bytes_first_log_backed_selective_match:
     total:
       calls: 1
       instructions: 576942
       heap_increase: 1
       stable_memory_increase: 68
     scopes:
-      inline_value_first_log_backed_selective_match:
+      inline_property_bytes_first_log_backed_selective_match:
         calls: 1
         instructions: 575395
         heap_increase: 1

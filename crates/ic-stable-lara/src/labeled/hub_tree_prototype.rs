@@ -199,7 +199,7 @@ impl HubBucketTree {
 
 /// Production-faithful narrow variant: value is the bare 4-byte `target`
 /// (`Edge::BYTES == 4`; per-edge inline values/properties already live in
-/// `EdgeInlineValueStore`/`EdgePropertyStore`, never in the slab row). Used to test
+/// `EdgeInlinePropertyBytesStore`/`EdgePropertyStore`, never in the slab row). Used to test
 /// whether shrinking the B-tree value from 10 to 4 bytes recovers scan cost
 /// (ADR 0022 Stage 2b). Same `(vertex, label, seq)` key and semantics as
 /// [`HubBucketTree`]. Bench-only variant (see `labeled/bench.rs`).

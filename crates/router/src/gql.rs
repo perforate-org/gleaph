@@ -1517,7 +1517,7 @@ async fn run_gql_unchecked(
         }
     }
 
-    if let Some(ddl) = crate::edge_inline_value_ddl::try_parse(query) {
+    if let Some(ddl) = crate::edge_inline_property_ddl::try_parse(query) {
         let caller = msg_caller();
         authorize_index_ddl(&caller)?;
         if mode == GqlExecutionMode::Query && !force {
@@ -1532,7 +1532,7 @@ async fn run_gql_unchecked(
         let store = RouterStore::new();
         let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
         match stmt.schema {
-            crate::edge_inline_value_ddl::InlineEdgePropertySchema::Scalar { scalar_type } => {
+            crate::edge_inline_property_ddl::InlineEdgePropertySchema::Scalar { scalar_type } => {
                 store.commit_set_edge_label_inline_scalar_schema(
                     graph_id,
                     &stmt.edge_label,
@@ -1540,7 +1540,7 @@ async fn run_gql_unchecked(
                     scalar_type,
                 )?;
             }
-            crate::edge_inline_value_ddl::InlineEdgePropertySchema::Struct { fields } => {
+            crate::edge_inline_property_ddl::InlineEdgePropertySchema::Struct { fields } => {
                 store.commit_set_edge_label_inline_struct_schema(
                     graph_id,
                     &stmt.edge_label,
@@ -3197,7 +3197,7 @@ async fn plan_simple_query_for_bulk(
     // DDL/admin paths are not eligible for bulk grouping.
     if crate::index_ddl::try_parse(query).is_some()
         || crate::constraint_ddl::try_parse(query).is_some()
-        || crate::edge_inline_value_ddl::try_parse(query).is_some()
+        || crate::edge_inline_property_ddl::try_parse(query).is_some()
     {
         return Ok(None);
     }

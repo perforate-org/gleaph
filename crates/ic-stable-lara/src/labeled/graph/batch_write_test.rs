@@ -12,17 +12,18 @@ mod tests {
         OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
         OneOrientationBatchPlan, OneOrientationBucketRun, OneOrientationPhysicalLocation,
     };
-    use crate::labeled::graph::iter::LabeledEdgeInlineValueBatchScratch;
-    use crate::labeled::graph::test_support::{PayloadTestEdge, test_graph_with_default};
+    use crate::labeled::graph::iter::LabeledEdgeInlinePropertyBatchScratch;
+    use crate::labeled::graph::test_support::{InlinePropertyTestEdge, test_graph_with_default};
     use crate::labeled::graph::{LabeledLaraGraph, OutEdgeOrder};
     use crate::labeled::record::LabeledVertex;
-    use crate::lara::edge_inline_value::force_payload_allocation_error_after;
+    use crate::lara::edge_inline_property::force_inline_property_bytes_allocation_error_after;
     use std::ops::ControlFlow;
     use std::panic::AssertUnwindSafe;
 
-    fn segment16_payload_graph() -> LabeledLaraGraph<PayloadTestEdge, crate::VectorMemory> {
+    fn segment16_inline_property_graph()
+    -> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
         use crate::test_support::vector_memory;
-        LabeledLaraGraph::<PayloadTestEdge, crate::VectorMemory>::new_with_segment_size(
+        LabeledLaraGraph::<InlinePropertyTestEdge, crate::VectorMemory>::new_with_segment_size(
             vector_memory(),
             vector_memory(),
             vector_memory(),
@@ -70,22 +71,23 @@ mod tests {
         .unwrap()
     }
 
-    fn collect_payload_values(
-        graph: &LabeledLaraGraph<PayloadTestEdge, crate::VectorMemory>,
+    fn collect_inline_property_values(
+        graph: &LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory>,
         src: VertexId,
         label_id: BucketLabelKey,
     ) -> Vec<Vec<u8>> {
-        let mut scratch = LabeledEdgeInlineValueBatchScratch::<PayloadTestEdge>::default();
+        let mut scratch =
+            LabeledEdgeInlinePropertyBatchScratch::<InlinePropertyTestEdge>::default();
         let mut out: Vec<Vec<u8>> = Vec::new();
         graph
-            .visit_out_edge_inline_value_batches_for_label_next(
+            .visit_out_edge_inline_property_batches_for_label_next(
                 src,
                 label_id,
                 OutEdgeOrder::Ascending,
                 &mut scratch,
                 |batch| {
                     let width = usize::from(batch.byte_width);
-                    for chunk in batch.inline_value_bytes.chunks(width) {
+                    for chunk in batch.inline_property_bytes.chunks(width) {
                         out.push(chunk.to_vec());
                     }
                     ControlFlow::<()>::Continue(())
@@ -151,7 +153,7 @@ mod tests {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -229,14 +231,14 @@ mod tests {
             .expect("fill log");
 
         let edge_capacity_before = graph.edges.header().elem_capacity;
-        let payload_tail_before = graph.values.header().slab_occupied_tail;
+        let inline_property_bytes_tail_before = graph.values.header().slab_occupied_tail;
 
         let plan = OneOrientationBatchPlan {
             runs: vec![
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -248,7 +250,7 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(0),
@@ -267,14 +269,14 @@ mod tests {
         );
 
         let edge_capacity_after = graph.edges.header().elem_capacity;
-        let payload_tail_after = graph.values.header().slab_occupied_tail;
+        let inline_property_bytes_tail_after = graph.values.header().slab_occupied_tail;
         assert_eq!(
             edge_capacity_before, edge_capacity_after,
             "reserve failure must not grow edge store capacity"
         );
         assert_eq!(
-            payload_tail_before, payload_tail_after,
-            "reserve failure must not move payload occupied tail"
+            inline_property_bytes_tail_before, inline_property_bytes_tail_after,
+            "reserve failure must not move inline property bytes occupied tail"
         );
     }
 
@@ -288,7 +290,7 @@ mod tests {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: BucketLabelKey::directed_from_index(1),
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -324,7 +326,7 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: BucketLabelKey::directed_from_index(1),
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -336,7 +338,7 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: BucketLabelKey::directed_from_index(1),
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(0),
@@ -372,7 +374,7 @@ mod tests {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: BucketLabelKey::directed_from_index(1),
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![
                     OneOrientationBatchEdge {
                         logical_ordinal: 1,
@@ -420,7 +422,7 @@ mod tests {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![
                     OneOrientationBatchEdge {
                         logical_ordinal: 0,
@@ -466,33 +468,33 @@ mod tests {
 
     #[test]
     fn commit_edge_only_batch_success() {
-        let graph = segment16_payload_graph();
+        let graph = segment16_inline_property_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
         let label = BucketLabelKey::directed_from_index(1);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 0)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 0)
             .unwrap();
 
         let plan = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
                     neighbor_vertex_id: VertexId::from(1),
                     label_id: label,
-                    edge: PayloadTestEdge::with_bytes(1, &[]),
+                    edge: InlinePropertyTestEdge::with_bytes(1, &[]),
                 }],
             }],
         };
 
         let result = graph.insert_one_orientation_batch(&plan).unwrap();
         assert_eq!(result.edge_slots_written, 1);
-        assert_eq!(result.payload_slots_written, 0);
+        assert_eq!(result.inline_property_bytes_slots_written, 0);
         assert!(result.locations.is_none());
 
         let _buckets = graph
@@ -504,34 +506,34 @@ mod tests {
     }
 
     #[test]
-    fn commit_payload_batch_new_span_success() {
-        let graph = segment16_payload_graph();
+    fn commit_inline_property_bytes_batch_new_span_success() {
+        let graph = segment16_inline_property_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
         let label = BucketLabelKey::directed_from_index(1);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
             .unwrap();
 
         let plan = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 4,
+                inline_property_width: 4,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
                     neighbor_vertex_id: VertexId::from(1),
                     label_id: label,
-                    edge: PayloadTestEdge::with_i32(1, 100),
+                    edge: InlinePropertyTestEdge::with_i32(1, 100),
                 }],
             }],
         };
 
         let result = graph.insert_one_orientation_batch(&plan).unwrap();
         assert_eq!(result.edge_slots_written, 1);
-        assert_eq!(result.payload_slots_written, 1);
+        assert_eq!(result.inline_property_bytes_slots_written, 1);
 
         let _buckets = graph
             .read_vertex_label_buckets(&graph.vertices.get(VertexId::from(0)))
@@ -540,14 +542,14 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].target, 1);
 
-        let values = collect_payload_values(&graph, VertexId::from(0), label);
+        let values = collect_inline_property_values(&graph, VertexId::from(0), label);
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], 100_i32.to_le_bytes().to_vec());
     }
 
     #[test]
-    fn commit_payload_batch_second_run_success() {
-        let graph = segment16_payload_graph();
+    fn commit_inline_property_bytes_batch_second_run_success() {
+        let graph = segment16_inline_property_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -555,23 +557,23 @@ mod tests {
 
         let label = BucketLabelKey::directed_from_index(1);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
             .unwrap();
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(2), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(2), label, 4)
             .unwrap();
 
         let plan_a = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 4,
+                inline_property_width: 4,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
                     neighbor_vertex_id: VertexId::from(1),
                     label_id: label,
-                    edge: PayloadTestEdge::with_i32(1, 42),
+                    edge: InlinePropertyTestEdge::with_i32(1, 42),
                 }],
             }],
         };
@@ -581,42 +583,42 @@ mod tests {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(2),
                 label_id: label,
-                inline_value_width: 4,
+                inline_property_width: 4,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(2),
                     neighbor_vertex_id: VertexId::from(1),
                     label_id: label,
-                    edge: PayloadTestEdge::with_i32(1, 100),
+                    edge: InlinePropertyTestEdge::with_i32(1, 100),
                 }],
             }],
         };
         let result = graph.insert_one_orientation_batch(&plan_b).unwrap();
         assert_eq!(result.edge_slots_written, 1);
-        assert_eq!(result.payload_slots_written, 1);
+        assert_eq!(result.inline_property_bytes_slots_written, 1);
 
         let out = graph.out_edges(VertexId::from(2)).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].target, 1);
 
-        let values = collect_payload_values(&graph, VertexId::from(2), label);
+        let values = collect_inline_property_values(&graph, VertexId::from(2), label);
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], 100_i32.to_le_bytes().to_vec());
     }
 
     #[test]
     fn commit_multi_run_batch_success() {
-        let graph = segment16_payload_graph();
+        let graph = segment16_inline_property_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
         let label = BucketLabelKey::directed_from_index(1);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 0)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 0)
             .unwrap();
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(2), label, 0)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(2), label, 0)
             .unwrap();
 
         let plan = OneOrientationBatchPlan {
@@ -624,25 +626,25 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
                         neighbor_vertex_id: VertexId::from(1),
                         label_id: label,
-                        edge: PayloadTestEdge::with_bytes(1, &[]),
+                        edge: InlinePropertyTestEdge::with_bytes(1, &[]),
                     }],
                 },
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(2),
                     label_id: label,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(2),
                         neighbor_vertex_id: VertexId::from(1),
                         label_id: label,
-                        edge: PayloadTestEdge::with_bytes(1, &[]),
+                        edge: InlinePropertyTestEdge::with_bytes(1, &[]),
                     }],
                 },
             ],
@@ -653,7 +655,7 @@ mod tests {
             result.edge_slots_written >= 2,
             "expanded run writes folded log plus pending edges"
         );
-        assert_eq!(result.payload_slots_written, 0);
+        assert_eq!(result.inline_property_bytes_slots_written, 0);
 
         let v0_targets: Vec<u32> = graph
             .iter_edges_for_label(VertexId::from(0), label)
@@ -672,48 +674,48 @@ mod tests {
     }
 
     #[test]
-    fn reserve_mid_allocation_failure_rolls_back_payload_tail() {
-        let graph = segment16_payload_graph();
+    fn reserve_mid_allocation_failure_rolls_back_inline_property_bytes_tail() {
+        let graph = segment16_inline_property_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
         let label = BucketLabelKey::directed_from_index(1);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
             .unwrap();
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(2), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(2), label, 4)
             .unwrap();
 
-        let payload_tail_before = graph.values.header().slab_occupied_tail;
+        let inline_property_bytes_tail_before = graph.values.header().slab_occupied_tail;
 
-        force_payload_allocation_error_after(1);
+        force_inline_property_bytes_allocation_error_after(1);
 
         let plan = OneOrientationBatchPlan {
             runs: vec![
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label,
-                    inline_value_width: 4,
+                    inline_property_width: 4,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
                         neighbor_vertex_id: VertexId::from(1),
                         label_id: label,
-                        edge: PayloadTestEdge::with_i32(1, 100),
+                        edge: InlinePropertyTestEdge::with_i32(1, 100),
                     }],
                 },
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(2),
                     label_id: label,
-                    inline_value_width: 4,
+                    inline_property_width: 4,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(2),
                         neighbor_vertex_id: VertexId::from(1),
                         label_id: label,
-                        edge: PayloadTestEdge::with_i32(1, 200),
+                        edge: InlinePropertyTestEdge::with_i32(1, 200),
                     }],
                 },
             ],
@@ -725,10 +727,10 @@ mod tests {
             "expected StorageError after forced allocation failure, got {err}"
         );
 
-        let payload_tail_after = graph.values.header().slab_occupied_tail;
+        let inline_property_bytes_tail_after = graph.values.header().slab_occupied_tail;
         assert_eq!(
-            payload_tail_before, payload_tail_after,
-            "mid-allocation failure must roll back payload occupied tail"
+            inline_property_bytes_tail_before, inline_property_bytes_tail_after,
+            "mid-allocation failure must roll back inline property bytes occupied tail"
         );
 
         let _buckets = graph
@@ -742,27 +744,27 @@ mod tests {
 
     #[test]
     fn commit_stale_bucket_panics_before_writes() {
-        let graph = segment16_payload_graph();
+        let graph = segment16_inline_property_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
         let label = BucketLabelKey::directed_from_index(1);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
             .unwrap();
 
         let plan = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 4,
+                inline_property_width: 4,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
                     neighbor_vertex_id: VertexId::from(1),
                     label_id: label,
-                    edge: PayloadTestEdge::with_i32(1, 100),
+                    edge: InlinePropertyTestEdge::with_i32(1, 100),
                 }],
             }],
         };
@@ -770,7 +772,11 @@ mod tests {
         let reservation = graph.reserve_one_orientation_batch(&plan).unwrap();
 
         graph
-            .insert_edge(VertexId::from(0), label, PayloadTestEdge::with_i32(2, 200))
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                InlinePropertyTestEdge::with_i32(2, 200),
+            )
             .unwrap();
 
         let before = graph.out_edges(VertexId::from(0)).unwrap();
@@ -787,30 +793,30 @@ mod tests {
 
     #[test]
     fn commit_wrong_graph_instance_panics_before_writes() {
-        let graph_a = segment16_payload_graph();
+        let graph_a = segment16_inline_property_graph();
         graph_a.push_vertex(LabeledVertex::default()).unwrap();
         graph_a.push_vertex(LabeledVertex::default()).unwrap();
 
-        let graph_b = segment16_payload_graph();
+        let graph_b = segment16_inline_property_graph();
         graph_b.push_vertex(LabeledVertex::default()).unwrap();
         graph_b.push_vertex(LabeledVertex::default()).unwrap();
 
         let label = BucketLabelKey::directed_from_index(1);
         graph_a
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 0)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 0)
             .unwrap();
 
         let plan = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
                     neighbor_vertex_id: VertexId::from(1),
                     label_id: label,
-                    edge: PayloadTestEdge::with_bytes(1, &[]),
+                    edge: InlinePropertyTestEdge::with_bytes(1, &[]),
                 }],
             }],
         };
@@ -830,22 +836,22 @@ mod tests {
     }
 
     #[test]
-    fn reserve_failure_restores_edge_capacity_after_payload_alloc_failure() {
+    fn reserve_failure_restores_edge_capacity_after_inline_property_bytes_alloc_failure() {
         // Use a segment16 graph: creating the first non-default label bucket pins
         // a 16-slot leaf block at the tail of the edge slab.  The initial capacity
         // is 256, so after bucket setup it is 272.  We then deliberately shrink the
         // logical edge-store capacity to the slot just before the bucket's
         // edge_start, forcing the upcoming one-edge run to call set_elem_capacity
-        // before the payload allocator runs.  Forcing that payload allocation to
+        // before the inline property bytes allocator runs.  Forcing that inline property bytes allocation to
         // fail must restore the logical edge capacity to the pre-reserve snapshot.
-        let graph = segment16_payload_graph();
+        let graph = segment16_inline_property_graph();
         for _ in 0..3 {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
 
         let label = BucketLabelKey::directed_from_index(1);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
             .unwrap();
 
         let edge_capacity_after_setup = graph.edges.header().elem_capacity;
@@ -866,19 +872,19 @@ mod tests {
             .expect("shrinking edge logical capacity to existing memory slack must succeed");
         assert_eq!(graph.edges.header().elem_capacity, shrunk_capacity);
 
-        force_payload_allocation_error_after(0);
+        force_inline_property_bytes_allocation_error_after(0);
 
         let plan = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 4,
+                inline_property_width: 4,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
                     neighbor_vertex_id: VertexId::from(1),
                     label_id: label,
-                    edge: PayloadTestEdge::with_i32(1, 100),
+                    edge: InlinePropertyTestEdge::with_i32(1, 100),
                 }],
             }],
         };
@@ -899,7 +905,7 @@ mod tests {
     #[test]
     fn reserve_rejects_empty_plan() {
         // An empty batch has no defined semantics and must be rejected.
-        let graph = segment16_payload_graph();
+        let graph = segment16_inline_property_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
@@ -913,20 +919,20 @@ mod tests {
     }
 
     #[test]
-    fn commit_multi_payload_run_offsets_match_read_back() {
-        // Two separate vertices with payload buckets; verify each run's payload
+    fn commit_multi_inline_property_run_offsets_match_read_back() {
+        // Two separate vertices with inline property bytes buckets; verify each run's payload
         // is written at the correct offset by reading back values.
-        let graph = segment16_payload_graph();
+        let graph = segment16_inline_property_graph();
         for _ in 0..4 {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
 
         let label = BucketLabelKey::directed_from_index(1);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
             .unwrap();
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(2), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(2), label, 4)
             .unwrap();
 
         let plan = OneOrientationBatchPlan {
@@ -934,32 +940,32 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label,
-                    inline_value_width: 4,
+                    inline_property_width: 4,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
                         neighbor_vertex_id: VertexId::from(1),
                         label_id: label,
-                        edge: PayloadTestEdge::with_i32(1, 100),
+                        edge: InlinePropertyTestEdge::with_i32(1, 100),
                     }],
                 },
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(2),
                     label_id: label,
-                    inline_value_width: 4,
+                    inline_property_width: 4,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(2),
                         neighbor_vertex_id: VertexId::from(1),
                         label_id: label,
-                        edge: PayloadTestEdge::with_i32(1, 200),
+                        edge: InlinePropertyTestEdge::with_i32(1, 200),
                     }],
                 },
             ],
         };
 
         let result = graph.insert_one_orientation_batch(&plan).unwrap();
-        assert_eq!(result.payload_slots_written, 2);
+        assert_eq!(result.inline_property_bytes_slots_written, 2);
     }
 
     #[test]
@@ -992,7 +998,7 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 0,
@@ -1013,7 +1019,7 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 2,
@@ -1049,18 +1055,18 @@ mod tests {
     }
 
     #[test]
-    fn overflow_log_same_leaf_payload_multi_bucket_append_success() {
-        let graph = segment16_payload_graph();
+    fn overflow_log_same_leaf_inline_property_multi_bucket_append_success() {
+        let graph = segment16_inline_property_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
         let label_a = BucketLabelKey::directed_from_index(1);
         let label_b = BucketLabelKey::directed_from_index(2);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label_a, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label_a, 4)
             .unwrap();
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label_b, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label_b, 4)
             .unwrap();
 
         for i in 1..=3u32 {
@@ -1068,14 +1074,14 @@ mod tests {
                 .insert_edge(
                     VertexId::from(0),
                     label_a,
-                    PayloadTestEdge::with_bytes(i, &[1u8, 1, 1, 1]),
+                    InlinePropertyTestEdge::with_bytes(i, &[1u8, 1, 1, 1]),
                 )
                 .unwrap();
             graph
                 .insert_edge(
                     VertexId::from(0),
                     label_b,
-                    PayloadTestEdge::with_bytes(10 + i, &[2u8, 2, 2, 2]),
+                    InlinePropertyTestEdge::with_bytes(10 + i, &[2u8, 2, 2, 2]),
                 )
                 .unwrap();
         }
@@ -1085,42 +1091,42 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
-                    inline_value_width: 4,
+                    inline_property_width: 4,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 0,
                             owner_vertex_id: VertexId::from(0),
                             neighbor_vertex_id: VertexId::from(1),
                             label_id: label_a,
-                            edge: PayloadTestEdge::with_bytes(100, &[10u8, 11, 12, 13]),
+                            edge: InlinePropertyTestEdge::with_bytes(100, &[10u8, 11, 12, 13]),
                         },
                         OneOrientationBatchEdge {
                             logical_ordinal: 1,
                             owner_vertex_id: VertexId::from(0),
                             neighbor_vertex_id: VertexId::from(1),
                             label_id: label_a,
-                            edge: PayloadTestEdge::with_bytes(101, &[14u8, 15, 16, 17]),
+                            edge: InlinePropertyTestEdge::with_bytes(101, &[14u8, 15, 16, 17]),
                         },
                     ],
                 },
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
-                    inline_value_width: 4,
+                    inline_property_width: 4,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 2,
                             owner_vertex_id: VertexId::from(0),
                             neighbor_vertex_id: VertexId::from(1),
                             label_id: label_b,
-                            edge: PayloadTestEdge::with_bytes(200, &[20u8, 21, 22, 23]),
+                            edge: InlinePropertyTestEdge::with_bytes(200, &[20u8, 21, 22, 23]),
                         },
                         OneOrientationBatchEdge {
                             logical_ordinal: 3,
                             owner_vertex_id: VertexId::from(0),
                             neighbor_vertex_id: VertexId::from(1),
                             label_id: label_b,
-                            edge: PayloadTestEdge::with_bytes(201, &[24u8, 25, 26, 27]),
+                            edge: InlinePropertyTestEdge::with_bytes(201, &[24u8, 25, 26, 27]),
                         },
                     ],
                 },
@@ -1129,14 +1135,14 @@ mod tests {
 
         let result = graph
             .insert_one_orientation_batch(&plan)
-            .expect("same-leaf payload multi-bucket overflow-log append should commit");
+            .expect("same-leaf inline property multi-bucket overflow-log append should commit");
         assert_eq!(result.edge_slots_written, 4);
         assert_eq!(result.edge_log_entries_written, 4);
-        assert_eq!(result.payload_slots_written, 4);
-        assert_eq!(result.payload_log_entries_written, 4);
+        assert_eq!(result.inline_property_bytes_slots_written, 4);
+        assert_eq!(result.inline_property_bytes_log_entries_written, 4);
 
-        let a_values = collect_payload_values(&graph, VertexId::from(0), label_a);
-        let b_values = collect_payload_values(&graph, VertexId::from(0), label_b);
+        let a_values = collect_inline_property_values(&graph, VertexId::from(0), label_a);
+        let b_values = collect_inline_property_values(&graph, VertexId::from(0), label_b);
         assert_eq!(
             a_values,
             vec![
@@ -1219,7 +1225,7 @@ mod tests {
             .expect("fill log");
 
         let edge_capacity_before = graph.edges.header().elem_capacity;
-        let payload_tail_before = graph.values.header().slab_occupied_tail;
+        let inline_property_bytes_tail_before = graph.values.header().slab_occupied_tail;
         let before = graph.out_edges(VertexId::from(0)).unwrap();
 
         let plan = OneOrientationBatchPlan {
@@ -1227,7 +1233,7 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![
                         OneOrientationBatchEdge {
                             logical_ordinal: 0,
@@ -1248,7 +1254,7 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 2,
                         owner_vertex_id: VertexId::from(0),
@@ -1267,10 +1273,13 @@ mod tests {
         );
 
         let edge_capacity_after = graph.edges.header().elem_capacity;
-        let payload_tail_after = graph.values.header().slab_occupied_tail;
+        let inline_property_bytes_tail_after = graph.values.header().slab_occupied_tail;
         let after = graph.out_edges(VertexId::from(0)).unwrap();
         assert_eq!(edge_capacity_before, edge_capacity_after);
-        assert_eq!(payload_tail_before, payload_tail_after);
+        assert_eq!(
+            inline_property_bytes_tail_before,
+            inline_property_bytes_tail_after
+        );
         assert_eq!(before, after);
 
         let (idx_after, _) = graph.edges().read_overflow_log_state(leaf);
@@ -1322,7 +1331,7 @@ mod tests {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![
                     OneOrientationBatchEdge {
                         logical_ordinal: 0,
@@ -1476,7 +1485,7 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_a,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 0,
                         owner_vertex_id: VertexId::from(0),
@@ -1488,7 +1497,7 @@ mod tests {
                 OneOrientationBucketRun {
                     owner_vertex_id: VertexId::from(0),
                     label_id: label_b,
-                    inline_value_width: 0,
+                    inline_property_width: 0,
                     edges: vec![OneOrientationBatchEdge {
                         logical_ordinal: 1,
                         owner_vertex_id: VertexId::from(0),
@@ -1535,43 +1544,49 @@ mod tests {
     }
 
     #[test]
-    fn expanded_slab_payload_single_bucket_success() {
-        let graph = segment16_payload_graph();
+    fn expanded_slab_inline_property_single_bucket_success() {
+        let graph = segment16_inline_property_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
 
         let label = BucketLabelKey::directed_from_index(1);
         let other_label = BucketLabelKey::directed_from_index(2);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), label, 4)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
             .unwrap();
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), other_label, 0)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), other_label, 0)
             .unwrap();
         graph
             .insert_edge(
                 VertexId::from(0),
                 other_label,
-                PayloadTestEdge::with_bytes(1, &[]),
+                InlinePropertyTestEdge::with_bytes(1, &[]),
             )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), label, PayloadTestEdge::with_i32(1, 10))
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                InlinePropertyTestEdge::with_i32(1, 10),
+            )
             .unwrap();
 
         let header = graph.edges().header();
-        let leaf = LabeledLaraGraph::<PayloadTestEdge, crate::VectorMemory>::leaf_index_for_vid(
-            VertexId::from(0),
-            header.segment_size,
-        );
+        let leaf =
+            LabeledLaraGraph::<InlinePropertyTestEdge, crate::VectorMemory>::leaf_index_for_vid(
+                VertexId::from(0),
+                header.segment_size,
+            );
         let edge_log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
-        let payload_log_capacity = graph.values.read_payload_log_state(leaf).1 as usize;
-        assert_eq!(edge_log_capacity, payload_log_capacity);
+        let inline_property_bytes_log_capacity =
+            graph.values.read_inline_property_bytes_log_state(leaf).1 as usize;
+        assert_eq!(edge_log_capacity, inline_property_bytes_log_capacity);
         let edge_entries = (0..edge_log_capacity)
             .map(|i| {
                 (
                     if i == 0 { -1 } else { (i - 1) as i32 },
-                    PayloadTestEdge::with_i32(100 + i as u32, 1000 + i as i32),
+                    InlinePropertyTestEdge::with_i32(100 + i as u32, 1000 + i as i32),
                 )
             })
             .collect::<Vec<_>>();
@@ -1579,12 +1594,12 @@ mod tests {
             .edges()
             .write_overflow_log_entries(leaf, 0, &edge_entries)
             .unwrap();
-        let payload_bytes = (0..payload_log_capacity)
+        let inline_property_bytes = (0..inline_property_bytes_log_capacity)
             .flat_map(|i| (2000 + i as i32).to_le_bytes())
             .collect::<Vec<_>>();
         graph
             .values
-            .write_payload_log_entries(leaf, 0, -1, 4, &payload_bytes)
+            .write_inline_property_bytes_log_entries(leaf, 0, -1, 4, &inline_property_bytes)
             .unwrap();
 
         let vertex = graph.vertices.get(VertexId::from(0));
@@ -1593,7 +1608,7 @@ mod tests {
             .unwrap()
         {
             crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
-            _ => panic!("payload bucket must exist"),
+            _ => panic!("inline property bytes bucket must exist"),
         };
         graph
             .buckets()
@@ -1602,9 +1617,9 @@ mod tests {
                 bucket
                     .with_overflow_log_head((edge_log_capacity - 1) as i32)
                     .with_degree_field((edge_log_capacity + 1) as u32)
-                    .try_with_payload_log(
-                        (payload_log_capacity - 1) as i32,
-                        payload_log_capacity as u8,
+                    .try_with_inline_property_bytes_log(
+                        (inline_property_bytes_log_capacity - 1) as i32,
+                        inline_property_bytes_log_capacity as u8,
                     )
                     .unwrap(),
             )
@@ -1614,38 +1629,38 @@ mod tests {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 4,
+                inline_property_width: 4,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
                     neighbor_vertex_id: VertexId::from(1),
                     label_id: label,
-                    edge: PayloadTestEdge::with_i32(1, 3000),
+                    edge: InlinePropertyTestEdge::with_i32(1, 3000),
                 }],
             }],
         };
 
-        let payload_tail_before = graph.values.header().slab_occupied_tail;
+        let inline_property_bytes_tail_before = graph.values.header().slab_occupied_tail;
         let reservation = graph
             .reserve_one_orientation_batch(&plan)
-            .expect("payload expanded-slab batch should reserve");
+            .expect("inline property expanded-slab batch should reserve");
         assert!(reservation.uses_expansion());
         reservation.rollback(&graph);
         assert_eq!(
             graph.values.header().slab_occupied_tail,
-            payload_tail_before,
-            "payload expansion rollback must restore the occupied tail"
+            inline_property_bytes_tail_before,
+            "inline property bytes expansion rollback must restore the occupied tail"
         );
 
         let reservation = graph
             .reserve_one_orientation_batch(&plan)
-            .expect("payload expanded-slab batch should reserve after rollback");
+            .expect("inline property expanded-slab batch should reserve after rollback");
         let result = reservation.commit_with_locations(&graph);
         assert_eq!(result.edge_log_entries_written, 0);
-        assert_eq!(result.payload_log_entries_written, 0);
+        assert_eq!(result.inline_property_bytes_log_entries_written, 0);
         assert_eq!(
-            result.payload_slots_written,
-            (payload_log_capacity + 1) as u32
+            result.inline_property_bytes_slots_written,
+            (inline_property_bytes_log_capacity + 1) as u32
         );
         assert!(matches!(
             result
@@ -1655,14 +1670,14 @@ mod tests {
                 .as_slice(),
             [OneOrientationBatchLocation {
                 location: OneOrientationPhysicalLocation::Slab {
-                    payload_byte_offset: Some(_),
+                    inline_property_bytes_offset: Some(_),
                     ..
                 },
                 ..
             }]
         ));
-        let values = collect_payload_values(&graph, VertexId::from(0), label);
-        assert_eq!(values.len(), payload_log_capacity + 2);
+        let values = collect_inline_property_values(&graph, VertexId::from(0), label);
+        assert_eq!(values.len(), inline_property_bytes_log_capacity + 2);
         assert_eq!(values.last().unwrap(), &3000_i32.to_le_bytes().to_vec());
     }
 
@@ -1715,14 +1730,14 @@ mod tests {
             .expect("fill log");
 
         let edge_capacity_before = graph.edges.header().elem_capacity;
-        let payload_tail_before = graph.values.header().slab_occupied_tail;
+        let inline_property_bytes_tail_before = graph.values.header().slab_occupied_tail;
         let before = graph.out_edges(VertexId::from(0)).unwrap();
 
         let plan = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
                 owner_vertex_id: VertexId::from(0),
                 label_id: label,
-                inline_value_width: 0,
+                inline_property_width: 0,
                 edges: vec![OneOrientationBatchEdge {
                     logical_ordinal: 0,
                     owner_vertex_id: VertexId::from(0),
@@ -1740,15 +1755,15 @@ mod tests {
         );
 
         let edge_capacity_after = graph.edges.header().elem_capacity;
-        let payload_tail_after = graph.values.header().slab_occupied_tail;
+        let inline_property_bytes_tail_after = graph.values.header().slab_occupied_tail;
         let after = graph.out_edges(VertexId::from(0)).unwrap();
         assert_eq!(
             edge_capacity_before, edge_capacity_after,
             "reserve failure must not change edge logical capacity"
         );
         assert_eq!(
-            payload_tail_before, payload_tail_after,
-            "reserve failure must not move payload occupied tail"
+            inline_property_bytes_tail_before, inline_property_bytes_tail_after,
+            "reserve failure must not move inline property bytes occupied tail"
         );
         assert_eq!(
             before, after,

@@ -189,13 +189,13 @@ mod tests {
     use gleaph_gql_planner::plan::PlanOp;
 
     fn install_wcoj_triangle(store: &GraphStore, payload: &[u8]) -> (VertexId, VertexId, VertexId) {
-        use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
+        use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
         let label_id = crate::test_labels::edge_label_id_for_name("WcojTriRel");
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::WeightRawU16,
+                encoding: EdgeInlinePropertyEncoding::WeightRawU16,
             },
         );
         let a = store
@@ -208,13 +208,13 @@ mod tests {
             .insert_vertex_named(["WcojTriNode"], Vec::<(&str, Value)>::new())
             .expect("c");
         store
-            .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), payload)
+            .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), payload)
             .expect("a-b");
         store
-            .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), payload)
+            .insert_directed_edge_with_inline_property_bytes(b, c, Some(label_id), payload)
             .expect("b-c");
         store
-            .insert_directed_edge_with_inline_value_bytes(c, a, Some(label_id), payload)
+            .insert_directed_edge_with_inline_property_bytes(c, a, Some(label_id), payload)
             .expect("c-a");
         (a, b, c)
     }
@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn wcoj_triangle_hop_aux_returns_referenced_edge_inline_value() {
+    fn wcoj_triangle_hop_aux_returns_referenced_edge_inline_property() {
         let store = GraphStore::new();
         let payload = 9u16.to_le_bytes();
         install_wcoj_triangle(&store, &payload);

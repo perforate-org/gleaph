@@ -4,9 +4,9 @@ pub const PAYLOAD_LOG_CELL_BYTES: usize = 8;
 /// Max payload bytes stored inline in the log cell.
 pub const MAX_PAYLOAD_LOG_INLINE_WIDTH: usize = PAYLOAD_LOG_CELL_BYTES;
 
-/// Returns whether a bucket width stores its log-backed body in `payload_blobs`.
+/// Returns whether a bucket width stores its log-backed body in `inline_property_bytes_blobs`.
 #[inline]
-pub fn payload_log_uses_blob(width: u16) -> bool {
+pub fn inline_property_bytes_log_uses_blob(width: u16) -> bool {
     usize::from(width) > MAX_PAYLOAD_LOG_INLINE_WIDTH
 }
 
@@ -55,7 +55,7 @@ impl InlineValueLogCell {
     /// Decodes an inline payload using the bucket-provided `width`.
     pub fn decode_inline(&self, width: u16, out: &mut [u8]) -> Option<usize> {
         let w = usize::from(width);
-        if payload_log_uses_blob(width)
+        if inline_property_bytes_log_uses_blob(width)
             || w == 0
             || w > MAX_PAYLOAD_LOG_INLINE_WIDTH
             || out.len() < w
@@ -72,9 +72,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn payload_log_uses_blob_from_bucket_width() {
-        assert!(!payload_log_uses_blob(8));
-        assert!(payload_log_uses_blob(9));
+    fn inline_property_bytes_log_uses_blob_from_bucket_width() {
+        assert!(!inline_property_bytes_log_uses_blob(8));
+        assert!(inline_property_bytes_log_uses_blob(9));
     }
 
     #[test]

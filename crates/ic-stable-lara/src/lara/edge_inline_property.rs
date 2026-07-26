@@ -7,20 +7,25 @@ mod cell;
 mod log;
 
 use crate::lara::edge::free_span::{FreeSpan, FreeSpanStore};
-use crate::lara::edge_inline_value::blobs::EdgeInlineValueBlobMap;
-use crate::lara::edge_inline_value::cell::payload_log_uses_blob;
-use crate::lara::edge_inline_value::log::{
-    HeaderV1 as InlineValueLogHeaderV1, InlineValueLogStore, PAYLOAD_BYTES,
+use crate::lara::edge_inline_property::blobs::EdgeInlinePropertyBytesBlobMap;
+use crate::lara::edge_inline_property::cell::inline_property_bytes_log_uses_blob;
+use crate::lara::edge_inline_property::log::{
+    HeaderV1 as InlineValueLogHeaderV1, InlinePropertyBytesLogStore, PAYLOAD_BYTES,
 };
 use crate::slab_index::{byte_exclusive_end_fits, byte_offset_fits, checked_add_byte_offset};
 use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
 use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt};
 
-pub use blob_id::EdgeInlineValueBlobId;
-pub use blob_store::{BlobStoreError, EdgeInlineValueBlobStore, NoopEdgeInlineValueBlobStore};
+pub use blob_id::EdgeInlinePropertyBytesBlobId;
+pub use blob_store::{
+    BlobStoreError, EdgeInlinePropertyBytesBlobStore, NoopEdgeInlinePropertyBytesBlobStore,
+};
 pub use cell::InlineValueLogCell;
-pub use log::{InitError as InlineValueLogInitError, InlineValueLogStore as ValueOverflowLogStore};
+pub use log::{
+    InitError as InlinePropertyBytesLogInitError,
+    InlinePropertyBytesLogStore as ValueOverflowLogStore,
+};
 
 #[cfg(test)]
 thread_local! {
@@ -35,12 +40,12 @@ thread_local! {
 #[cfg(test)]
 /// Force the payload allocator to fail after `successful_allocations` successful
 /// calls to `append_byte_span` or `grow_byte_span_in_place`.
-pub(crate) fn force_payload_allocation_error_after(successful_allocations: u32) {
+pub(crate) fn force_inline_property_bytes_allocation_error_after(successful_allocations: u32) {
     FORCE_PAYLOAD_ALLOC_ERROR_AFTER.with(|c| c.set(successful_allocations));
 }
 
 #[cfg(test)]
-fn take_forced_payload_allocation_error() -> bool {
+fn take_forced_inline_property_bytes_allocation_error() -> bool {
     FORCE_PAYLOAD_ALLOC_ERROR_AFTER.with(|c| {
         let v = c.get();
         if v == u32::MAX {
@@ -145,7 +150,7 @@ impl std::error::Error for InitError {}
 
 /// Errors returned while writing one payload overflow-log entry.
 #[derive(Debug, PartialEq, Eq)]
-pub enum InlineValueLogWriteError {
+pub enum InlinePropertyBytesLogWriteError {
     /// Stable memory could not grow or write the value-log entry.
     Grow(GrowFailed),
     /// External blob storage rejected the payload.
@@ -154,7 +159,7 @@ pub enum InlineValueLogWriteError {
     SegmentLogFull,
 }
 
-impl fmt::Display for InlineValueLogWriteError {
+impl fmt::Display for InlinePropertyBytesLogWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Grow(err) => write!(f, "payload log write failed: {err}"),
@@ -164,7 +169,7 @@ impl fmt::Display for InlineValueLogWriteError {
     }
 }
 
-impl std::error::Error for InlineValueLogWriteError {
+impl std::error::Error for InlinePropertyBytesLogWriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Grow(err) => Some(err),
@@ -174,13 +179,13 @@ impl std::error::Error for InlineValueLogWriteError {
     }
 }
 
-impl From<GrowFailed> for InlineValueLogWriteError {
+impl From<GrowFailed> for InlinePropertyBytesLogWriteError {
     fn from(value: GrowFailed) -> Self {
         Self::Grow(value)
     }
 }
 
-impl From<BlobStoreError> for InlineValueLogWriteError {
+impl From<BlobStoreError> for InlinePropertyBytesLogWriteError {
     fn from(value: BlobStoreError) -> Self {
         Self::Blob(value)
     }
@@ -188,7 +193,7 @@ impl From<BlobStoreError> for InlineValueLogWriteError {
 
 /// Errors returned while reading one payload overflow-log entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InlineValueLogReadError {
+pub enum InlinePropertyBytesLogReadError {
     /// Caller-provided output buffer is smaller than the expected edge-inline-value width.
     OutputTooSmall {
         /// Expected edge-inline-value byte width.
@@ -222,7 +227,7 @@ pub enum InlineValueLogReadError {
     },
 }
 
-impl fmt::Display for InlineValueLogReadError {
+impl fmt::Display for InlinePropertyBytesLogReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OutputTooSmall { width, out_len } => write!(
@@ -250,7 +255,7 @@ impl fmt::Display for InlineValueLogReadError {
     }
 }
 
-impl std::error::Error for InlineValueLogReadError {}
+impl std::error::Error for InlinePropertyBytesLogReadError {}
 
 /// Stable byte slab for edge inline values.
 #[derive(Clone, Debug)]
@@ -368,17 +373,17 @@ impl<M: Memory> PayloadByteSlabStore<M> {
 }
 
 /// Combined stable edge-inline-value storage for labeled graphs.
-pub struct EdgeInlineValueStore<M: Memory> {
+pub struct EdgeInlinePropertyBytesStore<M: Memory> {
     slab: PayloadByteSlabStore<M>,
-    log: InlineValueLogStore<M>,
-    blobs: EdgeInlineValueBlobMap<M>,
+    log: InlinePropertyBytesLogStore<M>,
+    blobs: EdgeInlinePropertyBytesBlobMap<M>,
     free_spans: FreeSpanStore<M>,
     header: Cell<HeaderV1>,
 }
 
 /// Payload-slab accounting derived from the payload allocator owner.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PayloadAllocatorStats {
+pub struct InlinePropertyBytesAllocatorStats {
     /// Backing payload-slab capacity in bytes.
     pub byte_capacity: u64,
     /// Exclusive end of the append-only occupied slab prefix.
@@ -391,11 +396,11 @@ pub struct PayloadAllocatorStats {
     pub free_span_count: u64,
 }
 
-impl<M: Memory> EdgeInlineValueStore<M> {
+impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
     /// Creates a new edge-inline-value store over empty stable memories.
     pub fn new(
         slab_memory: M,
-        payload_log: M,
+        inline_property_bytes_log: M,
         value_blobs: M,
         free_spans: M,
         free_span_by_start: M,
@@ -410,9 +415,11 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         }
         let header = HeaderV1::new(byte_capacity);
         let slab = PayloadByteSlabStore::new(slab_memory, header)?;
-        let log =
-            InlineValueLogStore::new(payload_log, InlineValueLogHeaderV1::new(segment_count))?;
-        let blobs = EdgeInlineValueBlobMap::init(value_blobs);
+        let log = InlinePropertyBytesLogStore::new(
+            inline_property_bytes_log,
+            InlineValueLogHeaderV1::new(segment_count),
+        )?;
+        let blobs = EdgeInlinePropertyBytesBlobMap::init(value_blobs);
         let free_spans = FreeSpanStore::new(free_spans, free_span_by_start)?;
         Ok(Self {
             slab,
@@ -426,7 +433,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     /// Reopens an edge-inline-value store, initializing empty payload memories when needed.
     pub fn init(
         slab_memory: M,
-        payload_log: M,
+        inline_property_bytes_log: M,
         value_blobs: M,
         free_spans: M,
         free_span_by_start: M,
@@ -440,7 +447,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         // regions is partial loss.
         match crate::classify_composite_init([
             slab_memory.size(),
-            payload_log.size(),
+            inline_property_bytes_log.size(),
             free_spans.size(),
             free_span_by_start.size(),
         ]) {
@@ -458,11 +465,15 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         } else {
             PayloadByteSlabStore::init(slab_memory)?
         };
-        let log = if payload_log.size() == 0 {
-            InlineValueLogStore::new(payload_log, InlineValueLogHeaderV1::new(edge_segment_count))
-                .map_err(|_| InitError::InvalidLayout)?
+        let log = if inline_property_bytes_log.size() == 0 {
+            InlinePropertyBytesLogStore::new(
+                inline_property_bytes_log,
+                InlineValueLogHeaderV1::new(edge_segment_count),
+            )
+            .map_err(|_| InitError::InvalidLayout)?
         } else {
-            InlineValueLogStore::init(payload_log).map_err(InitError::PayloadLog)?
+            InlinePropertyBytesLogStore::init(inline_property_bytes_log)
+                .map_err(InitError::PayloadLog)?
         };
         if log.header().segment_count != edge_segment_count {
             return Err(InitError::PayloadLogLayoutMismatch);
@@ -474,7 +485,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
             FreeSpanStore::init(free_spans, free_span_by_start)
                 .map_err(|_| InitError::FreeSpansInvalid)?
         };
-        let blobs = EdgeInlineValueBlobMap::init(value_blobs);
+        let blobs = EdgeInlinePropertyBytesBlobMap::init(value_blobs);
         let header = slab.header()?;
         Ok(Self {
             slab,
@@ -489,30 +500,41 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         self.log.grow_segment_count_to(new_count)
     }
 
-    pub(crate) fn release_payload_log_segment(&self, leaf_segment: u32) -> Result<(), GrowFailed> {
-        let high_water = self.payload_log_segment_high_water(leaf_segment);
+    pub(crate) fn release_inline_property_bytes_log_segment(
+        &self,
+        leaf_segment: u32,
+    ) -> Result<(), GrowFailed> {
+        let high_water = self.inline_property_bytes_log_segment_high_water(leaf_segment);
         self.blobs.drain_leaf_segment(leaf_segment, high_water);
         self.log.release_segment(leaf_segment)
     }
 
-    pub(crate) fn payload_log_segment_high_water(&self, leaf_segment: u32) -> u32 {
+    pub(crate) fn inline_property_bytes_log_segment_high_water(&self, leaf_segment: u32) -> u32 {
         let h = self.log.header();
         self.log.read_idx_with_header(&h, leaf_segment).max(0) as u32
     }
 
-    pub(crate) fn payload_log_segment_is_full(&self, leaf_segment: u32) -> bool {
+    pub(crate) fn inline_property_bytes_log_segment_is_full(&self, leaf_segment: u32) -> bool {
         let h = self.log.header();
-        self.payload_log_segment_high_water(leaf_segment) >= h.max_log_entries
+        self.inline_property_bytes_log_segment_high_water(leaf_segment) >= h.max_log_entries
     }
 
-    pub(crate) fn sweep_payload_log_chain(&self, leaf_segment: u32, payload_chain: &[u32]) {
+    pub(crate) fn sweep_inline_property_bytes_log_chain(
+        &self,
+        leaf_segment: u32,
+        payload_chain: &[u32],
+    ) {
         for &entry_idx in payload_chain {
             self.blobs.drop_log_site(leaf_segment, entry_idx);
-            self.clear_payload_log_cell(leaf_segment, entry_idx);
+            self.clear_inline_property_bytes_log_cell(leaf_segment, entry_idx);
         }
     }
 
-    fn read_payload_log_cell(&self, leaf_segment: u32, entry_idx: u32) -> InlineValueLogCell {
+    fn read_inline_property_bytes_log_cell(
+        &self,
+        leaf_segment: u32,
+        entry_idx: u32,
+    ) -> InlineValueLogCell {
         let mut payload = [0u8; PAYLOAD_BYTES];
         let h = self.log.header();
         self.log
@@ -520,7 +542,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         InlineValueLogCell::from_bytes(payload)
     }
 
-    pub(crate) fn clear_payload_log_cell(&self, leaf_segment: u32, entry_idx: u32) {
+    pub(crate) fn clear_inline_property_bytes_log_cell(&self, leaf_segment: u32, entry_idx: u32) {
         let h = self.log.header();
         let mut scratch = [0u8; PAYLOAD_BYTES];
         let prev = self
@@ -532,23 +554,23 @@ impl<M: Memory> EdgeInlineValueStore<M> {
             .write_entry_with_header(&h, leaf_segment, entry_idx, prev, &zeros);
     }
 
-    pub(crate) fn write_payload_log_entry(
+    pub(crate) fn write_inline_property_bytes_log_entry(
         &self,
         leaf_segment: u32,
         entry_idx: u32,
         prev_head: i32,
         width: u16,
-        payload_bytes: &[u8],
-    ) -> Result<(), InlineValueLogWriteError> {
+        inline_property_bytes: &[u8],
+    ) -> Result<(), InlinePropertyBytesLogWriteError> {
         self.blobs.drop_log_site(leaf_segment, entry_idx);
-        let cell = if payload_log_uses_blob(width) {
-            let id = EdgeInlineValueBlobId::from_log_site(leaf_segment, entry_idx);
-            self.blobs.put_blob(id, payload_bytes)?;
+        let cell = if inline_property_bytes_log_uses_blob(width) {
+            let id = EdgeInlinePropertyBytesBlobId::from_log_site(leaf_segment, entry_idx);
+            self.blobs.put_blob(id, inline_property_bytes)?;
             InlineValueLogCell::EMPTY
         } else {
             let w = usize::from(width);
-            debug_assert_eq!(payload_bytes.len(), w);
-            InlineValueLogCell::inline(width, payload_bytes)
+            debug_assert_eq!(inline_property_bytes.len(), w);
+            InlineValueLogCell::inline(width, inline_property_bytes)
         };
         let h = self.log.header();
         self.log.write_entry_with_header(
@@ -565,29 +587,36 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         Ok(())
     }
 
-    pub(crate) fn append_payload_log_entry(
+    pub(crate) fn append_inline_property_bytes_log_entry(
         &self,
         leaf_segment: u32,
         prev_head: i32,
         width: u16,
-        payload_bytes: &[u8],
-    ) -> Result<u32, InlineValueLogWriteError> {
+        inline_property_bytes: &[u8],
+    ) -> Result<u32, InlinePropertyBytesLogWriteError> {
         let h = self.log.header();
         let idx = self.log.read_idx_with_header(&h, leaf_segment);
         if idx < 0 || idx >= h.max_log_entries as i32 {
-            return Err(InlineValueLogWriteError::SegmentLogFull);
+            return Err(InlinePropertyBytesLogWriteError::SegmentLogFull);
         }
-        let entry_idx = u32::try_from(idx).map_err(|_| InlineValueLogWriteError::SegmentLogFull)?;
-        self.write_payload_log_entry(leaf_segment, entry_idx, prev_head, width, payload_bytes)?;
+        let entry_idx =
+            u32::try_from(idx).map_err(|_| InlinePropertyBytesLogWriteError::SegmentLogFull)?;
+        self.write_inline_property_bytes_log_entry(
+            leaf_segment,
+            entry_idx,
+            prev_head,
+            width,
+            inline_property_bytes,
+        )?;
         Ok(entry_idx)
     }
 
-    pub(crate) fn read_payload_log_idx(&self, leaf_segment: u32) -> i32 {
+    pub(crate) fn read_inline_property_bytes_log_idx(&self, leaf_segment: u32) -> i32 {
         let h = self.log.header();
         self.log.read_idx_with_header(&h, leaf_segment)
     }
 
-    pub(crate) fn read_payload_log_state(&self, leaf_segment: u32) -> (i32, u32) {
+    pub(crate) fn read_inline_property_bytes_log_state(&self, leaf_segment: u32) -> (i32, u32) {
         let h = self.log.header();
         (
             self.log.read_idx_with_header(&h, leaf_segment),
@@ -595,24 +624,24 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         )
     }
 
-    pub(crate) fn write_payload_log_entries(
+    pub(crate) fn write_inline_property_bytes_log_entries(
         &self,
         leaf_segment: u32,
         start_idx: u32,
         prev_head: i32,
         width: u16,
-        payload_bytes: &[u8],
-    ) -> Result<(), InlineValueLogWriteError> {
+        inline_property_bytes: &[u8],
+    ) -> Result<(), InlinePropertyBytesLogWriteError> {
         let w = usize::from(width);
         if w == 0 {
             return Ok(());
         }
         debug_assert_eq!(
-            payload_bytes.len() % w,
+            inline_property_bytes.len() % w,
             0,
             "payload byte count must be a multiple of width"
         );
-        let count = payload_bytes.len() / w;
+        let count = inline_property_bytes.len() / w;
         let h = self.log.header();
         for i in 0..count {
             let entry_idx = start_idx + i as u32;
@@ -621,9 +650,9 @@ impl<M: Memory> EdgeInlineValueStore<M> {
             } else {
                 (entry_idx - 1) as i32
             };
-            let bytes = &payload_bytes[i * w..(i + 1) * w];
-            let cell = if payload_log_uses_blob(width) {
-                let id = EdgeInlineValueBlobId::from_log_site(leaf_segment, entry_idx);
+            let bytes = &inline_property_bytes[i * w..(i + 1) * w];
+            let cell = if inline_property_bytes_log_uses_blob(width) {
+                let id = EdgeInlinePropertyBytesBlobId::from_log_site(leaf_segment, entry_idx);
                 self.blobs.put_blob(id, bytes)?;
                 InlineValueLogCell::EMPTY
             } else {
@@ -637,31 +666,31 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         Ok(())
     }
 
-    pub(crate) fn read_payload_log_entry(
+    pub(crate) fn read_inline_property_bytes_log_entry(
         &self,
         leaf_segment: u32,
         entry_idx: u32,
         width: u16,
         out: &mut [u8],
-    ) -> Result<(), InlineValueLogReadError> {
+    ) -> Result<(), InlinePropertyBytesLogReadError> {
         let w = usize::from(width);
         if w == 0 || out.len() < w {
-            return Err(InlineValueLogReadError::OutputTooSmall {
+            return Err(InlinePropertyBytesLogReadError::OutputTooSmall {
                 width,
                 out_len: out.len(),
             });
         }
-        if payload_log_uses_blob(width) {
-            let id = EdgeInlineValueBlobId::from_log_site(leaf_segment, entry_idx);
+        if inline_property_bytes_log_uses_blob(width) {
+            let id = EdgeInlinePropertyBytesBlobId::from_log_site(leaf_segment, entry_idx);
             let mut buf = Vec::with_capacity(w);
             if !self.blobs.get_blob(id, &mut buf) {
-                return Err(InlineValueLogReadError::MissingBlob {
+                return Err(InlinePropertyBytesLogReadError::MissingBlob {
                     leaf_segment,
                     entry_idx,
                 });
             }
             if buf.len() != w {
-                return Err(InlineValueLogReadError::BlobWidthMismatch {
+                return Err(InlinePropertyBytesLogReadError::BlobWidthMismatch {
                     expected: width,
                     actual: buf.len(),
                 });
@@ -669,20 +698,24 @@ impl<M: Memory> EdgeInlineValueStore<M> {
             out[..w].copy_from_slice(&buf);
             return Ok(());
         }
-        let cell = self.read_payload_log_cell(leaf_segment, entry_idx);
+        let cell = self.read_inline_property_bytes_log_cell(leaf_segment, entry_idx);
         if cell.decode_inline(width, out).is_some() {
             return Ok(());
         }
-        Err(InlineValueLogReadError::InvalidInlineCell { width })
+        Err(InlinePropertyBytesLogReadError::InvalidInlineCell { width })
     }
 
     #[cfg(test)]
-    pub(crate) fn drop_payload_blob_for_test(&self, leaf_segment: u32, entry_idx: u32) {
+    pub(crate) fn drop_inline_property_bytes_blob_for_test(
+        &self,
+        leaf_segment: u32,
+        entry_idx: u32,
+    ) {
         self.blobs.drop_log_site(leaf_segment, entry_idx);
     }
 
     /// Returns value-log entry indices from oldest to newest by walking `log_head`.
-    pub(crate) fn payload_log_chain_asc_indices(
+    pub(crate) fn inline_property_bytes_log_chain_asc_indices(
         &self,
         leaf_segment: u32,
         log_head: i32,
@@ -706,34 +739,40 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Reads payload bytes using a precomputed oldest-to-newest chain (avoids rebuilding per call).
-    pub(crate) fn read_payload_log_chain_entry(
+    pub(crate) fn read_inline_property_bytes_log_chain_entry(
         &self,
         leaf_segment: u32,
         payload_chain: &[u32],
         asc_log_index: u32,
         width: u16,
         out: &mut [u8],
-    ) -> Result<(), InlineValueLogReadError> {
+    ) -> Result<(), InlinePropertyBytesLogReadError> {
         let Some(&entry_idx) = payload_chain.get(asc_log_index as usize) else {
-            return Err(InlineValueLogReadError::MissingAscLogIndex { asc_log_index });
+            return Err(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index });
         };
-        self.read_payload_log_entry(leaf_segment, entry_idx, width, out)
+        self.read_inline_property_bytes_log_entry(leaf_segment, entry_idx, width, out)
     }
 
     /// Reads the value stored at `asc_log_index` in oldest-to-newest log order.
-    pub(crate) fn read_payload_log_asc_index(
+    pub(crate) fn read_inline_property_bytes_log_asc_index(
         &self,
         leaf_segment: u32,
         log_head: i32,
         asc_log_index: u32,
         width: u16,
         out: &mut [u8],
-    ) -> Result<(), InlineValueLogReadError> {
+    ) -> Result<(), InlinePropertyBytesLogReadError> {
         if log_head < 0 || width == 0 {
-            return Err(InlineValueLogReadError::MissingAscLogIndex { asc_log_index });
+            return Err(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index });
         }
-        let chain = self.payload_log_chain_asc_indices(leaf_segment, log_head);
-        self.read_payload_log_chain_entry(leaf_segment, &chain, asc_log_index, width, out)
+        let chain = self.inline_property_bytes_log_chain_asc_indices(leaf_segment, log_head);
+        self.read_inline_property_bytes_log_chain_entry(
+            leaf_segment,
+            &chain,
+            asc_log_index,
+            width,
+            out,
+        )
     }
 
     /// Returns the cached payload-slab header.
@@ -747,9 +786,9 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Returns allocator-owned capacity and retired-span accounting.
-    pub fn allocator_stats(&self) -> PayloadAllocatorStats {
+    pub fn allocator_stats(&self) -> InlinePropertyBytesAllocatorStats {
         let spans = self.free_spans.allocator_stats();
-        PayloadAllocatorStats {
+        InlinePropertyBytesAllocatorStats {
             byte_capacity: self.byte_capacity(),
             slab_occupied_tail: self.header().slab_occupied_tail,
             free_bytes: spans.free_bytes,
@@ -821,7 +860,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     }
 
     /// Writes one fixed-width payload slot.
-    pub(crate) fn write_payload_slot(
+    pub(crate) fn write_inline_property_bytes_slot(
         &self,
         offset: u64,
         width: u16,
@@ -875,7 +914,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
         new_len: u64,
     ) -> Result<bool, GrowFailed> {
         #[cfg(test)]
-        if take_forced_payload_allocation_error() {
+        if take_forced_inline_property_bytes_allocation_error() {
             return Err(GrowFailed {
                 current_size: self.byte_capacity(),
                 delta: 0,
@@ -959,7 +998,7 @@ impl<M: Memory> EdgeInlineValueStore<M> {
     /// Allocates at the occupied tail without consulting the free list.
     pub(crate) fn append_byte_span(&self, len: u64) -> Result<u64, GrowFailed> {
         #[cfg(test)]
-        if take_forced_payload_allocation_error() {
+        if take_forced_inline_property_bytes_allocation_error() {
             return Err(GrowFailed {
                 current_size: self.byte_capacity(),
                 delta: 0,
@@ -991,12 +1030,13 @@ mod tests {
         Rc::new(RefCell::new(Vec::new()))
     }
 
-    fn test_store() -> EdgeInlineValueStore<VectorMemory> {
-        EdgeInlineValueStore::new(mem(), mem(), mem(), mem(), mem(), 1024, 1).expect("store")
+    fn test_store() -> EdgeInlinePropertyBytesStore<VectorMemory> {
+        EdgeInlinePropertyBytesStore::new(mem(), mem(), mem(), mem(), mem(), 1024, 1)
+            .expect("store")
     }
 
     #[test]
-    fn allocator_stats_reports_retired_payload_spans() {
+    fn allocator_stats_reports_retired_inline_property_spans() {
         let store = test_store();
         let first = store.append_byte_span(10).unwrap();
         let second = store.append_byte_span(20).unwrap();
@@ -1004,7 +1044,7 @@ mod tests {
 
         assert_eq!(
             store.allocator_stats(),
-            PayloadAllocatorStats {
+            InlinePropertyBytesAllocatorStats {
                 byte_capacity: 1024,
                 slab_occupied_tail: 30,
                 free_bytes: 10,
@@ -1016,46 +1056,46 @@ mod tests {
     }
 
     #[test]
-    fn payload_log_blob_round_trips_wide_payload() {
+    fn inline_property_bytes_log_blob_round_trips_wide_inline_property_bytes() {
         let store = test_store();
         let payload = vec![0xABu8; 100];
         store
-            .write_payload_log_entry(0, 0, -1, 100, &payload)
+            .write_inline_property_bytes_log_entry(0, 0, -1, 100, &payload)
             .expect("write");
         let mut out = vec![0u8; 100];
         store
-            .read_payload_log_entry(0, 0, 100, &mut out)
+            .read_inline_property_bytes_log_entry(0, 0, 100, &mut out)
             .expect("read");
         assert_eq!(out, payload);
     }
 
     #[test]
-    fn payload_log_round_trips_payload() {
+    fn inline_property_bytes_log_round_trips_inline_property_bytes() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 4, &[1, 2, 3, 4])
+            .write_inline_property_bytes_log_entry(0, 0, -1, 4, &[1, 2, 3, 4])
             .expect("write");
         let mut out = [0u8; 4];
         store
-            .read_payload_log_entry(0, 0, 4, &mut out)
+            .read_inline_property_bytes_log_entry(0, 0, 4, &mut out)
             .expect("read");
         assert_eq!(out, [1, 2, 3, 4]);
         store
-            .read_payload_log_asc_index(0, 0, 0, 4, &mut out)
+            .read_inline_property_bytes_log_asc_index(0, 0, 0, 4, &mut out)
             .expect("read asc");
         assert_eq!(out, [1, 2, 3, 4]);
     }
 
     #[test]
-    fn payload_log_read_rejects_undersized_output_buffer() {
+    fn inline_property_bytes_log_read_rejects_undersized_output_buffer() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 4, &[1, 2, 3, 4])
+            .write_inline_property_bytes_log_entry(0, 0, -1, 4, &[1, 2, 3, 4])
             .expect("write");
         let mut out = [0u8; 3];
         assert_eq!(
-            store.read_payload_log_entry(0, 0, 4, &mut out),
-            Err(InlineValueLogReadError::OutputTooSmall {
+            store.read_inline_property_bytes_log_entry(0, 0, 4, &mut out),
+            Err(InlinePropertyBytesLogReadError::OutputTooSmall {
                 width: 4,
                 out_len: 3
             })
@@ -1063,16 +1103,16 @@ mod tests {
     }
 
     #[test]
-    fn payload_log_read_rejects_bucket_width_blob_without_body() {
+    fn inline_property_bytes_log_read_rejects_bucket_width_blob_without_body() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 8, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .write_inline_property_bytes_log_entry(0, 0, -1, 8, &[1, 2, 3, 4, 5, 6, 7, 8])
             .expect("write");
-        store.drop_payload_blob_for_test(0, 0);
+        store.drop_inline_property_bytes_blob_for_test(0, 0);
         let mut out = [0u8; 9];
         assert_eq!(
-            store.read_payload_log_entry(0, 0, 9, &mut out),
-            Err(InlineValueLogReadError::MissingBlob {
+            store.read_inline_property_bytes_log_entry(0, 0, 9, &mut out),
+            Err(InlinePropertyBytesLogReadError::MissingBlob {
                 leaf_segment: 0,
                 entry_idx: 0
             })
@@ -1080,16 +1120,16 @@ mod tests {
     }
 
     #[test]
-    fn payload_log_read_rejects_missing_blob() {
+    fn inline_property_bytes_log_read_rejects_missing_blob() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .write_inline_property_bytes_log_entry(0, 0, -1, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
             .expect("write");
         store.blobs.drop_log_site(0, 0);
         let mut out = [0u8; 9];
         assert_eq!(
-            store.read_payload_log_entry(0, 0, 9, &mut out),
-            Err(InlineValueLogReadError::MissingBlob {
+            store.read_inline_property_bytes_log_entry(0, 0, 9, &mut out),
+            Err(InlinePropertyBytesLogReadError::MissingBlob {
                 leaf_segment: 0,
                 entry_idx: 0
             })
@@ -1097,19 +1137,22 @@ mod tests {
     }
 
     #[test]
-    fn payload_log_read_rejects_blob_width_mismatch() {
+    fn inline_property_bytes_log_read_rejects_blob_width_mismatch() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .write_inline_property_bytes_log_entry(0, 0, -1, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
             .expect("write");
         store
             .blobs
-            .put_blob(EdgeInlineValueBlobId::from_log_site(0, 0), &[1, 2, 3, 4, 5])
+            .put_blob(
+                EdgeInlinePropertyBytesBlobId::from_log_site(0, 0),
+                &[1, 2, 3, 4, 5],
+            )
             .expect("overwrite blob");
         let mut out = [0u8; 9];
         assert_eq!(
-            store.read_payload_log_entry(0, 0, 9, &mut out),
-            Err(InlineValueLogReadError::BlobWidthMismatch {
+            store.read_inline_property_bytes_log_entry(0, 0, 9, &mut out),
+            Err(InlinePropertyBytesLogReadError::BlobWidthMismatch {
                 expected: 9,
                 actual: 5
             })
@@ -1117,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_value_slab_round_trips_bytes() {
+    fn inline_property_bytes_slab_round_trips_bytes() {
         let store = test_store();
         store.write_bytes(10, &[1, 2, 3, 4]).expect("write");
         let mut buf = [0u8; 4];
@@ -1148,37 +1191,37 @@ mod tests {
     }
 
     #[test]
-    fn payload_log_asc_index_follows_oldest_to_newest() {
+    fn inline_property_bytes_log_asc_index_follows_oldest_to_newest() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 2, &[10, 0])
+            .write_inline_property_bytes_log_entry(0, 0, -1, 2, &[10, 0])
             .expect("entry 0");
         store
-            .write_payload_log_entry(0, 1, 0, 2, &[20, 0])
+            .write_inline_property_bytes_log_entry(0, 1, 0, 2, &[20, 0])
             .expect("entry 1");
         let mut out = [0u8; 2];
         store
-            .read_payload_log_asc_index(0, 1, 0, 2, &mut out)
+            .read_inline_property_bytes_log_asc_index(0, 1, 0, 2, &mut out)
             .expect("read oldest");
         assert_eq!(out, [10, 0]);
         store
-            .read_payload_log_asc_index(0, 1, 1, 2, &mut out)
+            .read_inline_property_bytes_log_asc_index(0, 1, 1, 2, &mut out)
             .expect("read newest");
         assert_eq!(out, [20, 0]);
     }
 
     #[test]
-    fn payload_log_grows_segment_count() {
+    fn inline_property_bytes_log_grows_segment_count() {
         let store = test_store();
         assert_eq!(store.log.header().segment_count, 1);
         store.grow_segment_count_to(4).expect("grow");
         assert_eq!(store.log.header().segment_count, 4);
         store
-            .write_payload_log_entry(3, 0, -1, 1, &[7])
+            .write_inline_property_bytes_log_entry(3, 0, -1, 1, &[7])
             .expect("leaf 3");
         let mut out = [0u8; 1];
         store
-            .read_payload_log_entry(3, 0, 1, &mut out)
+            .read_inline_property_bytes_log_entry(3, 0, 1, &mut out)
             .expect("read leaf 3");
         assert_eq!(out, [7]);
     }
@@ -1205,7 +1248,7 @@ mod tests {
         let blobs = mem();
         let free_spans = mem();
         let by_start = mem();
-        EdgeInlineValueStore::new(
+        EdgeInlinePropertyBytesStore::new(
             slab.clone(),
             log.clone(),
             blobs.clone(),
@@ -1217,7 +1260,7 @@ mod tests {
         .expect("store");
         // Slab, free-span pair populated, payload log wiped (miswired region).
         assert!(matches!(
-            EdgeInlineValueStore::init(slab, mem(), blobs, free_spans, by_start, 1024, 1),
+            EdgeInlinePropertyBytesStore::init(slab, mem(), blobs, free_spans, by_start, 1024, 1),
             Err(InitError::PartialLayout)
         ));
     }
@@ -1229,7 +1272,7 @@ mod tests {
         let blobs = mem();
         let free_spans = mem();
         let by_start = mem();
-        EdgeInlineValueStore::new(
+        EdgeInlinePropertyBytesStore::new(
             slab.clone(),
             log.clone(),
             blobs.clone(),
@@ -1240,7 +1283,8 @@ mod tests {
         )
         .expect("store");
         assert!(
-            EdgeInlineValueStore::init(slab, log, blobs, free_spans, by_start, 1024, 1).is_ok()
+            EdgeInlinePropertyBytesStore::init(slab, log, blobs, free_spans, by_start, 1024, 1)
+                .is_ok()
         );
     }
 
@@ -1251,7 +1295,7 @@ mod tests {
         // is partial loss, not a fresh create.
         crate::safe_write(&blobs, 0, &[1]).expect("populate blob region");
         assert!(matches!(
-            EdgeInlineValueStore::init(mem(), mem(), blobs, mem(), mem(), 1024, 1),
+            EdgeInlinePropertyBytesStore::init(mem(), mem(), blobs, mem(), mem(), 1024, 1),
             Err(InitError::PartialLayout)
         ));
     }
@@ -1263,7 +1307,7 @@ mod tests {
         let free_spans = mem();
         let by_start = mem();
         // Populate every required region; leave the blob region untouched.
-        EdgeInlineValueStore::new(
+        EdgeInlinePropertyBytesStore::new(
             slab.clone(),
             log.clone(),
             mem(),
@@ -1276,7 +1320,8 @@ mod tests {
         // Reopen with an empty blob region: valid for a store that never wrote a
         // wide-payload blob.
         assert!(
-            EdgeInlineValueStore::init(slab, log, mem(), free_spans, by_start, 1024, 1).is_ok()
+            EdgeInlinePropertyBytesStore::init(slab, log, mem(), free_spans, by_start, 1024, 1)
+                .is_ok()
         );
     }
 
@@ -1288,7 +1333,7 @@ mod tests {
         let free_spans = mem();
         let by_start = mem();
         // Fully populate every region with a payload-log segment_count of 2.
-        EdgeInlineValueStore::new(
+        EdgeInlinePropertyBytesStore::new(
             slab.clone(),
             log.clone(),
             blobs.clone(),
@@ -1301,7 +1346,7 @@ mod tests {
         // Reopen claiming the edge store has three segments: a real layout
         // mismatch on an otherwise consistent, fully populated memory set.
         assert!(matches!(
-            EdgeInlineValueStore::init(slab, log, blobs, free_spans, by_start, 1024, 3),
+            EdgeInlinePropertyBytesStore::init(slab, log, blobs, free_spans, by_start, 1024, 3),
             Err(InitError::PayloadLogLayoutMismatch)
         ));
     }

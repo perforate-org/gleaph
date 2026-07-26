@@ -16,7 +16,7 @@ use ic_stable_lara::{
 
 use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara_label};
 use super::{GraphStore, GraphStoreError, stable::GRAPH};
-use crate::edge_inline_value_schema::lookup_edge_inline_value_profile;
+use crate::edge_inline_property_schema::lookup_edge_inline_property_profile;
 use rapidhash::{HashMapExt, RapidHashMap};
 
 /// One logical edge supplied by a client for unordered batch planning.
@@ -36,7 +36,7 @@ pub struct BatchEdgeInput {
     /// Whether the edge is directed (`source -> target`) or undirected.
     pub directed: bool,
     /// Fixed-width inline payload bytes. Must match the label profile width.
-    pub inline_value_bytes: Vec<u8>,
+    pub inline_property_bytes: Vec<u8>,
 }
 
 /// Role of one physical half-edge intent within a logical edge.
@@ -72,9 +72,9 @@ pub struct BatchEdgeIntent {
     /// Storage label, including directedness bit.
     pub storage_label: LaraLabelId,
     /// Physical byte width per inline value slot (`0` = no payload).
-    pub inline_value_width: u16,
+    pub inline_property_width: u16,
     /// Inline payload bytes carried by this half-edge.
-    pub inline_value_bytes: Vec<u8>,
+    pub inline_property_bytes: Vec<u8>,
 }
 
 /// Error returned when batch planning cannot produce a read-only summary.
@@ -160,7 +160,7 @@ impl BatchPlacementError {
     fn from_graph_store_error_for_label(err: GraphStoreError) -> Self {
         match err {
             GraphStoreError::InvalidEdgeLabelId(id) => BatchPlacementError::InvalidEdgeLabelId(id),
-            GraphStoreError::EdgeInlineValueWidthMismatch {
+            GraphStoreError::EdgeInlinePropertyBytesWidthMismatch {
                 label,
                 expected,
                 actual,
@@ -189,7 +189,7 @@ pub struct BatchPlacementKey {
     /// Storage label, including directedness bit.
     pub storage_label: LaraLabelId,
     /// Physical byte width per inline value slot (`0` = no payload).
-    pub inline_value_width: u16,
+    pub inline_property_width: u16,
 }
 
 impl BatchPlacementKey {
@@ -202,7 +202,7 @@ impl BatchPlacementKey {
             self.leaf_segment,
             u32::from(self.owner_vertex_id),
             u64::from(self.storage_label.raw()),
-            self.inline_value_width,
+            self.inline_property_width,
         )
     }
 }
@@ -265,7 +265,7 @@ impl BatchPlacementGroup {
     pub fn projected_minimum_payload_bytes(&self) -> Result<u64, BatchPlacementError> {
         let slots = self.projected_minimum_payload_slots()?;
         slots
-            .checked_mul(u64::from(self.key.inline_value_width))
+            .checked_mul(u64::from(self.key.inline_property_width))
             .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
     }
 }
@@ -310,7 +310,7 @@ pub struct BatchPlacementLeafSummary {
     /// Sum of inline-value overflow-log slots reserved by **all** existing buckets on this leaf.
     pub full_leaf_resident_log_payload_slots: u64,
     /// Payload widths represented by resident and pending payloads on this leaf.
-    pub payload_widths: BTreeSet<u16>,
+    pub inline_property_byte_widths: BTreeSet<u16>,
 }
 
 impl BatchPlacementLeafSummary {
@@ -326,7 +326,7 @@ impl BatchPlacementLeafSummary {
 
     /// Minimum inline-value slots required to hold all leaf-wide resident and pending values.
     pub fn projected_minimum_payload_slots(&self) -> Result<u64, BatchPlacementError> {
-        if self.payload_widths.len() > 1 {
+        if self.inline_property_byte_widths.len() > 1 {
             return Err(BatchPlacementError::PayloadWidthMixed);
         }
         self.full_leaf_resident_slab_payload_slots
@@ -490,7 +490,7 @@ impl GraphStore {
                 u32::try_from(ordinal).map_err(|_| BatchPlacementError::OrdinalOverflow)?;
             let key = input.target_key();
             if let Some(&first_idx) = first_index.get(&key) {
-                if edges[first_idx].inline_value_bytes != input.inline_value_bytes {
+                if edges[first_idx].inline_property_bytes != input.inline_property_bytes {
                     return Err(BatchPlacementError::ConflictingDuplicateEdgeTarget);
                 }
                 return Err(BatchPlacementError::DuplicateEdgeTarget);
@@ -547,8 +547,8 @@ fn expand_logical_edge_to_intents(
     // Validate catalog label and inline value width.
     GraphStore::validate_catalog_edge_label(Some(catalog_label))
         .map_err(BatchPlacementError::from_graph_store_error_for_label)?;
-    let expected_width = lookup_edge_inline_value_profile(catalog_label).required_byte_width();
-    let actual = input.inline_value_bytes.len();
+    let expected_width = lookup_edge_inline_property_profile(catalog_label).required_byte_width();
+    let actual = input.inline_property_bytes.len();
     let expected = usize::from(expected_width);
     if actual != expected {
         return Err(BatchPlacementError::InlineValueWidthMismatch {
@@ -569,8 +569,8 @@ fn expand_logical_edge_to_intents(
             owner_vertex_id: input.source_vertex_id,
             neighbor_vertex_id: input.target_vertex_id,
             storage_label,
-            inline_value_width: expected_width,
-            inline_value_bytes: input.inline_value_bytes.clone(),
+            inline_property_width: expected_width,
+            inline_property_bytes: input.inline_property_bytes.clone(),
         });
         out.push(BatchEdgeIntent {
             logical_ordinal: ordinal,
@@ -579,8 +579,8 @@ fn expand_logical_edge_to_intents(
             owner_vertex_id: input.target_vertex_id,
             neighbor_vertex_id: input.source_vertex_id,
             storage_label,
-            inline_value_width: expected_width,
-            inline_value_bytes: input.inline_value_bytes.clone(),
+            inline_property_width: expected_width,
+            inline_property_bytes: input.inline_property_bytes.clone(),
         });
     } else {
         // Undirected: two forward halves. The canonical owner is the higher id.
@@ -601,8 +601,8 @@ fn expand_logical_edge_to_intents(
                 input.source_vertex_id
             },
             storage_label,
-            inline_value_width: expected_width,
-            inline_value_bytes: input.inline_value_bytes.clone(),
+            inline_property_width: expected_width,
+            inline_property_bytes: input.inline_property_bytes.clone(),
         });
         // Self-loops produce only one forward half.
         if owner != alias {
@@ -613,8 +613,8 @@ fn expand_logical_edge_to_intents(
                 owner_vertex_id: alias,
                 neighbor_vertex_id: owner,
                 storage_label,
-                inline_value_width: expected_width,
-                inline_value_bytes: input.inline_value_bytes.clone(),
+                inline_property_width: expected_width,
+                inline_property_bytes: input.inline_property_bytes.clone(),
             });
         }
     }
@@ -643,7 +643,7 @@ fn group_intents_for_placement(
             leaf_segment,
             owner_vertex_id: intent.owner_vertex_id,
             storage_label: intent.storage_label,
-            inline_value_width: intent.inline_value_width,
+            inline_property_width: intent.inline_property_width,
         };
         use std::collections::btree_map::Entry;
         if let Entry::Vacant(slot) = groups.entry(key) {
@@ -654,10 +654,10 @@ fn group_intents_for_placement(
                 resident_slab_edge_slots: existing.map(|e| e.stored_edge_slots).unwrap_or(0),
                 resident_log_edge_slots: existing.map(|e| e.edge_overflow_log_len).unwrap_or(0),
                 resident_slab_payload_slots: existing
-                    .map(|e| e.inline_value_slab_slots)
+                    .map(|e| e.inline_property_bytes_slab_slots)
                     .unwrap_or(0),
                 resident_log_payload_slots: existing
-                    .map(|e| e.payload_overflow_log_len)
+                    .map(|e| e.inline_property_bytes_overflow_log_len)
                     .unwrap_or(0),
             });
         }
@@ -688,14 +688,16 @@ fn group_intents_for_placement(
                 pending_payload_intents: 0,
                 full_leaf_resident_slab_payload_slots: 0,
                 full_leaf_resident_log_payload_slots: 0,
-                payload_widths: BTreeSet::new(),
+                inline_property_byte_widths: BTreeSet::new(),
             });
         leaf_entry.pending_edge_intents = leaf_entry
             .pending_edge_intents
             .checked_add(1)
             .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-        if intent.inline_value_width > 0 {
-            leaf_entry.payload_widths.insert(intent.inline_value_width);
+        if intent.inline_property_width > 0 {
+            leaf_entry
+                .inline_property_byte_widths
+                .insert(intent.inline_property_width);
             leaf_entry.pending_payload_intents = leaf_entry
                 .pending_payload_intents
                 .checked_add(1)
@@ -739,9 +741,13 @@ fn group_intents_for_placement(
             .expect("leaf summary present");
         leaf_entry.full_leaf_resident_slab_edge_slots = stats.total_stored_edge_slots;
         leaf_entry.full_leaf_resident_log_edge_slots = stats.total_edge_overflow_log_slots;
-        leaf_entry.full_leaf_resident_slab_payload_slots = stats.total_inline_value_slab_slots;
-        leaf_entry.full_leaf_resident_log_payload_slots = stats.total_payload_overflow_log_slots;
-        leaf_entry.payload_widths.extend(stats.payload_widths);
+        leaf_entry.full_leaf_resident_slab_payload_slots =
+            stats.total_inline_property_bytes_slab_slots;
+        leaf_entry.full_leaf_resident_log_payload_slots =
+            stats.total_inline_property_bytes_overflow_log_slots;
+        leaf_entry
+            .inline_property_byte_widths
+            .extend(stats.inline_property_byte_widths);
     }
 
     Ok((groups, leaf_summaries))
@@ -804,8 +810,8 @@ mod tests {
         PENDING_VERTEX_PURGES, UNIQUE_EFFECT_OUTBOX, memory::stable_memory_stats,
     };
     use super::*;
-    use crate::test_labels::{edge_label_id_for_name, install_test_edge_inline_value_profile};
-    use gleaph_graph_kernel::entry::{Edge, EdgeInlineValueEncoding, EdgeInlineValueProfile};
+    use crate::test_labels::{edge_label_id_for_name, install_test_edge_inline_property_profile};
+    use gleaph_graph_kernel::entry::{Edge, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     use gleaph_graph_kernel::stable_memory::StableMemoryStats;
 
     fn fresh_store() -> GraphStore {
@@ -830,7 +836,7 @@ mod tests {
             target_vertex_id: target,
             catalog_label: label,
             directed,
-            inline_value_bytes: bytes,
+            inline_property_bytes: bytes,
         }
     }
 
@@ -941,15 +947,15 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_inline_value_for_same_target_is_rejected() {
+    fn conflicting_inline_property_for_same_target_is_rejected() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let label = edge_label_id_for_name("BatchConflictPayload");
-        install_test_edge_inline_value_profile(
+        install_test_edge_inline_property_profile(
             label,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::RawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
         let edges = vec![
@@ -966,15 +972,15 @@ mod tests {
     }
 
     #[test]
-    fn identical_inline_value_for_same_target_is_still_duplicate() {
+    fn identical_inline_property_for_same_target_is_still_duplicate() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let label = edge_label_id_for_name("BatchIdenticalPayload");
-        install_test_edge_inline_value_profile(
+        install_test_edge_inline_property_profile(
             label,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::RawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
         let edges = vec![
@@ -1001,15 +1007,15 @@ mod tests {
     }
 
     #[test]
-    fn inline_value_width_must_match_label_profile() {
+    fn inline_property_width_must_match_label_profile() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let label = edge_label_id_for_name("BatchWidth");
-        install_test_edge_inline_value_profile(
+        install_test_edge_inline_property_profile(
             label,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::RawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
         let edges = vec![input(v[0], v[1], Some(label), true, vec![1])];
@@ -1173,7 +1179,7 @@ mod tests {
                 leaf_segment: 0,
                 owner_vertex_id: VertexId::from(0),
                 storage_label: LaraLabelId::UNLABELED_DIRECTED,
-                inline_value_width: 0,
+                inline_property_width: 0,
             },
             pending_edge_intents: 3,
             resident_slab_edge_slots: 2,
@@ -1192,7 +1198,7 @@ mod tests {
                 leaf_segment: 0,
                 owner_vertex_id: VertexId::from(0),
                 storage_label: LaraLabelId::UNLABELED_DIRECTED,
-                inline_value_width: 4,
+                inline_property_width: 4,
             },
             pending_edge_intents: 2,
             resident_slab_edge_slots: 0,
@@ -1219,7 +1225,7 @@ mod tests {
             pending_payload_intents: 2,
             full_leaf_resident_slab_payload_slots: 1,
             full_leaf_resident_log_payload_slots: 1,
-            payload_widths: [1u16, 8u16].into_iter().collect(),
+            inline_property_byte_widths: [1u16, 8u16].into_iter().collect(),
         };
         assert_eq!(
             summary.projected_minimum_payload_slots(),

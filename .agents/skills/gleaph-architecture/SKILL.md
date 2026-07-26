@@ -39,7 +39,7 @@ Every Gleaph-specific architecture review must preserve:
 
 - **Encapsulation:** Router, Graph, indexes, storage, and GQL crates expose capabilities through intentional APIs, not internal state shortcuts.
 - **Separation of concerns:** portable GQL crates stay language-oriented; Router coordinates; Graph executes and stores; indexes answer index reads.
-- **Invariants:** placement, postings, edge identity, labels, payloads, tombstones, and stable layout rules are enforced by the domain that owns the corresponding state.
+- **Invariants:** placement, postings, edge identity, labels, inline properties, tombstones, and stable layout rules are enforced by the domain that owns the corresponding state.
 - **Consistency:** derived state such as postings, telemetry, reverse adjacency, and cached plans has one update path from the canonical source.
 - **Fitness for purpose:** Gleaph-specific extensions solve a concrete product or storage need without polluting general-purpose crates.
 
@@ -119,16 +119,16 @@ Must not own:
 
 ---
 
-## Edge Payload vs Property Store
+## Edge Inline Property vs Property Store
 
-Edge Payload and Property Store serve different purposes.
+Edge Inline Property and Property Store serve different purposes.
 
-### Edge Payload
+### Edge Inline Property
 
 Use for:
 
 - Frequently accessed values
-- Compact fixed-size payloads
+- Compact fixed-size properties
 - Traversal-critical information
 - Ranking weights
 
@@ -176,7 +176,6 @@ For every change:
 Prefer extending existing concepts over introducing new ones.
 
 ---
-
 
 ## Bootstrap and authority
 

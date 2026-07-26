@@ -1,13 +1,13 @@
-//! Router SSOT for `(GraphId, EdgeLabelId) → EdgeInlineValueSchemaRecord` (ADR 0008, ADR 0018).
+//! Router SSOT for `(GraphId, EdgeLabelId) → EdgeInlinePropertySchemaRecord` (ADR 0008, ADR 0018).
 //!
-//! The stable value is a versioned `EdgeInlineValueSchemaRecord`. Development stable data must be wiped
+//! The stable value is a versioned `EdgeInlinePropertySchemaRecord`. Development stable data must be wiped
 //! when this format changes because backward compatibility is not maintained.
-//! The physical `EdgeInlineValueProfile` consumed by Graph is always derived from the canonical record.
+//! The physical `EdgeInlinePropertyProfile` consumed by Graph is always derived from the canonical record.
 
 use std::fmt;
 
 use gleaph_graph_kernel::entry::{
-    EdgeInlineValueProfile, EdgeInlineValueProfileError, EdgeLabelId, GraphId, PropertyId,
+    EdgeInlinePropertyProfile, EdgeInlinePropertyProfileError, EdgeLabelId, GraphId, PropertyId,
 };
 use gleaph_graph_kernel::plan_exec::{ResolvedInlineSchema, ResolvedInlineStructField};
 use gleaph_graph_kernel::scoped_name_catalog::GraphScopedIdKey;
@@ -61,66 +61,66 @@ impl InlineScalarType {
     }
 
     /// The physical edge-inline-value profile this scalar declaration derives.
-    pub const fn edge_inline_value_profile(self) -> EdgeInlineValueProfile {
-        use gleaph_graph_kernel::entry::EdgeInlineValueEncoding::*;
+    pub const fn edge_inline_property_profile(self) -> EdgeInlinePropertyProfile {
+        use gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::*;
         match self {
-            Self::U8 => EdgeInlineValueProfile {
+            Self::U8 => EdgeInlinePropertyProfile {
                 byte_width: 1,
                 encoding: RawU8,
             },
-            Self::U16 => EdgeInlineValueProfile {
+            Self::U16 => EdgeInlinePropertyProfile {
                 byte_width: 2,
                 encoding: RawU16,
             },
-            Self::U32 => EdgeInlineValueProfile {
+            Self::U32 => EdgeInlinePropertyProfile {
                 byte_width: 4,
                 encoding: RawU32,
             },
-            Self::U64 => EdgeInlineValueProfile {
+            Self::U64 => EdgeInlinePropertyProfile {
                 byte_width: 8,
                 encoding: RawU64,
             },
-            Self::I8 => EdgeInlineValueProfile {
+            Self::I8 => EdgeInlinePropertyProfile {
                 byte_width: 1,
                 encoding: RawI8,
             },
-            Self::I16 => EdgeInlineValueProfile {
+            Self::I16 => EdgeInlinePropertyProfile {
                 byte_width: 2,
                 encoding: RawI16,
             },
-            Self::I32 => EdgeInlineValueProfile {
+            Self::I32 => EdgeInlinePropertyProfile {
                 byte_width: 4,
                 encoding: RawI32,
             },
-            Self::I64 => EdgeInlineValueProfile {
+            Self::I64 => EdgeInlinePropertyProfile {
                 byte_width: 8,
                 encoding: RawI64,
             },
-            Self::U128 => EdgeInlineValueProfile {
+            Self::U128 => EdgeInlinePropertyProfile {
                 byte_width: 16,
                 encoding: RawU128,
             },
-            Self::I128 => EdgeInlineValueProfile {
+            Self::I128 => EdgeInlinePropertyProfile {
                 byte_width: 16,
                 encoding: RawI128,
             },
-            Self::F16 => EdgeInlineValueProfile {
+            Self::F16 => EdgeInlinePropertyProfile {
                 byte_width: 2,
                 encoding: F16,
             },
-            Self::F32 => EdgeInlineValueProfile {
+            Self::F32 => EdgeInlinePropertyProfile {
                 byte_width: 4,
                 encoding: F32,
             },
-            Self::F64 => EdgeInlineValueProfile {
+            Self::F64 => EdgeInlinePropertyProfile {
                 byte_width: 8,
                 encoding: F64,
             },
-            Self::Fixed32 => EdgeInlineValueProfile {
+            Self::Fixed32 => EdgeInlinePropertyProfile {
                 byte_width: 32,
                 encoding: RawFixed32,
             },
-            Self::Fixed64 => EdgeInlineValueProfile {
+            Self::Fixed64 => EdgeInlinePropertyProfile {
                 byte_width: 64,
                 encoding: RawFixed64,
             },
@@ -140,7 +140,7 @@ pub const MAX_INLINE_STRUCT_TOTAL_BYTES: u16 =
     gleaph_graph_kernel::federation::MAX_FEDERATED_EXPAND_INLINE_VALUE_BYTE_WIDTH;
 
 /// Maximum encoded stable-record size for an inline STRUCT schema record.
-/// Must fit inside the [`EdgeInlineValueSchemaRecord`] [`Storable::BOUND`] envelope.
+/// Must fit inside the [`EdgeInlinePropertySchemaRecord`] [`Storable::BOUND`] envelope.
 pub const MAX_INLINE_STRUCT_RECORD_BYTES: usize = 1024;
 
 /// Logical specification of one fixed-size inline edge STRUCT field.
@@ -232,7 +232,7 @@ impl InlineStructLayout {
             if !seen.insert(name.clone()) {
                 return Err(InlineStructLayoutError::DuplicateField(name));
             }
-            let byte_width = scalar_type.edge_inline_value_profile().byte_width;
+            let byte_width = scalar_type.edge_inline_property_profile().byte_width;
             let byte_offset = offset;
             // Checked arithmetic: under current bounds (64 fields x 64 bytes = 4096) u16 overflow
             // is mathematically unreachable, but a future bound change must not silently saturate.
@@ -264,7 +264,7 @@ impl InlineStructLayout {
     /// `PropertyId` is a fixed-width LE u32, so encoding with `PropertyId::from_raw(u32::MAX)` is
     /// an exact size representative, not merely an upper bound.
     pub fn fits_record_bound(&self, max_record_bytes: usize) -> bool {
-        let record = EdgeInlineValueSchemaRecord::InlineStruct {
+        let record = EdgeInlinePropertySchemaRecord::InlineStruct {
             property_id: PropertyId::from_raw(u32::MAX),
             field_specs: self.field_specs.clone(),
         };
@@ -275,15 +275,15 @@ impl InlineStructLayout {
     /// returns its exact byte length. `PropertyId` is a fixed-width LE u32, so this is the real
     /// encoded size for any actual property id.
     pub fn record_size_upper_bound(&self) -> usize {
-        let record = EdgeInlineValueSchemaRecord::InlineStruct {
+        let record = EdgeInlinePropertySchemaRecord::InlineStruct {
             property_id: PropertyId::from_raw(u32::MAX),
             field_specs: self.field_specs.clone(),
         };
         ic_stable_structures::Storable::into_bytes(record).len()
     }
 
-    pub fn profile(&self) -> EdgeInlineValueProfile {
-        EdgeInlineValueProfile::opaque_bytes(self.total_byte_width)
+    pub fn profile(&self) -> EdgeInlinePropertyProfile {
+        EdgeInlinePropertyProfile::opaque_bytes(self.total_byte_width)
     }
 
     /// Same as `from_fields` but also checks the stable-record size envelope.
@@ -303,9 +303,9 @@ impl InlineStructLayout {
 
 /// Canonical Router-owned record for the edge-label payload schema.
 #[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
-pub enum EdgeInlineValueSchemaRecord {
+pub enum EdgeInlinePropertySchemaRecord {
     /// Unnamed profile installed through the admin API. Carries no logical property identity.
-    UnnamedProfile { profile: EdgeInlineValueProfile },
+    UnnamedProfile { profile: EdgeInlinePropertyProfile },
     /// Slice 20: one fixed-width scalar inline property per edge label.
     InlineScalar {
         property_id: PropertyId,
@@ -320,12 +320,12 @@ pub enum EdgeInlineValueSchemaRecord {
     },
 }
 
-impl EdgeInlineValueSchemaRecord {
+impl EdgeInlinePropertySchemaRecord {
     /// Derives the physical wire profile regardless of schema kind.
-    pub fn profile(&self) -> EdgeInlineValueProfile {
+    pub fn profile(&self) -> EdgeInlinePropertyProfile {
         match self {
             Self::UnnamedProfile { profile } => profile.clone(),
-            Self::InlineScalar { scalar_type, .. } => scalar_type.edge_inline_value_profile(),
+            Self::InlineScalar { scalar_type, .. } => scalar_type.edge_inline_property_profile(),
             Self::InlineStruct { field_specs, .. } => {
                 let layout = InlineStructLayout::from_fields(
                     field_specs
@@ -360,7 +360,7 @@ impl EdgeInlineValueSchemaRecord {
 
 const SCHEMA_RECORD_VERSION: u8 = 2;
 
-impl ic_stable_structures::Storable for EdgeInlineValueSchemaRecord {
+impl ic_stable_structures::Storable for EdgeInlinePropertySchemaRecord {
     const BOUND: ic_stable_structures::storable::Bound =
         ic_stable_structures::storable::Bound::Bounded {
             max_size: 1024,
@@ -376,7 +376,7 @@ impl ic_stable_structures::Storable for EdgeInlineValueSchemaRecord {
         out.push(SCHEMA_RECORD_VERSION);
         out.extend_from_slice(
             &candid::encode_one(&self)
-                .expect("EdgeInlineValueSchemaRecord candid encode should not fail"),
+                .expect("EdgeInlinePropertySchemaRecord candid encode should not fail"),
         );
         out
     }
@@ -385,10 +385,10 @@ impl ic_stable_structures::Storable for EdgeInlineValueSchemaRecord {
         let slice = bytes.as_ref();
         assert!(
             slice.first() == Some(&SCHEMA_RECORD_VERSION),
-            "EdgeInlineValueSchemaRecord version mismatch; existing stable data must be wiped"
+            "EdgeInlinePropertySchemaRecord version mismatch; existing stable data must be wiped"
         );
         let record: Self = candid::decode_one(&slice[1..])
-            .expect("EdgeInlineValueSchemaRecord candid decode should not fail");
+            .expect("EdgeInlinePropertySchemaRecord candid decode should not fail");
         // Fail-closed validation: a decoded InlineStruct must re-derive to the same canonical layout.
         if let Self::InlineStruct {
             property_id: _,
@@ -411,9 +411,9 @@ impl ic_stable_structures::Storable for EdgeInlineValueSchemaRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EdgeInlineValueProfileStoreError {
+pub enum EdgeInlinePropertyProfileStoreError {
     InvalidCatalogLabel(EdgeLabelId),
-    InvalidProfile(EdgeInlineValueProfileError),
+    InvalidProfile(EdgeInlinePropertyProfileError),
     InlineSchemaConflict(String),
     UnnamedProfileConflict(String),
     /// Slice 24: a proposed inline struct layout failed canonical re-derivation or record-bound
@@ -421,7 +421,7 @@ pub enum EdgeInlineValueProfileStoreError {
     LayoutInvalid(String),
 }
 
-impl fmt::Display for EdgeInlineValueProfileStoreError {
+impl fmt::Display for EdgeInlinePropertyProfileStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidCatalogLabel(id) => {
@@ -439,10 +439,10 @@ impl fmt::Display for EdgeInlineValueProfileStoreError {
     }
 }
 
-impl std::error::Error for EdgeInlineValueProfileStoreError {}
+impl std::error::Error for EdgeInlinePropertyProfileStoreError {}
 
-pub struct EdgeInlineValueProfileStore<M: Memory> {
-    inner: StableBTreeMap<GraphScopedIdKey<EdgeLabelId>, EdgeInlineValueSchemaRecord, M>,
+pub struct EdgeInlinePropertyProfileStore<M: Memory> {
+    inner: StableBTreeMap<GraphScopedIdKey<EdgeLabelId>, EdgeInlinePropertySchemaRecord, M>,
     /// Heap-only last-value cache. Stable memory remains the SSOT; this is rebuilt empty after
     /// upgrade and is invalidated or replaced by every store-owned write.
     last_record: RefCell<Option<CachedSchemaRecord>>,
@@ -450,10 +450,10 @@ pub struct EdgeInlineValueProfileStore<M: Memory> {
 
 struct CachedSchemaRecord {
     key: GraphScopedIdKey<EdgeLabelId>,
-    record: Option<EdgeInlineValueSchemaRecord>,
+    record: Option<EdgeInlinePropertySchemaRecord>,
 }
 
-impl<M: Memory> EdgeInlineValueProfileStore<M> {
+impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
     pub fn init(memory: M) -> Self {
         Self {
             inner: StableBTreeMap::init(memory),
@@ -465,7 +465,7 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         &self,
         graph_id: GraphId,
         label: EdgeLabelId,
-    ) -> Option<EdgeInlineValueSchemaRecord> {
+    ) -> Option<EdgeInlinePropertySchemaRecord> {
         let key = GraphScopedIdKey {
             graph_id,
             id: label,
@@ -485,10 +485,10 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
 
     /// Physical profile accessor used by tests and by callers that only need the byte width/encoding.
     #[allow(dead_code)]
-    pub fn get_profile(&self, graph_id: GraphId, label: EdgeLabelId) -> EdgeInlineValueProfile {
+    pub fn get_profile(&self, graph_id: GraphId, label: EdgeLabelId) -> EdgeInlinePropertyProfile {
         self.get_record(graph_id, label)
             .map(|record| record.profile())
-            .unwrap_or_else(EdgeInlineValueProfile::no_inline_value)
+            .unwrap_or_else(EdgeInlinePropertyProfile::no_inline_property)
     }
 
     /// Router-derived projection of the canonical record into the physical wire shape Graph needs.
@@ -500,18 +500,18 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         &self,
         graph_id: GraphId,
         label: EdgeLabelId,
-    ) -> (EdgeInlineValueProfile, Option<ResolvedInlineSchema>) {
+    ) -> (EdgeInlinePropertyProfile, Option<ResolvedInlineSchema>) {
         let record = self.get_record(graph_id, label);
         let profile = record
             .as_ref()
-            .map(EdgeInlineValueSchemaRecord::profile)
-            .unwrap_or_else(EdgeInlineValueProfile::no_inline_value);
+            .map(EdgeInlinePropertySchemaRecord::profile)
+            .unwrap_or_else(EdgeInlinePropertyProfile::no_inline_property);
         let schema = record.and_then(|record| match record {
-            EdgeInlineValueSchemaRecord::UnnamedProfile { .. } => None,
-            EdgeInlineValueSchemaRecord::InlineScalar { property_id, .. } => {
+            EdgeInlinePropertySchemaRecord::UnnamedProfile { .. } => None,
+            EdgeInlinePropertySchemaRecord::InlineScalar { property_id, .. } => {
                 Some(ResolvedInlineSchema::Scalar { property_id })
             }
-            EdgeInlineValueSchemaRecord::InlineStruct {
+            EdgeInlinePropertySchemaRecord::InlineStruct {
                 property_id,
                 field_specs,
             } => {
@@ -528,7 +528,7 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
                     .map(|f| ResolvedInlineStructField {
                         name: f.name.clone(),
                         byte_offset: f.byte_offset,
-                        profile: f.scalar_type.edge_inline_value_profile(),
+                        profile: f.scalar_type.edge_inline_property_profile(),
                     })
                     .collect();
                 Some(ResolvedInlineSchema::Struct {
@@ -544,7 +544,7 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         &mut self,
         graph_id: GraphId,
         label: EdgeLabelId,
-        record: EdgeInlineValueSchemaRecord,
+        record: EdgeInlinePropertySchemaRecord,
     ) {
         let key = GraphScopedIdKey {
             graph_id,
@@ -561,18 +561,20 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         &mut self,
         graph_id: GraphId,
         label: EdgeLabelId,
-        profile: EdgeInlineValueProfile,
-    ) -> Result<(), EdgeInlineValueProfileStoreError> {
+        profile: EdgeInlinePropertyProfile,
+    ) -> Result<(), EdgeInlinePropertyProfileStoreError> {
         if !label.is_catalog_allocatable() {
-            return Err(EdgeInlineValueProfileStoreError::InvalidCatalogLabel(label));
+            return Err(EdgeInlinePropertyProfileStoreError::InvalidCatalogLabel(
+                label,
+            ));
         }
         profile
             .validate()
-            .map_err(EdgeInlineValueProfileStoreError::InvalidProfile)?;
+            .map_err(EdgeInlinePropertyProfileStoreError::InvalidProfile)?;
         if let Some(existing) = self.get_record(graph_id, label)
             && existing.is_named_inline()
         {
-            return Err(EdgeInlineValueProfileStoreError::InlineSchemaConflict(
+            return Err(EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(
                 format!(
                     "edge label {} has an inline schema; admin profile setter cannot override it",
                     label.raw()
@@ -582,24 +584,24 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         self.insert_record(
             graph_id,
             label,
-            EdgeInlineValueSchemaRecord::UnnamedProfile { profile },
+            EdgeInlinePropertySchemaRecord::UnnamedProfile { profile },
         );
         Ok(())
     }
 
-    pub fn insert_if_absent_no_inline_value(
+    pub fn insert_if_absent_no_inline_property(
         &mut self,
         graph_id: GraphId,
         label: EdgeLabelId,
-    ) -> Result<(), EdgeInlineValueProfileStoreError> {
+    ) -> Result<(), EdgeInlinePropertyProfileStoreError> {
         if self.get_record(graph_id, label).is_some() {
             return Ok(());
         }
         self.insert_record(
             graph_id,
             label,
-            EdgeInlineValueSchemaRecord::UnnamedProfile {
-                profile: EdgeInlineValueProfile::no_inline_value(),
+            EdgeInlinePropertySchemaRecord::UnnamedProfile {
+                profile: EdgeInlinePropertyProfile::no_inline_property(),
             },
         );
         Ok(())
@@ -611,18 +613,20 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         label: EdgeLabelId,
         property_id: PropertyId,
         scalar_type: InlineScalarType,
-    ) -> Result<(), EdgeInlineValueProfileStoreError> {
+    ) -> Result<(), EdgeInlinePropertyProfileStoreError> {
         if !label.is_catalog_allocatable() {
-            return Err(EdgeInlineValueProfileStoreError::InvalidCatalogLabel(label));
+            return Err(EdgeInlinePropertyProfileStoreError::InvalidCatalogLabel(
+                label,
+            ));
         }
-        let profile = scalar_type.edge_inline_value_profile();
+        let profile = scalar_type.edge_inline_property_profile();
         profile
             .validate()
-            .map_err(EdgeInlineValueProfileStoreError::InvalidProfile)?;
+            .map_err(EdgeInlinePropertyProfileStoreError::InvalidProfile)?;
 
         if let Some(existing) = self.get_record(graph_id, label) {
             match existing {
-                EdgeInlineValueSchemaRecord::InlineScalar {
+                EdgeInlinePropertySchemaRecord::InlineScalar {
                     property_id: existing_pid,
                     scalar_type: existing_st,
                     ..
@@ -630,24 +634,24 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
                     if existing_pid == property_id && existing_st == scalar_type {
                         return Ok(());
                     }
-                    return Err(EdgeInlineValueProfileStoreError::InlineSchemaConflict(
+                    return Err(EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(
                         format!(
                             "edge label {} already has a different inline scalar schema",
                             label.raw()
                         ),
                     ));
                 }
-                EdgeInlineValueSchemaRecord::InlineStruct { .. } => {
-                    return Err(EdgeInlineValueProfileStoreError::InlineSchemaConflict(
+                EdgeInlinePropertySchemaRecord::InlineStruct { .. } => {
+                    return Err(EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(
                         format!(
                             "edge label {} already has an inline struct schema",
                             label.raw()
                         ),
                     ));
                 }
-                EdgeInlineValueSchemaRecord::UnnamedProfile { profile } => {
-                    if profile != EdgeInlineValueProfile::no_inline_value() {
-                        return Err(EdgeInlineValueProfileStoreError::UnnamedProfileConflict(
+                EdgeInlinePropertySchemaRecord::UnnamedProfile { profile } => {
+                    if profile != EdgeInlinePropertyProfile::no_inline_property() {
+                        return Err(EdgeInlinePropertyProfileStoreError::UnnamedProfileConflict(
                             format!(
                                 "edge label {} has a legacy unnamed payload profile; install inline schema before the legacy profile",
                                 label.raw()
@@ -661,7 +665,7 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         self.insert_record(
             graph_id,
             label,
-            EdgeInlineValueSchemaRecord::InlineScalar {
+            EdgeInlinePropertySchemaRecord::InlineScalar {
                 property_id,
                 scalar_type,
             },
@@ -682,9 +686,11 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         label: EdgeLabelId,
         property_id: PropertyId,
         layout: InlineStructLayout,
-    ) -> Result<(), EdgeInlineValueProfileStoreError> {
+    ) -> Result<(), EdgeInlinePropertyProfileStoreError> {
         if !label.is_catalog_allocatable() {
-            return Err(EdgeInlineValueProfileStoreError::InvalidCatalogLabel(label));
+            return Err(EdgeInlinePropertyProfileStoreError::InvalidCatalogLabel(
+                label,
+            ));
         }
 
         // Re-derive and record-bound-check from the canonical logical specs at the owning stable
@@ -698,40 +704,40 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
                 .collect(),
             MAX_INLINE_STRUCT_RECORD_BYTES,
         )
-        .map_err(|e| EdgeInlineValueProfileStoreError::LayoutInvalid(e.to_string()))?;
+        .map_err(|e| EdgeInlinePropertyProfileStoreError::LayoutInvalid(e.to_string()))?;
 
         let profile = validated.profile();
         profile
             .validate()
-            .map_err(EdgeInlineValueProfileStoreError::InvalidProfile)?;
+            .map_err(EdgeInlinePropertyProfileStoreError::InvalidProfile)?;
 
         if let Some(existing) = self.get_record(graph_id, label) {
             match existing {
-                EdgeInlineValueSchemaRecord::InlineStruct {
+                EdgeInlinePropertySchemaRecord::InlineStruct {
                     property_id: existing_pid,
                     field_specs: ref existing_specs,
                 } => {
                     if existing_pid == property_id && existing_specs == validated.field_specs() {
                         return Ok(());
                     }
-                    return Err(EdgeInlineValueProfileStoreError::InlineSchemaConflict(
+                    return Err(EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(
                         format!(
                             "edge label {} already has a different inline struct schema",
                             label.raw()
                         ),
                     ));
                 }
-                EdgeInlineValueSchemaRecord::InlineScalar { .. } => {
-                    return Err(EdgeInlineValueProfileStoreError::InlineSchemaConflict(
+                EdgeInlinePropertySchemaRecord::InlineScalar { .. } => {
+                    return Err(EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(
                         format!(
                             "edge label {} already has an inline scalar schema",
                             label.raw()
                         ),
                     ));
                 }
-                EdgeInlineValueSchemaRecord::UnnamedProfile { profile } => {
-                    if profile != EdgeInlineValueProfile::no_inline_value() {
-                        return Err(EdgeInlineValueProfileStoreError::UnnamedProfileConflict(
+                EdgeInlinePropertySchemaRecord::UnnamedProfile { profile } => {
+                    if profile != EdgeInlinePropertyProfile::no_inline_property() {
+                        return Err(EdgeInlinePropertyProfileStoreError::UnnamedProfileConflict(
                             format!(
                                 "edge label {} has a legacy unnamed payload profile; install inline schema before the legacy profile",
                                 label.raw()
@@ -745,7 +751,7 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         self.insert_record(
             graph_id,
             label,
-            EdgeInlineValueSchemaRecord::InlineStruct {
+            EdgeInlinePropertySchemaRecord::InlineStruct {
                 property_id,
                 field_specs: validated.field_specs().to_vec(),
             },
@@ -788,7 +794,7 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     use ic_stable_structures::{Storable, VectorMemory};
     use std::{cell::RefCell, rc::Rc};
 
@@ -798,28 +804,28 @@ mod tests {
 
     #[test]
     fn insert_legacy_profile_rejects_invalid_profile_encoding() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let label = EdgeLabelId::from_raw(1);
-        let profile = EdgeInlineValueProfile {
+        let profile = EdgeInlinePropertyProfile {
             byte_width: 4,
-            encoding: EdgeInlineValueEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
         };
         assert!(matches!(
             store.insert_unnamed_profile_profile(GraphId::from_raw(1), label, profile),
-            Err(EdgeInlineValueProfileStoreError::InvalidProfile(
-                EdgeInlineValueProfileError::WidthEncodingMismatch
+            Err(EdgeInlinePropertyProfileStoreError::InvalidProfile(
+                EdgeInlinePropertyProfileError::WidthEncodingMismatch
             ))
         ));
     }
 
     #[test]
     fn legacy_profile_round_trips() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(2);
-        let profile = EdgeInlineValueProfile {
+        let profile = EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
         };
         store
             .insert_unnamed_profile_profile(graph, label, profile.clone())
@@ -830,7 +836,7 @@ mod tests {
 
     #[test]
     fn inline_scalar_schema_round_trips() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(3);
         let property_id = PropertyId::from_raw(7);
@@ -840,23 +846,23 @@ mod tests {
         let record = store.get_record(graph, label).expect("record");
         assert_eq!(
             record,
-            EdgeInlineValueSchemaRecord::InlineScalar {
+            EdgeInlinePropertySchemaRecord::InlineScalar {
                 property_id,
                 scalar_type: InlineScalarType::F32,
             }
         );
         assert_eq!(
             store.get_profile(graph, label),
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 4,
-                encoding: EdgeInlineValueEncoding::F32,
+                encoding: EdgeInlinePropertyEncoding::F32,
             }
         );
     }
 
     #[test]
     fn last_record_cache_is_cleared_when_graph_is_removed() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(11);
         let label = EdgeLabelId::from_raw(12);
         store
@@ -876,7 +882,7 @@ mod tests {
 
     #[test]
     fn inline_scalar_is_idempotent() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(4);
         let property_id = PropertyId::from_raw(7);
@@ -894,7 +900,7 @@ mod tests {
 
     #[test]
     fn inline_scalar_conflicts_on_different_scalar() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(5);
         let property_id = PropertyId::from_raw(7);
@@ -906,13 +912,13 @@ mod tests {
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::InlineSchemaConflict(_)
+            EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(_)
         ));
     }
 
     #[test]
     fn inline_scalar_conflicts_on_different_property() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(6);
         store
@@ -923,22 +929,22 @@ mod tests {
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::InlineSchemaConflict(_)
+            EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(_)
         ));
     }
 
     #[test]
     fn inline_scalar_rejects_unnamed_profile_override() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(7);
         store
             .insert_unnamed_profile_profile(
                 graph,
                 label,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlineValueEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
                 },
             )
             .expect("legacy");
@@ -947,13 +953,13 @@ mod tests {
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::UnnamedProfileConflict(_)
+            EdgeInlinePropertyProfileStoreError::UnnamedProfileConflict(_)
         ));
     }
 
     #[test]
     fn unnamed_profile_cannot_override_inline_scalar() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(8);
         store
@@ -963,48 +969,48 @@ mod tests {
             .insert_unnamed_profile_profile(
                 graph,
                 label,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlineValueEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
                 },
             )
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::InlineSchemaConflict(_)
+            EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(_)
         ));
     }
 
     #[test]
-    fn default_no_inline_value_record_is_unnamed_profile() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+    fn default_no_inline_property_record_is_unnamed_profile() {
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(9);
         store
-            .insert_if_absent_no_inline_value(graph, label)
+            .insert_if_absent_no_inline_property(graph, label)
             .expect("default");
         assert_eq!(
             store.get_record(graph, label),
-            Some(EdgeInlineValueSchemaRecord::UnnamedProfile {
-                profile: EdgeInlineValueProfile::no_inline_value(),
+            Some(EdgeInlinePropertySchemaRecord::UnnamedProfile {
+                profile: EdgeInlinePropertyProfile::no_inline_property(),
             })
         );
     }
 
     #[test]
     fn versioned_record_bytes_round_trip() {
-        let record = EdgeInlineValueSchemaRecord::InlineScalar {
+        let record = EdgeInlinePropertySchemaRecord::InlineScalar {
             property_id: PropertyId::from_raw(42),
             scalar_type: InlineScalarType::F32,
         };
         let bytes = record.clone().into_bytes();
         assert_eq!(bytes[0], SCHEMA_RECORD_VERSION);
-        let decoded = EdgeInlineValueSchemaRecord::from_bytes(std::borrow::Cow::Owned(bytes));
+        let decoded = EdgeInlinePropertySchemaRecord::from_bytes(std::borrow::Cow::Owned(bytes));
         assert_eq!(decoded, record);
     }
     #[test]
     fn inline_property_id_accessor_returns_property_id() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(3);
         let property_id = PropertyId::from_raw(7);
@@ -1023,16 +1029,16 @@ mod tests {
 
     #[test]
     fn unnamed_profile_inline_property_id_is_none() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(2);
         store
             .insert_unnamed_profile_profile(
                 graph,
                 label,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlineValueEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
                 },
             )
             .expect("legacy");
@@ -1061,7 +1067,10 @@ mod tests {
         assert_eq!(layout.fields()[1].byte_width, 4);
         assert_eq!(layout.fields()[2].byte_offset, 8);
         assert_eq!(layout.fields()[2].byte_width, 8);
-        assert_eq!(layout.profile(), EdgeInlineValueProfile::opaque_bytes(16));
+        assert_eq!(
+            layout.profile(),
+            EdgeInlinePropertyProfile::opaque_bytes(16)
+        );
     }
 
     #[test]
@@ -1122,7 +1131,7 @@ mod tests {
         }
         let layout = InlineStructLayout::from_fields(declared.clone()).expect("layout ok");
         let small_id_size = {
-            let record = EdgeInlineValueSchemaRecord::InlineStruct {
+            let record = EdgeInlinePropertySchemaRecord::InlineStruct {
                 property_id: PropertyId::from_raw(0),
                 field_specs: layout.field_specs().to_vec(),
             };
@@ -1161,7 +1170,7 @@ mod tests {
 
     #[test]
     fn inline_struct_schema_round_trips() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(10);
         let property_id = PropertyId::from_raw(20);
@@ -1177,21 +1186,21 @@ mod tests {
         let record = store.get_record(graph, label).expect("record");
         assert_eq!(
             record,
-            EdgeInlineValueSchemaRecord::InlineStruct {
+            EdgeInlinePropertySchemaRecord::InlineStruct {
                 property_id,
                 field_specs: layout.field_specs().to_vec(),
             }
         );
         assert_eq!(
             store.get_profile(graph, label),
-            EdgeInlineValueProfile::opaque_bytes(16)
+            EdgeInlinePropertyProfile::opaque_bytes(16)
         );
         assert_eq!(record.inline_property_id(), Some(property_id));
     }
 
     #[test]
     fn inline_struct_schema_is_idempotent() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(11);
         let property_id = PropertyId::from_raw(21);
@@ -1210,7 +1219,7 @@ mod tests {
 
     #[test]
     fn inline_struct_conflicts_on_different_field_order() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(12);
         let property_id = PropertyId::from_raw(22);
@@ -1232,13 +1241,13 @@ mod tests {
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::InlineSchemaConflict(_)
+            EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(_)
         ));
     }
 
     #[test]
     fn inline_struct_conflicts_on_different_field_type() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(13);
         let property_id = PropertyId::from_raw(23);
@@ -1254,13 +1263,13 @@ mod tests {
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::InlineSchemaConflict(_)
+            EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(_)
         ));
     }
 
     #[test]
     fn inline_scalar_rejects_existing_inline_struct() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(14);
         let property_id = PropertyId::from_raw(24);
@@ -1274,13 +1283,13 @@ mod tests {
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::InlineSchemaConflict(_)
+            EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(_)
         ));
     }
 
     #[test]
     fn inline_struct_rejects_existing_inline_scalar() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(15);
         let property_id = PropertyId::from_raw(25);
@@ -1294,22 +1303,22 @@ mod tests {
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::InlineSchemaConflict(_)
+            EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(_)
         ));
     }
 
     #[test]
     fn inline_struct_rejects_legacy_unnamed_profile() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(16);
         store
             .insert_unnamed_profile_profile(
                 graph,
                 label,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlineValueEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
                 },
             )
             .expect("legacy");
@@ -1320,13 +1329,13 @@ mod tests {
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::UnnamedProfileConflict(_)
+            EdgeInlinePropertyProfileStoreError::UnnamedProfileConflict(_)
         ));
     }
 
     #[test]
     fn unnamed_profile_cannot_override_inline_struct() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(17);
         let layout = InlineStructLayout::from_fields(vec![("a".into(), InlineScalarType::U8)])
@@ -1338,15 +1347,15 @@ mod tests {
             .insert_unnamed_profile_profile(
                 graph,
                 label,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlineValueEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
                 },
             )
             .expect_err("conflict");
         assert!(matches!(
             err,
-            EdgeInlineValueProfileStoreError::InlineSchemaConflict(_)
+            EdgeInlinePropertyProfileStoreError::InlineSchemaConflict(_)
         ));
     }
 
@@ -1357,13 +1366,13 @@ mod tests {
             ("confidence".into(), InlineScalarType::F32),
         ])
         .expect("layout");
-        let record = EdgeInlineValueSchemaRecord::InlineStruct {
+        let record = EdgeInlinePropertySchemaRecord::InlineStruct {
             property_id: PropertyId::from_raw(42),
             field_specs: layout.field_specs().to_vec(),
         };
         let bytes = record.clone().into_bytes();
         assert_eq!(bytes[0], SCHEMA_RECORD_VERSION);
-        let decoded = EdgeInlineValueSchemaRecord::from_bytes(std::borrow::Cow::Owned(bytes));
+        let decoded = EdgeInlinePropertySchemaRecord::from_bytes(std::borrow::Cow::Owned(bytes));
         assert_eq!(decoded, record);
     }
 
@@ -1385,7 +1394,7 @@ mod tests {
             "test fixture should exceed the record envelope"
         );
 
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let graph = GraphId::from_raw(1);
         let label = EdgeLabelId::from_raw(30);
         let property_id = PropertyId::from_raw(40);
@@ -1393,7 +1402,7 @@ mod tests {
             .set_inline_struct_schema(graph, label, property_id, oversized)
             .expect_err("oversized struct must be rejected at stable boundary");
         assert!(
-            matches!(err, EdgeInlineValueProfileStoreError::LayoutInvalid(_)),
+            matches!(err, EdgeInlinePropertyProfileStoreError::LayoutInvalid(_)),
             "expected LayoutInvalid, got {err:?}"
         );
         assert!(

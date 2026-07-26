@@ -5,7 +5,9 @@ use super::{
     weighted_shortest_can_use_hop_count, weighted_shortest_paths_between,
 };
 use crate::plan::query::executor::test_support::*;
-use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile, PropertyId};
+use gleaph_graph_kernel::entry::{
+    EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, PropertyId,
+};
 use gleaph_graph_kernel::plan_exec::{ResolvedProperty, ResolvedPropertyTable};
 use ic_stable_lara::traits::CsrEdge;
 use path_test_helpers::*;
@@ -16,7 +18,7 @@ mod path_test_helpers {
     use gleaph_gql::types::PathElement;
     use gleaph_gql_planner::plan::PhysicalPlan;
     use gleaph_graph_kernel::entry::{
-        EdgeInlineValueEncoding, EdgeInlineValueProfile, EdgeLabelId, PropertyId,
+        EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId, PropertyId,
     };
     use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalEdgeId, GlobalVertexId};
     use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
@@ -92,9 +94,9 @@ mod path_test_helpers {
             edge: vec![ResolvedEdgeLabel::with_inline_property(
                 "InlineRoad".to_string(),
                 label_id,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlineValueEncoding::RawU16,
+                    encoding: EdgeInlinePropertyEncoding::RawU16,
                 },
                 Some(property_id),
             )],
@@ -123,11 +125,11 @@ mod path_test_helpers {
             .insert_vertex_named(["InlineDst"], Vec::<(&str, Value)>::new())
             .expect("insert c");
         let label_id = crate::test_labels::edge_label_id_for_name("InlineRoad");
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::RawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
         crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
@@ -135,13 +137,18 @@ mod path_test_helpers {
         // a->b costs 1, b->c costs 1: total 2 (cheapest)
         // a->c costs 100: direct but expensive
         store
-            .insert_directed_edge_with_inline_value_bytes(a, b, Some(road), &1u16.to_le_bytes())
+            .insert_directed_edge_with_inline_property_bytes(a, b, Some(road), &1u16.to_le_bytes())
             .expect("a->b");
         store
-            .insert_directed_edge_with_inline_value_bytes(b, c, Some(road), &1u16.to_le_bytes())
+            .insert_directed_edge_with_inline_property_bytes(b, c, Some(road), &1u16.to_le_bytes())
             .expect("b->c");
         store
-            .insert_directed_edge_with_inline_value_bytes(a, c, Some(road), &100u16.to_le_bytes())
+            .insert_directed_edge_with_inline_property_bytes(
+                a,
+                c,
+                Some(road),
+                &100u16.to_le_bytes(),
+            )
             .expect("a->c");
         (a, b, c)
     }
@@ -217,21 +224,26 @@ mod path_test_helpers {
             .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
             .expect("insert c");
         let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
+            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
         );
         let road = catalog_edge_label("WgtRoad");
         store
-            .insert_directed_edge_with_inline_value_bytes(a, b, Some(road), &1u16.to_le_bytes())
+            .insert_directed_edge_with_inline_property_bytes(a, b, Some(road), &1u16.to_le_bytes())
             .expect("a->b");
         store
-            .insert_directed_edge_with_inline_value_bytes(b, c, Some(road), &1u16.to_le_bytes())
+            .insert_directed_edge_with_inline_property_bytes(b, c, Some(road), &1u16.to_le_bytes())
             .expect("b->c");
         store
-            .insert_directed_edge_with_inline_value_bytes(a, c, Some(road), &100u16.to_le_bytes())
+            .insert_directed_edge_with_inline_property_bytes(
+                a,
+                c,
+                Some(road),
+                &100u16.to_le_bytes(),
+            )
             .expect("a->c");
         (a, b, c)
     }
@@ -1590,9 +1602,9 @@ fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
     let knows = crate::test_labels::edge_label_id_for_name("WgtUnionKnows");
     let likes = crate::test_labels::edge_label_id_for_name("WgtUnionLikes");
     for label_id in [knows, likes] {
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
+            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
         );
@@ -1600,7 +1612,7 @@ fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
     let knows_wire = catalog_edge_label("WgtUnionKnows");
     let likes_wire = catalog_edge_label("WgtUnionLikes");
     store
-        .insert_directed_edge_with_inline_value_bytes(
+        .insert_directed_edge_with_inline_property_bytes(
             a,
             cheap_target,
             Some(knows_wire),
@@ -1608,7 +1620,7 @@ fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
         )
         .expect("cheap knows");
     store
-        .insert_directed_edge_with_inline_value_bytes(
+        .insert_directed_edge_with_inline_property_bytes(
             a,
             _expensive_target,
             Some(likes_wire),
@@ -1692,9 +1704,9 @@ fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
         .insert_vertex_named(["WgtKTarget"], Vec::<(&str, Value)>::new())
         .expect("insert target");
     let label_id = crate::test_labels::edge_label_id_for_name("WgtKRoad");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         }),
     );
@@ -1702,22 +1714,22 @@ fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
     let cheap = 1u16.to_le_bytes();
     let expensive = 50u16.to_le_bytes();
     store
-        .insert_directed_edge_with_inline_value_bytes(a, b1, Some(road), &cheap)
+        .insert_directed_edge_with_inline_property_bytes(a, b1, Some(road), &cheap)
         .expect("a-b1");
     store
-        .insert_directed_edge_with_inline_value_bytes(b1, target, Some(road), &cheap)
+        .insert_directed_edge_with_inline_property_bytes(b1, target, Some(road), &cheap)
         .expect("b1-target");
     store
-        .insert_directed_edge_with_inline_value_bytes(a, b2, Some(road), &cheap)
+        .insert_directed_edge_with_inline_property_bytes(a, b2, Some(road), &cheap)
         .expect("a-b2");
     store
-        .insert_directed_edge_with_inline_value_bytes(b2, target, Some(road), &cheap)
+        .insert_directed_edge_with_inline_property_bytes(b2, target, Some(road), &cheap)
         .expect("b2-target");
     store
-        .insert_directed_edge_with_inline_value_bytes(a, long, Some(road), &expensive)
+        .insert_directed_edge_with_inline_property_bytes(a, long, Some(road), &expensive)
         .expect("a-long");
     store
-        .insert_directed_edge_with_inline_value_bytes(long, target, Some(road), &expensive)
+        .insert_directed_edge_with_inline_property_bytes(long, target, Some(road), &expensive)
         .expect("long-target");
 
     let plan = plan(vec![
@@ -1789,24 +1801,24 @@ fn setup_hop_bound_cheaper_vertex_unusable_graph(store: &GraphStore) -> (VertexI
         .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
         .expect("insert dst");
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         }),
     );
     let road = catalog_edge_label("WgtRoad");
     store
-        .insert_directed_edge_with_inline_value_bytes(s, x, Some(road), &2u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(s, x, Some(road), &2u16.to_le_bytes())
         .expect("s->x");
     store
-        .insert_directed_edge_with_inline_value_bytes(s, a, Some(road), &0u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(s, a, Some(road), &0u16.to_le_bytes())
         .expect("s->a");
     store
-        .insert_directed_edge_with_inline_value_bytes(a, x, Some(road), &1u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(a, x, Some(road), &1u16.to_le_bytes())
         .expect("a->x");
     store
-        .insert_directed_edge_with_inline_value_bytes(x, dst, Some(road), &1u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(x, dst, Some(road), &1u16.to_le_bytes())
         .expect("x->dst");
     (s, dst)
 }
@@ -1877,24 +1889,24 @@ fn setup_stale_mid_diamond_graph(store: &GraphStore) -> (VertexId, VertexId) {
         .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
         .expect("insert dst");
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         }),
     );
     let road = catalog_edge_label("WgtRoad");
     store
-        .insert_directed_edge_with_inline_value_bytes(s, mid, Some(road), &10u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(s, mid, Some(road), &10u16.to_le_bytes())
         .expect("s->mid");
     store
-        .insert_directed_edge_with_inline_value_bytes(s, a, Some(road), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(s, a, Some(road), &5u16.to_le_bytes())
         .expect("s->a");
     store
-        .insert_directed_edge_with_inline_value_bytes(a, mid, Some(road), &1u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(a, mid, Some(road), &1u16.to_le_bytes())
         .expect("a->mid");
     store
-        .insert_directed_edge_with_inline_value_bytes(mid, dst, Some(road), &0u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(mid, dst, Some(road), &0u16.to_le_bytes())
         .expect("mid->dst");
     (s, dst)
 }
@@ -1940,8 +1952,8 @@ fn stale_mid_diamond_edge_bindings_carry_expected_weights() {
                 .expect("binding");
             let w = crate::plan::query::gleaph_weight::decode_traversal_edge_weight(
                 binding.handle,
-                binding.inline_value_len(),
-                binding.inline_value_bytes_slice(),
+                binding.inline_property_len(),
+                binding.inline_property_bytes_slice(),
             )
             .expect("decode");
             weights.insert(neighbor, w);
@@ -2022,8 +2034,8 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     let detour = hop_costs[0].0;
     store
         .for_each_directed_out_edges_for_label_unchecked(VertexId::from(detour), road, |edge| {
-            let inline_value_bytes = edge.inline_value_bytes().to_vec();
-            assert_eq!(inline_value_bytes, vec![1, 0]);
+            let inline_property_bytes = edge.inline_property_bytes().to_vec();
+            assert_eq!(inline_property_bytes, vec![1, 0]);
             let handle = EdgeHandle {
                 owner_vertex_id: VertexId::from(detour),
                 label_id: ic_stable_lara::BucketLabelKey::from_raw(edge.label_id),
@@ -2034,8 +2046,8 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
                 .expect("lookup")
                 .expect("record");
             assert_eq!(
-                record.inline_value_bytes(),
-                inline_value_bytes.as_slice(),
+                record.inline_property_bytes(),
+                inline_property_bytes.as_slice(),
                 "find_outgoing_edge_record must match iterated edge bytes"
             );
         })
@@ -2054,9 +2066,9 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     assert_eq!(from_detour.len(), 1);
     let binding = from_detour[0].1.clone();
     assert_eq!(
-        binding.inline_value_bytes_slice(),
+        binding.inline_property_bytes_slice(),
         &[1, 0],
-        "binding inline_value_bytes for detour->mid"
+        "binding inline_property_bytes for detour->mid"
     );
     let hop = decode_direct_gleaph_weight_hop_cost(decoder, binding).expect("detour hop");
     assert!(
@@ -2148,7 +2160,7 @@ fn weighted_shortest_skips_stale_higher_cost_vertex_entries() {
     store
         .for_each_directed_out_edges_for_label_unchecked(s, road, |edge| {
             weights.push(u16::from_le_bytes(
-                edge.inline_value_bytes().try_into().unwrap(),
+                edge.inline_property_bytes().try_into().unwrap(),
             ));
         })
         .expect("out edges from s");
@@ -2220,30 +2232,30 @@ fn weighted_shortest_prefers_zero_weight_detour_over_direct_edge() {
         .insert_vertex_named(["WgtD2"], Vec::<(&str, Value)>::new())
         .expect("insert d2");
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         }),
     );
     let road = catalog_edge_label("WgtRoad");
     store
-        .insert_directed_edge_with_inline_value_bytes(a, d1, Some(road), &0u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(a, d1, Some(road), &0u16.to_le_bytes())
         .expect("a->d1");
     store
-        .insert_directed_edge_with_inline_value_bytes(a, d2, Some(road), &0u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(a, d2, Some(road), &0u16.to_le_bytes())
         .expect("a->d2");
     store
-        .insert_directed_edge_with_inline_value_bytes(d1, d2, Some(road), &0u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(d1, d2, Some(road), &0u16.to_le_bytes())
         .expect("d1->d2");
     store
-        .insert_directed_edge_with_inline_value_bytes(d1, c, Some(road), &0u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(d1, c, Some(road), &0u16.to_le_bytes())
         .expect("d1->c");
     store
-        .insert_directed_edge_with_inline_value_bytes(d2, c, Some(road), &0u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(d2, c, Some(road), &0u16.to_le_bytes())
         .expect("d2->c");
     store
-        .insert_directed_edge_with_inline_value_bytes(a, c, Some(road), &50u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(a, c, Some(road), &50u16.to_le_bytes())
         .expect("a->c direct");
     let plan = plan(vec![
         PlanOp::NodeScan {
@@ -2492,24 +2504,24 @@ fn inline_cost_shortest_prefers_direct_edge_when_cheaper() {
         .insert_vertex_named(["InlineDst"], Vec::<(&str, Value)>::new())
         .expect("insert c");
     let label_id = crate::test_labels::edge_label_id_for_name("InlineRoad");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::RawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
     let road = catalog_edge_label("InlineRoad");
     // a->b->c costs 100+100 = 200; direct a->c costs 1.
     store
-        .insert_directed_edge_with_inline_value_bytes(a, b, Some(road), &100u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(a, b, Some(road), &100u16.to_le_bytes())
         .expect("a->b");
     store
-        .insert_directed_edge_with_inline_value_bytes(b, c, Some(road), &100u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(b, c, Some(road), &100u16.to_le_bytes())
         .expect("b->c");
     store
-        .insert_directed_edge_with_inline_value_bytes(a, c, Some(road), &1u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(a, c, Some(road), &1u16.to_le_bytes())
         .expect("a->c");
 
     let plan = inline_cost_plan_with_direction(EdgeDirection::PointingRight);
@@ -2537,18 +2549,18 @@ fn inline_cost_shortest_reverse_reads_mirrored_payload() {
         .insert_vertex_named(["InlineMid"], Vec::<(&str, Value)>::new())
         .expect("insert b");
     let label_id = crate::test_labels::edge_label_id_for_name("InlineRoad");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::RawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
     let road = catalog_edge_label("InlineRoad");
     // Only a->b exists with cost 7; reverse search b->a must read the same payload.
     store
-        .insert_directed_edge_with_inline_value_bytes(a, b, Some(road), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_property_bytes(a, b, Some(road), &7u16.to_le_bytes())
         .expect("a->b");
 
     let mut plan = inline_cost_plan_with_direction(EdgeDirection::PointingRight);
@@ -2597,18 +2609,18 @@ fn inline_cost_undirected_shortest_path_uses_payload_cost() {
         .insert_vertex_named(["InlineDst"], Vec::<(&str, Value)>::new())
         .expect("insert b");
     let label_id = crate::test_labels::edge_label_id_for_name("InlineRoad");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::RawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
     let road = catalog_edge_label("InlineRoad");
     // A single undirected edge a-b with a fixed-width inline payload of cost 9.
     store
-        .insert_undirected_edge_with_inline_value_bytes(a, b, Some(road), &9u16.to_le_bytes())
+        .insert_undirected_edge_with_inline_property_bytes(a, b, Some(road), &9u16.to_le_bytes())
         .expect("undirected a-b");
 
     let plan = plan(vec![

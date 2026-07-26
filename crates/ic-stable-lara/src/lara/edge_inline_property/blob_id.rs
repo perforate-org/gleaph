@@ -3,9 +3,9 @@
 /// Opaque key for a large edge inline value tied to one payload overflow log slot.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EdgeInlineValueBlobId(u64);
+pub struct EdgeInlinePropertyBytesBlobId(u64);
 
-impl EdgeInlineValueBlobId {
+impl EdgeInlinePropertyBytesBlobId {
     /// Builds the canonical id for `(leaf_segment, entry_idx)`.
     #[inline]
     pub const fn from_log_site(leaf: u32, entry_idx: u32) -> Self {

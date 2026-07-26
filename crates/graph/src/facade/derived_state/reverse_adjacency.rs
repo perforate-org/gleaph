@@ -32,10 +32,12 @@
 use super::super::stable::EDGE_ALIASES;
 use crate::facade::store::helpers::{catalog_edge_label_from_wire, edge_alias_slot_key};
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
-use gleaph_graph_kernel::entry::{Edge, EdgeInlineValue, EdgeSlotIndex, EdgeTarget, VertexRef};
+use gleaph_graph_kernel::entry::{
+    Edge, EdgeInlinePropertyBytes, EdgeSlotIndex, EdgeTarget, VertexRef,
+};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, VertexId,
-    labeled::{LabeledEdgeInlineValueBatchScratch, OutEdgeOrder},
+    labeled::{LabeledEdgeInlinePropertyBatchScratch, OutEdgeOrder},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -191,30 +193,30 @@ fn reverse_edge_to(source: VertexId, payload: &[u8]) -> Edge {
         target: VertexRef::local(source),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
         label_id: 0,
-        inline_value: EdgeInlineValue::EMPTY,
+        inline_property: EdgeInlinePropertyBytes::EMPTY,
     };
     if payload.is_empty() {
         edge
     } else {
-        edge.with_inline_value_bytes(payload)
+        edge.with_inline_property_bytes(payload)
     }
 }
 
-/// Captures the forward out-edges of one diverged key as `(forward_slot, inline_value_bytes)`, copying
+/// Captures the forward out-edges of one diverged key as `(forward_slot, inline_property_bytes)`, copying
 /// payloads from the slab when the label carries them so the rebuilt reverse halves match exactly.
 fn collect_forward_edges_for_key(
     store: &GraphStore,
     source: VertexId,
     target: VertexId,
     wire: LaraLabelId,
-    inline_value_width: u16,
+    inline_property_width: u16,
 ) -> Result<Vec<(u32, Vec<u8>)>, GraphStoreError> {
     let mut forward = Vec::new();
-    if inline_value_width > 0 {
+    if inline_property_width > 0 {
         let catalog = catalog_edge_label_from_wire(wire)
             .expect("non-zero payload width implies a catalog edge label");
-        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
-        store.for_each_directed_out_edges_for_label_with_inline_value_slices_reusing(
+        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        store.for_each_directed_out_edges_for_label_with_inline_property_byte_slices_reusing(
             source,
             catalog,
             OutEdgeOrder::Ascending,
@@ -244,12 +246,13 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
     let source = VertexId::from(key.source_vertex_id);
     let target = VertexId::from(key.target_vertex_id);
     let wire = LaraLabelId::from_raw(key.label_id);
-    let inline_value_width = catalog_edge_label_from_wire(wire)
-        .map(crate::edge_inline_value_schema::lookup_edge_inline_value_profile)
+    let inline_property_width = catalog_edge_label_from_wire(wire)
+        .map(crate::edge_inline_property_schema::lookup_edge_inline_property_profile)
         .map(|profile| profile.required_byte_width())
         .unwrap_or(0);
 
-    let forward = collect_forward_edges_for_key(store, source, target, wire, inline_value_width)?;
+    let forward =
+        collect_forward_edges_for_key(store, source, target, wire, inline_property_width)?;
 
     // Drop the key's directed reverse-IN alias rows (keyed by reverse slot, valued by the forward
     // canonical slot) before the reverse slots they reference are reassigned below.
@@ -273,12 +276,12 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
     // live `commit_directed_edge_insert` sequence.
     for (forward_slot, payload) in &forward {
         store.with_graph_mut(|graph| {
-            if inline_value_width > 0 {
-                graph.repair_ensure_orientation_inline_value_width(
+            if inline_property_width > 0 {
+                graph.repair_ensure_orientation_inline_property_width(
                     ic_stable_lara::labeled::LabeledOrientation::Reverse,
                     target,
                     wire,
-                    inline_value_width,
+                    inline_property_width,
                 )?;
             }
             graph.repair_insert_one_orientation_edge(
@@ -309,7 +312,7 @@ mod tests {
     use super::*;
     use crate::facade::stable::GRAPH;
     use crate::facade::store::helpers::{edge_storage_label, lara_label};
-    use gleaph_graph_kernel::entry::{Edge, EdgeInlineValue, EdgeSlotIndex, VertexRef};
+    use gleaph_graph_kernel::entry::{Edge, EdgeInlinePropertyBytes, EdgeSlotIndex, VertexRef};
     use ic_stable_lara::traits::CsrEdge;
 
     fn local_edge_to(target: VertexId) -> Edge {
@@ -317,7 +320,7 @@ mod tests {
             target: VertexRef::local(target),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 0,
-            inline_value: EdgeInlineValue::EMPTY,
+            inline_property: EdgeInlinePropertyBytes::EMPTY,
         }
     }
 
@@ -461,18 +464,18 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_preserves_edge_inline_value() {
+    fn rebuild_preserves_edge_inline_property() {
         use gleaph_graph_kernel::entry::{
-            EdgeInlineValueProfile, EdgeWeightProfile, WeightEncoding,
+            EdgeInlinePropertyProfile, EdgeWeightProfile, WeightEncoding,
         };
 
         let store = GraphStore::new();
         let source = store.insert_vertex().expect("source");
         let target = store.insert_vertex().expect("target");
         let label_id = crate::test_labels::edge_label_id_for_name("RevRepairPayload");
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            EdgeInlineValueProfile::from(EdgeWeightProfile {
+            EdgeInlinePropertyProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
         );
@@ -480,7 +483,12 @@ mod tests {
         let payload = 0xBEEFu16.to_le_bytes();
 
         store
-            .insert_directed_edge_with_inline_value_bytes(source, target, Some(label_id), &payload)
+            .insert_directed_edge_with_inline_property_bytes(
+                source,
+                target,
+                Some(label_id),
+                &payload,
+            )
             .expect("payloaded edge");
 
         // Corrupt: drop the reverse half so the forward payload edge has no reverse mirror.
@@ -498,10 +506,10 @@ mod tests {
         rebuild_reverse_adjacency(&store).expect("repair");
 
         check_reverse_adjacency(&store).expect("repair restores reverse half");
-        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
+        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
         let mut restored = None;
         store
-            .for_each_directed_in_edges_for_label_with_inline_value_slices_reusing(
+            .for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing(
                 target,
                 label_id,
                 OutEdgeOrder::Ascending,

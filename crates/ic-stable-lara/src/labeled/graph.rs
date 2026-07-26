@@ -17,7 +17,9 @@ use crate::{
         bucket_store::LabelBucketStore,
         record::{LabelBucket, LabeledVertex},
     },
-    lara::{edge::EdgeStore, edge_inline_value::EdgeInlineValueStore, vertex::VertexStore},
+    lara::{
+        edge::EdgeStore, edge_inline_property::EdgeInlinePropertyBytesStore, vertex::VertexStore,
+    },
     traits::CsrEdge,
 };
 use ic_stable_structures::Memory;
@@ -50,7 +52,7 @@ mod compact;
 #[cfg(test)]
 pub(crate) use compact::force_next_compact_vertex_edge_span_step_error;
 #[cfg(test)]
-pub(crate) use values::force_next_payload_compaction_error;
+pub(crate) use values::force_next_inline_property_bytes_compaction_error;
 pub mod batch_write;
 #[cfg(test)]
 mod batch_write_test;
@@ -75,8 +77,9 @@ pub use insert::{ScalarInsertLocation, ScalarInsertStorage};
 pub use iter::LabeledOutEdgesIter;
 pub use iter::LabeledSpanIter;
 pub use iter::{
-    HybridOverflowEdgeReplay, LabeledEdgeInlineValueBatch, LabeledEdgeInlineValueBatchScratch,
-    LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch,
+    HybridOverflowEdgeReplay, LabeledEdgeInlinePropertyBatch,
+    LabeledEdgeInlinePropertyBatchScratch, LabeledInlinePropertyValueBatch,
+    LabeledInlinePropertyValueBatchScratch,
 };
 
 /// Single-orientation multi-level labeled CSR graph.
@@ -88,10 +91,10 @@ where
     vertices: VertexStore<LabeledVertex, M>,
     buckets: LabelBucketStore<M>,
     edges: EdgeStore<E, M>,
-    values: EdgeInlineValueStore<M>,
+    values: EdgeInlinePropertyBytesStore<M>,
     default_label: BucketLabelKey,
     last_bucket_lookup: Cell<Option<BucketLookupCache>>,
-    payload_compaction_deferred: Cell<bool>,
+    inline_property_bytes_compaction_deferred: Cell<bool>,
     bucket_lookup_cache: [Cell<Option<BucketLookupCache>>; BUCKET_LOOKUP_CACHE_ENTRIES],
     _marker: PhantomData<E>,
 }
@@ -118,14 +121,14 @@ pub struct EdgeRemoval<E> {
 
 /// Aggregated payload storage accounting for one labeled graph orientation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LabeledPayloadStorageStats {
-    /// Bytes required by live payload values in bucket-local order.
+pub struct LabeledInlinePropertyBytesStorageStats {
+    /// Bytes required by live inline property values in bucket-local order.
     pub live_bytes: u64,
-    /// Bytes reserved by payload slab spans owned by labeled vertices.
+    /// Bytes reserved by inline property bytes slab spans owned by labeled vertices.
     pub allocated_bytes: u64,
     /// Payload slab backing capacity in bytes.
     pub byte_capacity: u64,
-    /// Exclusive end of the append-only occupied payload slab prefix.
+    /// Exclusive end of the append-only occupied inline property bytes slab prefix.
     pub slab_occupied_tail: u64,
     /// Bytes available in retired payload free spans.
     pub free_bytes: u64,
@@ -135,10 +138,10 @@ pub struct LabeledPayloadStorageStats {
     pub free_span_count: u64,
 }
 
-/// Result of a payload-only slab compaction.
+/// Result of a inline-property-bytes-only slab compaction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LabeledPayloadCompactionResult {
-    /// Number of payload slab spans moved.
+pub struct LabeledInlinePropertyBytesCompactionResult {
+    /// Number of inline property bytes slab spans moved.
     pub moved_spans: u32,
     /// Total payload bytes copied into earlier free spans.
     pub moved_bytes: u64,

@@ -1,8 +1,8 @@
-//! Resolve `EdgeInlineValueProfile` from execution wire (ADR 0008).
+//! Resolve `EdgeInlinePropertyProfile` from execution wire (ADR 0008).
 
 use std::cell::RefCell;
 
-use gleaph_graph_kernel::entry::{EdgeInlineValueProfile, EdgeLabelId};
+use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId};
 use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable};
 
 thread_local! {
@@ -19,30 +19,30 @@ pub(crate) fn clear_execution_resolved_labels() {
     ACTIVE_RESOLVED_LABELS.with(|cell| *cell.borrow_mut() = None);
 }
 
-pub(crate) fn lookup_edge_inline_value_profile_with(
+pub(crate) fn lookup_edge_inline_property_profile_with(
     labels: Option<&ResolvedLabelTable>,
     label: EdgeLabelId,
-) -> EdgeInlineValueProfile {
-    if let Some(profile) = labels.and_then(|table| table.edge_inline_value_profile(label)) {
+) -> EdgeInlinePropertyProfile {
+    if let Some(profile) = labels.and_then(|table| table.edge_inline_property_profile(label)) {
         return profile.clone();
     }
     if let Some(profile) = ACTIVE_RESOLVED_LABELS.with(|cell| {
         cell.borrow()
             .as_ref()
-            .and_then(|table| table.edge_inline_value_profile(label))
+            .and_then(|table| table.edge_inline_property_profile(label))
             .cloned()
     }) {
         return profile;
     }
     #[cfg(any(test, feature = "canbench"))]
-    if let Some(profile) = crate::test_labels::edge_inline_value_profile_for_id(label) {
+    if let Some(profile) = crate::test_labels::edge_inline_property_profile_for_id(label) {
         return profile;
     }
-    EdgeInlineValueProfile::no_inline_value()
+    EdgeInlinePropertyProfile::no_inline_property()
 }
 
-pub(crate) fn lookup_edge_inline_value_profile(label: EdgeLabelId) -> EdgeInlineValueProfile {
-    lookup_edge_inline_value_profile_with(None, label)
+pub(crate) fn lookup_edge_inline_property_profile(label: EdgeLabelId) -> EdgeInlinePropertyProfile {
+    lookup_edge_inline_property_profile_with(None, label)
 }
 
 /// Returns the Router-resolved edge label entry, if one was projected for this execution.
@@ -71,7 +71,7 @@ pub(crate) fn edge_label_ids_for_predicate_fusion(
     }
     #[cfg(any(test, feature = "canbench"))]
     {
-        crate::test_labels::edge_label_ids_with_inline_value_profiles()
+        crate::test_labels::edge_label_ids_with_inline_property_profiles()
     }
     #[cfg(not(any(test, feature = "canbench")))]
     {

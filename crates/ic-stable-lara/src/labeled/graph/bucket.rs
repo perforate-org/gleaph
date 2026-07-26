@@ -38,11 +38,11 @@ pub struct LeafBucketPlacementStats {
     /// Sum of edge overflow-log entries across all buckets on this leaf.
     pub total_edge_overflow_log_slots: u64,
     /// Sum of inline-value slab slots across all buckets on this leaf.
-    pub total_inline_value_slab_slots: u64,
+    pub total_inline_property_bytes_slab_slots: u64,
     /// Sum of inline-value overflow-log entries across all buckets on this leaf.
-    pub total_payload_overflow_log_slots: u64,
+    pub total_inline_property_bytes_overflow_log_slots: u64,
     /// Non-zero payload widths present on this leaf.
-    pub payload_widths: BTreeSet<u16>,
+    pub inline_property_byte_widths: BTreeSet<u16>,
 }
 
 /// Read-only placement metadata for one existing label bucket.
@@ -60,13 +60,13 @@ pub struct LabelBucketPlacementInfo {
     /// Number of edges stored in the per-bucket overflow log chain.
     pub edge_overflow_log_len: u32,
     /// Physical byte width per inline value slot (`0` = no payload).
-    pub inline_value_byte_width: u16,
+    pub inline_property_byte_width: u16,
     /// Inline-value slab slots reserved for this bucket.
-    pub inline_value_slab_slots: u32,
+    pub inline_property_bytes_slab_slots: u32,
     /// Payload overflow log head, or `-1` when all values are on the slab.
-    pub payload_overflow_log_head: i32,
+    pub inline_property_bytes_overflow_log_head: i32,
     /// Number of values stored in the per-bucket payload overflow log chain.
-    pub payload_overflow_log_len: u32,
+    pub inline_property_bytes_overflow_log_len: u32,
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -648,7 +648,7 @@ where
     /// Read-only aggregate placement metadata for every bucket on one PMA leaf.
     ///
     /// Iterates the bucket descriptors of all non-default-label vertices in `leaf`
-    /// and sums their exact resident edge/payload slab and overflow-log slots. This
+    /// and sums their exact resident edge/inline property bytes slab and overflow-log slots. This
     /// includes buckets that are not directly targeted by a pending batch, which is
     /// required for ADR 0045 leaf-level projected geometry.
     ///
@@ -670,9 +670,9 @@ where
             bucket_mode_vertices: 0,
             total_stored_edge_slots: 0,
             total_edge_overflow_log_slots: 0,
-            total_inline_value_slab_slots: 0,
-            total_payload_overflow_log_slots: 0,
-            payload_widths: BTreeSet::new(),
+            total_inline_property_bytes_slab_slots: 0,
+            total_inline_property_bytes_overflow_log_slots: 0,
+            inline_property_byte_widths: BTreeSet::new(),
         };
         for vid_u in start_vid..end_vid {
             let vid = VertexId::from(vid_u);
@@ -706,14 +706,14 @@ where
                     .total_stored_edge_slots
                     .checked_add(u64::from(bucket.stored_slots))
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                stats.total_inline_value_slab_slots = stats
-                    .total_inline_value_slab_slots
-                    .checked_add(u64::from(bucket.inline_value_slab_slots()))
+                stats.total_inline_property_bytes_slab_slots = stats
+                    .total_inline_property_bytes_slab_slots
+                    .checked_add(u64::from(bucket.inline_property_bytes_slab_slots()))
                     .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                if bucket.inline_value_byte_width() > 0 {
+                if bucket.inline_property_byte_width() > 0 {
                     stats
-                        .payload_widths
-                        .insert(bucket.inline_value_byte_width());
+                        .inline_property_byte_widths
+                        .insert(bucket.inline_property_byte_width());
                 }
                 if bucket.overflow_log_head() >= 0 {
                     let log_len = self
@@ -724,10 +724,10 @@ where
                         .checked_add(u64::from(log_len))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 }
-                if bucket.inline_value_log_head() >= 0 {
-                    stats.total_payload_overflow_log_slots = stats
-                        .total_payload_overflow_log_slots
-                        .checked_add(u64::from(bucket.inline_value_log_len()))
+                if bucket.inline_property_bytes_log_head() >= 0 {
+                    stats.total_inline_property_bytes_overflow_log_slots = stats
+                        .total_inline_property_bytes_overflow_log_slots
+                        .checked_add(u64::from(bucket.inline_property_bytes_log_len()))
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 }
             }
@@ -767,10 +767,12 @@ where
                     stored_edge_slots: bucket.stored_slots,
                     edge_overflow_log_head: bucket.overflow_log_head(),
                     edge_overflow_log_len,
-                    inline_value_byte_width: bucket.inline_value_byte_width(),
-                    inline_value_slab_slots: bucket.inline_value_slab_slots(),
-                    payload_overflow_log_head: bucket.inline_value_log_head(),
-                    payload_overflow_log_len: bucket.inline_value_log_len() as u32,
+                    inline_property_byte_width: bucket.inline_property_byte_width(),
+                    inline_property_bytes_slab_slots: bucket.inline_property_bytes_slab_slots(),
+                    inline_property_bytes_overflow_log_head: bucket
+                        .inline_property_bytes_log_head(),
+                    inline_property_bytes_overflow_log_len: bucket.inline_property_bytes_log_len()
+                        as u32,
                 }))
             }
             BucketSearch::Missing { .. } => Ok(None),
@@ -1011,10 +1013,16 @@ where
         }
     }
 
-    pub(super) fn bucket_payload_log_chain(&self, src: VertexId, bucket: &LabelBucket) -> Vec<u32> {
-        let leaf = self.payload_log_leaf(src);
-        self.values
-            .payload_log_chain_asc_indices(leaf, bucket.inline_value_log_head())
+    pub(super) fn bucket_inline_property_bytes_log_chain(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+    ) -> Vec<u32> {
+        let leaf = self.inline_property_bytes_log_leaf(src);
+        self.values.inline_property_bytes_log_chain_asc_indices(
+            leaf,
+            bucket.inline_property_bytes_log_head(),
+        )
     }
 }
 
@@ -1026,11 +1034,11 @@ mod tests {
 
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_log_backed_bucket() {
-        let graph = inline_value_test_graph();
+        let graph = inline_property_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=33u32 {
             let weight = u16::try_from(target).expect("weight fits u16");
@@ -1038,7 +1046,7 @@ mod tests {
                 .insert_edge_skip_leaf_cascade(
                     VertexId::from(0),
                     road,
-                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
                 )
                 .unwrap();
         }
@@ -1065,8 +1073,8 @@ mod tests {
             vec![32, 30]
         );
         for edge in &visited {
-            assert_eq!(edge.inline_value_len, 2);
-            let b = edge.edge_inline_value_bytes();
+            assert_eq!(edge.inline_property_len, 2);
+            let b = edge.edge_inline_property_bytes();
             assert_eq!(
                 u16::from_le_bytes([b[0], b[1]]),
                 u16::try_from(edge.target).unwrap()

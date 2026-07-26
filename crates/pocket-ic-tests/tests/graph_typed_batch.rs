@@ -13,7 +13,7 @@ use candid::{Decode, Encode};
 use gleaph_gql::ast::Expr;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
 use gleaph_gql_planner::wire::encode_block_plans;
-use gleaph_graph_kernel::entry::EdgeInlineValueProfile;
+use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanBatchMode, ExecutePlanBatchResult, ExecutePlanBatchTypedArgs,
     ExecutePlanBatchTypedShared, ExecutePlanTypedOp, GetMutationJournalEntriesArgs,
@@ -87,7 +87,7 @@ fn make_typed_batch_args(
                 edge: vec![ResolvedEdgeLabel {
                     name: "POSTED".into(),
                     id: gleaph_graph_kernel::entry::EdgeLabelId::from_raw(posted_edge_label_id),
-                    inline_value_profile: EdgeInlineValueProfile::no_inline_value(),
+                    inline_property_profile: EdgeInlinePropertyProfile::no_inline_property(),
                     inline_schema: None,
                 }],
             }),

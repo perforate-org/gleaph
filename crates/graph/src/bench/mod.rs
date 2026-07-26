@@ -12,7 +12,7 @@ mod mate_compression;
 mod mate_footprint;
 mod stable_layout;
 
-use crate::edge_inline_value_scalar_codec::encode_edge_inline_value_scalar;
+use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar;
 use crate::facade::GraphStore;
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::gql_execution_context::GqlExecutionContext;
@@ -23,13 +23,13 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{
-    EdgeInlineValuePredicate, EdgeInlineVectorPredicate, EdgeVectorMetric, PhysicalPlan, PlanOp,
+    EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, EdgeVectorMetric, PhysicalPlan, PlanOp,
     ProjectColumn, PropertyAssignment, ScanValue, SearchOutputKind, SearchOutputPlan,
     SearchProviderPlan, ShortestMode, ShortestPathCost, VarLenSpec,
 };
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::{
-    ConstraintNameId, EdgeInlineValueEncoding, EdgeInlineValueProfile, EdgeLabelId,
+    ConstraintNameId, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
     EdgeWeightProfile, PropertyId, Vertex, WeightEncoding,
 };
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
@@ -284,9 +284,9 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
         .expect("insert dst");
 
     let label_id = crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         }),
     );
@@ -302,7 +302,7 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
     }
     for (i, &prefix) in prefixes.iter().enumerate() {
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 prefix,
                 hub,
                 Some(road),
@@ -312,7 +312,7 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
     }
     for (i, &prefix) in prefixes.iter().enumerate() {
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 src,
                 prefix,
                 Some(road),
@@ -325,7 +325,7 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             .insert_vertex_named(["BenchWspSpoke"], Vec::<(&str, Value)>::new())
             .expect("insert spoke");
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 hub,
                 spoke,
                 Some(road),
@@ -333,7 +333,7 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             )
             .expect("hub->spoke");
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 spoke,
                 dst,
                 Some(road),
@@ -376,9 +376,9 @@ fn inline_cost_execution_context(
         edge: vec![ResolvedEdgeLabel::with_inline_property(
             "BenchInlineCostEdge".to_string(),
             label_id,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::RawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
             Some(property_id),
         )],
@@ -411,11 +411,11 @@ fn setup_repeated_inline_cost_cache_graph(store: &GraphStore) -> (VertexId, Vert
         .expect("insert dst");
 
     let label_id = crate::test_labels::edge_label_id_for_name("BenchInlineCostEdge");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::RawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
@@ -431,7 +431,7 @@ fn setup_repeated_inline_cost_cache_graph(store: &GraphStore) -> (VertexId, Vert
     }
     for (i, &prefix) in prefixes.iter().enumerate() {
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 prefix,
                 hub,
                 Some(road),
@@ -441,7 +441,7 @@ fn setup_repeated_inline_cost_cache_graph(store: &GraphStore) -> (VertexId, Vert
     }
     for (i, &prefix) in prefixes.iter().enumerate() {
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 src,
                 prefix,
                 Some(road),
@@ -454,7 +454,7 @@ fn setup_repeated_inline_cost_cache_graph(store: &GraphStore) -> (VertexId, Vert
             .insert_vertex_named(["BenchInlineCostSpoke"], Vec::<(&str, Value)>::new())
             .expect("insert spoke");
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 hub,
                 spoke,
                 Some(road),
@@ -462,7 +462,7 @@ fn setup_repeated_inline_cost_cache_graph(store: &GraphStore) -> (VertexId, Vert
             )
             .expect("hub->spoke");
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 spoke,
                 dst,
                 Some(road),
@@ -715,7 +715,7 @@ fn expand_plan_for_label(
             var_len: None,
             indexed_edge_equality: indexed_edge_equality
                 .map(|(property, value)| (property.into(), value)),
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -807,7 +807,7 @@ fn expand_filter_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             dst_filter: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(Expr::new(ExprKind::PropertyAccess {
@@ -957,20 +957,24 @@ fn setup_expand_single_label_hub(store: &GraphStore, hub_out: u32, edge_label: &
 }
 
 const INLINE_VALUE_SKEW_EDGE_LABEL: &str = "BenchPayloadSkewRoad";
-const INLINE_VALUE_SKEW_MATCH_WEIGHT: u16 = 7;
+const INLINE_PROPERTY_SKEW_MATCH_WEIGHT: u16 = 7;
 const INLINE_VALUE_SKEW_NOISE_WEIGHT: u16 = 1;
 /// Minimum same-label edge count that forces hybrid slab + overflow log on one hub (see ADR 0016).
 const INLINE_VALUE_FIRST_LOG_OVERFLOW_NOISE: u32 = 48;
 const PAYLOAD_FIRST_LOG_MATCH_OUT: u32 = 24;
 
 /// Single-label hub with skewed inline values; expand filters by edge inline value equality.
-fn setup_expand_inline_value_skewed_graph_scaled(store: &GraphStore, noise: u32, match_out: u32) {
+fn setup_expand_inline_property_skewed_graph_scaled(
+    store: &GraphStore,
+    noise: u32,
+    match_out: u32,
+) {
     let label_id = crate::test_labels::edge_label_id_for_name(INLINE_VALUE_SKEW_EDGE_LABEL);
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
         },
     );
     let noise_dst = store
@@ -985,7 +989,7 @@ fn setup_expand_inline_value_skewed_graph_scaled(store: &GraphStore, noise: u32,
     for i in 0..noise {
         let _ = i;
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 hub,
                 noise_dst,
                 Some(label_id),
@@ -996,17 +1000,17 @@ fn setup_expand_inline_value_skewed_graph_scaled(store: &GraphStore, noise: u32,
     for i in 0..match_out {
         let _ = i;
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 hub,
                 target_dst,
                 Some(label_id),
-                &INLINE_VALUE_SKEW_MATCH_WEIGHT.to_le_bytes(),
+                &INLINE_PROPERTY_SKEW_MATCH_WEIGHT.to_le_bytes(),
             )
             .expect("target edge");
     }
 }
 
-fn expand_inline_value_predicate_eq_plan(match_weight: u16) -> PhysicalPlan {
+fn expand_inline_property_predicate_eq_plan(match_weight: u16) -> PhysicalPlan {
     plan(vec![
         PlanOp::NodeScan {
             variable: "h".into(),
@@ -1022,7 +1026,7 @@ fn expand_inline_value_predicate_eq_plan(match_weight: u16) -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: Some(EdgeInlineValuePredicate {
+            edge_inline_property_predicate: Some(EdgeInlinePropertyPredicate {
                 op: CmpOp::Eq,
                 value: ScanValue::Literal(Value::Uint16(match_weight)),
             }),
@@ -1043,14 +1047,14 @@ fn expand_inline_value_predicate_eq_plan(match_weight: u16) -> PhysicalPlan {
     ])
 }
 
-fn bench_expand_inline_value_skewed(
+fn bench_expand_inline_property_skewed(
     noise: u32,
     match_out: u32,
     scope: &'static str,
 ) -> canbench_rs::BenchResult {
     let store = GraphStore::new();
-    setup_expand_inline_value_skewed_graph_scaled(&store, noise, match_out);
-    let plan = expand_inline_value_predicate_eq_plan(INLINE_VALUE_SKEW_MATCH_WEIGHT);
+    setup_expand_inline_property_skewed_graph_scaled(&store, noise, match_out);
+    let plan = expand_inline_property_predicate_eq_plan(INLINE_PROPERTY_SKEW_MATCH_WEIGHT);
     let expected = match_out as usize;
 
     canbench_rs::bench_fn(|| {
@@ -1061,19 +1065,19 @@ fn bench_expand_inline_value_skewed(
     })
 }
 
-/// Incoming mirror of [`setup_expand_inline_value_skewed_graph_scaled`]: `noise`/`match_in` edges point
+/// Incoming mirror of [`setup_expand_inline_property_skewed_graph_scaled`]: `noise`/`match_in` edges point
 /// **into** the hub (`src -> hub`), so the predicate expand walks the hub's reverse adjacency.
-fn setup_expand_inline_value_skewed_incoming_graph_scaled(
+fn setup_expand_inline_property_skewed_incoming_graph_scaled(
     store: &GraphStore,
     noise: u32,
     match_in: u32,
 ) {
     let label_id = crate::test_labels::edge_label_id_for_name(INLINE_VALUE_SKEW_EDGE_LABEL);
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
         },
     );
     let noise_src = store
@@ -1088,7 +1092,7 @@ fn setup_expand_inline_value_skewed_incoming_graph_scaled(
     for i in 0..noise {
         let _ = i;
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 noise_src,
                 hub,
                 Some(label_id),
@@ -1099,17 +1103,17 @@ fn setup_expand_inline_value_skewed_incoming_graph_scaled(
     for i in 0..match_in {
         let _ = i;
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 target_src,
                 hub,
                 Some(label_id),
-                &INLINE_VALUE_SKEW_MATCH_WEIGHT.to_le_bytes(),
+                &INLINE_PROPERTY_SKEW_MATCH_WEIGHT.to_le_bytes(),
             )
             .expect("target edge");
     }
 }
 
-fn expand_inline_value_predicate_eq_plan_incoming(match_weight: u16) -> PhysicalPlan {
+fn expand_inline_property_predicate_eq_plan_incoming(match_weight: u16) -> PhysicalPlan {
     plan(vec![
         PlanOp::NodeScan {
             variable: "h".into(),
@@ -1125,7 +1129,7 @@ fn expand_inline_value_predicate_eq_plan_incoming(match_weight: u16) -> Physical
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: Some(EdgeInlineValuePredicate {
+            edge_inline_property_predicate: Some(EdgeInlinePropertyPredicate {
                 op: CmpOp::Eq,
                 value: ScanValue::Literal(Value::Uint16(match_weight)),
             }),
@@ -1146,14 +1150,14 @@ fn expand_inline_value_predicate_eq_plan_incoming(match_weight: u16) -> Physical
     ])
 }
 
-fn bench_expand_inline_value_skewed_incoming(
+fn bench_expand_inline_property_skewed_incoming(
     noise: u32,
     match_in: u32,
     scope: &'static str,
 ) -> canbench_rs::BenchResult {
     let store = GraphStore::new();
-    setup_expand_inline_value_skewed_incoming_graph_scaled(&store, noise, match_in);
-    let plan = expand_inline_value_predicate_eq_plan_incoming(INLINE_VALUE_SKEW_MATCH_WEIGHT);
+    setup_expand_inline_property_skewed_incoming_graph_scaled(&store, noise, match_in);
+    let plan = expand_inline_property_predicate_eq_plan_incoming(INLINE_PROPERTY_SKEW_MATCH_WEIGHT);
     let expected = match_in as usize;
 
     canbench_rs::bench_fn(|| {
@@ -1291,7 +1295,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -1311,7 +1315,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -1331,7 +1335,7 @@ fn expand_deep_row_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -1409,7 +1413,7 @@ fn expand_filter_10pct_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             dst_filter: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(Expr::new(ExprKind::PropertyAccess {
@@ -1510,7 +1514,7 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     label_expr: None,
                     var_len: None,
                     indexed_edge_equality: None,
-                    edge_inline_value_predicate: None,
+                    edge_inline_property_predicate: None,
                     edge_inline_vector_predicate: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
@@ -1537,7 +1541,7 @@ fn expand_hash_join_then_expand_plan() -> PhysicalPlan {
                     label_expr: None,
                     var_len: None,
                     indexed_edge_equality: None,
-                    edge_inline_value_predicate: None,
+                    edge_inline_property_predicate: None,
                     edge_inline_vector_predicate: None,
                     edge_property_projection: None,
                     dst_property_projection: None,
@@ -1648,11 +1652,11 @@ fn setup_expand_vector_graph_with_scale(store: &GraphStore, scale: ExpandVectorG
         "W64 vector profile can hold at most 64 bytes"
     );
     let label_id = crate::test_labels::edge_label_id_for_name(scale.edge_label);
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: 64,
-            encoding: EdgeInlineValueEncoding::VectorF32 {
+            encoding: EdgeInlinePropertyEncoding::VectorF32 {
                 dims: scale.dims as u16,
             },
         },
@@ -1674,7 +1678,7 @@ fn setup_expand_vector_graph_with_scale(store: &GraphStore, scale: ExpandVectorG
             far_bytes.as_slice()
         };
         store
-            .insert_directed_edge_with_inline_value_bytes(hub, dst, Some(label_id), bytes)
+            .insert_directed_edge_with_inline_property_bytes(hub, dst, Some(label_id), bytes)
             .expect("edge");
     }
 }
@@ -1702,7 +1706,7 @@ fn expand_vector_plan(
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: Some(EdgeInlineVectorPredicate {
                 metric,
                 query: ScanValue::Literal(f32_vector_value(query)),
@@ -1749,7 +1753,7 @@ fn expand_vector_bindings_plan(
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: Some(EdgeInlineVectorPredicate {
                 metric,
                 query: ScanValue::Literal(f32_vector_value(query)),
@@ -1895,44 +1899,45 @@ fn bench_graph_expand_hub_return_dst_1k_only() -> canbench_rs::BenchResult {
 
 /// 200 noise + 24 matching inline value edges on one label; edge inline value `Eq` predicate expand.
 #[bench(raw)]
-fn bench_graph_expand_inline_value_skewed_200a_24b() -> canbench_rs::BenchResult {
-    bench_expand_inline_value_skewed(
+fn bench_graph_expand_inline_property_skewed_200a_24b() -> canbench_rs::BenchResult {
+    bench_expand_inline_property_skewed(
         EXPAND_SKEW_NOISE,
         EXPAND_HUB_OUT,
-        "expand_inline_value_skewed_200a_24b",
+        "expand_inline_property_skewed_200a_24b",
     )
 }
 
 /// 2_000 noise + 100 matching inline value edges; edge inline value `Eq` predicate expand.
 #[bench(raw)]
-fn bench_graph_expand_inline_value_skewed_2k_a_100b() -> canbench_rs::BenchResult {
-    bench_expand_inline_value_skewed(
+fn bench_graph_expand_inline_property_skewed_2k_a_100b() -> canbench_rs::BenchResult {
+    bench_expand_inline_property_skewed(
         EXPAND_SKEW_NOISE_M,
         EXPAND_HUB_OUT_M,
-        "expand_inline_value_skewed_2k_a_100b",
+        "expand_inline_property_skewed_2k_a_100b",
     )
 }
 
 /// ADR 0016 / M6: 48 noise + 24 payload matches on one overflow-log hub; payload-first selective expand.
 #[bench(raw)]
-fn bench_graph_inline_value_first_log_backed_selective_match() -> canbench_rs::BenchResult {
-    bench_expand_inline_value_skewed(
+fn bench_graph_inline_property_bytes_first_log_backed_selective_match() -> canbench_rs::BenchResult
+{
+    bench_expand_inline_property_skewed(
         INLINE_VALUE_FIRST_LOG_OVERFLOW_NOISE,
         PAYLOAD_FIRST_LOG_MATCH_OUT,
-        "inline_value_first_log_backed_selective_match",
+        "inline_property_bytes_first_log_backed_selective_match",
     )
 }
 
-/// Incoming mirror of `inline_value_first_log_backed_selective_match`: 48 noise + 24 payload matches
+/// Incoming mirror of `inline_property_bytes_first_log_backed_selective_match`: 48 noise + 24 payload matches
 /// point into one overflow-log hub; `PointingLeft` payload-first expand reuses the reverse phase-1
 /// hybrid replay for phase-2 slot reads (symmetry with the outgoing path).
 #[bench(raw)]
-fn bench_graph_inline_value_first_incoming_log_backed_selective_match() -> canbench_rs::BenchResult
-{
-    bench_expand_inline_value_skewed_incoming(
+fn bench_graph_inline_property_bytes_first_incoming_log_backed_selective_match()
+-> canbench_rs::BenchResult {
+    bench_expand_inline_property_skewed_incoming(
         INLINE_VALUE_FIRST_LOG_OVERFLOW_NOISE,
         PAYLOAD_FIRST_LOG_MATCH_OUT,
-        "inline_value_first_incoming_log_backed_selective_match",
+        "inline_property_bytes_first_incoming_log_backed_selective_match",
     )
 }
 
@@ -2624,11 +2629,11 @@ fn setup_inline_scalar_edges(
     store: &GraphStore,
 ) -> (VertexId, gleaph_graph_kernel::entry::EdgeLabelId) {
     let label_id = crate::test_labels::edge_label_id_for_name("BenchInlineRoad");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::RawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let src = store
@@ -2639,7 +2644,7 @@ fn setup_inline_scalar_edges(
             .insert_vertex_named(["BenchInlineDst"], Vec::<(&str, Value)>::new())
             .expect("dst");
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 src,
                 dst,
                 Some(label_id),
@@ -2674,9 +2679,9 @@ fn inline_read_execution_context(
         edge: vec![ResolvedEdgeLabel::with_inline_property(
             "BenchInlineRoad".to_string(),
             label_id,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::RawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
             Some(property_id),
         )],
@@ -2710,7 +2715,7 @@ fn inline_projection_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             edge_property_projection: Some(vec!["distance".into()].into()),
             dst_property_projection: None,
@@ -2750,7 +2755,7 @@ fn inline_filter_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -2862,11 +2867,11 @@ fn setup_inline_struct_edges(
 ) -> (VertexId, gleaph_graph_kernel::entry::EdgeLabelId) {
     let label_id = crate::test_labels::edge_label_id_for_name("BenchInlineStructRoad");
     let total_width: u16 = 16;
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: total_width,
-            encoding: EdgeInlineValueEncoding::RawBytes,
+            encoding: EdgeInlinePropertyEncoding::RawBytes,
         },
     );
     let property_id = PropertyId::from_raw(2);
@@ -2877,25 +2882,25 @@ fn setup_inline_struct_edges(
             (
                 "score".to_string(),
                 0,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 4,
-                    encoding: EdgeInlineValueEncoding::F32,
+                    encoding: EdgeInlinePropertyEncoding::F32,
                 },
             ),
             (
                 "confidence".to_string(),
                 4,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 4,
-                    encoding: EdgeInlineValueEncoding::F32,
+                    encoding: EdgeInlinePropertyEncoding::F32,
                 },
             ),
             (
                 "updated_at".to_string(),
                 8,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 8,
-                    encoding: EdgeInlineValueEncoding::RawU64,
+                    encoding: EdgeInlinePropertyEncoding::RawU64,
                 },
             ),
         ],
@@ -2913,7 +2918,7 @@ fn setup_inline_struct_edges(
         payload.extend_from_slice(&0.5f32.to_le_bytes());
         payload.extend_from_slice(&((i % 100) as u64).to_le_bytes());
         store
-            .insert_directed_edge_with_inline_value_bytes(src, dst, Some(label_id), &payload)
+            .insert_directed_edge_with_inline_property_bytes(src, dst, Some(label_id), &payload)
             .expect("edge");
     }
     (src, label_id)
@@ -2944,9 +2949,9 @@ fn inline_struct_read_execution_context(
         edge: vec![ResolvedEdgeLabel::with_inline_schema(
             "BenchInlineStructRoad".to_string(),
             label_id,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: total_width,
-                encoding: EdgeInlineValueEncoding::RawBytes,
+                encoding: EdgeInlinePropertyEncoding::RawBytes,
             },
             Some(ResolvedInlineSchema::Struct {
                 property_id,
@@ -2954,25 +2959,25 @@ fn inline_struct_read_execution_context(
                     ResolvedInlineStructField {
                         name: "score".to_string(),
                         byte_offset: 0,
-                        profile: EdgeInlineValueProfile {
+                        profile: EdgeInlinePropertyProfile {
                             byte_width: 4,
-                            encoding: EdgeInlineValueEncoding::F32,
+                            encoding: EdgeInlinePropertyEncoding::F32,
                         },
                     },
                     ResolvedInlineStructField {
                         name: "confidence".to_string(),
                         byte_offset: 4,
-                        profile: EdgeInlineValueProfile {
+                        profile: EdgeInlinePropertyProfile {
                             byte_width: 4,
-                            encoding: EdgeInlineValueEncoding::F32,
+                            encoding: EdgeInlinePropertyEncoding::F32,
                         },
                     },
                     ResolvedInlineStructField {
                         name: "updated_at".to_string(),
                         byte_offset: 8,
-                        profile: EdgeInlineValueProfile {
+                        profile: EdgeInlinePropertyProfile {
                             byte_width: 8,
-                            encoding: EdgeInlineValueEncoding::RawU64,
+                            encoding: EdgeInlinePropertyEncoding::RawU64,
                         },
                     },
                 ],
@@ -3008,7 +3013,7 @@ fn inline_struct_projection_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             edge_property_projection: Some(vec!["stats".into()].into()),
             dst_property_projection: None,
@@ -3051,7 +3056,7 @@ fn inline_struct_filter_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_inline_value_predicate: None,
+            edge_inline_property_predicate: None,
             edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
@@ -3168,9 +3173,9 @@ mod bench_setup_tests {
     /// [`setup_repeated_edge_cost_cache_graph`] having installed it first.
     fn install_bench_wsp_wgt_profile() {
         let label_id = crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            EdgeInlineValueProfile::from(EdgeWeightProfile {
+            EdgeInlinePropertyProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
         );
@@ -3311,8 +3316,8 @@ mod bench_setup_tests {
     }
 
     #[test]
-    fn repeated_edge_cost_cache_inline_value_batch_path_on_hot_vertices() {
-        use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgeInlineValueBatchScratch};
+    fn repeated_edge_cost_cache_inline_property_batch_path_on_hot_vertices() {
+        use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgeInlinePropertyBatchScratch};
 
         let store = GraphStore::new();
         let start = u32::from(store.vertex_count());
@@ -3331,10 +3336,10 @@ mod bench_setup_tests {
         }
         let hub = hub.expect("hub");
 
-        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
+        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
         let mut hub_dense = None;
         store
-            .visit_directed_out_edge_inline_value_batches_for_label(
+            .visit_directed_out_edge_inline_property_batches_for_label(
                 hub,
                 road,
                 OutEdgeOrder::Descending,
@@ -3345,7 +3350,7 @@ mod bench_setup_tests {
 
         let mut src_dense = None;
         store
-            .visit_directed_out_edge_inline_value_batches_for_label(
+            .visit_directed_out_edge_inline_property_batches_for_label(
                 src,
                 road,
                 OutEdgeOrder::Descending,
@@ -3443,7 +3448,7 @@ mod bench_setup_tests {
         }
         for &prefix in &prefixes {
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     prefix,
                     hub,
                     Some(road),
@@ -3453,7 +3458,7 @@ mod bench_setup_tests {
         }
         for (i, &prefix) in prefixes.iter().enumerate() {
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     src,
                     prefix,
                     Some(road),
@@ -3465,7 +3470,7 @@ mod bench_setup_tests {
             .insert_vertex_named(["BenchWspSpoke"], Vec::<(&str, Value)>::new())
             .expect("spoke");
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 hub,
                 spoke,
                 Some(road),
@@ -3491,7 +3496,7 @@ mod bench_setup_tests {
                 .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
                 .expect("prefix");
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     src,
                     prefix,
                     Some(road),
@@ -3499,7 +3504,7 @@ mod bench_setup_tests {
                 )
                 .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     prefix,
                     hub,
                     Some(road),
@@ -3522,7 +3527,7 @@ mod bench_setup_tests {
                 .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
                 .expect("prefix");
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     src,
                     prefix,
                     Some(road),
@@ -3582,11 +3587,11 @@ mod bench_setup_tests {
 fn install_bench_inline_road(label_name: &str) -> (EdgeLabelId, PropertyId) {
     let label = crate::test_labels::edge_label_id_for_name(label_name);
     let property = crate::test_labels::property_id_for_name("distance");
-    crate::test_labels::install_test_edge_inline_value_profile(
+    crate::test_labels::install_test_edge_inline_property_profile(
         label,
-        EdgeInlineValueProfile {
+        EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::RawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     crate::test_labels::install_test_edge_inline_property(label, property);
@@ -3596,16 +3601,16 @@ fn install_bench_inline_road(label_name: &str) -> (EdgeLabelId, PropertyId) {
 #[bench(raw)]
 fn bench_inline_scalar_pack_batch_u16() -> canbench_rs::BenchResult {
     let values: Vec<Value> = (0..256).map(Value::Int64).collect();
-    let profile = EdgeInlineValueProfile {
+    let profile = EdgeInlinePropertyProfile {
         byte_width: 2,
-        encoding: EdgeInlineValueEncoding::RawU16,
+        encoding: EdgeInlinePropertyEncoding::RawU16,
     };
 
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("inline_scalar_pack_batch_u16");
         let mut total = 0usize;
         for value in &values {
-            let bytes = encode_edge_inline_value_scalar(&profile, value).expect("encode");
+            let bytes = encode_edge_inline_property_scalar(&profile, value).expect("encode");
             total = total.wrapping_add(bytes.len());
         }
         black_box(total)
@@ -3622,7 +3627,7 @@ fn bench_inline_scalar_set_payload_fixed_edges() -> canbench_rs::BenchResult {
     for _ in 0..100 {
         let src = insert_bench_vertex_named(&store, &["BenchInlineCity"]);
         let dst = insert_bench_vertex_named(&store, &["BenchInlineCity"]);
-        let handle = GraphMutationExecutor::insert_directed_edge_with_inline_value_bytes(
+        let handle = GraphMutationExecutor::insert_directed_edge_with_inline_property_bytes(
             &store,
             src,
             dst,
@@ -3641,7 +3646,7 @@ fn bench_inline_scalar_set_payload_fixed_edges() -> canbench_rs::BenchResult {
         for handle in &edges {
             let bytes = (i.wrapping_add(1)).to_le_bytes();
             store
-                .update_edge_inline_value_at_handle(*handle, &bytes)
+                .update_edge_inline_property_at_handle(*handle, &bytes)
                 .expect("update payload");
             i = i.wrapping_add(1);
         }

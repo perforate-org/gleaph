@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{Edge, EdgeInlineValue};
+use gleaph_graph_kernel::entry::{Edge, EdgeInlinePropertyBytes};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrEdge;
@@ -16,24 +16,24 @@ use super::super::error::PlanQueryError;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgeBinding {
     pub handle: EdgeHandle,
-    pub inline_value: EdgeInlineValue,
+    pub inline_property: EdgeInlinePropertyBytes,
 }
 
 impl EdgeBinding {
     #[inline]
-    pub fn inline_value_bytes_slice(&self) -> &[u8] {
-        self.inline_value.as_slice()
+    pub fn inline_property_bytes_slice(&self) -> &[u8] {
+        self.inline_property.as_slice()
     }
 
     #[inline]
-    pub fn inline_value_len(&self) -> usize {
-        self.inline_value.len()
+    pub fn inline_property_len(&self) -> usize {
+        self.inline_property.len()
     }
 
     pub fn from_edge(handle: EdgeHandle, edge: Edge) -> Self {
         Self {
             handle,
-            inline_value: edge.inline_value,
+            inline_property: edge.inline_property,
         }
     }
 
@@ -41,7 +41,7 @@ impl EdgeBinding {
     pub fn from_federated_neighbor_hit(hit: &FederatedExpandNeighbor) -> Self {
         Self {
             handle: edge_handle_from_federated_hit_wire(hit),
-            inline_value: hit.inline_value(),
+            inline_property: hit.inline_property(),
         }
     }
 
@@ -121,7 +121,7 @@ pub(crate) fn edge_binding_for_federated_expand_hit(
 
 /// Per-hop auxiliary scalar for `{edge}__hop_aux` (inline edge inline value bytes).
 pub(crate) fn hop_aux_scalar(edge: &EdgeBinding) -> Value {
-    let bytes = edge.inline_value_bytes_slice();
+    let bytes = edge.inline_property_bytes_slice();
     if bytes.is_empty() {
         Value::Null
     } else {
@@ -233,21 +233,21 @@ mod tests {
     use super::super::test_support::*;
 
     #[test]
-    fn reverse_expand_binding_resolves_forward_edge_inline_value_and_owner() {
+    fn reverse_expand_binding_resolves_forward_edge_inline_property_and_owner() {
         let store = GraphStore::new();
         let a = store.insert_vertex().expect("a");
         let b = store.insert_vertex().expect("b");
         let label_id = crate::test_labels::edge_label_id_for_name("RevExpandWgt");
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(
+            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(
                 gleaph_graph_kernel::entry::EdgeWeightProfile {
                     encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
                 },
             ),
         );
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 a,
                 b,
                 Some(label_id),
@@ -259,12 +259,12 @@ mod tests {
         let binding = edge_binding_for_expand(&store, b, EdgeDirection::PointingLeft, in_edge)
             .expect("binding");
         assert_eq!(binding.handle.owner_vertex_id, a);
-        assert_eq!(binding.inline_value_bytes_slice(), &[42, 0]);
+        assert_eq!(binding.inline_property_bytes_slice(), &[42, 0]);
 
         let weight = crate::plan::query::gleaph_weight::decode_traversal_edge_weight(
             binding.handle,
-            binding.inline_value_len(),
-            binding.inline_value_bytes_slice(),
+            binding.inline_property_len(),
+            binding.inline_property_bytes_slice(),
         )
         .expect("decode weight");
         assert_eq!(weight, 42.0);

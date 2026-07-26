@@ -2,8 +2,8 @@
 
 #[cfg(feature = "canbench")]
 mod bench;
-mod edge_inline_value_scalar_codec;
-mod edge_inline_value_schema;
+mod edge_inline_property_scalar_codec;
+mod edge_inline_property_schema;
 mod element_id_encoding;
 #[expect(
     dead_code,
@@ -285,10 +285,10 @@ async fn e2e_insert_directed_edge_with_label(
 
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
-async fn e2e_insert_directed_edge_with_inline_value(
-    args: canister::types::E2eInsertDirectedEdgeWithPayloadArgs,
+async fn e2e_insert_directed_edge_with_inline_property(
+    args: canister::types::E2eInsertDirectedEdgeWithInlinePropertyArgs,
 ) -> Result<(), String> {
-    canister::handlers::e2e_insert_directed_edge_with_inline_value(args).await
+    canister::handlers::e2e_insert_directed_edge_with_inline_property(args).await
 }
 
 #[cfg(feature = "pocket-ic-e2e")]

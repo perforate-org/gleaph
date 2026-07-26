@@ -5,7 +5,7 @@ Anchor timestamp: 2026-07-03 09:54:43 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`), Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline payload, Slice 24 fixed-size inline struct schema registration (`CREATE EDGE LABEL ... { <property> { ... } INLINE }`), and Slice 25 ordinary read access to fixed-size inline edge struct fields (`e.stats` returns a record; `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence) are implemented**; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, nested structs, and generic `CREATE GRAPH TYPE` `INLINE` annotations remain planned; vector-index DDL remains planned.** This document
+**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`), Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration (`CREATE EDGE LABEL ... { <property> { ... } INLINE }`), and Slice 25 ordinary read access to fixed-size inline edge struct fields (`e.stats` returns a record; `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence) are implemented**; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, nested structs, and generic `CREATE GRAPH TYPE` `INLINE` annotations remain planned; vector-index DDL remains planned.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -40,11 +40,11 @@ semantics.
 | ----------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                                                                                                                                                                                                                                                                          | `gleaph-gql-ic` value extension                                                             |
 | IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                                                                                                                                                                                                                                                                          | Graph execution context                                                                     |
-| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar `INLINE` schema registration, read access, mutation packing, and shortest-path `COST BY e.property` implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`, `INSERT ... {distance: 7}`, `SET e.distance = 9`, `ANY SHORTEST ... COST BY e.distance`); **fixed-size struct schema registration and ordinary struct field reads are implemented** (`CREATE EDGE LABEL ... { <property> { ... } INLINE }`; `e.stats` returns a record, `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence); struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, and nested structs remain planned | Router schema/catalog + Graph edge inline value execution                                        |
+| Edge inline property             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar `INLINE` schema registration, read access, mutation packing, and shortest-path `COST BY e.property` implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`, `INSERT ... {distance: 7}`, `SET e.distance = 9`, `ANY SHORTEST ... COST BY e.distance`); **fixed-size struct schema registration and ordinary struct field reads are implemented** (`CREATE EDGE LABEL ... { <property> { ... } INLINE }`; `e.stats` returns a record, `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence); struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, and nested structs remain planned | Router schema/catalog + Graph edge inline property execution                                        |
 | Shortest-path cost            | `COST BY e.distance`                                                      | **Implemented** for the bounded direct-property shape: one concrete edge label, one declared edge variable, and exactly `e.<inline-property>`; `GLEAPH.COST BY GLEAPH.WEIGHT(e)` compatibility surface preserved; compound expressions and label-expression costs remain planned | Graph query planner/executor                                                                |
 | Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph query executor                                                                        |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
-| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge inline value executor                                                |
+| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge inline property executor                                                |
 | Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to eight `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), two to eight `OR`-connected same-binding same-property numeric range predicates (one one-sided range per arm, union of `lookup_range_page` streams with interval merge within the property, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property numeric range predicates (one one-sided range per arm, per-property interval merge, union of `lookup_range_page` streams across distinct property ids, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding heterogeneous equality/range predicates (each leaf independently equality or one-sided numeric range, per-property range interval merge, union of `lookup_equal_page` and `lookup_range_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, text/bytes/temporal/boolean/collection/path range predicates, mixed OR/AND remain planned, and nine-or-more disjunctive arms are rejected fail-closed | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
 
@@ -111,7 +111,7 @@ context must provide one or receive a runtime-function error.
 ### Target syntax
 
 **Status:** Planned target. Existing code still exposes `GLEAPH.WEIGHT(e)` and fixed-width edge
-payload profiles.
+inline property profiles.
 
 `INLINE` is a storage/layout modifier for one edge-label property. It is not a logical type. The
 logical query surface is ordinary property access:
@@ -187,25 +187,25 @@ CREATE EDGE LABEL ROAD {
 ```
 
 For each edge label, exactly one inline slot is allowed; in Slice 20 it is a scalar. The Router owns the canonical schema
-record `(graph_id, edge_label_id) → { property_id, scalar_type, derived EdgeInlineValueProfile }` in the
-existing `ROUTER_EDGE_PAYLOAD_PROFILES` stable region. The physical profile is derived from the scalar
-type; Graph receives it on the existing `ResolvedEdgeLabel` wire and stores/executes payload bytes
+record `(graph_id, edge_label_id) → { property_id, scalar_type, derived EdgeInlinePropertyProfile }` in the
+existing `ROUTER_EDGE_INLINE_PROPERTY_PROFILES` stable region. The physical profile is derived from the scalar
+type; Graph receives it on the existing `ResolvedEdgeLabel` wire and stores/executes inline property bytes
 with that width and encoding.
 
 Accepted scalar types are the fixed-width forms that map losslessly to an existing
-`EdgeInlineValueProfile`: `UINT8`, `UINT16`, `UINT32`, `UINT64`, `INT8`, `INT16`, `INT32`, `INT64`,
+`EdgeInlinePropertyProfile`: `UINT8`, `UINT16`, `UINT32`, `UINT64`, `INT8`, `INT16`, `INT32`, `INT64`,
 `UINT128`, `INT128`, `FLOAT16`, `FLOAT32`, `FLOAT64`, `FIXED32`, and `FIXED64`. Every other type
 (including fixed-size structs, strings, variable-width blobs, arrays, embeddings, and weight encodings) is
 rejected fail-closed in this slice.
 
 The Router DDL is idempotent for the exact same declaration and returns `Conflict` for any
 incompatible redeclaration (different property, scalar type, or a label that already has a legacy
-unnamed payload profile installed through the admin API). Authorization follows the same
+unnamed inline property profile installed through the admin API). Authorization follows the same
 admin/manager-with-prepare-register policy as index and constraint DDL.
 
 Slice 21 adds ordinary `e.distance` property access for scalar inline slots
 (`e.property`, `WHERE e.property`, `ORDER BY e.property`). Slice 22 adds ordinary mutation packing
-of scalar values into the inline payload (`INSERT ... {distance: 7}`, `SET e.distance = 9`,
+of scalar values into the inline property bytes (`INSERT ... {distance: 7}`, `SET e.distance = 9`,
 `SET e = {distance: 9, ...}`), with fail-closed rejection of missing, duplicate, `NULL`, overflowing,
 non-finite, and malformed fixed-byte values before any canonical write. This section does not add
 `COST BY e.distance`, fixed-size struct inline slots, or `INLINE` inside generic `CREATE GRAPH TYPE`
@@ -230,8 +230,8 @@ CREATE EDGE LABEL AFFINITY {
 For each edge label, exactly one inline slot is allowed; it may be a scalar (Slice 20) or a
 fixed-size struct (Slice 24), but not both. The Router owns the canonical schema record
 `(graph_id, edge_label_id) -> { property_id, declaration-ordered logical field specs [name, scalar_type] }`
-in the existing `ROUTER_EDGE_PAYLOAD_PROFILES` stable region. The physical profile sent to Graph is
-`EdgeInlineValueProfile::opaque_bytes(total_byte_width)`; Graph receives only the existing top-level
+in the existing `ROUTER_EDGE_INLINE_PROPERTY_PROFILES` stable region. The physical profile sent to Graph is
+`EdgeInlinePropertyProfile::opaque_bytes(total_byte_width)`; Graph receives only the existing top-level
 inline property identity and the derived opaque `RawBytes` profile in this slice. Struct fields are
 stored in declaration order with no padding. Bounds are enforced fail-closed: non-empty struct,
 unique field names within the struct, accepted fixed-width scalar field types only, field count
@@ -245,16 +245,16 @@ derived state.
 
 Exact replay is idempotent only when the same top-level property name, the same field names in the
 same declaration order, and the same field scalar types are supplied. Any incompatible
-redeclaration, any scalar/struct conflict, any legacy unnamed payload profile, and any property-index
+redeclaration, any scalar/struct conflict, any legacy unnamed inline property profile, and any property-index
 conflict on the same (label, property) are rejected before any catalog or schema mutation. Struct
 field reads (`e.stats.score`), struct mutation packing, `COST BY` over a struct field, and generic
 `CREATE GRAPH TYPE ... INLINE` annotations remain planned.
 
 ### Relationship to `GLEAPH.WEIGHT`
 
-`GLEAPH.WEIGHT(e)` is the implemented compatibility surface for fixed-width edge inline value weights.
-Ordinary inline property access (`e.distance`) and the existing edge-inline-value predicate surface
-(`GLEAPH.WEIGHT(e) = ...`) share the same Router-resolved `EdgeInlineValueProfile` and the same
+`GLEAPH.WEIGHT(e)` is the implemented compatibility surface for fixed-width edge inline property weights.
+Ordinary inline property access (`e.distance`) and the existing edge-inline-property predicate surface
+(`GLEAPH.WEIGHT(e) = ...`) share the same Router-resolved `EdgeInlinePropertyProfile` and the same
 Graph inline-aware read helper. The target dialect
 replaces it with ordinary property access:
 
@@ -280,7 +280,7 @@ RETURN b
 
 `GLEAPH.SEQUENCE(e)` exposes Gleaph's edge insertion-order compensation for a bound edge variable.
 The ordering value is owned by Graph edge storage and execution. It is keyed by the edge identity and
-edge-label-local insertion sequence; it is not decoded from edge inline value bytes and is not a property
+edge-label-local insertion sequence; it is not decoded from edge inline property bytes and is not a property
 store lookup.
 
 Use it when a query needs deterministic ascending or descending edge order:
@@ -305,14 +305,14 @@ rows, so Graph preserves its scan order. An optional subplan that binds `e` is a
 boundary and is not lowered as an order on the earlier edge.
 
 This function must be classified separately from `GLEAPH.WEIGHT(e)` and `GLEAPH.VECTOR.*` in the Rust
-manifest. Those helpers read or score fixed-width edge inline value bytes; `GLEAPH.SEQUENCE(e)` reads
+manifest. Those helpers read or score fixed-width edge inline property bytes; `GLEAPH.SEQUENCE(e)` reads
 Graph-owned edge ordering metadata.
 
 ## Edge-payload vector predicates
 
 **Status:** Implemented compatibility surface.
 
-`GLEAPH.VECTOR.*` is implemented as SIMD scoring over fixed-width **edge inline value** bytes, not vertex
+`GLEAPH.VECTOR.*` is implemented as SIMD scoring over fixed-width **edge inline property** bytes, not vertex
 embedding ANN search:
 
 ```gql
@@ -337,7 +337,7 @@ Unfused use is rejected. Do not reuse this surface for vertex embedding search.
 **Status:** Planned schema syntax; ADR 0031 storage and vector-index APIs are implemented in slices.
 
 Embeddings belong to the canonical vertex embedding store and derived vector-index model. They are not
-edge inline payloads and are not ordinary variable-size property-store values.
+edge inline property bytess and are not ordinary variable-size property-store values.
 
 Target schema shape:
 
@@ -795,7 +795,7 @@ This expresses the intended flow:
 | 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix and non-leading `SEARCH` after a bound vertex, vertex-only, leading and non-leading `SEARCH ... WHERE` with one to eight `AND`-connected equalities on distinct properties, one numeric range, a two-sided numeric range, mixed equality-plus-one-sided-range, mixed equality-plus-two-sided-range, same-property equality disjunctions, cross-property pure equality disjunctions (where property names may repeat or differ), same-property pure numeric-range disjunctions, and cross-property pure numeric-range disjunctions, all backed by active vertex property indexes; `DISTANCE AS` and `SCORE AS` for cosine |
 | 5     | Add result hydration from vector hits to graph vertex bindings                                         | Implemented via row-shaped `SeedBindingsWire`                                                                        |
 | 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared`      |
-| 7     | Add scalar `INLINE` edge-property schema syntax, ordinary read access (`e.inline_field`), ordinary mutation packing (`INSERT`/`SET`/`REMOVE` semantics), and bounded ordinary `COST BY e.inline_field` shortest-path cost into the inline payload; add fixed-size struct inline schema registration and ordinary struct field reads (`e.stats`, `e.stats.field`) | Implemented: scalar inline schema registration, read access, mutation packing, and bounded `COST BY e.property` are complete; fixed-size struct schema registration and ordinary struct field reads are complete; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, nested structs, and generic `CREATE GRAPH TYPE` `INLINE` annotations remain planned |
+| 7     | Add scalar `INLINE` edge-property schema syntax, ordinary read access (`e.inline_field`), ordinary mutation packing (`INSERT`/`SET`/`REMOVE` semantics), and bounded ordinary `COST BY e.inline_field` shortest-path cost into the inline property bytes; add fixed-size struct inline schema registration and ordinary struct field reads (`e.stats`, `e.stats.field`) | Implemented: scalar inline schema registration, read access, mutation packing, and bounded `COST BY e.property` are complete; fixed-size struct schema registration and ordinary struct field reads are complete; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, nested structs, and generic `CREATE GRAPH TYPE` `INLINE` annotations remain planned |
 | 8     | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available        | Planned                                                                                                              |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.
@@ -808,7 +808,7 @@ Every stage that changes public syntax must update this document and add parser/
   clients.
 - Router resolves vector-index names, embedding names, graph context, activation gates, and target
   canisters.
-- Graph executes shard-local property access, inline payload decode, runtime functions, and
+- Graph executes shard-local property access, inline property bytes decode, runtime functions, and
   shortest-path cost evaluation.
 - Vector Index executes ANN search and owns search/rebuild/maintenance internals.
 

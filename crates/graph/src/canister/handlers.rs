@@ -1597,8 +1597,8 @@ pub async fn e2e_insert_directed_edge_with_label(
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
-pub async fn e2e_insert_directed_edge_with_inline_value(
-    args: super::types::E2eInsertDirectedEdgeWithPayloadArgs,
+pub async fn e2e_insert_directed_edge_with_inline_property(
+    args: super::types::E2eInsertDirectedEdgeWithInlinePropertyArgs,
 ) -> Result<(), String> {
     use crate::index::edge_pending;
     use gleaph_graph_kernel::entry::EdgeLabelId;
@@ -1615,15 +1615,20 @@ pub async fn e2e_insert_directed_edge_with_inline_value(
         edge: vec![ResolvedEdgeLabel::new(
             "ROAD",
             label,
-            args.inline_value_profile.clone(),
+            args.inline_property_profile.clone(),
         )],
         ..ResolvedLabelTable::default()
     };
-    crate::edge_inline_value_schema::set_execution_resolved_labels(Some(resolved));
+    crate::edge_inline_property_schema::set_execution_resolved_labels(Some(resolved));
     let result = store
-        .insert_directed_edge_with_inline_value_bytes(source, target, Some(label), &args.payload)
+        .insert_directed_edge_with_inline_property_bytes(
+            source,
+            target,
+            Some(label),
+            &args.inline_property,
+        )
         .map_err(|e| e.to_string());
-    crate::edge_inline_value_schema::set_execution_resolved_labels(None);
+    crate::edge_inline_property_schema::set_execution_resolved_labels(None);
     result?;
 
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
@@ -1798,7 +1803,7 @@ pub async fn e2e_delete_directed_edge_with_property(
 /// Set a sidecar edge property on an existing directed edge (PocketIC E2E only).
 ///
 /// Used to test inline-payload precedence: the caller creates an edge with a payload through
-/// [`e2e_insert_directed_edge_with_inline_value`], then sets the same property id to a different
+/// [`e2e_insert_directed_edge_with_inline_property`], then sets the same property id to a different
 /// sidecar value here, and finally reads `e.property` to prove payload bytes win.
 #[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_set_edge_property(
@@ -2076,7 +2081,7 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
     use gleaph_gql_planner::wire::encode_block_plans;
-    use gleaph_graph_kernel::entry::{EdgeInlineValueProfile, EdgeLabelId, VertexLabelId};
+    use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId, VertexLabelId};
     use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ElementIdEncodingKey, ShardId};
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
@@ -2166,7 +2171,7 @@ mod tests {
                     edge: vec![ResolvedEdgeLabel {
                         name: "POSTED".into(),
                         id: EdgeLabelId::from_raw(1),
-                        inline_value_profile: EdgeInlineValueProfile::no_inline_value(),
+                        inline_property_profile: EdgeInlinePropertyProfile::no_inline_property(),
                         inline_schema: None,
                     }],
                 }),

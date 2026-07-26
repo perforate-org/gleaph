@@ -1,19 +1,19 @@
-//! Stable `EdgeLabelId → EdgeInlineValueProfile` map (router SSOT per ADR 0008).
+//! Stable `EdgeLabelId → EdgeInlinePropertyProfile` map (router SSOT per ADR 0008).
 
 use crate::entry::{
-    EdgeInlineValueProfile, EdgeInlineValueProfileError, EdgeLabelId, EdgeWeightProfile,
+    EdgeInlinePropertyProfile, EdgeInlinePropertyProfileError, EdgeLabelId, EdgeWeightProfile,
 };
 use ic_stable_structures::{Memory, StableBTreeMap};
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EdgeInlineValueProfileStoreError {
+pub enum EdgeInlinePropertyProfileStoreError {
     InvalidCatalogLabel(EdgeLabelId),
-    InvalidProfile(EdgeInlineValueProfileError),
+    InvalidProfile(EdgeInlinePropertyProfileError),
     ProfileAlreadyInstalled(EdgeLabelId),
 }
 
-impl fmt::Display for EdgeInlineValueProfileStoreError {
+impl fmt::Display for EdgeInlinePropertyProfileStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidCatalogLabel(id) => {
@@ -33,34 +33,36 @@ impl fmt::Display for EdgeInlineValueProfileStoreError {
     }
 }
 
-impl std::error::Error for EdgeInlineValueProfileStoreError {}
+impl std::error::Error for EdgeInlinePropertyProfileStoreError {}
 
-pub struct EdgeInlineValueProfileStore<M: Memory> {
-    inner: StableBTreeMap<EdgeLabelId, EdgeInlineValueProfile, M>,
+pub struct EdgeInlinePropertyProfileStore<M: Memory> {
+    inner: StableBTreeMap<EdgeLabelId, EdgeInlinePropertyProfile, M>,
 }
 
-impl<M: Memory> EdgeInlineValueProfileStore<M> {
+impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
     pub fn init(memory: M) -> Self {
         Self {
             inner: StableBTreeMap::init(memory),
         }
     }
 
-    pub fn get(&self, label: EdgeLabelId) -> Option<EdgeInlineValueProfile> {
+    pub fn get(&self, label: EdgeLabelId) -> Option<EdgeInlinePropertyProfile> {
         self.inner.get(&label)
     }
 
     pub fn insert(
         &mut self,
         label: EdgeLabelId,
-        profile: EdgeInlineValueProfile,
-    ) -> Result<(), EdgeInlineValueProfileStoreError> {
+        profile: EdgeInlinePropertyProfile,
+    ) -> Result<(), EdgeInlinePropertyProfileStoreError> {
         if !label.is_catalog_allocatable() {
-            return Err(EdgeInlineValueProfileStoreError::InvalidCatalogLabel(label));
+            return Err(EdgeInlinePropertyProfileStoreError::InvalidCatalogLabel(
+                label,
+            ));
         }
         profile
             .validate()
-            .map_err(EdgeInlineValueProfileStoreError::InvalidProfile)?;
+            .map_err(EdgeInlinePropertyProfileStoreError::InvalidProfile)?;
         self.inner.insert(label, profile);
         Ok(())
     }
@@ -68,8 +70,8 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
     pub fn insert_if_absent(
         &mut self,
         label: EdgeLabelId,
-        profile: EdgeInlineValueProfile,
-    ) -> Result<(), EdgeInlineValueProfileStoreError> {
+        profile: EdgeInlinePropertyProfile,
+    ) -> Result<(), EdgeInlinePropertyProfileStoreError> {
         if self.inner.get(&label).is_some() {
             return Ok(());
         }
@@ -80,8 +82,8 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
         &mut self,
         label: EdgeLabelId,
         profile: EdgeWeightProfile,
-    ) -> Result<(), EdgeInlineValueProfileStoreError> {
-        self.insert(label, EdgeInlineValueProfile::from(profile))
+    ) -> Result<(), EdgeInlinePropertyProfileStoreError> {
+        self.insert(label, EdgeInlinePropertyProfile::from(profile))
     }
 
     pub fn remove(&mut self, label: EdgeLabelId) {
@@ -113,7 +115,7 @@ impl<M: Memory> EdgeInlineValueProfileStore<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile, EdgeLabelId};
+    use crate::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId};
     use ic_stable_structures::VectorMemory;
     use std::{cell::RefCell, rc::Rc};
 
@@ -123,27 +125,27 @@ mod tests {
 
     #[test]
     fn insert_rejects_invalid_profile_encoding() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let label = EdgeLabelId::from_raw(1);
-        let profile = EdgeInlineValueProfile {
+        let profile = EdgeInlinePropertyProfile {
             byte_width: 4,
-            encoding: EdgeInlineValueEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
         };
         assert!(matches!(
             store.insert(label, profile),
-            Err(EdgeInlineValueProfileStoreError::InvalidProfile(
-                EdgeInlineValueProfileError::WidthEncodingMismatch
+            Err(EdgeInlinePropertyProfileStoreError::InvalidProfile(
+                EdgeInlinePropertyProfileError::WidthEncodingMismatch
             ))
         ));
     }
 
     #[test]
     fn insert_and_get_round_trip() {
-        let mut store = EdgeInlineValueProfileStore::init(mem());
+        let mut store = EdgeInlinePropertyProfileStore::init(mem());
         let label = EdgeLabelId::from_raw(2);
-        let profile = EdgeInlineValueProfile {
+        let profile = EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlineValueEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
         };
         store.insert(label, profile.clone()).expect("insert");
         assert_eq!(store.get(label), Some(profile));

@@ -1,23 +1,25 @@
 use std::collections::BTreeMap;
 
-use crate::edge_inline_value_scalar_codec::encode_edge_inline_value_scalar;
+use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar;
 use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
 use gleaph_gql_planner::plan::{
-    EdgeInlineValuePredicate, EdgeInlineVectorPredicate, EdgeVectorMetric as PlanEdgeVectorMetric,
-    ScanValue,
+    EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate,
+    EdgeVectorMetric as PlanEdgeVectorMetric, ScanValue,
 };
-use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile, EdgeLabelId};
+use gleaph_graph_kernel::entry::{
+    EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
+};
 
-use crate::plan::query::edge_inline_value_batch_kernel::PreparedEdgeInlineValueBatchKernel;
+use crate::plan::query::edge_inline_property_batch_kernel::PreparedLabeledEdgeInlinePropertyBatchKernel;
 use crate::plan::query::edge_vector_kernel::{
     EdgeVectorMetric as KernelEdgeVectorMetric, PreparedEdgeVectorKernel,
 };
 use crate::plan::query::error::PlanQueryError;
 use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 #[derive(Clone, Debug)]
-pub(crate) struct PreparedEdgeInlineValuePredicate {
-    pub(crate) kernel: PreparedEdgeInlineValueBatchKernel,
+pub(crate) struct PreparedEdgeInlinePropertyPredicate {
+    pub(crate) kernel: PreparedLabeledEdgeInlinePropertyBatchKernel,
     pub(crate) op: CmpOp,
     pub(crate) expected: Vec<u8>,
 }
@@ -38,14 +40,14 @@ impl PreparedEdgeInlineVectorThreshold {
         predicate: &EdgeInlineVectorPredicate,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<Option<Self>, PlanQueryError> {
-        let profile = crate::edge_inline_value_schema::lookup_edge_inline_value_profile_with(
+        let profile = crate::edge_inline_property_schema::lookup_edge_inline_property_profile_with(
             resolved_labels,
             label_id,
         );
         if profile.required_byte_width() == 0 {
             return Ok(None);
         }
-        let EdgeInlineValueEncoding::VectorF32 { dims } = profile.encoding else {
+        let EdgeInlinePropertyEncoding::VectorF32 { dims } = profile.encoding else {
             return Err(PlanQueryError::UnsupportedOp(
                 "edge inline vector predicate for non-vector encodings",
             ));
@@ -74,11 +76,15 @@ impl PreparedEdgeInlineVectorThreshold {
         }))
     }
 
-    pub(crate) fn collect_matching_indices(&self, inline_value_bytes: &[u8], out: &mut Vec<usize>) {
+    pub(crate) fn collect_matching_indices(
+        &self,
+        inline_property_bytes: &[u8],
+        out: &mut Vec<usize>,
+    ) {
         match (self.metric, self.op) {
             (KernelEdgeVectorMetric::L2Squared, CmpOp::Lt) => {
                 self.kernel.collect_l2_squared_upper_bound_indices(
-                    inline_value_bytes,
+                    inline_property_bytes,
                     &self.query,
                     self.threshold,
                     false,
@@ -87,7 +93,7 @@ impl PreparedEdgeInlineVectorThreshold {
             }
             (KernelEdgeVectorMetric::L2Squared, CmpOp::Le) => {
                 self.kernel.collect_l2_squared_upper_bound_indices(
-                    inline_value_bytes,
+                    inline_property_bytes,
                     &self.query,
                     self.threshold,
                     true,
@@ -95,7 +101,7 @@ impl PreparedEdgeInlineVectorThreshold {
                 )
             }
             _ => self.kernel.collect_matching_indices(
-                inline_value_bytes,
+                inline_property_bytes,
                 &self.query,
                 self.metric,
                 self.threshold,
@@ -120,14 +126,14 @@ fn kernel_edge_vector_metric(metric: PlanEdgeVectorMetric) -> KernelEdgeVectorMe
     }
 }
 
-impl PreparedEdgeInlineValuePredicate {
+impl PreparedEdgeInlinePropertyPredicate {
     pub(crate) fn prepare(
         resolved_labels: Option<&ResolvedLabelTable>,
         label_id: EdgeLabelId,
-        predicate: &EdgeInlineValuePredicate,
+        predicate: &EdgeInlinePropertyPredicate,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<Option<Self>, PlanQueryError> {
-        let profile = crate::edge_inline_value_schema::lookup_edge_inline_value_profile_with(
+        let profile = crate::edge_inline_property_schema::lookup_edge_inline_property_profile_with(
             resolved_labels,
             label_id,
         );
@@ -135,11 +141,12 @@ impl PreparedEdgeInlineValuePredicate {
             return Ok(None);
         }
         let Some(expected) =
-            scan_value_to_edge_inline_value_bytes(&profile, &predicate.value, parameters)?
+            scan_value_to_edge_inline_property_bytes(&profile, &predicate.value, parameters)?
         else {
             return Ok(None);
         };
-        let kernel = PreparedEdgeInlineValueBatchKernel::new(profile.byte_width, profile.encoding);
+        let kernel =
+            PreparedLabeledEdgeInlinePropertyBatchKernel::new(profile.byte_width, profile.encoding);
         Ok(Some(Self {
             kernel,
             op: predicate.op,
@@ -148,8 +155,8 @@ impl PreparedEdgeInlineValuePredicate {
     }
 }
 
-fn scan_value_to_edge_inline_value_bytes(
-    profile: &EdgeInlineValueProfile,
+fn scan_value_to_edge_inline_property_bytes(
+    profile: &EdgeInlinePropertyProfile,
     scan_value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Option<Vec<u8>>, PlanQueryError> {
@@ -166,7 +173,7 @@ fn scan_value_to_edge_inline_value_bytes(
     if matches!(value, Value::Null) {
         return Ok(None);
     }
-    edge_inline_value_bytes_from_value(profile, value)
+    edge_inline_property_bytes_from_value(profile, value)
 }
 
 fn scan_value_to_f32_vector(
@@ -208,48 +215,48 @@ fn scan_value_to_value<'a>(
     }
 }
 
-fn edge_inline_value_bytes_from_value(
-    profile: &EdgeInlineValueProfile,
+fn edge_inline_property_bytes_from_value(
+    profile: &EdgeInlinePropertyProfile,
     value: &Value,
 ) -> Result<Option<Vec<u8>>, PlanQueryError> {
     let bytes = match &profile.encoding {
-        EdgeInlineValueEncoding::RawU8
-        | EdgeInlineValueEncoding::RawU16
-        | EdgeInlineValueEncoding::RawU32
-        | EdgeInlineValueEncoding::RawU64
-        | EdgeInlineValueEncoding::RawI8
-        | EdgeInlineValueEncoding::RawI16
-        | EdgeInlineValueEncoding::RawI32
-        | EdgeInlineValueEncoding::RawI64
-        | EdgeInlineValueEncoding::RawU128
-        | EdgeInlineValueEncoding::RawI128
-        | EdgeInlineValueEncoding::F16
-        | EdgeInlineValueEncoding::F32
-        | EdgeInlineValueEncoding::F64
-        | EdgeInlineValueEncoding::RawFixed32
-        | EdgeInlineValueEncoding::RawFixed64 => {
-            return encode_edge_inline_value_scalar(profile, value)
+        EdgeInlinePropertyEncoding::RawU8
+        | EdgeInlinePropertyEncoding::RawU16
+        | EdgeInlinePropertyEncoding::RawU32
+        | EdgeInlinePropertyEncoding::RawU64
+        | EdgeInlinePropertyEncoding::RawI8
+        | EdgeInlinePropertyEncoding::RawI16
+        | EdgeInlinePropertyEncoding::RawI32
+        | EdgeInlinePropertyEncoding::RawI64
+        | EdgeInlinePropertyEncoding::RawU128
+        | EdgeInlinePropertyEncoding::RawI128
+        | EdgeInlinePropertyEncoding::F16
+        | EdgeInlinePropertyEncoding::F32
+        | EdgeInlinePropertyEncoding::F64
+        | EdgeInlinePropertyEncoding::RawFixed32
+        | EdgeInlinePropertyEncoding::RawFixed64 => {
+            return encode_edge_inline_property_scalar(profile, value)
                 .map(Some)
                 .map_err(|err| PlanQueryError::InvalidExpressionValue {
                     expression: format!("edge inline value scalar literal: {err}"),
                 });
         }
-        EdgeInlineValueEncoding::WeightRawU16 => {
+        EdgeInlinePropertyEncoding::WeightRawU16 => {
             u16_from_value(value).map(|v| v.to_le_bytes().to_vec())?
         }
-        EdgeInlineValueEncoding::WeightLinearU16 { .. }
-        | EdgeInlineValueEncoding::WeightLogU16 { .. }
-        | EdgeInlineValueEncoding::WeightBinary16 => {
+        EdgeInlinePropertyEncoding::WeightLinearU16 { .. }
+        | EdgeInlinePropertyEncoding::WeightLogU16 { .. }
+        | EdgeInlinePropertyEncoding::WeightBinary16 => {
             return Err(PlanQueryError::UnsupportedOp(
                 "edge inline value predicate for transformed weight encodings",
             ));
         }
-        EdgeInlineValueEncoding::VectorF32 { .. } => {
+        EdgeInlinePropertyEncoding::VectorF32 { .. } => {
             return Err(PlanQueryError::UnsupportedOp(
                 "edge inline value predicate for vector encodings",
             ));
         }
-        EdgeInlineValueEncoding::RawBytes => match value {
+        EdgeInlinePropertyEncoding::RawBytes => match value {
             Value::Bytes(bytes) => bytes.clone(),
             _ => {
                 return Err(PlanQueryError::InvalidExpressionValue {
@@ -273,17 +280,17 @@ fn u16_from_value(value: &Value) -> Result<u16, PlanQueryError> {
         Value::Uint32(v) => u128::from(*v),
         Value::Uint64(v) => u128::from(*v),
         Value::Uint128(v) => *v,
-        Value::Int8(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_value())?,
-        Value::Int16(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_value())?,
-        Value::Int32(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_value())?,
-        Value::Int64(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_value())?,
-        Value::Int128(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_value())?,
-        _ => return Err(invalid_u16_edge_inline_value()),
+        Value::Int8(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_property())?,
+        Value::Int16(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_property())?,
+        Value::Int32(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_property())?,
+        Value::Int64(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_property())?,
+        Value::Int128(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_inline_property())?,
+        _ => return Err(invalid_u16_edge_inline_property()),
     };
-    u16::try_from(intermediate).map_err(|_| invalid_u16_edge_inline_value())
+    u16::try_from(intermediate).map_err(|_| invalid_u16_edge_inline_property())
 }
 
-fn invalid_u16_edge_inline_value() -> PlanQueryError {
+fn invalid_u16_edge_inline_property() -> PlanQueryError {
     PlanQueryError::InvalidExpressionValue {
         expression: "u16 edge inline value predicate literal".into(),
     }

@@ -11,8 +11,8 @@ use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarL
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::LabeledEdgeInlineValueBatch;
-use ic_stable_lara::labeled::{LabeledEdgeInlineValueBatchScratch, OutEdgeOrder};
+use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch;
+use ic_stable_lara::labeled::{LabeledEdgeInlinePropertyBatchScratch, OutEdgeOrder};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -280,7 +280,7 @@ pub(crate) async fn execute_shortest_path(
 /// Controls whether shortest-path expansion hydrates edge inline values and reuses batch scratch.
 pub(crate) struct ShortestExpandOptions<'a> {
     pub load_payloads: bool,
-    pub payload_scratch: Option<&'a mut LabeledEdgeInlineValueBatchScratch<Edge>>,
+    pub payload_scratch: Option<&'a mut LabeledEdgeInlinePropertyBatchScratch<Edge>>,
 }
 
 /// Holds a catalog [`EdgeLabelId`] per shortest-path search; expansion uses directed/undirected
@@ -335,7 +335,7 @@ impl ShortestFixedLabelExpand {
                 };
                 if options.load_payloads {
                     if let Some(scratch) = options.payload_scratch {
-                        store.for_each_directed_out_edges_for_label_with_inline_values_reusing(
+                        store.for_each_directed_out_edges_for_label_with_inline_property_bytes_reusing(
                             current,
                             label,
                             OutEdgeOrder::Descending,
@@ -343,7 +343,7 @@ impl ShortestFixedLabelExpand {
                             &mut visit_edge,
                         )?;
                     } else {
-                        store.for_each_directed_out_edges_for_label_with_inline_values(
+                        store.for_each_directed_out_edges_for_label_with_inline_property_bytes(
                             current,
                             label,
                             OutEdgeOrder::Descending,
@@ -384,7 +384,7 @@ impl ShortestFixedLabelExpand {
                 };
                 if options.load_payloads {
                     if let Some(scratch) = options.payload_scratch {
-                        store.for_each_directed_in_edges_for_label_with_inline_values_reusing(
+                        store.for_each_directed_in_edges_for_label_with_inline_property_bytes_reusing(
                             current,
                             label,
                             OutEdgeOrder::Descending,
@@ -392,7 +392,7 @@ impl ShortestFixedLabelExpand {
                             &mut visit_edge,
                         )?;
                     } else {
-                        store.for_each_directed_in_edges_for_label_with_inline_values(
+                        store.for_each_directed_in_edges_for_label_with_inline_property_bytes(
                             current,
                             label,
                             OutEdgeOrder::Descending,
@@ -444,7 +444,7 @@ impl ShortestFixedLabelExpand {
         self,
         store: &GraphStore,
         current: VertexId,
-        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), PlanQueryError>
     where
@@ -465,7 +465,7 @@ impl ShortestFixedLabelExpand {
                     }
                 };
                 store
-                    .for_each_directed_out_edges_for_label_with_inline_value_slices_reusing(
+                    .for_each_directed_out_edges_for_label_with_inline_property_byte_slices_reusing(
                         current,
                         label,
                         OutEdgeOrder::Descending,
@@ -491,7 +491,7 @@ impl ShortestFixedLabelExpand {
                     }
                 };
                 store
-                    .for_each_directed_in_edges_for_label_with_inline_value_slices_reusing(
+                    .for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing(
                         current,
                         label,
                         OutEdgeOrder::Descending,
@@ -513,16 +513,17 @@ impl ShortestFixedLabelExpand {
     }
 
     /// Expands fixed-label edges in LARA payload batches (dense slab bulk-read groups).
-    pub(crate) fn expand_inline_value_batches<Visit>(
+    pub(crate) fn expand_inline_property_batches<Visit>(
         self,
         store: &GraphStore,
         current: VertexId,
-        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), PlanQueryError>
     where
-        Visit:
-            for<'b> FnMut(&'b LabeledEdgeInlineValueBatch<'b, Edge>) -> Result<(), PlanQueryError>,
+        Visit: for<'b> FnMut(
+            &'b LabeledEdgeInlinePropertyBatch<'b, Edge>,
+        ) -> Result<(), PlanQueryError>,
     {
         match self {
             Self::Forward { label } => {
@@ -532,7 +533,7 @@ impl ShortestFixedLabelExpand {
                     LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
                 let mut expand_err = None;
                 store
-                    .visit_out_edge_inline_value_batches_for_label(
+                    .visit_out_edge_inline_property_batches_for_label(
                         current,
                         storage_label,
                         OutEdgeOrder::Descending,
@@ -560,7 +561,7 @@ impl ShortestFixedLabelExpand {
                     LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
                 let mut expand_err = None;
                 store
-                    .visit_in_edge_inline_value_batches_for_label(
+                    .visit_in_edge_inline_property_batches_for_label(
                         current,
                         storage_label,
                         OutEdgeOrder::Descending,

@@ -5,19 +5,19 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
-    EdgeInlineValuePredicate, EdgeInlineVectorPredicate, ScanValue, Str,
+    EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, ScanValue, Str,
 };
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::{
-    LabeledEdgeInlineValueBatchScratch, LabeledPayloadValueBatchScratch, OutEdgeOrder,
+    LabeledEdgeInlinePropertyBatchScratch, LabeledInlinePropertyValueBatchScratch, OutEdgeOrder,
 };
 
 use super::label_expr::{
     catalog_edge_label_ids_for_predicate_fusion, fusion_edge_label_ids_for_expr,
 };
-use super::predicates::{PreparedEdgeInlineValuePredicate, PreparedEdgeInlineVectorThreshold};
+use super::predicates::{PreparedEdgeInlinePropertyPredicate, PreparedEdgeInlineVectorThreshold};
 use super::{
     ExpandDst, edge_matches_indexed_equality, expand_accepts_remote_dst, expand_dst_binding,
     expand_dst_matches_prebound_vertex, push_expand_candidate, push_scanned_value_expand_candidate,
@@ -35,18 +35,18 @@ use crate::plan::query::executor::{
 use crate::plan::query::row::PlanRow;
 pub(crate) type ExpandCandidate = (ExpandDst, EdgeBinding);
 
-pub(crate) fn expand_candidates_matching_edge_inline_value_into(
+pub(crate) fn expand_candidates_matching_edge_inline_property_into(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: EdgeLabelId,
     sequence_order: EdgeSequenceOrder,
-    predicate: &PreparedEdgeInlineValuePredicate,
+    predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
     let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
-    if try_expand_matching_edge_inline_value_inline_value_first(
+    if try_expand_matching_edge_inline_property_inline_property_bytes_first(
         store,
         src_id,
         direction,
@@ -57,7 +57,7 @@ pub(crate) fn expand_candidates_matching_edge_inline_value_into(
     )? {
         return Ok(());
     }
-    expand_matching_edge_inline_value_combined_batch(
+    expand_matching_edge_inline_property_combined_batch(
         store,
         src_id,
         direction,
@@ -68,31 +68,36 @@ pub(crate) fn expand_candidates_matching_edge_inline_value_into(
     )
 }
 
-fn try_expand_matching_edge_inline_value_inline_value_first(
+fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
     storage_label: LaraLabelId,
     order: OutEdgeOrder,
-    predicate: &PreparedEdgeInlineValuePredicate,
+    predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
-    let inline_value_first_eligible =
-        match direction {
-            EdgeDirection::PointingRight => store
-                .out_label_bucket_inline_value_first_predicate_eligible(src_id, storage_label)?,
-            EdgeDirection::PointingLeft => store
-                .in_label_bucket_inline_value_first_predicate_eligible(src_id, storage_label)?,
-            other => return Err(PlanQueryError::UnsupportedDirection(other)),
-        };
-    if !inline_value_first_eligible {
+    let inline_property_bytes_first_eligible = match direction {
+        EdgeDirection::PointingRight => store
+            .out_label_bucket_inline_property_bytes_first_predicate_eligible(
+                src_id,
+                storage_label,
+            )?,
+        EdgeDirection::PointingLeft => store
+            .in_label_bucket_inline_property_bytes_first_predicate_eligible(
+                src_id,
+                storage_label,
+            )?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    };
+    if !inline_property_bytes_first_eligible {
         return Ok(false);
     }
 
     let mut pending_slots = Vec::new();
     let mut pending_payloads = Vec::new();
-    let mut value_scratch = LabeledPayloadValueBatchScratch::default();
-    let mut visit_values = |batch: ic_stable_lara::labeled::LabeledPayloadValueBatch<'_>| {
+    let mut value_scratch = LabeledInlinePropertyValueBatchScratch::default();
+    let mut visit_values = |batch: ic_stable_lara::labeled::LabeledInlinePropertyValueBatch<'_>| {
         let mut matches = Vec::new();
         predicate.kernel.collect_matching_value_indices(
             batch.values,
@@ -114,7 +119,7 @@ fn try_expand_matching_edge_inline_value_inline_value_first(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .visit_out_inline_value_batches_for_label(
+            .visit_out_inline_property_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -123,7 +128,7 @@ fn try_expand_matching_edge_inline_value_inline_value_first(
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .visit_in_inline_value_batches_for_label(
+            .visit_in_inline_property_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -156,7 +161,7 @@ fn try_expand_matching_edge_inline_value_inline_value_first(
         let Some(payload) = payload_by_slot.get(&edge.edge_slot_index.raw()) else {
             return;
         };
-        let edge = edge.with_inline_value_bytes(payload);
+        let edge = edge.with_inline_property_bytes(payload);
         match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
             Some(edge_dst) => {
                 push_scanned_value_expand_candidate(out, store, src_id, direction, edge_dst, edge)
@@ -170,7 +175,7 @@ fn try_expand_matching_edge_inline_value_inline_value_first(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .read_out_edge_slots_for_label_reusing_inline_value_scratch(
+            .read_out_edge_slots_for_label_reusing_inline_property_scratch(
                 src_id,
                 storage_label,
                 &pending_slots,
@@ -180,7 +185,7 @@ fn try_expand_matching_edge_inline_value_inline_value_first(
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .read_in_edge_slots_for_label_reusing_inline_value_scratch(
+            .read_in_edge_slots_for_label_reusing_inline_property_scratch(
                 src_id,
                 storage_label,
                 &pending_slots,
@@ -198,26 +203,26 @@ fn try_expand_matching_edge_inline_value_inline_value_first(
     Ok(true)
 }
 
-fn expand_matching_edge_inline_value_combined_batch(
+fn expand_matching_edge_inline_property_combined_batch(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
     storage_label: LaraLabelId,
     order: OutEdgeOrder,
-    predicate: &PreparedEdgeInlineValuePredicate,
+    predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
-    let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
+    let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
     let mut visit_batch =
-        |batch: ic_stable_lara::labeled::LabeledEdgeInlineValueBatch<'_, Edge>| {
+        |batch: ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch<'_, Edge>| {
             if error.is_some() {
                 return;
             }
             matches.clear();
             predicate.kernel.collect_matching_value_indices(
-                batch.inline_value_bytes,
+                batch.inline_property_bytes,
                 predicate.op,
                 &predicate.expected,
                 &mut matches,
@@ -229,8 +234,9 @@ fn expand_matching_edge_inline_value_combined_batch(
                 };
                 let payload_start = idx * width;
                 let payload_end = payload_start + width;
-                let edge = edge
-                    .with_inline_value_bytes(&batch.inline_value_bytes[payload_start..payload_end]);
+                let edge = edge.with_inline_property_bytes(
+                    &batch.inline_property_bytes[payload_start..payload_end],
+                );
                 match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
                     Some(edge_dst) => push_scanned_value_expand_candidate(
                         out, store, src_id, direction, edge_dst, edge,
@@ -248,7 +254,7 @@ fn expand_matching_edge_inline_value_combined_batch(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_property_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -257,7 +263,7 @@ fn expand_matching_edge_inline_value_combined_batch(
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .visit_in_edge_inline_value_batches_for_label(
+            .visit_in_edge_inline_property_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -304,16 +310,16 @@ fn expand_matching_edge_vector_threshold_combined_batch(
     predicate: &PreparedEdgeInlineVectorThreshold,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
-    let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
+    let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
     let mut visit_batch =
-        |batch: ic_stable_lara::labeled::LabeledEdgeInlineValueBatch<'_, Edge>| {
+        |batch: ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch<'_, Edge>| {
             if error.is_some() {
                 return;
             }
             matches.clear();
-            predicate.collect_matching_indices(batch.inline_value_bytes, &mut matches);
+            predicate.collect_matching_indices(batch.inline_property_bytes, &mut matches);
             if !matches.is_empty() {
                 out.reserve(matches.len());
             }
@@ -324,8 +330,9 @@ fn expand_matching_edge_vector_threshold_combined_batch(
                 };
                 let payload_start = idx * width;
                 let payload_end = payload_start + width;
-                let edge = edge
-                    .with_inline_value_bytes(&batch.inline_value_bytes[payload_start..payload_end]);
+                let edge = edge.with_inline_property_bytes(
+                    &batch.inline_property_bytes[payload_start..payload_end],
+                );
                 match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
                     Some(edge_dst) => push_scanned_value_expand_candidate(
                         out, store, src_id, direction, edge_dst, edge,
@@ -343,7 +350,7 @@ fn expand_matching_edge_vector_threshold_combined_batch(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_property_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -352,7 +359,7 @@ fn expand_matching_edge_vector_threshold_combined_batch(
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .visit_in_edge_inline_value_batches_for_label(
+            .visit_in_edge_inline_property_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -388,7 +395,7 @@ pub(super) fn expand_vector_dst_only_rows_into(
     evaluator: &QueryExprEvaluator<'_>,
     predicate: &PreparedEdgeInlineVectorThreshold,
     out: &mut Vec<PlanRow>,
-    scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+    scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
     matches: &mut Vec<usize>,
 ) -> Result<(), PlanQueryError> {
     let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
@@ -488,17 +495,17 @@ fn expand_vector_dst_only_rows_combined_batch(
     evaluator: &QueryExprEvaluator<'_>,
     predicate: &PreparedEdgeInlineVectorThreshold,
     out: &mut Vec<PlanRow>,
-    scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+    scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
     matches: &mut Vec<usize>,
 ) -> Result<(), PlanQueryError> {
     let mut error = None;
     let mut visit_batch =
-        |batch: ic_stable_lara::labeled::LabeledEdgeInlineValueBatch<'_, Edge>| {
+        |batch: ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch<'_, Edge>| {
             if error.is_some() {
                 return;
             }
             matches.clear();
-            predicate.collect_matching_indices(batch.inline_value_bytes, matches);
+            predicate.collect_matching_indices(batch.inline_property_bytes, matches);
             if !matches.is_empty() {
                 out.reserve(matches.len());
             }
@@ -533,7 +540,7 @@ fn expand_vector_dst_only_rows_combined_batch(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .visit_out_edge_inline_value_batches_for_label(
+            .visit_out_edge_inline_property_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -542,7 +549,7 @@ fn expand_vector_dst_only_rows_combined_batch(
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .visit_in_edge_inline_value_batches_for_label(
+            .visit_in_edge_inline_property_batches_for_label(
                 src_id,
                 storage_label,
                 order,
@@ -570,13 +577,13 @@ pub(crate) fn expand_candidates_with_label_expr_fusion_into(
     label_expr: &LabelExpr,
     sequence_order: EdgeSequenceOrder,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_value_predicate: Option<&EdgeInlineValuePredicate>,
+    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
     edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
     let has_predicate = indexed_edge_equality.is_some()
-        || edge_inline_value_predicate.is_some()
+        || edge_inline_property_predicate.is_some()
         || edge_inline_vector_predicate.is_some();
     if !has_predicate {
         return Ok(false);
@@ -595,7 +602,7 @@ pub(crate) fn expand_candidates_with_label_expr_fusion_into(
             Some(label_id),
             sequence_order,
             indexed_edge_equality,
-            edge_inline_value_predicate,
+            edge_inline_property_predicate,
             edge_inline_vector_predicate,
             parameters,
             out,
@@ -613,7 +620,7 @@ pub(crate) fn expand_candidates_for_expand_op_into(
     label_expr: Option<&LabelExpr>,
     sequence_order: EdgeSequenceOrder,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_value_predicate: Option<&EdgeInlineValuePredicate>,
+    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
     edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
@@ -628,7 +635,7 @@ pub(crate) fn expand_candidates_for_expand_op_into(
             expr,
             sequence_order,
             indexed_edge_equality,
-            edge_inline_value_predicate,
+            edge_inline_property_predicate,
             edge_inline_vector_predicate,
             parameters,
             out,
@@ -644,7 +651,7 @@ pub(crate) fn expand_candidates_for_expand_op_into(
         edge_label_id,
         sequence_order,
         indexed_edge_equality,
-        edge_inline_value_predicate,
+        edge_inline_property_predicate,
         edge_inline_vector_predicate,
         parameters,
         out,
@@ -659,7 +666,7 @@ pub(crate) fn expand_candidates_into(
     edge_label_id: Option<EdgeLabelId>,
     sequence_order: EdgeSequenceOrder,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_value_predicate: Option<&EdgeInlineValuePredicate>,
+    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
     edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
@@ -680,20 +687,20 @@ pub(crate) fn expand_candidates_into(
     {
         return Ok(());
     }
-    if let Some(edge_inline_value_predicate) = edge_inline_value_predicate {
+    if let Some(edge_inline_property_predicate) = edge_inline_property_predicate {
         let Some(edge_label_id) = edge_label_id else {
             return Ok(());
         };
-        let Some(predicate) = PreparedEdgeInlineValuePredicate::prepare(
+        let Some(predicate) = PreparedEdgeInlinePropertyPredicate::prepare(
             execution.resolved_labels.as_ref(),
             edge_label_id,
-            edge_inline_value_predicate,
+            edge_inline_property_predicate,
             parameters,
         )?
         else {
             return Ok(());
         };
-        expand_candidates_matching_edge_inline_value_into(
+        expand_candidates_matching_edge_inline_property_into(
             store,
             src_id,
             direction,
@@ -885,7 +892,7 @@ where
     match direction {
         EdgeDirection::PointingRight => {
             if let Some(lid) = edge_label_id {
-                store.for_each_directed_out_edges_for_label_with_inline_values(
+                store.for_each_directed_out_edges_for_label_with_inline_property_bytes(
                     src_id, lid, order, visit,
                 )?;
             } else {
@@ -903,7 +910,7 @@ where
         }
         EdgeDirection::PointingLeft => {
             if let Some(lid) = edge_label_id {
-                store.for_each_directed_in_edges_for_label_with_inline_values(
+                store.for_each_directed_in_edges_for_label_with_inline_property_bytes(
                     src_id, lid, order, visit,
                 )?;
             } else {

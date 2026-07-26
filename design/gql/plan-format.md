@@ -247,14 +247,14 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
 `ExecutePlanArgs.label_table` carries `ResolvedEdgeLabel` entries for every edge label the plan may touch. Each entry includes:
 
 - `name`, `id` — the canonical edge label identity.
-- `payload_profile` — physical byte width and encoding from Router stable state.
-- `inline_schema: Option<ResolvedInlineSchema>` — Router-derived scalar-or-struct projection for this concrete edge label. `None` for `UnnamedProfile`; `Scalar { property_id }` for `InlineScalar`; `Struct { property_id, fields }` for `InlineStruct`, where each field carries its name, declaration-ordered byte offset, and exact scalar `EdgeInlineValueProfile`. Graph validates this projection but never persists or infers it.
+- `inline_property_profile` — physical byte width and encoding from Router stable state.
+- `inline_schema: Option<ResolvedInlineSchema>` — Router-derived scalar-or-struct projection for this concrete edge label. `None` for `UnnamedProfile`; `Scalar { property_id }` for `InlineScalar`; `Struct { property_id, fields }` for `InlineStruct`, where each field carries its name, declaration-ordered byte offset, and exact scalar `EdgeInlinePropertyProfile`. Graph validates this projection but never persists or infers it.
 
 Graph must treat `inline_schema` as a read-only plan-scoped projection. It does not own the schema and must not infer or persist the property identity or field layout.
 
 For a requested edge property:
 
-- If the concrete label's `inline_schema` is `Scalar { property_id }` and the resolved property id matches, Graph decodes the edge inline value bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported payloads fail closed; the sidecar property store is never consulted as fallback.
+- If the concrete label's `inline_schema` is `Scalar { property_id }` and the resolved property id matches, Graph decodes the edge inline property bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported payloads fail closed; the sidecar property store is never consulted as fallback.
 - If the concrete label's `inline_schema` is `Struct { property_id, fields }` and the resolved property id matches the top-level struct property, Graph validates the field layout (non-empty, unique names, non-overlapping offsets, field-width sum equals payload width) and decodes the payload into a declaration-ordered GQL `Value::Record`. Accessing an unknown nested field returns `Value::Null`; a malformed projection or payload fails closed before sidecar fallback.
 - Otherwise Graph falls back to the sidecar property store (`GraphStore::edge_property`), preserving existing non-inline behavior.
 
@@ -269,15 +269,15 @@ Graph classifies evaluated assignments using the `ResolvedEdgeLabel.inline_schem
 
 - For an `InlineScalar` schema, exactly one assignment for the property id is required. Missing, duplicate, `NULL`, overflowing, signedness-mismatched, non-finite, or malformed fixed-byte values fail closed before any storage write.
 - For an `InlineStruct` schema, any edge mutation path (insert, `SET e.prop`, all-properties replacement, or `REMOVE e.prop`) is rejected fail-closed until Slice 26. This is a label-wide gate: even sidecar property SET/REMOVE on a Struct-labeled edge cannot fall through, because Slice 25 defines no mutation contract for that label shape. The top-level struct property is never written to sidecar state.
-- The inline value is encoded into the exact fixed-width payload bytes using one Graph-owned scalar
+- The inline property is encoded into the exact fixed-width inline property bytes using one Graph-owned scalar
   codec shared with read and predicate paths.
 - `InsertEdge` calls the existing payload-aware edge insert commits (`insert_*_edge_with_payload_bytes`)
   with the encoded bytes; non-inline assignments are applied as ordinary sidecar properties.
 - `SET e.prop = val` for the inline property updates the payload through the existing mirrored
-  payload-update commit (`update_edge_inline_value_at_handle`). Non-matching properties continue to use
+  payload-update commit (`update_edge_inline_property_at_handle`). Non-matching properties continue to use
   `GraphStore::set_edge_property`.
 - `SET e = { ... }` evaluates and resolves the complete record, rejects duplicates and missing
-  inline values, encodes the inline field, removes all existing sidecar properties, updates the payload
+  inline propertys, encodes the inline field, removes all existing sidecar properties, updates the payload
   exactly once, and writes only the remaining sidecar assignments.
 - `REMOVE e.prop` for the inline property is rejected until an absence representation exists. Removing
   non-inline sidecar properties keeps existing behavior.

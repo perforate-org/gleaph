@@ -694,10 +694,10 @@ mod tests {
         let edge_span_meta = mem();
         let edge_free_spans = mem();
         let edge_free_span_by_start = mem();
-        let inline_value_slab = mem();
+        let inline_property_bytes_slab = mem();
         let value_free_spans = mem();
         let value_free_span_by_start = mem();
-        let payload_log = mem();
+        let inline_property_bytes_log = mem();
         let value_blobs = mem();
         let default_label = BucketLabelKey::from_raw(1);
         let elem_capacity = 1 << 20;
@@ -713,10 +713,10 @@ mod tests {
             edge_span_meta.clone(),
             edge_free_spans.clone(),
             edge_free_span_by_start.clone(),
-            inline_value_slab.clone(),
+            inline_property_bytes_slab.clone(),
             value_free_spans.clone(),
             value_free_span_by_start.clone(),
-            payload_log.clone(),
+            inline_property_bytes_log.clone(),
             value_blobs.clone(),
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             default_label,
@@ -746,10 +746,10 @@ mod tests {
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            inline_value_slab,
+            inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            payload_log,
+            inline_property_bytes_log,
             value_blobs,
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             default_label,

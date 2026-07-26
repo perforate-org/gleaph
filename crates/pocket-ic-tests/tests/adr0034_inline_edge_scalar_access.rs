@@ -14,7 +14,7 @@ use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
-    e2e_insert_directed_edge_with_inline_value, e2e_insert_vertex, e2e_insert_vertex_with_label,
+    e2e_insert_directed_edge_with_inline_property, e2e_insert_vertex, e2e_insert_vertex_with_label,
     e2e_set_edge_property, gql_execute_idempotent_as_admin,
     gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin,
     install_single_shard_federation,
@@ -24,10 +24,10 @@ use std::collections::BTreeMap;
 const EDGE_LABEL: &str = "ROAD";
 const PROPERTY: &str = "distance";
 
-fn road_profile() -> gleaph_graph_kernel::entry::EdgeInlineValueProfile {
-    gleaph_graph_kernel::entry::EdgeInlineValueProfile {
+fn road_profile() -> gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+    gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
         byte_width: 2,
-        encoding: gleaph_graph_kernel::entry::EdgeInlineValueEncoding::WeightRawU16,
+        encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::WeightRawU16,
     }
 }
 
@@ -51,7 +51,7 @@ fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, IcWireValue>> {
 }
 
 fn insert_road(env: &FederationEnv, source: u32, target: u32, road_label_id: u16, distance: u16) {
-    e2e_insert_directed_edge_with_inline_value(
+    e2e_insert_directed_edge_with_inline_property(
         env,
         env.graph_source,
         source,
@@ -62,7 +62,7 @@ fn insert_road(env: &FederationEnv, source: u32, target: u32, road_label_id: u16
     );
 }
 
-fn scenario_projection_returns_inline_value(env: &FederationEnv, road_label_id: u16) {
+fn scenario_projection_returns_inline_property(env: &FederationEnv, road_label_id: u16) {
     let source_label = admin_intern_vertex_label(env, "ProjectionSource").raw();
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
@@ -85,7 +85,7 @@ fn scenario_projection_returns_inline_value(env: &FederationEnv, road_label_id: 
     );
 }
 
-fn scenario_filter_matches_inline_value(env: &FederationEnv, road_label_id: u16) {
+fn scenario_filter_matches_inline_property(env: &FederationEnv, road_label_id: u16) {
     let source_label = admin_intern_vertex_label(env, "FilterSource").raw();
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let match_target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
@@ -110,7 +110,7 @@ fn scenario_filter_matches_inline_value(env: &FederationEnv, road_label_id: u16)
     );
 }
 
-fn scenario_order_by_sorts_by_inline_value(env: &FederationEnv, road_label_id: u16) {
+fn scenario_order_by_sorts_by_inline_property(env: &FederationEnv, road_label_id: u16) {
     let source_label = admin_intern_vertex_label(env, "OrderSource").raw();
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let first = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
@@ -185,9 +185,9 @@ fn inline_scalar_access_suite() {
     let env = setup();
     let road_label_id = admin_intern_edge_label(&env, EDGE_LABEL).raw();
 
-    scenario_projection_returns_inline_value(&env, road_label_id);
-    scenario_filter_matches_inline_value(&env, road_label_id);
-    scenario_order_by_sorts_by_inline_value(&env, road_label_id);
+    scenario_projection_returns_inline_property(&env, road_label_id);
+    scenario_filter_matches_inline_property(&env, road_label_id);
+    scenario_order_by_sorts_by_inline_property(&env, road_label_id);
     scenario_payload_wins_over_sidecar(&env, road_label_id);
     scenario_edge_index_create_rejects_inline_property(&env);
 }

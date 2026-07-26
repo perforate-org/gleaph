@@ -160,12 +160,12 @@ impl Storable for EdgeWeightProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::edge_inline_value::{EdgeInlineValueProfile, decode_edge_weight};
+    use crate::entry::edge_inline_property::{EdgeInlinePropertyProfile, decode_edge_weight};
     use half::f16;
 
     fn decode_weight_bytes(profile: &EdgeWeightProfile, bytes: &[u8]) -> f32 {
-        let inline_value_profile = EdgeInlineValueProfile::from(profile.clone());
-        let decoder = inline_value_profile.prepare().expect("prepare");
+        let inline_property_profile = EdgeInlinePropertyProfile::from(profile.clone());
+        let decoder = inline_property_profile.prepare().expect("prepare");
         decode_edge_weight(&decoder, bytes).expect("decode")
     }
 

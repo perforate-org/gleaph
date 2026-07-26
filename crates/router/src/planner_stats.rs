@@ -14,7 +14,7 @@ use crate::edge_index_direction::{
     EdgeIndexDirectionTag, index_applies_to_query, tag_to_direction,
 };
 use crate::facade::stable::{
-    ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_PAYLOAD_PROFILES, ROUTER_PROPERTY_CATALOG,
+    ROUTER_EDGE_INLINE_PROPERTY_PROFILES, ROUTER_EDGE_LABEL_CATALOG, ROUTER_PROPERTY_CATALOG,
 };
 use crate::facade::store::RouterStore;
 
@@ -190,7 +190,7 @@ impl GraphStats for RouterGraphStats {
                     .with_borrow(|catalog| catalog.get_id(self.graph_id, property));
                 let inline_matches = label_id.is_some()
                     && property_id.is_some()
-                    && ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|store| {
+                    && ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|store| {
                         store
                             .get_record(self.graph_id, label_id.unwrap())
                             .is_some_and(|record| {
@@ -213,7 +213,7 @@ impl GraphStats for RouterGraphStats {
                 };
                 let any_label_is_inline = ROUTER_EDGE_LABEL_CATALOG.with_borrow(|catalog| {
                     catalog.iter_ids_for_graph(self.graph_id).any(|label_id| {
-                        ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|store| {
+                        ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|store| {
                             store
                                 .get_record(self.graph_id, label_id)
                                 .is_some_and(|record| {
@@ -321,8 +321,8 @@ mod tests {
     }
     #[test]
     fn edge_property_index_for_none_fail_closed_when_any_label_is_inline() {
-        use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
-        use crate::facade::stable::edge_inline_value_profiles::InlineScalarType;
+        use crate::facade::stable::ROUTER_EDGE_INLINE_PROPERTY_PROFILES;
+        use crate::facade::stable::edge_inline_property_profiles::InlineScalarType;
         let store = RouterStore::new();
         let admin = Principal::from_slice(&[1; 29]);
         store.init_from_args(&RouterInitArgs {
@@ -356,7 +356,7 @@ mod tests {
         ))
         .expect("create edge index on KNOWS.distance");
 
-        ROUTER_EDGE_PAYLOAD_PROFILES
+        ROUTER_EDGE_INLINE_PROPERTY_PROFILES
             .with_borrow_mut(|s| {
                 s.set_inline_scalar_schema(
                     graph_id,
@@ -407,8 +407,8 @@ mod tests {
         // Slice 24: an InlineStruct slot must not be reported as sidecar-indexed for either
         // concrete or wildcard label queries, even when a real edge index exists on another
         // label for the same property id.
-        use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
-        use crate::facade::stable::edge_inline_value_profiles::{
+        use crate::facade::stable::ROUTER_EDGE_INLINE_PROPERTY_PROFILES;
+        use crate::facade::stable::edge_inline_property_profiles::{
             InlineScalarType, InlineStructLayout,
         };
         let store = RouterStore::new();
@@ -450,7 +450,7 @@ mod tests {
             ("confidence".into(), InlineScalarType::F32),
         ])
         .expect("seed layout");
-        ROUTER_EDGE_PAYLOAD_PROFILES
+        ROUTER_EDGE_INLINE_PROPERTY_PROFILES
             .with_borrow_mut(|s| {
                 s.set_inline_struct_schema(graph_id, affinity_label_id, stats_property_id, layout)
             })

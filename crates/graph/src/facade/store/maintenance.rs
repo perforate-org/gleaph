@@ -167,19 +167,21 @@ fn dedup_vertex_ids(vertices: &[VertexId]) -> Vec<VertexId> {
 
 #[cfg(test)]
 mod tests {
-    use gleaph_graph_kernel::entry::{EdgeInlineValueProfile, EdgeWeightProfile, WeightEncoding};
-    use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgeInlineValueBatchScratch};
+    use gleaph_graph_kernel::entry::{
+        EdgeInlinePropertyProfile, EdgeWeightProfile, WeightEncoding,
+    };
+    use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgeInlinePropertyBatchScratch};
 
     use super::*;
-    use crate::test_labels::install_test_edge_inline_value_profile;
+    use crate::test_labels::install_test_edge_inline_property_profile;
 
     fn setup_converging_hub_without_tombstones(store: &GraphStore) -> VertexId {
         let src = store.insert_vertex().expect("src");
         let hub = store.insert_vertex().expect("hub");
         let label = crate::test_labels::edge_label_id_for_name("BulkFinalizeRoad");
-        install_test_edge_inline_value_profile(
+        install_test_edge_inline_property_profile(
             label,
-            EdgeInlineValueProfile::from(EdgeWeightProfile {
+            EdgeInlinePropertyProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
         );
@@ -190,7 +192,7 @@ mod tests {
         }
         for &prefix in &prefixes {
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     prefix,
                     hub,
                     Some(label),
@@ -200,7 +202,7 @@ mod tests {
         }
         for (i, &prefix) in prefixes.iter().enumerate() {
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     src,
                     prefix,
                     Some(label),
@@ -212,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_bulk_ingest_preserves_hot_forward_inline_values() {
+    fn finalize_bulk_ingest_preserves_hot_forward_inline_properties() {
         let store = GraphStore::new();
         let src = setup_converging_hub_without_tombstones(&store);
         let road = crate::test_labels::edge_label_id_for_name("BulkFinalizeRoad");
@@ -226,10 +228,10 @@ mod tests {
         assert_eq!(report.queued_forward, 1);
         assert_eq!(report.queued_reverse, 0);
 
-        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
+        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
         let mut edge_count = 0;
         store
-            .visit_directed_out_edge_inline_value_batches_for_label(
+            .visit_directed_out_edge_inline_property_batches_for_label(
                 src,
                 road,
                 OutEdgeOrder::Descending,

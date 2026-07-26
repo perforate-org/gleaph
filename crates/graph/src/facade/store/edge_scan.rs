@@ -5,7 +5,7 @@ use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
     labeled::{
-        BucketDirectedness, LabeledEdgeInlineValueBatch, LabeledEdgeInlineValueBatchScratch,
+        BucketDirectedness, LabeledEdgeInlinePropertyBatch, LabeledEdgeInlinePropertyBatchScratch,
         OutEdgeOrder,
     },
 };
@@ -66,75 +66,78 @@ impl GraphStore {
         })
     }
 
-    pub(crate) fn visit_out_inline_value_batches_for_label<Visit>(
+    pub(crate) fn visit_out_inline_property_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
         order: OutEdgeOrder,
-        scratch: &mut ic_stable_lara::labeled::LabeledPayloadValueBatchScratch,
+        scratch: &mut ic_stable_lara::labeled::LabeledInlinePropertyValueBatchScratch,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledPayloadValueBatch<'b>),
+        Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledInlinePropertyValueBatch<'b>),
     {
         GRAPH.with_borrow(|graph| {
-            graph.visit_out_inline_value_batches_for_label(vertex_id, label, order, scratch, visit)
+            graph.visit_out_inline_property_batches_for_label(
+                vertex_id, label, order, scratch, visit,
+            )
         })
     }
 
-    pub(crate) fn out_label_bucket_dense_inline_value_batch_eligible(
+    pub(crate) fn out_label_bucket_dense_inline_property_batch_eligible(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
     ) -> Result<bool, GraphStoreError> {
         Ok(GRAPH.with_borrow(|graph| {
-            graph.out_bucket_dense_inline_value_batch_eligible(vertex_id, label)
+            graph.out_bucket_dense_inline_property_batch_eligible(vertex_id, label)
         })?)
     }
 
-    pub(crate) fn in_label_bucket_dense_inline_value_batch_eligible(
+    pub(crate) fn in_label_bucket_dense_inline_property_batch_eligible(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
     ) -> Result<bool, GraphStoreError> {
         Ok(GRAPH.with_borrow(|graph| {
-            graph.in_bucket_dense_inline_value_batch_eligible(vertex_id, label)
+            graph.in_bucket_dense_inline_property_batch_eligible(vertex_id, label)
         })?)
     }
 
-    pub(crate) fn out_label_bucket_inline_value_first_predicate_eligible(
+    pub(crate) fn out_label_bucket_inline_property_bytes_first_predicate_eligible(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
     ) -> Result<bool, GraphStoreError> {
         Ok(GRAPH.with_borrow(|graph| {
-            graph.out_bucket_inline_value_first_predicate_eligible(vertex_id, label)
+            graph.out_bucket_inline_property_bytes_first_predicate_eligible(vertex_id, label)
         })?)
     }
 
-    pub(crate) fn in_label_bucket_inline_value_first_predicate_eligible(
+    pub(crate) fn in_label_bucket_inline_property_bytes_first_predicate_eligible(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
     ) -> Result<bool, GraphStoreError> {
         Ok(GRAPH.with_borrow(|graph| {
-            graph.in_bucket_inline_value_first_predicate_eligible(vertex_id, label)
+            graph.in_bucket_inline_property_bytes_first_predicate_eligible(vertex_id, label)
         })?)
     }
 
-    pub(crate) fn visit_in_inline_value_batches_for_label<Visit>(
+    pub(crate) fn visit_in_inline_property_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
         order: OutEdgeOrder,
-        scratch: &mut ic_stable_lara::labeled::LabeledPayloadValueBatchScratch,
+        scratch: &mut ic_stable_lara::labeled::LabeledInlinePropertyValueBatchScratch,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledPayloadValueBatch<'b>),
+        Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledInlinePropertyValueBatch<'b>),
     {
         GRAPH.with_borrow(|graph| {
-            graph.visit_in_inline_value_batches_for_label(vertex_id, label, order, scratch, visit)
+            graph
+                .visit_in_inline_property_batches_for_label(vertex_id, label, order, scratch, visit)
         })
     }
 
@@ -154,13 +157,13 @@ impl GraphStore {
         })
     }
 
-    pub(crate) fn read_out_edge_slots_for_label_reusing_inline_value_scratch<Visit>(
+    pub(crate) fn read_out_edge_slots_for_label_reusing_inline_property_scratch<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
         slots: &[u32],
         order: OutEdgeOrder,
-        scratch: &ic_stable_lara::labeled::LabeledPayloadValueBatchScratch,
+        scratch: &ic_stable_lara::labeled::LabeledInlinePropertyValueBatchScratch,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
@@ -193,13 +196,13 @@ impl GraphStore {
         })
     }
 
-    pub(crate) fn read_in_edge_slots_for_label_reusing_inline_value_scratch<Visit>(
+    pub(crate) fn read_in_edge_slots_for_label_reusing_inline_property_scratch<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
         slots: &[u32],
         order: OutEdgeOrder,
-        scratch: &ic_stable_lara::labeled::LabeledPayloadValueBatchScratch,
+        scratch: &ic_stable_lara::labeled::LabeledInlinePropertyValueBatchScratch,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
@@ -217,18 +220,18 @@ impl GraphStore {
     }
 
     #[cfg(any(test, feature = "canbench"))]
-    pub(crate) fn visit_directed_out_inline_value_batches_for_label<Visit>(
+    pub(crate) fn visit_directed_out_inline_property_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut ic_stable_lara::labeled::LabeledPayloadValueBatchScratch,
+        scratch: &mut ic_stable_lara::labeled::LabeledInlinePropertyValueBatchScratch,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
-        Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledPayloadValueBatch<'b>),
+        Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledInlinePropertyValueBatch<'b>),
     {
-        self.visit_out_inline_value_batches_for_label(
+        self.visit_out_inline_property_batches_for_label(
             vertex_id,
             LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw()),
             order,
@@ -261,18 +264,18 @@ impl GraphStore {
     }
 
     #[cfg(any(test, feature = "canbench"))]
-    pub(crate) fn visit_directed_out_edge_inline_value_batches_for_label<Visit>(
+    pub(crate) fn visit_directed_out_edge_inline_property_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
-        Visit: for<'b> FnMut(LabeledEdgeInlineValueBatch<'b, Edge>),
+        Visit: for<'b> FnMut(LabeledEdgeInlinePropertyBatch<'b, Edge>),
     {
-        self.visit_out_edge_inline_value_batches_for_label(
+        self.visit_out_edge_inline_property_batches_for_label(
             vertex_id,
             LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw()),
             order,
@@ -282,43 +285,43 @@ impl GraphStore {
         .map_err(GraphStoreError::from)
     }
 
-    pub(crate) fn visit_out_edge_inline_value_batches_for_label<Visit>(
+    pub(crate) fn visit_out_edge_inline_property_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(LabeledEdgeInlineValueBatch<'b, Edge>),
+        Visit: for<'b> FnMut(LabeledEdgeInlinePropertyBatch<'b, Edge>),
     {
         GRAPH.with_borrow(|graph| {
-            graph.visit_out_edge_inline_value_batches_for_label(
+            graph.visit_out_edge_inline_property_batches_for_label(
                 vertex_id, label, order, scratch, visit,
             )
         })
     }
 
-    pub(crate) fn visit_in_edge_inline_value_batches_for_label<Visit>(
+    pub(crate) fn visit_in_edge_inline_property_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(LabeledEdgeInlineValueBatch<'b, Edge>),
+        Visit: for<'b> FnMut(LabeledEdgeInlinePropertyBatch<'b, Edge>),
     {
         GRAPH.with_borrow(|graph| {
-            graph.visit_in_edge_inline_value_batches_for_label(
+            graph.visit_in_edge_inline_property_batches_for_label(
                 vertex_id, label, order, scratch, visit,
             )
         })
     }
 
-    pub(crate) fn for_each_directed_out_edges_for_label_with_inline_values<Visit>(
+    pub(crate) fn for_each_directed_out_edges_for_label_with_inline_property_bytes<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
@@ -328,8 +331,8 @@ impl GraphStore {
     where
         Visit: FnMut(Edge),
     {
-        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
-        self.for_each_directed_out_edges_for_label_with_inline_values_reusing(
+        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        self.for_each_directed_out_edges_for_label_with_inline_property_bytes_reusing(
             vertex_id,
             label,
             order,
@@ -338,34 +341,36 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn for_each_directed_out_edges_for_label_with_inline_value_slices_reusing<Visit>(
+    pub(crate) fn for_each_directed_out_edges_for_label_with_inline_property_byte_slices_reusing<
+        Visit,
+    >(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
         Visit: FnMut(&Edge, &[u8]),
     {
         if self
-            .edge_label_inline_value_profile(label)
+            .edge_label_inline_property_profile(label)
             .is_some_and(|profile| profile.required_byte_width() > 0)
         {
             let storage_label = LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
-            self.visit_out_edge_inline_value_batches_for_label(
+            self.visit_out_edge_inline_property_batches_for_label(
                 vertex_id,
                 storage_label,
                 order,
                 scratch,
                 |batch| {
                     let width = usize::from(batch.byte_width);
-                    debug_assert_eq!(batch.inline_value_bytes.len(), batch.edges.len() * width);
+                    debug_assert_eq!(batch.inline_property_bytes.len(), batch.edges.len() * width);
                     for (edge, value) in batch
                         .edges
                         .iter()
-                        .zip(batch.inline_value_bytes.chunks_exact(width))
+                        .zip(batch.inline_property_bytes.chunks_exact(width))
                     {
                         visit(edge, value);
                     }
@@ -374,29 +379,29 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
         } else {
             self.for_each_directed_out_edges_for_label(vertex_id, label, order, |edge| {
-                visit(&edge, edge.inline_value_bytes());
+                visit(&edge, edge.inline_property_bytes());
             })
         }
     }
 
-    pub(crate) fn for_each_directed_out_edges_for_label_with_inline_values_reusing<Visit>(
+    pub(crate) fn for_each_directed_out_edges_for_label_with_inline_property_bytes_reusing<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
         Visit: FnMut(Edge),
     {
         let mut visit = visit;
-        self.for_each_directed_out_edges_for_label_with_inline_value_slices_reusing(
+        self.for_each_directed_out_edges_for_label_with_inline_property_byte_slices_reusing(
             vertex_id,
             label,
             order,
             scratch,
-            |edge, value| visit(edge.with_inline_value_bytes(value)),
+            |edge, value| visit(edge.with_inline_property_bytes(value)),
         )
     }
 
@@ -444,7 +449,7 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
     }
 
-    pub(crate) fn for_each_directed_in_edges_for_label_with_inline_values<Visit>(
+    pub(crate) fn for_each_directed_in_edges_for_label_with_inline_property_bytes<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
@@ -454,8 +459,8 @@ impl GraphStore {
     where
         Visit: FnMut(Edge),
     {
-        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
-        self.for_each_directed_in_edges_for_label_with_inline_values_reusing(
+        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        self.for_each_directed_in_edges_for_label_with_inline_property_bytes_reusing(
             vertex_id,
             label,
             order,
@@ -464,34 +469,36 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn for_each_directed_in_edges_for_label_with_inline_value_slices_reusing<Visit>(
+    pub(crate) fn for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing<
+        Visit,
+    >(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
         Visit: FnMut(&Edge, &[u8]),
     {
         if self
-            .edge_label_inline_value_profile(label)
+            .edge_label_inline_property_profile(label)
             .is_some_and(|profile| profile.required_byte_width() > 0)
         {
             let storage_label = LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
-            self.visit_in_edge_inline_value_batches_for_label(
+            self.visit_in_edge_inline_property_batches_for_label(
                 vertex_id,
                 storage_label,
                 order,
                 scratch,
                 |batch| {
                     let width = usize::from(batch.byte_width);
-                    debug_assert_eq!(batch.inline_value_bytes.len(), batch.edges.len() * width);
+                    debug_assert_eq!(batch.inline_property_bytes.len(), batch.edges.len() * width);
                     for (edge, value) in batch
                         .edges
                         .iter()
-                        .zip(batch.inline_value_bytes.chunks_exact(width))
+                        .zip(batch.inline_property_bytes.chunks_exact(width))
                     {
                         visit(edge, value);
                     }
@@ -500,29 +507,29 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
         } else {
             self.for_each_directed_in_edges_for_label(vertex_id, label, order, |edge| {
-                visit(&edge, edge.inline_value_bytes());
+                visit(&edge, edge.inline_property_bytes());
             })
         }
     }
 
-    pub(crate) fn for_each_directed_in_edges_for_label_with_inline_values_reusing<Visit>(
+    pub(crate) fn for_each_directed_in_edges_for_label_with_inline_property_bytes_reusing<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
         Visit: FnMut(Edge),
     {
         let mut visit = visit;
-        self.for_each_directed_in_edges_for_label_with_inline_value_slices_reusing(
+        self.for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing(
             vertex_id,
             label,
             order,
             scratch,
-            |edge, value| visit(edge.with_inline_value_bytes(value)),
+            |edge, value| visit(edge.with_inline_property_bytes(value)),
         )
     }
 

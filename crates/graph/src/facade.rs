@@ -47,12 +47,12 @@ pub(crate) use stable::repair_journal::RepairPostingOp;
 #[cfg(feature = "canbench")]
 pub mod bench_stable_layout {
     use gleaph_graph_kernel::entry::{
-        EdgeInlineValueProfile, EdgeLabelId, EdgeWeightProfile, WeightEncoding,
+        EdgeInlinePropertyProfile, EdgeLabelId, EdgeWeightProfile, WeightEncoding,
     };
     use std::hint::black_box;
 
     use super::GraphStore;
-    use crate::test_labels::install_test_edge_inline_value_profile;
+    use crate::test_labels::install_test_edge_inline_property_profile;
 
     pub fn edge_profile_label() -> EdgeLabelId {
         EdgeLabelId::from_raw(1)
@@ -63,7 +63,7 @@ pub mod bench_stable_layout {
         let weight = EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         };
-        install_test_edge_inline_value_profile(label, EdgeInlineValueProfile::from(weight));
+        install_test_edge_inline_property_profile(label, EdgeInlinePropertyProfile::from(weight));
     }
 
     pub fn read_weight_via_store(label: EdgeLabelId) -> Option<EdgeWeightProfile> {

@@ -13,7 +13,7 @@ use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
-    e2e_insert_directed_edge_with_inline_value, e2e_insert_vertex, e2e_insert_vertex_with_label,
+    e2e_insert_directed_edge_with_inline_property, e2e_insert_vertex, e2e_insert_vertex_with_label,
     e2e_set_edge_property, gql_execute_idempotent_as_admin,
     gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin,
     install_single_shard_federation,
@@ -29,10 +29,10 @@ fn inline_struct_ddl() -> String {
     )
 }
 
-fn affinity_profile() -> gleaph_graph_kernel::entry::EdgeInlineValueProfile {
-    gleaph_graph_kernel::entry::EdgeInlineValueProfile {
+fn affinity_profile() -> gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+    gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
         byte_width: 16,
-        encoding: gleaph_graph_kernel::entry::EdgeInlineValueEncoding::RawBytes,
+        encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawBytes,
     }
 }
 
@@ -72,7 +72,7 @@ fn insert_affinity(
     confidence: f32,
     updated_at: u64,
 ) {
-    e2e_insert_directed_edge_with_inline_value(
+    e2e_insert_directed_edge_with_inline_property(
         env,
         env.graph_source,
         source,

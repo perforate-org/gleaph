@@ -7,7 +7,7 @@ use crate::bench as helper;
 use crate::labeled::hub_tree_prototype::{HubBucketTree, HubTargetTree};
 use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLaraGraph,
-    LabeledPayloadValueBatchScratch, LabeledVertex, OutEdgeOrder,
+    LabeledInlinePropertyValueBatchScratch, LabeledVertex, OutEdgeOrder,
     batch_write::{OneOrientationBatchEdge, OneOrientationBatchPlan, OneOrientationBucketRun},
     graph::{LabeledLaraGraph, VertexEdgeSpanCompactOneStep},
 };
@@ -57,20 +57,20 @@ struct PayloadBenchEdge {
     target: u32,
     slot_index: u32,
     payload: [u8; 8],
-    inline_value_len: u16,
+    inline_property_len: u16,
 }
 
 impl PayloadBenchEdge {
-    fn with_payload(target: u32, inline_value_len: u16, bytes: &[u8]) -> Self {
+    fn with_payload(target: u32, inline_property_len: u16, bytes: &[u8]) -> Self {
         let len = u16::try_from(bytes.len()).expect("bench payload fits u16");
-        debug_assert_eq!(len, inline_value_len);
+        debug_assert_eq!(len, inline_property_len);
         let mut payload = [0u8; 8];
         payload[..bytes.len()].copy_from_slice(bytes);
         Self {
             target,
             slot_index: 0,
             payload,
-            inline_value_len,
+            inline_property_len,
         }
     }
 }
@@ -83,7 +83,7 @@ impl CsrEdge for PayloadBenchEdge {
             target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
             slot_index: 0,
             payload: [0u8; 8],
-            inline_value_len: 0,
+            inline_property_len: 0,
         }
     }
 
@@ -110,19 +110,19 @@ impl CsrEdge for PayloadBenchEdge {
         self.slot_index
     }
 
-    fn edge_inline_value_byte_width(&self) -> u16 {
-        self.inline_value_len
+    fn edge_inline_property_byte_width(&self) -> u16 {
+        self.inline_property_len
     }
 
-    fn edge_inline_value_bytes(&self) -> &[u8] {
-        &self.payload[..usize::from(self.inline_value_len)]
+    fn edge_inline_property_bytes(&self) -> &[u8] {
+        &self.payload[..usize::from(self.inline_property_len)]
     }
 
-    fn with_stored_inline_value_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
+    fn with_stored_inline_property_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
         let len = usize::from(width).min(bytes.len()).min(8);
         self.payload = [0u8; 8];
         self.payload[..len].copy_from_slice(&bytes[..len]);
-        self.inline_value_len = u16::try_from(len).expect("bench payload width fits u16");
+        self.inline_property_len = u16::try_from(len).expect("bench payload width fits u16");
         self
     }
 }
@@ -133,7 +133,7 @@ impl CsrEdgeTombstone for PayloadBenchEdge {
             target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
             slot_index: 0,
             payload: [0u8; 8],
-            inline_value_len: 0,
+            inline_property_len: 0,
         }
     }
 }
@@ -150,10 +150,10 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        inline_value_slab,
+        inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        payload_log,
+        inline_property_bytes_log,
         value_blob,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
@@ -167,10 +167,10 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        inline_value_slab,
+        inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        payload_log,
+        inline_property_bytes_log,
         value_blob,
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         BucketLabelKey::from_raw(1),
@@ -209,7 +209,7 @@ fn bench_labeled_batch_edge_only_expansion_existing_bucket() -> canbench_rs::Ben
         runs: vec![OneOrientationBucketRun {
             owner_vertex_id: VertexId::from(0),
             label_id: label,
-            inline_value_width: 0,
+            inline_property_width: 0,
             edges: vec![
                 OneOrientationBatchEdge {
                     logical_ordinal: 0,
@@ -249,10 +249,10 @@ fn bench_labeled_batch_payload_expansion_existing_bucket() -> canbench_rs::Bench
     let payload_label = BucketLabelKey::from_raw(2);
     let edge_only_label = BucketLabelKey::from_raw(3);
     graph
-        .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), payload_label, 8)
-        .expect("payload bucket");
+        .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), payload_label, 8)
+        .expect("inline property bytes bucket");
     graph
-        .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), edge_only_label, 0)
+        .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), edge_only_label, 0)
         .expect("edge-only bucket");
     graph
         .insert_edge(
@@ -271,7 +271,8 @@ fn bench_labeled_batch_payload_expansion_existing_bucket() -> canbench_rs::Bench
 
     let leaf = u32::from(VertexId::from(0)) / graph.edges().header().segment_size.max(1);
     let edge_log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
-    let payload_log_capacity = graph.values().read_payload_log_state(leaf).1 as usize;
+    let inline_property_bytes_log_capacity =
+        graph.values().read_inline_property_bytes_log_state(leaf).1 as usize;
     let edge_entries: Vec<(i32, PayloadBenchEdge)> = (0..edge_log_capacity)
         .map(|i| {
             (
@@ -284,20 +285,20 @@ fn bench_labeled_batch_payload_expansion_existing_bucket() -> canbench_rs::Bench
         .edges()
         .write_overflow_log_entries(leaf, 0, &edge_entries)
         .expect("fill edge log");
-    let payload_bytes = (0..payload_log_capacity)
+    let inline_property_bytes = (0..inline_property_bytes_log_capacity)
         .flat_map(|_| [3u8; 8])
         .collect::<Vec<_>>();
     graph
         .values()
-        .write_payload_log_entries(leaf, 0, -1, 8, &payload_bytes)
-        .expect("fill payload log");
+        .write_inline_property_bytes_log_entries(leaf, 0, -1, 8, &inline_property_bytes)
+        .expect("fill inline property bytes log");
     let vertex = graph.vertices().get(VertexId::from(0));
     let (bucket_slot, bucket) = match graph
         .find_bucket(VertexId::from(0), &vertex, payload_label)
-        .expect("payload bucket lookup")
+        .expect("inline property bytes bucket lookup")
     {
         crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
-        _ => panic!("payload bucket must exist"),
+        _ => panic!("inline property bytes bucket must exist"),
     };
     graph
         .buckets()
@@ -306,18 +307,18 @@ fn bench_labeled_batch_payload_expansion_existing_bucket() -> canbench_rs::Bench
             bucket
                 .with_overflow_log_head((edge_log_capacity - 1) as i32)
                 .with_degree_field((edge_log_capacity + 1) as u32)
-                .try_with_payload_log(
-                    (payload_log_capacity - 1) as i32,
-                    payload_log_capacity as u8,
+                .try_with_inline_property_bytes_log(
+                    (inline_property_bytes_log_capacity - 1) as i32,
+                    inline_property_bytes_log_capacity as u8,
                 )
-                .expect("payload log metadata"),
+                .expect("inline property bytes log metadata"),
         )
-        .expect("payload bucket metadata");
+        .expect("inline property bytes bucket metadata");
     let plan = OneOrientationBatchPlan {
         runs: vec![OneOrientationBucketRun {
             owner_vertex_id: VertexId::from(0),
             label_id: payload_label,
-            inline_value_width: 8,
+            inline_property_width: 8,
             edges: vec![OneOrientationBatchEdge {
                 logical_ordinal: 0,
                 owner_vertex_id: VertexId::from(0),
@@ -350,10 +351,10 @@ fn payload_bench_graph(
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        inline_value_slab,
+        inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        payload_log,
+        inline_property_bytes_log,
         value_blob,
     ) = labeled_lara_memories();
     LabeledLaraGraph::new(
@@ -367,10 +368,10 @@ fn payload_bench_graph(
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        inline_value_slab,
+        inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        payload_log,
+        inline_property_bytes_log,
         value_blob,
         crate::labeled::InitialCapacities::uniform(elem_capacity),
         BucketLabelKey::from_raw(1),
@@ -404,7 +405,7 @@ fn seed_overflow_payload_hub(
     let vid = VertexId::from(0);
     let label = BucketLabelKey::from_raw(2);
     graph
-        .ensure_label_bucket_inline_value_byte_width(vid, label, payload_width)
+        .ensure_label_bucket_inline_property_byte_width(vid, label, payload_width)
         .expect("payload width");
     for target in 1..=edge_count {
         let mut payload = [0u8; 8];
@@ -732,7 +733,7 @@ fn bench_labeled_for_each_edges_for_label_48_x51() -> canbench_rs::BenchResult {
                     |_slot, item| {
                         let edge = item
                             .edge
-                            .with_stored_inline_value_bytes(
+                            .with_stored_inline_property_bytes(
                                 item.inline_property.width,
                                 item.inline_property.bytes(),
                             )
@@ -764,7 +765,7 @@ fn bench_labeled_for_each_edges_for_label_24_x51() -> canbench_rs::BenchResult {
                     |_slot, item| {
                         let edge = item
                             .edge
-                            .with_stored_inline_value_bytes(
+                            .with_stored_inline_property_bytes(
                                 item.inline_property.width,
                                 item.inline_property.bytes(),
                             )
@@ -1030,16 +1031,16 @@ fn bench_labeled_deferred_maintenance_compact_vertex_span_1() -> canbench_rs::Be
 
 /// ADR 0016: payload attach over hybrid slab + 8 B inline payload overflow log.
 #[bench(raw)]
-fn bench_labeled_payload_log_scan_8b_inline_overflow() -> canbench_rs::BenchResult {
+fn bench_labeled_inline_property_bytes_log_scan_8b_inline_overflow() -> canbench_rs::BenchResult {
     let graph = payload_bench_graph(1 << 20);
     let (vid, label) =
         seed_overflow_payload_hub(&graph, OVERFLOW_LOG_HUB_EDGES, PAYLOAD_LOG_INLINE_WIDTH);
-    let mut scratch = LabeledPayloadValueBatchScratch::default();
+    let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
     bench_fn(|| {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
             let mut byte_count = 0usize;
             let _ = graph
-                .visit_out_inline_value_batches_for_label_next(
+                .visit_out_inline_property_batches_for_label_next(
                     vid,
                     label,
                     OutEdgeOrder::Descending,
@@ -1063,7 +1064,7 @@ fn bench_labeled_payload_exact_growth_256() -> canbench_rs::BenchResult {
         let vid = graph.push_vertex(LabeledVertex::default()).expect("vertex");
         let label = BucketLabelKey::directed_from_index(2);
         graph
-            .ensure_label_bucket_inline_value_byte_width(vid, label, 2)
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 2)
             .expect("payload width");
         for target in 0..256u32 {
             graph
@@ -1091,7 +1092,7 @@ fn seed_fragmented_payload_fixture(
         (removed_wide, 2, 4),
     ] {
         graph
-            .ensure_label_bucket_inline_value_byte_width(vid, label, width)
+            .ensure_label_bucket_inline_property_byte_width(vid, label, width)
             .expect("payload width");
         graph
             .insert_edge_skip_leaf_cascade(
@@ -1121,7 +1122,7 @@ fn seed_payload_free_span_count(
             u16::try_from(100 + index).expect("benchmark label fits u16"),
         );
         graph
-            .ensure_label_bucket_inline_value_byte_width(vid, label, 2)
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 2)
             .expect("payload width");
         graph
             .insert_edge_skip_leaf_cascade(
@@ -1151,7 +1152,7 @@ fn bench_payload_pressure_stats(
         for _ in 0..64 {
             black_box(
                 graph
-                    .payload_compaction_needed(3)
+                    .inline_property_bytes_compaction_needed(3)
                     .expect("payload pressure"),
             );
         }
@@ -1177,7 +1178,7 @@ fn bench_labeled_payload_pressure_stats_256() -> canbench_rs::BenchResult {
     bench_payload_pressure_stats(256, "payload_pressure_stats_256")
 }
 
-/// Measures the first payload allocation that triggers fragmented-slab compaction.
+/// Measures the first inline property bytes allocation that triggers fragmented-slab compaction.
 #[bench(raw)]
 fn bench_labeled_payload_fragmented_first_span_6() -> canbench_rs::BenchResult {
     bench_fn(|| {
@@ -1185,7 +1186,7 @@ fn bench_labeled_payload_fragmented_first_span_6() -> canbench_rs::BenchResult {
         let vid = seed_fragmented_payload_fixture(&graph);
         let target = BucketLabelKey::directed_from_index(5);
         graph
-            .ensure_label_bucket_inline_value_byte_width(vid, target, 6)
+            .ensure_label_bucket_inline_property_byte_width(vid, target, 6)
             .expect("payload width");
         let _scope = canbench_rs::bench_scope("payload_fragmented_trigger_insert");
         graph
@@ -1195,7 +1196,11 @@ fn bench_labeled_payload_fragmented_first_span_6() -> canbench_rs::BenchResult {
                 PayloadBenchEdge::with_payload(3, 6, &3u32.to_le_bytes()),
             )
             .expect("payload insert");
-        black_box(graph.payload_storage_stats().expect("payload stats"));
+        black_box(
+            graph
+                .inline_property_bytes_storage_stats()
+                .expect("payload stats"),
+        );
     })
 }
 
@@ -1207,7 +1212,7 @@ fn bench_labeled_payload_fragmented_first_span_4_control() -> canbench_rs::Bench
         let vid = seed_fragmented_payload_fixture(&graph);
         let target = BucketLabelKey::directed_from_index(5);
         graph
-            .ensure_label_bucket_inline_value_byte_width(vid, target, 4)
+            .ensure_label_bucket_inline_property_byte_width(vid, target, 4)
             .expect("payload width");
         let _scope = canbench_rs::bench_scope("payload_fragmented_control_insert");
         graph
@@ -1217,19 +1222,31 @@ fn bench_labeled_payload_fragmented_first_span_4_control() -> canbench_rs::Bench
                 PayloadBenchEdge::with_payload(3, 4, &3u32.to_le_bytes()),
             )
             .expect("payload insert");
-        black_box(graph.payload_storage_stats().expect("payload stats"));
+        black_box(
+            graph
+                .inline_property_bytes_storage_stats()
+                .expect("payload stats"),
+        );
     })
 }
 
-/// Isolates the payload-only compaction pass for the fragmented fixture.
+/// Isolates the inline-property-bytes-only compaction pass for the fragmented fixture.
 #[bench(raw)]
 fn bench_labeled_payload_fragmented_compaction_only() -> canbench_rs::BenchResult {
     bench_fn(|| {
         let graph = payload_bench_graph(1 << 20);
         let _vid = seed_fragmented_payload_fixture(&graph);
         let _scope = canbench_rs::bench_scope("payload_fragmented_compaction_only");
-        black_box(graph.compact_payload_slab().expect("payload compaction"));
-        black_box(graph.payload_storage_stats().expect("payload stats"));
+        black_box(
+            graph
+                .compact_inline_property_bytes_slab()
+                .expect("inline property bytes compaction"),
+        );
+        black_box(
+            graph
+                .inline_property_bytes_storage_stats()
+                .expect("payload stats"),
+        );
     })
 }
 
@@ -1243,7 +1260,7 @@ fn bench_labeled_deferred_payload_fragmented_enqueue_6() -> canbench_rs::BenchRe
         let target = BucketLabelKey::directed_from_index(5);
         graph
             .inner()
-            .ensure_label_bucket_inline_value_byte_width(vid, target, 6)
+            .ensure_label_bucket_inline_property_byte_width(vid, target, 6)
             .expect("payload width");
         let _scope = canbench_rs::bench_scope("payload_deferred_enqueue_insert");
         graph
@@ -1253,7 +1270,7 @@ fn bench_labeled_deferred_payload_fragmented_enqueue_6() -> canbench_rs::BenchRe
     })
 }
 
-/// Measures the deferred maintenance step that performs payload compaction.
+/// Measures the deferred maintenance step that performs inline property bytes compaction.
 #[bench(raw)]
 fn bench_labeled_deferred_payload_fragmented_maintenance_6() -> canbench_rs::BenchResult {
     bench_fn(|| {
@@ -1263,7 +1280,7 @@ fn bench_labeled_deferred_payload_fragmented_maintenance_6() -> canbench_rs::Ben
         let target = BucketLabelKey::directed_from_index(5);
         graph
             .inner()
-            .ensure_label_bucket_inline_value_byte_width(vid, target, 6)
+            .ensure_label_bucket_inline_property_byte_width(vid, target, 6)
             .expect("payload width");
         graph
             .insert_edge(vid, target, PayloadBenchEdge::with_payload(3, 6, &[3u8; 6]))
@@ -1303,12 +1320,12 @@ fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResul
                     |_slot, item| {
                         let edge = item
                             .edge
-                            .with_stored_inline_value_bytes(
+                            .with_stored_inline_property_bytes(
                                 item.inline_property.width,
                                 item.inline_property.bytes(),
                             )
                             .with_label_id(label.raw());
-                        count += usize::from(edge.inline_value_len > 0);
+                        count += usize::from(edge.inline_property_len > 0);
                         ControlFlow::<()>::Continue(())
                     },
                 )

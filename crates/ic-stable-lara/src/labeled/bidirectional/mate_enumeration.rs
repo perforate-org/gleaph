@@ -453,15 +453,15 @@ where
             let source_scan_rows = live_entries;
             let counterpart_scan_rows = u64::try_from(counterpart_count)
                 .map_err(|_| MateLeafEnumerationError::ArithmeticOverflow)?;
-            let packed_width_bytes = if info.inline_value_byte_width == 0 {
+            let packed_width_bytes = if info.inline_property_byte_width == 0 {
                 policy.packed_width_bytes
-            } else if info.inline_value_byte_width <= 4 {
-                info.inline_value_byte_width as u8
+            } else if info.inline_property_byte_width <= 4 {
+                info.inline_property_byte_width as u8
             } else {
                 return Err(MateLeafEnumerationError::UnsupportedWidth {
                     owner,
                     label,
-                    width: info.inline_value_byte_width,
+                    width: info.inline_property_byte_width,
                 });
             };
             let inputs = MatePromotionInputs {

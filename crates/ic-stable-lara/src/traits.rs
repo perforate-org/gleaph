@@ -176,19 +176,19 @@ pub trait CsrEdge: Clone {
 
     /// Physical byte width of the in-memory edge inline value (0 when absent).
     #[inline]
-    fn edge_inline_value_byte_width(&self) -> u16 {
+    fn edge_inline_property_byte_width(&self) -> u16 {
         0
     }
 
-    /// In-memory edge inline value bytes; length must match [`Self::edge_inline_value_byte_width`].
+    /// In-memory edge inline value bytes; length must match [`Self::edge_inline_property_byte_width`].
     #[inline]
-    fn edge_inline_value_bytes(&self) -> &[u8] {
+    fn edge_inline_property_bytes(&self) -> &[u8] {
         &[]
     }
 
     /// Returns a copy with in-memory payload bytes attached (wire row unchanged).
     #[inline]
-    fn with_stored_inline_value_bytes(self, _width: u16, _bytes: &[u8]) -> Self {
+    fn with_stored_inline_property_bytes(self, _width: u16, _bytes: &[u8]) -> Self {
         self
     }
 

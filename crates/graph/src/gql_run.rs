@@ -1063,7 +1063,7 @@ async fn run_wire_plans(
     mutation_id: Option<MutationId>,
     check_journal: bool,
 ) -> Result<TransactionBlockRun, GqlRunError> {
-    crate::edge_inline_value_schema::set_execution_resolved_labels(
+    crate::edge_inline_property_schema::set_execution_resolved_labels(
         execution.resolved_labels.clone(),
     );
     // The element-id encoding key is threaded as owned data (evaluator / materialization / canonical
@@ -1082,7 +1082,7 @@ async fn run_wire_plans(
         check_journal,
     )
     .await;
-    crate::edge_inline_value_schema::clear_execution_resolved_labels();
+    crate::edge_inline_property_schema::clear_execution_resolved_labels();
     run_result
 }
 
@@ -3413,20 +3413,30 @@ mod tests {
             .insert_vertex_named(["WgtGqlC"], Vec::<(&str, Value)>::new())
             .expect("c");
         let label_id = crate::test_labels::edge_label_id_for_name("WgtGqlRoad");
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
+            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
         );
         store
-            .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &1u16.to_le_bytes())
+            .insert_directed_edge_with_inline_property_bytes(
+                a,
+                b,
+                Some(label_id),
+                &1u16.to_le_bytes(),
+            )
             .expect("a->b");
         store
-            .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &1u16.to_le_bytes())
+            .insert_directed_edge_with_inline_property_bytes(
+                b,
+                c,
+                Some(label_id),
+                &1u16.to_le_bytes(),
+            )
             .expect("b->c");
         store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 a,
                 c,
                 Some(label_id),

@@ -19,35 +19,35 @@ use super::{LabeledLaraGraph, LabeledOperationError, OutEdgeOrder};
 
 /// Reusable buffers for labeled edge-inline-value batch traversal.
 #[derive(Clone, Debug)]
-pub struct LabeledEdgeInlineValueBatchScratch<E> {
+pub struct LabeledEdgeInlinePropertyBatchScratch<E> {
     /// Edge rows in the same order as the parallel value byte chunks.
     pub edges: Vec<E>,
     /// Flattened value bytes: `edges.len() * batch.byte_width.byte_width()` bytes.
-    pub inline_value_bytes: Vec<u8>,
+    pub inline_property_bytes: Vec<u8>,
     /// Reusable bulk-read buffer for contiguous edge slab IO.
     pub(super) io_edge_bytes: Vec<u8>,
-    /// Reusable bulk-read buffer for contiguous payload slab IO.
-    pub(super) io_inline_value_bytes: Vec<u8>,
+    /// Reusable bulk-read buffer for contiguous inline property bytes slab IO.
+    pub(super) io_inline_property_bytes: Vec<u8>,
     pub(super) stop_requested: Rc<Cell<bool>>,
 }
 
-impl<E> Default for LabeledEdgeInlineValueBatchScratch<E> {
+impl<E> Default for LabeledEdgeInlinePropertyBatchScratch<E> {
     fn default() -> Self {
         Self {
             edges: Vec::new(),
-            inline_value_bytes: Vec::new(),
+            inline_property_bytes: Vec::new(),
             io_edge_bytes: Vec::new(),
-            io_inline_value_bytes: Vec::new(),
+            io_inline_property_bytes: Vec::new(),
             stop_requested: Rc::new(Cell::new(false)),
         }
     }
 }
 
-impl<E> LabeledEdgeInlineValueBatchScratch<E> {
+impl<E> LabeledEdgeInlinePropertyBatchScratch<E> {
     /// Clears both reusable buffers while preserving allocation capacity.
     pub fn clear(&mut self) {
         self.edges.clear();
-        self.inline_value_bytes.clear();
+        self.inline_property_bytes.clear();
     }
 
     pub(super) fn reset_stop(&mut self) {
@@ -65,15 +65,15 @@ impl<E> LabeledEdgeInlineValueBatchScratch<E> {
         &self.io_edge_bytes[..len]
     }
 
-    pub(super) fn io_payload_slice_mut(&mut self, len: usize) -> &mut [u8] {
-        if self.io_inline_value_bytes.len() < len {
-            self.io_inline_value_bytes.resize(len, 0);
+    pub(super) fn io_inline_property_bytes_slice_mut(&mut self, len: usize) -> &mut [u8] {
+        if self.io_inline_property_bytes.len() < len {
+            self.io_inline_property_bytes.resize(len, 0);
         }
-        &mut self.io_inline_value_bytes[..len]
+        &mut self.io_inline_property_bytes[..len]
     }
 
-    pub(super) fn io_payload_slice(&self, len: usize) -> &[u8] {
-        &self.io_inline_value_bytes[..len]
+    pub(super) fn io_inline_property_bytes_slice(&self, len: usize) -> &[u8] {
+        &self.io_inline_property_bytes[..len]
     }
 }
 
@@ -127,20 +127,20 @@ impl HybridOverflowEdgeReplay {
     }
 }
 
-/// Reusable buffers for payload-only batch traversal (phase 1).
+/// Reusable buffers for inline-property-bytes-only batch traversal (phase 1).
 #[derive(Clone, Debug, Default)]
-pub struct LabeledPayloadValueBatchScratch {
+pub struct LabeledInlinePropertyValueBatchScratch {
     /// Absolute edge slot index per value chunk in `values`.
     pub slot_indices: Vec<u32>,
     /// Flattened payload bytes: `slot_indices.len() * byte_width` when emitted.
     pub values: Vec<u8>,
     /// Populated by hybrid overflow payload phase 1 for phase-2 slot reads.
     pub hybrid_overflow_replay: HybridOverflowEdgeReplay,
-    /// Reusable bulk-read buffer for contiguous payload slab IO.
-    pub(super) io_payload_bytes: Vec<u8>,
+    /// Reusable bulk-read buffer for contiguous inline property bytes slab IO.
+    pub(super) io_inline_property_bytes: Vec<u8>,
 }
 
-impl LabeledPayloadValueBatchScratch {
+impl LabeledInlinePropertyValueBatchScratch {
     /// Clears batch buffers while preserving hybrid overflow replay for phase 2.
     pub fn clear(&mut self) {
         self.slot_indices.clear();
@@ -153,16 +153,16 @@ impl LabeledPayloadValueBatchScratch {
         self.hybrid_overflow_replay.clear();
     }
 
-    pub(super) fn io_payload_slice_mut(&mut self, len: usize) -> &mut [u8] {
-        if self.io_payload_bytes.len() < len {
-            self.io_payload_bytes.resize(len, 0);
+    pub(super) fn io_inline_property_bytes_slice_mut(&mut self, len: usize) -> &mut [u8] {
+        if self.io_inline_property_bytes.len() < len {
+            self.io_inline_property_bytes.resize(len, 0);
         }
-        &mut self.io_payload_bytes[..len]
+        &mut self.io_inline_property_bytes[..len]
     }
 }
 
 /// One batch of parallel payload bytes for a single label bucket (no edge rows).
-pub struct LabeledPayloadValueBatch<'a> {
+pub struct LabeledInlinePropertyValueBatch<'a> {
     /// Label bucket visited by this batch.
     pub label_id: BucketLabelKey,
     /// Physical byte width of each payload chunk in `values`.
@@ -173,23 +173,23 @@ pub struct LabeledPayloadValueBatch<'a> {
     pub slot_indices: &'a [u32],
     /// Flattened payload bytes in the same order as `slot_indices`.
     pub values: &'a [u8],
-    /// `true` when values were read from a contiguous resident payload slab span.
+    /// `true` when values were read from a contiguous resident inline property bytes slab span.
     pub dense: bool,
 }
 
 /// One batch of edges and their parallel value bytes for a single label bucket.
-pub struct LabeledEdgeInlineValueBatch<'a, E> {
+pub struct LabeledEdgeInlinePropertyBatch<'a, E> {
     /// Label bucket visited by this batch.
     pub label_id: BucketLabelKey,
     /// Physical byte width of each edge inline value in this batch.
     pub byte_width: u16,
-    /// Scan order used for both `edges` and `payload_bytes`.
+    /// Scan order used for both `edges` and `inline_property_bytes`.
     pub order: OutEdgeOrder,
     /// Edge rows in scan order.
     pub edges: &'a [E],
     /// Flattened edge-inline-value bytes in the same order as `edges`.
-    pub inline_value_bytes: &'a [u8],
-    /// `true` when the batch was read from contiguous resident edge/payload slab spans.
+    pub inline_property_bytes: &'a [u8],
+    /// `true` when the batch was read from contiguous resident edge/inline property bytes slab spans.
     pub dense: bool,
 }
 
@@ -234,8 +234,8 @@ pub struct LabeledBucketScan<'a, E: CsrEdgeTombstone, M: Memory> {
     bucket: LabelBucket,
     label_id: BucketLabelKey,
     log_chains: Option<Vec<u32>>,
-    attach_payload: bool,
-    next_payload_ordinal: u32,
+    attach_inline_property_bytes: bool,
+    next_inline_property_bytes_ordinal: u32,
     kind: LabeledBucketScanKind<'a, E, M>,
 }
 
@@ -467,19 +467,21 @@ where
         let edge = edge
             .with_slot_index(slot)
             .with_label_id(self.label_id.raw());
-        if self.attach_payload {
-            let ordinal = self.next_payload_ordinal;
+        if self.attach_inline_property_bytes {
+            let ordinal = self.next_inline_property_bytes_ordinal;
             match self.kind {
                 LabeledBucketScanKind::Desc { .. } => {
-                    self.next_payload_ordinal = self.next_payload_ordinal.saturating_sub(1);
+                    self.next_inline_property_bytes_ordinal =
+                        self.next_inline_property_bytes_ordinal.saturating_sub(1);
                 }
                 LabeledBucketScanKind::Asc { .. } => {
-                    self.next_payload_ordinal = self.next_payload_ordinal.saturating_add(1);
+                    self.next_inline_property_bytes_ordinal =
+                        self.next_inline_property_bytes_ordinal.saturating_add(1);
                 }
             }
             Some(
                 self.graph
-                    .attach_edge_inline_value_at_ordinal(
+                    .attach_edge_inline_property_at_ordinal(
                         self.src,
                         &self.bucket,
                         ordinal,
@@ -547,10 +549,14 @@ where
         let skipped = u32::try_from(skipped).unwrap_or(u32::MAX);
         match self.kind {
             LabeledBucketScanKind::Desc { .. } => {
-                self.next_payload_ordinal = self.next_payload_ordinal.saturating_sub(skipped);
+                self.next_inline_property_bytes_ordinal = self
+                    .next_inline_property_bytes_ordinal
+                    .saturating_sub(skipped);
             }
             LabeledBucketScanKind::Asc { .. } => {
-                self.next_payload_ordinal = self.next_payload_ordinal.saturating_add(skipped);
+                self.next_inline_property_bytes_ordinal = self
+                    .next_inline_property_bytes_ordinal
+                    .saturating_add(skipped);
             }
         }
         result
@@ -578,7 +584,7 @@ where
         bucket: LabelBucket,
         label_id: BucketLabelKey,
         log_chains: Option<Vec<u32>>,
-        attach_payload: bool,
+        attach_inline_property_bytes: bool,
         iter: OutEdgesIter<'a, E, M>,
     ) -> LabeledSpanIter<'a, E, M> {
         LabeledSpanIter::Scan(LabeledBucketScan {
@@ -589,8 +595,8 @@ where
             bucket,
             label_id,
             log_chains,
-            attach_payload,
-            next_payload_ordinal: bucket.degree().saturating_sub(1),
+            attach_inline_property_bytes,
+            next_inline_property_bytes_ordinal: bucket.degree().saturating_sub(1),
             kind: LabeledBucketScanKind::Desc { iter },
         })
     }
@@ -603,7 +609,7 @@ where
         bucket: LabelBucket,
         label_id: BucketLabelKey,
         log_chains: Option<Vec<u32>>,
-        attach_payload: bool,
+        attach_inline_property_bytes: bool,
         iter: AscOutEdgesIter<'a, E, M>,
     ) -> LabeledSpanIter<'a, E, M> {
         LabeledSpanIter::Scan(LabeledBucketScan {
@@ -614,8 +620,8 @@ where
             bucket,
             label_id,
             log_chains,
-            attach_payload,
-            next_payload_ordinal: 0,
+            attach_inline_property_bytes,
+            next_inline_property_bytes_ordinal: 0,
             kind: LabeledBucketScanKind::Asc { iter },
         })
     }

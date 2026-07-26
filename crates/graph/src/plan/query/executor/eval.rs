@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use jiff::Unit;
 
-use crate::edge_inline_value_scalar_codec::decode_edge_inline_value_scalar;
+use crate::edge_inline_property_scalar_codec::decode_edge_inline_property_scalar;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{
     AggregateFunc, CmpOp, DurationQualifier, Expr, ExprKind, ObjectName, TruthValue,
@@ -83,8 +83,8 @@ fn decode_gleaph_weight_for_edge_binding(
     super::super::gleaph_weight::decode_shortest_hop_cost_from_edge_binding(edge).or_else(|_| {
         super::super::gleaph_weight::decode_traversal_edge_weight_prepared(
             decoder,
-            edge.inline_value_len(),
-            edge.inline_value_bytes_slice(),
+            edge.inline_property_len(),
+            edge.inline_property_bytes_slice(),
         )
     })
 }
@@ -317,7 +317,7 @@ pub(crate) fn try_read_inline_edge_property(
     property_id: PropertyId,
     resolved_labels: Option<&ResolvedLabelTable>,
 ) -> Result<Option<Value>, PlanQueryError> {
-    let Some(label) = crate::edge_inline_value_schema::resolved_edge_label_with(
+    let Some(label) = crate::edge_inline_property_schema::resolved_edge_label_with(
         resolved_labels,
         EdgeLabelId::from_raw(edge.handle.label_id.raw()),
     ) else {
@@ -330,8 +330,8 @@ pub(crate) fn try_read_inline_edge_property(
         return Ok(None);
     }
 
-    let bytes = edge.inline_value_bytes_slice();
-    let required_width = usize::from(label.inline_value_profile.required_byte_width());
+    let bytes = edge.inline_property_bytes_slice();
+    let required_width = usize::from(label.inline_property_profile.required_byte_width());
     if required_width == 0 {
         return Err(PlanQueryError::InvalidExpressionValue {
             expression: format!(
@@ -353,7 +353,7 @@ pub(crate) fn try_read_inline_edge_property(
 
     match inline_schema {
         ResolvedInlineSchema::Scalar { .. } => {
-            decode_edge_inline_value_scalar(&label.inline_value_profile, bytes)
+            decode_edge_inline_property_scalar(&label.inline_property_profile, bytes)
                 .map(Some)
                 .map_err(|err| PlanQueryError::InvalidExpressionValue {
                     expression: format!(
@@ -450,14 +450,13 @@ fn validate_and_decode_inline_struct(
                 ),
             });
         }
-        let value = decode_edge_inline_value_scalar(&field.profile, &payload[start..end]).map_err(
-            |err| PlanQueryError::InvalidExpressionValue {
+        let value = decode_edge_inline_property_scalar(&field.profile, &payload[start..end])
+            .map_err(|err| PlanQueryError::InvalidExpressionValue {
                 expression: format!(
                     "inline struct field {} decode error for label {label_id_raw}: {err}",
                     field.name
                 ),
-            },
-        )?;
+            })?;
         record_fields.push((field.name.clone(), value));
     }
 
@@ -1279,7 +1278,7 @@ fn edge_to_value(
         ),
         (
             "payload".to_owned(),
-            Value::Bytes(binding.inline_value_bytes_slice().to_vec()),
+            Value::Bytes(binding.inline_property_bytes_slice().to_vec()),
         ),
         (
             "label".to_owned(),
@@ -1486,8 +1485,8 @@ mod tests {
     use super::try_read_inline_edge_property;
     use crate::plan::query::executor::eval::record_property;
     use gleaph_graph_kernel::entry::{
-        Edge, EdgeInlineValue, EdgeInlineValueEncoding, EdgeInlineValueProfile, EdgeLabelId,
-        EdgeSlotIndex, PropertyId,
+        Edge, EdgeInlinePropertyBytes, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile,
+        EdgeLabelId, EdgeSlotIndex, PropertyId,
     };
     use gleaph_graph_kernel::plan_exec::{
         ResolvedEdgeLabel, ResolvedInlineSchema, ResolvedInlineStructField, ResolvedLabelTable,
@@ -3198,7 +3197,7 @@ mod tests {
             target: gleaph_graph_kernel::entry::VertexRef::local(VertexId::from(2u32)),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 7,
-            inline_value: EdgeInlineValue::from_slice(payload),
+            inline_property: EdgeInlinePropertyBytes::from_slice(payload),
         };
         EdgeBinding::from_edge(handle, edge)
     }
@@ -3206,7 +3205,7 @@ mod tests {
     fn resolved_label_table_with_inline(
         label_id: u16,
         property_id: u16,
-        profile: EdgeInlineValueProfile,
+        profile: EdgeInlinePropertyProfile,
     ) -> ResolvedLabelTable {
         ResolvedLabelTable {
             vertex: Vec::new(),
@@ -3225,9 +3224,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 4,
-                encoding: EdgeInlineValueEncoding::F32,
+                encoding: EdgeInlinePropertyEncoding::F32,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3244,9 +3243,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 4,
-                encoding: EdgeInlineValueEncoding::F32,
+                encoding: EdgeInlinePropertyEncoding::F32,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(99), Some(&table))
@@ -3260,9 +3259,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 4,
-                encoding: EdgeInlineValueEncoding::F32,
+                encoding: EdgeInlinePropertyEncoding::F32,
             },
         );
         let err = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3273,8 +3272,8 @@ mod tests {
     fn resolved_label_table_with_inline_struct(
         label_id: u16,
         property_id: u16,
-        inline_value_width: u16,
-        fields: Vec<(String, u16, EdgeInlineValueProfile)>,
+        inline_property_width: u16,
+        fields: Vec<(String, u16, EdgeInlinePropertyProfile)>,
     ) -> ResolvedLabelTable {
         let schema = ResolvedInlineSchema::Struct {
             property_id: PropertyId::from_raw(u32::from(property_id)),
@@ -3292,9 +3291,9 @@ mod tests {
             edge: vec![ResolvedEdgeLabel::with_inline_schema(
                 "Affinity".to_string(),
                 EdgeLabelId::from_raw(label_id),
-                EdgeInlineValueProfile {
-                    byte_width: inline_value_width,
-                    encoding: EdgeInlineValueEncoding::RawBytes,
+                EdgeInlinePropertyProfile {
+                    byte_width: inline_property_width,
+                    encoding: EdgeInlinePropertyEncoding::RawBytes,
                 },
                 Some(schema),
             )],
@@ -3319,25 +3318,25 @@ mod tests {
                 (
                     "score".to_string(),
                     0,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 4,
-                        encoding: EdgeInlineValueEncoding::F32,
+                        encoding: EdgeInlinePropertyEncoding::F32,
                     },
                 ),
                 (
                     "confidence".to_string(),
                     4,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 4,
-                        encoding: EdgeInlineValueEncoding::F32,
+                        encoding: EdgeInlinePropertyEncoding::F32,
                     },
                 ),
                 (
                     "updated_at".to_string(),
                     8,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 8,
-                        encoding: EdgeInlineValueEncoding::RawU64,
+                        encoding: EdgeInlinePropertyEncoding::RawU64,
                     },
                 ),
             ],
@@ -3368,9 +3367,9 @@ mod tests {
             vec![(
                 "score".to_string(),
                 0,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 4,
-                    encoding: EdgeInlineValueEncoding::F32,
+                    encoding: EdgeInlinePropertyEncoding::F32,
                 },
             )],
         );
@@ -3393,9 +3392,9 @@ mod tests {
             edge: vec![ResolvedEdgeLabel::with_inline_schema(
                 "Affinity".to_string(),
                 EdgeLabelId::from_raw(7),
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 4,
-                    encoding: EdgeInlineValueEncoding::RawBytes,
+                    encoding: EdgeInlinePropertyEncoding::RawBytes,
                 },
                 Some(ResolvedInlineSchema::Struct {
                     property_id: PropertyId::from_raw(42),
@@ -3420,17 +3419,17 @@ mod tests {
                 (
                     "a".to_string(),
                     0,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 4,
-                        encoding: EdgeInlineValueEncoding::F32,
+                        encoding: EdgeInlinePropertyEncoding::F32,
                     },
                 ),
                 (
                     "b".to_string(),
                     2,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 4,
-                        encoding: EdgeInlineValueEncoding::F32,
+                        encoding: EdgeInlinePropertyEncoding::F32,
                     },
                 ),
             ],
@@ -3441,7 +3440,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_struct_edge_property_read_fails_on_inline_value_width_mismatch() {
+    fn inline_struct_edge_property_read_fails_on_inline_property_width_mismatch() {
         let payload = [0u8; 12];
         let binding = inline_edge_binding(&payload);
         let table = resolved_label_table_with_inline_struct(
@@ -3452,17 +3451,17 @@ mod tests {
                 (
                     "a".to_string(),
                     0,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 8,
-                        encoding: EdgeInlineValueEncoding::RawU64,
+                        encoding: EdgeInlinePropertyEncoding::RawU64,
                     },
                 ),
                 (
                     "b".to_string(),
                     8,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 8,
-                        encoding: EdgeInlineValueEncoding::RawU64,
+                        encoding: EdgeInlinePropertyEncoding::RawU64,
                     },
                 ),
             ],
@@ -3484,17 +3483,17 @@ mod tests {
                 (
                     "a".to_string(),
                     0,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 4,
-                        encoding: EdgeInlineValueEncoding::F32,
+                        encoding: EdgeInlinePropertyEncoding::F32,
                     },
                 ),
                 (
                     "a".to_string(),
                     4,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 4,
-                        encoding: EdgeInlineValueEncoding::F32,
+                        encoding: EdgeInlinePropertyEncoding::F32,
                     },
                 ),
             ],
@@ -3523,49 +3522,49 @@ mod tests {
                 (
                     "f16_col".to_string(),
                     0,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 2,
-                        encoding: EdgeInlineValueEncoding::F16,
+                        encoding: EdgeInlinePropertyEncoding::F16,
                     },
                 ),
                 (
                     "f32_col".to_string(),
                     2,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 4,
-                        encoding: EdgeInlineValueEncoding::F32,
+                        encoding: EdgeInlinePropertyEncoding::F32,
                     },
                 ),
                 (
                     "f64_col".to_string(),
                     6,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 8,
-                        encoding: EdgeInlineValueEncoding::F64,
+                        encoding: EdgeInlinePropertyEncoding::F64,
                     },
                 ),
                 (
                     "u128_col".to_string(),
                     14,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 16,
-                        encoding: EdgeInlineValueEncoding::RawU128,
+                        encoding: EdgeInlinePropertyEncoding::RawU128,
                     },
                 ),
                 (
                     "i128_col".to_string(),
                     30,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 16,
-                        encoding: EdgeInlineValueEncoding::RawI128,
+                        encoding: EdgeInlinePropertyEncoding::RawI128,
                     },
                 ),
                 (
                     "fixed_col".to_string(),
                     46,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 32,
-                        encoding: EdgeInlineValueEncoding::RawFixed32,
+                        encoding: EdgeInlinePropertyEncoding::RawFixed32,
                     },
                 ),
             ],
@@ -3602,9 +3601,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 8,
-                encoding: EdgeInlineValueEncoding::F64,
+                encoding: EdgeInlinePropertyEncoding::F64,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3619,9 +3618,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 8,
-                encoding: EdgeInlineValueEncoding::RawI64,
+                encoding: EdgeInlinePropertyEncoding::RawI64,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3638,9 +3637,9 @@ mod tests {
             edge: vec![ResolvedEdgeLabel::new(
                 "Road".to_string(),
                 EdgeLabelId::from_raw(7),
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 4,
-                    encoding: EdgeInlineValueEncoding::RawBytes,
+                    encoding: EdgeInlinePropertyEncoding::RawBytes,
                 },
             )],
         };
@@ -3655,9 +3654,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::F16,
+                encoding: EdgeInlinePropertyEncoding::F16,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3672,9 +3671,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 1,
-                encoding: EdgeInlineValueEncoding::RawU8,
+                encoding: EdgeInlinePropertyEncoding::RawU8,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3689,9 +3688,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::RawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3706,9 +3705,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 4,
-                encoding: EdgeInlineValueEncoding::RawU32,
+                encoding: EdgeInlinePropertyEncoding::RawU32,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3723,9 +3722,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 8,
-                encoding: EdgeInlineValueEncoding::RawU64,
+                encoding: EdgeInlinePropertyEncoding::RawU64,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3740,9 +3739,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 16,
-                encoding: EdgeInlineValueEncoding::RawU128,
+                encoding: EdgeInlinePropertyEncoding::RawU128,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3757,9 +3756,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 1,
-                encoding: EdgeInlineValueEncoding::RawI8,
+                encoding: EdgeInlinePropertyEncoding::RawI8,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3774,9 +3773,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::RawI16,
+                encoding: EdgeInlinePropertyEncoding::RawI16,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3791,9 +3790,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 4,
-                encoding: EdgeInlineValueEncoding::RawI32,
+                encoding: EdgeInlinePropertyEncoding::RawI32,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3808,9 +3807,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 8,
-                encoding: EdgeInlineValueEncoding::RawI64,
+                encoding: EdgeInlinePropertyEncoding::RawI64,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3829,9 +3828,9 @@ mod tests {
             let table = resolved_label_table_with_inline(
                 7,
                 42,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 16,
-                    encoding: EdgeInlineValueEncoding::RawI128,
+                    encoding: EdgeInlinePropertyEncoding::RawI128,
                 },
             );
             let value =
@@ -3849,9 +3848,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 32,
-                encoding: EdgeInlineValueEncoding::RawFixed32,
+                encoding: EdgeInlinePropertyEncoding::RawFixed32,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3867,9 +3866,9 @@ mod tests {
         let table = resolved_label_table_with_inline(
             7,
             42,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 64,
-                encoding: EdgeInlineValueEncoding::RawFixed64,
+                encoding: EdgeInlinePropertyEncoding::RawFixed64,
             },
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
@@ -3880,22 +3879,22 @@ mod tests {
 
     #[test]
     fn inline_edge_property_read_rejects_width_mismatch_for_integer_encodings() {
-        let cases: &[(EdgeInlineValueEncoding, u16, &[u8])] = &[
-            (EdgeInlineValueEncoding::RawU8, 1, &[0u8; 2]),
-            (EdgeInlineValueEncoding::RawU16, 2, &[0u8; 1]),
-            (EdgeInlineValueEncoding::RawU32, 4, &[0u8; 2]),
-            (EdgeInlineValueEncoding::RawU64, 8, &[0u8; 4]),
-            (EdgeInlineValueEncoding::RawI8, 1, &[0u8; 2]),
-            (EdgeInlineValueEncoding::RawI16, 2, &[0u8; 1]),
-            (EdgeInlineValueEncoding::RawI32, 4, &[0u8; 2]),
-            (EdgeInlineValueEncoding::RawI64, 8, &[0u8; 4]),
+        let cases: &[(EdgeInlinePropertyEncoding, u16, &[u8])] = &[
+            (EdgeInlinePropertyEncoding::RawU8, 1, &[0u8; 2]),
+            (EdgeInlinePropertyEncoding::RawU16, 2, &[0u8; 1]),
+            (EdgeInlinePropertyEncoding::RawU32, 4, &[0u8; 2]),
+            (EdgeInlinePropertyEncoding::RawU64, 8, &[0u8; 4]),
+            (EdgeInlinePropertyEncoding::RawI8, 1, &[0u8; 2]),
+            (EdgeInlinePropertyEncoding::RawI16, 2, &[0u8; 1]),
+            (EdgeInlinePropertyEncoding::RawI32, 4, &[0u8; 2]),
+            (EdgeInlinePropertyEncoding::RawI64, 8, &[0u8; 4]),
         ];
         for (encoding, width, payload) in cases {
             let binding = inline_edge_binding(payload);
             let table = resolved_label_table_with_inline(
                 7,
                 42,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: *width,
                     encoding: encoding.clone(),
                 },
@@ -3912,16 +3911,16 @@ mod tests {
 
     #[test]
     fn inline_edge_property_read_rejects_width_mismatch_for_128bit_encodings() {
-        let cases: &[(EdgeInlineValueEncoding, &[u8])] = &[
-            (EdgeInlineValueEncoding::RawU128, &[0u8; 8]),
-            (EdgeInlineValueEncoding::RawI128, &[0u8; 8]),
+        let cases: &[(EdgeInlinePropertyEncoding, &[u8])] = &[
+            (EdgeInlinePropertyEncoding::RawU128, &[0u8; 8]),
+            (EdgeInlinePropertyEncoding::RawI128, &[0u8; 8]),
         ];
         for (encoding, payload) in cases {
             let binding = inline_edge_binding(payload);
             let table = resolved_label_table_with_inline(
                 7,
                 42,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: 16,
                     encoding: encoding.clone(),
                 },
@@ -3938,17 +3937,17 @@ mod tests {
 
     #[test]
     fn inline_edge_property_read_rejects_width_mismatch_for_float_encodings() {
-        let cases: &[(EdgeInlineValueEncoding, u16, &[u8])] = &[
-            (EdgeInlineValueEncoding::F16, 2, &[0u8; 1]),
-            (EdgeInlineValueEncoding::F32, 4, &[0u8; 2]),
-            (EdgeInlineValueEncoding::F64, 8, &[0u8; 4]),
+        let cases: &[(EdgeInlinePropertyEncoding, u16, &[u8])] = &[
+            (EdgeInlinePropertyEncoding::F16, 2, &[0u8; 1]),
+            (EdgeInlinePropertyEncoding::F32, 4, &[0u8; 2]),
+            (EdgeInlinePropertyEncoding::F64, 8, &[0u8; 4]),
         ];
         for (encoding, width, payload) in cases {
             let binding = inline_edge_binding(payload);
             let table = resolved_label_table_with_inline(
                 7,
                 42,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: *width,
                     encoding: encoding.clone(),
                 },
@@ -3965,16 +3964,16 @@ mod tests {
 
     #[test]
     fn inline_edge_property_read_rejects_width_mismatch_for_fixed_encodings() {
-        let cases: &[(EdgeInlineValueEncoding, u16, &[u8])] = &[
-            (EdgeInlineValueEncoding::RawFixed32, 32, &[0u8; 16]),
-            (EdgeInlineValueEncoding::RawFixed64, 64, &[0u8; 32]),
+        let cases: &[(EdgeInlinePropertyEncoding, u16, &[u8])] = &[
+            (EdgeInlinePropertyEncoding::RawFixed32, 32, &[0u8; 16]),
+            (EdgeInlinePropertyEncoding::RawFixed64, 64, &[0u8; 32]),
         ];
         for (encoding, width, payload) in cases {
             let binding = inline_edge_binding(payload);
             let table = resolved_label_table_with_inline(
                 7,
                 42,
-                EdgeInlineValueProfile {
+                EdgeInlinePropertyProfile {
                     byte_width: *width,
                     encoding: encoding.clone(),
                 },

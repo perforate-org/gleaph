@@ -78,3 +78,10 @@ Rust edition 2024, MSRV 1.88. Depends on `gleaph-gql` (path dependency at `../gq
 - Optimization passes run in dependency order (pushdown → reorder → fusion → limit → topk → wcoj)
 - Adaptive reoptimization hints annotate plans for executor-side re-evaluation
 - Executor lives in a separate crate (future `gleaph-gql-executor`)
+
+
+## Terminology note
+
+The "inline-property-equality" anchor/source naming in this crate refers to vertex pattern literals
+such as `(n:Label {prop: value})`. It is unrelated to edge `INLINE` property bytes storage, which is
+owned by `gleaph-graph-kernel` / `ic-stable-lara` and is named `EdgeInlinePropertyBytes` per ADR 0051.

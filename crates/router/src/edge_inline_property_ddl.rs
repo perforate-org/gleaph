@@ -4,7 +4,7 @@
 //! A Router-owned parser for the standalone inline edge-property schema statement.
 //! Non-INLINE statements continue through the generic GQL parser unchanged.
 
-use crate::facade::stable::edge_inline_value_profiles::InlineScalarType;
+use crate::facade::stable::edge_inline_property_profiles::InlineScalarType;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct InlineEdgeStructField {
@@ -26,7 +26,7 @@ pub(crate) struct InlineEdgeSchema {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum EdgeInlineValueDdlParseError {
+pub(crate) enum EdgeInlinePropertyBytesDdlParseError {
     #[error("expected {0}")]
     Expected(String),
     #[error("unexpected trailing input")]
@@ -44,7 +44,7 @@ pub(crate) enum EdgeInlineValueDdlParseError {
 /// Returns `None` when the query is not the inline edge-label DDL shape.
 pub(crate) fn try_parse(
     query: &str,
-) -> Option<Result<InlineEdgeSchema, EdgeInlineValueDdlParseError>> {
+) -> Option<Result<InlineEdgeSchema, EdgeInlinePropertyBytesDdlParseError>> {
     let trimmed = query.trim();
     let upper = trimmed.to_ascii_uppercase();
     if upper.starts_with("CREATE EDGE LABEL") {
@@ -54,7 +54,7 @@ pub(crate) fn try_parse(
     }
 }
 
-fn parse(query: &str) -> Result<InlineEdgeSchema, EdgeInlineValueDdlParseError> {
+fn parse(query: &str) -> Result<InlineEdgeSchema, EdgeInlinePropertyBytesDdlParseError> {
     let mut cur = Cursor::new(query);
     cur.skip_ws();
     cur.expect_ascii_ci("CREATE")?;
@@ -74,9 +74,8 @@ fn parse(query: &str) -> Result<InlineEdgeSchema, EdgeInlineValueDdlParseError> 
         }
     } else {
         let scalar_name = cur.parse_ident()?;
-        let scalar_type = InlineScalarType::from_ddl_name(&scalar_name).ok_or(
-            EdgeInlineValueDdlParseError::UnrecognisedScalarType(scalar_name),
-        )?;
+        let scalar_type = InlineScalarType::from_ddl_name(&scalar_name)
+            .ok_or(EdgeInlinePropertyBytesDdlParseError::UnrecognisedScalarType(scalar_name))?;
         InlineEdgePropertySchema::Scalar { scalar_type }
     };
     cur.skip_ws();
@@ -85,14 +84,14 @@ fn parse(query: &str) -> Result<InlineEdgeSchema, EdgeInlineValueDdlParseError> 
 
     // Reject a second field / comma.
     if cur.try_consume(',') {
-        return Err(EdgeInlineValueDdlParseError::MultipleFields);
+        return Err(EdgeInlinePropertyBytesDdlParseError::MultipleFields);
     }
     if cur
         .peek()
         .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
     {
         // A second identifier means a second field declaration.
-        return Err(EdgeInlineValueDdlParseError::MultipleFields);
+        return Err(EdgeInlinePropertyBytesDdlParseError::MultipleFields);
     }
 
     cur.skip_ws();
@@ -101,7 +100,7 @@ fn parse(query: &str) -> Result<InlineEdgeSchema, EdgeInlineValueDdlParseError> 
     cur.try_consume(';');
     cur.skip_ws();
     if !cur.is_eof() {
-        return Err(EdgeInlineValueDdlParseError::TrailingInput);
+        return Err(EdgeInlinePropertyBytesDdlParseError::TrailingInput);
     }
 
     Ok(InlineEdgeSchema {
@@ -113,17 +112,17 @@ fn parse(query: &str) -> Result<InlineEdgeSchema, EdgeInlineValueDdlParseError> 
 
 fn parse_struct_body(
     cur: &mut Cursor<'_>,
-) -> Result<Vec<InlineEdgeStructField>, EdgeInlineValueDdlParseError> {
+) -> Result<Vec<InlineEdgeStructField>, EdgeInlinePropertyBytesDdlParseError> {
     cur.skip_ws();
     cur.expect('{')?;
     cur.skip_ws();
 
     let first = cur.peek();
     if first == Some('}') {
-        return Err(EdgeInlineValueDdlParseError::EmptyStruct);
+        return Err(EdgeInlinePropertyBytesDdlParseError::EmptyStruct);
     }
     if first.is_none() {
-        return Err(EdgeInlineValueDdlParseError::Expected("}".into()));
+        return Err(EdgeInlinePropertyBytesDdlParseError::Expected("}".into()));
     }
 
     let mut fields = Vec::new();
@@ -137,12 +136,11 @@ fn parse_struct_body(
         let name = cur.parse_ident()?;
         cur.skip_ws();
         let scalar_name = cur.parse_ident()?;
-        let scalar_type = InlineScalarType::from_ddl_name(&scalar_name).ok_or(
-            EdgeInlineValueDdlParseError::UnrecognisedScalarType(scalar_name),
-        )?;
+        let scalar_type = InlineScalarType::from_ddl_name(&scalar_name)
+            .ok_or(EdgeInlinePropertyBytesDdlParseError::UnrecognisedScalarType(scalar_name))?;
 
         if !seen.insert(name.clone()) {
-            return Err(EdgeInlineValueDdlParseError::DuplicateField(name));
+            return Err(EdgeInlinePropertyBytesDdlParseError::DuplicateField(name));
         }
         fields.push(InlineEdgeStructField { name, scalar_type });
 
@@ -151,7 +149,7 @@ fn parse_struct_body(
             // A comma must be followed by another field; trailing comma is rejected.
             cur.skip_ws();
             if cur.peek() == Some('}') {
-                return Err(EdgeInlineValueDdlParseError::Expected(
+                return Err(EdgeInlinePropertyBytesDdlParseError::Expected(
                     "field after comma".into(),
                 ));
             }
@@ -161,7 +159,7 @@ fn parse_struct_body(
             break;
         }
         // Two adjacent field specs without a comma.
-        return Err(EdgeInlineValueDdlParseError::Expected(",".into()));
+        return Err(EdgeInlinePropertyBytesDdlParseError::Expected(",".into()));
     }
 
     cur.expect('}')?;
@@ -225,11 +223,13 @@ impl<'a> Cursor<'a> {
         true
     }
 
-    fn expect_ascii_ci(&mut self, word: &str) -> Result<(), EdgeInlineValueDdlParseError> {
+    fn expect_ascii_ci(&mut self, word: &str) -> Result<(), EdgeInlinePropertyBytesDdlParseError> {
         if self.consume_ascii_ci(word) {
             Ok(())
         } else {
-            Err(EdgeInlineValueDdlParseError::Expected(word.to_string()))
+            Err(EdgeInlinePropertyBytesDdlParseError::Expected(
+                word.to_string(),
+            ))
         }
     }
 
@@ -243,24 +243,28 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    fn expect(&mut self, ch: char) -> Result<(), EdgeInlineValueDdlParseError> {
+    fn expect(&mut self, ch: char) -> Result<(), EdgeInlinePropertyBytesDdlParseError> {
         self.skip_ws();
         if self.peek() == Some(ch) {
             self.pos += 1;
             Ok(())
         } else {
-            Err(EdgeInlineValueDdlParseError::Expected(ch.to_string()))
+            Err(EdgeInlinePropertyBytesDdlParseError::Expected(
+                ch.to_string(),
+            ))
         }
     }
 
-    fn parse_ident(&mut self) -> Result<String, EdgeInlineValueDdlParseError> {
+    fn parse_ident(&mut self) -> Result<String, EdgeInlinePropertyBytesDdlParseError> {
         self.skip_ws();
         let start = self.pos;
         let first = self
             .peek()
-            .ok_or_else(|| EdgeInlineValueDdlParseError::Expected("identifier".into()))?;
+            .ok_or_else(|| EdgeInlinePropertyBytesDdlParseError::Expected("identifier".into()))?;
         if !(first.is_ascii_alphabetic() || first == '_') {
-            return Err(EdgeInlineValueDdlParseError::Expected("identifier".into()));
+            return Err(EdgeInlinePropertyBytesDdlParseError::Expected(
+                "identifier".into(),
+            ));
         }
         self.pos += 1;
         while let Some(ch) = self.peek() {
@@ -271,7 +275,7 @@ impl<'a> Cursor<'a> {
             }
         }
         let s = std::str::from_utf8(&self.bytes[start..self.pos])
-            .map_err(|_| EdgeInlineValueDdlParseError::Expected("identifier".into()))?;
+            .map_err(|_| EdgeInlinePropertyBytesDdlParseError::Expected("identifier".into()))?;
         Ok(s.to_string())
     }
 }
@@ -380,7 +384,7 @@ mod tests {
         let err =
             parse("CREATE EDGE LABEL AFFINITY { stats { score FLOAT32, } INLINE }").unwrap_err();
         assert!(
-            matches!(err, EdgeInlineValueDdlParseError::Expected(_)),
+            matches!(err, EdgeInlinePropertyBytesDdlParseError::Expected(_)),
             "{err:?}"
         );
     }
@@ -392,7 +396,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, EdgeInlineValueDdlParseError::Expected(_)),
+            matches!(err, EdgeInlinePropertyBytesDdlParseError::Expected(_)),
             "{err:?}"
         );
     }
@@ -403,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn non_edge_inline_value_ddl_returns_none() {
+    fn non_edge_inline_property_ddl_returns_none() {
         assert!(try_parse("MATCH (n) RETURN n").is_none());
         assert!(try_parse("CREATE INDEX x FOR (n:N) ON (n.p)").is_none());
         assert!(try_parse("CREATE CONSTRAINT c FOR (n:N) REQUIRE n.p IS UNIQUE").is_none());
@@ -412,14 +416,17 @@ mod tests {
     #[test]
     fn missing_inline_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD { distance FLOAT32 }").unwrap_err();
-        assert!(matches!(err, EdgeInlineValueDdlParseError::Expected(_)));
+        assert!(matches!(
+            err,
+            EdgeInlinePropertyBytesDdlParseError::Expected(_)
+        ));
     }
 
     #[test]
     fn multiple_fields_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD { distance FLOAT32 INLINE, time UINT32 INLINE }")
             .unwrap_err();
-        assert_eq!(err, EdgeInlineValueDdlParseError::MultipleFields);
+        assert_eq!(err, EdgeInlinePropertyBytesDdlParseError::MultipleFields);
     }
 
     #[test]
@@ -427,7 +434,7 @@ mod tests {
         let err = parse("CREATE EDGE LABEL ROAD { distance FOO INLINE }").unwrap_err();
         assert_eq!(
             err,
-            EdgeInlineValueDdlParseError::UnrecognisedScalarType("FOO".into())
+            EdgeInlinePropertyBytesDdlParseError::UnrecognisedScalarType("FOO".into())
         );
     }
 
@@ -437,25 +444,31 @@ mod tests {
             "CREATE EDGE LABEL ROAD { distance FLOAT32 INLINE } CREATE EDGE LABEL X { y UINT8 INLINE }"
         )
         .unwrap_err();
-        assert_eq!(err, EdgeInlineValueDdlParseError::TrailingInput);
+        assert_eq!(err, EdgeInlinePropertyBytesDdlParseError::TrailingInput);
     }
 
     #[test]
     fn missing_braces_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD distance FLOAT32 INLINE").unwrap_err();
-        assert!(matches!(err, EdgeInlineValueDdlParseError::Expected(_)));
+        assert!(matches!(
+            err,
+            EdgeInlinePropertyBytesDdlParseError::Expected(_)
+        ));
     }
 
     #[test]
     fn empty_body_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD {}").unwrap_err();
-        assert!(matches!(err, EdgeInlineValueDdlParseError::Expected(_)));
+        assert!(matches!(
+            err,
+            EdgeInlinePropertyBytesDdlParseError::Expected(_)
+        ));
     }
 
     #[test]
     fn empty_struct_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD { stats {} INLINE }").unwrap_err();
-        assert_eq!(err, EdgeInlineValueDdlParseError::EmptyStruct);
+        assert_eq!(err, EdgeInlinePropertyBytesDdlParseError::EmptyStruct);
     }
 
     #[test]
@@ -464,7 +477,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err,
-            EdgeInlineValueDdlParseError::DuplicateField("score".into())
+            EdgeInlinePropertyBytesDdlParseError::DuplicateField("score".into())
         );
     }
 
@@ -472,7 +485,10 @@ mod tests {
     fn nested_struct_rejected() {
         let err =
             parse("CREATE EDGE LABEL ROAD { stats { nested { x UINT8 } } INLINE }").unwrap_err();
-        assert!(matches!(err, EdgeInlineValueDdlParseError::Expected(_)));
+        assert!(matches!(
+            err,
+            EdgeInlinePropertyBytesDdlParseError::Expected(_)
+        ));
     }
 
     #[test]
@@ -484,7 +500,7 @@ mod tests {
             .unwrap_err();
             assert_eq!(
                 err,
-                EdgeInlineValueDdlParseError::UnrecognisedScalarType(keyword.into())
+                EdgeInlinePropertyBytesDdlParseError::UnrecognisedScalarType(keyword.into())
             );
         }
     }
@@ -493,6 +509,6 @@ mod tests {
     fn struct_multiple_top_level_fields_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD { a { x UINT8 } INLINE, b { y UINT8 } INLINE }")
             .unwrap_err();
-        assert_eq!(err, EdgeInlineValueDdlParseError::MultipleFields);
+        assert_eq!(err, EdgeInlinePropertyBytesDdlParseError::MultipleFields);
     }
 }

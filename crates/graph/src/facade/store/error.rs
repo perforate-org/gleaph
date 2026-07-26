@@ -31,9 +31,9 @@ pub enum GraphStoreError {
     /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.
     InvalidEdgeLabelId(EdgeLabelId),
     /// Edge inline value byte width is not supported by labeled edge-inline-value storage.
-    InvalidEdgeInlineValueWidth(usize),
+    InvalidEdgeInlinePropertyBytesWidth(usize),
     /// Stored edge-inline-value bytes do not match the catalog label's configured width.
-    EdgeInlineValueWidthMismatch {
+    EdgeInlinePropertyBytesWidthMismatch {
         label: Option<EdgeLabelId>,
         expected: usize,
         actual: usize,
@@ -77,10 +77,10 @@ impl fmt::Display for GraphStoreError {
                 "edge label id {} is not a catalog edge label (MSB clear, non-zero)",
                 id.raw()
             ),
-            Self::InvalidEdgeInlineValueWidth(width) => {
+            Self::InvalidEdgeInlinePropertyBytesWidth(width) => {
                 write!(f, "edge inline value byte width {width} is not supported")
             }
-            Self::EdgeInlineValueWidthMismatch {
+            Self::EdgeInlinePropertyBytesWidthMismatch {
                 label,
                 expected,
                 actual,
@@ -121,8 +121,8 @@ impl std::error::Error for GraphStoreError {
             Self::VertexNotDetached { .. }
             | Self::EdgeNotFound { .. }
             | Self::InvalidEdgeLabelId(_)
-            | Self::InvalidEdgeInlineValueWidth(_)
-            | Self::EdgeInlineValueWidthMismatch { .. }
+            | Self::InvalidEdgeInlinePropertyBytesWidth(_)
+            | Self::EdgeInlinePropertyBytesWidthMismatch { .. }
             | Self::RemoteEdgeNotSupported
             | Self::FederatedExpandPayload { .. }
             | Self::VertexTombstoned => None,

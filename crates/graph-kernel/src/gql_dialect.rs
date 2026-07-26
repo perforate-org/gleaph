@@ -60,7 +60,7 @@ pub enum GqlDialectExtensionKind {
     /// Path-pattern extension such as `GLEAPH.COST`.
     PathExtension,
     /// Function that reads a fixed-width edge-inline-value value.
-    EdgeInlineValueFunction,
+    EdgeInlinePropertyFunction,
     /// Function that reads Graph-owned edge insertion-order metadata.
     EdgeOrderingFunction,
     /// Search subclause such as `SEARCH ... IN (VECTOR INDEX ...)`.
@@ -209,7 +209,7 @@ pub const GLEAPH_DIALECT_EXTENSIONS: &[GqlDialectExtensionSpec] = &[
     },
     GqlDialectExtensionSpec {
         canonical_name: GLEAPH_WEIGHT,
-        kind: GqlDialectExtensionKind::EdgeInlineValueFunction,
+        kind: GqlDialectExtensionKind::EdgeInlinePropertyFunction,
         status: GqlDialectExtensionStatus::Compatibility,
         owner: GqlDialectExtensionOwner::GraphExecution,
         doc_anchor: "design/gql/extension-syntax.md#edge-inline-properties",
@@ -223,21 +223,21 @@ pub const GLEAPH_DIALECT_EXTENSIONS: &[GqlDialectExtensionSpec] = &[
     },
     GqlDialectExtensionSpec {
         canonical_name: GLEAPH_VECTOR_L2_SQUARED,
-        kind: GqlDialectExtensionKind::EdgeInlineValueFunction,
+        kind: GqlDialectExtensionKind::EdgeInlinePropertyFunction,
         status: GqlDialectExtensionStatus::Compatibility,
         owner: GqlDialectExtensionOwner::GraphPlannerIntegration,
         doc_anchor: "design/gql/extension-syntax.md#edge-inline-value-vector-predicates",
     },
     GqlDialectExtensionSpec {
         canonical_name: GLEAPH_VECTOR_COSINE_DISTANCE,
-        kind: GqlDialectExtensionKind::EdgeInlineValueFunction,
+        kind: GqlDialectExtensionKind::EdgeInlinePropertyFunction,
         status: GqlDialectExtensionStatus::Compatibility,
         owner: GqlDialectExtensionOwner::GraphPlannerIntegration,
         doc_anchor: "design/gql/extension-syntax.md#edge-inline-value-vector-predicates",
     },
     GqlDialectExtensionSpec {
         canonical_name: GLEAPH_VECTOR_DOT,
-        kind: GqlDialectExtensionKind::EdgeInlineValueFunction,
+        kind: GqlDialectExtensionKind::EdgeInlinePropertyFunction,
         status: GqlDialectExtensionStatus::Compatibility,
         owner: GqlDialectExtensionOwner::GraphPlannerIntegration,
         doc_anchor: "design/gql/extension-syntax.md#edge-inline-value-vector-predicates",
@@ -301,10 +301,10 @@ pub fn operational_procedures() -> impl Iterator<Item = &'static GqlDialectExten
 }
 
 /// Edge-inline-value functions declared in the manifest.
-pub fn edge_inline_value_functions() -> impl Iterator<Item = &'static GqlDialectExtensionSpec> {
+pub fn edge_inline_property_functions() -> impl Iterator<Item = &'static GqlDialectExtensionSpec> {
     GLEAPH_DIALECT_EXTENSIONS
         .iter()
-        .filter(|spec| spec.kind == GqlDialectExtensionKind::EdgeInlineValueFunction)
+        .filter(|spec| spec.kind == GqlDialectExtensionKind::EdgeInlinePropertyFunction)
 }
 
 /// Edge-ordering functions declared in the manifest.
@@ -371,17 +371,20 @@ mod tests {
     }
 
     #[test]
-    fn sequence_is_edge_ordering_not_inline_value() {
+    fn sequence_is_edge_ordering_not_inline_property() {
         let spec = GLEAPH_DIALECT_EXTENSIONS
             .iter()
             .find(|spec| spec.canonical_name == GLEAPH_SEQUENCE)
             .expect("GLEAPH.SEQUENCE in manifest");
         assert_eq!(spec.kind, GqlDialectExtensionKind::EdgeOrderingFunction);
-        assert_ne!(spec.kind, GqlDialectExtensionKind::EdgeInlineValueFunction);
+        assert_ne!(
+            spec.kind,
+            GqlDialectExtensionKind::EdgeInlinePropertyFunction
+        );
     }
 
     #[test]
-    fn vector_entries_are_edge_inline_value_functions() {
+    fn vector_entries_are_edge_inline_property_functions() {
         for name in [
             GLEAPH_VECTOR_L2_SQUARED,
             GLEAPH_VECTOR_COSINE_DISTANCE,
@@ -391,7 +394,10 @@ mod tests {
                 .iter()
                 .find(|spec| spec.canonical_name == name)
                 .unwrap_or_else(|| panic!("{name:?} in manifest"));
-            assert_eq!(spec.kind, GqlDialectExtensionKind::EdgeInlineValueFunction);
+            assert_eq!(
+                spec.kind,
+                GqlDialectExtensionKind::EdgeInlinePropertyFunction
+            );
         }
     }
 
@@ -469,7 +475,7 @@ mod tests {
     #[test]
     fn helper_groups_are_consistent_with_manifest() {
         assert_eq!(operational_procedures().count(), 3);
-        assert_eq!(edge_inline_value_functions().count(), 4);
+        assert_eq!(edge_inline_property_functions().count(), 4);
         assert_eq!(edge_ordering_functions().count(), 1);
         assert_eq!(planned_extensions().count(), 1);
     }

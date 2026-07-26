@@ -1,7 +1,7 @@
 use super::error::PlanMutationError;
 use super::expr_evaluator::{MutationPropertyExprEvaluation, MutationPropertyExprEvaluator};
 use super::gleaph_finalize;
-use crate::edge_inline_value_scalar_codec::encode_edge_inline_value_scalar;
+use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar;
 use crate::facade::mutation_executor::{GraphMutationExecutor, insert_vertex_with_async};
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
@@ -13,7 +13,7 @@ use gleaph_gql_ic::{UniqueKeyOutcome, encode_unique_value};
 use gleaph_gql_planner::plan::{
     PhysicalPlan, PlanOp, ProjectColumn, RemovePlanItem, SetPlanItem, Str,
 };
-use gleaph_graph_kernel::entry::EdgeInlineValueProfile;
+use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
 use gleaph_graph_kernel::entry::{ConstraintNameId, EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{
@@ -600,9 +600,9 @@ fn execute_set_item(
             if let Some(edge) = bindings.edges.get(variable.as_ref()) {
                 reject_struct_inline_mutation(execution, *edge)?;
                 if is_inline_edge_property(execution, *edge, property_id) {
-                    let inline_value_bytes =
+                    let inline_property_bytes =
                         encode_inline_edge_property(execution, *edge, property_id, &value)?;
-                    store.update_edge_inline_value_at_handle(*edge, &inline_value_bytes)?;
+                    store.update_edge_inline_property_at_handle(*edge, &inline_property_bytes)?;
                 } else {
                     store
                         .set_edge_property(*edge, property_id, value)
@@ -687,13 +687,13 @@ fn execute_set_all_properties(
     }
 
     if let Some(edge) = bindings.edges.get(variable.as_ref()) {
-        let (inline_value_bytes, sidecar_fields) =
+        let (inline_property_bytes, sidecar_fields) =
             prepare_edge_record_replacement(execution, *edge, fields)?;
         for (property_id, _) in store.edge_properties(*edge) {
             store.remove_edge_property(*edge, property_id);
         }
-        if let Some(bytes) = inline_value_bytes {
-            store.update_edge_inline_value_at_handle(*edge, &bytes)?;
+        if let Some(bytes) = inline_property_bytes {
+            store.update_edge_inline_property_at_handle(*edge, &bytes)?;
         }
         for (property_id, value) in sidecar_fields {
             store
@@ -1152,8 +1152,8 @@ fn collect_detach_delete_edge_label_deltas(
 /// Packed fixed-width payload bytes plus the profile used to encode them.
 #[derive(Clone, Debug)]
 struct InlineScalarPayload {
-    inline_value_bytes: Vec<u8>,
-    inline_value_profile: EdgeInlineValueProfile,
+    inline_property_bytes: Vec<u8>,
+    inline_property_profile: EdgeInlinePropertyProfile,
 }
 
 /// Preflight every sidecar property: reserved property ids are rejected and the value must be
@@ -1198,7 +1198,7 @@ fn classify_edge_assignments(
     let (inline_property_id, profile) = match inline_schema {
         ResolvedInlineSchema::Scalar { property_id } => (
             property_id,
-            execution.resolved_edge_inline_value_profile(label_id),
+            execution.resolved_edge_inline_property_profile(label_id),
         ),
         ResolvedInlineSchema::Struct { property_id, .. } => {
             return Err(PlanMutationError::UnsupportedInlineStructMutation {
@@ -1208,22 +1208,22 @@ fn classify_edge_assignments(
         }
     };
 
-    let mut inline_value: Option<Value> = None;
+    let mut inline_property: Option<Value> = None;
     let mut sidecar = Vec::new();
     for (property_id, value) in assignments {
         if property_id == inline_property_id {
-            if inline_value.is_some() {
+            if inline_property.is_some() {
                 return Err(PlanMutationError::DuplicateInlinePropertyAssignment {
                     property: property_name_or_id(execution, inline_property_id),
                 });
             }
-            inline_value = Some(value);
+            inline_property = Some(value);
         } else {
             sidecar.push((property_id, value));
         }
     }
 
-    let Some(value) = inline_value else {
+    let Some(value) = inline_property else {
         return Err(PlanMutationError::MissingRequiredInlineProperty {
             label: label_name_or_id(execution, label_id),
             property: property_name_or_id(execution, inline_property_id),
@@ -1236,17 +1236,18 @@ fn classify_edge_assignments(
         });
     }
 
-    let inline_value_bytes = encode_edge_inline_value_scalar(&profile, &value).map_err(|err| {
-        PlanMutationError::InvalidInlinePropertyValue {
-            property: property_name_or_id(execution, inline_property_id),
-            reason: err.to_string(),
-        }
-    })?;
+    let inline_property_bytes =
+        encode_edge_inline_property_scalar(&profile, &value).map_err(|err| {
+            PlanMutationError::InvalidInlinePropertyValue {
+                property: property_name_or_id(execution, inline_property_id),
+                reason: err.to_string(),
+            }
+        })?;
 
     Ok((
         Some(InlineScalarPayload {
-            inline_value_bytes,
-            inline_value_profile: profile,
+            inline_property_bytes,
+            inline_property_profile: profile,
         }),
         validate_sidecar_properties(execution, sidecar)?,
     ))
@@ -1329,8 +1330,8 @@ fn encode_inline_edge_property(
             property: property_name_or_id(execution, property_id),
         });
     }
-    let profile = execution.resolved_edge_inline_value_profile(label_id);
-    encode_edge_inline_value_scalar(&profile, value).map_err(|err| {
+    let profile = execution.resolved_edge_inline_property_profile(label_id);
+    encode_edge_inline_property_scalar(&profile, value).map_err(|err| {
         PlanMutationError::InvalidInlinePropertyValue {
             property: property_name_or_id(execution, property_id),
             reason: err.to_string(),
@@ -1361,7 +1362,7 @@ fn prepare_edge_record_replacement(
         });
     }
 
-    let mut inline_value: Option<Value> = None;
+    let mut inline_property: Option<Value> = None;
     let mut sidecar = Vec::new();
 
     for (name, value) in fields {
@@ -1369,21 +1370,21 @@ fn prepare_edge_record_replacement(
         if let Some(ref schema) = inline
             && property_id == schema.property_id()
         {
-            if inline_value.is_some() {
+            if inline_property.is_some() {
                 return Err(PlanMutationError::DuplicateInlinePropertyAssignment {
                     property: property_name_or_id(execution, schema.property_id()),
                 });
             }
-            inline_value = Some(value);
+            inline_property = Some(value);
             continue;
         }
         sidecar.push((property_id, value));
     }
 
-    let inline_value_bytes = if let Some(schema) = inline {
+    let inline_property_bytes = if let Some(schema) = inline {
         let expected_inline_id = schema.property_id();
-        let profile = execution.resolved_edge_inline_value_profile(label.unwrap());
-        let Some(value) = inline_value else {
+        let profile = execution.resolved_edge_inline_property_profile(label.unwrap());
+        let Some(value) = inline_property else {
             return Err(PlanMutationError::MissingRequiredInlineProperty {
                 label: label
                     .and_then(|id| execution.resolved_edge_label_name(id))
@@ -1397,7 +1398,7 @@ fn prepare_edge_record_replacement(
             });
         }
         Some(
-            encode_edge_inline_value_scalar(&profile, &value).map_err(|err| {
+            encode_edge_inline_property_scalar(&profile, &value).map_err(|err| {
                 PlanMutationError::InvalidInlinePropertyValue {
                     property: property_name_or_id(execution, expected_inline_id),
                     reason: err.to_string(),
@@ -1409,7 +1410,7 @@ fn prepare_edge_record_replacement(
     };
 
     Ok((
-        inline_value_bytes,
+        inline_property_bytes,
         validate_sidecar_properties(execution, sidecar)?,
     ))
 }
@@ -1423,12 +1424,12 @@ fn insert_directed_edge_with_inline(
     sidecar_properties: Vec<(PropertyId, Value)>,
 ) -> Result<EdgeHandle, PlanMutationError> {
     if let Some(payload) = inline_payload {
-        GraphMutationExecutor::insert_directed_edge_with_inline_value_bytes(
+        GraphMutationExecutor::insert_directed_edge_with_inline_property_bytes(
             store,
             source,
             target,
             label,
-            &payload.inline_value_bytes,
+            &payload.inline_property_bytes,
             sidecar_properties,
         )
         .map_err(PlanMutationError::from)
@@ -1453,12 +1454,12 @@ fn insert_undirected_edge_with_inline(
     sidecar_properties: Vec<(PropertyId, Value)>,
 ) -> Result<EdgeHandle, PlanMutationError> {
     if let Some(payload) = inline_payload {
-        GraphMutationExecutor::insert_undirected_edge_with_inline_value_bytes(
+        GraphMutationExecutor::insert_undirected_edge_with_inline_property_bytes(
             store,
             endpoint_a,
             endpoint_b,
             label,
-            &payload.inline_value_bytes,
+            &payload.inline_property_bytes,
             sidecar_properties,
         )
         .map_err(PlanMutationError::from)
@@ -1554,7 +1555,7 @@ mod tests {
     use super::*;
     use crate::facade::canonical_undirected_owner;
     use crate::gql_execution_context::GqlExecutionContext;
-    use crate::test_labels::install_test_edge_inline_value_profile;
+    use crate::test_labels::install_test_edge_inline_property_profile;
     use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
     use gleaph_gql::types::Decimal;
     use gleaph_gql::{ExtensionValue, Value};
@@ -3063,9 +3064,9 @@ mod tests {
     }
 
     #[test]
-    fn call_finalize_bulk_ingest_preserves_hot_forward_inline_values() {
+    fn call_finalize_bulk_ingest_preserves_hot_forward_inline_properties() {
         use gleaph_gql_planner::plan::YieldColumn;
-        use ic_stable_lara::labeled::LabeledEdgeInlineValueBatchScratch;
+        use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
 
         let store = GraphStore::new();
         let src = setup_finalize_call_hub_graph(&store);
@@ -3094,10 +3095,10 @@ mod tests {
         );
 
         let road = crate::test_labels::edge_label_id_for_name("GqlFinalizeRoad");
-        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
+        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
         let mut edge_count = 0;
         store
-            .visit_directed_out_edge_inline_value_batches_for_label(
+            .visit_directed_out_edge_inline_property_batches_for_label(
                 src,
                 road,
                 OutEdgeOrder::Descending,
@@ -3110,15 +3111,15 @@ mod tests {
 
     fn setup_finalize_call_hub_graph(store: &GraphStore) -> VertexId {
         use gleaph_graph_kernel::entry::{
-            EdgeInlineValueProfile, EdgeWeightProfile, WeightEncoding,
+            EdgeInlinePropertyProfile, EdgeWeightProfile, WeightEncoding,
         };
 
         let src = store.insert_vertex().expect("src");
         let hub = store.insert_vertex().expect("hub");
         let label = crate::test_labels::edge_label_id_for_name("GqlFinalizeRoad");
-        install_test_edge_inline_value_profile(
+        install_test_edge_inline_property_profile(
             label,
-            EdgeInlineValueProfile::from(EdgeWeightProfile {
+            EdgeInlinePropertyProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
         );
@@ -3129,7 +3130,7 @@ mod tests {
         }
         for &prefix in &prefixes {
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     prefix,
                     hub,
                     Some(label),
@@ -3139,7 +3140,7 @@ mod tests {
         }
         for (i, &prefix) in prefixes.iter().enumerate() {
             store
-                .insert_directed_edge_with_inline_value_bytes(
+                .insert_directed_edge_with_inline_property_bytes(
                     src,
                     prefix,
                     Some(label),
@@ -3218,22 +3219,22 @@ mod tests {
     // --- ADR 0034 Slice 22: inline edge scalar mutation packing ---
 
     fn install_inline_road_fixture() -> (EdgeLabelId, PropertyId) {
-        use gleaph_graph_kernel::entry::EdgeInlineValueEncoding;
+        use gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding;
 
         let label = crate::test_labels::edge_label_id_for_name("InlineRoad");
         let property = crate::test_labels::property_id_for_name("distance");
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlineValueEncoding::RawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
         crate::test_labels::install_test_edge_inline_property(label, property);
         (label, property)
     }
 
-    fn find_in_edge_inline_value(
+    fn find_in_edge_inline_property(
         store: &GraphStore,
         target: VertexId,
         source: VertexId,
@@ -3244,10 +3245,10 @@ mod tests {
             .ok()?
             .into_iter()
             .find(|edge| edge.neighbor_vid() == source)
-            .map(|edge| edge.inline_value_bytes().to_vec())
+            .map(|edge| edge.inline_property_bytes().to_vec())
     }
 
-    fn find_out_edge_inline_value(
+    fn find_out_edge_inline_property(
         store: &GraphStore,
         source: VertexId,
         target: VertexId,
@@ -3258,10 +3259,10 @@ mod tests {
             .ok()?
             .into_iter()
             .find(|edge| edge.neighbor_vid() == target)
-            .map(|edge| edge.inline_value_bytes().to_vec())
+            .map(|edge| edge.inline_property_bytes().to_vec())
     }
 
-    fn find_undirected_edge_inline_value(
+    fn find_undirected_edge_inline_property(
         store: &GraphStore,
         endpoint: VertexId,
         other: VertexId,
@@ -3272,7 +3273,7 @@ mod tests {
             .ok()?
             .into_iter()
             .find(|edge| edge.neighbor_vid() == other)
-            .map(|edge| edge.inline_value_bytes().to_vec())
+            .map(|edge| edge.inline_property_bytes().to_vec())
     }
 
     fn inline_edge_scalar_insert_directed() {
@@ -3314,7 +3315,7 @@ mod tests {
         let b = bindings.vertices["b"];
 
         assert_eq!(
-            find_out_edge_inline_value(&store, a, b),
+            find_out_edge_inline_property(&store, a, b),
             Some(7u16.to_le_bytes().to_vec())
         );
         // Sidecar must not contain the inline property.
@@ -3362,7 +3363,7 @@ mod tests {
 
         // Logical direction is b -> a; physical reverse mirror carries the payload too.
         assert_eq!(
-            find_out_edge_inline_value(&store, b, a),
+            find_out_edge_inline_property(&store, b, a),
             Some(7u16.to_le_bytes().to_vec())
         );
     }
@@ -3407,11 +3408,11 @@ mod tests {
         let b = bindings.vertices["b"];
 
         assert_eq!(
-            find_undirected_edge_inline_value(&store, a, b),
+            find_undirected_edge_inline_property(&store, a, b),
             Some(7u16.to_le_bytes().to_vec())
         );
         assert_eq!(
-            find_undirected_edge_inline_value(&store, b, a),
+            find_undirected_edge_inline_property(&store, b, a),
             Some(7u16.to_le_bytes().to_vec())
         );
     }
@@ -3463,12 +3464,12 @@ mod tests {
         let b = bindings.vertices["b"];
 
         assert_eq!(
-            find_out_edge_inline_value(&store, a, b),
+            find_out_edge_inline_property(&store, a, b),
             Some(9u16.to_le_bytes().to_vec())
         );
         // Reverse mirror was updated by the same commit.
         assert_eq!(
-            find_in_edge_inline_value(&store, b, a),
+            find_in_edge_inline_property(&store, b, a),
             Some(9u16.to_le_bytes().to_vec())
         );
         assert_eq!(store.edge_properties(bindings.edges["e"]), Vec::new());
@@ -3521,7 +3522,7 @@ mod tests {
         let b = bindings.vertices["b"];
 
         assert_eq!(
-            find_out_edge_inline_value(&store, a, b),
+            find_out_edge_inline_property(&store, a, b),
             Some(7u16.to_le_bytes().to_vec())
         );
         let sidecar = store.edge_properties(bindings.edges["e"]);
@@ -3771,7 +3772,7 @@ mod tests {
         let b = bindings.vertices["b"];
 
         assert_eq!(
-            find_out_edge_inline_value(&store, a, b),
+            find_out_edge_inline_property(&store, a, b),
             Some(9u16.to_le_bytes().to_vec())
         );
         let sidecar = store.edge_properties(bindings.edges["e"]);
@@ -3831,7 +3832,7 @@ mod tests {
         let a = VertexId::from(0u32);
         let b = VertexId::from(1u32);
         assert_eq!(
-            find_out_edge_inline_value(&store, a, b),
+            find_out_edge_inline_property(&store, a, b),
             Some(7u16.to_le_bytes().to_vec())
         );
     }
@@ -3877,7 +3878,10 @@ mod tests {
         let b = bindings.vertices["b"];
 
         // No payload profile installed, so the edge is inserted with empty payload.
-        assert_eq!(find_out_edge_inline_value(&store, a, b), Some(Vec::new()));
+        assert_eq!(
+            find_out_edge_inline_property(&store, a, b),
+            Some(Vec::new())
+        );
         assert_eq!(
             store.edge_properties(bindings.edges["e"]),
             vec![(weight, Value::Int64(7))]
@@ -3966,7 +3970,7 @@ mod tests {
         // Vertices were created, but no edge or payload must exist.
         let a = VertexId::from(0u32);
         let b = VertexId::from(1u32);
-        assert_eq!(find_out_edge_inline_value(&store, a, b), None);
+        assert_eq!(find_out_edge_inline_property(&store, a, b), None);
         assert!(store.directed_out_edges(a).unwrap().is_empty());
     }
 
@@ -4054,7 +4058,7 @@ mod tests {
 
         // Both payload and sidecar must remain unchanged.
         assert_eq!(
-            find_out_edge_inline_value(&store, a, b),
+            find_out_edge_inline_property(&store, a, b),
             Some(7u16.to_le_bytes().to_vec())
         );
         assert_eq!(
@@ -4066,15 +4070,15 @@ mod tests {
     // --- ADR 0034 Slice 25: inline edge STRUCT mutation must stay fail-closed ---
 
     fn install_inline_struct_road_fixture() -> (EdgeLabelId, PropertyId) {
-        use gleaph_graph_kernel::entry::EdgeInlineValueEncoding;
+        use gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding;
 
         let label = crate::test_labels::edge_label_id_for_name("InlineStructRoad");
         let property = crate::test_labels::property_id_for_name("stats");
-        crate::test_labels::install_test_edge_inline_value_profile(
+        crate::test_labels::install_test_edge_inline_property_profile(
             label,
-            EdgeInlineValueProfile {
+            EdgeInlinePropertyProfile {
                 byte_width: 16,
-                encoding: EdgeInlineValueEncoding::RawBytes,
+                encoding: EdgeInlinePropertyEncoding::RawBytes,
             },
         );
         crate::test_labels::install_test_edge_inline_struct_property(
@@ -4084,25 +4088,25 @@ mod tests {
                 (
                     "score".to_string(),
                     0,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 4,
-                        encoding: EdgeInlineValueEncoding::F32,
+                        encoding: EdgeInlinePropertyEncoding::F32,
                     },
                 ),
                 (
                     "confidence".to_string(),
                     4,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 4,
-                        encoding: EdgeInlineValueEncoding::F32,
+                        encoding: EdgeInlinePropertyEncoding::F32,
                     },
                 ),
                 (
                     "updated_at".to_string(),
                     8,
-                    EdgeInlineValueProfile {
+                    EdgeInlinePropertyProfile {
                         byte_width: 8,
-                        encoding: EdgeInlineValueEncoding::RawU64,
+                        encoding: EdgeInlinePropertyEncoding::RawU64,
                     },
                 ),
             ],
@@ -4125,7 +4129,7 @@ mod tests {
         let a = store.insert_vertex().expect("a");
         let b = store.insert_vertex().expect("b");
         let handle = store
-            .insert_directed_edge_with_inline_value_bytes(
+            .insert_directed_edge_with_inline_property_bytes(
                 a,
                 b,
                 Some(label),

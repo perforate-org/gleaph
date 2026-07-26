@@ -9,7 +9,7 @@ use crate::{
     },
     lara::{
         edge::{EdgeStore, counts::SegmentEdgeCounts, segment_tree_leaf_count},
-        edge_inline_value::EdgeInlineValueStore,
+        edge_inline_property::EdgeInlinePropertyBytesStore,
         operation_error::LaraOperationError,
         vertex::VertexStore,
     },
@@ -49,17 +49,18 @@ where
             if candidate.edge_slot_index_raw() != needle.edge_slot_index_raw() {
                 return false;
             }
-            let width = needle.edge_inline_value_byte_width();
+            let width = needle.edge_inline_property_byte_width();
             if width != 0 {
-                return candidate.edge_inline_value_byte_width() == width
-                    && candidate.edge_inline_value_bytes() == needle.edge_inline_value_bytes();
+                return candidate.edge_inline_property_byte_width() == width
+                    && candidate.edge_inline_property_bytes()
+                        == needle.edge_inline_property_bytes();
             }
             return true;
         }
-        let width = needle.edge_inline_value_byte_width();
+        let width = needle.edge_inline_property_byte_width();
         if width != 0 {
-            return candidate.edge_inline_value_byte_width() == width
-                && candidate.edge_inline_value_bytes() == needle.edge_inline_value_bytes();
+            return candidate.edge_inline_property_byte_width() == width
+                && candidate.edge_inline_property_bytes() == needle.edge_inline_property_bytes();
         }
         candidate == needle
     }
@@ -76,10 +77,10 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
-        inline_value_slab: M,
+        inline_property_bytes_slab: M,
         value_free_spans: M,
         value_free_span_by_start: M,
-        payload_log: M,
+        inline_property_bytes_log: M,
         value_blobs: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
@@ -95,10 +96,10 @@ where
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            inline_value_slab,
+            inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            payload_log,
+            inline_property_bytes_log,
             value_blobs,
             capacities,
             default_label,
@@ -121,10 +122,10 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
-        inline_value_slab: M,
+        inline_property_bytes_slab: M,
         value_free_spans: M,
         value_free_span_by_start: M,
-        payload_log: M,
+        inline_property_bytes_log: M,
         value_blobs: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
@@ -153,18 +154,18 @@ where
                 segment_size,
                 segment_size,
             )?,
-            values: EdgeInlineValueStore::new(
-                inline_value_slab,
-                payload_log,
+            values: EdgeInlinePropertyBytesStore::new(
+                inline_property_bytes_slab,
+                inline_property_bytes_log,
                 value_blobs,
                 value_free_spans,
                 value_free_span_by_start,
-                capacities.payload_bytes,
+                capacities.inline_property_bytes,
                 segment_count,
             )?,
             default_label,
             last_bucket_lookup: Cell::new(None),
-            payload_compaction_deferred: Cell::new(false),
+            inline_property_bytes_compaction_deferred: Cell::new(false),
             bucket_lookup_cache: std::array::from_fn(|_| Cell::new(None)),
             _marker: PhantomData,
         })
@@ -182,10 +183,10 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
-        inline_value_slab: M,
+        inline_property_bytes_slab: M,
         value_free_spans: M,
         value_free_span_by_start: M,
-        payload_log: M,
+        inline_property_bytes_log: M,
         value_blobs: M,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
@@ -194,7 +195,7 @@ where
         // graph-owned composite that must be created or reopened together.
         // `value_blobs` is excluded: it may legitimately stay empty on reopen
         // (no wide payloads), and its Fresh-vs-Reopen asymmetry is enforced
-        // inside `EdgeInlineValueStore::init`.
+        // inside `EdgeInlinePropertyBytesStore::init`.
         match crate::classify_composite_init([
             vertices.size(),
             buckets.size(),
@@ -206,10 +207,10 @@ where
             edge_span_meta.size(),
             edge_free_spans.size(),
             edge_free_span_by_start.size(),
-            inline_value_slab.size(),
+            inline_property_bytes_slab.size(),
             value_free_spans.size(),
             value_free_span_by_start.size(),
-            payload_log.size(),
+            inline_property_bytes_log.size(),
         ]) {
             crate::CompositeInit::Partial => return Err(InitError::PartialLayout),
             crate::CompositeInit::Fresh | crate::CompositeInit::Reopen => {}
@@ -238,19 +239,19 @@ where
             )
             .map_err(InitError::Buckets)?,
             edges,
-            values: EdgeInlineValueStore::init(
-                inline_value_slab,
-                payload_log,
+            values: EdgeInlinePropertyBytesStore::init(
+                inline_property_bytes_slab,
+                inline_property_bytes_log,
                 value_blobs,
                 value_free_spans,
                 value_free_span_by_start,
-                capacities.payload_bytes,
+                capacities.inline_property_bytes,
                 edge_segment_count,
             )
-            .map_err(InitError::Payloads)?,
+            .map_err(InitError::InlinePropertyBytes)?,
             default_label,
             last_bucket_lookup: Cell::new(None),
-            payload_compaction_deferred: Cell::new(false),
+            inline_property_bytes_compaction_deferred: Cell::new(false),
             bucket_lookup_cache: std::array::from_fn(|_| Cell::new(None)),
             _marker: PhantomData,
         })
@@ -271,7 +272,7 @@ where
     }
 
     /// Returns the stable edge-inline-value store.
-    pub fn values(&self) -> &EdgeInlineValueStore<M> {
+    pub fn values(&self) -> &EdgeInlinePropertyBytesStore<M> {
         &self.values
     }
 
@@ -543,7 +544,7 @@ mod tests {
             crate::labeled::InitialCapacities {
                 bucket_slots: 7,
                 edge_slots: 11,
-                payload_bytes: 13,
+                inline_property_bytes: 13,
             },
             BucketLabelKey::directed_from_index(1),
         )

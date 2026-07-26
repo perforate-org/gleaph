@@ -115,7 +115,7 @@ pub struct InitialCapacities {
     /// Initial number of edge slots per orientation.
     pub edge_slots: u64,
     /// Initial byte capacity of the inline-payload slab per orientation.
-    pub payload_bytes: u64,
+    pub inline_property_bytes: u64,
 }
 
 impl InitialCapacities {
@@ -124,7 +124,7 @@ impl InitialCapacities {
         Self {
             bucket_slots: value,
             edge_slots: value,
-            payload_bytes: value,
+            inline_property_bytes: value,
         }
     }
 }
@@ -146,9 +146,10 @@ pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem}
 pub use graph::BucketEntryPosition;
 pub use graph::{EdgeRemoval, EdgeSlotMove};
 pub use graph::{
-    HybridOverflowEdgeReplay, InitError as LabeledGraphInitError, LabeledEdgeInlineValueBatch,
-    LabeledEdgeInlineValueBatchScratch, LabeledLaraGraph, LabeledOperationError,
-    LabeledOutEdgesIter, LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch, OutEdgeOrder,
+    HybridOverflowEdgeReplay, InitError as LabeledGraphInitError, LabeledEdgeInlinePropertyBatch,
+    LabeledEdgeInlinePropertyBatchScratch, LabeledInlinePropertyValueBatch,
+    LabeledInlinePropertyValueBatchScratch, LabeledLaraGraph, LabeledOperationError,
+    LabeledOutEdgesIter, OutEdgeOrder,
 };
 pub use graph::{LabelBucketPlacementInfo, LeafBucketPlacementStats};
 pub use graph::{ScalarInsertLocation, ScalarInsertStorage};

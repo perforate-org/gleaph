@@ -13,7 +13,7 @@ pub(super) struct EdgeInsertSpec<'a> {
     pub target_vertex_id: VertexId,
     pub catalog_label: Option<EdgeLabelId>,
     pub undirected: bool,
-    pub inline_value_bytes: &'a [u8],
+    pub inline_property_bytes: &'a [u8],
     pub canonical: EdgeHandle,
 }
 
@@ -53,7 +53,7 @@ impl GraphStore {
                 alias_spec.target_vertex_id,
                 alias_spec.catalog_label,
                 alias_spec.undirected,
-                alias_spec.inline_value_bytes,
+                alias_spec.inline_property_bytes,
                 alias_spec.canonical,
             )?;
         }
@@ -114,8 +114,8 @@ impl GraphStore {
                         canonical.label_id,
                         |candidate| {
                             candidate.neighbor_vid() == canonical.owner_vertex_id
-                                && candidate.edge_inline_value_bytes()
-                                    == edge.edge_inline_value_bytes()
+                                && candidate.edge_inline_property_bytes()
+                                    == edge.edge_inline_property_bytes()
                         },
                     )
                 })?;
@@ -163,7 +163,7 @@ impl GraphStore {
             spec.target_vertex_id,
             spec.catalog_label,
             spec.undirected,
-            spec.inline_value_bytes,
+            spec.inline_property_bytes,
             spec.canonical,
         )?;
         self.run_post_edge_insert_maintenance()
@@ -176,7 +176,7 @@ pub(super) fn journal_edge_insert(
     _target_vertex_id: VertexId,
     _catalog_label: Option<EdgeLabelId>,
     _undirected: bool,
-    _inline_value_bytes: &[u8],
+    _inline_property_bytes: &[u8],
     _canonical: EdgeHandle,
 ) -> Result<(), GraphStoreError> {
     Ok(())

@@ -1,26 +1,28 @@
 //! Edge inline payload updates (schema from router wire per ADR 0008).
 
 use gleaph_graph_kernel::entry::{
-    EdgeInlineValueProfile, EdgeLabelId, EdgeTarget, EdgeWeightProfile,
+    EdgeInlinePropertyProfile, EdgeLabelId, EdgeTarget, EdgeWeightProfile,
 };
 
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-use super::helpers::{catalog_edge_label_from_wire, validate_edge_inline_value_bytes_for_label};
+use super::helpers::{catalog_edge_label_from_wire, validate_edge_inline_property_bytes_for_label};
 use ic_stable_lara::traits::CsrEdge;
 
 impl GraphStore {
     pub fn edge_label_weight_profile(&self, label: EdgeLabelId) -> Option<EdgeWeightProfile> {
-        let profile = crate::edge_inline_value_schema::lookup_edge_inline_value_profile(label);
+        let profile =
+            crate::edge_inline_property_schema::lookup_edge_inline_property_profile(label);
         profile.to_weight_profile()
     }
 
-    pub fn edge_label_inline_value_profile(
+    pub fn edge_label_inline_property_profile(
         &self,
         label: EdgeLabelId,
-    ) -> Option<EdgeInlineValueProfile> {
-        let profile = crate::edge_inline_value_schema::lookup_edge_inline_value_profile(label);
+    ) -> Option<EdgeInlinePropertyProfile> {
+        let profile =
+            crate::edge_inline_property_schema::lookup_edge_inline_property_profile(label);
         if profile.required_byte_width() == 0 {
             None
         } else {
@@ -29,13 +31,13 @@ impl GraphStore {
     }
 
     /// Updates the inline edge-inline-value bytes at `handle`.
-    pub(super) fn commit_update_edge_inline_value_at_handle(
+    pub(super) fn commit_update_edge_inline_property_at_handle(
         &self,
         handle: EdgeHandle,
-        inline_value_bytes: &[u8],
+        inline_property_bytes: &[u8],
     ) -> Result<(), GraphStoreError> {
         let catalog_label = catalog_edge_label_from_wire(handle.label_id);
-        validate_edge_inline_value_bytes_for_label(catalog_label, inline_value_bytes)?;
+        validate_edge_inline_property_bytes_for_label(catalog_label, inline_property_bytes)?;
 
         let reverse_canonical = self.canonical_reverse_in_edge_handle(handle);
         let forward = if reverse_canonical != handle {
@@ -51,11 +53,11 @@ impl GraphStore {
                 label_id: forward.label_id,
                 slot_index: forward.slot_index.raw(),
             })?;
-        let new_edge = edge.with_inline_value_bytes(inline_value_bytes);
+        let new_edge = edge.with_inline_property_bytes(inline_property_bytes);
 
         let mut updated = self
             .with_graph_mut(|graph| {
-                graph.update_forward_edge_inline_value_at_slot(
+                graph.update_forward_edge_inline_property_at_slot(
                     forward.owner_vertex_id,
                     forward.label_id,
                     forward.slot_index.raw(),
@@ -74,7 +76,7 @@ impl GraphStore {
                 {
                     updated |= self
                         .with_graph_mut(|graph| {
-                            graph.update_reverse_edge_inline_value_at_slot(
+                            graph.update_reverse_edge_inline_property_at_slot(
                                 reverse.owner_vertex_id,
                                 reverse.label_id,
                                 reverse.slot_index.raw(),
@@ -93,7 +95,7 @@ impl GraphStore {
             {
                 updated |= self
                     .with_graph_mut(|graph| {
-                        graph.update_forward_edge_inline_value_at_slot(
+                        graph.update_forward_edge_inline_property_at_slot(
                             alias.owner_vertex_id,
                             alias.label_id,
                             alias.slot_index.raw(),
@@ -106,7 +108,7 @@ impl GraphStore {
             let reverse = self.canonical_reverse_in_edge_handle(handle);
             updated = self
                 .with_graph_mut(|graph| {
-                    graph.update_reverse_edge_inline_value_at_slot(
+                    graph.update_reverse_edge_inline_property_at_slot(
                         reverse.owner_vertex_id,
                         reverse.label_id,
                         reverse.slot_index.raw(),

@@ -7,7 +7,7 @@ use crate::plan::{
 };
 
 use super::helpers::{
-    encode_conditional_candidate, encode_edge_inline_value_predicate,
+    encode_conditional_candidate, encode_edge_inline_property_predicate,
     encode_edge_inline_vector_predicate, encode_index_scan_spec, encode_indexed_edge_equality,
     encode_remove_item, encode_scan_value, encode_yield_column, opt_edge_label_str,
     opt_node_label_str, opt_str_opt, opt_str_slice, shortest_mode_to_wire, var_len_to_wire,
@@ -133,7 +133,7 @@ impl Encoder {
                 label_expr,
                 var_len,
                 indexed_edge_equality,
-                edge_inline_value_predicate,
+                edge_inline_property_predicate,
                 edge_inline_vector_predicate,
                 edge_property_projection,
                 dst_property_projection,
@@ -152,8 +152,8 @@ impl Encoder {
                 label_expr: opt_label_expr_id(self, label_expr.as_ref())?,
                 var_len: var_len.map(var_len_to_wire),
                 indexed_edge_equality: encode_indexed_edge_equality(indexed_edge_equality)?,
-                edge_inline_value_predicate: encode_edge_inline_value_predicate(
-                    edge_inline_value_predicate,
+                edge_inline_property_predicate: encode_edge_inline_property_predicate(
+                    edge_inline_property_predicate,
                 )?,
                 edge_inline_vector_predicate: encode_edge_inline_vector_predicate(
                     edge_inline_vector_predicate,
@@ -176,7 +176,7 @@ impl Encoder {
                 label_expr,
                 var_len,
                 indexed_edge_equality,
-                edge_inline_value_predicate,
+                edge_inline_property_predicate,
                 edge_inline_vector_predicate,
                 dst_filter,
                 edge_property_projection,
@@ -196,8 +196,8 @@ impl Encoder {
                 label_expr: opt_label_expr_id(self, label_expr.as_ref())?,
                 var_len: var_len.map(var_len_to_wire),
                 indexed_edge_equality: encode_indexed_edge_equality(indexed_edge_equality)?,
-                edge_inline_value_predicate: encode_edge_inline_value_predicate(
-                    edge_inline_value_predicate,
+                edge_inline_property_predicate: encode_edge_inline_property_predicate(
+                    edge_inline_property_predicate,
                 )?,
                 edge_inline_vector_predicate: encode_edge_inline_vector_predicate(
                     edge_inline_vector_predicate,

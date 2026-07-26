@@ -6,11 +6,11 @@ use super::super::stable::graph_catalog::{
     resolve_registered_graph_id,
 };
 use super::super::stable::{
-    ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS,
-    ROUTER_EDGE_PAYLOAD_PROFILES, ROUTER_GQL_GRAPH_CATALOG, ROUTER_GRAPH_CATALOG,
-    ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_GRAPHS, ROUTER_INDEX_NAME_CATALOG, ROUTER_PROPERTY_CATALOG,
-    ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_SHARDS_BY_GRAPH_ID, ROUTER_VERTEX_LABEL_CATALOG,
-    ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
+    ROUTER_EDGE_INLINE_PROPERTY_PROFILES, ROUTER_EDGE_LABEL_CATALOG,
+    ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS, ROUTER_GQL_GRAPH_CATALOG,
+    ROUTER_GRAPH_CATALOG, ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_GRAPHS, ROUTER_INDEX_NAME_CATALOG,
+    ROUTER_PROPERTY_CATALOG, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_SHARDS_BY_GRAPH_ID,
+    ROUTER_VERTEX_LABEL_CATALOG, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
 #[cfg(test)]
 use super::registry_invariants::check_registry_invariants;
@@ -199,7 +199,7 @@ impl RouterStore {
         ROUTER_EDGE_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
         ROUTER_PROPERTY_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
         ROUTER_INDEX_NAME_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
-        ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| store.remove_graph(graph_id));
+        ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow_mut(|store| store.remove_graph(graph_id));
         super::super::stable::indexed_catalog::purge_graph_indexes(graph_id);
         super::super::stable::constraint_catalog::purge_graph_constraints(graph_id);
         super::super::stable::reservation_catalog::purge_graph_reservations(graph_id);
