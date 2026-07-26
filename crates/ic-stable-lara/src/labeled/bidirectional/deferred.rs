@@ -21,8 +21,8 @@ use crate::{
             OneOrientationBatchResult,
         },
         graph::{
-            EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph, LabeledOperationError,
-            OutEdgeOrder, ScalarInsertLocation,
+            BucketEntryPosition, EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph,
+            LabeledOperationError, OutEdgeOrder, ScalarInsertLocation,
         },
     },
     lara::maintenance::{
@@ -35,7 +35,7 @@ use ic_stable_structures::{Memory, Storable, storable::Bound};
 use ic_stable_vec_deque::{
     GrowFailed as QueueGrowFailed, InitError as QueueInitError, StableVecDeque,
 };
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, fmt, ops::ControlFlow};
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -1971,8 +1971,25 @@ where
     where
         Visit: FnMut(E),
     {
+        let mut visit = visit;
         self.forward
-            .for_each_edges_for_label(src, label_id, visit)
+            .visit_edges_with_inline_property(
+                src,
+                label_id,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(label_id.raw());
+                    visit(edge);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -1987,8 +2004,20 @@ where
     where
         Visit: FnMut(E),
     {
+        let mut visit = visit;
         self.forward
-            .for_each_edges_for_label_ordered(src, label_id, order, visit)
+            .visit_edges_with_inline_property(src, label_id, order, |_slot, item| {
+                let edge = item
+                    .edge
+                    .with_stored_inline_value_bytes(
+                        item.inline_property.width,
+                        &item.inline_property.bytes,
+                    )
+                    .with_label_id(label_id.raw());
+                visit(edge);
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2003,8 +2032,13 @@ where
     where
         Visit: FnMut(E),
     {
+        let mut visit = visit;
         self.forward
-            .for_each_edges_for_label_topology_ordered(src, label_id, order, visit)
+            .visit_edges(src, label_id, order, |_slot, edge| {
+                visit(edge.with_label_id(label_id.raw()));
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2019,8 +2053,13 @@ where
     where
         Visit: FnMut(E),
     {
+        let mut visit = visit;
         self.forward
-            .for_each_edges_for_label_topology_unchecked(src, label_id, order, visit)
+            .visit_edges(src, label_id, order, |_slot, edge| {
+                visit(edge.with_label_id(label_id.raw()));
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2092,14 +2131,23 @@ where
         label_id: BucketLabelKey,
         slots: &[u32],
         order: OutEdgeOrder,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
+        let positions: Vec<_> = slots
+            .iter()
+            .copied()
+            .map(BucketEntryPosition::new)
+            .collect();
         self.forward
-            .read_out_edge_slots_for_label(src, label_id, slots, order, visit)
+            .visit_edges_at(src, label_id, &positions, order, |_slot, edge| {
+                visit(edge.with_label_id(label_id.raw()));
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2111,14 +2159,23 @@ where
         slots: &[u32],
         order: OutEdgeOrder,
         replay: Option<&crate::labeled::HybridOverflowEdgeReplay>,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
+        let positions: Vec<_> = slots
+            .iter()
+            .copied()
+            .map(BucketEntryPosition::new)
+            .collect();
         self.forward
-            .read_out_edge_slots_for_label_with_replay(src, label_id, slots, order, replay, visit)
+            .visit_edges_at_with_replay(src, label_id, &positions, order, replay, |_slot, edge| {
+                visit(edge.with_label_id(label_id.raw()));
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2163,14 +2220,23 @@ where
         label_id: BucketLabelKey,
         slots: &[u32],
         order: OutEdgeOrder,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
+        let positions: Vec<_> = slots
+            .iter()
+            .copied()
+            .map(BucketEntryPosition::new)
+            .collect();
         self.reverse
-            .read_out_edge_slots_for_label(dst, label_id, slots, order, visit)
+            .visit_edges_at(dst, label_id, &positions, order, |_slot, edge| {
+                visit(edge.with_label_id(label_id.raw()));
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -2184,51 +2250,25 @@ where
         slots: &[u32],
         order: OutEdgeOrder,
         replay: Option<&crate::labeled::HybridOverflowEdgeReplay>,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
+        let positions: Vec<_> = slots
+            .iter()
+            .copied()
+            .map(BucketEntryPosition::new)
+            .collect();
         self.reverse
-            .read_out_edge_slots_for_label_with_replay(dst, label_id, slots, order, replay, visit)
+            .visit_edges_at_with_replay(dst, label_id, &positions, order, replay, |_slot, edge| {
+                visit(edge.with_label_id(label_id.raw()));
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
-
-    /// Visits reverse outgoing edges (incoming edges in the public graph view) and parallel value
-    /// bytes for one label in `order`.
-    pub fn visit_in_edge_inline_value_batches_for_label<Visit>(
-        &self,
-        dst: VertexId,
-        label_id: BucketLabelKey,
-        order: OutEdgeOrder,
-        scratch: &mut crate::labeled::LabeledEdgeInlineValueBatchScratch<E>,
-        visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
-    where
-        Visit: for<'b> FnMut(crate::labeled::LabeledEdgeInlineValueBatch<'b, E>),
-    {
-        self.reverse
-            .visit_out_edge_inline_value_batches_for_label(dst, label_id, order, scratch, visit)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
-    }
-
-    /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the forward store.
-    pub fn skip_then_visit_each_forward_out_edge_for_label<Visit, Err>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        offset_remaining: &mut usize,
-        visit: Visit,
-    ) -> Result<Result<bool, Err>, DeferredBidirectionalLabeledError>
-    where
-        Visit: FnMut(E) -> Result<bool, Err>,
-    {
-        self.forward
-            .skip_then_visit_each_out_edge_for_label(src, label_id, offset_remaining, visit)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
-    }
-
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_by_directedness`] on the forward store.
     pub fn skip_then_visit_each_forward_out_edge_by_directedness<Visit, Err>(
         &self,
@@ -2361,8 +2401,25 @@ where
     where
         Visit: FnMut(E),
     {
+        let mut visit = visit;
         self.reverse
-            .for_each_edges_for_label(dst, label_id, visit)
+            .visit_edges_with_inline_property(
+                dst,
+                label_id,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(label_id.raw());
+                    visit(edge);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -2377,8 +2434,20 @@ where
     where
         Visit: FnMut(E),
     {
+        let mut visit = visit;
         self.reverse
-            .for_each_edges_for_label_ordered(dst, label_id, order, visit)
+            .visit_edges_with_inline_property(dst, label_id, order, |_slot, item| {
+                let edge = item
+                    .edge
+                    .with_stored_inline_value_bytes(
+                        item.inline_property.width,
+                        &item.inline_property.bytes,
+                    )
+                    .with_label_id(label_id.raw());
+                visit(edge);
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -2393,8 +2462,13 @@ where
     where
         Visit: FnMut(E),
     {
+        let mut visit = visit;
         self.reverse
-            .for_each_edges_for_label_topology_ordered(dst, label_id, order, visit)
+            .visit_edges(dst, label_id, order, |_slot, edge| {
+                visit(edge.with_label_id(label_id.raw()));
+                ControlFlow::<()>::Continue(())
+            })
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -2410,8 +2484,25 @@ where
     where
         Visit: FnMut(E),
     {
+        let mut visit = visit;
         self.forward
-            .for_each_edges_for_label_unchecked(src, label_id, visit)
+            .visit_edges_with_inline_property(
+                src,
+                label_id,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(label_id.raw());
+                    visit(edge);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2425,8 +2516,25 @@ where
     where
         Visit: FnMut(E),
     {
+        let mut visit = visit;
         self.reverse
-            .for_each_edges_for_label_unchecked(dst, label_id, visit)
+            .visit_edges_with_inline_property(
+                dst,
+                label_id,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_value_bytes(
+                            item.inline_property.width,
+                            &item.inline_property.bytes,
+                        )
+                        .with_label_id(label_id.raw());
+                    visit(edge);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 

@@ -10,7 +10,7 @@ use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, LabeledPayloadValueBatchScratch,
     LabeledVertex, MateStorageMemories, OutEdgeOrder,
     graph::LabeledLaraGraph,
-    graph::traverse_next::{BucketEntryPosition, InlinePropertyScratch, LabeledTraversalRequest},
+    graph::traverse_next::{BucketEntryPosition, LabeledTraversalRequest},
 };
 use crate::traverse::{Traversal, TraversalWindow};
 use crate::{
@@ -562,18 +562,18 @@ fn bench_traverse_next_visit_edges_with_inline_property() -> canbench_rs::BenchR
             .insert_edge_skip_leaf_cascade(src, label, PayloadBenchEdge::new(i + 10, u64::from(i)))
             .unwrap();
     }
-    let mut scratch = InlinePropertyScratch::<PayloadBenchEdge>::new();
     bench_fn(|| {
         let mut count = 0u32;
         let _ = graph
-            .visit_edges_with_inline_property_reusing_scratch(
+            .visit_edges_with_inline_property::<()>(
                 src,
                 label,
                 OutEdgeOrder::Ascending,
-                &mut scratch,
-                |_slot, _edge, width, bytes| {
-                    count += u32::from(width == bytes.len() as u16);
-                    black_box(bytes);
+                |_slot, item| {
+                    count += u32::from(
+                        item.inline_property.width == item.inline_property.bytes.len() as u16,
+                    );
+                    black_box(&item.inline_property.bytes);
                     std::ops::ControlFlow::<()>::Continue(())
                 },
             )

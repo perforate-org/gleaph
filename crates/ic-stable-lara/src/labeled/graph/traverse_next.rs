@@ -28,10 +28,7 @@ use crate::traverse::{Traversal, TraversalOrder, TraversalRequest, TraversalWind
 #[cfg(feature = "canbench")]
 mod bench;
 
-use super::{
-    BucketSearch, LabeledLaraGraph, OutEdgeOrder, error::LabeledOperationError,
-    iter::LabeledEdgeInlineValueBatchScratch,
-};
+use super::{BucketSearch, LabeledLaraGraph, OutEdgeOrder, error::LabeledOperationError};
 
 #[derive(Debug)]
 enum LabeledWindowBreak<B> {
@@ -81,28 +78,6 @@ pub struct InlinePropertyBytes {
     pub width: u16,
     /// Exact byte contents of the inline property, or empty when `width == 0`.
     pub bytes: Vec<u8>,
-}
-
-/// Reusable byte storage for borrowed inline-property traversal.
-pub(crate) struct InlinePropertyScratch<E> {
-    bytes: Vec<u8>,
-    batch: LabeledEdgeInlineValueBatchScratch<E>,
-}
-
-impl<E> Default for InlinePropertyScratch<E> {
-    fn default() -> Self {
-        Self {
-            bytes: Vec::new(),
-            batch: LabeledEdgeInlineValueBatchScratch::default(),
-        }
-    }
-}
-
-impl<E> InlinePropertyScratch<E> {
-    /// Creates empty reusable byte and batch buffers.
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
 }
 
 impl InlinePropertyBytes {
@@ -423,155 +398,6 @@ where
         )
     }
 
-    /// Streams inline properties into reusable scratch storage.
-    ///
-    /// The callback must consume `bytes` before returning. This avoids allocating one owned
-    /// `Vec` per edge while retaining the owned API above for callers that need to keep values.
-    pub(crate) fn visit_edges_with_inline_property_reusing_scratch<B>(
-        &self,
-        owner: VertexId,
-        label: BucketLabelKey,
-        order: OutEdgeOrder,
-        scratch: &mut InlinePropertyScratch<E>,
-        mut visit: impl FnMut(BucketEntryPosition, &E, u16, &[u8]) -> ControlFlow<B>,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        self.ensure_vertex(owner)?;
-        // A reusable scratch may carry the stop flag from an earlier early-break traversal.
-        // Reset it before every invocation so a subsequent scan starts from a clean state.
-        scratch.batch.reset_stop();
-        let vertex = self.vertices.get(owner);
-        if vertex.is_default_edge_labeled() {
-            if label != self.bypass_storage_label_for(&vertex) {
-                return Ok(ControlFlow::Continue(()));
-            }
-            return match order {
-                OutEdgeOrder::Ascending => {
-                    let mut edges = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
-                    while let Some((slot, edge)) = edges.next_with_slot() {
-                        let edge = edge.with_label_id(label.raw());
-                        if let ControlFlow::Break(value) =
-                            visit(BucketEntryPosition::new(slot), &edge, 0, &[])
-                        {
-                            return Ok(ControlFlow::Break(value));
-                        }
-                    }
-                    Ok(ControlFlow::Continue(()))
-                }
-                OutEdgeOrder::Descending => {
-                    let mut edges = self.edges.out_edges_iter(&self.vertices, owner)?;
-                    while let Some((slot, edge)) = edges.next_with_slot() {
-                        let edge = edge.with_label_id(label.raw());
-                        if let ControlFlow::Break(value) =
-                            visit(BucketEntryPosition::new(slot), &edge, 0, &[])
-                        {
-                            return Ok(ControlFlow::Break(value));
-                        }
-                    }
-                    Ok(ControlFlow::Continue(()))
-                }
-            };
-        }
-
-        let bucket = match self.find_bucket(owner, &vertex, label)? {
-            BucketSearch::Found { bucket, .. } => bucket,
-            BucketSearch::Missing { .. } => return Ok(ControlFlow::Continue(())),
-        };
-        let width = bucket.inline_value_byte_width();
-
-        // The combined batch path performs contiguous slab reads and reuses the hybrid
-        // overflow replay. Keep the direct path only for zero-width values, where there is no
-        // payload read to batch.
-        if width > 0 {
-            let stop_requested = std::rc::Rc::clone(&scratch.batch.stop_requested);
-            let mut stopped = false;
-            let mut break_value = None;
-            self.visit_out_edge_inline_value_batches_for_label(
-                owner,
-                label,
-                order,
-                &mut scratch.batch,
-                |batch| {
-                    if stopped {
-                        return;
-                    }
-                    let byte_width = usize::from(batch.byte_width);
-                    for (index, edge) in batch.edges.iter().enumerate() {
-                        let start = index * byte_width;
-                        let end = start + byte_width;
-                        let bytes = &batch.inline_value_bytes[start..end];
-                        if let ControlFlow::Break(value) = visit(
-                            BucketEntryPosition::new(edge.edge_slot_index_raw()),
-                            edge,
-                            batch.byte_width,
-                            bytes,
-                        ) {
-                            stopped = true;
-                            stop_requested.set(true);
-                            break_value = Some(value);
-                            break;
-                        }
-                    }
-                },
-            )?;
-            return Ok(match break_value {
-                Some(value) => ControlFlow::Break(value),
-                None => ControlFlow::Continue(()),
-            });
-        }
-
-        // Zero-width buckets do not need a payload-log chain. Keep the direct topology path for
-        // this case so the visitor still sees every live edge without manufacturing bytes.
-        let log_chains: Option<Vec<u32>> = None;
-        let logical_slots = self.bucket_reserved_edge_slots(owner, &bucket);
-        let mut ordinal = match order {
-            OutEdgeOrder::Ascending => 0,
-            OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
-        };
-        let mut property_error = None;
-        let result = self.for_each_live_edge_slot_for_label_direct_with_control_flow(
-            owner,
-            label,
-            logical_slots,
-            order,
-            0,
-            |slot, edge| {
-                if width == 0 {
-                    return visit(BucketEntryPosition::new(slot), &edge, 0, &[]);
-                }
-                if scratch.bytes.len() != usize::from(width) {
-                    scratch.bytes.resize(usize::from(width), 0);
-                }
-                let read = self.read_bucket_payload_for_slot_into(
-                    owner,
-                    &bucket,
-                    ordinal,
-                    log_chains.as_ref(),
-                    &mut scratch.bytes,
-                );
-                if let Err(error) = read {
-                    property_error = Some(error);
-                    return ControlFlow::Continue(());
-                }
-                let flow = visit(BucketEntryPosition::new(slot), &edge, width, &scratch.bytes);
-                if matches!(flow, ControlFlow::Continue(())) {
-                    ordinal = match order {
-                        OutEdgeOrder::Ascending => ordinal.saturating_add(1),
-                        OutEdgeOrder::Descending => ordinal.saturating_sub(1),
-                    };
-                }
-                flow
-            },
-        );
-        if let Some(error) = property_error {
-            return Err(error);
-        }
-        result
-    }
-
-    /// Visits every live edge for one label together with its exact inline-property bytes.
     pub(crate) fn visit_edges_with_inline_property<B>(
         &self,
         owner: VertexId,
@@ -1511,33 +1337,19 @@ mod tests {
         assert_eq!(flow, ControlFlow::Continue(()));
         assert_eq!(streamed, slots.len() as u32);
 
-        let mut property_scratch = InlinePropertyScratch::<PayloadTestEdge>::new();
-        let mut borrowed = 0u32;
-        let flow = graph
-            .visit_edges_with_inline_property_reusing_scratch::<()>(
-                src,
-                label,
-                OutEdgeOrder::Descending,
-                &mut property_scratch,
-                |_slot, edge, width, bytes| {
-                    assert_eq!(width, 4);
-                    assert_eq!(bytes, &(edge.target * 7).to_le_bytes());
-                    borrowed += 1;
-                    ControlFlow::Continue(())
-                },
-            )
-            .unwrap();
-        assert_eq!(flow, ControlFlow::Continue(()));
-        assert_eq!(borrowed, slots.len() as u32);
-
+        // A second full traversal still sees exact bytes after an early break.
         let mut stopped_after = 0u32;
         let flow = graph
-            .visit_edges_with_inline_property_reusing_scratch::<u32>(
+            .visit_edges_with_inline_property::<u32>(
                 src,
                 label,
                 OutEdgeOrder::Ascending,
-                &mut property_scratch,
-                |_slot, _edge, _width, _bytes| {
+                |_slot, item| {
+                    assert_eq!(item.inline_property.width, 4);
+                    assert_eq!(
+                        item.inline_property.bytes,
+                        &(item.edge.target * 7).to_le_bytes()[..]
+                    );
                     stopped_after += 1;
                     ControlFlow::Break(stopped_after)
                 },
@@ -1545,17 +1357,18 @@ mod tests {
             .unwrap();
         assert_eq!(flow, ControlFlow::Break(1));
 
-        // The same scratch remains reusable after the early break above.
         let mut resumed = 0u32;
         let flow = graph
-            .visit_edges_with_inline_property_reusing_scratch::<()>(
+            .visit_edges_with_inline_property::<()>(
                 src,
                 label,
                 OutEdgeOrder::Ascending,
-                &mut property_scratch,
-                |_slot, edge, width, bytes| {
-                    assert_eq!(width, 4);
-                    assert_eq!(bytes, &(edge.target * 7).to_le_bytes());
+                |_slot, item| {
+                    assert_eq!(item.inline_property.width, 4);
+                    assert_eq!(
+                        item.inline_property.bytes,
+                        &(item.edge.target * 7).to_le_bytes()[..]
+                    );
                     resumed += 1;
                     ControlFlow::Continue(())
                 },
