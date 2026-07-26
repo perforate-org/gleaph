@@ -538,6 +538,53 @@ where
         self.visit_edges(owner, label, order, |slot, _edge| visit(slot))
     }
 
+    /// Collects outgoing edges for one label in the requested order.
+    ///
+    /// Topology-only collection that does not attach edge inline values. Use
+    /// [`Self::iter_edges_with_inline_property_for_label_next`] when the caller needs
+    /// payload bytes or comparisons that depend on them.
+    pub(crate) fn iter_edges_for_label_next(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+    ) -> Result<Vec<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let mut out = Vec::new();
+        let _ = self.visit_edges(owner, label, order, |_slot, edge| {
+            out.push(edge);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(out)
+    }
+
+    /// Collects outgoing edges with their inline-property bytes for one label.
+    pub(crate) fn iter_edges_with_inline_property_for_label_next(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+    ) -> Result<Vec<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let mut out = Vec::new();
+        let _ = self.visit_edges_with_inline_property(owner, label, order, |_slot, item| {
+            let edge = item
+                .edge
+                .with_stored_inline_value_bytes(
+                    item.inline_property.width,
+                    item.inline_property.bytes(),
+                )
+                .with_label_id(label.raw());
+            out.push(edge);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(out)
+    }
+
     /// Visits a bounded window of live edges for one label in the requested order.
     ///
     /// For dense, tombstone-free label buckets this bulk-reads the topology slab

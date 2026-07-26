@@ -3263,9 +3263,7 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        let mut out = Vec::new();
-        self.for_each_edges_for_label(src, label_id, |edge| out.push(edge))?;
-        Ok(out)
+        self.iter_edges_with_inline_property_for_label_next(src, label_id, OutEdgeOrder::Descending)
     }
 
     /// Returns the bucket-index range that stores edges with `directedness`.
