@@ -438,7 +438,7 @@ where
             };
         }
         let BucketSearch::Found {
-            slot: _bucket_slot,
+            slot: bucket_slot,
             bucket,
         } = self.find_bucket(owner, &vertex, label)?
         else {
@@ -452,23 +452,23 @@ where
         {
             return self.visit_dense_label_bucket_edges(owner, label, &bucket, order, visit);
         }
-        let Some(info) = self.read_label_bucket_placement_info(owner, label)? else {
-            return Ok(ControlFlow::Continue(()));
-        };
-        let logical_slots = info
-            .stored_edge_slots
-            .checked_add(info.edge_overflow_log_len)
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
-        self.for_each_live_edge_slot_for_label_direct_with_control_flow(
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let mut iter = self.labeled_bucket_span_iter(
             owner,
-            label,
-            logical_slots,
             order,
+            &vertex,
+            &[bucket],
             0,
-            |slot, edge| visit(BucketEntryPosition::new(slot), edge),
-        )
+            bucket_index,
+            false,
+        )?;
+        while let Some(result) = iter.next_with_slot() {
+            let (slot, edge) = result?;
+            if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+        Ok(ControlFlow::Continue(()))
     }
 
     pub(crate) fn visit_edges_with_inline_property<B>(
@@ -520,18 +520,17 @@ where
                 }
             };
         }
-        let (bucket, _bucket_index, log_chains) =
-            self.resolve_label_bucket_and_payload_chains(owner, label, &vertex)?;
-        let width = bucket.inline_value_byte_width();
-        let Some(info) = self.read_label_bucket_placement_info(owner, label)? else {
+        let BucketSearch::Found {
+            slot: bucket_slot,
+            bucket,
+        } = self.find_bucket(owner, &vertex, label)?
+        else {
             return Ok(ControlFlow::Continue(()));
         };
-        let logical_slots = info
-            .stored_edge_slots
-            .checked_add(info.edge_overflow_log_len)
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
+        let width = bucket.inline_value_byte_width();
+        if bucket.degree() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
 
         // Fast path for dense, tombstone-free buckets: bulk-read the topology slab in one
         // call, and bulk-read the payload span when the bucket carries inline values. This
@@ -540,7 +539,6 @@ where
         if bucket.inline_value_log_head() < 0
             && bucket.overflow_log_head() < 0
             && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-            && bucket.degree() > 0
         {
             let payload_bytes = if width > 0 {
                 self.read_bucket_payload_span(owner, &bucket, 0, bucket.degree())?
@@ -576,54 +574,30 @@ where
             );
         }
 
-        let mut ordinal = match order {
-            OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
-            OutEdgeOrder::Ascending => 0,
-        };
-        let flow = self.for_each_live_edge_slot_for_label_direct_with_control_flow(
-            owner,
-            label,
-            logical_slots,
-            order,
-            0,
-            |slot, edge| {
-                let inline_property = if width == 0 {
-                    InlinePropertyBytes::empty()
-                } else {
-                    match self.read_inline_property_bytes_for_ordinal(
-                        owner,
-                        label,
-                        &bucket,
-                        ordinal,
-                        log_chains.as_ref(),
-                    ) {
-                        Ok(property) => property,
-                        Err(error) => return ControlFlow::Break(Err(error)),
-                    }
-                };
-                match visit(
-                    BucketEntryPosition::new(slot),
-                    EdgeWithInlineProperty {
-                        edge,
-                        inline_property,
-                    },
-                ) {
-                    ControlFlow::Continue(()) => {
-                        match order {
-                            OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
-                            OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
-                        }
-                        ControlFlow::Continue(())
-                    }
-                    ControlFlow::Break(value) => ControlFlow::Break(Ok(value)),
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let mut iter =
+            self.labeled_bucket_span_iter(owner, order, &vertex, &[bucket], 0, bucket_index, true)?;
+        while let Some(result) = iter.next_with_slot() {
+            let (slot, edge) = result?;
+            let inline_property = if width == 0 {
+                InlinePropertyBytes::empty()
+            } else {
+                InlinePropertyBytes {
+                    width,
+                    bytes: edge.edge_inline_value_bytes().to_vec(),
                 }
-            },
-        );
-        match flow? {
-            ControlFlow::Continue(()) => Ok(ControlFlow::Continue(())),
-            ControlFlow::Break(Ok(value)) => Ok(ControlFlow::Break(value)),
-            ControlFlow::Break(Err(error)) => Err(error),
+            };
+            if let ControlFlow::Break(value) = visit(
+                BucketEntryPosition::new(slot),
+                EdgeWithInlineProperty {
+                    edge,
+                    inline_property,
+                },
+            ) {
+                return Ok(ControlFlow::Break(value));
+            }
         }
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Visits a selected set of logical slots for one label in the requested order.

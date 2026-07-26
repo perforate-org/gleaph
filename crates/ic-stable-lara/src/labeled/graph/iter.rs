@@ -450,10 +450,7 @@ where
     pub(crate) fn next_with_slot(&mut self) -> Option<Result<(u32, E), LabeledOperationError>> {
         let edge = match &mut self.kind {
             LabeledBucketScanKind::Desc { iter } => iter.next_with_slot()?,
-            LabeledBucketScanKind::Asc { iter } => {
-                let edge = iter.next()?;
-                (edge.edge_slot_index_raw(), edge)
-            }
+            LabeledBucketScanKind::Asc { iter } => iter.next_with_slot()?,
         };
         let (slot, edge) = edge;
         let edge = edge
