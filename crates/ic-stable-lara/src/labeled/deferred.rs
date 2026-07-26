@@ -132,7 +132,8 @@ mod tests {
         graph_with_segment_size(32)
     }
 
-    fn payload_graph() -> DeferredLabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
+    fn inline_property_graph()
+    -> DeferredLabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
         let (
             vertices,
             buckets,
@@ -839,7 +840,7 @@ mod tests {
 
     #[test]
     fn deferred_inline_property_bytes_compaction_preserves_values_and_reclaims_holes() {
-        let graph = payload_graph();
+        let graph = inline_property_graph();
         let src = graph
             .inner()
             .push_vertex(crate::labeled::record::LabeledVertex::default())
@@ -864,7 +865,7 @@ mod tests {
             graph
                 .remove_edge_matching(src, label, |edge| edge.target == target)
                 .unwrap()
-                .expect("payload edge removed");
+                .expect("inline property edge removed");
         }
         while graph.maintenance_queue_len() > 0 {
             graph.maintenance(MaintenanceBudget {
@@ -921,7 +922,10 @@ mod tests {
             });
         }
         let after = graph.inner().inline_property_bytes_storage_stats().unwrap();
-        assert_eq!(after.free_bytes, 6, "unexpected payload stats: {after:?}");
+        assert_eq!(
+            after.free_bytes, 6,
+            "unexpected inline property stats: {after:?}"
+        );
         assert_eq!(after.largest_free_span, after.free_bytes);
         assert!(
             !graph
@@ -1160,7 +1164,7 @@ where
                 ))
                 .map_err(DeferredError::Inner)?;
         self.inner
-            .insert_edge_skip_leaf_cascade_deferred_payload(src, label_id, edge)
+            .insert_edge_skip_leaf_cascade_deferred_inline_property(src, label_id, edge)
             .map_err(DeferredError::Inner)?;
         if inline_property_bytes_compaction_needed {
             self.mark_compact_inline_property_bytes_slab()?;

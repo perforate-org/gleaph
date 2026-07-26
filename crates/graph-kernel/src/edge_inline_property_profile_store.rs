@@ -26,7 +26,7 @@ impl fmt::Display for EdgeInlinePropertyProfileStoreError {
             Self::InvalidProfile(e) => write!(f, "{e}"),
             Self::ProfileAlreadyInstalled(id) => write!(
                 f,
-                "edge label {} payload profile is already installed",
+                "edge label {} inline property profile is already installed",
                 id.raw()
             ),
         }

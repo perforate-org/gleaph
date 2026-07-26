@@ -551,7 +551,7 @@ fn unregister_graph_cascades_vocabulary_partitions() {
                 encoding: EdgeInlinePropertyEncoding::WeightRawU16,
             },
         )
-        .expect("payload profile");
+        .expect("inline property profile");
     store.apply_label_stats_delta_payload(
         graph_id,
         ShardId::new(0),

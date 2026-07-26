@@ -23,7 +23,7 @@ use rapidhash::{HashMapExt, RapidHashMap};
 ///
 /// The planner expands this into one or two physical intents owned by LARA.
 /// Forward/reverse halves and undirected canonical/alias halves are derived, not
-/// supplied. Edge properties (other than the fixed-width inline payload) are out
+/// supplied. Edge properties (other than the fixed-width inline property bytes) are out
 /// of scope for this slice and fail closed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchEdgeInput {
@@ -35,7 +35,7 @@ pub struct BatchEdgeInput {
     pub catalog_label: Option<EdgeLabelId>,
     /// Whether the edge is directed (`source -> target`) or undirected.
     pub directed: bool,
-    /// Fixed-width inline payload bytes. Must match the label profile width.
+    /// Fixed-width inline property bytes bytes. Must match the label profile width.
     pub inline_property_bytes: Vec<u8>,
 }
 
@@ -84,7 +84,7 @@ pub enum BatchPlacementError {
     VertexNotLive(VertexId),
     /// An edge label id is not catalog-allocatable.
     InvalidEdgeLabelId(EdgeLabelId),
-    /// Inline payload width does not match the label profile.
+    /// Inline inline property byte width does not match the label profile.
     InlineValueWidthMismatch {
         label: Option<EdgeLabelId>,
         expected: usize,
@@ -147,7 +147,9 @@ impl std::fmt::Display for BatchPlacementError {
                     "default/unlabeled edges are not supported by batch placement"
                 )
             }
-            Self::PayloadWidthMixed => write!(f, "payload widths are mixed within one leaf"),
+            Self::PayloadWidthMixed => {
+                write!(f, "inline property byte widths are mixed within one leaf")
+            }
             Self::ProjectedCapacityOverflow => write!(f, "projected capacity overflow"),
             Self::ProjectedCountOverflow => write!(f, "projected count overflow"),
         }
@@ -237,9 +239,9 @@ pub struct BatchPlacementGroup {
     /// Existing edge overflow-log entries for this bucket, or zero if none.
     pub resident_log_edge_slots: u32,
     /// Existing inline-value slab slots reserved for this bucket, or zero.
-    pub resident_slab_payload_slots: u32,
+    pub resident_slab_inline_property_bytes_slots: u32,
     /// Existing inline-value overflow-log entries for this bucket, or zero.
-    pub resident_log_payload_slots: u32,
+    pub resident_log_inline_property_bytes_slots: u32,
 }
 
 impl BatchPlacementGroup {
@@ -254,16 +256,18 @@ impl BatchPlacementGroup {
     }
 
     /// Minimum inline-value slots required to hold all resident and pending values.
-    pub fn projected_minimum_payload_slots(&self) -> Result<u64, BatchPlacementError> {
-        u64::from(self.resident_slab_payload_slots)
-            .checked_add(u64::from(self.resident_log_payload_slots))
+    pub fn projected_minimum_inline_property_bytes_slots(
+        &self,
+    ) -> Result<u64, BatchPlacementError> {
+        u64::from(self.resident_slab_inline_property_bytes_slots)
+            .checked_add(u64::from(self.resident_log_inline_property_bytes_slots))
             .and_then(|s| s.checked_add(self.pending_edge_intents))
             .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
     }
 
     /// Minimum inline-value bytes required to hold all resident and pending values.
     pub fn projected_minimum_payload_bytes(&self) -> Result<u64, BatchPlacementError> {
-        let slots = self.projected_minimum_payload_slots()?;
+        let slots = self.projected_minimum_inline_property_bytes_slots()?;
         slots
             .checked_mul(u64::from(self.key.inline_property_width))
             .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
@@ -300,15 +304,15 @@ pub struct BatchPlacementLeafSummary {
     /// Sum of edge overflow-log slots reserved by **all** existing buckets on this leaf.
     pub full_leaf_resident_log_edge_slots: u64,
     /// Sum of inline-value slab slots reserved by buckets targeted by this batch.
-    pub target_resident_slab_payload_slots: u64,
+    pub target_resident_slab_inline_property_bytes_slots: u64,
     /// Sum of inline-value overflow-log slots reserved by buckets targeted by this batch.
-    pub target_resident_log_payload_slots: u64,
+    pub target_resident_log_inline_property_bytes_slots: u64,
     /// Number of pending payload intents targeting this leaf.
     pub pending_payload_intents: u64,
     /// Sum of inline-value slab slots reserved by **all** existing buckets on this leaf.
-    pub full_leaf_resident_slab_payload_slots: u64,
+    pub full_leaf_resident_slab_inline_property_bytes_slots: u64,
     /// Sum of inline-value overflow-log slots reserved by **all** existing buckets on this leaf.
-    pub full_leaf_resident_log_payload_slots: u64,
+    pub full_leaf_resident_log_inline_property_bytes_slots: u64,
     /// Payload widths represented by resident and pending payloads on this leaf.
     pub inline_property_byte_widths: BTreeSet<u16>,
 }
@@ -325,12 +329,14 @@ impl BatchPlacementLeafSummary {
     }
 
     /// Minimum inline-value slots required to hold all leaf-wide resident and pending values.
-    pub fn projected_minimum_payload_slots(&self) -> Result<u64, BatchPlacementError> {
+    pub fn projected_minimum_inline_property_bytes_slots(
+        &self,
+    ) -> Result<u64, BatchPlacementError> {
         if self.inline_property_byte_widths.len() > 1 {
             return Err(BatchPlacementError::PayloadWidthMixed);
         }
-        self.full_leaf_resident_slab_payload_slots
-            .checked_add(self.full_leaf_resident_log_payload_slots)
+        self.full_leaf_resident_slab_inline_property_bytes_slots
+            .checked_add(self.full_leaf_resident_log_inline_property_bytes_slots)
             .and_then(|s| s.checked_add(self.pending_payload_intents))
             .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
     }
@@ -406,7 +412,7 @@ impl BatchPlacementSummary {
 /// Internal duplicate-detection key for a logical edge target.
 ///
 /// ADR 0045 rejects duplicate mutations targeting the same logical edge in one
-/// unordered chunk, regardless of inline payload. Directed edges are keyed by
+/// unordered chunk, regardless of inline property bytes. Directed edges are keyed by
 /// (source, target, label). Undirected edges are keyed by canonical endpoint pair
 /// (higher id first) and label, so `(a,b)` and `(b,a)` collide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -653,10 +659,10 @@ fn group_intents_for_placement(
                 pending_edge_intents: 0,
                 resident_slab_edge_slots: existing.map(|e| e.stored_edge_slots).unwrap_or(0),
                 resident_log_edge_slots: existing.map(|e| e.edge_overflow_log_len).unwrap_or(0),
-                resident_slab_payload_slots: existing
+                resident_slab_inline_property_bytes_slots: existing
                     .map(|e| e.inline_property_bytes_slab_slots)
                     .unwrap_or(0),
-                resident_log_payload_slots: existing
+                resident_log_inline_property_bytes_slots: existing
                     .map(|e| e.inline_property_bytes_overflow_log_len)
                     .unwrap_or(0),
             });
@@ -683,11 +689,11 @@ fn group_intents_for_placement(
                 pending_edge_intents: 0,
                 full_leaf_resident_slab_edge_slots: 0,
                 full_leaf_resident_log_edge_slots: 0,
-                target_resident_slab_payload_slots: 0,
-                target_resident_log_payload_slots: 0,
+                target_resident_slab_inline_property_bytes_slots: 0,
+                target_resident_log_inline_property_bytes_slots: 0,
                 pending_payload_intents: 0,
-                full_leaf_resident_slab_payload_slots: 0,
-                full_leaf_resident_log_payload_slots: 0,
+                full_leaf_resident_slab_inline_property_bytes_slots: 0,
+                full_leaf_resident_log_inline_property_bytes_slots: 0,
                 inline_property_byte_widths: BTreeSet::new(),
             });
         leaf_entry.pending_edge_intents = leaf_entry
@@ -722,13 +728,13 @@ fn group_intents_for_placement(
             .target_resident_log_edge_slots
             .checked_add(u64::from(group.resident_log_edge_slots))
             .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-        leaf_entry.target_resident_slab_payload_slots = leaf_entry
-            .target_resident_slab_payload_slots
-            .checked_add(u64::from(group.resident_slab_payload_slots))
+        leaf_entry.target_resident_slab_inline_property_bytes_slots = leaf_entry
+            .target_resident_slab_inline_property_bytes_slots
+            .checked_add(u64::from(group.resident_slab_inline_property_bytes_slots))
             .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
-        leaf_entry.target_resident_log_payload_slots = leaf_entry
-            .target_resident_log_payload_slots
-            .checked_add(u64::from(group.resident_log_payload_slots))
+        leaf_entry.target_resident_log_inline_property_bytes_slots = leaf_entry
+            .target_resident_log_inline_property_bytes_slots
+            .checked_add(u64::from(group.resident_log_inline_property_bytes_slots))
             .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
     }
 
@@ -741,9 +747,9 @@ fn group_intents_for_placement(
             .expect("leaf summary present");
         leaf_entry.full_leaf_resident_slab_edge_slots = stats.total_stored_edge_slots;
         leaf_entry.full_leaf_resident_log_edge_slots = stats.total_edge_overflow_log_slots;
-        leaf_entry.full_leaf_resident_slab_payload_slots =
+        leaf_entry.full_leaf_resident_slab_inline_property_bytes_slots =
             stats.total_inline_property_bytes_slab_slots;
-        leaf_entry.full_leaf_resident_log_payload_slots =
+        leaf_entry.full_leaf_resident_log_inline_property_bytes_slots =
             stats.total_inline_property_bytes_overflow_log_slots;
         leaf_entry
             .inline_property_byte_widths
@@ -1184,8 +1190,8 @@ mod tests {
             pending_edge_intents: 3,
             resident_slab_edge_slots: 2,
             resident_log_edge_slots: 1,
-            resident_slab_payload_slots: 0,
-            resident_log_payload_slots: 0,
+            resident_slab_inline_property_bytes_slots: 0,
+            resident_log_inline_property_bytes_slots: 0,
         };
         assert_eq!(group.projected_minimum_edge_slots().unwrap(), 6);
     }
@@ -1203,10 +1209,15 @@ mod tests {
             pending_edge_intents: 2,
             resident_slab_edge_slots: 0,
             resident_log_edge_slots: 0,
-            resident_slab_payload_slots: 1,
-            resident_log_payload_slots: 1,
+            resident_slab_inline_property_bytes_slots: 1,
+            resident_log_inline_property_bytes_slots: 1,
         };
-        assert_eq!(group.projected_minimum_payload_slots().unwrap(), 4);
+        assert_eq!(
+            group
+                .projected_minimum_inline_property_bytes_slots()
+                .unwrap(),
+            4
+        );
         assert_eq!(group.projected_minimum_payload_bytes().unwrap(), 16);
     }
 
@@ -1220,15 +1231,15 @@ mod tests {
             pending_edge_intents: 2,
             full_leaf_resident_slab_edge_slots: 0,
             full_leaf_resident_log_edge_slots: 0,
-            target_resident_slab_payload_slots: 0,
-            target_resident_log_payload_slots: 0,
+            target_resident_slab_inline_property_bytes_slots: 0,
+            target_resident_log_inline_property_bytes_slots: 0,
             pending_payload_intents: 2,
-            full_leaf_resident_slab_payload_slots: 1,
-            full_leaf_resident_log_payload_slots: 1,
+            full_leaf_resident_slab_inline_property_bytes_slots: 1,
+            full_leaf_resident_log_inline_property_bytes_slots: 1,
             inline_property_byte_widths: [1u16, 8u16].into_iter().collect(),
         };
         assert_eq!(
-            summary.projected_minimum_payload_slots(),
+            summary.projected_minimum_inline_property_bytes_slots(),
             Err(BatchPlacementError::PayloadWidthMixed)
         );
     }
@@ -1308,6 +1319,9 @@ mod tests {
             forward_leaf.full_leaf_resident_slab_edge_slots > 0,
             "full leaf edge occupancy must include default-label bypass rows"
         );
-        assert_eq!(forward_leaf.full_leaf_resident_slab_payload_slots, 0);
+        assert_eq!(
+            forward_leaf.full_leaf_resident_slab_inline_property_bytes_slots,
+            0
+        );
     }
 }

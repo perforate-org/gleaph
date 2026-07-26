@@ -311,7 +311,7 @@ fn try_eval_gleaph_weight(
 /// Reads an inline edge property if `(label_id, property_id)` matches the Router-resolved
 /// inline schema for this concrete edge label. Returns `Ok(None)` when the property is not the
 /// inline slot, allowing the caller to fall back to the sidecar property store. Returns an error
-/// when the inline slot matches but the payload/schema is malformed, missing, or unsupported.
+/// when the inline slot matches but the inline property/schema is malformed, missing, or unsupported.
 pub(crate) fn try_read_inline_edge_property(
     edge: &EdgeBinding,
     property_id: PropertyId,
@@ -335,7 +335,7 @@ pub(crate) fn try_read_inline_edge_property(
     if required_width == 0 {
         return Err(PlanQueryError::InvalidExpressionValue {
             expression: format!(
-                "inline property read for label {} requires a non-zero payload width",
+                "inline property read for label {} requires a non-zero inline property byte width",
                 edge.handle.label_id.raw()
             ),
         });
@@ -343,7 +343,7 @@ pub(crate) fn try_read_inline_edge_property(
     if bytes.len() != required_width {
         return Err(PlanQueryError::InvalidExpressionValue {
             expression: format!(
-                "inline payload width mismatch for label {}: expected {} bytes, got {}",
+                "inline inline property byte width mismatch for label {}: expected {} bytes, got {}",
                 edge.handle.label_id.raw(),
                 required_width,
                 bytes.len()
@@ -357,7 +357,7 @@ pub(crate) fn try_read_inline_edge_property(
                 .map(Some)
                 .map_err(|err| PlanQueryError::InvalidExpressionValue {
                     expression: format!(
-                        "inline payload decode error for label {}: {err}",
+                        "inline property bytes decode error for label {}: {err}",
                         edge.handle.label_id.raw()
                     ),
                 })
@@ -370,7 +370,7 @@ pub(crate) fn try_read_inline_edge_property(
 
 fn validate_and_decode_inline_struct(
     label_id_raw: u16,
-    payload: &[u8],
+    inline_property_bytes: &[u8],
     fields: &[ResolvedInlineStructField],
 ) -> Result<Value, PlanQueryError> {
     if fields.is_empty() {
@@ -426,11 +426,11 @@ fn validate_and_decode_inline_struct(
         })?;
     }
 
-    if usize::from(field_width_sum) != payload.len() {
+    if usize::from(field_width_sum) != inline_property_bytes.len() {
         return Err(PlanQueryError::InvalidExpressionValue {
             expression: format!(
-                "inline struct payload width mismatch for label {label_id_raw}: expected {field_width_sum} bytes, got {}",
-                payload.len()
+                "inline struct inline property byte width mismatch for label {label_id_raw}: expected {field_width_sum} bytes, got {}",
+                inline_property_bytes.len()
             ),
         });
     }
@@ -439,24 +439,25 @@ fn validate_and_decode_inline_struct(
     for field in fields {
         let start = usize::from(field.byte_offset);
         let end = start + usize::from(field.profile.required_byte_width());
-        if end > payload.len() {
+        if end > inline_property_bytes.len() {
             return Err(PlanQueryError::InvalidExpressionValue {
                 expression: format!(
-                    "inline struct field {} for label {label_id_raw} exceeds payload bounds (offset {} + width {} > {})",
+                    "inline struct field {} for label {label_id_raw} exceeds inline property bytes bounds (offset {} + width {} > {})",
                     field.name,
                     field.byte_offset,
                     field.profile.required_byte_width(),
-                    payload.len()
+                    inline_property_bytes.len()
                 ),
             });
         }
-        let value = decode_edge_inline_property_scalar(&field.profile, &payload[start..end])
-            .map_err(|err| PlanQueryError::InvalidExpressionValue {
-                expression: format!(
-                    "inline struct field {} decode error for label {label_id_raw}: {err}",
-                    field.name
-                ),
-            })?;
+        let value =
+            decode_edge_inline_property_scalar(&field.profile, &inline_property_bytes[start..end])
+                .map_err(|err| PlanQueryError::InvalidExpressionValue {
+                    expression: format!(
+                        "inline struct field {} decode error for label {label_id_raw}: {err}",
+                        field.name
+                    ),
+                })?;
         record_fields.push((field.name.clone(), value));
     }
 
@@ -1277,7 +1278,7 @@ fn edge_to_value(
             Value::Uint64(u64::from(handle.slot_index.raw())),
         ),
         (
-            "payload".to_owned(),
+            "inline property bytes".to_owned(),
             Value::Bytes(binding.inline_property_bytes_slice().to_vec()),
         ),
         (
@@ -3187,7 +3188,7 @@ mod tests {
             other => panic!("expected float median: {other:?}"),
         }
     }
-    fn inline_edge_binding(payload: &[u8]) -> EdgeBinding {
+    fn inline_edge_binding(inline_property_bytes: &[u8]) -> EdgeBinding {
         let handle = EdgeHandle {
             owner_vertex_id: VertexId::from(1u32),
             label_id: ic_stable_lara::labeled::BucketLabelKey::from_raw(7),
@@ -3197,7 +3198,7 @@ mod tests {
             target: gleaph_graph_kernel::entry::VertexRef::local(VertexId::from(2u32)),
             edge_slot_index: EdgeSlotIndex::from_raw(0),
             label_id: 7,
-            inline_property: EdgeInlinePropertyBytes::from_slice(payload),
+            inline_property: EdgeInlinePropertyBytes::from_slice(inline_property_bytes),
         };
         EdgeBinding::from_edge(handle, edge)
     }
@@ -3219,7 +3220,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_edge_property_read_decodes_f32_payload() {
+    fn inline_edge_property_read_decodes_f32_inline_property() {
         let binding = inline_edge_binding(&f32::to_le_bytes(3.5));
         let table = resolved_label_table_with_inline(
             7,
@@ -3305,11 +3306,11 @@ mod tests {
         let score = 3.5f32.to_le_bytes();
         let confidence = 0.75f32.to_le_bytes();
         let updated_at = 1_700_000_000u64.to_le_bytes();
-        let mut payload = Vec::with_capacity(16);
-        payload.extend_from_slice(&score);
-        payload.extend_from_slice(&confidence);
-        payload.extend_from_slice(&updated_at);
-        let binding = inline_edge_binding(&payload);
+        let mut inline_property = Vec::with_capacity(16);
+        inline_property.extend_from_slice(&score);
+        inline_property.extend_from_slice(&confidence);
+        inline_property.extend_from_slice(&updated_at);
+        let binding = inline_edge_binding(&inline_property);
         let table = resolved_label_table_with_inline_struct(
             7,
             42,
@@ -3358,8 +3359,8 @@ mod tests {
 
     #[test]
     fn inline_struct_edge_property_read_unknown_field_becomes_null() {
-        let payload = Vec::from(7.0f32.to_le_bytes());
-        let binding = inline_edge_binding(&payload);
+        let inline_property = Vec::from(7.0f32.to_le_bytes());
+        let binding = inline_edge_binding(&inline_property);
         let table = resolved_label_table_with_inline_struct(
             7,
             42,
@@ -3385,8 +3386,8 @@ mod tests {
 
     #[test]
     fn inline_struct_edge_property_read_fails_on_malformed_projection() {
-        let payload = Vec::from(7.0f32.to_le_bytes());
-        let binding = inline_edge_binding(&payload);
+        let inline_property = Vec::from(7.0f32.to_le_bytes());
+        let binding = inline_edge_binding(&inline_property);
         let table = ResolvedLabelTable {
             vertex: Vec::new(),
             edge: vec![ResolvedEdgeLabel::with_inline_schema(
@@ -3409,8 +3410,8 @@ mod tests {
 
     #[test]
     fn inline_struct_edge_property_read_fails_on_overlapping_fields() {
-        let payload = [0u8; 8];
-        let binding = inline_edge_binding(&payload);
+        let inline_property = [0u8; 8];
+        let binding = inline_edge_binding(&inline_property);
         let table = resolved_label_table_with_inline_struct(
             7,
             42,
@@ -3441,8 +3442,8 @@ mod tests {
 
     #[test]
     fn inline_struct_edge_property_read_fails_on_inline_property_width_mismatch() {
-        let payload = [0u8; 12];
-        let binding = inline_edge_binding(&payload);
+        let inline_property = [0u8; 12];
+        let binding = inline_edge_binding(&inline_property);
         let table = resolved_label_table_with_inline_struct(
             7,
             42,
@@ -3467,14 +3468,14 @@ mod tests {
             ],
         );
         let err = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
-            .expect_err("payload width mismatch must fail closed");
+            .expect_err("inline property byte width mismatch must fail closed");
         assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
 
     #[test]
     fn inline_struct_edge_property_read_fails_on_duplicate_field_names() {
-        let payload = [0u8; 8];
-        let binding = inline_edge_binding(&payload);
+        let inline_property = [0u8; 8];
+        let binding = inline_edge_binding(&inline_property);
         let table = resolved_label_table_with_inline_struct(
             7,
             42,
@@ -3505,15 +3506,15 @@ mod tests {
 
     #[test]
     fn inline_struct_edge_property_read_decodes_mixed_scalar_types() {
-        let mut payload = Vec::with_capacity(40);
-        payload.extend_from_slice(&f16::from_f32(1.5).to_le_bytes()); // 0
-        payload.extend_from_slice(&2.5f32.to_le_bytes()); // 2
-        payload.extend_from_slice(&3.5f64.to_le_bytes()); // 6
-        payload.extend_from_slice(&u128::MAX.to_le_bytes()); // 14
-        payload.extend_from_slice(&i128::MIN.to_le_bytes()); // 30
-        payload.extend_from_slice(&[0xef; 32]); // 46..78 FIXED32 (placeholder; we will use 32 bytes)
-        assert_eq!(payload.len(), 78);
-        let binding = inline_edge_binding(&payload);
+        let mut inline_property = Vec::with_capacity(40);
+        inline_property.extend_from_slice(&f16::from_f32(1.5).to_le_bytes()); // 0
+        inline_property.extend_from_slice(&2.5f32.to_le_bytes()); // 2
+        inline_property.extend_from_slice(&3.5f64.to_le_bytes()); // 6
+        inline_property.extend_from_slice(&u128::MAX.to_le_bytes()); // 14
+        inline_property.extend_from_slice(&i128::MIN.to_le_bytes()); // 30
+        inline_property.extend_from_slice(&[0xef; 32]); // 46..78 FIXED32 (placeholder; we will use 32 bytes)
+        assert_eq!(inline_property.len(), 78);
+        let binding = inline_edge_binding(&inline_property);
         let table = resolved_label_table_with_inline_struct(
             7,
             42,
@@ -3649,7 +3650,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_edge_property_read_decodes_f16_payload() {
+    fn inline_edge_property_read_decodes_f16_inline_property() {
         let binding = inline_edge_binding(&f16::from_f32(1.5).to_le_bytes());
         let table = resolved_label_table_with_inline(
             7,
@@ -3666,7 +3667,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_edge_property_read_decodes_u8_payload() {
+    fn inline_edge_property_read_decodes_u8_inline_property() {
         let binding = inline_edge_binding(&[42u8]);
         let table = resolved_label_table_with_inline(
             7,
@@ -3683,7 +3684,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_edge_property_read_decodes_u16_payload() {
+    fn inline_edge_property_read_decodes_u16_inline_property() {
         let binding = inline_edge_binding(&u16::to_le_bytes(1000));
         let table = resolved_label_table_with_inline(
             7,
@@ -3700,7 +3701,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_edge_property_read_decodes_u32_payload() {
+    fn inline_edge_property_read_decodes_u32_inline_property() {
         let binding = inline_edge_binding(&u32::to_le_bytes(123_456_789));
         let table = resolved_label_table_with_inline(
             7,
@@ -3717,7 +3718,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_edge_property_read_decodes_u64_payload() {
+    fn inline_edge_property_read_decodes_u64_inline_property() {
         let binding = inline_edge_binding(&u64::to_le_bytes(u64::MAX));
         let table = resolved_label_table_with_inline(
             7,
@@ -3842,9 +3843,9 @@ mod tests {
     }
 
     #[test]
-    fn inline_edge_property_read_decodes_fixed32_payload() {
-        let payload = [0xabu8; 32];
-        let binding = inline_edge_binding(&payload);
+    fn inline_edge_property_read_decodes_fixed32_inline_property() {
+        let inline_property = [0xabu8; 32];
+        let binding = inline_edge_binding(&inline_property);
         let table = resolved_label_table_with_inline(
             7,
             42,
@@ -3856,13 +3857,13 @@ mod tests {
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
             .expect("inline value");
-        assert_eq!(value, Value::Bytes(payload.to_vec()));
+        assert_eq!(value, Value::Bytes(inline_property.to_vec()));
     }
 
     #[test]
-    fn inline_edge_property_read_decodes_fixed64_payload() {
-        let payload = [0xcd; 64];
-        let binding = inline_edge_binding(&payload);
+    fn inline_edge_property_read_decodes_fixed64_inline_property() {
+        let inline_property = [0xcd; 64];
+        let binding = inline_edge_binding(&inline_property);
         let table = resolved_label_table_with_inline(
             7,
             42,
@@ -3874,7 +3875,7 @@ mod tests {
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
             .expect("inline value");
-        assert_eq!(value, Value::Bytes(payload.to_vec()));
+        assert_eq!(value, Value::Bytes(inline_property.to_vec()));
     }
 
     #[test]

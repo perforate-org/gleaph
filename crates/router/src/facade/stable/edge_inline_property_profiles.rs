@@ -653,7 +653,7 @@ impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
                     if profile != EdgeInlinePropertyProfile::no_inline_property() {
                         return Err(EdgeInlinePropertyProfileStoreError::UnnamedProfileConflict(
                             format!(
-                                "edge label {} has a legacy unnamed payload profile; install inline schema before the legacy profile",
+                                "edge label {} has a legacy unnamed inline property profile; install inline schema before the legacy profile",
                                 label.raw()
                             ),
                         ));
@@ -739,7 +739,7 @@ impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
                     if profile != EdgeInlinePropertyProfile::no_inline_property() {
                         return Err(EdgeInlinePropertyProfileStoreError::UnnamedProfileConflict(
                             format!(
-                                "edge label {} has a legacy unnamed payload profile; install inline schema before the legacy profile",
+                                "edge label {} has a legacy unnamed inline property profile; install inline schema before the legacy profile",
                                 label.raw()
                             ),
                         ));

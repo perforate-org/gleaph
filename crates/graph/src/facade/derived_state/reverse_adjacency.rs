@@ -214,7 +214,7 @@ fn collect_forward_edges_for_key(
     let mut forward = Vec::new();
     if inline_property_width > 0 {
         let catalog = catalog_edge_label_from_wire(wire)
-            .expect("non-zero payload width implies a catalog edge label");
+            .expect("non-zero inline property byte width implies a catalog edge label");
         let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
         store.for_each_directed_out_edges_for_label_with_inline_property_byte_slices_reusing(
             source,
@@ -489,9 +489,9 @@ mod tests {
                 Some(label_id),
                 &payload,
             )
-            .expect("payloaded edge");
+            .expect("inline-property-bearing edge");
 
-        // Corrupt: drop the reverse half so the forward payload edge has no reverse mirror.
+        // Corrupt: drop the reverse half so the forward inline property edge has no reverse mirror.
         GRAPH.with_borrow(|graph| {
             graph
                 .remove_reverse_edge_matching(

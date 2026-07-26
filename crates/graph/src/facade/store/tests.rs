@@ -48,7 +48,7 @@ fn install_edge_label_weight_profile_stores_payload_and_derives_weight_view() {
     assert!(matches!(
         store
             .edge_label_inline_property_profile(label_id)
-            .expect("payload")
+            .expect("inline property bytes")
             .encoding,
         EdgeInlinePropertyEncoding::WeightLinearU16 { .. }
     ));
@@ -417,7 +417,7 @@ fn updating_undirected_edge_inline_property_updates_both_storage_rows() {
 }
 
 #[test]
-fn forward_edge_compaction_preserves_inline_payloads() {
+fn forward_edge_compaction_preserves_inline_propertys() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let first = store.insert_vertex().expect("first");
@@ -594,7 +594,7 @@ fn weighted_road_parallel_out_edges_from_a_round_trip() {
 }
 
 #[test]
-fn directed_out_edges_visit_attaches_inline_payloads() {
+fn directed_out_edges_visit_attaches_inline_propertys() {
     let store = GraphStore::new();
     let a = store.insert_vertex().expect("a");
     let label_id = crate::test_labels::edge_label_id_for_name("VisitWgtRoad");
@@ -1345,7 +1345,7 @@ fn post_insert_maintenance_reclaims_parallel_overflow_bucket_for_inline_properti
             &mut scratch,
             |batch| edge_count += batch.edges.len(),
         )
-        .expect("payload batches");
+        .expect("inline property batches");
 
     assert_eq!(edge_count, 48);
     assert_eq!(

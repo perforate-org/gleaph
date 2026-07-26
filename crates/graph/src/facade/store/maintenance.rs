@@ -238,7 +238,7 @@ mod tests {
                 &mut scratch,
                 |batch| edge_count += batch.edges.len(),
             )
-            .expect("payload batches");
+            .expect("inline property batches");
         assert_eq!(edge_count, 48);
     }
 

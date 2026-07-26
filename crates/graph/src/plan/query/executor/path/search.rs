@@ -62,7 +62,7 @@ pub(crate) fn shortest_paths_between(
     var_len: &Option<VarLenSpec>,
     mode: ShortestMode,
     store_hop_edges: bool,
-    load_edge_inline_propertys: bool,
+    load_edge_inline_property_bytes: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
     if let Some(k) = mode.shortest_k_limit() {
         return shortest_k_hop_paths_between(
@@ -76,7 +76,7 @@ pub(crate) fn shortest_paths_between(
             var_len,
             k,
             store_hop_edges,
-            load_edge_inline_propertys,
+            load_edge_inline_property_bytes,
         );
     }
 
@@ -142,8 +142,8 @@ pub(crate) fn shortest_paths_between(
                 current,
                 &mut candidates,
                 ShortestExpandOptions {
-                    load_payloads: load_edge_inline_propertys,
-                    payload_scratch: None,
+                    load_inline_property_bytes: load_edge_inline_property_bytes,
+                    inline_property_scratch: None,
                 },
             )?,
             None => {
@@ -220,7 +220,7 @@ fn shortest_k_hop_paths_between(
     var_len: &Option<VarLenSpec>,
     k: u64,
     store_hop_edges: bool,
-    load_edge_inline_propertys: bool,
+    load_edge_inline_property_bytes: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
     let k = usize::try_from(k).map_err(|_| PlanQueryError::InvalidLimit {
         value: Value::Uint64(k),
@@ -284,8 +284,8 @@ fn shortest_k_hop_paths_between(
                 current,
                 &mut candidates,
                 ShortestExpandOptions {
-                    load_payloads: load_edge_inline_propertys,
-                    payload_scratch: None,
+                    load_inline_property_bytes: load_edge_inline_property_bytes,
+                    inline_property_scratch: None,
                 },
             )?,
             None => {

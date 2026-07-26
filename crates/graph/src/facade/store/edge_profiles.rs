@@ -1,4 +1,4 @@
-//! Edge inline payload updates (schema from router wire per ADR 0008).
+//! Edge inline property bytes updates (schema from router wire per ADR 0008).
 
 use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyProfile, EdgeLabelId, EdgeTarget, EdgeWeightProfile,

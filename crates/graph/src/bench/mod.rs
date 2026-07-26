@@ -956,7 +956,7 @@ fn setup_expand_single_label_hub(store: &GraphStore, hub_out: u32, edge_label: &
     }
 }
 
-const INLINE_VALUE_SKEW_EDGE_LABEL: &str = "BenchPayloadSkewRoad";
+const INLINE_VALUE_SKEW_EDGE_LABEL: &str = "BenchInlinePropertySkewRoad";
 const INLINE_PROPERTY_SKEW_MATCH_WEIGHT: u16 = 7;
 const INLINE_VALUE_SKEW_NOISE_WEIGHT: u16 = 1;
 /// Minimum same-label edge count that forces hybrid slab + overflow log on one hub (see ADR 0016).
@@ -978,10 +978,16 @@ fn setup_expand_inline_property_skewed_graph_scaled(
         },
     );
     let noise_dst = store
-        .insert_vertex_named(["BenchPayloadSkewNoiseDst"], Vec::<(&str, Value)>::new())
+        .insert_vertex_named(
+            ["BenchInlinePropertySkewNoiseDst"],
+            Vec::<(&str, Value)>::new(),
+        )
         .expect("noise dst");
     let target_dst = store
-        .insert_vertex_named(["BenchPayloadSkewTargetDst"], Vec::<(&str, Value)>::new())
+        .insert_vertex_named(
+            ["BenchInlinePropertySkewTargetDst"],
+            Vec::<(&str, Value)>::new(),
+        )
         .expect("target dst");
     let hub = store
         .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
@@ -1081,10 +1087,16 @@ fn setup_expand_inline_property_skewed_incoming_graph_scaled(
         },
     );
     let noise_src = store
-        .insert_vertex_named(["BenchPayloadSkewNoiseSrc"], Vec::<(&str, Value)>::new())
+        .insert_vertex_named(
+            ["BenchInlinePropertySkewNoiseSrc"],
+            Vec::<(&str, Value)>::new(),
+        )
         .expect("noise src");
     let target_src = store
-        .insert_vertex_named(["BenchPayloadSkewTargetSrc"], Vec::<(&str, Value)>::new())
+        .insert_vertex_named(
+            ["BenchInlinePropertySkewTargetSrc"],
+            Vec::<(&str, Value)>::new(),
+        )
         .expect("target src");
     let hub = store
         .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
@@ -2913,10 +2925,10 @@ fn setup_inline_struct_edges(
             .insert_vertex_named(["BenchInlineStructDst"], Vec::<(&str, Value)>::new())
             .expect("dst");
         let score = ((i % 100) as f32) / 10.0;
-        let mut payload = Vec::with_capacity(usize::from(total_width));
-        payload.extend_from_slice(&score.to_le_bytes());
-        payload.extend_from_slice(&0.5f32.to_le_bytes());
-        payload.extend_from_slice(&((i % 100) as u64).to_le_bytes());
+        let mut inline_property = Vec::with_capacity(usize::from(total_width));
+        inline_property.extend_from_slice(&score.to_le_bytes());
+        inline_property.extend_from_slice(&0.5f32.to_le_bytes());
+        inline_property.extend_from_slice(&((i % 100) as u64).to_le_bytes());
         store
             .insert_directed_edge_with_inline_property_bytes(src, dst, Some(label_id), &payload)
             .expect("edge");
@@ -3167,7 +3179,7 @@ mod bench_setup_tests {
     use super::*;
     use ic_stable_lara::CsrEdge;
 
-    /// Installs the `BenchWspWgtEdge` weight payload profile (`RawU16`, 2 bytes) in
+    /// Installs the `BenchWspWgtEdge` weight inline property profile (`RawU16`, 2 bytes) in
     /// the process-global test registry. The probe tests below build partial
     /// converging-hub fixtures directly, so they cannot rely on
     /// [`setup_repeated_edge_cost_cache_graph`] having installed it first.
@@ -3346,7 +3358,7 @@ mod bench_setup_tests {
                 &mut scratch,
                 |batch| hub_dense = Some(batch.dense),
             )
-            .expect("hub payload batches");
+            .expect("hub inline property batches");
 
         let mut src_dense = None;
         store
@@ -3357,7 +3369,7 @@ mod bench_setup_tests {
                 &mut scratch,
                 |batch| src_dense = Some(batch.dense),
             )
-            .expect("src payload batches");
+            .expect("src inline property batches");
 
         assert_eq!(
             hub_dense,
@@ -3618,7 +3630,7 @@ fn bench_inline_scalar_pack_batch_u16() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_inline_scalar_set_payload_fixed_edges() -> canbench_rs::BenchResult {
+fn bench_inline_scalar_set_inline_property_fixed_edges() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
     let (label, _property) = install_bench_inline_road("BenchInlineRoad");
 
@@ -3641,13 +3653,13 @@ fn bench_inline_scalar_set_payload_fixed_edges() -> canbench_rs::BenchResult {
     }
 
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("inline_scalar_set_payload_fixed_edges");
+        let _scope = canbench_rs::bench_scope("inline_scalar_set_inline_property_fixed_edges");
         let mut i = 0u16;
         for handle in &edges {
             let bytes = (i.wrapping_add(1)).to_le_bytes();
             store
                 .update_edge_inline_property_at_handle(*handle, &bytes)
-                .expect("update payload");
+                .expect("update inline property");
             i = i.wrapping_add(1);
         }
         black_box(i)

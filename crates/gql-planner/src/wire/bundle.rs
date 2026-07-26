@@ -162,12 +162,13 @@ fn decode_plan_bundle_owned(bytes: &[u8]) -> Result<(bool, Vec<PhysicalPlan>), P
             bytes[offset + 3],
         ]) as usize;
         offset = len_end;
-        let payload_end = offset.checked_add(len).ok_or(PlanBundleError::Truncated)?;
-        if payload_end > bytes.len() {
+        let inline_property_bytes_end =
+            offset.checked_add(len).ok_or(PlanBundleError::Truncated)?;
+        if inline_property_bytes_end > bytes.len() {
             return Err(PlanBundleError::Truncated);
         }
-        let slice = &bytes[offset..payload_end];
-        offset = payload_end;
+        let slice = &bytes[offset..inline_property_bytes_end];
+        offset = inline_property_bytes_end;
         let wire: super::convert::PhysicalPlanWire =
             rkyv_from_wire_bytes(slice).map_err(PlanBundleError::Wire)?;
         plans.push(physical_plan_from_wire(&wire).map_err(PlanBundleError::Wire)?);

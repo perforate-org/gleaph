@@ -97,7 +97,7 @@ impl BatchEdgeInsertResult {
     }
 
     /// Total payload slab slots written across all committed orientations.
-    pub(crate) fn total_payload_slots(&self) -> Option<u64> {
+    pub(crate) fn total_inline_property_bytes_slots(&self) -> Option<u64> {
         match self {
             Self::Committed {
                 inline_property_bytes_slots_written,
@@ -634,7 +634,7 @@ mod tests {
             }]
         ));
         assert_eq!(result.total_edge_slots(), Some(2));
-        assert_eq!(result.total_payload_slots(), Some(2));
+        assert_eq!(result.total_inline_property_bytes_slots(), Some(2));
         assert!(!result.used_expansion());
 
         let label_raw = storage_label_for(Some(label), true);
@@ -677,7 +677,7 @@ mod tests {
             } if matches!(locations.as_ref().expect("capture locations").as_slice(), [BatchEdgePhysicalLocation::Undirected { .. }])
         ));
         assert_eq!(result.total_edge_slots(), Some(2));
-        assert_eq!(result.total_payload_slots(), Some(2));
+        assert_eq!(result.total_inline_property_bytes_slots(), Some(2));
 
         let label_raw = storage_label_for(Some(label), false);
         assert_eq!(
@@ -723,7 +723,7 @@ mod tests {
             } if matches!(locations.as_ref().expect("capture locations").as_slice(), [BatchEdgePhysicalLocation::UndirectedSelfLoop { .. }])
         ));
         assert_eq!(result.total_edge_slots(), Some(1));
-        assert_eq!(result.total_payload_slots(), Some(1));
+        assert_eq!(result.total_inline_property_bytes_slots(), Some(1));
 
         let label_raw = storage_label_for(Some(label), false);
         assert_eq!(
@@ -767,7 +767,7 @@ mod tests {
             }
         ));
         assert_eq!(result.total_edge_slots(), Some(4));
-        assert_eq!(result.total_payload_slots(), Some(0));
+        assert_eq!(result.total_inline_property_bytes_slots(), Some(0));
         assert!(!result.used_expansion());
 
         let label_raw = storage_label_for(Some(label), true);
@@ -881,7 +881,7 @@ mod tests {
         assert_eq!(after.reverse_payload, before.reverse_payload);
     }
 
-    /// Reserve both orientations of a payload-bearing directed edge (so both
+    /// Reserve both orientations of a inline-property-bearing directed edge (so both
     /// forward and reverse payload allocations complete), then roll back both
     /// reservations and verify every logical allocator boundary is restored.
     ///
@@ -1012,12 +1012,12 @@ mod tests {
         assert_eq!(
             after_rollback.forward_payload.free_span_count - before.forward_payload.free_span_count,
             1,
-            "forward payload free-list must gain one retired span"
+            "forward inline property free-list must gain one retired span"
         );
         assert_eq!(
             after_rollback.reverse_payload.free_span_count - before.reverse_payload.free_span_count,
             1,
-            "reverse payload free-list must gain one retired span"
+            "reverse inline property free-list must gain one retired span"
         );
         assert!(
             after_rollback.forward_payload.largest_free_span >= expected_payload_bytes,
@@ -1118,7 +1118,7 @@ mod tests {
         assert_eq!(
             after.forward_payload.free_span_count - before.forward_payload.free_span_count,
             1,
-            "forward payload free-list must gain exactly one retired span"
+            "forward inline property free-list must gain exactly one retired span"
         );
         assert!(
             after.forward_payload.largest_free_span >= expected_forward_payload_bytes,

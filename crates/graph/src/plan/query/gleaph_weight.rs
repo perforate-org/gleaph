@@ -59,7 +59,7 @@ pub(crate) fn decode_traversal_edge_weight(
         if profile.required_byte_width() == 0 {
             return Err(PlanQueryError::GleaphWeight {
                 message: format!(
-                    "edge label row has no payload profile (stored width {} bytes)",
+                    "edge label row has no inline property profile (stored width {} bytes)",
                     inline_property_len
                 ),
             });
@@ -276,7 +276,7 @@ fn prepared_weight_decoder_for_catalog_label(
         .prepare()
         .map_err(
             |e: EdgeInlinePropertyProfileError| PlanQueryError::GleaphWeight {
-                message: format!("GLEAPH.WEIGHT({edge_var}): invalid payload profile: {e}"),
+                message: format!("GLEAPH.WEIGHT({edge_var}): invalid inline property profile: {e}"),
             },
         )?;
     ensure_edge_inline_property_decoder_is_weight(edge_var, label_name, &decoder)?;
@@ -284,7 +284,7 @@ fn prepared_weight_decoder_for_catalog_label(
         .to_weight_profile()
         .ok_or_else(|| PlanQueryError::GleaphWeight {
             message: format!(
-                "GLEAPH.WEIGHT({edge_var}): edge label '{label_name}' payload profile is not a weight encoding"
+                "GLEAPH.WEIGHT({edge_var}): edge label '{label_name}' inline property profile is not a weight encoding"
             ),
         })?
         .prepare()
@@ -360,7 +360,7 @@ pub(crate) fn decode_shortest_hop_cost_from_edge_binding(
         .to_weight_profile()
         .ok_or_else(|| PlanQueryError::GleaphWeight {
             message: format!(
-                "weighted shortest-path hop: edge label {} payload is not a weight encoding",
+                "weighted shortest-path hop: edge label {} inline property is not a weight encoding",
                 catalog.raw()
             ),
         })?
@@ -393,7 +393,7 @@ fn ensure_edge_inline_property_decoder_is_weight(
     }
     Err(PlanQueryError::GleaphWeight {
         message: format!(
-            "GLEAPH.WEIGHT({edge_var}): edge label '{label_name}' payload profile is not a weight encoding"
+            "GLEAPH.WEIGHT({edge_var}): edge label '{label_name}' inline property profile is not a weight encoding"
         ),
     })
 }

@@ -62,7 +62,7 @@ impl fmt::Display for LabeledOperationError {
                 edge_inline_property_width,
             } => write!(
                 f,
-                "edge inline value byte width {edge_inline_property_width} does not match label bucket payload byte width {bucket_width}"
+                "edge inline value byte width {edge_inline_property_width} does not match label bucket inline property byte width {bucket_width}"
             ),
             Self::InvalidVertexRow(err) => write!(f, "invalid labeled vertex row: {err:?}"),
         }

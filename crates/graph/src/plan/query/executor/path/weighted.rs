@@ -471,7 +471,7 @@ pub(crate) fn weighted_shortest_paths_between(
         None
     };
     let mut candidates = Vec::new();
-    let mut payload_scratch = LabeledEdgeInlinePropertyBatchScratch::<Edge>::default();
+    let mut inline_property_scratch = LabeledEdgeInlinePropertyBatchScratch::<Edge>::default();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,
@@ -520,48 +520,56 @@ pub(crate) fn weighted_shortest_paths_between(
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _expand_scope = bench_scope("weighted_shortest_expand");
             let base_cost = entry.cost.clone();
-            prep.expand_inline_property_batches(store, current, &mut payload_scratch, |batch| {
-                let width = usize::from(batch.byte_width);
-                for (edge, payload) in batch
-                    .edges
-                    .iter()
-                    .zip(batch.inline_property_bytes.chunks_exact(width))
-                {
-                    let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
-                        continue;
-                    };
-                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                    let _relax_scope = bench_scope("weighted_shortest_relax");
-                    let hop_edge = if store_hop_edges {
-                        Some(EdgeBinding {
-                            handle: edge_binding_handle_for_scanned_expand(
-                                store, current, direction, edge,
-                            )?,
-                            inline_property: EdgeInlinePropertyBytes::EMPTY,
-                        })
-                    } else {
-                        None
-                    };
-                    relax_weighted_shortest_neighbor(
-                        next,
-                        &base_cost,
-                        depth,
-                        state_idx,
-                        &mut states,
-                        &mut heap,
-                        &mut tie,
-                        &mut found_min_cost,
-                        any_best_cost.as_mut(),
-                        hop_edge,
-                        || {
-                            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                            let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
-                            decode_direct_gleaph_weight_hop_cost_from_payload(decoder, payload)
-                        },
-                    )?;
-                }
-                Ok(())
-            })?;
+            prep.expand_inline_property_batches(
+                store,
+                current,
+                &mut inline_property_scratch,
+                |batch| {
+                    let width = usize::from(batch.byte_width);
+                    for (edge, payload) in batch
+                        .edges
+                        .iter()
+                        .zip(batch.inline_property_bytes.chunks_exact(width))
+                    {
+                        let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
+                            continue;
+                        };
+                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                        let _relax_scope = bench_scope("weighted_shortest_relax");
+                        let hop_edge = if store_hop_edges {
+                            Some(EdgeBinding {
+                                handle: edge_binding_handle_for_scanned_expand(
+                                    store, current, direction, edge,
+                                )?,
+                                inline_property: EdgeInlinePropertyBytes::EMPTY,
+                            })
+                        } else {
+                            None
+                        };
+                        relax_weighted_shortest_neighbor(
+                            next,
+                            &base_cost,
+                            depth,
+                            state_idx,
+                            &mut states,
+                            &mut heap,
+                            &mut tie,
+                            &mut found_min_cost,
+                            any_best_cost.as_mut(),
+                            hop_edge,
+                            || {
+                                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                                let _scope =
+                                    bench_scope("weighted_shortest_hop_cost_decode_direct");
+                                decode_direct_gleaph_weight_hop_cost_from_inline_property(
+                                    decoder, payload,
+                                )
+                            },
+                        )?;
+                    }
+                    Ok(())
+                },
+            )?;
         } else {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _expand_scope = bench_scope("weighted_shortest_expand");
@@ -572,8 +580,8 @@ pub(crate) fn weighted_shortest_paths_between(
                     current,
                     &mut candidates,
                     ShortestExpandOptions {
-                        load_payloads: true,
-                        payload_scratch: Some(&mut payload_scratch),
+                        load_inline_property_bytes: true,
+                        inline_property_scratch: Some(&mut inline_property_scratch),
                     },
                 )?,
                 None => {
@@ -728,7 +736,7 @@ fn weighted_shortest_k_paths_between(
         prepare_inline_property_cost(cost_expr, edge_var, execution, label_id)?;
     let use_hop_cost_cache = direct_gleaph_weight_decoder.is_none();
     let mut candidates = Vec::new();
-    let mut payload_scratch = LabeledEdgeInlinePropertyBatchScratch::<Edge>::default();
+    let mut inline_property_scratch = LabeledEdgeInlinePropertyBatchScratch::<Edge>::default();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,
@@ -756,42 +764,51 @@ fn weighted_shortest_k_paths_between(
             prepared_inline_cost,
         ) {
             let base_cost = entry.cost.clone();
-            prep.expand_inline_property_batches(store, current, &mut payload_scratch, |batch| {
-                let width = usize::from(batch.byte_width);
-                for (edge, payload) in batch
-                    .edges
-                    .iter()
-                    .zip(batch.inline_property_bytes.chunks_exact(width))
-                {
-                    let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
-                        continue;
-                    };
-                    let hop_edge = if store_hop_edges {
-                        Some(EdgeBinding {
-                            handle: edge_binding_handle_for_scanned_expand(
-                                store, current, direction, edge,
-                            )?,
-                            inline_property: EdgeInlinePropertyBytes::EMPTY,
-                        })
-                    } else {
-                        None
-                    };
-                    relax_weighted_shortest_neighbor(
-                        next,
-                        &base_cost,
-                        depth,
-                        state_idx,
-                        &mut states,
-                        &mut heap,
-                        &mut tie,
-                        &mut found_min_cost,
-                        None,
-                        hop_edge,
-                        || decode_direct_gleaph_weight_hop_cost_from_payload(decoder, payload),
-                    )?;
-                }
-                Ok(())
-            })?;
+            prep.expand_inline_property_batches(
+                store,
+                current,
+                &mut inline_property_scratch,
+                |batch| {
+                    let width = usize::from(batch.byte_width);
+                    for (edge, payload) in batch
+                        .edges
+                        .iter()
+                        .zip(batch.inline_property_bytes.chunks_exact(width))
+                    {
+                        let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
+                            continue;
+                        };
+                        let hop_edge = if store_hop_edges {
+                            Some(EdgeBinding {
+                                handle: edge_binding_handle_for_scanned_expand(
+                                    store, current, direction, edge,
+                                )?,
+                                inline_property: EdgeInlinePropertyBytes::EMPTY,
+                            })
+                        } else {
+                            None
+                        };
+                        relax_weighted_shortest_neighbor(
+                            next,
+                            &base_cost,
+                            depth,
+                            state_idx,
+                            &mut states,
+                            &mut heap,
+                            &mut tie,
+                            &mut found_min_cost,
+                            None,
+                            hop_edge,
+                            || {
+                                decode_direct_gleaph_weight_hop_cost_from_inline_property(
+                                    decoder, payload,
+                                )
+                            },
+                        )?;
+                    }
+                    Ok(())
+                },
+            )?;
         } else {
             candidates.clear();
             match fixed_label_expand {
@@ -800,8 +817,8 @@ fn weighted_shortest_k_paths_between(
                     current,
                     &mut candidates,
                     ShortestExpandOptions {
-                        load_payloads: true,
-                        payload_scratch: Some(&mut payload_scratch),
+                        load_inline_property_bytes: true,
+                        inline_property_scratch: Some(&mut inline_property_scratch),
                     },
                 )?,
                 None => {
@@ -935,7 +952,7 @@ fn relax_weighted_shortest_neighbor(
     Ok(())
 }
 
-fn decode_direct_gleaph_weight_hop_cost_from_payload(
+fn decode_direct_gleaph_weight_hop_cost_from_inline_property(
     decoder: &PreparedWeightDecoder,
     payload: &[u8],
 ) -> Result<WeightedCost, PlanQueryError> {
@@ -991,7 +1008,7 @@ fn eval_shortest_hop_cost(
             execution.resolved_labels.as_ref(),
         )?
         .ok_or_else(|| PlanQueryError::GleaphCost {
-            message: "COST BY e.property: inline payload read returned no value".into(),
+            message: "COST BY e.property: inline property read returned no value".into(),
         })?;
         return WeightedCost::from_value(value);
     }
@@ -1064,7 +1081,7 @@ pub(crate) fn decode_direct_gleaph_weight_hop_cost(
     decoder: &PreparedWeightDecoder,
     edge_binding: EdgeBinding,
 ) -> Result<WeightedCost, PlanQueryError> {
-    decode_direct_gleaph_weight_hop_cost_from_payload(
+    decode_direct_gleaph_weight_hop_cost_from_inline_property(
         decoder,
         edge_binding.inline_property_bytes_slice(),
     )

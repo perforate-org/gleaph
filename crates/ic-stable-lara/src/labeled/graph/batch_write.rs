@@ -13,7 +13,7 @@
 //!    and required destination geometry.  If reserve fails part-way through
 //!    capacity reservation, it restores the logical edge-store capacity and the
 //!    inline property bytes occupied tail to their pre-reserve values.  Any payload bytes that
-//!    were already appended are retired to the payload free-list as reusable
+//!    were already appended are retired to the inline property free-list as reusable
 //!    slack.  The underlying stable-memory pages are not shrunk.  Canonical
 //!    adjacency and bucket metadata are never modified.
 //! 2. `BatchReservation::commit` performs the actual stable-memory mutations.
@@ -65,7 +65,7 @@ where
     pub neighbor_vertex_id: VertexId,
     /// Storage label, including directedness bit.
     pub label_id: BucketLabelKey,
-    /// Encoded edge bytes, including the inline payload if any.
+    /// Encoded edge bytes, including the inline property bytes if any.
     pub edge: E,
 }
 
@@ -236,7 +236,7 @@ where
 /// folds them into a slab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OneOrientationPhysicalLocation {
-    /// Edge slab slot and optional inline payload byte offset.
+    /// Edge slab slot and optional inline property bytes byte offset.
     Slab {
         /// Edge slab slot.
         edge_slot: u64,
@@ -400,7 +400,7 @@ pub enum OneOrientationBatchError {
     SlabCapacityExceeded,
     /// The overflow log cannot hold the planned run.
     LogCapacityExceeded,
-    /// A payload edge carried a byte length different from the declared width.
+    /// A inline property edge carried a byte length different from the declared width.
     InlinePropertyBytesLengthMismatch {
         /// Logical ordinal of the offending edge.
         logical_ordinal: u32,
@@ -429,7 +429,7 @@ enum RunDestination {
     Slab {
         /// First edge slab slot written for the run.
         edge_start_slot: u64,
-        /// Byte offset in the inline property bytes slab where the run writes, if payload-bearing.
+        /// Byte offset in the inline property bytes slab where the run writes, if inline-property-bearing.
         inline_property_bytes_offset: Option<u64>,
         /// Number of payload bytes reserved.
         inline_property_bytes_byte_count: u64,
@@ -438,7 +438,7 @@ enum RunDestination {
     OverflowLog {
         /// Index of the first reserved edge log entry.
         edge_log_start_idx: u32,
-        /// Index of the first reserved inline property bytes log entry, if payload-bearing.
+        /// Index of the first reserved inline property bytes log entry, if inline-property-bearing.
         inline_property_bytes_log_start_idx: Option<u32>,
     },
     /// Expand the pinned PMA leaf block in place and write the run into the new slab
@@ -548,7 +548,7 @@ where
     /// fallible validation before any canonical write.  If reserve fails after
     /// growing edge/payload backing capacity, it restores the logical edge-store
     /// capacity and inline property bytes occupied tail to their pre-reserve values.  Payload
-    /// bytes that were already appended are retired to the payload free-list
+    /// bytes that were already appended are retired to the inline property free-list
     /// as reusable slack; the underlying stable-memory pages are not shrunk.
     /// Canonical adjacency and bucket metadata are never modified.  On success
     /// it returns an opaque [`BatchReservation`] token; the valid operations on
@@ -854,7 +854,7 @@ where
                     } => {
                         let inline_property_bytes_offset = if p.inline_property_width > 0 {
                             let (actual_offset, _allocated_len) = allocated
-                                .expect("payload-bearing slab run must have an allocated offset");
+                                .expect("inline-property-bearing slab run must have an allocated offset");
                             if let Some(InlinePropertyBytesAllocationKind::Existing { offset }) =
                                 p.inline_property_bytes_allocation
                             {
@@ -896,7 +896,7 @@ where
                     } => {
                         let inline_property_bytes_offset = if p.inline_property_width > 0 {
                             let (actual_offset, _allocated_len) = allocated.expect(
-                                "payload-bearing expanded-slab run must have an allocated offset",
+                                "inline-property-bearing expanded-slab run must have an allocated offset",
                             );
                             Some(actual_offset)
                         } else {
@@ -993,12 +993,12 @@ where
         if current_tail > original_tail {
             self.values
                 .retire_byte_span(original_tail, current_tail - original_tail)
-                .expect("reserve rollback must restore payload free-list consistency");
+                .expect("reserve rollback must restore inline property free-list consistency");
             self.values.reset_slab_occupied_tail(original_tail);
         }
     }
 
-    /// Verify that the summed edge and payload slot counts of the preflight runs
+    /// Verify that the summed edge and inline property bytes slot counts of the preflight runs
     /// fit into the public `u32` result fields.
     ///
     /// This is pulled out so the boundary can be unit-tested directly: a batch
@@ -1136,7 +1136,7 @@ where
             );
         }
 
-        // Verify every payload-bearing edge matches the declared width.  This
+        // Verify every inline-property-bearing edge matches the declared width.  This
         // proves the commit-time assertion cannot fire for malformed input.
         let mut inline_property_bytes_byte_count: u64 = 0;
         if run.inline_property_width > 0 {
@@ -1198,7 +1198,7 @@ where
             assert_eq!(
                 total_inline_property_bytes,
                 inline_property_bytes_byte_count + had_bytes,
-                "preflight payload geometry mismatch"
+                "preflight inline property geometry mismatch"
             );
         }
 
@@ -1245,7 +1245,7 @@ where
             .checked_add(edge_slot_count)
             .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
 
-        // Verify every payload-bearing edge matches the declared width and check
+        // Verify every inline-property-bearing edge matches the declared width and check
         // payload overflow log capacity.
         let mut inline_property_bytes_byte_count: u64 = 0;
         let mut inline_property_bytes_log_start_idx = None;
@@ -1272,11 +1272,11 @@ where
             let (raw_payload_idx, inline_property_bytes_log_capacity) = self
                 .values
                 .read_inline_property_bytes_log_state(inline_property_bytes_log_leaf);
-            let base_payload_idx = raw_payload_idx.max(0) as u32;
+            let base_inline_property_bytes_idx = raw_payload_idx.max(0) as u32;
             let inline_property_bytes_log_start_idx_virtual =
                 *inline_property_bytes_log_leaf_cursors
                     .entry(inline_property_bytes_log_leaf)
-                    .or_insert(base_payload_idx);
+                    .or_insert(base_inline_property_bytes_idx);
             let inline_property_bytes_log_end_idx = inline_property_bytes_log_start_idx_virtual
                 .checked_add(edge_slot_count)
                 .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
@@ -1347,7 +1347,7 @@ where
             0
         };
 
-        // Validate payload-bearing edges and project the inline property bytes slab space that
+        // Validate inline-property-bearing edges and project the inline property bytes slab space that
         // will hold the existing slab values, any folded inline property bytes log entries, and
         // the pending batch values after the leaf expansion.
         let mut inline_property_bytes_byte_count: u64 = 0;
@@ -1663,7 +1663,7 @@ where
                         .checked_add(res.edge_slot_count)
                         .expect("reserve guaranteed stored_slots overflow safety");
                     if res.inline_property_width > 0 {
-                        let _updated_payload_slots = bucket
+                        let _updated_inline_property_bytes_slots = bucket
                             .inline_property_bytes_slab_slots()
                             .checked_add(res.edge_slot_count)
                             .expect("reserve guaranteed inline property bytes slab slot overflow safety");
@@ -1717,7 +1717,7 @@ where
                         .write_slots_contiguous(*edge_start_slot, &edge_bytes)
                         .expect("reserve guaranteed edge slab capacity");
 
-                    let payload_width = u64::from(res.inline_property_width);
+                    let inline_property_width = u64::from(res.inline_property_width);
                     if let Some(locations) = locations.as_mut() {
                         locations.extend(run.edges.iter().enumerate().map(|(offset, edge)| {
                             OneOrientationBatchLocation {
@@ -1733,12 +1733,12 @@ where
                                             start
                                                 .checked_add(
                                                     (offset as u64)
-                                                        .checked_mul(payload_width)
+                                                        .checked_mul(inline_property_width)
                                                         .expect(
-                                                            "reserve guaranteed payload location",
+                                                            "reserve guaranteed inline property location",
                                                         ),
                                                 )
-                                                .expect("reserve guaranteed payload location")
+                                                .expect("reserve guaranteed inline property location")
                                         }),
                                 },
                             }
@@ -1747,7 +1747,7 @@ where
 
                     if res.inline_property_width > 0 {
                         let payload_offset = inline_property_bytes_offset.expect(
-                            "reserve guaranteed a payload byte offset for payload-bearing run",
+                            "reserve guaranteed an inline property byte offset for inline-property-bearing run",
                         );
                         let inline_property_bytes = run
                             .edges
@@ -1757,7 +1757,7 @@ where
                         assert_eq!(
                             inline_property_bytes.len() as u64,
                             *inline_property_bytes_byte_count,
-                            "reserve payload byte count must match actual payload bytes"
+                            "reserve inline property byte count must match actual inline property bytes"
                         );
                         graph
                             .values
@@ -1765,7 +1765,7 @@ where
                             .expect("reserve guaranteed inline property bytes slab capacity");
                         inline_property_bytes_slots_written = inline_property_bytes_slots_written
                             .checked_add(u64::from(res.edge_slot_count))
-                            .expect("reserve guaranteed payload slot count");
+                            .expect("reserve guaranteed inline property bytes slot count");
                     }
 
                     edge_slots_written = edge_slots_written
@@ -1813,9 +1813,9 @@ where
                         .edges
                         .write_overflow_log_entries(leaf, *edge_log_start_idx, &entries)
                         .expect("reserve guaranteed edge log capacity");
-                    let payload_start = if res.inline_property_width > 0 {
+                    let inline_property_bytes_start = if res.inline_property_width > 0 {
                         Some(inline_property_bytes_log_start_idx.expect(
-                            "reserve guaranteed a inline property bytes log start index for payload-bearing run",
+                            "reserve guaranteed a inline property bytes log start index for inline-property-bearing run",
                         ))
                     } else {
                         None
@@ -1830,11 +1830,12 @@ where
                                     edge_entry_idx: edge_log_start_idx
                                         .checked_add(offset as u32)
                                         .expect("reserve guaranteed edge log location"),
-                                    inline_property_bytes_entry_idx: payload_start.map(|start| {
-                                        start.checked_add(offset as u32).expect(
+                                    inline_property_bytes_entry_idx: inline_property_bytes_start
+                                        .map(|start| {
+                                            start.checked_add(offset as u32).expect(
                                             "reserve guaranteed inline property bytes log location",
                                         )
-                                    }),
+                                        }),
                                 },
                             }
                         }));
@@ -1849,21 +1850,22 @@ where
                     if res.inline_property_width > 0 {
                         let inline_property_bytes_log_leaf = graph
                             .inline_property_bytes_log_leaf(res.bucket_fingerprint.owner_vertex_id);
-                        let prev_payload_head = bucket.inline_property_bytes_log_head();
+                        let prev_inline_property_bytes_log_head =
+                            bucket.inline_property_bytes_log_head();
                         let inline_property_bytes = run
                             .edges
                             .iter()
                             .flat_map(|e| e.edge.edge_inline_property_bytes().iter().copied())
                             .collect::<Vec<u8>>();
-                        let payload_start = inline_property_bytes_log_start_idx.expect(
-                            "reserve guaranteed a inline property bytes log start index for payload-bearing run",
+                        let inline_property_bytes_start = inline_property_bytes_log_start_idx.expect(
+                            "reserve guaranteed a inline property bytes log start index for inline-property-bearing run",
                         );
                         graph
                             .values
                             .write_inline_property_bytes_log_entries(
                                 inline_property_bytes_log_leaf,
-                                payload_start,
-                                prev_payload_head,
+                                inline_property_bytes_start,
+                                prev_inline_property_bytes_log_head,
                                 res.inline_property_width,
                                 &inline_property_bytes,
                             )
@@ -1874,7 +1876,7 @@ where
                                 .expect("reserve guaranteed inline property bytes log slot count");
                         inline_property_bytes_slots_written = inline_property_bytes_slots_written
                             .checked_add(u64::from(res.edge_slot_count))
-                            .expect("reserve guaranteed payload slot count");
+                            .expect("reserve guaranteed inline property bytes slot count");
                     }
                 }
                 RunDestination::ExpandedSlab {
@@ -1889,7 +1891,7 @@ where
                     inline_property_bytes_byte_count,
                     ..
                 } => {
-                    let (edge_written, payload_written, run_locations) =
+                    let (edge_written, inline_property_bytes_written, run_locations) =
                         Self::commit_expanded_slab_run::<M>(
                             graph,
                             run,
@@ -1912,8 +1914,8 @@ where
                         .checked_add(edge_written)
                         .expect("reserve guaranteed expanded edge slot count");
                     inline_property_bytes_slots_written = inline_property_bytes_slots_written
-                        .checked_add(payload_written)
-                        .expect("reserve guaranteed expanded payload slot count");
+                        .checked_add(inline_property_bytes_written)
+                        .expect("reserve guaranteed expanded inline property bytes slot count");
                 }
             }
         }
@@ -1978,21 +1980,24 @@ where
                     let last_edge_idx = edge_log_start_idx + res.edge_slot_count - 1;
                     updated_bucket = updated_bucket.with_overflow_log_head(last_edge_idx as i32);
                     if res.inline_property_width > 0 {
-                        let payload_start = inline_property_bytes_log_start_idx.expect(
-                            "reserve guaranteed inline property bytes log start index for payload-bearing run",
+                        let inline_property_bytes_start = inline_property_bytes_log_start_idx.expect(
+                            "reserve guaranteed inline property bytes log start index for inline-property-bearing run",
                         );
-                        let last_payload_idx = payload_start + res.edge_slot_count - 1;
-                        let next_payload_len = u32::from(bucket.inline_property_bytes_log_len())
-                            .checked_add(res.edge_slot_count)
-                            .expect(
-                                "reserve guaranteed inline property bytes log len overflow safety",
-                            );
-                        let next_payload_len_u8 = u8::try_from(next_payload_len)
-                            .expect("reserve guaranteed inline property bytes log len fits in u8");
+                        let last_inline_property_bytes_idx =
+                            inline_property_bytes_start + res.edge_slot_count - 1;
+                        let next_inline_property_bytes_len = u32::from(
+                            bucket.inline_property_bytes_log_len(),
+                        )
+                        .checked_add(res.edge_slot_count)
+                        .expect("reserve guaranteed inline property bytes log len overflow safety");
+                        let next_inline_property_bytes_len_u8 = u8::try_from(
+                            next_inline_property_bytes_len,
+                        )
+                        .expect("reserve guaranteed inline property bytes log len fits in u8");
                         updated_bucket = updated_bucket
                             .try_with_inline_property_bytes_log(
-                                last_payload_idx as i32,
-                                next_payload_len_u8,
+                                last_inline_property_bytes_idx as i32,
+                                next_inline_property_bytes_len_u8,
                             )
                             .expect("reserve guaranteed inline property bytes log state");
                     }
@@ -2152,15 +2157,15 @@ where
             .write_slots_contiguous(pending_start, &edge_bytes)
             .expect("reserve guaranteed slab capacity");
 
-        let payload_width = u64::from(res.inline_property_width);
-        let pending_payload_start = inline_property_bytes_offset.map(|offset| {
+        let inline_property_width = u64::from(res.inline_property_width);
+        let pending_inline_property_bytes_start = inline_property_bytes_offset.map(|offset| {
             offset
                 .checked_add(
                     u64::from(existing_inline_property_bytes_slots)
                         .checked_add(u64::from(inline_property_bytes_log_len))
-                        .expect("reserve guaranteed pending payload slot offset")
-                        .checked_mul(payload_width)
-                        .expect("reserve guaranteed pending payload byte offset"),
+                        .expect("reserve guaranteed pending inline property slot offset")
+                        .checked_mul(inline_property_width)
+                        .expect("reserve guaranteed pending inline property byte offset"),
                 )
                 .expect("reserve guaranteed pending payload offset")
         });
@@ -2175,15 +2180,17 @@ where
                         edge_slot: pending_start
                             .checked_add(offset as u64)
                             .expect("reserve guaranteed edge location"),
-                        inline_property_bytes_offset: pending_payload_start.map(|start| {
-                            start
-                                .checked_add(
-                                    (offset as u64)
-                                        .checked_mul(payload_width)
-                                        .expect("reserve guaranteed payload location"),
-                                )
-                                .expect("reserve guaranteed payload location")
-                        }),
+                        inline_property_bytes_offset: pending_inline_property_bytes_start.map(
+                            |start| {
+                                start
+                                    .checked_add(
+                                        (offset as u64)
+                                            .checked_mul(inline_property_width)
+                                            .expect("reserve guaranteed inline property location"),
+                                    )
+                                    .expect("reserve guaranteed inline property location")
+                            },
+                        ),
                     },
                 })
                 .collect::<Vec<_>>()
@@ -2209,8 +2216,8 @@ where
         let mut inline_property_bytes_slots_written: u64 = 0;
         if res.inline_property_width > 0 {
             let width = u64::from(res.inline_property_width);
-            let new_payload_offset =
-                inline_property_bytes_offset.expect("reserve guaranteed payload byte offset");
+            let new_payload_offset = inline_property_bytes_offset
+                .expect("reserve guaranteed inline property byte offset");
 
             // Fold existing payload overflow-log entries into the slab.
             if inline_property_bytes_log_len > 0 {
@@ -2234,9 +2241,9 @@ where
                         .checked_add(
                             u64::from(existing_inline_property_bytes_slots)
                                 .checked_add(offset as u64)
-                                .expect("reserve guaranteed folded payload slot offset")
+                                .expect("reserve guaranteed folded inline property slot offset")
                                 .checked_mul(width)
-                                .expect("reserve guaranteed folded payload byte offset"),
+                                .expect("reserve guaranteed folded inline property byte offset"),
                         )
                         .expect("reserve guaranteed folded payload offset");
                     graph
@@ -2255,15 +2262,15 @@ where
             assert_eq!(
                 pending_inline_property_bytes.len() as u64,
                 inline_property_bytes_byte_count,
-                "reserve payload byte count must match actual payload bytes"
+                "reserve inline property byte count must match actual inline property bytes"
             );
             let pending_payload_offset = new_payload_offset
                 .checked_add(
                     u64::from(existing_inline_property_bytes_slots)
                         .checked_add(u64::from(inline_property_bytes_log_len))
-                        .expect("reserve guaranteed pending payload slot offset")
+                        .expect("reserve guaranteed pending inline property slot offset")
                         .checked_mul(width)
-                        .expect("reserve guaranteed pending payload byte offset"),
+                        .expect("reserve guaranteed pending inline property byte offset"),
                 )
                 .expect("reserve guaranteed pending payload offset");
             graph
@@ -2274,7 +2281,7 @@ where
             let total_inline_property_bytes_slots = u64::from(existing_inline_property_bytes_slots)
                 .checked_add(u64::from(inline_property_bytes_log_len))
                 .and_then(|s| s.checked_add(u64::from(res.edge_slot_count)))
-                .expect("reserve guaranteed payload slot count");
+                .expect("reserve guaranteed inline property bytes slot count");
             updated_bucket = updated_bucket
                 .with_inline_property_bytes_slab_slots(total_inline_property_bytes_slots as u32)
                 .with_inline_property_bytes_log_head(-1);
@@ -2284,21 +2291,23 @@ where
             }
             inline_property_bytes_slots_written = u64::from(inline_property_bytes_log_len)
                 .checked_add(u64::from(res.edge_slot_count))
-                .expect("reserve guaranteed payload slot count");
+                .expect("reserve guaranteed inline property bytes slot count");
 
             let total_inline_property_bytes = total_inline_property_bytes_slots
                 .checked_mul(width)
-                .expect("reserve guaranteed payload byte count");
+                .expect("reserve guaranteed inline property byte count");
             let had_bytes = u64::from(existing_inline_property_bytes_slots)
                 .checked_mul(width)
-                .expect("reserve guaranteed existing payload byte count");
+                .expect("reserve guaranteed existing inline property byte count");
             let alloc_delta = total_inline_property_bytes - had_bytes;
             if alloc_delta > 0 {
                 let vertex = graph.vertices.get(owner);
                 let new_alloc = vertex
                     .inline_property_bytes_allocated_bytes()
                     .checked_add(alloc_delta)
-                    .expect("reserve guaranteed vertex payload allocated bytes overflow safety");
+                    .expect(
+                        "reserve guaranteed vertex inline property allocated bytes overflow safety",
+                    );
                 graph.vertices.set(
                     owner,
                     &vertex.with_inline_property_bytes_allocated_bytes(new_alloc),
@@ -2343,7 +2352,7 @@ where
     /// This consumes the token and restores the edge-store logical capacity
     /// and inline property bytes occupied tail to the values captured before
     /// `reserve_one_orientation_batch` mutated them.  Any payload bytes that
-    /// were already appended are retired to the payload free-list as reusable
+    /// were already appended are retired to the inline property free-list as reusable
     /// slack; the underlying stable-memory pages are not shrunk.  Canonical
     /// adjacency and bucket metadata are untouched.  Because the token is
     /// consumed, a reservation cannot be rolled back twice.
@@ -2439,7 +2448,7 @@ impl std::fmt::Display for OneOrientationBatchError {
             } => {
                 write!(
                     f,
-                    "payload width mismatch: bucket {bucket_width}, edge {edge_width}"
+                    "inline property byte width mismatch: bucket {bucket_width}, edge {edge_width}"
                 )
             }
             Self::SlabCapacityExceeded => write!(f, "slab capacity exceeded"),
@@ -2459,7 +2468,7 @@ impl std::fmt::Display for OneOrientationBatchError {
                 inline_property_bytes_log_len,
             } => write!(
                 f,
-                "edge/payload overflow-log length mismatch: edge {edge_log_len}, payload {inline_property_bytes_log_len}"
+                "edge/inline-property overflow-log length mismatch: edge {edge_log_len}, inline property {inline_property_bytes_log_len}"
             ),
             Self::StorageError(e) => write!(f, "storage error: {e}"),
             Self::InvalidOrientationPair(detail) => write!(f, "invalid orientation pair: {detail}"),
@@ -2553,9 +2562,9 @@ mod tests {
     }
 
     #[test]
-    fn reserve_checks_total_edge_and_payload_slot_counts_fit_in_u32_results() {
+    fn reserve_checks_total_edge_and_inline_property_bytes_slot_counts_fit_in_u32_results() {
         // `check_total_result_counts_fit_u32` rejects plans whose summed edge or
-        // payload slot counts would not fit in the public `u32` result fields.
+        // inline property bytes slot counts would not fit in the public `u32` result fields.
         // Payload byte counts are irrelevant to this check; only slot counts matter.
         let check = |preflight: &[PreflightRun]| {
             super::LabeledLaraGraph::<GraphTestEdge, crate::VectorMemory>::check_total_result_counts_fit_u32(
@@ -2585,7 +2594,7 @@ mod tests {
             "edge slot count overflowing u32 must be rejected"
         );
 
-        let too_many_payload = vec![
+        let too_many_inline_property = vec![
             PreflightRun {
                 edge_slot_count: u32::MAX / 2 + 1,
                 inline_property_width: 4,
@@ -2598,8 +2607,8 @@ mod tests {
             },
         ];
         assert!(
-            check(&too_many_payload).is_err(),
-            "payload slot count overflowing u32 must be rejected"
+            check(&too_many_inline_property).is_err(),
+            "inline property bytes slot count overflowing u32 must be rejected"
         );
 
         let edge_at_max_u32 = vec![PreflightRun {
@@ -2611,13 +2620,13 @@ mod tests {
             "exactly u32::MAX edge slots must be accepted"
         );
 
-        let payload_at_max_u32 = vec![PreflightRun {
+        let inline_property_at_max_u32 = vec![PreflightRun {
             edge_slot_count: u32::MAX,
             inline_property_width: 1,
             ..Default::default()
         }];
         assert!(
-            check(&payload_at_max_u32).is_ok(),
+            check(&inline_property_at_max_u32).is_ok(),
             "exactly u32::MAX inline property bytes slots must be accepted"
         );
     }

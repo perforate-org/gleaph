@@ -498,8 +498,8 @@ where
             return Ok(());
         }
         let log_len = u32::from(bucket.inline_property_bytes_log_len());
-        let slab_payload_slots = bucket.inline_property_bytes_slab_slots();
-        if slot_index < slab_payload_slots {
+        let slab_inline_property_bytes_slots = bucket.inline_property_bytes_slab_slots();
+        if slot_index < slab_inline_property_bytes_slots {
             let offset = super::super::invariants::inline_property_bytes_byte_offset_at_slot(
                 bucket, slot_index,
             )?;
@@ -507,7 +507,7 @@ where
             return Ok(());
         }
         let asc_log_index = slot_index
-            .checked_sub(slab_payload_slots)
+            .checked_sub(slab_inline_property_bytes_slots)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         if asc_log_index >= log_len {
             return Err(LabeledOperationError::from(
@@ -588,7 +588,7 @@ where
             .checked_add(slab_bytes)
             .is_some_and(|end| end == self.values.header().slab_occupied_tail);
         // Payload capacity is independent from the edge segment size.  A
-        // payload-bearing bucket starts with one value-width entry and grows
+        // inline-property-bearing bucket starts with one value-width entry and grows
         // in value-width byte units while its span remains extendable.  Once
         // a inline property bytes log exists, or the span is no longer at the slab tail,
         // append to the log instead of repeatedly relocating the span.
@@ -782,7 +782,7 @@ where
         }
         self.values
             .retire_byte_span(plan.retired_offset, plan.retired_len)
-            .unwrap_or_else(|_| panic!("reserved payload-span retirement failed"));
+            .unwrap_or_else(|_| panic!("reserved inline-property-span retirement failed"));
         self.vertices.set(src, &plan.updated_vertex);
         plan.bucket
     }
@@ -1025,13 +1025,13 @@ where
             });
         }
         if edge_inline_property_width != 0 {
-            let prev_payload_slots =
+            let prev_inline_property_bytes_slots =
                 self.bucket_resident_inline_property_bytes_slots_for(src, &bucket);
             bucket = self.ensure_bucket_inline_property_bytes_span(
                 src,
                 slot,
                 bucket,
-                prev_payload_slots,
+                prev_inline_property_bytes_slots,
             )?;
             self.write_edge_inline_property_at_slot(&bucket, slot_index, &edge)?;
         }
@@ -1233,12 +1233,13 @@ where
             }
             let bucket_index = u32::try_from(bucket_index)
                 .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-            let slot_payloads = self.collect_bucket_inline_property_bytes_slots_asc_order(
-                src,
-                &vertex,
-                bucket_index,
-                bucket,
-            )?;
+            let slot_inline_property_bytes = self
+                .collect_bucket_inline_property_bytes_slots_asc_order(
+                    src,
+                    &vertex,
+                    bucket_index,
+                    bucket,
+                )?;
 
             let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
             let successor =
@@ -1262,23 +1263,26 @@ where
                 edge_slots.push(edge.edge_slot_index_raw());
             }
 
-            let payload_slots: Vec<u32> = slot_payloads.iter().map(|(slot, _)| *slot).collect();
+            let inline_property_bytes_slots: Vec<u32> = slot_inline_property_bytes
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect();
             assert_eq!(
-                payload_slots,
+                inline_property_bytes_slots,
                 edge_slots,
                 "label {:?}: inline property bytes slots must follow asc edge slab order",
                 bucket.bucket_label_key()
             );
 
             let width = usize::from(bucket.inline_property_byte_width());
-            for (slot, expected) in slot_payloads {
+            for (slot, expected) in slot_inline_property_bytes {
                 let offset = inline_property_bytes_byte_offset_at_slot(bucket, slot)?;
                 let mut at_offset = vec![0u8; width];
                 self.values.read_bytes(offset, &mut at_offset);
                 assert_eq!(
                     at_offset,
                     expected,
-                    "label {:?} slot {slot}: payload bytes must live at dense offset",
+                    "label {:?} slot {slot}: inline property bytes must live at dense offset",
                     bucket.bucket_label_key()
                 );
             }
@@ -1422,7 +1426,7 @@ mod tests {
                 graph
                     .remove_edge_matching(src, label, |edge| edge.target == target)
                     .unwrap()
-                    .expect("payload edge removed");
+                    .expect("inline property edge removed");
             }
         }
 
@@ -1469,7 +1473,7 @@ mod tests {
                 graph
                     .remove_edge_matching(src, label, |edge| edge.target == target)
                     .unwrap()
-                    .expect("payload edge removed");
+                    .expect("inline property edge removed");
             }
         }
 
@@ -1479,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_payload_insert_skips_synchronous_compaction() {
+    fn deferred_inline_property_insert_skips_synchronous_compaction() {
         let graph = inline_property_test_graph();
         let src = graph.push_vertex(LabeledVertex::default()).unwrap();
         for (label, target, width) in [(2, 0, 2), (3, 1, 2), (4, 2, 4)] {
@@ -1501,7 +1505,7 @@ mod tests {
             graph
                 .remove_edge_matching(src, label, |edge| edge.target == target)
                 .unwrap()
-                .expect("payload edge removed");
+                .expect("inline property edge removed");
         }
 
         let target = BucketLabelKey::from_raw(5);
@@ -1509,7 +1513,7 @@ mod tests {
             .ensure_label_bucket_inline_property_byte_width(src, target, 6)
             .unwrap();
         graph
-            .insert_edge_skip_leaf_cascade_deferred_payload(
+            .insert_edge_skip_leaf_cascade_deferred_inline_property(
                 src,
                 target,
                 InlinePropertyTestEdge::with_bytes(3, &[3u8; 6]),
@@ -3366,7 +3370,7 @@ mod tests {
         );
         assert!(
             bucket.inline_property_bytes_log_head() >= 0,
-            "expected payload overflow log for 12-byte payloads"
+            "expected inline property bytes overflow log for 12-byte inline properties"
         );
 
         let mut seen = Vec::new();
@@ -3432,7 +3436,9 @@ mod tests {
                 OutEdgeOrder::Descending,
                 |_slot, _item| ControlFlow::<()>::Continue(()),
             )
-            .expect_err("corrupt inline property bytes log must not be converted to zero payload");
+            .expect_err(
+                "corrupt inline property bytes log must not be converted to zero inline property",
+            );
         assert!(
             matches!(err, LabeledOperationError::InlinePropertyBytesLogRead(_)),
             "unexpected error: {err:?}"
@@ -3488,7 +3494,9 @@ mod tests {
                 &mut scratch,
                 |_| ControlFlow::<()>::Continue(()),
             )
-            .expect_err("payload batch traversal must report corrupt inline property bytes log");
+            .expect_err(
+                "inline property batch traversal must report corrupt inline property bytes log",
+            );
         assert!(
             matches!(err, LabeledOperationError::InlinePropertyBytesLogRead(_)),
             "unexpected batch error: {err:?}"
@@ -3528,7 +3536,7 @@ mod tests {
                     && edge.edge_inline_property_bytes() == needle
             })
             .unwrap()
-            .expect("payload predicate should match");
+            .expect("inline property predicate should match");
         assert_eq!(found.0.target, 2);
         assert_eq!(found.1, Some(road));
     }
@@ -3613,7 +3621,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &1u16.to_le_bytes()),
             )
-            .expect_err("payload edge must not infer bucket inline property schema");
+            .expect_err("inline property bytes edge must not infer bucket inline property schema");
         assert!(matches!(
             err,
             LabeledOperationError::InlinePropertyBytesWidthMismatch {
@@ -3624,7 +3632,7 @@ mod tests {
         assert_eq!(
             graph.out_edge_label_ids(VertexId::from(0)).unwrap(),
             Vec::<BucketLabelKey>::new(),
-            "failed payload insert must not create an empty label bucket"
+            "failed inline property bytes insert must not create an empty label bucket"
         );
     }
 
@@ -3649,7 +3657,7 @@ mod tests {
                 default,
                 InlinePropertyTestEdge::with_bytes(2, &2u16.to_le_bytes()),
             )
-            .expect_err("payload insert must not promote default bypass row");
+            .expect_err("inline property bytes insert must not promote default bypass row");
         assert!(matches!(
             err,
             LabeledOperationError::InlinePropertyBytesWidthMismatch {
@@ -3686,7 +3694,9 @@ mod tests {
             .unwrap();
         let err = graph
             .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), road, 2u16)
-            .expect_err("non-empty no-inline property bytes bucket must not become payloaded");
+            .expect_err(
+                "non-empty no-inline property bytes bucket must not become inline-property-bearing",
+            );
         assert!(matches!(
             err,
             LabeledOperationError::InlinePropertyBytesWidthMismatch {
@@ -3713,7 +3723,7 @@ mod tests {
         ] {
             let err = graph
                 .insert_edge_skip_leaf_cascade(VertexId::from(0), valued, edge)
-                .expect_err("payload width must match existing bucket schema");
+                .expect_err("inline property byte width must match existing bucket schema");
             assert!(matches!(
                 err,
                 LabeledOperationError::InlinePropertyBytesWidthMismatch {
@@ -3807,7 +3817,7 @@ mod tests {
         graph.compact_vertex_edge_span(src, 0).unwrap();
         graph
             .test_assert_bucket_inline_property_bytes_follow_edge_slab_order(src)
-            .expect("payload order matches edge slab after rewrite and compact");
+            .expect("inline property bytes order matches edge slab after rewrite and compact");
     }
 
     #[test]

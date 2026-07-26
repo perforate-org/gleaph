@@ -58,27 +58,27 @@ impl CsrEdgeTombstone for BenchEdge {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PayloadBenchEdge {
+struct InlinePropertyBenchEdge {
     target: u32,
-    payload: [u8; 8],
+    inline_property: [u8; 8],
 }
 
-impl PayloadBenchEdge {
+impl InlinePropertyBenchEdge {
     fn new(target: u32, value: u64) -> Self {
         Self {
             target,
-            payload: value.to_le_bytes(),
+            inline_property: value.to_le_bytes(),
         }
     }
 }
 
-impl CsrEdge for PayloadBenchEdge {
+impl CsrEdge for InlinePropertyBenchEdge {
     const BYTES: usize = 4;
 
     fn read_from(bytes: &[u8]) -> Self {
         Self {
             target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            payload: [0u8; 8],
+            inline_property: [0u8; 8],
         }
     }
 
@@ -93,7 +93,7 @@ impl CsrEdge for PayloadBenchEdge {
     fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         Self {
             target: u32::from(vid),
-            payload: self.payload,
+            inline_property: self.inline_property,
         }
     }
 
@@ -102,30 +102,30 @@ impl CsrEdge for PayloadBenchEdge {
     }
 
     fn edge_inline_property_bytes(&self) -> &[u8] {
-        &self.payload
+        &self.inline_property
     }
 
     fn with_stored_inline_property_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
         let len = usize::from(width).min(bytes.len()).min(8);
-        self.payload = [0u8; 8];
-        self.payload[..len].copy_from_slice(&bytes[..len]);
+        self.inline_property = [0u8; 8];
+        self.inline_property[..len].copy_from_slice(&bytes[..len]);
         self
     }
 }
 
-impl CsrEdgeTombstone for PayloadBenchEdge {
+impl CsrEdgeTombstone for InlinePropertyBenchEdge {
     fn tombstone_edge() -> Self {
         Self {
             target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
-            payload: [0u8; 8],
+            inline_property: [0u8; 8],
         }
     }
 }
 
-fn payload_bench_graph(
+fn inline_property_bench_graph(
     elem_capacity: u64,
     default_label: BucketLabelKey,
-) -> LabeledLaraGraph<PayloadBenchEdge, crate::VectorMemory> {
+) -> LabeledLaraGraph<InlinePropertyBenchEdge, crate::VectorMemory> {
     let (
         vertices,
         buckets,
@@ -287,10 +287,10 @@ fn bench_traverse_next_visit_in_edges_dense() -> canbench_rs::BenchResult {
     })
 }
 
-/// Reverse/incoming hybrid scan with inline-property payload batches.
+/// Reverse/incoming hybrid scan with inline-property inline property batches.
 #[bench(raw)]
 fn bench_traverse_next_visit_in_edges_hybrid_inline_property() -> canbench_rs::BenchResult {
-    let graph = reverse_bench_graph::<PayloadBenchEdge>();
+    let graph = reverse_bench_graph::<InlinePropertyBenchEdge>();
     let src = VertexId::from(0);
     let dst = VertexId::from(1);
     graph.push_vertex().unwrap();
@@ -306,8 +306,8 @@ fn bench_traverse_next_visit_in_edges_hybrid_inline_property() -> canbench_rs::B
                 src,
                 dst,
                 label,
-                PayloadBenchEdge::new(dst.into(), u64::from(i)),
-                PayloadBenchEdge::new(src.into(), u64::from(i)),
+                InlinePropertyBenchEdge::new(dst.into(), u64::from(i)),
+                InlinePropertyBenchEdge::new(src.into(), u64::from(i)),
             )
             .unwrap();
         black_box(value);
@@ -479,7 +479,7 @@ fn bench_traverse_next_visit_edges_early_break() -> canbench_rs::BenchResult {
 /// Hybrid bucket: slab prefix plus overflow-log suffix.
 #[bench(raw)]
 fn bench_traverse_next_visit_edges_hybrid() -> canbench_rs::BenchResult {
-    let graph = payload_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
+    let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
@@ -487,7 +487,11 @@ fn bench_traverse_next_visit_edges_hybrid() -> canbench_rs::BenchResult {
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
-            .insert_edge_skip_leaf_cascade(src, label, PayloadBenchEdge::new(i + 10, u64::from(i)))
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+            )
             .unwrap();
     }
     bench_fn(|| {
@@ -505,7 +509,7 @@ fn bench_traverse_next_visit_edges_hybrid() -> canbench_rs::BenchResult {
 /// Selected-slot topology read reusing a cached hybrid overflow replay.
 #[bench(raw)]
 fn bench_traverse_next_visit_edges_at_with_replay() -> canbench_rs::BenchResult {
-    let graph = payload_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
+    let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
@@ -513,7 +517,11 @@ fn bench_traverse_next_visit_edges_at_with_replay() -> canbench_rs::BenchResult 
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
-            .insert_edge_skip_leaf_cascade(src, label, PayloadBenchEdge::new(i + 10, u64::from(i)))
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+            )
             .unwrap();
     }
     let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
@@ -551,7 +559,7 @@ fn bench_traverse_next_visit_edges_at_with_replay() -> canbench_rs::BenchResult 
 /// Streaming visitor that attaches exact inline-property bytes per edge.
 #[bench(raw)]
 fn bench_traverse_next_visit_edges_with_inline_property() -> canbench_rs::BenchResult {
-    let graph = payload_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
+    let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
@@ -559,7 +567,11 @@ fn bench_traverse_next_visit_edges_with_inline_property() -> canbench_rs::BenchR
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
-            .insert_edge_skip_leaf_cascade(src, label, PayloadBenchEdge::new(i + 10, u64::from(i)))
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+            )
             .unwrap();
     }
     bench_fn(|| {
@@ -582,14 +594,14 @@ fn bench_traverse_next_visit_edges_with_inline_property() -> canbench_rs::BenchR
     })
 }
 
-/// Legacy traversal baseline on the identical 256-edge hybrid payload fixture.
+/// Legacy traversal baseline on the identical 256-edge hybrid inline property fixture.
 ///
 /// This is intentionally kept beside the candidate benchmark so both closures share the same
 /// graph type, edge count, label, inline width, and build conditions.
 #[bench(raw)]
 fn bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture()
 -> canbench_rs::BenchResult {
-    let graph = payload_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
+    let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
@@ -597,7 +609,11 @@ fn bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture()
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
-            .insert_edge_skip_leaf_cascade(src, label, PayloadBenchEdge::new(i + 10, u64::from(i)))
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+            )
             .unwrap();
     }
     bench_fn(|| {
@@ -615,7 +631,7 @@ fn bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture()
 /// Property-first batch read, followed by selected-slot topology read.
 #[bench(raw)]
 fn bench_traverse_next_property_first_then_selected() -> canbench_rs::BenchResult {
-    let graph = payload_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
+    let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     graph
@@ -623,7 +639,11 @@ fn bench_traverse_next_property_first_then_selected() -> canbench_rs::BenchResul
         .unwrap();
     for i in 0..HYBRID_DEGREE {
         graph
-            .insert_edge_skip_leaf_cascade(src, label, PayloadBenchEdge::new(i + 10, u64::from(i)))
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+            )
             .unwrap();
     }
     bench_fn(|| {

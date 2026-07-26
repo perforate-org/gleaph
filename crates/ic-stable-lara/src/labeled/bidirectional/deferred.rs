@@ -1778,7 +1778,7 @@ where
                     .map_err(DeferredBidirectionalLabeledError::Forward)?;
         self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
         self.forward
-            .insert_edge_skip_leaf_cascade_deferred_payload(src, label_id, forward_edge)
+            .insert_edge_skip_leaf_cascade_deferred_inline_property(src, label_id, forward_edge)
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         if inline_property_bytes_compaction_needed {
             self.mark_compact_inline_property_bytes_slab(Orientation::Forward)?;
@@ -1862,7 +1862,7 @@ where
     /// This consumes the reservation token, delegates to the forward or reverse
     /// labeled graph, and restores the edge-store logical capacity and payload
     /// occupied tail captured at reserve time.  Any payload bytes that were
-    /// already appended are retired to the payload free-list as reusable slack;
+    /// already appended are retired to the inline property free-list as reusable slack;
     /// the underlying stable-memory pages are not shrunk.  Canonical adjacency
     /// and bucket metadata are untouched.
     pub fn rollback_batch_reservation(
@@ -1931,7 +1931,7 @@ where
                     .map_err(DeferredBidirectionalLabeledError::Reverse)?;
         let forward_location = self
             .forward
-            .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+            .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
                 src,
                 label_id,
                 forward_edge,
@@ -1942,7 +1942,7 @@ where
             Err(LabeledOperationError::InvalidDefaultBypass)
         } else {
             self.reverse
-                .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+                .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
                     dst,
                     label_id,
                     reverse_edge,
@@ -1951,7 +1951,7 @@ where
         #[cfg(not(test))]
         let reverse_result = self
             .reverse
-            .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+            .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
                 dst,
                 label_id,
                 reverse_edge,
@@ -1971,7 +1971,7 @@ where
             self.mark_compact_inline_property_bytes_slab(Orientation::Forward)
                 .unwrap_or_else(|error| {
                     panic!(
-                        "forward payload maintenance admission failed after directed canonical write: {error}"
+                        "forward inline property bytes maintenance admission failed after directed canonical write: {error}"
                     )
                 });
         }
@@ -1979,7 +1979,7 @@ where
             self.mark_compact_inline_property_bytes_slab(Orientation::Reverse)
                 .unwrap_or_else(|error| {
                     panic!(
-                        "reverse payload maintenance admission failed after directed canonical write: {error}"
+                        "reverse inline property bytes maintenance admission failed after directed canonical write: {error}"
                     )
                 });
         }
@@ -4147,7 +4147,9 @@ where
                 .map_err(DeferredBidirectionalLabeledError::Forward)?;
         let forward_location = self
             .forward
-            .insert_edge_skip_leaf_cascade_deferred_payload_with_location(u, label_id, edge_uv)
+            .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
+                u, label_id, edge_uv,
+            )
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         let reverse_location = if u != v {
             #[cfg(test)]
@@ -4155,14 +4157,16 @@ where
                 Err(LabeledOperationError::InvalidDefaultBypass)
             } else {
                 self.forward
-                    .insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+                    .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
                         v, label_id, edge_vu,
                     )
             };
             #[cfg(not(test))]
             let reverse_result = self
                 .forward
-                .insert_edge_skip_leaf_cascade_deferred_payload_with_location(v, label_id, edge_vu);
+                .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
+                    v, label_id, edge_vu,
+                );
             Some(reverse_result.unwrap_or_else(|error| {
                 panic!("undirected second half failed after first forward canonical write: {error}")
             }))
@@ -4183,7 +4187,7 @@ where
             self.mark_compact_inline_property_bytes_slab(Orientation::Forward)
                 .unwrap_or_else(|error| {
                     panic!(
-                        "undirected payload maintenance admission failed after canonical write: {error}"
+                        "undirected inline property bytes maintenance admission failed after canonical write: {error}"
                     )
                 });
         }
@@ -6062,7 +6066,8 @@ mod tests {
                 target,
                 slot_index: 0,
                 value,
-                inline_property_len: u16::try_from(len).expect("test payload fits u16 width"),
+                inline_property_len: u16::try_from(len)
+                    .expect("test inline property fits u16 width"),
             }
         }
     }

@@ -1289,7 +1289,7 @@ where
     {
         // Output contract: a phase-1 call always resets the replay first, so a stale replay from a
         // previous `(src, label)` can never survive an early return (default vertex, missing bucket,
-        // zero degree / payload width) and be misused by a phase-2 read.
+        // zero degree / inline property byte width) and be misused by a phase-2 read.
         scratch.hybrid_overflow_replay.clear();
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);

@@ -425,7 +425,7 @@ fn union_label_expr_edge_inline_property_predicate_fuses_per_label() {
 
     let result = store
         .execute_plan_query(&plan, &params(), execution)
-        .expect("execute union label_expr payload fusion");
+        .expect("execute union label_expr inline property fusion");
 
     assert_eq!(result.rows.len(), 2);
 }
@@ -527,7 +527,7 @@ fn wildcard_label_expr_edge_inline_property_predicate_fuses_via_catalog_fallback
                 ..Default::default()
             },
         )
-        .expect("wildcard payload fusion");
+        .expect("wildcard inline property fusion");
 
     assert_eq!(result.rows.len(), 1);
 }
@@ -636,7 +636,7 @@ fn not_label_expr_edge_inline_property_predicate_fuses_via_catalog_fallback() {
                 ..Default::default()
             },
         )
-        .expect("not label_expr payload fusion");
+        .expect("not label_expr inline property fusion");
 
     assert_eq!(result.rows.len(), 1);
     assert!(matches!(result.rows[0].get("b"), Some(Value::Record(_))));
@@ -2129,12 +2129,12 @@ fn var_len_edge_inline_property_predicate_fuses_at_each_hop() {
     ]);
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-        .expect("var_len payload fusion");
+        .expect("var_len inline property fusion");
 
     assert_eq!(
         result.rows.len(),
         0,
-        "first hop weight 7 must be pruned by per-hop payload predicate"
+        "first hop weight 7 must be pruned by per-hop inline property predicate"
     );
 }
 
@@ -2192,7 +2192,7 @@ fn gql_var_len_where_gleaph_weight_fuses_inline_property_predicate_per_hop() {
 
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-        .expect("var_len gql payload fusion");
+        .expect("var_len gql inline property fusion");
 
     assert_eq!(result.rows.len(), 1);
 }
@@ -2822,7 +2822,7 @@ fn overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe
     assert!(
         store
             .out_label_bucket_inline_property_bytes_first_predicate_eligible(hub, storage_label)
-            .expect("payload-first eligibility")
+            .expect("inline-property-first eligibility")
     );
 
     let equality = PreparedEdgeInlinePropertyPredicate::prepare(
@@ -2915,7 +2915,7 @@ fn incoming_overflow_hub_edge_inline_property_predicate_reuses_reverse_replay() 
     assert!(
         store
             .in_label_bucket_inline_property_bytes_first_predicate_eligible(hub, storage_label)
-            .expect("payload-first eligibility")
+            .expect("inline-property-first eligibility")
     );
 
     let equality = PreparedEdgeInlinePropertyPredicate::prepare(

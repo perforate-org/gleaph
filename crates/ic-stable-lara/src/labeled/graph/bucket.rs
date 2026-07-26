@@ -26,7 +26,7 @@ use super::{
 ///
 /// Returned by [`LabeledLaraGraph::read_leaf_placement_stats`]. This is a stable-
 /// store observation over the bucket descriptor span of every vertex in the leaf.
-/// Default-label bypass rows contribute edge occupancy but no payload width. It is intended for ADR 0045 read-only
+/// Default-label bypass rows contribute edge occupancy but no inline property byte width. It is intended for ADR 0045 read-only
 /// batch placement planning: an accurate leaf projection must include resident
 /// rows from buckets that are not directly targeted by the pending batch.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub struct LeafBucketPlacementStats {
     pub total_inline_property_bytes_slab_slots: u64,
     /// Sum of inline-value overflow-log entries across all buckets on this leaf.
     pub total_inline_property_bytes_overflow_log_slots: u64,
-    /// Non-zero payload widths present on this leaf.
+    /// Non-zero inline property byte widths present on this leaf.
     pub inline_property_byte_widths: BTreeSet<u16>,
 }
 

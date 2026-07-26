@@ -191,7 +191,7 @@ pub(super) fn validate_edge_inline_property_bytes(
     Ok(())
 }
 
-/// Checks supported physical widths and that bytes match the router-resolved payload profile.
+/// Checks supported physical widths and that bytes match the router-resolved inline property profile.
 pub(super) fn validate_edge_inline_property_bytes_for_label(
     catalog_label: Option<EdgeLabelId>,
     inline_property_bytes: &[u8],

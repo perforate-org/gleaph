@@ -457,7 +457,7 @@ pub fn exercise_labeled_hub_scan_paths(
         .iter_out_edges_undirected_only(hub, OutEdgeOrder::Descending)
         .unwrap();
 
-    let mut payload_scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+    let mut inline_property_scratch = LabeledEdgeInlinePropertyBatchScratch::default();
     for offset in 0..vertex.degree() {
         let slot = vertex.base_slot_start().saturating_add(u64::from(offset));
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
@@ -471,7 +471,7 @@ pub fn exercise_labeled_hub_scan_paths(
                 hub,
                 label,
                 OutEdgeOrder::Ascending,
-                &mut payload_scratch,
+                &mut inline_property_scratch,
                 |_| ControlFlow::<()>::Continue(()),
             )
             .map(|_| ())
@@ -481,7 +481,7 @@ pub fn exercise_labeled_hub_scan_paths(
                 hub,
                 label,
                 OutEdgeOrder::Descending,
-                &mut payload_scratch,
+                &mut inline_property_scratch,
                 |_| ControlFlow::<()>::Continue(()),
             )
             .map(|_| ())

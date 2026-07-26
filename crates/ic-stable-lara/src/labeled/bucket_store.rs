@@ -995,9 +995,9 @@ mod tests {
     }
 
     #[test]
-    fn degree_only_write_preserves_edge_and_payload_physical_state() {
+    fn degree_only_write_preserves_edge_and_inline_property_bytes_physical_state() {
         let buckets = store();
-        let original = LabelBucket::from_parts_with_payload(
+        let original = LabelBucket::from_parts_with_inline_property(
             crate::labeled::BucketLabelKey::from_raw(7),
             11,
             5,

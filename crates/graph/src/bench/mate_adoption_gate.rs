@@ -1281,7 +1281,7 @@ pub(crate) struct CanonicalIdentity {
     pub(crate) orientation: u8,
     pub(crate) label: u16,
     pub(crate) slot: u32,
-    pub(crate) inline_payload_fingerprint: String,
+    pub(crate) inline_property_fingerprint: String,
     pub(crate) payload_bytes: Vec<u8>,
 }
 
@@ -1293,7 +1293,7 @@ impl Ord for CanonicalIdentity {
             self.orientation,
             self.label,
             self.slot,
-            &self.inline_payload_fingerprint,
+            &self.inline_property_fingerprint,
             &self.payload_bytes,
         )
             .cmp(&(
@@ -1302,7 +1302,7 @@ impl Ord for CanonicalIdentity {
                 other.orientation,
                 other.label,
                 other.slot,
-                &other.inline_payload_fingerprint,
+                &other.inline_property_fingerprint,
                 &other.payload_bytes,
             ))
     }
@@ -1431,7 +1431,7 @@ pub(crate) fn build_fixture(spec: FixtureSpec) -> DeterministicFixture {
             orientation: (index % 2) as u8,
             label,
             slot,
-            inline_payload_fingerprint: digest_hex(&row_seed),
+            inline_property_fingerprint: digest_hex(&row_seed),
             payload_bytes,
         });
     }
@@ -1542,7 +1542,7 @@ fn build_real_mixed_label_fixture(spec: FixtureSpec) -> Result<DeterministicFixt
                 orientation: identity.orientation,
                 label: identity.label,
                 slot: identity.slot,
-                inline_payload_fingerprint: digest_hex(&seed),
+                inline_property_fingerprint: digest_hex(&seed),
                 payload_bytes: Vec::new(),
             }
         })
@@ -1745,7 +1745,7 @@ fn deterministic_fixture_from_physical(
                 orientation: identity.orientation,
                 label: 1,
                 slot: identity.slot,
-                inline_payload_fingerprint: digest_hex(&seed),
+                inline_property_fingerprint: digest_hex(&seed),
                 payload_bytes: Vec::new(),
             }
         })

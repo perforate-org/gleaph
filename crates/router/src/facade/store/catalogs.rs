@@ -135,13 +135,13 @@ impl RouterStore {
             }
             if existing.profile() != EdgeInlinePropertyProfile::no_inline_property() {
                 return Err(RouterError::Conflict(format!(
-                    "edge label {edge_label_name} has a legacy unnamed payload profile; inline schema is incompatible"
+                    "edge label {edge_label_name} has a legacy unnamed inline property profile; inline schema is incompatible"
                 )));
             }
         }
 
         // Inline/index conflict guard (ADR 0034 Slice 21/24): a sidecar edge Property Index
-        // for the same (label, property) would be semantically stale because inline payload
+        // for the same (label, property) would be semantically stale because inline property bytes
         // mutations do not maintain postings. Reject the DDL before any catalog write.
         if let Some(label_id) = existing_label_id
             && let Some(property_id) = existing_property_id
@@ -230,7 +230,7 @@ impl RouterStore {
                 crate::facade::stable::edge_inline_property_profiles::EdgeInlinePropertySchemaRecord::UnnamedProfile { profile } => {
                     if profile != EdgeInlinePropertyProfile::no_inline_property() {
                         return Err(RouterError::Conflict(format!(
-                            "edge label {edge_label_name} has a legacy unnamed payload profile; inline schema is incompatible"
+                            "edge label {edge_label_name} has a legacy unnamed inline property profile; inline schema is incompatible"
                         )));
                     }
                 }
@@ -238,7 +238,7 @@ impl RouterStore {
         }
 
         // Inline/index conflict guard (ADR 0034 Slice 21): a sidecar edge Property Index
-        // for the same (label, property) would be semantically stale because inline payload
+        // for the same (label, property) would be semantically stale because inline property bytes
         // mutations do not maintain postings. Reject the DDL before any catalog write.
         if let Some(label_id) = existing_label_id
             && let Some(property_id) = existing_property_id

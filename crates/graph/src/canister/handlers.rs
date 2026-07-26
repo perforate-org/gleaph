@@ -1609,7 +1609,7 @@ pub async fn e2e_insert_directed_edge_with_inline_property(
     let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
     let label = EdgeLabelId::from_raw(args.edge_label_id);
 
-    // ADR 0034 Slice 20 E2E seam: the Router normally supplies the resolved payload profile on
+    // ADR 0034 Slice 20 E2E seam: the Router normally supplies the resolved inline property profile on
     // the DML wire. Direct graph test helpers must provide the matching profile explicitly.
     let resolved = ResolvedLabelTable {
         edge: vec![ResolvedEdgeLabel::new(

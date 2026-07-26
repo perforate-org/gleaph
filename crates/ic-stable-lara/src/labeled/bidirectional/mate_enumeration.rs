@@ -190,7 +190,7 @@ impl fmt::Display for MateLeafEnumerationError {
                 width,
             } => write!(
                 f,
-                "unsupported payload width owner={owner} label={label} width={width}"
+                "unsupported inline property byte width owner={owner} label={label} width={width}"
             ),
             Self::ArithmeticOverflow => write!(f, "canonical enumeration arithmetic overflow"),
             Self::PolicyRejected => write!(f, "invalid enumeration policy"),

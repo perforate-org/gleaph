@@ -435,7 +435,7 @@ where
         Ok(())
     }
 
-    pub(crate) fn insert_edge_skip_leaf_cascade_deferred_payload(
+    pub(crate) fn insert_edge_skip_leaf_cascade_deferred_inline_property(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
@@ -456,7 +456,7 @@ where
         result.map(|_| ())
     }
 
-    pub(crate) fn insert_edge_skip_leaf_cascade_deferred_payload_with_location(
+    pub(crate) fn insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,

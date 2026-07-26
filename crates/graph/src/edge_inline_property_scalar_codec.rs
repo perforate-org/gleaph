@@ -28,7 +28,7 @@ pub enum EdgeInlinePropertyBytesScalarCodecError {
     NonFiniteFloat,
     /// `FIXED32` / `FIXED64` requires an exact-length byte string.
     FixedByteLengthMismatch { expected: usize, actual: usize },
-    /// The decoded payload width does not match the profile.
+    /// The decoded inline property byte width does not match the profile.
     WidthMismatch { expected: usize, actual: usize },
     /// Decode produced a payload shape the scalar codec cannot map back to `Value`.
     UnsupportedDecodedShape,
@@ -37,25 +37,31 @@ pub enum EdgeInlinePropertyBytesScalarCodecError {
 impl fmt::Display for EdgeInlinePropertyBytesScalarCodecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedEncoding => write!(f, "unsupported scalar payload encoding"),
+            Self::UnsupportedEncoding => write!(f, "unsupported scalar inline property encoding"),
             Self::InvalidValueKind { expected } => {
-                write!(f, "value kind is not valid for {expected} payload")
+                write!(f, "value kind is not valid for {expected} inline property")
             }
-            Self::IntegerOverflow => write!(f, "integer value overflows target payload width"),
+            Self::IntegerOverflow => write!(
+                f,
+                "integer value overflows target inline property byte width"
+            ),
             Self::NegativeToUnsigned => {
-                write!(f, "negative integer cannot be stored in unsigned payload")
+                write!(
+                    f,
+                    "negative integer cannot be stored in unsigned inline property"
+                )
             }
             Self::NonFiniteFloat => write!(f, "non-finite or overflowing float value"),
             Self::FixedByteLengthMismatch { expected, actual } => write!(
                 f,
-                "fixed-width payload expects {expected} bytes, got {actual}"
+                "fixed-width inline property expects {expected} bytes, got {actual}"
             ),
             Self::WidthMismatch { expected, actual } => write!(
                 f,
-                "payload byte width mismatch: expected {expected}, got {actual}"
+                "inline property byte width mismatch: expected {expected}, got {actual}"
             ),
             Self::UnsupportedDecodedShape => {
-                write!(f, "decoded payload shape is not a supported scalar")
+                write!(f, "decoded inline property shape is not a supported scalar")
             }
         }
     }

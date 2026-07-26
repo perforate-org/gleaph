@@ -138,7 +138,7 @@ impl GqlExecutionContext {
         )
     }
 
-    /// Router-resolved named inline property and matching payload profile for an edge label.
+    /// Router-resolved named inline property and matching inline property profile for an edge label.
     ///
     /// Returns `Some((property_id, inline_property_profile))` only when the Router projected a scalar inline
     /// schema for this concrete label. Struct inline schemas are excluded so that struct mutation

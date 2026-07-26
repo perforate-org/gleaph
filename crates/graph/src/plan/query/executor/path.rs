@@ -279,8 +279,8 @@ pub(crate) async fn execute_shortest_path(
 
 /// Controls whether shortest-path expansion hydrates edge inline values and reuses batch scratch.
 pub(crate) struct ShortestExpandOptions<'a> {
-    pub load_payloads: bool,
-    pub payload_scratch: Option<&'a mut LabeledEdgeInlinePropertyBatchScratch<Edge>>,
+    pub load_inline_property_bytes: bool,
+    pub inline_property_scratch: Option<&'a mut LabeledEdgeInlinePropertyBatchScratch<Edge>>,
 }
 
 /// Holds a catalog [`EdgeLabelId`] per shortest-path search; expansion uses directed/undirected
@@ -333,8 +333,8 @@ impl ShortestFixedLabelExpand {
                         }
                     }
                 };
-                if options.load_payloads {
-                    if let Some(scratch) = options.payload_scratch {
+                if options.load_inline_property_bytes {
+                    if let Some(scratch) = options.inline_property_scratch {
                         store.for_each_directed_out_edges_for_label_with_inline_property_bytes_reusing(
                             current,
                             label,
@@ -382,8 +382,8 @@ impl ShortestFixedLabelExpand {
                         }
                     }
                 };
-                if options.load_payloads {
-                    if let Some(scratch) = options.payload_scratch {
+                if options.load_inline_property_bytes {
+                    if let Some(scratch) = options.inline_property_scratch {
                         store.for_each_directed_in_edges_for_label_with_inline_property_bytes_reusing(
                             current,
                             label,
@@ -440,7 +440,7 @@ impl ShortestFixedLabelExpand {
     }
 
     /// Expands fixed-label edges while passing payload bytes by reference (no `Edge` clone).
-    pub(crate) fn expand_payload_slices<Visit>(
+    pub(crate) fn expand_inline_property_byte_slices<Visit>(
         self,
         store: &GraphStore,
         current: VertexId,
@@ -512,7 +512,7 @@ impl ShortestFixedLabelExpand {
         Ok(())
     }
 
-    /// Expands fixed-label edges in LARA payload batches (dense slab bulk-read groups).
+    /// Expands fixed-label edges in LARA inline property batches (dense slab bulk-read groups).
     pub(crate) fn expand_inline_property_batches<Visit>(
         self,
         store: &GraphStore,

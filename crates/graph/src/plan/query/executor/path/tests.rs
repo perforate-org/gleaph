@@ -2004,8 +2004,8 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
         s,
         &mut from_s,
         ShortestExpandOptions {
-            load_payloads: true,
-            payload_scratch: None,
+            load_inline_property_bytes: true,
+            inline_property_scratch: None,
         },
     )
     .expect("from s");
@@ -2058,8 +2058,8 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
         VertexId::from(detour),
         &mut from_detour,
         ShortestExpandOptions {
-            load_payloads: true,
-            payload_scratch: None,
+            load_inline_property_bytes: true,
+            inline_property_scratch: None,
         },
     )
     .expect("from detour");
@@ -2618,7 +2618,7 @@ fn inline_cost_undirected_shortest_path_uses_payload_cost() {
     );
     crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
     let road = catalog_edge_label("InlineRoad");
-    // A single undirected edge a-b with a fixed-width inline payload of cost 9.
+    // A single undirected edge a-b with a fixed-width inline property bytes of cost 9.
     store
         .insert_undirected_edge_with_inline_property_bytes(a, b, Some(road), &9u16.to_le_bytes())
         .expect("undirected a-b");
@@ -2679,7 +2679,7 @@ fn inline_cost_undirected_shortest_path_uses_payload_cost() {
     assert_eq!(
         result.rows[0].get("cost"),
         Some(&Value::Uint16(9)),
-        "expected COST BY e.distance to read inline payload 9"
+        "expected COST BY e.distance to read inline property bytes 9"
     );
 }
 

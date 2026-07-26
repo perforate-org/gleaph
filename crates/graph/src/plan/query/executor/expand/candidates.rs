@@ -95,7 +95,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
     }
 
     let mut pending_slots = Vec::new();
-    let mut pending_payloads = Vec::new();
+    let mut pending_inline_property_bytes = Vec::new();
     let mut value_scratch = LabeledInlinePropertyValueBatchScratch::default();
     let mut visit_values = |batch: ic_stable_lara::labeled::LabeledInlinePropertyValueBatch<'_>| {
         let mut matches = Vec::new();
@@ -110,10 +110,12 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
             let Some(&slot) = batch.slot_indices.get(idx) else {
                 continue;
             };
-            let payload_start = idx * batch_width;
-            let payload_end = payload_start + batch_width;
+            let inline_property_bytes_start = idx * batch_width;
+            let inline_property_bytes_end = inline_property_bytes_start + batch_width;
             pending_slots.push(slot);
-            pending_payloads.extend_from_slice(&batch.values[payload_start..payload_end]);
+            pending_inline_property_bytes.extend_from_slice(
+                &batch.values[inline_property_bytes_start..inline_property_bytes_end],
+            );
         }
     };
 
@@ -145,12 +147,12 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
     }
 
     let width = usize::from(predicate.kernel.byte_width());
-    let payload_by_slot: BTreeMap<u32, &[u8]> = pending_slots
+    let inline_property_bytes_by_slot: BTreeMap<u32, &[u8]> = pending_slots
         .iter()
         .enumerate()
         .map(|(idx, &slot)| {
             let start = idx * width;
-            (slot, &pending_payloads[start..start + width])
+            (slot, &pending_inline_property_bytes[start..start + width])
         })
         .collect();
     let mut error = None;
@@ -158,7 +160,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
         if error.is_some() {
             return;
         }
-        let Some(payload) = payload_by_slot.get(&edge.edge_slot_index.raw()) else {
+        let Some(payload) = inline_property_bytes_by_slot.get(&edge.edge_slot_index.raw()) else {
             return;
         };
         let edge = edge.with_inline_property_bytes(payload);
@@ -232,10 +234,11 @@ fn expand_matching_edge_inline_property_combined_batch(
                 let Some(edge) = batch.edges.get(idx).cloned() else {
                     continue;
                 };
-                let payload_start = idx * width;
-                let payload_end = payload_start + width;
+                let inline_property_bytes_start = idx * width;
+                let inline_property_bytes_end = inline_property_bytes_start + width;
                 let edge = edge.with_inline_property_bytes(
-                    &batch.inline_property_bytes[payload_start..payload_end],
+                    &batch.inline_property_bytes
+                        [inline_property_bytes_start..inline_property_bytes_end],
                 );
                 match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
                     Some(edge_dst) => push_scanned_value_expand_candidate(
@@ -328,10 +331,11 @@ fn expand_matching_edge_vector_threshold_combined_batch(
                 let Some(edge) = batch.edges.get(idx).cloned() else {
                     continue;
                 };
-                let payload_start = idx * width;
-                let payload_end = payload_start + width;
+                let inline_property_bytes_start = idx * width;
+                let inline_property_bytes_end = inline_property_bytes_start + width;
                 let edge = edge.with_inline_property_bytes(
-                    &batch.inline_property_bytes[payload_start..payload_end],
+                    &batch.inline_property_bytes
+                        [inline_property_bytes_start..inline_property_bytes_end],
                 );
                 match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
                     Some(edge_dst) => push_scanned_value_expand_candidate(

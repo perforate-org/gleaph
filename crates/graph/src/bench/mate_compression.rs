@@ -542,14 +542,14 @@ fn decode_sampled_blocks(
             _ => return Err("invalid sampled block mode".to_owned()),
         };
         *cursor = block_end;
-        let payload_end = (*cursor)
+        let inline_property_bytes_end = (*cursor)
             .checked_add(
                 count
                     .checked_mul(width)
                     .ok_or_else(|| "sampled payload overflow".to_owned())?,
             )
             .ok_or_else(|| "sampled payload cursor overflow".to_owned())?;
-        if payload_end > bytes.len() {
+        if inline_property_bytes_end > bytes.len() {
             return Err("truncated sampled payload".to_owned());
         }
         let mut values = Vec::with_capacity(count);
@@ -791,14 +791,14 @@ impl SampledPairedResidualLookup {
                     _ => return Err("invalid sampled residual mode".to_owned()),
                 };
                 cursor = block_end;
-                let payload_end = cursor
+                let inline_property_bytes_end = cursor
                     .checked_add(
                         count
                             .checked_mul(width)
                             .ok_or_else(|| "sampled payload overflow".to_owned())?,
                     )
                     .ok_or_else(|| "sampled payload cursor overflow".to_owned())?;
-                if payload_end > bytes.len() {
+                if inline_property_bytes_end > bytes.len() {
                     return Err("truncated sampled payload".to_owned());
                 }
                 let mut values = Vec::with_capacity(count);

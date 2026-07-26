@@ -678,7 +678,9 @@ mod tests {
         let payload_memory = VectorMemory::default();
         let mut locators = MateLocatorStore::init(locator_memory);
         let mut payloads = MatePayloadRegion::init(payload_memory).expect("payload region");
-        let (offset, length) = payloads.append(&[1, 2, 3, 4]).expect("payload");
+        let (offset, length) = payloads
+            .append(&[1, 2, 3, 4])
+            .expect("inline property bytes");
         assert_eq!(offset, 0);
         assert_eq!(
             payloads.read(offset, length).expect("read"),
@@ -699,7 +701,9 @@ mod tests {
         let reopened_payloads = MatePayloadRegion::init(payload_memory).expect("reopen payload");
         assert_eq!(reopened_locators.get(&key).expect("locator"), Some(record));
         assert_eq!(
-            reopened_payloads.read(offset, length).expect("payload"),
+            reopened_payloads
+                .read(offset, length)
+                .expect("inline property bytes"),
             vec![1, 2, 3, 4]
         );
     }

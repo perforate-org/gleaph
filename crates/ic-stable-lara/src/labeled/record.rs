@@ -32,7 +32,7 @@ pub struct LabelBucket {
     pub degree: u32,
     /// Stored edge-slab width (may exceed [`Self::degree`] while tombstones await compaction).
     pub stored_slots: u32,
-    /// Stored inline-value slab slots. Always zero when the payload width is zero.
+    /// Stored inline-value slab slots. Always zero when the inline property byte width is zero.
     inline_property_bytes_slab_slots: u32,
     /// Byte offset into [`EdgeInlinePropertyBytesStore`] where this bucket's value span starts.
     inline_property_bytes_offset: u64,
@@ -80,7 +80,7 @@ impl LabelBucket {
 
     /// Builds a row with edge-inline-value fields.
     #[inline]
-    pub fn from_parts_with_payload(
+    pub fn from_parts_with_inline_property(
         bucket_label_key: BucketLabelKey,
         edge_start: u64,
         degree: u32,
@@ -104,7 +104,7 @@ impl LabelBucket {
             inline_property_bytes_log_head,
             inline_property_bytes_log_len,
         )
-        .expect("LabelBucket::from_parts_with_payload: invalid fields")
+        .expect("LabelBucket::from_parts_with_inline_property: invalid fields")
     }
 
     /// Fallible constructor with release-safe range checks.
@@ -495,7 +495,7 @@ impl core::fmt::Display for LabelBucketFieldError {
             Self::InlinePropertyBytesStateWithoutSchema => {
                 write!(
                     f,
-                    "label bucket payload state requires a non-zero byte width"
+                    "label bucket inline property bytes state requires a non-zero byte width"
                 )
             }
         }
@@ -1337,7 +1337,7 @@ mod tests {
 
     #[test]
     fn label_bucket_round_trips_w64_inline_property_byte_width() {
-        let bucket = LabelBucket::from_parts_with_payload(
+        let bucket = LabelBucket::from_parts_with_inline_property(
             BucketLabelKey::default(),
             0,
             0,
@@ -1393,7 +1393,7 @@ mod tests {
 
     #[test]
     fn label_bucket_inline_property_bytes_offset_round_trips_on_wire() {
-        let bucket = LabelBucket::from_parts_with_payload(
+        let bucket = LabelBucket::from_parts_with_inline_property(
             BucketLabelKey::from_raw(2),
             10,
             2,

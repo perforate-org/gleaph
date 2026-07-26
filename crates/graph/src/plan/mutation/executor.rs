@@ -173,7 +173,7 @@ fn execute_ops_with_bindings(
                 let properties = evaluator.resolve_assignments(properties)?;
                 let resolved_label = resolve_edge_label(&execution, labels.first())?;
                 let property_ids = resolve_mutation_properties(&execution, properties)?;
-                let (inline_payload, sidecar_properties) =
+                let (inline_property, sidecar_properties) =
                     classify_edge_assignments(&execution, resolved_label, property_ids)?;
                 let handle = match direction {
                     EdgeDirection::PointingRight => insert_directed_edge_with_inline(
@@ -181,7 +181,7 @@ fn execute_ops_with_bindings(
                         src_id,
                         dst_id,
                         resolved_label,
-                        inline_payload.as_ref(),
+                        inline_property.as_ref(),
                         sidecar_properties,
                     )?,
                     EdgeDirection::PointingLeft => insert_directed_edge_with_inline(
@@ -189,7 +189,7 @@ fn execute_ops_with_bindings(
                         dst_id,
                         src_id,
                         resolved_label,
-                        inline_payload.as_ref(),
+                        inline_property.as_ref(),
                         sidecar_properties,
                     )?,
                     EdgeDirection::Undirected => insert_undirected_edge_with_inline(
@@ -197,7 +197,7 @@ fn execute_ops_with_bindings(
                         src_id,
                         dst_id,
                         resolved_label,
-                        inline_payload.as_ref(),
+                        inline_property.as_ref(),
                         sidecar_properties,
                     )?,
                     other => return Err(PlanMutationError::UnsupportedDirection(*other)),
@@ -355,7 +355,7 @@ pub(crate) async fn apply_mutation_ops_async(
                 let properties = evaluator.resolve_assignments(properties)?;
                 let resolved_label = resolve_edge_label(&execution, labels.first())?;
                 let property_ids = resolve_mutation_properties(&execution, properties)?;
-                let (inline_payload, sidecar_properties) =
+                let (inline_property, sidecar_properties) =
                     classify_edge_assignments(&execution, resolved_label, property_ids)?;
                 let handle = match direction {
                     EdgeDirection::PointingRight => insert_directed_edge_with_inline(
@@ -363,7 +363,7 @@ pub(crate) async fn apply_mutation_ops_async(
                         src_id,
                         dst_id,
                         resolved_label,
-                        inline_payload.as_ref(),
+                        inline_property.as_ref(),
                         sidecar_properties,
                     )?,
                     EdgeDirection::PointingLeft => insert_directed_edge_with_inline(
@@ -371,7 +371,7 @@ pub(crate) async fn apply_mutation_ops_async(
                         dst_id,
                         src_id,
                         resolved_label,
-                        inline_payload.as_ref(),
+                        inline_property.as_ref(),
                         sidecar_properties,
                     )?,
                     EdgeDirection::Undirected => insert_undirected_edge_with_inline(
@@ -379,7 +379,7 @@ pub(crate) async fn apply_mutation_ops_async(
                         src_id,
                         dst_id,
                         resolved_label,
-                        inline_payload.as_ref(),
+                        inline_property.as_ref(),
                         sidecar_properties,
                     )?,
                     other => return Err(PlanMutationError::UnsupportedDirection(*other)),
@@ -1151,7 +1151,7 @@ fn collect_detach_delete_edge_label_deltas(
 
 /// Packed fixed-width payload bytes plus the profile used to encode them.
 #[derive(Clone, Debug)]
-struct InlineScalarPayload {
+struct InlineScalarProperty {
     inline_property_bytes: Vec<u8>,
     inline_property_profile: EdgeInlinePropertyProfile,
 }
@@ -1187,7 +1187,7 @@ fn classify_edge_assignments(
     execution: &GqlExecutionContext,
     label: Option<EdgeLabelId>,
     assignments: Vec<(PropertyId, Value)>,
-) -> Result<(Option<InlineScalarPayload>, Vec<(PropertyId, Value)>), PlanMutationError> {
+) -> Result<(Option<InlineScalarProperty>, Vec<(PropertyId, Value)>), PlanMutationError> {
     let Some(label_id) = label else {
         return Ok((None, validate_sidecar_properties(execution, assignments)?));
     };
@@ -1245,7 +1245,7 @@ fn classify_edge_assignments(
         })?;
 
     Ok((
-        Some(InlineScalarPayload {
+        Some(InlineScalarProperty {
             inline_property_bytes,
             inline_property_profile: profile,
         }),
@@ -1420,10 +1420,10 @@ fn insert_directed_edge_with_inline(
     source: VertexId,
     target: VertexId,
     label: Option<EdgeLabelId>,
-    inline_payload: Option<&InlineScalarPayload>,
+    inline_property: Option<&InlineScalarProperty>,
     sidecar_properties: Vec<(PropertyId, Value)>,
 ) -> Result<EdgeHandle, PlanMutationError> {
-    if let Some(payload) = inline_payload {
+    if let Some(payload) = inline_property {
         GraphMutationExecutor::insert_directed_edge_with_inline_property_bytes(
             store,
             source,
@@ -1450,10 +1450,10 @@ fn insert_undirected_edge_with_inline(
     endpoint_a: VertexId,
     endpoint_b: VertexId,
     label: Option<EdgeLabelId>,
-    inline_payload: Option<&InlineScalarPayload>,
+    inline_property: Option<&InlineScalarProperty>,
     sidecar_properties: Vec<(PropertyId, Value)>,
 ) -> Result<EdgeHandle, PlanMutationError> {
-    if let Some(payload) = inline_payload {
+    if let Some(payload) = inline_property {
         GraphMutationExecutor::insert_undirected_edge_with_inline_property_bytes(
             store,
             endpoint_a,
@@ -3105,7 +3105,7 @@ mod tests {
                 &mut scratch,
                 |batch| edge_count += batch.edges.len(),
             )
-            .expect("payload batches");
+            .expect("inline property batches");
         assert_eq!(edge_count, 48);
     }
 
@@ -3877,7 +3877,7 @@ mod tests {
         let a = bindings.vertices["a"];
         let b = bindings.vertices["b"];
 
-        // No payload profile installed, so the edge is inserted with empty payload.
+        // No inline property profile installed, so the edge is inserted with empty payload.
         assert_eq!(
             find_out_edge_inline_property(&store, a, b),
             Some(Vec::new())
@@ -4114,12 +4114,12 @@ mod tests {
         (label, property)
     }
 
-    fn pack_stats_payload(score: f32, confidence: f32, updated_at: u64) -> Vec<u8> {
-        let mut payload = Vec::with_capacity(16);
-        payload.extend_from_slice(&score.to_le_bytes());
-        payload.extend_from_slice(&confidence.to_le_bytes());
-        payload.extend_from_slice(&updated_at.to_le_bytes());
-        payload
+    fn pack_stats_inline_property(score: f32, confidence: f32, updated_at: u64) -> Vec<u8> {
+        let mut inline_property = Vec::with_capacity(16);
+        inline_property.extend_from_slice(&score.to_le_bytes());
+        inline_property.extend_from_slice(&confidence.to_le_bytes());
+        inline_property.extend_from_slice(&updated_at.to_le_bytes());
+        inline_property
     }
 
     fn insert_inline_struct_edge(
@@ -4133,7 +4133,7 @@ mod tests {
                 a,
                 b,
                 Some(label),
-                &pack_stats_payload(3.5, 0.75, 1_700_000_000),
+                &pack_stats_inline_property(3.5, 0.75, 1_700_000_000),
             )
             .expect("edge");
         (a, b, handle)
