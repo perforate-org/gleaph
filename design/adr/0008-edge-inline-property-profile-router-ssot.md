@@ -5,7 +5,7 @@ Status: accepted
 Last revised: 2026-07-17
 Anchor timestamp: 2026-07-17 01:55:00 UTC +0000
 
-> **Terminology note:** ADR 0051 supersedes the payload / inline property / inline property names used in this document. The historical rationale remains valid; current names are in ADR 0051.
+> **Terminology note:** ADR 0051 supersedes the payload / inline value / inline property names used in this document. The historical rationale remains valid; current names are in ADR 0051.
 
 ## Revision history
 
@@ -14,11 +14,11 @@ Anchor timestamp: 2026-07-17 01:55:00 UTC +0000
 | 2026-06-12 | Proposed; router-owned logical schema, graph `ROUTER_EDGE_INLINE_PROPERTY_PROFILES` retirement plan. |
 | 2026-06-12 | Accepted; policy frozen pending implementation phases A–E in §6. |
 | 2026-06-12 | Implemented phases A–E; router region 21 live; graph `ROUTER_EDGE_INLINE_PROPERTY_PROFILES` retired (41 regions). |
-| 2026-07-01 | ADR 0034 Slice 20 + Slice 21 + Slice 22: store value is a versioned `EdgeInlinePropertySchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; `ResolvedEdgeLabel` carries `inline_property_id` as a router-derived projection consumed by both reads and mutations. Graph encodes mutation values into the payload using the same shared scalar codec and never writes the inline property to sidecar state. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
+| 2026-07-01 | ADR 0034 Slice 20 + Slice 21 + Slice 22: store value is a versioned `EdgeInlinePropertySchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; `ResolvedEdgeLabel` carries `inline_property_id` as a router-derived projection consumed by both reads and mutations. Graph encodes mutation values into the inline property bytes using the same shared scalar codec and never writes the inline property to sidecar state. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
 | 2026-07-03 | ADR 0034 Slice 24: `EdgeInlinePropertySchemaRecord` adds a named fixed-size inline STRUCT variant (`property_id`, declaration-ordered logical field specs `[name, scalar_type]`). Byte offsets, widths, and total width are deterministically derived; the physical profile is `EdgeInlinePropertyProfile::opaque_bytes(total_byte_width)`. Graph receives only the top-level inline property identity and the opaque physical profile in this slice; struct reads, mutation packing, and `COST BY` over struct fields remain planned. Development stable data must be wiped because the record format version is bumped and no legacy decode fallback is provided. |
-| 2026-07-03 | ADR 0034 Slice 25: `ResolvedEdgeLabel` replaces `inline_property_id` with `inline_schema: Option<ResolvedInlineSchema>` (`None`, `Scalar { property_id }`, or `Struct { property_id, fields }`). Router derives per-field byte offsets and scalar profiles from the canonical `InlineStructLayout` and projects them as a read-only wire shape. Graph consumes this single Router-resolved projection in separate read and mutation paths: the query executor validates and decodes struct payloads into a declaration-ordered `Value::Record`, while the mutation executor rejects any write or removal on a Struct-labeled edge until Slice 26. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
+| 2026-07-03 | ADR 0034 Slice 25: `ResolvedEdgeLabel` replaces `inline_property_id` with `inline_schema: Option<ResolvedInlineSchema>` (`None`, `Scalar { property_id }`, or `Struct { property_id, fields }`). Router derives per-field byte offsets and scalar profiles from the canonical `InlineStructLayout` and projects them as a read-only wire shape. Graph consumes this single Router-resolved projection in separate read and mutation paths: the query executor validates and decodes struct inline property bytes into a declaration-ordered `Value::Record`, while the mutation executor rejects any write or removal on a Struct-labeled edge until Slice 26. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
 | 2026-07-17 | Router adds a one-entry heap-only last-schema cache inside `EdgeInlinePropertyProfileStore`; stable memory remains the SSOT, and the cache is replaced on writes, cleared on graph removal, and empty after upgrade. |
-| 2026-07-27 | Terminology superseded by [ADR 0051](0051-edge-inline-property-terminology-and-weight-retirement.md): `EdgeInlinePropertyProfile` becomes `EdgeInlinePropertyProfile`, `inline_property_profile` becomes `inline_property_profile`, and `ROUTER_EDGE_INLINE_PROPERTY_PROFILES` becomes `ROUTER_EDGE_INLINE_PROPERTY_PROFILES`. This document is retained for historical rationale; use ADR 0051 for current names. |
+| 2026-07-27 | Terminology superseded by [ADR 0051](0051-edge-inline-property-terminology-and-weight-retirement.md): historical names (`EdgeInlineValueProfile`, `inline_value_profile`, `ROUTER_EDGE_PAYLOAD_PROFILES`) are retained in the rationale below; current names are in ADR 0051. This document is retained for historical rationale; use ADR 0051 for current names. |
 
 ## Context
 
@@ -26,7 +26,7 @@ ADR [0006](0006-pre-federation-foundation.md) §2 makes the **router** the singl
 **name → numeric id** of vertex properties, vertex labels, and edge labels. Graph shards store
 **values** keyed by resolved ids; they do not maintain label or property **names** in stable memory.
 
-`EdgeInlinePropertyProfile` ([labeled-edge-inline-propertys.md](../storage/labeled-edge-inline-propertys.md)) is different
+`EdgeInlinePropertyProfile` ([labeled-edge-inline-properties.md](../storage/labeled-edge-inline-properties.md)) is different
 from a name catalog. It defines the **logical physical schema** for a catalog edge label:
 
 - `byte_width` — bytes per edge slot in labeled LARA inline property bytes storage
@@ -55,9 +55,9 @@ duplicate *ownership* of schema between router (ids) and graph (profiles).
 
 | Topic | Current behavior | Implication |
 |-------|------------------|-------------|
-| **Unlabeled edges** | `UNLABELED_*` wire labels map to `catalog_label = None`; payload width defaults to 0 ([`helpers.rs`](../../crates/graph/src/facade/store/helpers.rs)). | Unlabeled traversal does **not** require a payload-profile catalog on graph or router. |
-| **LARA physical width** | `LabelBucket::inline_property_byte_width` is stored per orientation in forward/reverse CSR ([labeled-edge-inline-propertys.md](../storage/labeled-edge-inline-propertys.md)). | Physical width is **materialized** on the shard when edges are written; it is not a substitute for logical encoding semantics at query time. |
-| **Property analogy** | Property **names** on router; property **values** on graph. | Payload profile is **schema**, not edge-local inline property bytes. Schema belongs with router catalog policy; bytes stay in LARA inline property bytes stores. |
+| **Unlabeled edges** | `UNLABELED_*` wire labels map to `catalog_label = None`; inline property byte width defaults to 0 ([`helpers.rs`](../../crates/graph/src/facade/store/helpers.rs)). | Unlabeled traversal does **not** require a inline property profile catalog on graph or router. |
+| **LARA physical width** | `LabelBucket::inline_property_byte_width` is stored per orientation in forward/reverse CSR ([labeled-edge-inline-properties.md](../storage/labeled-edge-inline-properties.md)). | Physical width is **materialized** on the shard when edges are written; it is not a substitute for logical encoding semantics at query time. |
+| **Property analogy** | Property **names** on router; property **values** on graph. | Inline property profile is **schema**, not edge-local inline property bytes. Schema belongs with router catalog policy; bytes stay in LARA inline property bytes stores. |
 
 ### Prerequisites (met)
 
@@ -96,7 +96,7 @@ record. Development stable data must be wiped when this format changes because b
 Registration is coupled to edge-label identity:
 
 - **Preferred:** extend edge-label intern / admin APIs so registering or interning a catalog edge
-  label also records its `EdgeInlinePropertySchemaRecord` (default `UnnamedProfile` with `no_payload` / 0 bytes
+  label also records its `EdgeInlinePropertySchemaRecord` (default `UnnamedProfile` with `no_inline_property` / 0 bytes
   when omitted).
 - **Alternative (rejected):** a parallel stable map `ROUTER_EDGE_INLINE_PROPERTY_PROFILES` keyed by `EdgeLabelId`,
   updated only through router `commit_*` catalog/schema APIs. Slice 20 keeps a single map and
@@ -173,7 +173,7 @@ The graph executor must not invent schema by scanning its own stable map.
 
 - LARA inline property bytes and `LabelBucket::inline_property_byte_width` (physical materialization)
 - Validation that DML inline property bytes match **wire-resolved** profile for the label
-- Decode/prepare using plan-scoped profile from execution context (`GLEAPH.WEIGHT`, payload batch
+- Decode/prepare using plan-scoped profile from execution context (`GLEAPH.WEIGHT`, inline property bytes batch
   scans, etc.)
 
 **Heap-only optional cache:** graph may cache `EdgeLabelId → EdgeInlinePropertyProfile` for the duration
@@ -199,7 +199,7 @@ Update `gleaph_graph_kernel::stable_layout`, `stable-memory-inventory.md`, and p
 | **B — Graph read path** | Executor, `gleaph_weight`, expand fusion use execution context only | Existing expand/weight tests with wire injection |
 | **C — DML path** | Mutations validate against wire profile; remove graph install APIs | Facade store tests; pocket-ic DML |
 | **D — Stable retirement** | Delete graph region; repack ids; router region live | Reopen tests; `bench_layout_graph_stable_reopen_touch`; cold_touch **41** |
-| **E — Doc sync** | `labeled-edge-inline-propertys.md`, ADR 0007 baseline table, roadmap | design-sync checklist |
+| **E — Doc sync** | `labeled-edge-inline-properties.md`, ADR 0007 baseline table, roadmap | design-sync checklist |
 
 Phases A–C may land before D (dual-read or feature flag) only in short-lived branches; **main** should not keep two SSOTs beyond one merge window.
 
@@ -260,6 +260,6 @@ Router SSOT + graph periodically syncs to `ROUTER_EDGE_INLINE_PROPERTY_PROFILES`
 
 - [0006 — Pre-federation foundation](0006-pre-federation-foundation.md) §2 Catalog ownership
 - [0007 — Stable-memory layout](0007-stable-memory-layout.md) — repack gate
-- [labeled-edge-inline-propertys.md](../storage/labeled-edge-inline-propertys.md) — LARA physical model
+- [labeled-edge-inline-properties.md](../storage/labeled-edge-inline-properties.md) — LARA physical model
 - [stable-memory-inventory.md](../storage/stable-memory-inventory.md) — current MemoryId tables
 - [refactoring-roadmap.md](../architecture/refactoring-roadmap.md) — dev data discard policy

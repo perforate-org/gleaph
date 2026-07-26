@@ -109,8 +109,8 @@ exact rank/select scanning remains the source of truth.
 ## Related documents
 
 - [lara-dgap-contract.md](./lara-dgap-contract.md)
-- [labeled-edge-inline-values.md](./labeled-edge-inline-values.md)
-- [inline-value-first-traversal.md](./inline-value-first-traversal.md)
+- [labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md)
+- [inline-property-bytes-first-traversal.md](./inline-property-bytes-first-traversal.md)
 - [ADR 0048](../adr/0048-lara-counterpart-resolution.md)
 - [ADR 0050](../adr/0050-lara-traverse-read-api.md)
 - [federation/model.md](../federation/model.md)

@@ -315,7 +315,7 @@ The bidirectional wrapper is the smallest owner that sees:
 
 Canonical single-orientation mutation methods are not exposed to GraphStore as general-purpose APIs.
 
-GraphStore, batch insertion, deletion, inline-value update, compaction, and repair use owner-facing operations that preserve the pair-order invariant.
+GraphStore, batch insertion, deletion, inline-property update, compaction, and repair use owner-facing operations that preserve the pair-order invariant.
 
 Read-only forward and reverse accessors may remain public.
 
@@ -328,7 +328,7 @@ For a paired mutation:
 ```text
 validate and reserve
 → write both physical projections
-→ update mirrored payload state
+→ update mirrored inline property bytes state
 → publish success
 ```
 
@@ -378,23 +378,23 @@ Mirrored inline update and logical deletion call `counterpart_of`.
 
 An undirected self-loop updates or removes one physical entry once.
 
-### 14. Edge and payload slots remain separate domains
+### 14. Edge and inline property bytes slots remain separate domains
 
-Edge slots and inline-payload slots are not numerically paired.
+Edge slots and inline-property-bytes slots are not numerically paired.
 
 Their association is bucket-local live ordinal.
 
-For every inline-value operation, LARA:
+For every inline-property operation, LARA:
 
 1. resolves the edge entry’s bucket-local live ordinal;
-2. applies that ordinal to the payload sequence;
+2. applies that ordinal to the inline property bytes sequence;
 3. resolves the canonical counterpart occurrence using `counterpart_of`;
-4. resolves the counterpart bucket’s payload ordinal independently; and
+4. resolves the counterpart bucket’s inline property bytes ordinal independently; and
 5. updates or removes both mirrored values in one no-await commit.
 
-Edge-log indices, payload-log indices, blob positions, and physical slot numbers must not be assumed equal.
+Edge-log indices, inline property bytes log indices, blob positions, and physical slot numbers must not be assumed equal.
 
-Compaction may move edge and payload storage independently while preserving corresponding live sequence order.
+Compaction may move edge and inline property bytes storage independently while preserving corresponding live sequence order.
 
 ### 15. Logical-slot-preserving movement requires no Graph repair
 
@@ -579,10 +579,10 @@ batch-location return values, alias removal, or the associated tests.
 - singleton relations;
 - parallel relations;
 - equal-target entries interleaved with other targets;
-- distinct inline values on parallel edges;
+- distinct inline properties on parallel edges;
 - exact update and deletion from either physical half;
 - slab and overflow-log source/counterpart combinations;
-- edge and payload sequences in different physical domains;
+- edge and inline property bytes sequences in different physical domains;
 - scalar insertion returning exact locations;
 - batch insertion returning exact per-ordinal locations;
 - input-order-preserving pair order;
@@ -675,4 +675,4 @@ No specific sampled, packed, shared-orientation, pair-rank, permutation, leaf-bl
 - ADR 0049: input-order-preserving batch mutations
 - LARA storage contract
 - LARA and Graph facade contract
-- labeled edge inline-value contract
+- labeled edge inline-property contract

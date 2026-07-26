@@ -18,7 +18,7 @@ This document is a planning contract. It does not describe shipped behavior unle
 - Preserving backward compatibility with existing development data.
 - Updating crate, schema, or stable-layout version numbers as part of every refactoring patch.
 - Moving Gleaph-specific or Internet Computer-specific behavior into `gleaph-gql` or `gleaph-gql-planner`.
-- Changing LARA scan, tombstone, payload, or free-span semantics without a dedicated ADR.
+- Changing LARA scan, tombstone, inline property bytes, or free-span semantics without a dedicated ADR.
 
 ## Development Compatibility Policy
 
@@ -63,7 +63,7 @@ The refactor should first identify who owns each fact and invariant, then reshap
 | ---------------------------------------------- | ------------------------------------------------------ |
 | Vertex and canonical edge existence            | `gleaph-graph` / LARA-backed graph storage             |
 | Canonical edge identity                        | `owner_vertex_id`, `label_id`, `edge_slot_index`       |
-| Edge payload bytes                             | Labeled LARA payload slab/log/blob stores              |
+| Edge inline property bytes                             | Labeled LARA inline property bytes slab/log/blob stores              |
 | Vertex and edge property values                | Graph property stores                                  |
 | Property and label names in federated planning | Router catalogs                                        |
 | Router placement                               | Router placement maps                                  |
@@ -80,7 +80,7 @@ Canonical state includes:
 
 - Vertex rows.
 - Canonical forward edges.
-- Edge payload bytes.
+- Edge inline property bytes.
 - Property values.
 - Router placement records.
 - Label and property catalogs.
@@ -98,7 +98,7 @@ Derived or rebuildable state includes:
 
 ### Storage layout changes require explicit gates
 
-Any change that affects stable memory layout, memory ids, persisted key encodings, LARA slab layout, payload layout, postings layout, or router idempotency records requires:
+Any change that affects stable memory layout, memory ids, persisted key encodings, LARA slab layout, inline property bytes layout, postings layout, or router idempotency records requires:
 
 1. A design update or ADR.
 2. Reopen or upgrade tests.
@@ -116,7 +116,7 @@ These gates protect the new contract; they are not a requirement to preserve old
 The refactor should introduce explicit storage-domain methods before changing stable layout. For example:
 
 - Property write = primary property store mutation plus posting-maintenance event.
-- Edge insert = canonical edge write plus reverse/alias handling, payload-width validation, telemetry, and local edge postings.
+- Edge insert = canonical edge write plus reverse/alias handling, inline-property-byte-width validation, telemetry, and local edge postings.
 - Router placement update = logical placement plus reverse physical lookup plus mutation/idempotency state where applicable.
 
 ### Duplicate catalog patterns
@@ -127,7 +127,7 @@ The codebase has several bidirectional catalog patterns:
 - Router edge-label name/id maps.
 - Router property name/id maps.
 - Graph property catalog.
-- Edge weight and payload profile catalogs.
+- Edge weight and inline property profile catalogs.
 
 The desired direction is one reusable stable bidirectional catalog implementation, with domain-specific allocation policy supplied by the owning module. Reserved ids, sparse allocation behavior, manual insertion rules, and max-id limits should not be reimplemented in multiple places.
 
@@ -150,12 +150,12 @@ Distributed property and label reads should be router-owned. Graph shards should
 
 Legacy direct graph index paths should be isolated and removed when router seed routing covers the corresponding query shapes.
 
-### LARA and payload coupling
+### LARA and inline property bytes coupling
 
-Edge rows and payload bytes must stay aligned in logical slot order. Payload compaction and edge compaction should remain separate physical stores but one logical operation. Labeled LARA changes must preserve:
+Edge rows and inline property bytes must stay aligned in logical slot order. Payload compaction and edge compaction should remain separate physical stores but one logical operation. Labeled LARA changes must preserve:
 
 - Tombstone skipping.
-- Fail-fast payload reads.
+- Fail-fast inline property bytes reads.
 - `label_id` plus `edge_slot_index` edge identity.
 - Segment-footprint retirement semantics for leaf relocation.
 - Scan paths that do not consult PMA maintenance stores.
@@ -182,7 +182,7 @@ Keep separate stable-memory regions when any of these are true:
 Examples:
 
 - Forward adjacency and reverse adjacency.
-- Edge slab, payload slab, payload log, and payload blobs.
+- Edge slab, inline property bytes slab, inline property bytes log, and inline property bytes blobs.
 - Property values and property postings.
 - Router placement and label telemetry.
 - Canonical graph data and maintenance queues.
@@ -195,7 +195,7 @@ Consider consolidation only after the owner API is explicit and benchmarks show 
 Good candidates:
 
 - Small bidirectional catalog maps updated together.
-- Edge weight profile and edge inline value profile state if weight becomes a compatibility view over payload profiles.
+- Edge weight profile and edge inline property profile state if weight becomes a compatibility view over inline property profiles.
 - Tiny metadata cells that share identical lifecycle and upgrade behavior.
 - Maintenance metadata that is always read and written as one unit.
 
@@ -286,7 +286,7 @@ Goal: remove duplicated name/id catalog rules.
 
 **Status: Complete (2026-06-10).**
 
-**Progress:** `gleaph-graph-kernel::bidirectional_catalog` provides shared `BidirectionalCatalog` with sparse and dense allocation policies. Graph property catalog and router vertex/edge/property resolution catalogs use the shared type (same stable memory regions). Router retains ownership of federated label and property resolution APIs. Edge weight API reads canonical payload profiles via `to_weight_profile`; legacy `EDGE_WEIGHT_PROFILES` stable region retired in Phase 8 P1.
+**Progress:** `gleaph-graph-kernel::bidirectional_catalog` provides shared `BidirectionalCatalog` with sparse and dense allocation policies. Graph property catalog and router vertex/edge/property resolution catalogs use the shared type (same stable memory regions). Router retains ownership of federated label and property resolution APIs. Edge weight API reads canonical inline property profiles via `to_weight_profile`; legacy `EDGE_WEIGHT_PROFILES` stable region retired in Phase 8 P1.
 
 Deliverables:
 
@@ -294,7 +294,7 @@ Deliverables:
 - Move router label catalogs and property catalogs onto the shared implementation where the semantics match. **Done** (vertex/edge dense, property dense; graph property sparse).
 - Preserve router ownership of federated label and property resolution. **Done** (router `catalogs` domain unchanged at API boundary).
 - Evaluate graph property catalog migration separately from router catalogs. **Done** (graph re-exports shared catalog with `SparseFromOnePolicy`).
-- Convert edge weight profiles into a compatibility layer over edge inline value profiles, if the compatibility surface is still required. **Done** (`EdgeInlineValueProfile::to_weight_profile`; weight install writes payload only). Legacy stable region **retired** in Phase 8 P1 (2026-06-12).
+- Convert edge weight profiles into a compatibility layer over edge inline property profiles, if the compatibility surface is still required. **Done** (`EdgeInlinePropertyProfile::to_weight_profile`; weight install writes inline property bytes only). Legacy stable region **retired** in Phase 8 P1 (2026-06-12).
 
 Exit criteria:
 
@@ -350,7 +350,7 @@ Exit criteria:
 - Tests cover canonical mutation plus derived-state observation. **Met** for edge equality (`derived_state::edge_equality` tests).
 - Backfill state is not mistaken for canonical state. **Met** (maintenance-class cursors documented in [derived-state-query-semantics.md](../index/derived-state-query-semantics.md)).
 
-### Phase 6: LARA and payload physical cleanup
+### Phase 6: LARA and inline property bytes physical cleanup
 
 Goal: reduce low-level waste without weakening LARA contracts.
 
@@ -361,8 +361,8 @@ Goal: reduce low-level waste without weakening LARA contracts.
 Deliverables:
 
 - Continue moving labeled edge byte management toward segment-footprint retirement rather than per-vertex peel behavior. **Done** for pinned-leaf steady-state paths.
-- Keep edge rows and payload bytes aligned by logical slot order during compaction. **Done.**
-- Centralize dense/tiled payload offset math and batch traversal helpers. **Done** (offset, dense eligibility, `ascending_contiguous_u32_runs`).
+- Keep edge rows and inline property bytes aligned by logical slot order during compaction. **Done.**
+- Centralize dense/tiled inline property bytes offset math and batch traversal helpers. **Done** (offset, dense eligibility, `ascending_contiguous_u32_runs`).
 - Preserve `LabeledOperationError`, tombstone skipping, and fail-fast value-log reads. **Done.**
 - Add high-degree, many-label regression tests and canbench coverage. **Done** for 33×50 hub (`bench_labeled_mixed_label_hub_*` in `labeled/bench.rs`).
 
@@ -456,12 +456,12 @@ retain decision stands on §6 canbench evidence.
 - Upgrade and reopen tests cover any layout change.
 - Failure isolation impact is documented for any merge.
 
-### Follow-up: edge inline value schema (ADR 0008, implemented 2026-06-12)
+### Follow-up: edge inline property schema (ADR 0008, implemented 2026-06-12)
 
-`EdgeLabelId → EdgeInlineValueProfile` is **router SSOT** (`ROUTER_EDGE_PAYLOAD_PROFILES`); plan/DML
-wire carries `payload_profile` on `ResolvedEdgeLabel`; graph stable `EDGE_PAYLOAD_PROFILES` is
+`EdgeLabelId → EdgeInlinePropertyProfile` is **router SSOT** (`ROUTER_EDGE_INLINE_PROPERTY_PROFILES`); plan/DML
+wire carries `inline_property_profile` on `ResolvedEdgeLabel`; graph stable `EDGE_PAYLOAD_PROFILES` is
 retired (MemoryId repack 42 → 41 regions). Unlabeled edges remain 0-byte without catalog lookup.
-See [0008](../adr/0008-edge-inline-value-profile-router-ssot.md).
+See [0008](../adr/0008-edge-inline-property-profile-router-ssot.md).
 
 ### Phase 9: Validation and release gates (ongoing)
 
@@ -474,7 +474,7 @@ Required tests:
 - Vertex delete removes properties and derived postings.
 - Edge delete removes edge properties, aliases, local edge postings, and payloads.
 - Reverse adjacency and alias rebuild preserve canonical edge identity.
-- Payload compaction preserves edge/payload slot order.
+- Inline property bytes compaction preserves edge/inline-property-bytes slot order.
 - Router idempotency preserves client mutation key, request fingerprint, and zero-shard completion semantics.
 - Label and property catalogs reject conflicting mappings and round-trip after reopen.
 
@@ -504,7 +504,7 @@ Phases 0–8 are **complete**.
 | **Ongoing**     | Phase 9             | Tests + canbench on every boundary PR                                                              |
 | **Optional**    | Phase 8c follow-ups | P2 grouped-catalog prototype only if product revisits merge                                        |
 | **Deferred**    | Federation ADR      | ADR 0006 step 6+ (`RemoteVertexId`, `GROUP_SIZE`, peer expand) — blocked on product                |
-| **Independent** | Feature epics       | bulk-ingest finalize (P0–P3 done), inline-value-first traversal, executor gaps — not Phase numbers |
+| **Independent** | Feature epics       | bulk-ingest finalize (P0–P3 done), inline-property-bytes-first traversal, executor gaps — not Phase numbers |
 
 Phase 8 closed with **retain** on P2/P4 and executed repacks on P1/P3; that is the recorded outcome.
 
@@ -514,7 +514,7 @@ Phase 8 closed with **retain** on P2/P4 and executed repacks on P1/P3; that is t
 - [System overview](overview.md)
 - [LARA and graph facade](../storage/lara-and-facade.md)
 - [LARA](../storage/lara.md)
-- [Labeled edge inline value storage](../storage/labeled-edge-inline-values.md)
+- [Labeled edge inline property storage](../storage/labeled-edge-inline-properties.md)
 - [Property index](../index/property-index.md)
 - [Label index](../index/label-index.md)
 - [Federation target](../sharding/federation-target.md)

@@ -37,7 +37,7 @@ denote unrelated semantics.
 | Edge labels | 10–11 | `(GraphId, name) ↔ (GraphId, EdgeLabelId)` | **Per graph** |
 | Properties | 12–13 | `(GraphId, name) ↔ (GraphId, PropertyId)` | **Per graph** |
 | Index names | 16–17 | `(GraphId, String) → IndexNameId` | Per graph ([0011](0011-gql-graph-resolution-and-catalog-scoping.md)) |
-| Edge payload profiles | 20 | `(GraphId, EdgeLabelId) → EdgeInlineValueProfile` | **Per graph** ([0008](0008-edge-inline-value-profile-router-ssot.md)) |
+| Edge inline property profiles | 20 | `(GraphId, EdgeLabelId) → EdgeInlinePropertyProfile` | **Per graph** ([0008](0008-edge-inline-property-profile-router-ssot.md)) |
 | Label stats aggregates | 25–28 | `(GraphId, label_id)` / `(GraphId, ShardId, label_id)` | **Per graph** ([0015](0015-label-stats-projection-log.md)) |
 
 GQL **graph type** metadata is already per federation graph via `GraphCatalog.binding_map`
@@ -75,7 +75,7 @@ context, where graph-local `ShardId` values identify shards only for that `Graph
 |-------|--------|
 | **Global name → id SSOT** | Same string in different logical graphs must share one id even when semantics differ |
 | **Irreversible intern** | Removing a logical graph does not drop its vocabulary partition |
-| **Downstream keys assume global ids** | Edge payload profiles and label stats maps keyed by raw id only |
+| **Downstream keys assume global ids** | Edge inline property profiles and label stats maps keyed by raw id only |
 | **Inconsistent catalog pattern** | Index names are graph-scoped; labels and properties are not |
 
 ---
@@ -155,7 +155,7 @@ Union merge combines rows only; id namespaces are not merged across graphs.
 
 | Region | Current key | Target key |
 |--------|-------------|------------|
-| `ROUTER_EDGE_PAYLOAD_PROFILES` (20) | `EdgeLabelId` | **`(GraphId, EdgeLabelId)`** |
+| `ROUTER_EDGE_INLINE_PROPERTY_PROFILES` (20) | `EdgeLabelId` | **`(GraphId, EdgeLabelId)`** |
 | `ROUTER_VERTEX_LABEL_STATS` (25) | `u16` | **`(GraphId, VertexLabelId)`** or equivalent composite |
 | `ROUTER_EDGE_LABEL_STATS` (26) | `u16` | **`(GraphId, EdgeLabelId)`** |
 | `ROUTER_*_LABEL_LIVE_BY_SHARD` (27–28) | `(ShardId, u16)` | **`(GraphId, ShardId, label_id)`** or graph-partitioned map whose router-wide key includes `GraphId` |
@@ -168,7 +168,7 @@ raw `ShardId` alone to imply one graph. Per-shard label live maps either carry `
 stable key or are physically partitioned by `GraphId` with that partition key used for every
 lookup, replay, and invariant check.
 
-`enrich_edge_labels_for_predicate_fusion` enumerates payload profiles **per `GraphId`**, not
+`enrich_edge_labels_for_predicate_fusion` enumerates inline property profiles **per `GraphId`**, not
 globally.
 
 ### 5. Graph shard and graph-index — no posting key change
@@ -185,7 +185,7 @@ Extend graph catalog DDL / federation unregister to drop **vocabulary partition*
 `graph_id`:
 
 1. Remove all `(graph_id, *)` rows from vertex / edge / property scoped catalogs
-2. Remove `(graph_id, *)` from edge inline value profiles
+2. Remove `(graph_id, *)` from edge inline property profiles
 3. Remove `(graph_id, *)` label stats rows, including graph-partitioned shard-live rows
 4. Existing index catalog + `GraphCatalog` binding removal ([0011](0011-gql-graph-resolution-and-catalog-scoping.md), [0013](0013-gql-graph-type-catalog-on-router.md))
 
@@ -215,7 +215,7 @@ flowchart TB
     VL["GraphScopedNameCatalog<br/>VertexLabelId"]
     EL["GraphScopedNameCatalog<br/>EdgeLabelId"]
     PR["GraphScopedNameCatalog<br/>PropertyId"]
-    EP["Edge payload profiles<br/>(GraphId, EdgeLabelId)"]
+    EP["Edge inline property profiles<br/>(GraphId, EdgeLabelId)"]
     W["ExecutePlanArgs<br/>resolved_* tables"]
     GS["Graph shard<br/>values by id"]
     IX["graph-index<br/>postings by id + shard_id"]
@@ -237,7 +237,7 @@ flowchart TB
 | Name → id (labels, properties) | Router scoped catalogs per **`GraphId`** |
 | Graph name → `GraphId` | `ROUTER_GRAPH_CATALOG` (unchanged) |
 | Index name → `IndexNameId` | `ROUTER_INDEX_NAME_CATALOG` (unchanged scope) |
-| Edge payload schema | Router `(GraphId, EdgeLabelId)` map |
+| Edge inline property schema | Router `(GraphId, EdgeLabelId)` map |
 | Label stats projection | Router maps keyed by **`GraphId` + label id** |
 | Values on vertices/edges | Graph shard |
 | Postings | graph-index (ids interpreted in shard's graph) |
@@ -284,7 +284,7 @@ flowchart TB
 | **V0** | `GraphScopedNameCatalog<Id: CatalogId>` in graph-kernel; unit tests | **done** |
 | **V1** | Migrate regions 8–13; router lookup / intern / reverse APIs take `GraphId` | **done** |
 | **V2** | `resolve_plan_*` + gql ingress + seed + index_catalog + aggregate fast path | **done** |
-| **V3** | `(GraphId, EdgeLabelId)` payload profiles; `(GraphId, label_id)` label stats keys; `(GraphId, ShardId, label_id)` live-by-shard keys or equivalent graph partition | **done** |
+| **V3** | `(GraphId, EdgeLabelId)` inline property profiles; `(GraphId, label_id)` label stats keys; `(GraphId, ShardId, label_id)` live-by-shard keys or equivalent graph partition | **done** |
 | **V4** | `DROP GRAPH` / unregister cascade for vocabulary partitions | **done** |
 | **V5** (optional) | `GraphCatalog` DDL auto-intern labels/properties into graph partition | **done** |
 
@@ -322,7 +322,7 @@ vocabulary per graph.
 ## Related ADRs
 
 - [0006](0006-pre-federation-foundation.md) — router catalog SSOT (scope amended here)
-- [0008](0008-edge-inline-value-profile-router-ssot.md) — edge inline value profiles move to `(GraphId, EdgeLabelId)`
+- [0008](0008-edge-inline-property-profile-router-ssot.md) — edge inline property profiles move to `(GraphId, EdgeLabelId)`
 - [0010](0010-index-sharding-extensibility.md) — posting keys unchanged
 - [0011](0011-gql-graph-resolution-and-catalog-scoping.md) — graph-scoped index names; global vocabulary policy superseded
 - [0013](0013-gql-graph-type-catalog-on-router.md) — optional auto-intern follow-up

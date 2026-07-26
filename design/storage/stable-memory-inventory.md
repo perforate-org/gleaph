@@ -108,7 +108,7 @@ storage handles or alter allocation state.
 
 Graph now uses the custom manager from ADR 0043 with a 4-page default; 8 pages for vertex,
 label-bucket, label-sidecar, and embedding-incarnation rows; 16 pages for edge slab/log, aliases,
-and durable backlog; 32 pages for payload and embeddings; and 64 pages for property and local-unique
+and durable backlog; 32 pages for inline property bytes and embeddings; and 64 pages for property and local-unique
 values. This is an experimental fresh-layout choice: it keeps small regions below the upstream
 128-page default while allowing property-like storage to grow with less extent-count pressure. The custom
 manager assigns a bucket size per `MemoryId` while implementing the upstream `ic_stable_structures::Memory` trait.
@@ -139,7 +139,7 @@ Existing development stable data must be recreated when this policy changes; no 
 migration is provided.
 
 Fresh Graph stores use independent initial capacities for the labeled orientations:
-`bucket_slots = 1,024`, `edge_slots = 4,096`, and `payload_bytes = 65,536` per orientation.
+`bucket_slots = 1,024`, `edge_slots = 4,096`, and `inline_property_bytes = 65,536` per orientation.
 These are allocation hints only; LARA grows and relocates the slabs as data arrives. Reopen uses
 the capacities persisted in each region's own header, so changing these defaults does not resize
 existing stable memory.
@@ -158,10 +158,10 @@ existing stable memory.
 | 7        | `FWD_EDGE_SPAN_META`             | Edge span metadata                                                                                      | maintenance | —       |
 | 8        | `FWD_EDGE_FREE_SPANS`            | Retired edge physical spans                                                                             | maintenance | —       |
 | 9        | `FWD_EDGE_FREE_SPAN_BY_START`    | Edge free-span index                                                                                    | maintenance | —       |
-| 10       | `FWD_PAYLOAD_SLAB`               | Dense labeled edge inline-value prefix, independently allocated/relocated from edge slab                | canonical   | —       |
-| 11       | `FWD_PAYLOAD_FREE_SPANS`         | Payload free spans                                                                                      | maintenance | —       |
-| 12       | `FWD_PAYLOAD_FREE_SPAN_BY_START` | Payload free-span index                                                                                 | maintenance | —       |
-| 13       | `FWD_PAYLOAD_LOG`                | Ordered inline-value suffix log, independently folded from edge log                                     | canonical   | —       |
+| 10       | `FWD_PAYLOAD_SLAB`               | Dense labeled edge inline property bytes prefix, independently allocated/relocated from edge slab                | canonical   | —       |
+| 11       | `FWD_PAYLOAD_FREE_SPANS`         | Inline property bytes free spans                                                                                      | maintenance | —       |
+| 12       | `FWD_PAYLOAD_FREE_SPAN_BY_START` | Inline property bytes free-span index                                                                                 | maintenance | —       |
+| 13       | `FWD_PAYLOAD_LOG`                | Ordered inline-property suffix log, independently folded from edge log                                     | canonical   | —       |
 | 14       | `FWD_PAYLOAD_BLOBS`              | Large inline property bytes blobs                                                                                     | canonical   | —       |
 
 ### Reverse orientation (derived adjacency + payloads)
@@ -175,9 +175,9 @@ existing stable memory.
 | 20       | `REV_EDGES`                                                                | Reverse edge slab                                                                     | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
 | 21       | `REV_EDGE_LOG`                                                             | Reverse edge log                                                                      | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
 | 22–24    | `REV_EDGE_SPAN_META`, `REV_EDGE_FREE_SPANS`, `REV_EDGE_FREE_SPAN_BY_START` | Reverse edge maintenance                                                              | maintenance | —                                                                         |
-| 25       | `REV_PAYLOAD_SLAB`                                                         | Reverse inline-value prefix, independently allocated/relocated from reverse edge slab | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
-| 26–27    | `REV_PAYLOAD_FREE_SPANS`, `REV_PAYLOAD_FREE_SPAN_BY_START`                 | Reverse payload maintenance                                                           | maintenance | —                                                                         |
-| 28       | `REV_PAYLOAD_LOG`                                                          | Reverse ordered inline-value suffix log, independently folded from reverse edge log   | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
+| 25       | `REV_PAYLOAD_SLAB`                                                         | Reverse inline property bytes prefix, independently allocated/relocated from reverse edge slab | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
+| 26–27    | `REV_PAYLOAD_FREE_SPANS`, `REV_PAYLOAD_FREE_SPAN_BY_START`                 | Reverse inline property bytes maintenance                                                           | maintenance | —                                                                         |
+| 28       | `REV_PAYLOAD_LOG`                                                          | Reverse ordered inline property bytes suffix log, independently folded from reverse edge log   | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
 | 29       | `REV_PAYLOAD_BLOBS`                                                        | Reverse inline property bytes blobs                                                                 | derived     | Co-update + `rebuild_reverse_adjacency`                                   |
 
 ### LARA maintenance
@@ -205,7 +205,7 @@ This is a net increase of three regions after `EDGE_ALIASES` is removed. The
 locator uses a dedicated fixed-row store modeled on LARA vertex/count/span
 columns, not `StableVec`, and does not enlarge existing vertex, bucket, count,
 or span rows. The mate `FreeSpanStore` reuses the existing implementation and
-algorithm in a separate address space; it never shares edge or payload spans.
+algorithm in a separate address space; it never shares edge or inline property bytes spans.
 
 Owner: `ic-stable-lara` / graph `GRAPH` thread-local when promoted. The dormant foundation itself
 accepts four distinct memories and is not wired to `GRAPH`; scan paths must not consult PMA

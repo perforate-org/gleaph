@@ -11,7 +11,7 @@ repeats the inter-canister call overhead, update-message base cost, Candid
 boundary, and callback handling for every seed.
 
 The ICP cycle-cost model charges an inter-canister request/response overhead and
-an update-message base cost in addition to the instructions and payload bytes.
+an update-message base cost in addition to the instructions and inline property bytes.
 The cost applies to each call even when Router and Graph are on the same subnet.
 The existing fixed-page API therefore reduces ingress calls but does not reduce
 the dominant Router-to-Graph call count.

@@ -40,8 +40,8 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [storage/lara-and-facade.md](storage/lara-and-facade.md) | draft | LARA vs graph stable stores |
 | [storage/lara-dgap-contract.md](storage/lara-dgap-contract.md) | partially implemented | DGAP mapping detail and labeled gaps |
 | [storage/lara-labeled-migration-tests.md](storage/lara-labeled-migration-tests.md) | accepted | Labeled migration Phases A–E test gates |
-| [storage/labeled-edge-inline-values.md](storage/labeled-edge-inline-values.md) | implemented | Edge row vs payload slab layout |
-| [storage/inline-value-first-traversal.md](storage/inline-value-first-traversal.md) | partially implemented | Two-phase payload / edge read API (M1–M6 LARA sparse/hybrid phase 1) |
+| [storage/labeled-edge-inline-properties.md](storage/labeled-edge-inline-properties.md) | implemented | Edge row vs inline property bytes slab layout |
+| [storage/inline-property-bytes-first-traversal.md](storage/inline-property-bytes-first-traversal.md) | partially implemented | Two-phase inline property bytes / edge read API (M1–M6 LARA sparse/hybrid phase 1) |
 | [storage/bulk-ingest-finalize.md](storage/bulk-ingest-finalize.md) | implemented | GraphStore + canister + GQL `CALL` + router auto-finalize + WSP canbench baseline |
 | [security/rbac-and-prepared.md](security/rbac-and-prepared.md) | draft | Roles and prepared queries |
 | [index/property-index.md](index/property-index.md) | draft | graph-index and router seed routing |
@@ -72,4 +72,4 @@ Each document should include where possible:
 ## Keeping docs honest
 
 When behavior changes, update the design doc in the same PR when the change affects invariants or public semantics. Stale docs are worse than none—prefer marking sections **Implemented** / **Planned** / **Not implemented**.
-| [ADR 0047: Shared typed Graph bulk execution envelope](design/adr/0047-shared-typed-graph-bulk-envelope.md) | proposed | Router→Graph typed seed batch envelope with shared header and per-operation replay |
+| [ADR 0047: Shared typed Graph bulk execution envelope](./adr/0047-shared-typed-graph-bulk-envelope.md) | proposed | Router→Graph typed seed batch envelope with shared header and per-operation replay |

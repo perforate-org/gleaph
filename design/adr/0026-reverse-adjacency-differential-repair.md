@@ -25,7 +25,7 @@ edges is unsound in this layout:
 - `EDGE_ALIASES` directed keys are `edge_alias_slot_key(reverse_slot, true)` — derived
   from reverse **slot indices** (`facade/store/helpers.rs`). Rebuilding the whole reverse
   orientation reassigns every reverse slot, cascade-invalidating every directed alias row.
-- The reverse payload slab/log/blobs (regions 25, 28, 29) would be rewritten wholesale.
+- The reverse inline property bytes slab/log/blobs (regions 25, 28, 29) would be rewritten wholesale.
 
 ## Decision
 
@@ -38,7 +38,7 @@ For each diverged `(src, tgt, label)` key:
    `src`) via `remove_reverse_edge_matching`, and drop the key's directed alias rows via
    `EDGE_ALIASES::remove_all_for_canonical` over the key's forward slots.
 2. Re-insert one reverse half per forward out-edge of the key — copying the forward edge's
-   payload bytes from the slab (`for_each_directed_out_edges_for_label_with_payload_slices_reusing`)
+   inline property bytes from the slab (`for_each_directed_out_edges_for_label_with_payload_slices_reusing`)
    and re-creating the directed reverse-IN alias with the exact
    `find_reverse_alias_for_canonical` + alias-insert sequence the live insert path uses in
    `commit_directed_edge_insert`.
@@ -67,7 +67,7 @@ checked by `check_reverse_adjacency` is always restored regardless.
 
 - **Full clear-and-rebuild** (like `rebuild_edge_aliases` clears `EDGE_ALIASES`).
   Rejected: clearing/replaying all `REV_*` regions reassigns every reverse slot index,
-  cascade-invalidating all `EDGE_ALIASES` directed keys and rewriting the reverse payload
+  cascade-invalidating all `EDGE_ALIASES` directed keys and rewriting the reverse inline property bytes
   slab wholesale — a larger, multi-store operation with no benefit over the differential
   repair, whose cost is already bounded by the (normally empty) divergence set.
 - **No repair (check-only).** The status quo; leaves the only `Derived` region without a
@@ -101,7 +101,7 @@ rebuild or invalidate the affected mate leaf blobs before returning success.
 `crates/graph/src/facade/derived_state/reverse_adjacency.rs`:
 `repairs_forward_only_edge_into_reverse`,
 `repairs_reverse_orphan_by_removal`,
-`rebuild_preserves_edge_inline_value`,
+`rebuild_preserves_edge_inline_property`,
 `rebuild_is_noop_when_consistent`,
 `rebuild_leaves_unrelated_reverse_slots_untouched`.
 

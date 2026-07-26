@@ -1,49 +1,49 @@
-# Inline-value-first labeled edge traversal
+# Inline-property-first labeled edge traversal
 
-**Status:** Partially Implemented (M1–M6c inline-value-first predicate expand; sparse-only buckets still combined)
+**Status:** Partially Implemented (M1–M6c inline-property-bytes-first predicate expand; sparse-only buckets still combined)
 
 ## Purpose
 
-Define a **two-phase** traversal API for labeled edges when callers need edge inline values (weights, timestamps, property bytes). Phase 1 reads **payload bytes only** (and slot metadata). Phase 2 reads **edge rows** only for slots the caller still needs.
+Define a **two-phase** traversal API for labeled edges when callers need edge inline properties (weights, timestamps, property bytes). Phase 1 reads **inline property bytes only** (and slot metadata). Phase 2 reads **edge rows** only for slots the caller still needs.
 
 This separates *storage IO* from *executor filtering* and avoids materializing full `Edge` values for slots that predicates or indexes already reject.
 
 ## Non-goals
 
-- Changing the edge/payload storage layout ([labeled-edge-inline-values.md](./labeled-edge-inline-values.md)).
+- Changing the edge/inline property bytes storage layout ([labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md)).
 - Replacing topology-only traversal (`for_each_edges_for_label_topology_*`) used by hop-count shortest path.
 - A single API that always skips edge reads — some workloads (weighted shortest path) still need every live edge’s destination.
 - Solving sparse / log-backed buckets in the first milestone (see [Sparse buckets](#sparse-buckets-log-backed)).
 
 ## Problem (current behavior)
 
-Today the hot API is `visit_out_edge_inline_value_batches_for_label`, which delivers `LabeledEdgeInlineValueBatch { edges, payload_bytes, dense }`.
+Today the hot API is `visit_out_edge_inline_property_batches_for_label`, which delivers `LabeledEdgeInlinePropertyBatch { edges, inline_property_bytes, dense }`.
 
 **Implemented today** (`ic-stable-lara/src/labeled/graph/traverse.rs`):
 
 | Path | IO | Materialization |
 |------|----|-----------------|
-| **Dense** | Bulk-read edge slab + payload slab in parallel | Parse **every** edge row into `scratch.edges`, zip payloads |
-| **Sparse** | Per-slot edge iteration + `attach_edge_inline_value` | One `Edge` per live slot |
+| **Dense** | Bulk-read edge slab + inline property bytes slab in parallel | Parse **every** edge row into `scratch.edges`, zip payloads |
+| **Sparse** | Per-slot edge iteration + `attach_edge_inline_property` | One `Edge` per live slot |
 
-The graph executor’s predicate expand (`expand_candidates_matching_edge_inline_value_into`) already scans `batch.payload_bytes` first and keeps only matching indices — but LARA has **already** read and parsed all edge rows in the batch. Equality-index expand still walks all edges with payloads and filters by slot in the callback.
+The graph executor’s predicate expand (`expand_candidates_matching_edge_inline_property_into`) already scans `batch.inline_property_bytes` first and keeps only matching indices — but LARA has **already** read and parsed all edge rows in the batch. Equality-index expand still walks all edges with payloads and filters by slot in the callback.
 
-Weighted shortest path (`ShortestExpandOptions { load_payloads: true }`) needs **all** live edges (destination + weight). Inline-value-first does not reduce IO there; regressions on that path are dominated by decode/cache behavior, not edge-vs-payload ordering.
+Weighted shortest path (`ShortestExpandOptions { load_payloads: true }`) needs **all** live edges (destination + weight). Inline-property-first does not reduce IO there; regressions on that path are dominated by decode/cache behavior, not edge-vs-inline property bytes ordering.
 
 ## Invariants (unchanged)
 
-From [labeled-edge-inline-values.md](./labeled-edge-inline-values.md):
+From [labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md):
 
 ```text
 (vertex_id, label_id, edge_slot) → 4 B target in EdgeStore
-                              → payload_byte_width bytes in EdgeInlineValueStore
+                              → inline_property_byte_width bytes in EdgeInlinePropertyBytesStore
 ```
 
-Compaction and scan order stay aligned across edge and payload bytes. Any inline-value-first batch must report **the same slot order** as the existing combined batch API for the same `(src, label, order)`.
+Compaction and scan order stay aligned across edge and inline property bytes. Any inline-property-bytes-first batch must report **the same slot order** as the existing combined batch API for the same `(src, label, order)`.
 
 ## Proposed API (LARA)
 
-### Phase 1 — payload value batches
+### Phase 1 — inline property bytes value batches
 
 ```rust
 pub struct LabeledPayloadValueBatch<'a> {
@@ -52,7 +52,7 @@ pub struct LabeledPayloadValueBatch<'a> {
     pub order: OutEdgeOrder,
     /// Parallel to `values`: absolute edge slot index per chunk.
     pub slot_indices: &'a [u32],
-    /// Flattened payload bytes: `slot_indices.len() * byte_width`.
+    /// Flattened inline property bytes: `slot_indices.len() * byte_width`.
     pub values: &'a [u8],
     pub dense: bool,
 }
@@ -60,7 +60,7 @@ pub struct LabeledPayloadValueBatch<'a> {
 pub fn visit_out_payload_value_batches_for_label<Visit>(...) -> Result<(), LabeledOperationError>;
 ```
 
-**Dense bucket** (`payload_log_head < 0 && overflow_log_head < 0 && stored_slots == degree`):
+**Dense bucket** (`inline_property_bytes_log_head < 0 && overflow_log_head < 0 && stored_slots == degree`):
 
 1. Bulk-read `take * byte_width` bytes from `payload_offset + first_slot * width`.
 2. Emit `slot_indices = first_slot..first_slot+take` in scan order.
@@ -71,14 +71,14 @@ tombstones are not dense-eligible and use the combined-batch fallback. Phase 2 s
 slots if eligibility invariants drift.
 
 **Sparse / log-backed:** `visit_out_payload_value_batches_for_label` walks hybrid slab
-prefix (bulk payload) plus overflow-log entries, or the sparse span iterator, emitting
+prefix (bulk inline property bytes) plus overflow-log entries, or the sparse span iterator, emitting
 `slot_indices` + `values` without retaining edge rows in the batch. Predicate expand uses
 phase 1 + phase 2 on these buckets (M6).
 
-Log-backed payload attach uses `LabelBucket::payload_byte_width` to interpret each overflow-log
+Log-backed inline property bytes attach uses `LabelBucket::inline_property_byte_width` to interpret each overflow-log
 site: inline bytes in the 8 B log cell when width `<= 8`, else the blob map at `(leaf, entry_idx)`.
 Storage class is not stored in the cell. Log ordinals skipped by edge overflow replay (tombstone
-edges) are not read for payload phase 1
+edges) are not read for inline property bytes phase 1
 ([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
 
 ### Phase 2 — selective edge row read
@@ -99,9 +99,9 @@ pub fn read_out_edge_slots_for_label(
 
 ### Combined batch (compatibility)
 
-Dense-eligible buckets keep the **single-pass** parallel edge+payload read in
-`visit_dense_out_edge_inline_value_batches_for_bucket` (bulk `read_slots_contiguous` +
-payload bytes). A phase 1+2 adapter was tried and reverted: full-batch callers
+Dense-eligible buckets keep the **single-pass** parallel edge+inline property bytes read in
+`visit_dense_out_edge_inline_property_batches_for_bucket` (bulk `read_slots_contiguous` +
+inline property bytes). A phase 1+2 adapter was tried and reverted: full-batch callers
 (vector expand, high match-rate filters) regressed on canbench versus one IO pass.
 
 Hybrid and sparse buckets keep dedicated combined-batch paths.
@@ -112,20 +112,20 @@ Hybrid and sparse buckets keep dedicated combined-batch paths.
 
 | Method | Status | Role |
 |--------|--------|------|
-| `visit_out_edge_inline_value_batches_for_label` | Implemented | Combined batch; keep for simple callers |
+| `visit_out_edge_inline_property_batches_for_label` | Implemented | Combined batch; keep for simple callers |
 | `visit_out_payload_value_batches_for_label` | Implemented (dense + hybrid + sparse) | Phase 1 only |
 | `read_directed_out_edge_slots_for_label` | Implemented | Phase 2 only |
-| `for_each_directed_out_edges_for_label_topology_unchecked` | Implemented | No payload |
+| `for_each_directed_out_edges_for_label_topology_unchecked` | Implemented | No inline property bytes |
 
 Executor routing:
 
 | Workload | Traversal pattern |
 |----------|-------------------|
 | Hop-count `ShortestPath` | Topology only (`load_payloads: false`) |
-| Weighted `ShortestPath` | Bulk payload + bulk edge for **all** live slots (can use phase 1 + phase 2 with full slot list; no filter between phases) |
-| `Expand` + payload predicate | Phase 1 → filter → phase 2 on **dense** and **overflow** hubs (M6c + hybrid replay cache) |
-| `Expand` + equality index | Index → slot set → phase 2 (payload optional if index key is not payload-derived) |
-| `Expand` + vector threshold | Combined batch + filter indices (inline-value-first deferred — canbench regression at all tested scan/match sizes) |
+| Weighted `ShortestPath` | Bulk inline property bytes + bulk edge for **all** live slots (can use phase 1 + phase 2 with full slot list; no filter between phases) |
+| `Expand` + inline property bytes predicate | Phase 1 → filter → phase 2 on **dense** and **overflow** hubs (M6c + hybrid replay cache) |
+| `Expand` + equality index | Index → slot set → phase 2 (inline property bytes optional if index key is not inline property bytes-derived) |
+| `Expand` + vector threshold | Combined batch + filter indices (inline-property-bytes-first deferred — canbench regression at all tested scan/match sizes) |
 
 ## Executor integration (planned)
 
@@ -134,7 +134,7 @@ Executor routing:
 Replace “combined batch + filter indices” with:
 
 1. `visit_out_payload_value_batches_for_label`
-2. `PreparedEdgeInlineValueBatchKernel::collect_matching_value_indices(values, …)`
+2. `PreparedLabeledEdgeInlinePropertyBatchKernel::collect_matching_value_indices(values, …)`
 3. `read_directed_out_edge_slots_for_label(&match_slots, …)` → `ExpandDst` + `EdgeBinding`
 
 **Expected win:** proportional to `(1 - match_rate) * degree * E::BYTES` per hub, plus avoided `Edge` struct work on rejected slots.
@@ -143,11 +143,11 @@ Replace “combined batch + filter indices” with:
 
 No change to *which* slots are read. Optional refactor:
 
-1. Phase 1: bulk payload bytes per expand
+1. Phase 1: bulk inline property bytes per expand
 2. Decode weights with `PreparedWeightDecoder` into a scratch `Vec<WeightedCost>` (no `profile.prepare()` per edge)
 3. Phase 2: bulk edge rows, zip with weights in relax
 
-This is an **ordering / decode** optimization, not inline-value-first filtering.
+This is an **ordering / decode** optimization, not inline-property-bytes-first filtering.
 
 ### Equality index
 
@@ -160,15 +160,15 @@ Avoids full degree scan. **Reverse / undirected** expand still uses full adjacen
 
 ## Dense eligibility (unchanged)
 
-A bucket is **dense-eligible** for bulk payload read when:
+A bucket is **dense-eligible** for bulk inline property bytes read when:
 
 ```text
-payload_log_head < 0
+inline_property_bytes_log_head < 0
 && overflow_log_head < 0
 && stored_slots == degree
 ```
 
-Vertices that fail this (e.g. converging-hub **src** with 48 edges, `stored_slots > degree`) stay on sparse/combined path until sparse inline-value-first is designed.
+Vertices that fail this (e.g. converging-hub **src** with 48 edges, `stored_slots > degree`) stay on sparse/combined path until sparse inline-property-bytes-first is designed.
 
 ## Sparse buckets (log-backed)
 
@@ -176,13 +176,13 @@ Vertices that fail this (e.g. converging-hub **src** with 48 edges, `stored_slot
 
 Options for later:
 
-- Walk payload log in lockstep with edge overflow iterator (same entry index), emitting value batches without full `Edge` materialization
+- Walk inline property bytes log in lockstep with edge overflow iterator (same entry index), emitting value batches without full `Edge` materialization
 - Fold-to-slab maintenance to increase dense eligibility on hot hubs (production:
   `GraphStore` edge inserts drain the LARA maintenance queue via
   `post_edge_insert_maintenance_budget`; delete paths drain fully).
   Aggressive vertex-edge-span compaction at batch boundaries is **planned** in
   [bulk-ingest-finalize.md](./bulk-ingest-finalize.md) (not implemented).
-- Property / equality index to reduce visited slots without full payload scan
+- Property / equality index to reduce visited slots without full inline property bytes scan
 
 ## Migration plan
 
@@ -194,38 +194,38 @@ Options for later:
 | M3 | Facade wrappers + predicate expand switched | **Implemented** — dense + overflow use phase 1+2; sparse keeps combined batch in executor |
 | M4 | Equality-index expand uses phase 2 only | **Implemented** — forward (`PointingRight`); reverse/undirected keep full-scan fallback |
 | M5 | Weighted shortest: prepared decoder on relax hot path | **Implemented** — `PreparedWeightDecoder::decode`; optional zip refactor deferred |
-| M6 | Sparse inline-value-first | **Implemented (LARA)** — overflow `visit_out_payload_value_batches`; hybrid slab prefix reads edge rows for tombstone gating; cached payload log chains |
+| M6 | Sparse inline-property-bytes-first | **Implemented (LARA)** — overflow `visit_out_inline_property_value_batches`; hybrid slab prefix reads edge rows for tombstone gating; cached inline property bytes log chains |
 | M6a | Executor probe removal | **Implemented** — dense-eligibility pre-check before phase 1 |
-| M6b | Hybrid tombstone gating + chain cache | **Implemented** — slab prefix filters edge tombstones before emitting payload slots; `read_payload_log_chain_entry`; phase-2 overflow chain cache |
+| M6b | Hybrid tombstone gating + chain cache | **Implemented** — slab prefix filters edge tombstones before emitting inline property bytes slots; `read_inline_property_bytes_log_chain_entry`; phase-2 overflow chain cache |
 | M6c | Executor overflow routing | **Implemented** — phase 1 reuses hybrid overflow replay (`log_table`, `slot→log_idx`, slab delete set) for phase 2 (avoids chain rebuild + stable re-read). Naive routing regressed +23% on `expand_payload_skewed_2k`; replay fix **−32%** vs baseline (2026-06-15 canbench) |
 
-**Backward compatibility:** combined `LabeledEdgeInlineValueBatch` API remains; dense buckets use single-pass bulk read. Phase 1+2 APIs are for selective slot reads (predicate/index expand). Sparse-only paths unchanged in the executor.
+**Backward compatibility:** combined `LabeledEdgeInlinePropertyBatch` API remains; dense buckets use single-pass bulk read. Phase 1+2 APIs are for selective slot reads (predicate/index expand). Sparse-only paths unchanged in the executor.
 
 ### M6c insight: why naive overflow routing regressed
 
-Overflow predicate expand must scan **all** payload bytes to filter (low match rate does not skip payload IO). Combined batch decodes each live edge once while attaching payload. Naive inline-value-first moved topology work to phase 2, but **phase 2 re-built the overflow log chain and re-read stable memory per match slot**, duplicating work. Caching phase-1 replay (`log_table`, `slot_to_log_idx`, slab delete set) makes phase 2 decode only the **m** matching edges from the cached table. The hybrid slab prefix still reads edge rows when needed to keep tombstoned slab payloads out of phase 1.
+Overflow predicate expand must scan **all** inline property bytes to filter (low match rate does not skip inline property bytes IO). Combined batch decodes each live edge once while attaching inline property bytes. Naive inline-property-bytes-first moved topology work to phase 2, but **phase 2 re-built the overflow log chain and re-read stable memory per match slot**, duplicating work. Caching phase-1 replay (`log_table`, `slot_to_log_idx`, slab delete set) makes phase 2 decode only the **m** matching edges from the cached table. The hybrid slab prefix still reads edge rows when needed to keep tombstoned slab payloads out of phase 1.
 
 ## Benchmark expectations
 
 | Bench | Expectation |
 |-------|-------------|
-| `expand_payload_skewed_{200a,2k}` | Default `canbench`: single-label hub + `edge_inline_value_predicate`. M6c replay: **−26%** / **−32%** vs pre-M6c baseline (2026-06-15). |
-| `large_expand_payload_skewed_{10k,50k}` | `canbench_large`: heavier graph construction; inline-value-first vs combined neutral to ~2–4% faster at 50k scan. |
-| `expand_skewed_noise_*` | Two-label topology filter (not payload predicate); unchanged by inline-value-first routing. |
-| `weighted_shortest_edge_cost_cache` | **No** gain from inline-value-first alone; gain from prepared decoder + dense src path |
+| `expand_payload_skewed_{200a,2k}` | Default `canbench`: single-label hub + `edge_inline_property_predicate`. M6c replay: **−26%** / **−32%** vs pre-M6c baseline (2026-06-15). |
+| `large_expand_payload_skewed_{10k,50k}` | `canbench_large`: heavier graph construction; inline-property-bytes-first vs combined neutral to ~2–4% faster at 50k scan. |
+| `expand_skewed_noise_*` | Two-label topology filter (not inline property bytes predicate); unchanged by inline-property-bytes-first routing. |
+| `weighted_shortest_edge_cost_cache` | **No** gain from inline-property-bytes-first alone; gain from prepared decoder + dense src path |
 | `hop_count_shortest_converging_hub` | Unchanged (topology-only) |
 | New: `labeled_visit_payload_value_batches` | Isolates phase-1 IO |
 
 ## Open questions
 
-1. **Tombstones in dense payload-only scan:** Resolved for dense-eligible buckets — `stored_slots == degree` excludes in-slab tombstones; phase 1 reads payload bytes only. Phase 2 skips deleted slots on invariant drift.
-2. **Reverse / in-edges:** Resolved — incoming inline-value-first expand mirrors the outgoing contract.
+1. **Tombstones in dense inline property bytes-only scan:** Resolved for dense-eligible buckets — `stored_slots == degree` excludes in-slab tombstones; phase 1 reads inline property bytes only. Phase 2 skips deleted slots on invariant drift.
+2. **Reverse / in-edges:** Resolved — incoming inline-property-bytes-first expand mirrors the outgoing contract.
    `read_in_edge_slots_for_label_with_replay` (LARA bidirectional) and
    `GraphStore::read_in_edge_slots_for_label_reusing_payload_scratch` reuse the reverse phase-1
    hybrid replay; the executor (`PointingLeft` predicate expand) carries the same `value_scratch`
    into phase 2. Benchmark: `payload_first_incoming_log_backed_selective_match`.
 3. **Undirected expand:** May require two directed phase-2 reads or a dedicated undirected slot resolver.
-4. **ADR:** Not required for M1–M3 (API addition + executor routing). Consider ADR if sparse inline-value-first changes overflow log scan contract.
+4. **ADR:** Not required for M1–M3 (API addition + executor routing). Consider ADR if sparse inline-property-bytes-first changes overflow log scan contract.
 
 ## Source of truth
 
@@ -240,7 +240,7 @@ Overflow predicate expand must scan **all** payload bytes to filter (low match r
 
 ## Related
 
-- [labeled-edge-inline-values.md](./labeled-edge-inline-values.md) — storage layout and invariants
+- [labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md) — storage layout and invariants
 - [lara-and-facade.md](./lara-and-facade.md) — GraphStore vs LARA boundaries
 - [index/property-index.md](../index/property-index.md) — equality index postings
 - [execution/operators.md](../execution/operators.md) — `Expand`, `ShortestPath`

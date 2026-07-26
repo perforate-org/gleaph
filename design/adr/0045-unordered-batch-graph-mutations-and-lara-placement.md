@@ -78,7 +78,7 @@ The existing ownership boundaries remain suitable:
 - Graph owns logical vertex/edge mutation, canonical sidecars, label deltas, and
   derived-index outbox records. Bidirectional LARA owns physical pair ordering,
   returned slot locations, and the LARA-owned counterpart tables defined by ADR 0048.
-- LARA owns vertex rows, adjacency halves, labeled buckets, edge/payload
+- LARA owns vertex rows, adjacency halves, labeled buckets, edge/inline-property-bytes
   slab/log placement, PMA density, rebalance, relocation, and stable allocation.
 - graph-index remains a derived property-index owner and is not pulled into the
   canonical batch commit.
@@ -104,10 +104,10 @@ Implementation status as of 2026-07-23 07:12:03 UTC +0000:
   `BatchReservation::commit` / `BatchReservation::rollback` boundary exists.
   Empty plans are rejected by `reserve_one_orientation_batch`; the batch boundary
   does not define a no-op success path. Reserve performs all fallible validation,
-  edge/payload capacity reservation, and payload allocation before any canonical
-  write; on failure it restores the edge-store logical capacity and the payload
+  edge/inline-property-bytes capacity reservation, and inline property bytes allocation before any canonical
+  write; on failure it restores the edge-store logical capacity and the inline property bytes
   occupied tail to their pre-reserve values. Any inline property bytes already appended
-  are retired to the payload free-list as reusable slack; the underlying
+  are retired to the inline property bytes free-list as reusable slack; the underlying
   stable-memory pages are not shrunk. `BatchReservation::rollback` consumes the
   token and applies the same restoration, so a reservation cannot be rolled back
   twice. Commit validates the reservation token, the originating graph instance,
@@ -118,7 +118,7 @@ Implementation status as of 2026-07-23 07:12:03 UTC +0000:
   such a transaction boundary do not receive the same atomicity guarantee.
   Supported geometries are existing buckets whose run fits the current planned
   slab window (including the first bucket's vertex quota), plus pinned-leaf
-  expansion when the edge/inline property bytes logs are full. Fixed-width payload spans may
+  expansion when the edge/inline property bytes logs are full. Fixed-width inline property bytes spans may
   be reused or grown at the occupied tail; non-tail relocation remains
   unsupported.
 - Plan 0123 GraphStore clean-slab orchestration is implemented: `GraphStore::
@@ -129,12 +129,12 @@ try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   orientation reservation fails, every previously successful reservation is rolled
   back by consuming its token via `BatchReservation::rollback` /
   `DeferredBidirectionalLabeledLaraGraph::rollback_batch_reservation`, restoring
-  the edge-store logical capacity and payload occupied tail and retiring any
+  the edge-store logical capacity and inline property bytes occupied tail and retiring any
   allocated inline property bytes to the free-list as reusable slack. The underlying
   stable-memory pages are not shrunk, so the caller can safely fall back to the
-  existing scalar insertion path without leaking logical capacity or payload
+  existing scalar insertion path without leaking logical capacity or inline property bytes
   tail. Focused unit tests cover directed/reverse pairing, undirected
-  two-forward-half and self-loop behavior, payload read-back, multi-run commits,
+  two-forward-half and self-loop behavior, inline property bytes read-back, multi-run commits,
   reserve failure leaving canonical state and allocator headers/logical capacity
   unchanged plus the expected free-list slack shape, and empty/new-bucket
   unsupported rejection. Canbench coverage compares the clean-slab path against
@@ -143,12 +143,12 @@ try_insert_batch_edges_clean_slab` builds one-orientation plans from the
 - Plan 0124 per-leaf overflow-log batch append is implemented in
   `ic-stable-lara` and `gleaph-graph`. `reserve_one_orientation_batch` now admits
   existing-bucket runs that do not fit the current clean slab window but fit the
-  per-leaf edge/payload overflow logs. The reserve/commit boundary still rejects
+  per-leaf edge/inline-property-bytes overflow logs. The reserve/commit boundary still rejects
   empty plans, validates all geometry and capacity before any canonical write,
   and returns unsupported before any write when admission fails. Overflow-log
-  runs do not mutate edge-store logical capacity or payload occupied tail before
+  runs do not mutate edge-store logical capacity or inline property bytes occupied tail before
   commit; they reserve only ephemeral log capacity. Commit appends edge and
-  payload entries in logical ordinal order, updates bucket overflow heads and
+  inline property bytes entries in logical ordinal order, updates bucket overflow heads and
   degree, and leaves stored_slots and vertex slab span unchanged. Cross-
   orientation reserve-all-then-commit and rollback remain unchanged. Scalar
   fallback remains for new buckets, default/unlabeled promotion,
@@ -157,10 +157,10 @@ try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   append, log capacity exhaustion, multi-run and multi-orientation rollback,
   read-back order, and unchanged canonical/allocator state after rejection.
 - Plan 0125 pending-aware one-shot leaf expansion is implemented for existing
-  edge-only buckets. Plan 0128 extends it to fixed, uniform non-zero payload
-  widths: reserve projects and allocates the coupled payload span, commit folds
+  edge-only buckets. Plan 0128 extends it to fixed, uniform non-zero inline property bytes
+  widths: reserve projects and allocates the coupled inline property bytes span, commit folds
   edge/inline property bytes logs and writes aligned slab values, and rollback restores the
-  payload tail/free-list and edge allocator state. Payload read-back and full
+  inline property bytes tail/free-list and edge allocator state. Payload read-back and full
   canbench coverage are included; malformed edge/inline property bytes log lengths reject
   before allocation. New bucket creation, non-tail relocation, and full public
   wire integration remain planned for later slices.
@@ -230,7 +230,7 @@ intents:
 
 Each intent carries the logical ordinal and canonical/mate role. Returned LARA
 locations are joined by ordinal, never by a post-insert "first matching
-neighbor/payload" search. This gives parallel edges an exact forward/reverse or
+neighbor/inline-property-bytes" search. This gives parallel edges an exact forward/reverse or
 canonical/mate association. The two projections may be unordered only after one
 common order per pair key is chosen; independent projection ordering violates
 the pair-rank invariant in ADR 0048.
@@ -272,7 +272,7 @@ the same canister message rather than returning a partial-success `Err`.
 
 When one bucket run fits cleanly in its assigned slab window, LARA performs one
 bucket lookup/schema validation, one capacity decision, contiguous edge writes,
-contiguous fixed-width payload writes where applicable, and aggregated bucket,
+contiguous fixed-width inline property bytes writes where applicable, and aggregated bucket,
 PMA-count, and maintenance updates.
 
 The implementation must not call scalar `insert_edge` once per item under a
@@ -282,7 +282,7 @@ route the full batch through the overflow log.
 
 ### 6. Provide per-leaf overflow-log batch writes
 
-The edge overflow log and inline-value overflow log each receive a low-level
+The edge overflow log and inline-property overflow log each receive a low-level
 batch append API. The physical log is shared by buckets in a leaf, so planning
 aggregates all bucket groups for that leaf before reserving entries.
 
@@ -318,8 +318,8 @@ projected_resident(bucket) =
 ```
 
 The leaf projection also includes newly active vertex/bucket anchors and the
-existing PMA geometric slack policy. Inline payload capacity is computed in its
-independent domain using current inline property bytes slab slots, payload-log entries, pending
+existing PMA geometric slack policy. Inline property bytes capacity is computed in its
+independent domain using current inline property bytes slab slots, inline property bytes log entries, pending
 item count, and fixed width/blob representation.
 
 The physical PMA `segment_size` (vertices per leaf) remains fixed. The leaf's
@@ -349,15 +349,15 @@ When rebalance or relocation folds an edge overflow log, every preserved log
 entry is included in the required capacity and moved into the new slab before
 the bucket publishes `overflow_log_head = NONE`. Structural fold preserves the
 existing slot-identity contract, including any legacy tombstone entries that
-maintenance alone may discard. Inline-value log folding is planned separately
+maintenance alone may discard. Inline-property log folding is planned separately
 and retains ordinal alignment with edge rows.
 
 The commit order is:
 
-1. Reserve the final edge and payload destinations for every orientation.
+1. Reserve the final edge and inline property bytes destinations for every orientation.
 2. Copy/reposition existing slab rows while preserving the structural identity
    contract.
-3. Fold preserved edge and payload overflow-log entries into their planned slab
+3. Fold preserved edge and inline property bytes overflow-log entries into their planned slab
    destinations.
 4. Write pending batch rows and payloads.
 5. Publish bucket ranges, counts, heads, vertex bases, and leaf totals.
@@ -370,7 +370,7 @@ may reuse a tombstone only where the existing insertion contract permits reuse
 without invalidating sidecars; it does not treat unordered input as permission
 to compact or reorder pre-existing logical edges.
 
-### 8. Keep inline-value and property ownership separate
+### 8. Keep inline-property and property ownership separate
 
 Inline propertys supplied with new edges are part of the initial LARA placement,
 not post-insert scalar updates. Existing-edge inline updates use a LARA batch
@@ -406,7 +406,7 @@ returns a contiguous `Range<VertexId>`. It:
 
 1. Validates forward/reverse counts and every row.
 2. Computes the final vertex count and segment-tree leaf count.
-3. Reserves both vertex columns and all forward/reverse edge/payload segment
+3. Reserves both vertex columns and all forward/reverse edge/inline-property-bytes segment
    metadata once.
 4. Appends both orientations without per-row growth.
 
@@ -440,13 +440,13 @@ The implementation must make these conditions directly testable:
 1. Every committed logical directed edge has exactly its required forward and
    reverse halves; every committed undirected edge has the required one or two
    forward halves.
-2. Every half, payload, mate location, and sidecar is joined by logical ordinal or an
+2. Every half, inline property bytes, mate location, and sidecar is joined by logical ordinal or an
    exact planned handle, never by ambiguous first-match lookup.
 3. No validation or reservation failure leaves a bucket, bypass promotion,
-   vertex row, edge half, payload, property, mate locator, or derived event visible.
+   vertex row, edge half, inline property bytes, property, mate locator, or derived event visible.
 4. No recoverable allocation or encoding failure remains after the first
    canonical commit write.
-5. Planned edge and payload capacity includes all preserved slab rows, all
+5. Planned edge and inline property bytes capacity includes all preserved slab rows, all
    preserved overflow-log rows, and all pending batch rows.
 6. Dynamic leaf targets fit projected geometry in one expansion and use checked
    arithmetic.
@@ -458,7 +458,7 @@ The implementation must make these conditions directly testable:
 
 ## State representation and fresh-layout replacement
 
-The final adjacency, vertex, payload, and property states are representable in
+The final adjacency, vertex, inline property bytes, and property states are representable in
 the existing stable stores. Batch placement plans, pending overlays, physical
 half intents, and ordinal maps are ephemeral heap values and add no new LARA
 stable region or persisted physical layout.
@@ -544,7 +544,7 @@ Positive:
 
 - Known unordered batches can turn repeated random stable-memory mutations into
   a bounded number of planned contiguous writes and metadata commits.
-- Directed, reverse, undirected, inline-value, mate, property, and index-event
+- Directed, reverse, undirected, inline-property, mate, property, and index-event
   consistency remain enforced by their existing owners.
 - Large batches avoid unnecessary log staging and repeated fixed-step leaf
   growth.
@@ -555,7 +555,7 @@ Costs and trade-offs:
 
 - Planning needs temporary heap proportional to one bounded chunk and sorting or
   grouping by physical ownership keys.
-- Failure-atomic reserve/commit work must cover edge slab, edge log, payload
+- Failure-atomic reserve/commit work must cover edge slab, edge log, inline property bytes
   slab/log/blob storage, free spans, vertex columns, mate metadata, sidecars, journals,
   and durable derived events.
 - Combined new-vertex/new-edge chunks require projected geometry before vertex
@@ -579,7 +579,7 @@ At minimum, tests must cover:
   projected expansion.
 - Existing edge and inline property bytes logs included in capacity and folded to slab before
   heads/log segments are released.
-- Zero-width, narrow fixed-width, wide/blob, and independently pressured payload
+- Zero-width, narrow fixed-width, wide/blob, and independently pressured inline property bytes
   storage.
 - Tombstones and pre-existing edge order/slot identity across structural folds.
 - Batch inline updates across directed and undirected mirrors.
@@ -602,7 +602,7 @@ the message/instruction budgets permit. Required workload shapes include:
 - exact fit, small spill, log batch, log fold, weighted slide, in-place expand,
   and relocated multi-block expand;
 - directed fan-out, directed fan-in, undirected, and self-loop;
-- inline widths 0/W1/W8 and wide/blob payloads;
+- inline widths 0/W1/W8 and wide/blob inline property bytes;
 - vertex batches crossing PMA segment boundaries;
 - property-free, inline-only, sidecar-property, and indexed-property mutations.
 
@@ -621,17 +621,17 @@ count, log occupancy/debt, maintenance work, encoded bytes, and callback count.
    groups them by `(orientation, PMA leaf segment, owner vertex, storage label,
 inline width)`, reads existing LARA bucket/slab/overflow-log occupancy through
    `ic-stable-lara::labeled::LabelBucketPlacementInfo`, and projects the minimum
-   required edge/payload capacity using checked arithmetic. No canonical write,
+   required edge/inline-property-bytes capacity using checked arithmetic. No canonical write,
    wire change, or public API is introduced. The baseline planner fails closed for
-   a PMA leaf containing multiple non-zero payload widths; width-specific payload
+   a PMA leaf containing multiple non-zero inline property byte widths; width-specific inline property bytes
    byte projection remains a later slice rather than being approximated by a
    single slot count.
-2. Add one-orientation slab and edge/payload overflow-log batch primitives with
+2. Add one-orientation slab and edge/inline-property-bytes overflow-log batch primitives with
    plan/reserve/commit and failure-atomic tests.
 3. Add pending-aware leaf/window planning, dynamic one-shot expansion, and
    existing-log fold. **Implemented for existing-bucket runs in Plans 0125 and 0128.** Plan 0125 covers edge-only expansion; Plan 0128 extends the same
-   failure-atomic boundary to fixed, uniform non-zero payload widths, including
-   payload-log fold and payload-span growth at a reusable or occupied-tail
+   failure-atomic boundary to fixed, uniform non-zero inline property byte widths, including
+   inline-property-bytes-log fold and inline property bytes-span growth at a reusable or occupied-tail
    span. Relocation and new-bucket creation remain deferred.
    Expansion-success evidence remains owned by LARA; GraphStore exposes only
    internal admission classification and reserve-all rollback behavior. It
@@ -639,14 +639,14 @@ inline width)`, reads existing LARA bucket/slab/overflow-log occupancy through
    metadata for tests.
 4. **Partially implemented.** Plans 0123–0128 provide bidirectional directed
    and two-forward-half undirected orchestration. Plan 0129 now returns exact
-   internal slab/overflow-log edge and payload locations from LARA and joins
+   internal slab/overflow-log edge and inline property bytes locations from LARA and joins
    them by logical ordinal in GraphStore, including self-loop cardinality. Plan
    0130 makes aggregate-only output the normal path and retains location
    materialization as an explicit capture path.
    Persistent mate indexing and public result exposure remain planned.
 5. Add GraphStore edge insertion with initial inline propertys, properties, label
    deltas, and durable derived events.
-6. Add existing inline-value and vertex/edge property batch updates.
+6. Add existing inline-property and vertex/edge property batch updates.
 7. Add synchronized LARA/GraphStore vertex batches, then optional combined
    new-vertex/new-edge chunks using projected final geometry.
    Stages 6–7 remain planned internal primitives only. They do not create an
@@ -673,13 +673,13 @@ invariants and failure-atomic boundaries are covered.
 
 - `design/adr/0045-unordered-batch-graph-mutations-and-lara-placement.md`:
   status remains Partially Implemented; stages 1–3 are implemented for the
-  explicitly bounded existing-bucket expansion path, with fixed-width payload
+  explicitly bounded existing-bucket expansion path, with fixed-width inline property bytes
   support limited to reusable or occupied-tail spans.
 - `design/storage/lara.md`: link the read-only planning contract and note that
   direct slab/log batch writes, rebalance, and relocation remain planned.
 - `design/storage/lara-dgap-contract.md`: pending-aware leaf placement remains
   planned; maintenance-only compaction boundary is unchanged.
-- `design/storage/labeled-edge-inline-propertys.md`: inline property bytes slab/log batch
+- `design/storage/labeled-edge-inline-properties.md`: inline property bytes slab/log batch
   placement and mirrored update behavior remain planned.
 - `design/storage/bulk-ingest-finalize.md`: planned direct batch placement is
   distinct from the existing post-ingest maintenance/finalize hook.

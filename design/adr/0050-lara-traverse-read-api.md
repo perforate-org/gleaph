@@ -28,11 +28,11 @@ Examples include:
 
 The duplication makes it difficult to identify the cheapest correct primitive. More importantly,
 several APIs use `u32` for two different slot domains, and the word `topology` currently means
-"live edge row without inline-value reads" in some call sites rather than "raw stored cell".
+"live edge row without inline-property reads" in some call sites rather than "raw stored cell".
 
 The property-model terminology is also changing. The target term is **inline property**. Existing
 implementation identifiers now use `inline_property` and `inline_property_bytes`; historical
-`inline_value` and `payload` names in this area have been superseded by ADR 0051. New public or
+`inline_property` and `payload` names in this area have been superseded by ADR 0051. New public or
 crate-public read APIs defined by this ADR use `inline_property`; internal adapters call renamed
 inline-property storage helpers.
 
@@ -127,7 +127,7 @@ Graph `EdgeHandle`, and Graph-kernel `EdgeSlotIndex`. The latter is only a domai
 same type; it is not a second slot representation.
 
 Raw `u32` conversion is confined to wire and stable-key boundaries (`raw`, `from_raw`, and the
-explicit key codecs). LARA physical slab offsets, overflow-log entry indices, and inline-payload
+explicit key codecs). LARA physical slab offsets, overflow-log entry indices, and inline-property-bytes
 ordinals remain separate types/domains and must not be converted through this logical-slot type.
 
 The label MSB encodes directedness. The reverse-in alias marker (`0x8000_0000`) is unrelated: it
@@ -224,7 +224,7 @@ must never be able to hide a missing property read.
 For a non-zero width, the bytes must be read from the exact inline-property ordinal belonging to
 the live row identified by the requested logical slot. This identity check applies independently
 to slab and overflow-log storage and to forward and reverse buckets. A missing row, short or
-overlong payload, malformed payload, width mismatch, or bytes belonging to another ordinal is a
+overlong inline property bytes, malformed inline property bytes, width mismatch, or bytes belonging to another ordinal is a
 `LabeledOperationError`; implementations must not zero-fill, borrow an adjacent row, or downgrade
 the condition to `Missing`. Width zero performs no property read and returns an empty byte vector.
 
@@ -265,7 +265,7 @@ value to carry it without merging storage and caller error types.
 
 ### 6. Canonical general-purpose read surface
 
-The crate-level `Traversal` trait is the shared contract for every LARA implementation. Its associated `Request`, `Slot`, `EdgeState`, `EdgeWithInlineProperty`, `Replay`, and `Error` types allow normal, labeled, bidirectional, and deferred backends to expose the same logical operations. `Edge` is bounded by the existing `CsrEdge` trait; storage codec and payload behavior therefore remain single-sourced. The trait includes point reads, state reads, inline-property reads, full visits, selected-slot visits, and replay-aware selected-slot visits. The isolated labeled implementation is the first adapter; other backends are added against this contract.
+The crate-level `Traversal` trait is the shared contract for every LARA implementation. Its associated `Request`, `Slot`, `EdgeState`, `EdgeWithInlineProperty`, `Replay`, and `Error` types allow normal, labeled, bidirectional, and deferred backends to expose the same logical operations. `Edge` is bounded by the existing `CsrEdge` trait; storage codec and inline property bytes behavior therefore remain single-sourced. The trait includes point reads, state reads, inline-property reads, full visits, selected-slot visits, and replay-aware selected-slot visits. The isolated labeled implementation is the first adapter; other backends are added against this contract.
 
 The smallest general-purpose surface is:
 
@@ -450,8 +450,8 @@ It:
 - preserves the dense contiguous-read optimization; and
 - does not attach inline properties.
 
-Selected reads that need the existing two-phase payload optimization use a separate capability and
-do not allocate one payload value per edge:
+Selected reads that need the existing two-phase inline property bytes optimization use a separate capability and
+do not allocate one inline property bytes value per edge:
 
 ```rust
 pub(crate) fn visit_edges_at_with_replay<B>(
@@ -471,7 +471,7 @@ bucket snapshot match; otherwise the implementation discards it and performs the
 read. The replay is borrowed for the call and never becomes a source of truth. Inline-property
 bytes are attached by the dedicated property-first phase using the same scratch's `slot_indices`
 and `values` buffers; the selected visitor consumes those bytes without allocating per-edge
-payload buffers. The reverse wrapper has the identical contract with reverse orientation.
+inline property bytes buffers. The reverse wrapper has the identical contract with reverse orientation.
 
 Replay/scratch reuse remains an optimized LARA capability. The replay object is opaque, proves its
 `(owner, label, bucket fingerprint)` before use, and falls back to canonical reads on mismatch. It
@@ -514,7 +514,7 @@ The following remain private:
 - slab/log mapping;
 - overflow-log chain construction;
 - raw tombstone decoding;
-- inline-property ordinal mapping (currently implemented by payload-named helpers);
+- inline-property ordinal mapping (currently implemented by inline-property-bytes-named helpers);
 - `labeled_bucket_span_iter`; and
 - dense/hybrid/sparse implementation selection.
 
@@ -597,7 +597,7 @@ live/deleted decoding for slab rows and the same tombstone predicate for overflo
 malformed chain, owner mismatch, or impossible slot-to-location mapping is an error (fail closed),
 not an empty result.
 
-Default-label bypass has no inline-property payload under ADR 0008 (its payload/inline-property
+Default-label bypass has no inline-property-bytes under ADR 0008 (its inline property byte
 width is zero). Therefore `*_with_inline_property` on a bypass row is equivalent to the topology
 visitor and must not access inline-property storage. Adding bypass inline properties requires a
 separate ADR; it must not be inferred from this projection.
@@ -761,10 +761,10 @@ mapping for the known single-label read families is:
 | `read_edge_slot_state_for_label` | `read_edge_state(BucketEntryPosition)` |
 | `read_out_edge_slots_for_label` | `visit_edges_at` |
 | `read_out_edge_slots_for_label_with_replay` | `visit_edges_at` plus replay/scratch |
-| `read_out_edge_slots_for_label_reusing_inline_property_scratch` | `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve payload attachment |
+| `read_out_edge_slots_for_label_reusing_inline_property_scratch` | `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve inline property bytes attachment |
 | `read_in_edge_slots_for_label` | reverse `visit_edges_at` |
 | `read_in_edge_slots_for_label_with_replay` | reverse `visit_edges_at` plus replay/scratch |
-| `read_in_edge_slots_for_label_reusing_inline_property_scratch` | reverse `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve payload attachment |
+| `read_in_edge_slots_for_label_reusing_inline_property_scratch` | reverse `visit_edges_at` plus the explicit inline-property scratch/replay capability; canonicalize slots by `OutEdgeOrder` and preserve inline property bytes attachment |
 | `read_physical_edge_at_slot_for_label` | remove; migrate `mate` to logical read |
 | `for_each_live_physical_edge_location_for_label` | physical-location visitor |
 | `visit_out_edge_inline_property_batches_for_label` | forward inline-property batch capability |
@@ -910,12 +910,12 @@ The implementation patch must check and update:
   storage locations separate;
 - ADR 0008, confirming that default-label bypass rows have zero inline-property width;
 - ADR 0023, confirming the move/re-key obligations for property, posting, and alias sidecars;
-- `design/storage/labeled-edge-inline-propertys.md`, when its terminology is renamed;
+- `design/storage/labeled-edge-inline-properties.md`, when its terminology is renamed;
 - `design/storage/lara.md`, for the canonical labeled read boundary;
 - `design/storage/lara-and-facade.md`, if facade names or visibility change; and
 - Graph execution documentation for property-first selected-slot reads.
 
-This ADR is now aligned with the implemented code. Historical `inline_value`/`payload`
+This ADR is now aligned with the implemented code. Historical `inline_property`/`payload`
 identifiers in older revisions have been superseded by ADR 0051.
 
 ## Out of scope

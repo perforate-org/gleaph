@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Define an **explicit commit hook** for tombstone-free bulk ingest: after a batch of edge inserts, optionally enqueue `CompactVertexEdgeSpan` on known hot vertices and drain the LARA deferred maintenance queue so edge spans are reclaimed before read-heavy queries run. Inline-value payload storage is independent and may still use its own slab/log traversal after this hook.
+Define an **explicit commit hook** for tombstone-free bulk ingest: after a batch of edge inserts, optionally enqueue `CompactVertexEdgeSpan` on known hot vertices and drain the LARA deferred maintenance queue so edge spans are reclaimed before read-heavy queries run. Inline-property inline property bytes storage is independent and may still use its own slab/log traversal after this hook.
 
 This closes a query-performance/reclaim gap, separate from ordinary insert safety, between:
 
@@ -29,10 +29,10 @@ overflow_log_head < 0
 && stored_slots == degree
 ```
 
-The stronger dense inline-value batch predicate additionally requires the
-independent inline-value slab to have no log and to cover all live values. The
-bulk finalize hook does not promise that payload predicate; see
-[labeled-edge-inline-values.md](./labeled-edge-inline-values.md).
+The stronger dense inline-property batch predicate additionally requires the
+independent inline-property slab to have no log and to cover all live values. The
+bulk finalize hook does not promise that inline property bytes predicate; see
+[labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md).
 
 ### What is implemented today
 
@@ -70,8 +70,8 @@ With finalize (this design):
 2. System enqueues `CompactVertexEdgeSpan` for those vertices (per orientation).
 3. Maintenance drains with a finalize budget; client or timer retries until `remaining_queue_len == 0`.
 
-The hook does not force independent inline-value payload spans to become dense;
-payload reads remain correct through dense, hybrid, or sparse traversal.
+The hook does not force independent inline-property inline property bytes spans to become dense;
+inline property bytes reads remain correct through dense, hybrid, or sparse traversal.
 
 ## Caller contract (required)
 
@@ -79,7 +79,7 @@ The finalize caller **must** guarantee for every listed vertex and orientation:
 
 1. **No unprocessed edge tombstones** in the target span (no delete-then-insert hole pattern on that bucket).
 2. **Batch boundary:** finalize is not interleaved with concurrent mutations on the same vertices (single-writer ingest partition or equivalent).
-3. **Violation** is undefined at the storage layer (payload / slot inconsistency); treated as a caller bug, not validated at runtime (full tombstone scan is too expensive).
+3. **Violation** is undefined at the storage layer (inline property bytes / slot inconsistency); treated as a caller bug, not validated at runtime (full tombstone scan is too expensive).
 
 Vertices with delete/reinsert history must rely on **incremental drain only** until a future safe compaction story exists.
 
@@ -237,7 +237,7 @@ measures.
 |-------|----------------|-------|
 | `bench_graph_profile_setup_50kscan` | +0.23% (~1.17K ix/edge on 50k edges) | **Yes — insert-time drain.** Setup is measured inside `bench_fn`; each edge insert pays post-insert maintenance. Matches prior ~1.2K/insert estimate. |
 | `bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out` | **+10%** (3.12M → 3.44M total) | **No — not drain during query.** `bench_fn` measures only `execute_shortest_plan`. Regression is **setup graph shape**: removed `mark_compact_vertex_edge_span` on `src`. |
-| `bench_graph_hop_count_shortest_converging_hub_48prefix_24hub_out` | +0.9% | Same shared setup as WSP; smaller effect (hop-count path, not weighted payload-batch hot path). |
+| `bench_graph_hop_count_shortest_converging_hub_48prefix_24hub_out` | +0.9% | Same shared setup as WSP; smaller effect (hop-count path, not weighted inline-property-bytes-batch hot path). |
 | `bench_graph_expand_vector_l2_24scan_8match` | +0.25% | **Noise / negligible.** Query measured after tiny setup (24 edges). |
 | `ic-stable-lara` benches | Mixed up/down | **Unrelated** to GraphStore insert drain (direct LARA, no facade hook). |
 
@@ -251,12 +251,12 @@ Scopes under `bench_graph_weighted_shortest_repeated_*` (query phase only):
 | `shortest_fixed_expand_forward_slices` (ix) | ~899K | ~1.19M | Higher ix per call as well |
 | `weighted_shortest_relax` (calls) | 98 | 102 | Follows expand count |
 
-`repeated_edge_cost_cache_payload_batch_path_on_hot_vertices` still reports
+`repeated_edge_cost_cache_inline_property_batch_path_on_hot_vertices` still reports
 `batch.dense == true` for `src` after current setup-only post-insert drain.
 **Dense-eligible is necessary but not equivalent** to the old bench path that
 ran `mark_compact_vertex_edge_span` after all 48 parallel edges were present.
 Incremental per-insert drain can fold overflow to dense while leaving a bucket
-that is slower on the weighted shortest payload-batch expand path than after
+that is slower on the weighted shortest inline-property-bytes-batch expand path than after
 explicit vertex-edge-span compaction.
 
 This is the same production gap finalize is meant to close: post-insert drain
@@ -278,9 +278,9 @@ production post-ingest finalize API (replaces the temporary bench-only
 
 Hop-count converging-hub bench (`bench_graph_hop_count_shortest_converging_hub_*`)
 shares the same setup; total instructions moved −0.9% (within noise) — expected
-because that path is not weighted payload-batch hot.
+because that path is not weighted inline-property-bytes-batch hot.
 
-`repeated_edge_cost_cache_payload_batch_path_on_hot_vertices` confirms
+`repeated_edge_cost_cache_inline_property_batch_path_on_hot_vertices` confirms
 `batch.dense == true` for `src` after finalize setup.
 
 ## Implementation phases (when resumed)
@@ -304,7 +304,7 @@ because that path is not weighted payload-batch hot.
 
 - [ADR 0045](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **partially implemented substrate** for direct planned placement/reservation/commit; its unordered public contract has not shipped
 - [ADR 0049](../adr/0049-input-order-preserving-batch-graph-mutations.md) — **planned after ADR 0048 completion** input-order-preserving direct edge-insertion batch path; non-edge public batch operations remain absent in v1, and this document remains the implemented post-ingest maintenance/finalize hook
-- [inline-value-first-traversal.md](./inline-value-first-traversal.md) — dense eligibility, M6 sparse path
+- [inline-property-bytes-first-traversal.md](./inline-property-bytes-first-traversal.md) — dense eligibility, M6 sparse path
 - [lara-and-facade.md](./lara-and-facade.md) — `GraphStore` vs LARA maintenance
 - [gql/layers.md](../gql/layers.md) — Gleaph extensions stay out of portable GQL crates
 - [execution/operators.md](../execution/operators.md) — `CallProcedure` planner vs executor status

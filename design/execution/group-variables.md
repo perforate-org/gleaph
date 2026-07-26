@@ -16,8 +16,8 @@ Align variable-length expand semantics with GQL **group variables**: outside the
 | `{min,max}` `Expand` with `emit_path_binding` | `PlanBinding::Path(PathBinding)` (lazy, materializes to `Value::Path`) |
 | `SHORTEST k GROUP` with `path_var` | `PlanBinding::PathGroup` (materializes to `Value::List` of `Value::Path`) |
 | `SHORTEST k GROUP` with `edge` emitted | `PlanBinding::EdgeGroup` (last-hop edges) |
-| `{min,max}` `Expand` with `hop_aux_binding` | `PlanBinding::Value` — `Value::List` of `Value::Bytes` per hop (inline payload) |
-| Single-hop `Expand` with `hop_aux_binding` | `PlanBinding::Value(Value::Bytes)` or `Value::Null` when payload empty |
+| `{min,max}` `Expand` with `hop_aux_binding` | `PlanBinding::Value` — `Value::List` of `Value::Bytes` per hop (inline property bytes) |
+| Single-hop `Expand` with `hop_aux_binding` | `PlanBinding::Value(Value::Bytes)` or `Value::Null` when inline property bytes empty |
 
 `depth = 0` paths (when `min = 0`) bind empty groups (`EdgeGroup([])`, `VertexGroup([])`, empty hop_aux list).
 
@@ -60,7 +60,7 @@ Triangle / cycle patterns fused to [`PlanOp::WorstCaseOptimalJoin`] carry `hop_a
 | `RETURN SUM(GLEAPH.WEIGHT(e))` (implicit `PlanOp::Aggregate`) | OK (same horizontal fold per input row) |
 | `GLEAPH.WEIGHT(e)` | **Error** at evaluation (group, not singleton) |
 | `e.prop`, `u.prop` | **Error** (use indexed element first) |
-| `WHERE GLEAPH.WEIGHT(e) = …` on var_len | Planner may still **fuse** to per-hop `edge_inline_value_predicate` (search semantics unchanged) |
+| `WHERE GLEAPH.WEIGHT(e) = …` on var_len | Planner may still **fuse** to per-hop `edge_inline_property_predicate` (search semantics unchanged) |
 
 `SHORTEST … GLEAPH.COST(GLEAPH.WEIGHT(e))` uses singleton `e` inside the cost expression during path search; unrelated to post-match group bindings.
 

@@ -207,32 +207,32 @@ Edge property evaluation uses one inline-aware read helper (`try_read_inline_edg
 
 1. Resolve the property name through the plan's `ResolvedPropertyTable`.
 2. Use the concrete `EdgeBinding.handle.label_id` to look up the `ResolvedEdgeLabel`.
-3. If `inline_schema` is `Scalar { property_id }` and the requested property id matches, decode the bound `EdgeBinding.payload` with the payload profile's exact width and encoding, returning the corresponding GQL scalar `Value`.
-4. If `inline_schema` is `Struct { property_id, fields }` and the requested property id matches the top-level struct property, validate the physical field projection (non-empty, unique field names, non-overlapping offsets, field-width sum equals payload width) and decode each field slice with the shared scalar codec into a declaration-ordered GQL `Value::Record`. Accessing an unknown nested field evaluates to `Value::Null`.
+3. If `inline_schema` is `Scalar { property_id }` and the requested property id matches, decode the bound `EdgeBinding.inline_property_bytes` with the inline property profile's exact width and encoding, returning the corresponding GQL scalar `Value`.
+4. If `inline_schema` is `Struct { property_id, fields }` and the requested property id matches the top-level struct property, validate the physical field projection (non-empty, unique field names, non-overlapping offsets, field-width sum equals inline property byte width) and decode each field slice with the shared scalar codec into a declaration-ordered GQL `Value::Record`. Accessing an unknown nested field evaluates to `Value::Null`.
 5. If the property is not the inline slot, fall back to the sidecar `store.edge_property`.
-6. If the inline slot matches but the projection/payload is malformed, return `PlanQueryError` instead of `NULL` or sidecar rescue.
+6. If the inline slot matches but the projection/inline property bytes is malformed, return `PlanQueryError` instead of `NULL` or sidecar rescue.
 
 Projection, filtering, comparison, aggregate input, `ORDER BY`, and shortest-path hop cost (`COST BY e.property`) all route through this helper, so the precedence and fail-closed rules are enforced uniformly. Weighted shortest-path evaluation receives the plan-scoped `ResolvedLabelTable` and `ResolvedPropertyTable` and resolves the cost property once before search; if it is not the concrete label's inline slot, the search fails closed before scanning adjacency.
 
 ### Inline edge property mutation packing
 
-Ordinary GQL edge mutations for an `InlineScalar` edge label write the named inline property only through the fixed-width payload slot, never through the sidecar `EDGE_PROPERTIES` store or a Property Index maintenance queue. For an `InlineStruct` edge label, any edge mutation path that writes or removes a property (insert, `SET e.prop`, all-properties replacement, or `REMOVE e.prop`) is rejected fail-closed until Slice 26. This is a label-wide schema gate: even sidecar property SET/REMOVE on a Struct-labeled edge cannot fall through, because Slice 25 defines no mutation contract for that label shape.
+Ordinary GQL edge mutations for an `InlineScalar` edge label write the named inline property only through the fixed-width inline property bytes slot, never through the sidecar `EDGE_PROPERTIES` store or a Property Index maintenance queue. For an `InlineStruct` edge label, any edge mutation path that writes or removes a property (insert, `SET e.prop`, all-properties replacement, or `REMOVE e.prop`) is rejected fail-closed until Slice 26. This is a label-wide schema gate: even sidecar property SET/REMOVE on a Struct-labeled edge cannot fall through, because Slice 25 defines no mutation contract for that label shape.
 
-1. The mutation executor resolves the concrete edge label and reads `inline_schema` from the `ResolvedEdgeLabel` projection supplied by the Router; for a scalar schema it derives the payload profile from the same projection.
+1. The mutation executor resolves the concrete edge label and reads `inline_schema` from the `ResolvedEdgeLabel` projection supplied by the Router; for a scalar schema it derives the inline property profile from the same projection.
 2. Before any adjacency record is created, every assignment for the mutation is evaluated, property
-ids are resolved, and assignments are classified into at most one inline value and a list of
+ids are resolved, and assignments are classified into at most one inline property and a list of
 non-inline sidecar assignments.
-3. The inline value is encoded through the same scalar codec used for reads and predicate-byte
+3. The inline property is encoded through the same scalar codec used for reads and predicate-byte
 preparation. Every sidecar property is also preflighted: reserved property ids are rejected and the
 value must be encodable via `Value::to_binary_bytes()`. Missing, duplicate, `NULL`, malformed,
 overflowing, unpersistable, or otherwise invalid values fail closed before storage writes begin.
-4. Directed and undirected `INSERT` creates the edge with the prepared payload bytes; non-inline
+4. Directed and undirected `INSERT` creates the edge with the prepared inline property bytes; non-inline
 assignments are applied as ordinary sidecar properties afterward.
-5. `SET e.inline_property = ...` and `SET e = { ... }` update the payload through the existing
-mirrored `update_edge_inline_value_at_handle` commit, which synchronizes the forward, reverse, and
+5. `SET e.inline_property = ...` and `SET e = { ... }` update the inline property bytes through the existing
+mirrored `update_edge_inline_property_at_slot` commit, which synchronizes the forward, reverse, and
 undirected physical mirrors so reads are direction-independent. All-properties replacement first
 materializes the complete new record, rejects it if the inline property is missing or invalid, then
-replaces only the sidecar properties and updates the payload once.
+replaces only the sidecar properties and updates the inline property bytes once.
 6. `REMOVE e.inline_property` is rejected because this slice has no absence representation.
 
 Non-inline properties retain their existing sidecar storage and index-maintenance behavior. Graph

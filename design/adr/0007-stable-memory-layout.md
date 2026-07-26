@@ -143,7 +143,7 @@ Do not merge across these boundaries without a new ADR and benchmark proof:
 | Boundary                                                              | Rationale                                                                                           |
 | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Forward vs reverse LARA orientation                                   | Canonical vs derived; different rebuild story                                                       |
-| Edge slab vs payload slab / log / blobs                               | Different access patterns and compaction                                                            |
+| Edge slab vs inline property bytes slab / log / blobs                               | Different access patterns and compaction                                                            |
 | LARA adjacency vs graph facade (32+)                                  | `ic-stable-lara` bundle vs Gleaph domain stores                                                     |
 | Vertex/edge property values vs graph-index postings                   | Separate canisters; postings are derived                                                            |
 | Graph-index property postings vs label postings                       | Different key shapes and backfill paths                                                             |
@@ -160,7 +160,7 @@ These are **allowed to prototype** after §6 benchmarks. None are approved by th
 
 | Priority | Candidate                     | Current ids           | Hypothesis                                                   | Gate                                                                                                                                          |
 | -------- | ----------------------------- | --------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1       | Retire `EDGE_WEIGHT_PROFILES` | ~~Graph 37~~          | ~~Legacy read fallback~~                                     | **Done** (2026-06-12) — dev data discard; payload profiles only at id 37                                                                      |
+| P1       | Retire `EDGE_WEIGHT_PROFILES` | ~~Graph 37~~          | ~~Legacy read fallback~~                                     | **Done** (2026-06-12) — dev data discard; inline property profiles only at id 37                                                                      |
 | P2       | Router catalog VM grouping    | Router 5–10 (3 pairs) | Pair maps always updated together via `BidirectionalCatalog` | Measure intern + reopen vs 3 grouped metadata regions                                                                                         |
 | P3       | Label stats delta seq + log   | Graph 37–38           | Same mutation pipeline                                       | **Done** (2026-06-15) — repacked per [ADR 0015](0015-label-stats-projection-log.md); router dedup set removed, projection cursor at router 17 |
 | P4       | Router backfill cursors       | Router 19–20          | Same admin API surface                                       | Low priority; measure admin step latency only                                                                                                 |

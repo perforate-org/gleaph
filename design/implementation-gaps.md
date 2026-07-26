@@ -150,7 +150,7 @@ defect from being rediscovered without its prior reasoning.
 - **Observed behavior:** `compact_vertex_edge_span_one_step` preserves edge scan order and emits at
   most one `EdgeSlotMove` per queue pop, but `first_edge_slot_move_in_bucket` restarts at slot zero
   after every move. Alternating tombstones therefore make full bucket compaction quadratic in the
-  resident slab width. After edge-log and inline-value maintenance were separated, canbench measured
+  resident slab width. After edge-log and inline-property maintenance were separated, canbench measured
   `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024` at 73.36M instructions versus
   4.14M previously; the existing 4,096- and 16,384-edge cases were already dominated by the same
   quadratic shape.
@@ -284,9 +284,9 @@ defect from being rediscovered without its prior reasoning.
   `crates/graph/src/canister/handlers.rs::vertex_embedding_ingestion_tests` unit tests;
   `crates/pocket-ic-tests/tests/adr0031_vertex_embedding_ingestion.rs` PocketIC contract proving
   canonical ingestion reaches Router vector search without direct vector-canister seeding.
-- **Related contracts:** [ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md),
-  [design/index/vector-index.md](../index/vector-index.md),
-  [design/execution/pipeline.md](../execution/pipeline.md)
+- **Related contracts:** [ADR 0031](./adr/0031-vertex-embedding-store-and-derived-vector-index.md),
+  [design/index/vector-index.md](./index/vector-index.md),
+  [design/execution/pipeline.md](./execution/pipeline.md)
 
 ### GAP-2026-07-04-002 — `NEXT INSERT` lost edge endpoint identity
 

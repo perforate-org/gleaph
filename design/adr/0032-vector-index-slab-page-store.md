@@ -35,7 +35,7 @@ physical byte-row boundary. Partition-page search also pays a reverse-locator lo
 
 The relevant local precedent is the `ic-stable-*` storage family:
 
-- `ic-stable-lara` keeps large edge and payload slabs in raw stable-memory regions and stores small
+- `ic-stable-lara` keeps large edge and inline property bytes slabs in raw stable-memory regions and stores small
   metadata separately.
 - `ic-stable-lara` composite stores reject partial reopen layouts rather than recreating missing
   regions and overwriting live state.

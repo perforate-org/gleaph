@@ -245,7 +245,7 @@ Last revised: 2026-07-04 01:39:31 UTC +0000
 
 Gleaph already has two vector-related surfaces:
 
-- edge inline value vectors (`EdgeInlineValueEncoding::VectorF32`) used by graph execution while traversing
+- edge inline property vectors (`EdgeInlinePropertyEncoding::VectorF32`) used by graph execution while traversing
   edges; and
 - graph-index canisters that hold derived postings for router-owned query routing.
 
@@ -268,13 +268,13 @@ If vector bytes live only in the vector index canister, the index becomes canoni
 be rebuilt from graph shards. If vertex embeddings are stored as ordinary properties forever,
 Gleaph loses important embedding invariants: fixed dimensions, encoding, normalization policy,
 versioning, delete behavior, and bounded backfill into a vector index. If vertex embeddings are
-placed in edge inline value storage, vertex semantics and traversal-critical edge inline value semantics are
+placed in edge inline property storage, vertex semantics and traversal-critical edge inline property semantics are
 mixed.
 
 We need a plan that:
 
 - keeps vertex embeddings canonical on the graph shard;
-- keeps edge inline value vectors available for edge-local traversal predicates;
+- keeps edge inline property vectors available for edge-local traversal predicates;
 - treats vector indexes as derived candidate-generation structures;
 - supports bounded IC execution and upgrade-safe repair/backfill; and
 - makes `ivf_flat` the standard vector-index kind while leaving room for later `flat`, `ivf_pq`,
@@ -291,7 +291,7 @@ Property index and label index maintenance already provide the right architectur
 - failed index flushes converge through durable repair/backfill paths; and
 - posting keys do not embed graph-wide routing policy that belongs to the router.
 
-The existing edge vector path is not an ANN index. It is a graph-executor scan over edge inline value
+The existing edge vector path is not an ANN index. It is a graph-executor scan over edge inline property
 bytes, with SIMD and bounded L2 improvements in favorable cases but still worst-case `O(n * d)`.
 That path remains valid for traversal-critical edge-local vector predicates.
 
@@ -302,7 +302,7 @@ That path remains valid for traversal-critical edge-local vector predicates.
 Vertex embeddings are canonical graph state. `VertexEmbeddingStore` lives in the graph canister
 facade, not in the vector index canister.
 
-The store is a dedicated stable store rather than an edge inline value extension. Slice 1 commits the
+The store is a dedicated stable store rather than an edge inline property extension. Slice 1 commits the
 canonical key shape:
 
 ```text
@@ -323,12 +323,12 @@ Minimum write-boundary invariants:
 - embedding updates produce deterministic remove/insert deltas for derived vector indexes; and
 - graph canonical state remains sufficient to backfill the vector index.
 
-### 2. Edge payload vectors remain separate
+### 2. Edge inline property vectors remain separate
 
-`EdgeInlineValueEncoding::VectorF32` remains the representation for edge-local, traversal-critical
+`EdgeInlinePropertyEncoding::VectorF32` remains the representation for edge-local, traversal-critical
 vectors. It is appropriate when query execution evaluates a vector predicate while expanding edges.
 
-Vertex embeddings are not stored in edge inline values. They describe a vertex's semantic representation
+Vertex embeddings are not stored in edge inline properties. They describe a vertex's semantic representation
 and participate in vector candidate generation, backfill, and index synchronization.
 
 ### 3. Vector index canisters are derived candidate generators
@@ -351,7 +351,7 @@ VectorSubject =
 ```
 
 Initial implementation should focus on vertex embeddings. Edge subjects may be added later when
-there is a demonstrated need to externalize edge-inline-value vector search from graph execution.
+there is a demonstrated need to externalize edge-inline-property vector search from graph execution.
 
 ### 4. Derived vector storage uses index-local ids and partition-local vector pages
 
@@ -400,7 +400,7 @@ VECTOR_PAGE[(index_id, version, partition_id, page_id)] ->
 
 The first implementation supports `F32` only, but the shape is intentionally encoding-aware.
 `VECTOR_INDEX_DEFS[index_id] -> { encoding, dims, stride_bytes }` is the vector-index analogue of
-LabeledLARA's `label_id -> payload byte width`: the owner metadata fixes the byte width before any
+LabeledLARA's `label_id -> inline property byte width`: the owner metadata fixes the byte width before any
 vector bytes are read. Different dimensions or encodings use different indexes or physical page
 families. Slots inside one page always have one fixed stride.
 
@@ -812,7 +812,7 @@ future ADR proves that physical index selection must be user-visible.
 
 - Graph remains the source of truth for vertex embeddings.
 - Vector indexes are rebuildable derived state, matching the property/label index model.
-- Edge payload vectors keep their traversal-focused role.
+- Edge inline property vectors keep their traversal-focused role.
 - Router remains the only owner of cross-canister vector query orchestration.
 - Initial implementation can validate stable storage, recovery, and query contracts before taking
   on ANN-specific complexity.
@@ -843,7 +843,7 @@ future ADR proves that physical index selection must be user-visible.
 | Alternative | Why rejected |
 |-------------|--------------|
 | Store canonical vectors only in vector index canisters | Makes the index canister authoritative and prevents graph-owned rebuild/backfill. |
-| Store vertex embeddings as edge inline values | Mixes vertex semantic state with traversal-critical edge-local payload storage. |
+| Store vertex embeddings as edge inline properties | Mixes vertex semantic state with traversal-critical edge-local inline property bytes storage. |
 | Store embeddings only as ordinary vertex properties | Does not give embedding-specific dimension, encoding, update, and backfill invariants a clear owner. |
 | Make `flat` the standard index kind | Simpler, but not enough for production-scale candidate generation; keep it as a baseline/debug implementation. |
 | Expose algorithm names in query syntax | Couples user-facing query semantics to derived physical index choices; use index definition/config instead. |

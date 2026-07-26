@@ -86,7 +86,7 @@ used to discard an obligation that no other durable source can reconstruct.
 
 The region-level maturity inventory is a prerequisite to accepting this ADR, not merely an
 implementation follow-up. The minimum Durable Core candidates are Graph existence, canonical
-adjacency, labels, properties, inline edge payloads, graph metadata, and the Router auth, name/id
+adjacency, labels, properties, edge inline properties, graph metadata, and the Router auth, name/id
 catalogs, shard routing, idempotency, and recovery facts required to access them. Graph-hosted
 embeddings, Router vector catalogs/policies, Property Index, Vector Index, Provision, telemetry, and
 feature-specific operational state are not Durable Core by location alone. Embeddings, uniqueness,
@@ -394,7 +394,7 @@ production volume.
 
 Subject to the prerequisite maturity inventory, the Durable Core matrix covers at minimum:
 
-- Graph existence, canonical adjacency, labels, properties, inline payloads, metadata, and the
+- Graph existence, canonical adjacency, labels, properties, inline properties, metadata, and the
   maintenance/recovery records proven necessary to preserve those facts;
 - Router auth, graph/name catalogs, idempotency, graph/shard routing, and graph-mutation recovery
   state; and

@@ -25,7 +25,7 @@ This is an **interim** layout documented in `labeled.rs` and [lara-dgap-contract
 
 A reference implementation lives at `reference/DGAP/dgap/src/graph.h`. DGAP keeps slack **inside** each leaf segment's assigned `[from, to)` interval and slides data with `rebalance_weighted`; it does not peel per-vertex footprints on every growth event.
 
-Payload storage ([labeled-edge-inline-values.md](../storage/labeled-edge-inline-values.md)) already assumes edge compaction follows a **single logical order** across the edge slab. Divergent physical units (per-vertex span vs leaf segment) increase compaction risk and maintenance surface.
+Inline property bytes storage ([labeled-edge-inline-properties.md](../storage/labeled-edge-inline-properties.md)) already assumes edge compaction follows a **single logical order** across the edge slab. Divergent physical units (per-vertex span vs leaf segment) increase compaction risk and maintenance surface.
 
 ## Decision
 
@@ -81,7 +81,7 @@ When a new bucket is created for an ordinary directed edge insert, storage must 
    - Otherwise, the weighted slide redistributes the leaf block across its active vertices and labels, giving the new bucket real `stored_slots`.
    - If the leaf block still cannot absorb the new label, `relocate_labeled_leaf_physical_block` or element-capacity growth is used.
    - After folding a single edge-only label, `LabeledVertex::stored_slots` may retain bounded geometric tail headroom inside that vertex's non-overlapping leaf allocation. `LabelBucket::stored_slots` remains the exact resident edge width; later edge-only inserts consume the vertex tail before returning to the shared log. This amortizes repeated full-log folds without changing the zero-length later-bucket contract.
-   - Labels with inline values do not use this edge-only tail optimization. Their edge slab/log and payload slab/log continue to choose capacity and maintenance timing independently.
+   - Labels with inline properties do not use this edge-only tail optimization. Their edge slab/log and inline property bytes slab/log continue to choose capacity and maintenance timing independently.
 
 5. **Storage-owned preflight guarantees leaf capacity, not per-bucket pre-allocation.**
    - `prepare_labeled_edge_capacity_for_insert` runs before any canonical edge write for both forward `src` and reverse `dst`.
@@ -232,19 +232,19 @@ paying overflow-log and relocation cost for the common one-edge vertex.
 - `rebalance_vertex_edge_span` may still be used for vertex-level compaction, but not as the default growth path for a new bucket.
 - Tests that assume a non-zero `stored_slots` immediately after the first insert must be updated to distinguish dense/slab-backed buckets from log-backed buckets.
 
-## Independent edge and inline-value physical stores
+## Independent edge and inline-property physical stores
 
-The edge store and edge inline-value store share one logical contract—bucket-local live-edge order—but do not share physical slots, log entries, capacity, or maintenance timing.
+The edge store and edge inline-property store share one logical contract—bucket-local live-edge order—but do not share physical slots, log entries, capacity, or maintenance timing.
 
 - `LabelBucket::stored_slots` counts edge slab slots only. `overflow_log_head` belongs only to the edge leaf log.
-- `LabelBucket::inline_value_slab_slots` counts inline-value slab entries only. `inline_value_log_head` and `inline_value_log_len` belong only to the payload leaf log.
-- A label with `inline_value_byte_width = 0` always has zero inline-value slab slots and no payload log, regardless of its edge degree or edge physical state.
-- A payload-bearing label allocates its first payload span lazily at one value-width entry; subsequent payload slab growth is measured in value-width entries and is not rounded to the edge segment size or edge quota.
-- Edge rebalance, resize, and relocation preserve the current bucket-local live order but do not fold, resize, release, or relocate payload storage.
+- `LabelBucket::inline_property_bytes_slab_slots` counts inline-property slab entries only. `inline_property_bytes_log_head` and `inline_property_bytes_log_len` belong only to the inline property bytes leaf log.
+- A label with `inline_property_byte_width = 0` always has zero inline-property slab slots and no inline property bytes log, regardless of its edge degree or edge physical state.
+- A inline-property-bearing label allocates its first inline property bytes span lazily at one value-width entry; subsequent inline property bytes slab growth is measured in value-width entries and is not rounded to the edge segment size or edge quota.
+- Edge rebalance, resize, and relocation preserve the current bucket-local live order but do not fold, resize, release, or relocate inline property bytes storage.
 - Payload rebalance, resize, and relocation preserve the same current live order but do not fold, resize, release, or relocate edge storage.
-- Insert appends to both logical sequences only when the label has a non-zero inline-value width. Delete resolves the edge physical slot to its bucket-local live ordinal and removes the value at that ordinal. Physical maintenance can then occur in either order.
+- Insert appends to both logical sequences only when the label has a non-zero inline-property width. Delete resolves the edge physical slot to its bucket-local live ordinal and removes the value at that ordinal. Physical maintenance can then occur in either order.
 
-This rejects physical slot equality and equal edge/payload log entry indices as an invariant. They are transient implementation coincidences and cannot represent labels with no inline value.
+This rejects physical slot equality and equal edge/inline property bytes log entry indices as an invariant. They are transient implementation coincidences and cannot represent labels with no inline property.
 
 ### Structural overflow fold versus slot compaction
 
@@ -253,7 +253,7 @@ Edge-log fold has two distinct execution contracts:
 - **Foreground overflow delete is tombstone-free direct unlink.** Removing the head advances the
   head pointer. Removing a middle entry rewrites the one newer entry whose `prev` points to it.
   Newest-to-oldest scan order is unchanged; each live entry in the newer suffix shifts down one
-  logical slot and emits one `EdgeSlotMove`. A valued bucket shifts the matching payload suffix.
+  logical slot and emits one `EdgeSlotMove`. A valued bucket shifts the matching inline property bytes suffix.
 
 - **Rebalance, resize, and relocation perform a structural fold.** They append every edge-log entry,
   including tombstones, after the existing edge slab prefix. Existing slab slots and log-backed
@@ -265,9 +265,9 @@ Edge-log fold has two distinct execution contracts:
 - **Slab tombstones remain a separate incremental phase.** After the overflow suffix is folded,
   `compact_vertex_edge_span_one_step` moves at most one slab edge per maintenance work item. A short
   overflow fold must never collapse an arbitrarily large slab prefix.
-- **Edge overflow maintenance does not fold the inline-value log.** Payload log fold and payload slab
+- **Edge overflow maintenance does not fold the inline-property log.** Inline property bytes log fold and inline property bytes slab
   relocation remain independently triggered operations; edge compaction preserves the live ordinal
-  sequence on which payload lookup depends.
+  sequence on which inline property bytes lookup depends.
 
 Capacity for a structural fold is preflighted as `stored_slots + edge_log_chain_len`. Capacity for
 the maintenance fold is preflighted as `stored_slots + live_edge_log_entries`. Neither operation
@@ -332,7 +332,7 @@ ordering unchanged.
 
 When a physical leaf relocation has a separately allocated destination block, the source and
 destination intervals are disjoint while the old block is still retained. That case no longer
-needs to retain every vertex's captured edge payload: vertices are still ordered by descending
+needs to retain every vertex's captured edge inline property bytes: vertices are still ordered by descending
 destination position, but each vertex is materialized and committed immediately. Overlapping
 slides and in-place growth continue to materialize the complete leaf plan before the first write.
 The disjointness check is fail-closed when either interval end overflows, so the source-before-
@@ -347,8 +347,8 @@ vertex. A queued `CompactDenseLabeledVertexMaintenance` item uses its vertex onl
 representative for the leaf; when processed, it compacts the representative's bucket segment and
 then executes one leaf-wide labeled rebalance cascade. Inserts and deletes through the synchronous
 graph API retain their existing immediate cascade behavior. Vertex-level tombstone/span work and
-payload maintenance remain independently deduplicated, so a dense-leaf item does not suppress
-unrelated per-vertex or payload work.
+inline property bytes maintenance remain independently deduplicated, so a dense-leaf item does not suppress
+unrelated per-vertex or inline property bytes work.
 
 This removes repeated O(leaf) scans and relocation attempts when several vertices in one leaf are
 mutated before the maintenance queue is drained. The serialized work-item tag and payload remain
@@ -369,7 +369,7 @@ relocation-cascade scope moved from 20.56M to 9.75M, with no measured stable-pag
 selected policy is therefore 4 pages. Tests must assert logical capacity and failure atomicity
 rather than assume an exact physical page boundary.
 
-The `LabelBucket` stable record grows from 25 to 29 bytes to persist the payload slab-slot count independently. Development stable data using the earlier record width must be wiped; backward decoding is not provided.
+The `LabelBucket` stable record grows from 25 to 29 bytes to persist the inline property bytes slab-slot count independently. Development stable data using the earlier record width must be wiped; backward decoding is not provided.
 
 ## Consequences
 
@@ -377,7 +377,7 @@ The `LabelBucket` stable record grows from 25 to 29 bytes to persist the payload
 
 - Aligns labeled maintenance with proven DGAP/LARA complexity: slide inside fixed capacity vs repeated global tail append.
 - Removes cliff class where multi-label hubs pay O(edges) free-span work per vertex relocate.
-- One physical story for edge slab and payload compaction order.
+- One physical story for edge slab and inline property bytes compaction order.
 - Reviewers can judge labeled PRs against a single contract ([lara-dgap-contract.md](../storage/lara-dgap-contract.md)).
 
 ### Negative / cost

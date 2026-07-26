@@ -135,8 +135,8 @@ Key renames:
 | `EdgeInlineValueEncoding` | `EdgeInlinePropertyEncoding` |
 | `EdgeInlineValue` | `EdgeInlinePropertyBytes` |
 | `MAX_EDGE_INLINE_VALUE_BYTES` | `MAX_EDGE_INLINE_PROPERTY_BYTES` |
-| `PreparedEdgeInlineValueDecoder` | `PreparedEdgeInlinePropertyDecoder` |
-| `DecodedEdgeInlineValue` | `DecodedEdgeInlinePropertyValue` |
+| `PreparedEdgeInlineValueDecoder` | `PreparedEdgeInlinePropertyBytesDecoder` |
+| `DecodedEdgeInlineValue` | `DecodedEdgeInlinePropertyBytes` |
 | `EdgeInlineValuePredicate` (gql-planner) | `EdgeInlinePropertyPredicate` |
 | `EdgeInlineValueSchemaRecord` (router) | `EdgeInlinePropertySchemaRecord` |
 | `EdgeInlineValueProfileStore` (router) | `EdgeInlinePropertyProfileStore` |
@@ -203,12 +203,12 @@ manifest and its implementation remains in place.
    - Router `EdgeInlinePropertySchemaRecord`.
    - `ResolvedEdgeLabel` wire type.
 4. Update reopen tests and `bench_layout_graph_stable_reopen_touch` expectations.
-5. Update `design/adr/0008-edge-inline-value-profile-router-ssot.md`:
+5. Update `design/adr/0008-edge-inline-property-profile-router-ssot.md`:
    - title to "Edge inline property schema: router SSOT and graph stable retirement"
    - `payload_profile` → `inline_property_profile`
    - `ROUTER_EDGE_PAYLOAD_PROFILES` → `ROUTER_EDGE_INLINE_PROPERTY_PROFILES`
 6. Update `design/adr/0034-gleaph-gql-extension-syntax.md`, `design/gql/extension-syntax.md`,
-   `design/storage/labeled-edge-inline-values.md`, and `design/gql/plan-format.md`.
+   `design/storage/labeled-edge-inline-properties.md`, and `design/gql/plan-format.md`.
 7. Update `gleaph-graph-kernel::gql_dialect` manifest:
    - `GqlDialectExtensionKind::EdgeInlineValueFunction` → `EdgeInlinePropertyFunction`
    - doc anchors to `#edge-inline-properties`
@@ -229,10 +229,10 @@ manifest and its implementation remains in place.
 | Document | Update |
 |----------|--------|
 | `design/adr/README.md` | Add ADR 0051 entry. |
-| `design/adr/0008-edge-inline-value-profile-router-ssot.md` | Retitle; replace `payload_profile`, `EdgeInlineValueProfile`, `ROUTER_EDGE_PAYLOAD_PROFILES`; refresh stable-memory layout table. |
+| `design/adr/0008-edge-inline-property-profile-router-ssot.md` | Retitle; replace `payload_profile`, `EdgeInlineValueProfile`, `ROUTER_EDGE_PAYLOAD_PROFILES`; refresh stable-memory layout table. |
 | `design/adr/0034-gleaph-gql-extension-syntax.md` | Replace "inline value" and "payload" with "inline property" / "inline property bytes"; describe `GLEAPH.WEIGHT` as a Phase-B-removed legacy surface. |
 | `design/gql/extension-syntax.md` | Rename syntax class table from "Edge inline value" to "Edge inline property"; replace all bare "payload" usage in edge context. |
-| `design/storage/labeled-edge-inline-values.md` | Rename `EdgeInlineValueStore` → `EdgeInlinePropertyBytesStore`, `payload_byte_width` → `inline_property_byte_width`, `payload_slab/log/blobs` → `inline_property_bytes_*`. |
+| `design/storage/labeled-edge-inline-properties.md` | Rename `EdgeInlineValueStore` → `EdgeInlinePropertyBytesStore`, `payload_byte_width` → `inline_property_byte_width`, `payload_slab/log/blobs` → `inline_property_bytes_*`. |
 | `design/gql/plan-format.md` | `payload_profile` → `inline_property_profile`. |
 | `design/adr/0016-overflow-log-tombstones-and-src-fields.md` | Rename LARA-internal `payload_log` / `payload_blobs` / `payload_cell` only where they refer to the inline property bytes sequence. Preserve unrelated edge-row "payload" discussion if it refers to the 4-byte edge body. |
 | `crates/gql-planner/CLAUDE.md` | Keep "inline-property-equality" terminology but add a note that it refers to vertex pattern literals, not edge `INLINE` storage. |
@@ -242,6 +242,6 @@ manifest and its implementation remains in place.
 - [0051 — this ADR](0051-edge-inline-property-terminology-and-weight-retirement.md): accepted; Phase A terminology unification is the source of truth for all names in this document set.
 - [0006 — Pre-federation foundation](0006-pre-federation-foundation.md): router owns label/property id catalogs.
 - [0007 — Stable-memory layout](0007-stable-memory-layout.md): stable region naming and MemoryId repack policy.
-- [0008 — Edge inline value profile: router SSOT](0008-edge-inline-value-profile-router-ssot.md): will be retitled and updated by Phase A.
+- [0008 — Edge inline property profile: router SSOT](0008-edge-inline-property-profile-router-ssot.md): will be retitled and updated by Phase A.
 - [0034 — Gleaph GQL extension syntax surface](0034-gleaph-gql-extension-syntax.md): defines the `INLINE` public syntax that justifies the vocabulary.
 - [0050 — LARA traverse read API](0050-lara-traverse-read-api.md): may overlap with ic-stable-lara naming.

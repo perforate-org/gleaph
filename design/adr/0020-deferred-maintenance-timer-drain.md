@@ -199,7 +199,7 @@ one-`EdgeMoved`-per-pop path.
 
 Structural log folds performed by insert-time rebalance, resize, or relocation copy tombstone log
 entries as well and preserve slot indices, so they do not emit sidecar or posting re-keys. Edge-log
-maintenance does not fold the independent inline-value log.
+maintenance does not fold the independent inline-property log.
 
 ## Migration
 

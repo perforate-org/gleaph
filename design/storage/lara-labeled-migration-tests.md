@@ -183,7 +183,7 @@ These must pass after every phase PR.
 | `labeled_scan_never_reads_span_meta` | `traverse.rs` | **Implemented** — `ScanPathGuard` on hub scan paths; zero `span_meta` reads |
 | `labeled_scan_never_reads_free_span_store` | `traverse.rs` | **Implemented** — `ScanPathGuard` on hub scan paths; zero edge free-span reads |
 | `labeled_hub_materialized_matches_all_scan_iters` | `traverse.rs` | **Implemented** — hub fixture; materialized label targets match scan iterators |
-| `labeled_payload_edge_order_matches_edge_slab_order` | `values.rs` | **Implemented** — after rewrite/compact, payload slots and dense offsets follow asc edge slab order |
+| `labeled_inline_property_bytes_edge_order_matches_edge_slab_order` | `values.rs` | **Implemented** — after rewrite/compact, inline property bytes slots and dense offsets follow asc edge slab order |
 
 ---
 
@@ -231,4 +231,4 @@ Add to `crates/ic-stable-lara/src/test_support.rs` (or `labeled/test_support.rs`
 - [lara.md](./lara.md)
 - [lara-dgap-contract.md](./lara-dgap-contract.md)
 - [adr/0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md)
-- [labeled-edge-inline-values.md](./labeled-edge-inline-values.md)
+- [labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md)

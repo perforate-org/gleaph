@@ -87,7 +87,7 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 | Retire old physical | (implicit in resize; no free list) | `FreeSpanStore` after relocate | Segment footprint only | One `release_span` per leaf relocate |
 | Multi-label bytes | N/A | N/A | DGAP vertex rows + buckets; **one leaf physical block** | Sub-ranges inside pinned leaf block |
 
-Inline values are a separate physical domain: bucket-local live order associates values with edges, while payload slab slots, payload log entries, capacity, and maintenance timing remain independent from the edge leaf block.
+Inline properties are a separate physical domain: bucket-local live order associates values with edges, while inline property bytes slab slots, inline property bytes log entries, capacity, and maintenance timing remain independent from the edge leaf block.
 
 ---
 
@@ -170,7 +170,7 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 
 **Failure-atomic growth and promotion.** Core LARA `grow_segment_tree_to` and labeled `promote_bypass_to_bucket_mode` use a preflight/commit split: all fallible backing-memory growth (`counts_store`, `span_meta`, `log`, bucket slab, free-span records, free-span by-start index) completes before the first canonical metadata write. After that point no recoverable `Memory::grow` error remains. Physical preallocation is non-canonical and safe to retain after a rejected mutation.
 
-**Status:** Phase A–E implemented (pinned leaf, PMA density, in-window slide, single leaf `release_span` on relocate, rewrite-path growth via leaf relocate). Failure-atomic preflight is implemented for `grow_segment_tree_to` and `promote_bypass_to_bucket_mode`. New buckets use zero-length edge placement and the edge log. Inline values persist their own slab-slot count and maintain an independent slab/log lifecycle.
+**Status:** Phase A–E implemented (pinned leaf, PMA density, in-window slide, single leaf `release_span` on relocate, rewrite-path growth via leaf relocate). Failure-atomic preflight is implemented for `grow_segment_tree_to` and `promote_bypass_to_bucket_mode`. New buckets use zero-length edge placement and the edge log. Inline properties persist their own slab-slot count and maintain an independent slab/log lifecycle.
 
 ---
 
@@ -178,8 +178,8 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 
 - [lara.md](./lara.md) — **agreed LARA model** (four contracts, DGAP vs LARA)
 - [0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — decision record
-- [0016-overflow-log-tombstones-and-src-fields.md](../adr/0016-overflow-log-tombstones-and-src-fields.md) — historical edge-log tombstone and payload cell/blob layout decisions; ADR 0001 now owns independent edge/payload maintenance
+- [0016-overflow-log-tombstones-and-src-fields.md](../adr/0016-overflow-log-tombstones-and-src-fields.md) — historical edge-log tombstone and inline property bytes cell/blob layout decisions; ADR 0001 now owns independent edge/inline-property-bytes maintenance
 - [lara-and-facade.md](./lara-and-facade.md) — Gleaph layering
-- [labeled-edge-inline-values.md](./labeled-edge-inline-values.md) — payload slab (parallel contract)
+- [labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md) — inline property bytes slab (parallel contract)
 - `crates/ic-stable-lara/README.md` — crate-level overview
 - `reference/DGAP/dgap/src/graph.h` — reference implementation (~1500 LOC)

@@ -88,7 +88,7 @@ virtual-memory type compatible with `ic-stable-structures`:
 
 The initial per-region values remain an experimental policy and are not frozen by
 this ADR. The implementation must benchmark property, adjacency, LARA maintenance,
-payload, embedding, and log workloads before selecting production defaults. As a
+inline property bytes, embedding, and log workloads before selecting production defaults. As a
 starting hypothesis, tiny metadata regions should use smaller buckets, while
 properties, payloads, and embeddings should use larger buckets.
 
@@ -176,7 +176,7 @@ each class:
 | `FWD_BUCKET_FREE_SPANS`, `FWD_BUCKET_FREE_SPAN_BY_START`, `REV_BUCKET_FREE_SPANS`, `REV_BUCKET_FREE_SPAN_BY_START` | 4 | retain | Maintenance indexes are sparse and rebuildable; their records should not impose a large first allocation. |
 | `FWD_EDGE_COUNTS`, `REV_EDGE_COUNTS`, `FWD_EDGE_SPAN_META`, `REV_EDGE_SPAN_META` | 4 | retain | Per-segment metadata is small (16-byte count rows and 8-byte span rows); the 4-page quantum is sufficient until very large vertex counts. |
 | `FWD_EDGES`, `REV_EDGES`, `FWD_EDGE_LOG`, `REV_EDGE_LOG` | 16 | retain | Adjacency is the LARA hot path and pays for both PMA slack and relocation/log records; 16 pages gives useful growth without property-sized slack. |
-| `FWD_PAYLOAD_SLAB`, `REV_PAYLOAD_SLAB`, `FWD_PAYLOAD_LOG`, `REV_PAYLOAD_LOG`, `FWD_PAYLOAD_BLOBS`, `REV_PAYLOAD_BLOBS` | 32 | retain | Inline and overflow values are larger and grow with edge volume; payload domains should not compete for the 4-page extent budget. |
+| `FWD_PAYLOAD_SLAB`, `REV_PAYLOAD_SLAB`, `FWD_PAYLOAD_LOG`, `REV_PAYLOAD_LOG`, `FWD_PAYLOAD_BLOBS`, `REV_PAYLOAD_BLOBS` | 32 | retain | Inline and overflow values are larger and grow with edge volume; inline property bytes domains should not compete for the 4-page extent budget. |
 | `FWD_PAYLOAD_FREE_SPANS`, `FWD_PAYLOAD_FREE_SPAN_BY_START`, `REV_PAYLOAD_FREE_SPANS`, `REV_PAYLOAD_FREE_SPAN_BY_START` | 4 | retain | Rebuildable free-span indexes are sparse maintenance state. |
 | `MAINTENANCE_QUEUE`, `DIRTY_WORK_ITEMS` | 4 | retain | Bounded/deferred maintenance state; large pages would only hide queue pressure as slack. |
 | `VERTEX_LABEL_SETS` | 8 | retain | Sidecar rows scale with multi-label vertices but are generally smaller than property values. |
@@ -227,7 +227,7 @@ suite, so this does not promote them to a production policy.
 Positive:
 
 - Small, slow-growing regions no longer impose the same minimum allocation as
-  property or payload regions.
+  property or inline property bytes regions.
 - Large regions can receive a bucket size appropriate to their expected shard
   capacity, without reserving a fixed partition in advance.
 - Existing storage structures retain their public generic boundary and do not need
@@ -283,7 +283,7 @@ first implementation; revisit only if upstream integration constraints require i
 2. Wire Graph's existing typed region registry to one persisted per-`MemoryId`
    policy; do not change storage wrapper generics.
 3. Run focused canbench and PocketIC tests for property-heavy, edge-heavy,
-   payload-heavy, embedding, and maintenance workloads. Record logical pages,
+   inline-property-bytes-heavy, embedding, and maintenance workloads. Record logical pages,
    allocated pages, slack, physical stable memory, and reopen cost.
 4. Add an upgrade/migration preflight test and update ADR 0007 plus the stable-memory
    inventory with the final policy and region capacities.
@@ -292,7 +292,7 @@ first implementation; revisit only if upstream integration constraints require i
 Graph is now wired to the new crate with an experimental policy: 4 pages by
 default; 8 pages for vertex, label-bucket, label-sidecar, and embedding-incarnation
 rows; 16 pages for edge slab/log, aliases, and durable backlog; 32 pages for
-payload and embeddings; and 64 pages for property and local-unique values. Fresh
+inline property bytes and embeddings; and 64 pages for property and local-unique values. Fresh
 local stats showed that the earlier 32/64-page policy
 reserved about 49.9 MiB for about 3.7 MiB of logical data before seeding, so the
 smaller policy reduces initial slack while remaining above the 16 GiB physical

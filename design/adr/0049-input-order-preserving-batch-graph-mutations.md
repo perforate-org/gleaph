@@ -16,7 +16,7 @@ partially implemented substrate includes:
 - read-only placement and full-leaf occupancy projection;
 - one-orientation slab, overflow-log, and pending-aware expansion plans;
 - reserve-all-then-commit orchestration with rollback before canonical writes;
-- exact edge/payload location capture joined by logical ordinal; and
+- exact edge/inline-property-bytes location capture joined by logical ordinal; and
 - focused scalar-versus-batch benchmark coverage.
 
 ADR 0045 intentionally leaves the relative order of new edges unspecified. That
@@ -48,7 +48,7 @@ caller input order while retaining the material benefits of ADR 0045:
 
 1. one read-only projection over the complete bounded pending set;
 2. capacity planning by orientation, PMA leaf, vertex, and label bucket;
-3. contiguous edge and payload writes;
+3. contiguous edge and inline property bytes writes;
 4. pending-aware overflow-log, expansion, fold, and relocation decisions;
 5. shard-local failure atomicity and idempotent retry;
 6. exact forward/reverse or undirected mate association, including parallel
@@ -57,7 +57,7 @@ caller input order while retaining the material benefits of ADR 0045:
 
 The design must define the scope of the order guarantee precisely. Labeled
 adjacency is physically partitioned by orientation, owner vertex, storage label,
-and inline-value schema. A traversal spanning several label buckets already
+and inline-property schema. A traversal spanning several label buckets already
 uses label-bucket order, so a global cross-label insertion sequence is not
 representable in the current four-byte edge row without a new persistent
 sequence key.
@@ -87,7 +87,7 @@ The existing owners can absorb the new contract without a new subsystem:
 - Bidirectional LARA owns physical pair ordering, paired-orientation
   validation, exact returned locations, mate resolution, and mate-accelerator
   invalidation/rebuild.
-- One-orientation LARA owns bucket scan order, edge/payload slab and log
+- One-orientation LARA owns bucket scan order, edge/inline-property-bytes slab and log
   placement, PMA density, expansion, relocation, compaction, and stable
   allocation.
 
@@ -147,7 +147,7 @@ locations, or placement instructions.
 
 The v1 operation set is deliberately exhaustive and narrow. The public item is
 unresolved and contains no Router-interned catalog id, LARA storage label,
-inline-value width, or local vertex id:
+inline-property width, or local vertex id:
 
 ```text
 OrderedEdgeBatchPublicRequest =
@@ -163,7 +163,7 @@ OrderedEdgeInsertPublicItemV1 {
     target: EncodedVertexId,
     directed,
     edge_label_name: Option<String>,
-    inline_value: Option<CanonicalGqlValueBytesV1>,
+    inline_property: Option<CanonicalGqlValueBytesV1>,
     initial_edge_properties: [
         OrderedEdgePropertyPublicV1 {
             property_name: String,
@@ -181,11 +181,11 @@ codec contract against the conformance vectors owned by
 Router decodes both endpoint ids with the graph's `ElementIdEncodingKey`,
 resolves the optional edge-label name and every property name through its
 graph-scoped catalogs, validates the declared inline schema, and converts the
-inline value to the exact fixed-width LARA bytes. Missing, duplicate, malformed,
+inline property to the exact fixed-width LARA bytes. Missing, duplicate, malformed,
 oversized, or type-incompatible names/values fail during pre-envelope admission.
 
 It does not expose vertex insertion, combined new-vertex/new-edge mutation,
-existing inline-value update, or existing vertex/edge property update. ADR 0045
+existing inline-property update, or existing vertex/edge property update. ADR 0045
 stages 5–7 remain planned internal GraphStore/LARA primitives, but they do not
 retain or create an unordered public endpoint. A later public batch operation
 requires an explicit revision of this ADR with an exhaustive operation enum,
@@ -225,7 +225,7 @@ OrderedEdgeBatchGraphItemV1 {
     target_local_vertex_id: LocalVertexId,
     directed,
     catalog_edge_label_id: Option<EdgeLabelId>,
-    inline_value_bytes: Vec<u8>,
+    inline_property_bytes: Vec<u8>,
     resolved_initial_edge_properties: [
         ResolvedOrderedEdgePropertyV1 {
             property_id: PropertyId,
@@ -421,7 +421,7 @@ Graph call is possible while `OrderedEdgeBatchRouting` is stored.
 The order-bearing physical bucket key is:
 
 ```text
-(orientation, owner_vertex_id, storage_label_id, inline_value_width)
+(orientation, owner_vertex_id, storage_label_id, inline_property_byte_width)
 ```
 
 For every affected bucket `b`, let:
@@ -510,7 +510,7 @@ LARA boundary; no second pairing table is maintained. It then groups every
 physical intent exactly once by:
 
 ```text
-(orientation, owner_vertex_id, storage_label_id, inline_value_width)
+(orientation, owner_vertex_id, storage_label_id, inline_property_byte_width)
 ```
 
 The projection side is request-local identity metadata, not part of the
@@ -557,7 +557,7 @@ runs. The planner may continue to:
 - order bucket work for stable-memory locality;
 - combine multiple bucket projections into one leaf expansion or relocation;
 - select slab, overflow log, expanded slab, or relocated slab destinations;
-- write edge and payload spans contiguously; and
+- write edge and inline property bytes spans contiguously; and
 - aggregate metadata, mate invalidation, sidecar, and derived-event updates.
 
 Only the live row sequence within each bucket is constrained. This distinction
@@ -586,7 +586,7 @@ LARA's physical reservation owns:
 - the existing bucket/leaf fingerprints;
 - the current live sequence and append boundary;
 - destination spans and log ranges;
-- edge/payload capacity and allocator effects;
+- edge/inline-property-bytes capacity and allocator effects;
 - exact physical locations when capture is requested; and
 - the proof that every planned transformation preserves the live sequence.
 
@@ -618,11 +618,11 @@ The following are valid when their preconditions are proved:
 An old tombstone hole that precedes a surviving live row is not an ordered
 insertion destination. It may be reclaimed by maintenance only if compaction
 preserves the relative live order and repairs every affected physical handle,
-payload ordinal, mate accelerator, and canonical sidecar through their owning
+inline property bytes ordinal, mate accelerator, and canonical sidecar through their owning
 boundaries.
 
 The planner must validate logical order, not infer it solely from numeric slab
-or overflow-log indices. Edge and payload locations remain separate physical
+or overflow-log indices. Edge and inline property bytes locations remain separate physical
 domains joined by bucket-local live ordinal.
 
 ### 7. Keep aggregate-only output as the normal path
@@ -731,7 +731,7 @@ value/schema constraints during whole-request preflight.
 
 The final contract permits multiple new logical edges with the same endpoint
 pair when the Graph data model permits parallel edges. Their logical ordinals,
-inline values, properties, and exact returned locations distinguish them.
+inline properties, properties, and exact returned locations distinguish them.
 
 The current ADR 0045 planner rejects duplicate logical targets. ADR 0049 does
 not remove that fail-closed behavior until paired location handling, property
@@ -1534,10 +1534,10 @@ At minimum, implementation must cover:
   projections from different logical edges, including `[3 -- 2, 2 -- 1]`, with
   one reservation and scan order `[0, 1]`;
 - mixed directed, undirected, and self-loop items in one public batch;
-- parallel edges with distinct inline values/properties and exact mate rank;
+- parallel edges with distinct inline properties/properties and exact mate rank;
 - pre-existing live edges followed by pending edges;
 - slab, overflow-log, expanded-slab, folded-log, and relocated destinations;
-- edge/payload sequences stored in different physical domains;
+- edge/inline-property-bytes sequences stored in different physical domains;
 - interior tombstones, tail slack, deletion, compaction, and reopen;
 - mate ScanOnly and Published/fallback behavior after invalidation/rebuild;
 - property-free aggregate mode without location materialization;
@@ -1917,7 +1917,7 @@ and split invariant ownership. Rejected.
 - `design/storage/bulk-ingest-finalize.md` distinguishes the planned
   order-preserving direct batch path from the existing maintenance/finalize
   hook.
-- Router/Graph wire, SDK, stable-memory inventory, inline-value, and
+- Router/Graph wire, SDK, stable-memory inventory, inline-property, and
   LARA/facade documents are updated with implementation slices, not in advance
   as though the planned API were active.
 

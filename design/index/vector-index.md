@@ -487,7 +487,7 @@ Vector Index behavior is unchanged:
 Define the planned boundary between:
 
 - the graph-owned vertex embedding store;
-- edge inline value vectors used during traversal;
+- edge inline property vectors used during traversal;
 - derived vector index canisters; and
 - Router vector query coordination.
 
@@ -500,7 +500,7 @@ into a standalone vector database.
 - Using CSR as a vector-index stable-memory layout or snapshot format.
 - Exposing physical index kinds in GQL query syntax.
 - Defining public GraphRAG syntax.
-- Replacing edge inline value vectors used by traversal predicates.
+- Replacing edge inline property vectors used by traversal predicates.
 - Moving canonical vertex or edge state into an index canister.
 
 ## Ownership model
@@ -512,17 +512,17 @@ into a standalone vector database.
 | Vector index canister | derived full-vector copies, `ivf_flat`/`flat`/future `ivf_pq`/future `hnsw` search structures, candidate scoring | final graph results, traversal, property filtering, vertex existence |
 | GQL portable crates | generic language and planning structures only | Gleaph/IC-specific vector storage or canister assumptions |
 
-## Vertex embeddings vs edge inline value vectors
+## Vertex embeddings vs edge inline property vectors
 
-Vertex embeddings and edge inline value vectors are separate concepts.
+Vertex embeddings and edge inline property vectors are separate concepts.
 
 | Concept | Owner | Use |
 |---------|-------|-----|
 | Vertex embedding | Graph canister | semantic representation of a vertex; GraphRAG candidate generation; vector-index backfill |
-| Edge payload vector | Graph canister / LARA edge inline value | traversal-critical edge-local vector predicate during expand |
+| Edge inline property vector | Graph canister / LARA edge inline property | traversal-critical edge-local vector predicate during expand |
 | Vector index entry | Vector index canister | derived search structure for candidate generation |
 
-`EdgeInlineValueEncoding::VectorF32` remains valid for edge-local predicates. The canonical vertex
+`EdgeInlinePropertyEncoding::VectorF32` remains valid for edge-local predicates. The canonical vertex
 embedding store exists for vertex semantic embeddings so the graph shard can enforce dimensions,
 encoding, versioning, delete behavior, and rebuild/backfill into derived vector indexes.
 
@@ -580,7 +580,7 @@ VectorSubject =
 ```
 
 Phase 1 should support vertex subjects first. Edge subjects are deferred until there is a concrete
-need to externalize edge-inline-value vector search from graph execution.
+need to externalize edge-inline-property vector search from graph execution.
 
 ### Derived vector storage
 
@@ -772,5 +772,5 @@ bounded cleanup after publication.
 - [derived-state-query-semantics.md](derived-state-query-semantics.md)
 - [capacity-planning.md](capacity-planning.md)
 - [../architecture/overview.md](../architecture/overview.md)
-- [../storage/labeled-edge-inline-values.md](../storage/labeled-edge-inline-values.md)
-- [../storage/inline-value-first-traversal.md](../storage/inline-value-first-traversal.md)
+- [../storage/labeled-edge-inline-properties.md](../storage/labeled-edge-inline-properties.md)
+- [../storage/inline-property-bytes-first-traversal.md](../storage/inline-property-bytes-first-traversal.md)

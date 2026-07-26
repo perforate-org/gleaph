@@ -202,7 +202,7 @@ All callers use this function:
 Router dispatch **must not** apply delta payloads inline from `ExecutePlanResult` or
 `MutationOutcomeWire`. Those wire types no longer carry event vectors.
 
-### 4. Split graph mutation journal from delta payload storage
+### 4. Split graph mutation journal from delta inline property bytes storage
 
 Replace `APPLIED_MUTATION_REQUESTS` with a graph-local mutation journal:
 
@@ -331,7 +331,7 @@ Internal: `advance_label_stats_projection` is the sole stats apply implementatio
 
 - Names match the data model: label stats are a derived projection, not telemetry.
 - Router has a compact idempotency boundary: one cursor per shard.
-- Mutation idempotency and projection payload storage have separate sources of truth.
+- Mutation idempotency and projection inline property bytes storage have separate sources of truth.
 - Normal dispatch, recovery, and admin replay share the same projection advance path.
 - Query semantics become easier to document: count-only reads depend on projection freshness.
 - Implementation is smaller and reviewable as one coherent breaking change.

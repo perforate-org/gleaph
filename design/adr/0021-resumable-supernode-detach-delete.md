@@ -2,7 +2,7 @@
 
 Date: 2026-06-19
 Status: accepted (all stages 0–2 implemented 2026-06-19; revised after a
-read-gate breadth finding and a payload-free in-edge purge-bug finding — see
+read-gate breadth finding and a inline-property-bytes-free in-edge purge-bug finding — see
 "Implementation finding" and the staged Migration)
 Last revised: 2026-06-19
 
@@ -264,7 +264,7 @@ than the "single LARA traverse chokepoint" this ADR first assumed:
 
 - **No single LARA yield point.** `labeled/graph/traverse.rs` (~3250 lines)
   yields edges from ~10 sites across dense-prefix, hybrid/overflow-replay, point
-  lookup, and descending paths, *including batched inline-value-first paths* that do
+  lookup, and descending paths, *including batched inline-property-bytes-first paths* that do
   not pass through a per-edge `next()`. Filtering inside LARA core would touch all
   of them and the batch builders — high regression risk in the storage core.
 - **~12 graph-facade entry points.** `facade/store/edge_scan.rs` exposes
@@ -289,15 +289,15 @@ into LARA:
 
 - **Verdict: closure-wrap at the facade, not iterator-direct.** Query execution
   uses the `for_each_*` closure family exclusively (`for_each_csr_expand_edge` for
-  expand; `path.rs` for path finding; payload-batch visitors) — there is **no
+  expand; `path.rs` for path finding; inline-property-bytes-batch visitors) — there is **no
   `_edges_iter` usage in the executor**. Switching to iterator-direct filtering
   would require rewriting expand/path execution **and** would lose the for_each
-  family's payload-batching / scratch-reuse optimizations (`_with_payloads`,
+  family's inline-property-bytes-batching / scratch-reuse optimizations (`_with_payloads`,
   `_with_payload_slices_reusing`, edge/value batch paths), making
   property-projecting traversals slower. The wrapper adds only ~1 inlined,
   gated branch per edge in steady state (off when `has_pending_vertex_purges()`).
 - **One predicate, few wrappers.** Visit shapes that carry the edge —
-  `FnMut(Edge)`, `FnMut(&Edge, &[u8])`, `FnMut(LabeledEdgeInlineValueBatch<Edge>)` —
+  `FnMut(Edge)`, `FnMut(&Edge, &[u8])`, `FnMut(LabeledEdgeInlinePropertyBatch<Edge>)` —
   all expose `edge.neighbor_vid()` (always the counterpart relative to the queried
   vertex), so one direction-agnostic predicate
   `edge_hidden_by_purge(counterpart)` serves all of them.
@@ -434,11 +434,11 @@ path is flipped to populate the set:
 - **LARA purge-bug fix (uncovered here):** the reverse (in-edge) purge branch of
   both `process_delete_vertex_step` and `delete_vertex_deferred` reconstructed the
   forward edge from the reverse record, but `edge_matches_remove_target` matches a
-  **payload-free** edge by *slot index* — and the reverse-store slot never equals the
+  **inline-property-bytes-free** edge by *slot index* — and the reverse-store slot never equals the
   neighbor's forward slot, so the forward removal silently failed and the purge spun
   forever (latent in the old synchronous path too; only exposed once a node with
-  payload-free in-edges from distinct sources is deleted — prior tests used a
-  payload-carrying `TestEdge` that masked it). New `purge_one_directed_in_edge`
+  inline-property-bytes-free in-edges from distinct sources is deleted — prior tests used a
+  inline-property-bytes-carrying `TestEdge` that masked it). New `purge_one_directed_in_edge`
   removes one forward record at `src` and one reverse record at `dst` by **neighbor
   identity** across directed label buckets; removing the reverse record independently
   guarantees forward progress.
@@ -449,7 +449,7 @@ path is flipped to populate the set:
   (`vertex_hidden_by_pending_purge` true), then a full drain clears the pending set
   and removes every back-edge.
 - `detach_delete_hub_with_no_payload_in_edges_drains_every_back_edge`: end-to-end
-  public-API regression for the payload-free in-edge purge bug (8 distinct sources).
+  public-API regression for the inline-property-bytes-free in-edge purge bug (8 distinct sources).
 - Combined with the Stage 2c gate tests (anonymous targets, expand candidates,
   end-to-end queries), this covers in-flight and post-completion visibility.
 

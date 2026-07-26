@@ -267,7 +267,7 @@ Moving **`ROUTER_PROPERTY_CATALOG`** (and label catalogs) to the **graph-index c
 Canonical LARA + properties usually grow **faster** than index:
 
 ```text
-S_graph ≈ O(N) vertex rows + O(E) edge/payload bytes + O(all properties stored)
+S_graph ≈ O(N) vertex rows + O(E) edge/inline property bytes + O(all properties stored)
 ```
 
 Rule of thumb: if **`E × avg_payload`** approaches hundreds of GiB, **shard the graph** before tuning index splits. Index size is bounded by **what you index**, not everything stored.
