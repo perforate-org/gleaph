@@ -418,6 +418,35 @@ where
         Ok(buf)
     }
 
+    /// Reads a contiguous span of payload bytes for a dense slab bucket.
+    ///
+    /// `start_slot` and `slot_count` refer to bucket-local live ordinals (not physical slots).
+    /// The caller must guarantee the bucket is dense and tombstone-free, i.e.
+    /// `reserved_edge_slots == degree`.
+    pub(super) fn read_bucket_payload_span(
+        &self,
+        _src: VertexId,
+        bucket: &LabelBucket,
+        start_slot: u32,
+        slot_count: u32,
+    ) -> Result<Vec<u8>, LabeledOperationError> {
+        let width = bucket.inline_value_byte_width();
+        if width == 0 {
+            return Ok(Vec::new());
+        }
+        let offset =
+            crate::labeled::invariants::inline_value_byte_offset_at_slot(bucket, start_slot)?;
+        let byte_len = u64::from(slot_count).checked_mul(u64::from(width)).ok_or(
+            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow),
+        )?;
+        let byte_len_usize = usize::try_from(byte_len).map_err(|_| {
+            LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+        })?;
+        let mut buf = vec![0u8; byte_len_usize];
+        self.values.read_bytes(offset, &mut buf);
+        Ok(buf)
+    }
+
     pub(super) fn read_bucket_payload_for_slot_into(
         &self,
         src: VertexId,

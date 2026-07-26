@@ -450,10 +450,6 @@ where
         let (bucket, _bucket_index, log_chains) =
             self.resolve_label_bucket_and_payload_chains(owner, label, &vertex)?;
         let width = bucket.inline_value_byte_width();
-        let mut ordinal = match order {
-            OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
-            OutEdgeOrder::Ascending => 0,
-        };
         let Some(info) = self.read_label_bucket_placement_info(owner, label)? else {
             return Ok(ControlFlow::Continue(()));
         };
@@ -463,6 +459,61 @@ where
             .ok_or(LabeledOperationError::from(
                 LaraOperationError::CollectAllocationOverflow,
             ))?;
+
+        // Fast path for dense, tombstone-free buckets: read the entire payload span once,
+        // then attach bytes to each edge without per-row ordinal resolution or storage calls.
+        // This preserves the legacy `for_each_edges_for_label_ordered` dense batch semantics.
+        if width > 0
+            && bucket.inline_value_log_head() < 0
+            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+            && bucket.degree() > 0
+        {
+            let payload_slots = bucket.degree();
+            let payload_bytes = self.read_bucket_payload_span(owner, &bucket, 0, payload_slots)?;
+            let mut ordinal = match order {
+                OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
+                OutEdgeOrder::Ascending => 0,
+            };
+            let flow = self.for_each_live_edge_slot_for_label_direct_with_control_flow(
+                owner,
+                label,
+                logical_slots,
+                order,
+                0,
+                |slot, edge| {
+                    let start = usize::try_from(ordinal).unwrap_or(usize::MAX) * usize::from(width);
+                    let end = start + usize::from(width);
+                    let bytes = payload_bytes[start..end].to_vec();
+                    let inline_property = InlinePropertyBytes { width, bytes };
+                    match visit(
+                        BucketEntryPosition::new(slot),
+                        EdgeWithInlineProperty {
+                            edge,
+                            inline_property,
+                        },
+                    ) {
+                        ControlFlow::Continue(()) => {
+                            match order {
+                                OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
+                                OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
+                            }
+                            ControlFlow::Continue(())
+                        }
+                        ControlFlow::Break(value) => ControlFlow::Break(Ok(value)),
+                    }
+                },
+            );
+            return match flow? {
+                ControlFlow::Continue(()) => Ok(ControlFlow::Continue(())),
+                ControlFlow::Break(Ok(value)) => Ok(ControlFlow::Break(value)),
+                ControlFlow::Break(Err(error)) => Err(error),
+            };
+        }
+
+        let mut ordinal = match order {
+            OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
+            OutEdgeOrder::Ascending => 0,
+        };
         let flow = self.for_each_live_edge_slot_for_label_direct_with_control_flow(
             owner,
             label,
