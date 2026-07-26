@@ -2348,22 +2348,48 @@ where
         src: VertexId,
         directedness: BucketDirectedness,
         offset_remaining: &mut usize,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<Result<bool, Err>, DeferredBidirectionalLabeledError>
     where
         Visit: FnMut(E) -> Result<bool, Err>,
     {
-        self.forward
-            .skip_then_visit_each_out_edge_by_directedness(
+        let mut remaining = *offset_remaining;
+        let flow = self
+            .forward
+            .for_each_out_edges_by_directedness(
                 src,
                 directedness,
-                offset_remaining,
-                visit,
+                OutEdgeOrder::Descending,
+                |edge| {
+                    if remaining > 0 {
+                        remaining -= 1;
+                        return ControlFlow::<Result<bool, Err>>::Continue(());
+                    }
+                    match visit(edge) {
+                        Ok(false) => ControlFlow::Continue(()),
+                        Ok(true) => ControlFlow::Break(Ok(true)),
+                        Err(error) => ControlFlow::Break(Err(error)),
+                    }
+                },
             )
-            .map_err(DeferredBidirectionalLabeledError::Forward)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        match flow {
+            ControlFlow::Continue(()) => {
+                *offset_remaining = remaining;
+                Ok(Ok(false))
+            }
+            ControlFlow::Break(Ok(true)) => {
+                *offset_remaining = 0;
+                Ok(Ok(true))
+            }
+            ControlFlow::Break(Err(error)) => {
+                *offset_remaining = 0;
+                Ok(Err(error))
+            }
+            _ => unreachable!(),
+        }
     }
 
-    /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the reverse store.
     /// Like [`LabeledLaraGraph::skip_then_visit_each_out_edge_for_label`] on the reverse store.
     pub fn skip_then_visit_each_reverse_out_edge_for_label<Visit, Err>(
         &self,
@@ -2424,31 +2450,58 @@ where
         dst: VertexId,
         directedness: BucketDirectedness,
         offset_remaining: &mut usize,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<Result<bool, Err>, DeferredBidirectionalLabeledError>
     where
         Visit: FnMut(E) -> Result<bool, Err>,
     {
-        self.reverse
-            .skip_then_visit_each_out_edge_by_directedness(
+        let mut remaining = *offset_remaining;
+        let flow = self
+            .reverse
+            .for_each_out_edges_by_directedness(
                 dst,
                 directedness,
-                offset_remaining,
-                visit,
+                OutEdgeOrder::Descending,
+                |edge| {
+                    if remaining > 0 {
+                        remaining -= 1;
+                        return ControlFlow::<Result<bool, Err>>::Continue(());
+                    }
+                    match visit(edge) {
+                        Ok(false) => ControlFlow::Continue(()),
+                        Ok(true) => ControlFlow::Break(Ok(true)),
+                        Err(error) => ControlFlow::Break(Err(error)),
+                    }
+                },
             )
-            .map_err(DeferredBidirectionalLabeledError::Reverse)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        match flow {
+            ControlFlow::Continue(()) => {
+                *offset_remaining = remaining;
+                Ok(Ok(false))
+            }
+            ControlFlow::Break(Ok(true)) => {
+                *offset_remaining = 0;
+                Ok(Ok(true))
+            }
+            ControlFlow::Break(Err(error)) => {
+                *offset_remaining = 0;
+                Ok(Err(error))
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Forward outgoing edges filtered by label-bucket directedness in `order`.
-    pub(crate) fn for_each_out_edges_by_directedness<Visit>(
+    pub(crate) fn for_each_out_edges_by_directedness<B, Visit>(
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
         order: OutEdgeOrder,
         visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
+    ) -> Result<ControlFlow<B>, DeferredBidirectionalLabeledError>
     where
-        Visit: FnMut(E),
+        Visit: FnMut(E) -> ControlFlow<B>,
     {
         self.forward
             .for_each_out_edges_by_directedness(src, directedness, order, visit)
@@ -2456,15 +2509,15 @@ where
     }
 
     /// Like [`Self::for_each_out_edges_by_directedness`], but skips forward vertex range validation.
-    pub(crate) fn for_each_out_edges_by_directedness_unchecked<Visit>(
+    pub(crate) fn for_each_out_edges_by_directedness_unchecked<B, Visit>(
         &self,
         src: VertexId,
         directedness: BucketDirectedness,
         order: OutEdgeOrder,
         visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
+    ) -> Result<ControlFlow<B>, DeferredBidirectionalLabeledError>
     where
-        Visit: FnMut(E),
+        Visit: FnMut(E) -> ControlFlow<B>,
     {
         self.forward
             .for_each_out_edges_by_directedness_unchecked(src, directedness, order, visit)
@@ -2472,15 +2525,15 @@ where
     }
 
     /// Reverse orientation: visits edges at `dst` filtered by directedness (incoming to `dst` forward).
-    pub(crate) fn for_each_in_edges_by_directedness<Visit>(
+    pub(crate) fn for_each_in_edges_by_directedness<B, Visit>(
         &self,
         dst: VertexId,
         directedness: BucketDirectedness,
         order: OutEdgeOrder,
         visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
+    ) -> Result<ControlFlow<B>, DeferredBidirectionalLabeledError>
     where
-        Visit: FnMut(E),
+        Visit: FnMut(E) -> ControlFlow<B>,
     {
         self.reverse
             .for_each_out_edges_by_directedness(dst, directedness, order, visit)
@@ -2488,15 +2541,15 @@ where
     }
 
     /// Like [`Self::for_each_in_edges_by_directedness`], but skips reverse vertex range validation.
-    pub(crate) fn for_each_in_edges_by_directedness_unchecked<Visit>(
+    pub(crate) fn for_each_in_edges_by_directedness_unchecked<B, Visit>(
         &self,
         dst: VertexId,
         directedness: BucketDirectedness,
         order: OutEdgeOrder,
         visit: Visit,
-    ) -> Result<(), DeferredBidirectionalLabeledError>
+    ) -> Result<ControlFlow<B>, DeferredBidirectionalLabeledError>
     where
-        Visit: FnMut(E),
+        Visit: FnMut(E) -> ControlFlow<B>,
     {
         self.reverse
             .for_each_out_edges_by_directedness_unchecked(dst, directedness, order, visit)
@@ -4063,17 +4116,21 @@ where
         &self,
         vertex_id: VertexId,
         order: OutEdgeOrder,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         Visit: FnMut(E),
     {
-        self.for_each_out_edges_by_directedness(
+        let _ = self.for_each_out_edges_by_directedness(
             vertex_id,
             BucketDirectedness::Undirected,
             order,
-            visit,
-        )
+            |edge| {
+                visit(edge);
+                ControlFlow::<()>::Continue(())
+            },
+        )?;
+        Ok(())
     }
 
     /// Like [`Self::for_each_undirected_edges`], but skips `ensure_vertex`.
@@ -4081,17 +4138,21 @@ where
         &self,
         vertex_id: VertexId,
         order: OutEdgeOrder,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         Visit: FnMut(E),
     {
-        self.for_each_out_edges_by_directedness_unchecked(
+        let _ = self.for_each_out_edges_by_directedness_unchecked(
             vertex_id,
             BucketDirectedness::Undirected,
             order,
-            visit,
-        )
+            |edge| {
+                visit(edge);
+                ControlFlow::<()>::Continue(())
+            },
+        )?;
+        Ok(())
     }
 
     /// Visits directed outgoing edges at `vertex_id` (forward store, directed buckets only).
@@ -4099,17 +4160,21 @@ where
         &self,
         vertex_id: VertexId,
         order: OutEdgeOrder,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         Visit: FnMut(E),
     {
-        self.for_each_out_edges_by_directedness(
+        let _ = self.for_each_out_edges_by_directedness(
             vertex_id,
             BucketDirectedness::Directed,
             order,
-            visit,
-        )
+            |edge| {
+                visit(edge);
+                ControlFlow::<()>::Continue(())
+            },
+        )?;
+        Ok(())
     }
 
     /// Visits directed incoming edges at `vertex_id` (reverse store, directed buckets only).
@@ -4117,17 +4182,21 @@ where
         &self,
         vertex_id: VertexId,
         order: OutEdgeOrder,
-        visit: Visit,
+        mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
         Visit: FnMut(E),
     {
-        self.for_each_in_edges_by_directedness(
+        let _ = self.for_each_in_edges_by_directedness(
             vertex_id,
             BucketDirectedness::Directed,
             order,
-            visit,
-        )
+            |edge| {
+                visit(edge);
+                ControlFlow::<()>::Continue(())
+            },
+        )?;
+        Ok(())
     }
 }
 
