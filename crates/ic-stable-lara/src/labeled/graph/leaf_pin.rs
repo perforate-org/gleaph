@@ -17,6 +17,9 @@ use ic_stable_structures::Memory;
 use super::LabeledLaraGraph;
 use super::error::LabeledOperationError;
 
+#[cfg(test)]
+use super::OutEdgeOrder;
+
 /// Edge-slab slots reserved per vertex within one PMA leaf block.
 pub(crate) const fn labeled_leaf_vertex_edge_quota(segment_size: u32) -> u32 {
     if segment_size == 16 || segment_size == 0 {
@@ -556,6 +559,7 @@ mod tests {
         labeled::{bucket_label_key::BucketLabelKey, record::LabeledVertex},
         lara::edge::span_meta::SPAN_PHYSICAL_UNASSIGNED,
     };
+    use std::ops::ControlFlow;
 
     fn hub_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
         LabeledLaraGraph::new(
@@ -760,7 +764,16 @@ mod tests {
             .unwrap();
         let mut edges_out: Vec<TestEdge> = Vec::new();
         reopened
-            .for_each_edges_for_label(hub, BucketLabelKey::from_raw(42), |e| edges_out.push(e))
+            .visit_edges(
+                hub,
+                BucketLabelKey::from_raw(42),
+                OutEdgeOrder::Descending,
+                |_slot, e| {
+                    edges_out.push(e);
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map(|_| ())
             .unwrap();
         assert_eq!(edges_out.len(), 1);
         assert_eq!(edges_out[0].target, u32::from(dst));
