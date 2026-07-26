@@ -78,8 +78,8 @@ Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR
 wire/index records carry an owner, label, and raw `u32` slot field. `EDGE_ALIASES` and the existing
 `mate`-named paths remain active, and current code may still use raw-slot readers.
 
-**Target contract:** ADR 0048 makes `LogicalEdgeSlot` the only slot accepted by LARA
-`EdgeHandle`/`PhysicalEdgeRef`; raw slab/log locations remain inside LARA. Counterpart resolution is
+**Target contract:** ADR 0048 makes `BucketEntryPosition` the only slot accepted by LARA
+`EdgeHandle`/`CanonicalEdgeOccurrence`; raw slab/log locations remain inside LARA. Counterpart resolution is
 owned by bidirectional LARA through `counterpart_of` and `canonical_handle`, using live
 `PairOrdinal`. ADR 0050 consolidates labeled traversal around the same logical slot and provides
 the `visit_edges`/selected-slot APIs. Graph, Router, and graph-index encode logical slots into

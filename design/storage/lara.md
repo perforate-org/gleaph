@@ -194,10 +194,10 @@ than returning a recoverable error after the first canonical half is written.
 [ADR 0048](../adr/0048-lara-counterpart-resolution.md) places physical entry-to-entry pairing in
 bidirectional LARA rather than a Graph facade B-tree. The target contract uses live `PairOrdinal`
 and metadata-free `CounterpartScan`; it does not introduce locator rows, packed mate blobs, or a
-derived counterpart index. `PhysicalEdgeRef` and `EdgeHandle` carry `LogicalEdgeSlot`; raw slab/log
+derived counterpart index. `CanonicalEdgeOccurrence` and `EdgeHandle` carry `BucketEntryPosition`; raw slab/log
 locations remain private to LARA.
 
-ADR 0050 defines the target labeled read surface around `LogicalEdgeSlot`, `visit_edges`,
+ADR 0050 defines the target labeled read surface around `BucketEntryPosition`, `visit_edges`,
 `visit_edges_at`, and explicit `EdgeWithInlineProperty<E>` results. Forward/outgoing and
 reverse/incoming bidirectional wrappers delegate to the same orientation-local primitives.
 
@@ -253,7 +253,7 @@ Measurement fixtures reserve usable `MemoryId`s from `254` downward (`255` is re
 Plan 0147 now provides the bench-only `MeasurementMemoryBundle` ownership boundary and an
 AliasOnly bidirectional-LARA fixture with physical identity extraction. The fixture API is enabled
 only for measurement builds; Published evidence integration is limited to promotion-eligible
-directed-high, parallel, and undirected-high rows. Graph's bench adapter consumes AliasOnly physical rows for directed, parallel, undirected,
+directed-high, parallel, and undirected-high rows. Graph's bench adapter consumes AliasOnly canonical edge occurrences for directed, parallel, undirected,
 and undirected-self-loop fixtures only; the measurement owner also constructs an independent
 ScanOnly canonical-adjacency fixture and emits separate deferred rows for representable ScanOnly
 shapes. Evidence records logical identity bytes separately from stable-memory page deltas;

@@ -47,6 +47,30 @@ defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
 
+### GAP-2026-07-25-002 — Tombstone-heavy OFFSET scans lack a persistent skip structure
+
+- **Status:** Planned
+- **Severity:** P2 traversal performance and stable-layout research gap
+- **Owner:** `ic-stable-lara` traversal and LARA logical-slot metadata
+- **Observed behavior:** `TraversalWindow.offset` can jump directly only for a proven dense bucket.
+  Sparse or tombstone-bearing buckets inspect logical rows to count live matches before delivering
+  the requested window. No persistent interval summary, live bitmap, or rank/select structure is
+  currently part of the LARA layout.
+- **Expected or needed behavior:** A future implementation may skip tombstone-only regions and
+  resolve the requested live ordinal without inspecting every preceding logical slot, while
+  preserving logical-slot identity, exact forward/reverse ordering, overflow semantics, and
+  fail-closed corruption handling.
+- **Evidence:** [ADR 0050](adr/0050-lara-traverse-read-api.md) § “Known gap: tombstone-aware offset
+  acceleration”; `TraversalWindow` and the labeled sparse traversal implementation. The current
+  dense fast path is intentionally limited to `live_degree == logical_extent`.
+- **Impact:** Large sparse buckets can spend instructions scanning tombstones for OFFSET/LIMIT.
+  Introducing durable metadata now would expand the storage format and add mutation,
+  compaction/rebuild, reopen, and benchmark obligations before the design is understood.
+- **Next decision:** Conduct a bounded research and benchmark slice comparing fixed-width block
+  live-count summaries, hierarchical summaries, and live-bitvector rank/select. Only after an
+  accepted design establishes consistency and measured benefit should a persistent structure be
+  proposed in a follow-up ADR.
+
 ### GAP-2026-07-25-001 — Paired canonical edge writes expose recoverable post-write errors
 
 - **Status:** Resolved by Plan 0182
