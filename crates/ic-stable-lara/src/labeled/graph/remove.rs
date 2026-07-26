@@ -1265,6 +1265,7 @@ mod tests {
         VertexId,
         traits::{CsrEdge, CsrEdgeTombstone},
     };
+    use std::ops::ControlFlow;
 
     #[test]
     fn tombstone_bit_edges_satisfy_csr_liveness_contract() {
@@ -1381,11 +1382,18 @@ mod tests {
         let slot_of = |target| {
             let mut slot = None;
             graph
-                .for_each_edges_for_label(VertexId::from(0), road, |edge| {
-                    if edge.target == target {
-                        slot = Some(edge.slot_index);
-                    }
-                })
+                .visit_edges(
+                    VertexId::from(0),
+                    road,
+                    OutEdgeOrder::Descending,
+                    |s, edge| {
+                        if edge.target == target {
+                            slot = Some(s.raw());
+                        }
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map(|_| ())
                 .unwrap();
             slot.expect("target edge exists")
         };
