@@ -2420,7 +2420,7 @@ where
         let mut remaining = *offset_remaining;
         let flow = self
             .forward
-            .for_each_out_edges_by_directedness(
+            .visit_out_edges_by_directedness_with_inline_property(
                 src,
                 directedness,
                 OutEdgeOrder::Descending,
@@ -2522,7 +2522,7 @@ where
         let mut remaining = *offset_remaining;
         let flow = self
             .reverse
-            .for_each_out_edges_by_directedness(
+            .visit_out_edges_by_directedness_with_inline_property(
                 dst,
                 directedness,
                 OutEdgeOrder::Descending,
@@ -2568,7 +2568,7 @@ where
         Visit: FnMut(E) -> ControlFlow<B>,
     {
         self.forward
-            .for_each_out_edges_by_directedness(src, directedness, order, visit)
+            .visit_out_edges_by_directedness_with_inline_property(src, directedness, order, visit)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2584,7 +2584,12 @@ where
         Visit: FnMut(E) -> ControlFlow<B>,
     {
         self.forward
-            .for_each_out_edges_by_directedness_unchecked(src, directedness, order, visit)
+            .visit_out_edges_by_directedness_with_inline_property_unchecked(
+                src,
+                directedness,
+                order,
+                visit,
+            )
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2600,7 +2605,7 @@ where
         Visit: FnMut(E) -> ControlFlow<B>,
     {
         self.reverse
-            .for_each_out_edges_by_directedness(dst, directedness, order, visit)
+            .visit_out_edges_by_directedness_with_inline_property(dst, directedness, order, visit)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -2616,7 +2621,12 @@ where
         Visit: FnMut(E) -> ControlFlow<B>,
     {
         self.reverse
-            .for_each_out_edges_by_directedness_unchecked(dst, directedness, order, visit)
+            .visit_out_edges_by_directedness_with_inline_property_unchecked(
+                dst,
+                directedness,
+                order,
+                visit,
+            )
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -2774,7 +2784,7 @@ where
         label_id: BucketLabelKey,
     ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
         self.forward
-            .iter_edges_for_label(src, label_id)
+            .iter_edges_with_inline_property_for_label_next(src, label_id, OutEdgeOrder::Descending)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2785,7 +2795,7 @@ where
         label_id: BucketLabelKey,
     ) -> Result<Vec<E>, DeferredBidirectionalLabeledError> {
         self.reverse
-            .iter_edges_for_label(dst, label_id)
+            .iter_edges_with_inline_property_for_label_next(dst, label_id, OutEdgeOrder::Descending)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
@@ -3009,7 +3019,7 @@ where
     {
         let slot = self
             .reverse
-            .iter_edges_for_label(dst, label_id)
+            .iter_edges_with_inline_property_for_label_next(dst, label_id, OutEdgeOrder::Descending)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?
             .iter()
             .find(|candidate| matches(candidate))
@@ -3038,7 +3048,7 @@ where
     {
         let slot = self
             .forward
-            .iter_edges_for_label(src, label_id)
+            .iter_edges_with_inline_property_for_label_next(src, label_id, OutEdgeOrder::Descending)
             .map_err(DeferredBidirectionalLabeledError::Forward)?
             .iter()
             .find(|candidate| matches(candidate))

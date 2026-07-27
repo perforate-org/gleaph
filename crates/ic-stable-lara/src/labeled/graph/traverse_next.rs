@@ -12,7 +12,7 @@
 use crate::{
     VertexId,
     labeled::{
-        bucket_label_key::BucketLabelKey,
+        bucket_label_key::{BucketDirectedness, BucketLabelKey},
         record::{LabelBucket, LabeledVertex},
     },
     lara::operation_error::LaraOperationError,
@@ -753,6 +753,164 @@ where
             ControlFlow::<()>::Continue(())
         })?;
         Ok(out)
+    }
+
+    /// Visits outgoing edges whose bucket directedness matches `directedness` in the
+    /// requested order, attaching each edge's inline-property bytes.
+    ///
+    /// This is the directedness-scoped counterpart to
+    /// [`Self::visit_edges_with_inline_property`]: it walks only the label buckets whose
+    /// [`BucketDirectedness`] matches, in bucket order and slot order determined by
+    /// `order`, and yields fully materialized edges (topology + inline property bytes).
+    #[inline]
+    pub(crate) fn visit_out_edges_by_directedness_with_inline_property<B>(
+        &self,
+        owner: VertexId,
+        directedness: BucketDirectedness,
+        order: OutEdgeOrder,
+        visit: impl FnMut(E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        self.visit_out_edges_by_directedness_with_inline_property_for_vertex(
+            owner,
+            &vertex,
+            directedness,
+            order,
+            visit,
+        )
+    }
+
+    /// Unchecked variant of [`Self::visit_out_edges_by_directedness_with_inline_property`].
+    ///
+    /// The caller must ensure `owner` is within the vertex range.
+    #[inline]
+    pub(crate) fn visit_out_edges_by_directedness_with_inline_property_unchecked<B>(
+        &self,
+        owner: VertexId,
+        directedness: BucketDirectedness,
+        order: OutEdgeOrder,
+        visit: impl FnMut(E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        debug_assert!(u32::from(owner) < self.vertices.len());
+        let vertex = self.vertices.get(owner);
+        self.visit_out_edges_by_directedness_with_inline_property_for_vertex(
+            owner,
+            &vertex,
+            directedness,
+            order,
+            visit,
+        )
+    }
+
+    fn visit_out_edges_by_directedness_with_inline_property_for_vertex<B>(
+        &self,
+        owner: VertexId,
+        vertex: &LabeledVertex,
+        directedness: BucketDirectedness,
+        order: OutEdgeOrder,
+        mut visit: impl FnMut(E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        // Bypass (default-label) vertex: a single bucket whose directedness must match.
+        if vertex.is_default_edge_labeled() {
+            let label = self.bypass_storage_label_for(vertex);
+            if label.directedness() != directedness {
+                return Ok(ControlFlow::Continue(()));
+            }
+            return self.visit_edges_with_inline_property(owner, label, order, |_slot, item| {
+                let edge = item
+                    .edge
+                    .with_stored_inline_property_bytes(
+                        item.inline_property.width,
+                        item.inline_property.bytes(),
+                    )
+                    .with_label_id(label.raw());
+                visit(edge)
+            });
+        }
+
+        let deg = vertex.degree();
+        if deg == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        let strategy = Self::directedness_partition_strategy(directedness, order.ascending());
+        let (lo, hi) = self.buckets.directedness_bucket_index_range(
+            vertex.base_slot_start(),
+            deg,
+            directedness,
+            strategy,
+        )?;
+        if lo >= hi {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let buckets = self.read_vertex_label_buckets_range(vertex, lo, hi)?;
+
+        // Visit matching buckets in the requested bucket order, and within each bucket
+        // visit slots in the requested slot order.  Per-bucket we reuse the existing
+        // inline-property visitor so dense/hybrid/sparse fast paths apply automatically.
+        match order {
+            OutEdgeOrder::Ascending => {
+                for bucket in &buckets {
+                    if bucket.degree() == 0 {
+                        continue;
+                    }
+                    let label = bucket.bucket_label_key();
+                    if let ControlFlow::Break(value) = self.visit_edges_with_inline_property(
+                        owner,
+                        label,
+                        order,
+                        |_slot, item| {
+                            let edge = item
+                                .edge
+                                .with_stored_inline_property_bytes(
+                                    item.inline_property.width,
+                                    item.inline_property.bytes(),
+                                )
+                                .with_label_id(label.raw());
+                            visit(edge)
+                        },
+                    )? {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+            }
+            OutEdgeOrder::Descending => {
+                for bucket in buckets.iter().rev() {
+                    if bucket.degree() == 0 {
+                        continue;
+                    }
+                    let label = bucket.bucket_label_key();
+                    if let ControlFlow::Break(value) = self.visit_edges_with_inline_property(
+                        owner,
+                        label,
+                        order,
+                        |_slot, item| {
+                            let edge = item
+                                .edge
+                                .with_stored_inline_property_bytes(
+                                    item.inline_property.width,
+                                    item.inline_property.bytes(),
+                                )
+                                .with_label_id(label.raw());
+                            visit(edge)
+                        },
+                    )? {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+            }
+        }
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Visits a bounded window of live edges for one label in the requested order.
