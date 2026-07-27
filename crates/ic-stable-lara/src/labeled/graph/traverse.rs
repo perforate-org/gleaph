@@ -6,7 +6,6 @@ use crate::{
         access::LabelEdgeSpanAccess,
         bucket_label_key::{BucketDirectedness, BucketLabelKey},
         record::{LabelBucket, LabeledVertex},
-        slot_index::checked_add_slot_index,
     },
     lara::{
         edge::{
@@ -421,7 +420,7 @@ where
     pub(super) fn visit_label_out_edges_inner<Match, Visit>(
         &self,
         src: VertexId,
-        vertex: &LabeledVertex,
+        _vertex: &LabeledVertex,
         ascending: bool,
         offset: Option<usize>,
         limit: Option<usize>,
@@ -435,300 +434,24 @@ where
         Visit: FnMut(E),
     {
         let mut window = OutEdgeVisitWindow::new(offset, limit);
-        if vertex.is_default_edge_labeled() {
-            if vertex.degree() == 0 {
-                return Ok(());
-            }
-            let label = self.bypass_storage_label_for(vertex).raw();
-            if !ascending {
-                let mut it = OutEdgeSlabIter::try_new(
-                    &self.edges,
-                    vertex.base_slot_start(),
-                    vertex.stored_degree(),
-                    vertex.degree(),
-                )?;
-                let has_raw = raw_matches.is_some();
-                while let Some(edge) = it.next_live_edge_filtered(&mut raw_matches) {
-                    let edge = edge.with_label_id(label);
-                    if has_raw {
-                        if matches(&edge) && !window.emit_edge(edge, visit) {
-                            return Ok(());
-                        }
-                    } else if matches(&edge) && !window.emit_edge(edge, visit) {
-                        return Ok(());
-                    }
-                }
-                return Ok(());
-            }
-            for edge in self.edges.asc_out_edges(&self.vertices, src)? {
-                let edge = edge.with_label_id(label);
-                let passes = if let Some(raw_m) = raw_matches.as_mut() {
-                    let mut buf = vec![0u8; E::BYTES];
-                    edge.write_to(&mut buf);
-                    raw_m(&buf) && matches(&edge)
-                } else {
-                    matches(&edge)
-                };
-                if passes && !window.emit_edge(edge, visit) {
-                    return Ok(());
-                }
-            }
-            return Ok(());
-        }
-
-        let buckets = self.read_vertex_label_buckets(vertex)?;
-        if let Some(run) = Self::try_contiguous_tiled_labeled_out_edges(vertex, &buckets) {
-            if run.total_edges() == 0 {
-                return Ok(());
-            }
-            let nbytes = run.byte_len::<E>()?;
-            let mut raw = vec![0u8; nbytes];
-            self.edges.read_slots_contiguous(run.base(), &mut raw);
-            if !ascending {
-                let mut bucket_rev_idx = buckets.len() as isize - 1;
-                let mut slot_rev: Option<u32> = None;
-                while bucket_rev_idx >= 0 {
-                    let bidx = bucket_rev_idx as usize;
-                    let bucket = &buckets[bidx];
-                    if bucket.degree() == 0 {
-                        bucket_rev_idx -= 1;
-                        slot_rev = None;
-                        continue;
-                    }
-                    let bucket_index = bidx as u32;
-                    let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
-                    let slot = slot_rev.unwrap_or(bucket.degree().saturating_sub(1));
-                    let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
-                    let cont = if let Some(raw_m) = raw_matches.as_mut() {
-                        let edge = self.attach_edge_inline_property(
-                            src,
-                            vertex,
-                            bucket_index,
-                            *bucket,
-                            slot,
-                            E::read_from(chunk)
-                                .with_slot_index(slot)
-                                .with_label_id(bucket.bucket_label_key().raw()),
-                            log_chains.as_ref(),
-                        )?;
-                        if raw_m(chunk) {
-                            if matches(&edge) {
-                                window.emit_edge(edge, visit)
-                            } else {
-                                true
-                            }
-                        } else {
-                            true
-                        }
-                    } else {
-                        let edge = self.attach_edge_inline_property(
-                            src,
-                            vertex,
-                            bucket_index,
-                            *bucket,
-                            slot,
-                            E::read_from(chunk)
-                                .with_slot_index(slot)
-                                .with_label_id(bucket.bucket_label_key().raw()),
-                            log_chains.as_ref(),
-                        )?;
-                        if matches(&edge) {
-                            window.emit_edge(edge, visit)
-                        } else {
-                            true
-                        }
-                    };
-                    if !cont {
-                        return Ok(());
-                    }
-                    if slot == 0 {
-                        bucket_rev_idx -= 1;
-                        slot_rev = None;
-                    } else {
-                        slot_rev = Some(slot - 1);
-                    }
-                }
-            } else {
-                for (bucket_index, bucket) in buckets.iter().enumerate() {
-                    if bucket.degree() == 0 {
-                        continue;
-                    }
-                    let bucket_index = bucket_index as u32;
-                    let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
-                    for slot in 0..bucket.degree() {
-                        let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
-                        let edge = self.attach_edge_inline_property(
-                            src,
-                            vertex,
-                            bucket_index,
-                            *bucket,
-                            slot,
-                            E::read_from(chunk)
-                                .with_slot_index(slot)
-                                .with_label_id(bucket.bucket_label_key().raw()),
-                            log_chains.as_ref(),
-                        )?;
-                        let passes = if let Some(raw_m) = raw_matches.as_mut() {
-                            raw_m(chunk) && matches(&edge)
-                        } else {
-                            matches(&edge)
-                        };
-                        if passes && !window.emit_edge(edge, visit) {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-            return Ok(());
-        }
-
-        if !ascending {
-            for bucket_index in (0..buckets.len()).rev() {
-                let bucket_index = bucket_index as u32;
-                let bucket = &buckets[bucket_index as usize];
-                if bucket.degree() == 0 {
-                    continue;
-                }
-                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
-                let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-                let successor_start = self.bucket_slab_window_end_exclusive_after_bucket(
-                    vertex,
-                    bucket_index,
-                    bucket,
-                )?;
-                let acc = LabelEdgeSpanAccess::with_bucket(
-                    &self.buckets,
-                    slot,
-                    *bucket,
-                    successor_start,
-                    src,
-                );
-                if bucket.overflow_log_head() < 0 {
-                    let mut it = OutEdgeSlabIter::try_new(
-                        &self.edges,
-                        bucket.edge_start(),
-                        bucket.stored_slots,
-                        bucket.degree(),
-                    )?;
-                    let has_raw = raw_matches.is_some();
-                    while let Some(edge) = it.next_live_edge_filtered(&mut raw_matches) {
-                        let slot_index = edge.edge_slot_index_raw();
-                        let edge = self.attach_edge_inline_property(
-                            src,
-                            vertex,
-                            bucket_index,
-                            *bucket,
-                            slot_index,
-                            edge.with_label_id(bucket.bucket_label_key().raw()),
-                            log_chains.as_ref(),
-                        )?;
-                        if has_raw {
-                            if matches(&edge) && !window.emit_edge(edge, visit) {
-                                return Ok(());
-                            }
-                        } else if matches(&edge) && !window.emit_edge(edge, visit) {
-                            return Ok(());
-                        }
-                    }
-                } else {
-                    for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
-                        let slot_index = edge.edge_slot_index_raw();
-                        let edge = self.attach_edge_inline_property(
-                            src,
-                            vertex,
-                            bucket_index,
-                            *bucket,
-                            slot_index,
-                            edge.with_label_id(bucket.bucket_label_key().raw()),
-                            log_chains.as_ref(),
-                        )?;
-                        let passes = if let Some(raw_m) = raw_matches.as_mut() {
-                            let mut buf = vec![0u8; E::BYTES];
-                            edge.write_to(&mut buf);
-                            raw_m(&buf) && matches(&edge)
-                        } else {
-                            matches(&edge)
-                        };
-                        if passes && !window.emit_edge(edge, visit) {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
+        let order = if ascending {
+            OutEdgeOrder::Ascending
         } else {
-            for bucket_index in 0..buckets.len() as u32 {
-                let bucket = &buckets[bucket_index as usize];
-                if bucket.degree() == 0 {
-                    continue;
-                }
-                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
-                let slot = Self::labeled_vertex_bucket_slot(vertex, bucket_index)?;
-                let successor_start = self.bucket_slab_window_end_exclusive_after_bucket(
-                    vertex,
-                    bucket_index,
-                    bucket,
-                )?;
-                let acc = LabelEdgeSpanAccess::with_bucket(
-                    &self.buckets,
-                    slot,
-                    *bucket,
-                    successor_start,
-                    src,
-                );
-                if bucket.overflow_log_head() < 0 {
-                    for slot_idx in 0..bucket.stored_slots {
-                        let at = checked_add_slot_index(bucket.edge_start(), u64::from(slot_idx))
-                            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                        let edge = self.edges.read_slot(at);
-                        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                            continue;
-                        }
-                        let edge = self.attach_edge_inline_property(
-                            src,
-                            vertex,
-                            bucket_index,
-                            *bucket,
-                            slot_idx,
-                            edge.with_label_id(bucket.bucket_label_key().raw()),
-                            log_chains.as_ref(),
-                        )?;
-                        let passes = if let Some(raw_m) = raw_matches.as_mut() {
-                            let mut buf = vec![0u8; E::BYTES];
-                            edge.write_to(&mut buf);
-                            raw_m(&buf) && matches(&edge)
-                        } else {
-                            matches(&edge)
-                        };
-                        if passes && !window.emit_edge(edge, visit) {
-                            return Ok(());
-                        }
-                    }
-                } else {
-                    for edge in self.edges.asc_out_edges(&acc, VertexId::from(0))? {
-                        let slot_index = edge.edge_slot_index_raw();
-                        let edge = self.attach_edge_inline_property(
-                            src,
-                            vertex,
-                            bucket_index,
-                            *bucket,
-                            slot_index,
-                            edge.with_label_id(bucket.bucket_label_key().raw()),
-                            log_chains.as_ref(),
-                        )?;
-                        let passes = if let Some(raw_m) = raw_matches.as_mut() {
-                            let mut buf = vec![0u8; E::BYTES];
-                            edge.write_to(&mut buf);
-                            raw_m(&buf) && matches(&edge)
-                        } else {
-                            matches(&edge)
-                        };
-                        if passes && !window.emit_edge(edge, visit) {
-                            return Ok(());
-                        }
-                    }
-                }
+            OutEdgeOrder::Descending
+        };
+        let _ = self.visit_all_labels_with_inline_property(src, order, |edge| {
+            let passes = if let Some(raw_m) = raw_matches.as_mut() {
+                let mut buf = vec![0u8; E::BYTES];
+                edge.write_to(&mut buf);
+                raw_m(&buf) && matches(&edge)
+            } else {
+                matches(&edge)
+            };
+            if passes && !window.emit_edge(edge, visit) {
+                return ControlFlow::<()>::Break(());
             }
-        }
+            ControlFlow::<()>::Continue(())
+        })?;
         Ok(())
     }
 
