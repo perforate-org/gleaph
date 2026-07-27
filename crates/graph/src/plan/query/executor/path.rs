@@ -439,7 +439,7 @@ impl ShortestFixedLabelExpand {
         Ok(())
     }
 
-    /// Expands fixed-label edges while passing payload bytes by reference (no `Edge` clone).
+    /// Expands fixed-label edges while passing inline property bytes by reference (no `Edge` clone).
     pub(crate) fn expand_inline_property_byte_slices<Visit>(
         self,
         store: &GraphStore,
@@ -455,11 +455,11 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_forward_slices");
                 let mut expand_err = None;
-                let mut visit_edge = |edge: &Edge, payload: &[u8]| {
+                let mut visit_edge = |edge: &Edge, inline_property_bytes: &[u8]| {
                     if expand_err.is_some() {
                         return;
                     }
-                    match visit(edge, payload) {
+                    match visit(edge, inline_property_bytes) {
                         Ok(()) => {}
                         Err(err) => expand_err = Some(err),
                     }
@@ -481,11 +481,11 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_reverse_slices");
                 let mut expand_err = None;
-                let mut visit_edge = |edge: &Edge, payload: &[u8]| {
+                let mut visit_edge = |edge: &Edge, inline_property_bytes: &[u8]| {
                     if expand_err.is_some() {
                         return;
                     }
-                    match visit(edge, payload) {
+                    match visit(edge, inline_property_bytes) {
                         Ok(()) => {}
                         Err(err) => expand_err = Some(err),
                     }

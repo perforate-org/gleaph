@@ -44,7 +44,7 @@ pub enum StableMemoryClass {
     /// regions alone.
     ///
     /// **Gleaph examples:**
-    /// - Forward LARA adjacency and payload bytes (`FWD_*` slabs, logs, blobs)
+    /// - Forward LARA adjacency and inline property bytes (`FWD_*` slabs, logs, blobs)
     /// - Vertex/edge property values, vertex label sets on the graph shard
     /// - Router shard registry, placement map, resolution catalogs (names ↔ ids)
     /// - Graph/router mutation idempotency records (`GRAPH_MUTATION_JOURNAL`,
@@ -261,7 +261,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             1,
             StableMemoryClass::Canonical,
             "lara/adjacency",
-            "Per-vertex labeled edge buckets: edge slab/log locator plus independent payload slab/log split metadata",
+            "Per-vertex labeled edge buckets: edge slab/log locator plus independent inline property bytes slab/log split metadata",
             RebuildPath::None,
         ),
         region(
@@ -383,7 +383,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             16,
             StableMemoryClass::Derived,
             "lara/adjacency",
-            "Reverse labeled edge buckets: edge slab/log locator plus independent payload slab/log split metadata",
+            "Reverse labeled edge buckets: edge slab/log locator plus independent inline_property_bytes slab/log split metadata",
             RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(

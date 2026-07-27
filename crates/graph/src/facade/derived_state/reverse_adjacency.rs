@@ -16,9 +16,9 @@
 //! [`check_reverse_adjacency`] against the forward source of truth, instead of clearing and
 //! rebuilding the whole reverse orientation. A full rebuild would reassign every reverse slot
 //! index, which cascade-invalidates `EDGE_ALIASES` keys (derived from reverse slots) and the
-//! reverse payload slab wholesale (the reason a naive rebuild was rejected; see ADR 0026). The
+//! reverse inline property bytes slab wholesale (the reason a naive rebuild was rejected; see ADR 0026). The
 //! differential repair removes each diverged key's reverse in-edge halves and their alias rows,
-//! then re-inserts one reverse half per forward out-edge — copying the forward payload bytes and
+//! then re-inserts one reverse half per forward out-edge — copying the forward inline property bytes and
 //! recreating the directed reverse-IN alias exactly as the live insert path does in
 //! `commit_directed_edge_insert`. Non-diverged keys keep their slots and aliases; edge properties
 //! (keyed by canonical forward identity) are untouched.
@@ -186,24 +186,24 @@ pub(crate) fn rebuild_reverse_adjacency(store: &GraphStore) -> Result<(), GraphS
     Ok(())
 }
 
-/// Builds a reverse in-edge half pointing back at `source`, carrying `payload` (empty for unlabeled
-/// or payload-free directed edges). Mirrors the reverse edge shape built by the live insert path.
-fn reverse_edge_to(source: VertexId, payload: &[u8]) -> Edge {
+/// Builds a reverse in-edge half pointing back at `source`, carrying `inline_property_bytes` (empty for unlabeled
+/// or inline_property_bytes-free directed edges). Mirrors the reverse edge shape built by the live insert path.
+fn reverse_edge_to(source: VertexId, inline_property_bytes: &[u8]) -> Edge {
     let edge = Edge {
         target: VertexRef::local(source),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
         label_id: 0,
         inline_property: EdgeInlinePropertyBytes::EMPTY,
     };
-    if payload.is_empty() {
+    if inline_property_bytes.is_empty() {
         edge
     } else {
-        edge.with_inline_property_bytes(payload)
+        edge.with_inline_property_bytes(inline_property_bytes)
     }
 }
 
 /// Captures the forward out-edges of one diverged key as `(forward_slot, inline_property_bytes)`, copying
-/// payloads from the slab when the label carries them so the rebuilt reverse halves match exactly.
+/// inline property bytes from the slab when the label carries them so the rebuilt reverse halves match exactly.
 fn collect_forward_edges_for_key(
     store: &GraphStore,
     source: VertexId,
@@ -221,10 +221,10 @@ fn collect_forward_edges_for_key(
             catalog,
             OutEdgeOrder::Ascending,
             &mut scratch,
-            |edge, payload| {
+            |edge, inline_property_bytes| {
                 if matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == target)
                 {
-                    forward.push((edge.edge_slot_index.raw(), payload.to_vec()));
+                    forward.push((edge.edge_slot_index.raw(), inline_property_bytes.to_vec()));
                 }
             },
         )?;
@@ -274,7 +274,7 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
 
     // Re-insert one reverse half per forward out-edge and recreate its directed alias, matching the
     // live `commit_directed_edge_insert` sequence.
-    for (forward_slot, payload) in &forward {
+    for (forward_slot, inline_property_bytes) in &forward {
         store.with_graph_mut(|graph| {
             if inline_property_width > 0 {
                 graph.repair_ensure_orientation_inline_property_width(
@@ -288,7 +288,7 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
                 ic_stable_lara::labeled::LabeledOrientation::Reverse,
                 target,
                 wire,
-                reverse_edge_to(source, payload),
+                reverse_edge_to(source, inline_property_bytes),
             )
         })?;
         let canonical = EdgeHandle::at_slot(source, wire, *forward_slot);
@@ -480,14 +480,14 @@ mod tests {
             }),
         );
         let label = lara_label(edge_storage_label(Some(label_id), false));
-        let payload = 0xBEEFu16.to_le_bytes();
+        let inline_property_bytes = 0xBEEFu16.to_le_bytes();
 
         store
             .insert_directed_edge_with_inline_property_bytes(
                 source,
                 target,
                 Some(label_id),
-                &payload,
+                &inline_property_bytes,
             )
             .expect("inline-property-bearing edge");
 
@@ -520,8 +520,8 @@ mod tests {
                     }
                 },
             )
-            .expect("read reverse payload");
-        assert_eq!(restored.as_deref(), Some(&payload[..]));
+            .expect("read reverse inline property bytes");
+        assert_eq!(restored.as_deref(), Some(&inline_property_bytes[..]));
     }
 
     #[test]

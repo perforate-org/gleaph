@@ -90,7 +90,7 @@ The initial per-region values remain an experimental policy and are not frozen b
 this ADR. The implementation must benchmark property, adjacency, LARA maintenance,
 inline property bytes, embedding, and log workloads before selecting production defaults. As a
 starting hypothesis, tiny metadata regions should use smaller buckets, while
-properties, payloads, and embeddings should use larger buckets.
+properties, inline property bytes, and embeddings should use larger buckets.
 
 Graph-index now adopts the variable manager with a separate policy from Graph:
 catalog/config regions use 4 pages, vertex-label postings use 32 pages, and both
@@ -255,7 +255,7 @@ Costs and risks:
 
 This is the smallest change and is the current interim approach (16 pages for
 Graph). It retains the upstream implementation and simplest persistence model, but
-forces one compromise across metadata, LARA, properties, payloads, and embeddings.
+forces one compromise across metadata, LARA, properties, inline property bytes, and embeddings.
 It is rejected as the long-term design because it cannot simultaneously minimize
 slack and maximize the largest shard.
 

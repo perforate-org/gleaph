@@ -60,9 +60,9 @@ pub use crate::traverse::BucketEntryPosition;
 /// Exact inline-property bytes for one live edge row.
 ///
 /// Width zero is represented by an empty byte slice and is a valid value;
-/// callers must not treat it as a missing property.  Small payloads (up to
+/// callers must not treat it as a missing property.  Small inline property byte slices (up to
 /// 16 bytes) are stored inline to avoid per-edge heap allocations during
-/// sparse traversals; larger payloads fall back to a heap vector.
+/// sparse traversals; larger ones fall back to a heap vector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InlinePropertyBytes {
     /// Declared byte width of the inline property for this edge's label bucket.
@@ -133,7 +133,7 @@ impl InlinePropertyBytes {
 }
 
 /// A live edge row together with its exact inline-property bytes.
-/// Target payload bytes per batch; matches the legacy traverse batch sizing.
+/// Target inline property bytes per batch; matches the legacy traverse batch sizing.
 const EDGE_PAYLOAD_BATCH_TARGET_BYTES: usize = 2048;
 
 #[inline]
@@ -543,7 +543,7 @@ where
     ///
     /// Topology-only collection that does not attach edge inline values. Use
     /// [`Self::iter_edges_with_inline_property_for_label_next`] when the caller needs
-    /// payload bytes or comparisons that depend on them.
+    /// inline property bytes or comparisons that depend on them.
     pub(crate) fn iter_edges_for_label_next(
         &self,
         owner: VertexId,
@@ -894,7 +894,7 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
-    /// Visits outgoing payload value bytes for one label in batches.
+    /// Visits outgoing inline property value bytes for one label in batches.
     pub(crate) fn visit_out_inline_property_batches_for_label_next<B>(
         &self,
         owner: VertexId,
@@ -1011,8 +1011,8 @@ where
             let edge_slab_slots = slab_slots;
             let value_slab_slots = inline_property_bytes_slab_slots.min(edge_slab_slots);
             // Descending order: overflow log entries have the highest logical slots,
-            // followed by edge-slab entries whose payload lives in the overflow log,
-            // followed by the dense payload-slab prefix.
+            // followed by edge-slab entries whose inline_property_bytes lives in the overflow log,
+            // followed by the dense inline_property_bytes-slab prefix.
             let _ = self.emit_hybrid_overflow_log_inline_property_values_desc_next(
                 owner,
                 bucket,
@@ -1114,7 +1114,7 @@ where
         let label_id = bucket.bucket_label_key();
 
         // Fast path: when the caller has already verified the edge slab is live and
-        // there are no tombstone offsets to skip, bulk-read the contiguous payload
+        // there are no tombstone offsets to skip, bulk-read the contiguous inline_property_bytes
         // span and slice it into batches. This matches the legacy hybrid batch path
         // and avoids per-slot stable-memory round-trips.
         if omit_edge_slab_reads && deleted_slab_offsets.is_empty() {
@@ -2834,7 +2834,7 @@ mod tests {
             .unwrap();
         assert_eq!(targets, vec![(0, 1), (47, 48)]);
 
-        // A malformed payload-log length must fail closed rather than return
+        // A malformed inline_property_bytes-log length must fail closed rather than return
         // a partial or zero-filled property value.
         let vertex = graph.vertices.get(a);
         let BucketSearch::Found { slot, bucket } = graph.find_bucket(a, &vertex, label).unwrap()

@@ -15,7 +15,7 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-/// Dense slab payload reads: no inline property bytes log and the payload-owned slab width
+/// Dense slab inline property bytes reads: no inline property bytes log and the inline-property-bytes-owned slab width
 /// matches the live degree. Edge slab residency is intentionally irrelevant.
 #[inline]
 pub(crate) fn bucket_dense_slab_inline_property_bytes_readable(bucket: &LabelBucket) -> bool {
@@ -25,7 +25,7 @@ pub(crate) fn bucket_dense_slab_inline_property_bytes_readable(bucket: &LabelBuc
         && bucket.inline_property_bytes_slab_slots() == bucket.degree()
 }
 
-/// Dense payload batch traversal: no edge/inline property bytes logs and full slab residency.
+/// Dense inline property bytes batch traversal: no edge/inline property bytes logs and full slab residency.
 #[inline]
 pub(crate) fn bucket_dense_inline_property_batch_eligible(bucket: &LabelBucket) -> bool {
     bucket.degree() > 0
@@ -56,7 +56,7 @@ pub(crate) fn ascending_contiguous_u32_runs(slots: &[u32]) -> Vec<(u32, u32)> {
     runs
 }
 
-/// Byte offset of one fixed-width payload slot inside a bucket's dense slab span.
+/// Byte offset of one fixed-width inline property bytes slot inside a bucket's dense slab span.
 #[inline]
 pub(crate) fn inline_property_bytes_byte_offset_at_slot(
     bucket: &LabelBucket,

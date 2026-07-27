@@ -115,7 +115,7 @@ fn scenario_order_by_sorts_by_inline_property(env: &FederationEnv, road_label_id
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let first = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
     let second = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
-    // Insert out of order to prove ORDER BY reads payload, not insertion order.
+    // Insert out of order to prove ORDER BY reads inline property bytes, not insertion order.
     insert_road(env, source, second, road_label_id, 9);
     insert_road(env, source, first, road_label_id, 7);
 
@@ -141,7 +141,7 @@ fn scenario_order_by_sorts_by_inline_property(env: &FederationEnv, road_label_id
     );
 }
 
-fn scenario_payload_wins_over_sidecar(env: &FederationEnv, road_label_id: u16) {
+fn scenario_inline_property_wins_over_sidecar(env: &FederationEnv, road_label_id: u16) {
     let source_label = admin_intern_vertex_label(env, "PrecedenceSource").raw();
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
@@ -188,6 +188,6 @@ fn inline_scalar_access_suite() {
     scenario_projection_returns_inline_property(&env, road_label_id);
     scenario_filter_matches_inline_property(&env, road_label_id);
     scenario_order_by_sorts_by_inline_property(&env, road_label_id);
-    scenario_payload_wins_over_sidecar(&env, road_label_id);
+    scenario_inline_property_wins_over_sidecar(&env, road_label_id);
     scenario_edge_index_create_rejects_inline_property(&env);
 }

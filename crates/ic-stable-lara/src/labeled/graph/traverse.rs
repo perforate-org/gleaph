@@ -1229,7 +1229,7 @@ where
     /// Returns whether `(src, label_id)` is eligible for dense inline-property-bytes-only batch traversal.
     ///
     /// Hybrid and sparse overflow buckets return `false`; predicate expand should use the
-    /// combined edge+payload batch path without probing phase 1 first.
+    /// combined edge + inline property bytes batch path without probing phase 1 first.
     pub fn out_bucket_dense_inline_property_batch_eligible(
         &self,
         src: VertexId,
@@ -1270,11 +1270,11 @@ where
             && bucket.overflow_log_head() >= 0)
     }
 
-    /// Visits outgoing payload bytes for one label as batches without materializing edge rows.
+    /// Visits outgoing inline property bytes for one label as batches without materializing edge rows.
     ///
     /// Dense buckets bulk-read the inline property bytes slab; hybrid buckets combine slab bulk reads with
-    /// per-log-entry payload resolution; sparse buckets walk the span iterator and emit slot
-    /// indices with attached payload bytes only.
+    /// per-log-entry inline property bytes resolution; sparse buckets walk the span iterator and emit slot
+    /// indices with attached inline_property_bytes bytes only.
     pub fn visit_out_inline_property_batches_for_label<Visit>(
         &self,
         src: VertexId,
@@ -2174,7 +2174,7 @@ where
         E: CsrEdgeTombstone,
         Visit: for<'b> FnMut(LabeledEdgeInlinePropertyBatch<'b, E>),
     {
-        // The paired bulk path may index edge and payload bytes with the same local offset only
+        // The paired bulk path may index edge and inline property bytes with the same local offset only
         // when both independent stores currently expose the same slab prefix. Otherwise use the
         // live-ordinal-aware streaming batch path; physical split points are not an association
         // contract.
@@ -3707,7 +3707,7 @@ mod tests {
         );
     }
 
-    /// A hybrid-overflow replay built for a **different vertex that shares the same payload-log
+    /// A hybrid-overflow replay built for a **different vertex that shares the same inline_property_bytes-log
     /// leaf** (`leaf = src / segment_size`) must be rejected so phase 2 falls back to the sparse
     /// path. Reproduced with two real vertices in one leaf (not by mutating replay fields), since
     /// `leaf` + `label_id` + `slab_slots` alone cannot tell same-leaf vertices apart — only `src`
@@ -3720,7 +3720,7 @@ mod tests {
         assert_eq!(
             graph.inline_property_bytes_log_leaf(a),
             graph.inline_property_bytes_log_leaf(b),
-            "test requires two vertices sharing one payload-log leaf"
+            "test requires two vertices sharing one inline-property-bytes-log leaf"
         );
         let road = BucketLabelKey::from_raw(2);
         for v in [a, b] {

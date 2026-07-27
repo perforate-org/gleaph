@@ -165,11 +165,15 @@ mod tests {
             slot_index: 6,
             inline_property_bytes: vec![1, 2, 3],
         };
-        neighbor.validate_wire().expect("valid payload");
+        neighbor
+            .validate_wire()
+            .expect("valid inline property bytes");
         let bytes = Encode!(&neighbor).expect("encode");
         let decoded: FederatedExpandNeighbor =
             Decode!(&bytes, FederatedExpandNeighbor).expect("decode");
-        decoded.validate_wire().expect("decoded payload valid");
+        decoded
+            .validate_wire()
+            .expect("decoded inline property bytes valid");
         assert_eq!(
             decoded.inline_property_bytes,
             neighbor.inline_property_bytes

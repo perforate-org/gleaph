@@ -205,7 +205,7 @@ impl GraphStats for RouterGraphStats {
                 // graph has the property as its named inline slot, we cannot answer "is this property
                 // indexed?" with a simple yes based only on a sidecar edge index for some other label.
                 // The planner would otherwise fuse a predicate into an EdgeIndexScan that ignores
-                // inline edges carrying the same property id in their payload.
+                // inline edges carrying the same property id in their inline property bytes.
                 let Some(property_id) = ROUTER_PROPERTY_CATALOG
                     .with_borrow(|catalog| catalog.get_id(self.graph_id, property))
                 else {

@@ -301,7 +301,7 @@ impl InlineStructLayout {
     }
 }
 
-/// Canonical Router-owned record for the edge-label payload schema.
+/// Canonical Router-owned record for the edge-label inline property schema.
 #[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
 pub enum EdgeInlinePropertySchemaRecord {
     /// Unnamed profile installed through the admin API. Carries no logical property identity.
@@ -759,7 +759,10 @@ impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
         Ok(())
     }
 
-    pub fn label_ids_with_nonzero_payload(&self, graph_id: GraphId) -> Vec<EdgeLabelId> {
+    pub fn label_ids_with_nonzero_inline_property_bytes(
+        &self,
+        graph_id: GraphId,
+    ) -> Vec<EdgeLabelId> {
         self.inner
             .iter()
             .filter_map(|entry| {

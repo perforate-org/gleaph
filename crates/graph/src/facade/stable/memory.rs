@@ -34,7 +34,7 @@ const FWD_EDGE_SPAN_META: MemoryId = MemoryId::new(7);
 const FWD_EDGE_FREE_SPANS: MemoryId = MemoryId::new(8);
 const FWD_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(9);
 
-// --- Labeled graph: forward payload (5 memories) ---
+// --- Labeled graph: forward inline property bytes (5 memories) ---
 const FWD_INLINE_PROPERTY_BYTES_SLAB: MemoryId = MemoryId::new(10);
 const FWD_INLINE_PROPERTY_BYTES_FREE_SPANS: MemoryId = MemoryId::new(11);
 const FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(12);
@@ -53,7 +53,7 @@ const REV_EDGE_SPAN_META: MemoryId = MemoryId::new(22);
 const REV_EDGE_FREE_SPANS: MemoryId = MemoryId::new(23);
 const REV_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(24);
 
-// --- Labeled graph: reverse payload (5 memories) ---
+// --- Labeled graph: reverse inline property bytes (5 memories) ---
 const REV_INLINE_PROPERTY_BYTES_SLAB: MemoryId = MemoryId::new(25);
 const REV_INLINE_PROPERTY_BYTES_FREE_SPANS: MemoryId = MemoryId::new(26);
 const REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(27);
@@ -107,7 +107,7 @@ pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_
 const GRAPH_INITIAL_BUCKET_CAPACITY: u64 = 1 << 10;
 /// Initial edge-slot capacity for each labeled orientation (grows as needed).
 const GRAPH_INITIAL_EDGE_CAPACITY: u64 = 1 << 12;
-/// Initial inline-payload byte capacity for each labeled orientation (grows as needed).
+/// Initial inline-property-bytes byte capacity for each labeled orientation (grows as needed).
 const GRAPH_INITIAL_INLINE_PROPERTY_BYTES: u64 = 1 << 16;
 /// Default policy for regions not listed in `GRAPH_MEMORY_MANAGER_POLICIES`.
 #[cfg(all(

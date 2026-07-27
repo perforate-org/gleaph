@@ -152,7 +152,7 @@ pub struct E2eInsertDirectedEdgeWithInlinePropertyArgs {
     pub source_local_vertex_id: u32,
     pub target_local_vertex_id: u32,
     pub edge_label_id: u16,
-    pub inline_property: Vec<u8>,
+    pub inline_property_bytes: Vec<u8>,
     pub inline_property_profile: gleaph_graph_kernel::entry::EdgeInlinePropertyProfile,
 }
 
@@ -1514,7 +1514,7 @@ pub fn e2e_insert_directed_edge_with_inline_property(
     source_local: u32,
     target_local: u32,
     edge_label_id: u16,
-    inline_property: Vec<u8>,
+    inline_property_bytes: Vec<u8>,
     inline_property_profile: gleaph_graph_kernel::entry::EdgeInlinePropertyProfile,
 ) {
     let _: () = update_as_router(
@@ -1525,7 +1525,7 @@ pub fn e2e_insert_directed_edge_with_inline_property(
             source_local_vertex_id: source_local,
             target_local_vertex_id: target_local,
             edge_label_id,
-            inline_property,
+            inline_property_bytes,
             inline_property_profile,
         },
     );

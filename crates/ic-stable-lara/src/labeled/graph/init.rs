@@ -191,10 +191,10 @@ where
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, InitError> {
-        // The vertex column, bucket, edge, and payload subsystems are one
+        // The vertex column, bucket, edge, and inline property bytes subsystems are one
         // graph-owned composite that must be created or reopened together.
         // `value_blobs` is excluded: it may legitimately stay empty on reopen
-        // (no wide payloads), and its Fresh-vs-Reopen asymmetry is enforced
+        // (no wide inline property bytes), and its Fresh-vs-Reopen asymmetry is enforced
         // inside `EdgeInlinePropertyBytesStore::init`.
         match crate::classify_composite_init([
             vertices.size(),

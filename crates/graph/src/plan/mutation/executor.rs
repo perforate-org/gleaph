@@ -1149,7 +1149,7 @@ fn collect_detach_delete_edge_label_deltas(
     Ok(())
 }
 
-/// Packed fixed-width payload bytes plus the profile used to encode them.
+/// Packed fixed-width inline property bytes plus the profile used to encode them.
 #[derive(Clone, Debug)]
 struct InlineScalarProperty {
     inline_property_bytes: Vec<u8>,
@@ -1157,7 +1157,7 @@ struct InlineScalarProperty {
 }
 
 /// Preflight every sidecar property: reserved property ids are rejected and the value must be
-/// encodable as binary bytes. Failures are reported before any canonical adjacency or payload write
+/// encodable as binary bytes. Failures are reported before any canonical adjacency or inline property bytes write
 /// so invalid sidecar values cannot leave a partially initialized edge or a torn replacement.
 fn validate_sidecar_properties(
     execution: &GqlExecutionContext,
@@ -1180,7 +1180,7 @@ fn validate_sidecar_properties(
     Ok(sidecar)
 }
 
-/// Classify evaluated edge-property assignments into at most one inline scalar payload plus the
+/// Classify evaluated edge-property assignments into at most one inline scalar property bytes plus the
 /// remaining sidecar assignments. Rejects duplicate inline assignments, missing required inline
 /// values, and `NULL`.
 fn classify_edge_assignments(
@@ -1423,13 +1423,13 @@ fn insert_directed_edge_with_inline(
     inline_property: Option<&InlineScalarProperty>,
     sidecar_properties: Vec<(PropertyId, Value)>,
 ) -> Result<EdgeHandle, PlanMutationError> {
-    if let Some(payload) = inline_property {
+    if let Some(inline_property_bytes) = inline_property {
         GraphMutationExecutor::insert_directed_edge_with_inline_property_bytes(
             store,
             source,
             target,
             label,
-            &payload.inline_property_bytes,
+            &inline_property_bytes.inline_property_bytes,
             sidecar_properties,
         )
         .map_err(PlanMutationError::from)
@@ -1453,13 +1453,13 @@ fn insert_undirected_edge_with_inline(
     inline_property: Option<&InlineScalarProperty>,
     sidecar_properties: Vec<(PropertyId, Value)>,
 ) -> Result<EdgeHandle, PlanMutationError> {
-    if let Some(payload) = inline_property {
+    if let Some(inline_property_bytes) = inline_property {
         GraphMutationExecutor::insert_undirected_edge_with_inline_property_bytes(
             store,
             endpoint_a,
             endpoint_b,
             label,
-            &payload.inline_property_bytes,
+            &inline_property_bytes.inline_property_bytes,
             sidecar_properties,
         )
         .map_err(PlanMutationError::from)
@@ -3361,7 +3361,7 @@ mod tests {
         let a = bindings.vertices["a"];
         let b = bindings.vertices["b"];
 
-        // Logical direction is b -> a; physical reverse mirror carries the payload too.
+        // Logical direction is b -> a; physical reverse mirror carries the inline property bytes too.
         assert_eq!(
             find_out_edge_inline_property(&store, b, a),
             Some(7u16.to_le_bytes().to_vec())
@@ -3828,7 +3828,7 @@ mod tests {
             ),
             "got {err:?}"
         );
-        // Payload unchanged.
+        // InlinePropertyBytes unchanged.
         let a = VertexId::from(0u32);
         let b = VertexId::from(1u32);
         assert_eq!(
@@ -3877,7 +3877,7 @@ mod tests {
         let a = bindings.vertices["a"];
         let b = bindings.vertices["b"];
 
-        // No inline property profile installed, so the edge is inserted with empty payload.
+        // No inline property profile installed, so the edge is inserted with empty inline property bytes.
         assert_eq!(
             find_out_edge_inline_property(&store, a, b),
             Some(Vec::new())
@@ -3888,7 +3888,7 @@ mod tests {
         );
     }
     /// Extension value that deliberately cannot be persisted to the primary store. Used to prove
-    /// that invalid sidecar values fail closed before any edge/payload write.
+    /// that invalid sidecar values fail closed before any edge/inline-property-bytes write.
     #[derive(Debug, Clone)]
     struct UnpersistableSidecarExtension;
 
@@ -3967,7 +3967,7 @@ mod tests {
             "got {err:?}"
         );
 
-        // Vertices were created, but no edge or payload must exist.
+        // Vertices were created, but no edge or inline property bytes must exist.
         let a = VertexId::from(0u32);
         let b = VertexId::from(1u32);
         assert_eq!(find_out_edge_inline_property(&store, a, b), None);
@@ -4056,7 +4056,7 @@ mod tests {
             "got {err:?}"
         );
 
-        // Both payload and sidecar must remain unchanged.
+        // Both inline property bytes and sidecar must remain unchanged.
         assert_eq!(
             find_out_edge_inline_property(&store, a, b),
             Some(7u16.to_le_bytes().to_vec())

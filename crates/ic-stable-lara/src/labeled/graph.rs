@@ -119,22 +119,22 @@ pub struct EdgeRemoval<E> {
     pub moves: Vec<EdgeSlotMove>,
 }
 
-/// Aggregated payload storage accounting for one labeled graph orientation.
+/// Aggregated inline property bytes storage accounting for one labeled graph orientation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LabeledInlinePropertyBytesStorageStats {
     /// Bytes required by live inline property values in bucket-local order.
     pub live_bytes: u64,
     /// Bytes reserved by inline property bytes slab spans owned by labeled vertices.
     pub allocated_bytes: u64,
-    /// Payload slab backing capacity in bytes.
+    /// InlinePropertyBytes slab backing capacity in bytes.
     pub byte_capacity: u64,
     /// Exclusive end of the append-only occupied inline property bytes slab prefix.
     pub slab_occupied_tail: u64,
-    /// Bytes available in retired payload free spans.
+    /// Bytes available in retired inline_property_bytes free spans.
     pub free_bytes: u64,
-    /// Largest retired payload free span.
+    /// Largest retired inline property bytes free span.
     pub largest_free_span: u64,
-    /// Number of retired payload free spans.
+    /// Number of retired inline property bytes free spans.
     pub free_span_count: u64,
 }
 
@@ -143,7 +143,7 @@ pub struct LabeledInlinePropertyBytesStorageStats {
 pub struct LabeledInlinePropertyBytesCompactionResult {
     /// Number of inline property bytes slab spans moved.
     pub moved_spans: u32,
-    /// Total payload bytes copied into earlier free spans.
+    /// Total inline property bytes copied into earlier free spans.
     pub moved_bytes: u64,
 }
 

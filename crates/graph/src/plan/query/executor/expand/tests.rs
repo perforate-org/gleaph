@@ -357,7 +357,7 @@ fn union_label_expr_edge_inline_property_predicate_fuses_per_label() {
         )
         .unwrap();
 
-    // Provide the payload-profile projection explicitly so the test does not race
+    // Provide the inline-property-bytes profile projection explicitly so the test does not race
     // against other parallel tests that mutate the process-global test label registry.
     let a_label_id = crate::test_labels::vertex_label_id_for_name("UnionPayloadFusionA");
     let execution = GqlExecutionContext {
@@ -757,9 +757,14 @@ fn expand_hop_aux_binding_returns_edge_inline_property_bytes() {
             encoding: EdgeInlinePropertyEncoding::WeightRawU16,
         },
     );
-    let payload = 7u16.to_le_bytes();
+    let inline_property_bytes = 7u16.to_le_bytes();
     store
-        .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), &payload)
+        .insert_directed_edge_with_inline_property_bytes(
+            a,
+            b,
+            Some(label_id),
+            &inline_property_bytes,
+        )
         .unwrap();
 
     let plan = plan_gql("MATCH (a:HopAuxA)-[e:HopAuxRoad]->(b:HopAuxB) RETURN e__hop_aux AS aux");
@@ -781,7 +786,7 @@ fn expand_hop_aux_binding_returns_edge_inline_property_bytes() {
     assert_eq!(result.rows.len(), 1);
     assert_eq!(
         result.rows[0].get("aux"),
-        Some(&Value::Bytes(payload.to_vec()))
+        Some(&Value::Bytes(inline_property_bytes.to_vec()))
     );
 }
 
@@ -2170,7 +2175,7 @@ fn gql_var_len_where_gleaph_weight_fuses_inline_property_predicate_per_hop() {
         "MATCH (a:VarLenFusGqlA)-[e:VarLenFusGqlRoad]->{2,2}(c:VarLenFusGqlC) \
          WHERE GLEAPH.WEIGHT(e) = 5 RETURN c",
     );
-    let has_payload_fusion = plan.ops.iter().any(|op| {
+    let has_inline_property_fusion = plan.ops.iter().any(|op| {
         matches!(
             op,
             PlanOp::Expand {
@@ -2185,7 +2190,7 @@ fn gql_var_len_where_gleaph_weight_fuses_inline_property_predicate_per_hop() {
         )
     });
     assert!(
-        has_payload_fusion,
+        has_inline_property_fusion,
         "planner should fuse GLEAPH.WEIGHT into var_len expand: {:?}",
         plan.ops
     );
@@ -2856,7 +2861,7 @@ fn overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe
 }
 
 /// Incoming mirror of `overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe`: many edges
-/// point **into** an overflow-log hub, so `PointingLeft` payload-first expand routes through the
+/// point **into** an overflow-log hub, so `PointingLeft` inline-property-bytes-first expand routes through the
 /// reverse phase-1 replay reuse path. Asserts end-to-end correctness parity with phase-1 selection.
 /// The replay-reuse itself (phase 2 not rebuilding the overflow chain) is proven at the LARA
 /// boundary by `read_in_edge_slots_for_label_with_replay_reuses_reverse_replay` in `ic-stable-lara`,
@@ -2906,7 +2911,7 @@ fn incoming_overflow_hub_edge_inline_property_predicate_reuses_reverse_replay() 
             )
             .unwrap();
     }
-    // Reverse adjacency of the hub must be an overflow-log hybrid bucket on the payload-first path.
+    // Reverse adjacency of the hub must be an overflow-log hybrid bucket on the inline-property-bytes-first path.
     assert!(
         !store
             .in_label_bucket_dense_inline_property_batch_eligible(hub, storage_label)

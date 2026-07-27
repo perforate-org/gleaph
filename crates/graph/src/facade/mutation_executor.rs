@@ -18,9 +18,9 @@ pub trait GraphMutationExecutor {
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError>;
 
-    /// Insert a directed edge with validated payload bytes plus optional sidecar properties.
+    /// Insert a directed edge with validated inline property bytes plus optional sidecar properties.
     ///
-    /// Used by ordinary DML for an `InlineScalar` edge label: the payload is the canonical value
+    /// Used by ordinary DML for an `InlineScalar` edge label: the inline_property_bytes is the canonical value
     /// for the inline property, and `properties` carries only non-inline sidecar assignments.
     fn insert_directed_edge_with_inline_property_bytes(
         &self,
@@ -39,7 +39,7 @@ pub trait GraphMutationExecutor {
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError>;
 
-    /// Insert an undirected edge with validated payload bytes plus optional sidecar properties.
+    /// Insert an undirected edge with validated inline property bytes plus optional sidecar properties.
     fn insert_undirected_edge_with_inline_property_bytes(
         &self,
         endpoint_a: VertexId,

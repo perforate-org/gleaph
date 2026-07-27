@@ -16,7 +16,6 @@ pub const LAYOUT_VERSION: u8 = 1;
 const HEADER_SIZE: u64 = 32;
 const INLINE_LOG_ENTRY_BYTES: usize = 16;
 /// Inline property bytes log cell bytes per overflow log entry.
-
 /// Default per-segment overflow-log capacity (matches edge log).
 pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;
 

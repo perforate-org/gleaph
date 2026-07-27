@@ -38,13 +38,13 @@ For each diverged `(src, tgt, label)` key:
    `src`) via `remove_reverse_edge_matching`, and drop the key's directed alias rows via
    `EDGE_ALIASES::remove_all_for_canonical` over the key's forward slots.
 2. Re-insert one reverse half per forward out-edge of the key — copying the forward edge's
-   inline property bytes from the slab (`for_each_directed_out_edges_for_label_with_payload_slices_reusing`)
+   inline property bytes from the slab (`for_each_directed_out_edges_for_label_with_inline_property_bytes`)
    and re-creating the directed reverse-IN alias with the exact
    `find_reverse_alias_for_canonical` + alias-insert sequence the live insert path uses in
    `commit_directed_edge_insert`.
 
 This makes `reverse[key] == forward[key]` exactly, handles multigraph count gaps and edge
-payloads, and reassigns slots **only for diverged keys** (recreating their aliases in the
+inline property bytes, and reassigns slots **only for diverged keys** (recreating their aliases in the
 same step). Non-diverged keys keep their reverse slots and alias rows; edge properties
 (`EDGE_PROPERTIES`, keyed by canonical forward identity) are unaffected by reverse-slot
 changes. The expensive part — the full forward+reverse scan — already lives in the oracle;

@@ -97,7 +97,7 @@ pub struct E2eInsertDirectedEdgeWithInlinePropertyArgs {
     pub source_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
     pub target_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
     pub edge_label_id: u16,
-    pub inline_property: Vec<u8>,
+    pub inline_property_bytes: Vec<u8>,
     pub inline_property_profile: gleaph_graph_kernel::entry::EdgeInlinePropertyProfile,
 }
 

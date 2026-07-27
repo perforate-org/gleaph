@@ -235,19 +235,19 @@ fn inline_cost_by_symmetric_directed_reads_same_inline_property() {
     let b = e2e_insert_vertex_with_label(&env, env.graph_source, mid_label_id.raw());
 
     // Model a symmetric edge pair (both directions) sharing the same inline value.
-    // A true single undirected inline-payload edge is covered by a Graph unit test;
-    // this E2E test proves the cost value is read from the payload in each
+    // A true single undirected inline-property edge is covered by a Graph unit test;
+    // this E2E test proves the cost value is read from the inline property bytes in each
     // traversal direction independently.  Only the start vertex is labeled in each
     // query so the router seed-anchor prefix binds a single variable; the exact
     // destination is asserted via the returned ELEMENT_ID.
-    let payload = 5u16.to_le_bytes().to_vec();
+    let inline_property_bytes = 5u16.to_le_bytes().to_vec();
     e2e_insert_directed_edge_with_inline_property(
         &env,
         env.graph_source,
         a.local_vertex_id,
         b.local_vertex_id,
         edge_label_id.raw(),
-        payload.clone(),
+        inline_property_bytes.clone(),
         road_profile(),
     );
     e2e_insert_directed_edge_with_inline_property(
@@ -256,7 +256,7 @@ fn inline_cost_by_symmetric_directed_reads_same_inline_property() {
         b.local_vertex_id,
         a.local_vertex_id,
         edge_label_id.raw(),
-        payload,
+        inline_property_bytes,
         road_profile(),
     );
 

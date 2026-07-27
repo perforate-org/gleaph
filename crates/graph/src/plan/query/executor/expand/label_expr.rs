@@ -36,7 +36,7 @@ pub(crate) fn edge_matches_label_expr(
     edge_wire_label_matches_label_expr(execution, label_expr, LaraLabelId::from_raw(edge.label_id))
 }
 
-/// Distinct catalog edge labels named in `expr` when per-label index/payload/vector fusion applies.
+/// Distinct catalog edge labels named in `expr` when per-label index/inline-property-bytes/vector fusion applies.
 ///
 /// Returns `None` for wildcards, negation, or when no resolvable label names are present.
 pub(crate) fn fusion_edge_label_ids_for_expr(
@@ -58,7 +58,7 @@ pub(crate) fn fusion_edge_label_ids_for_expr(
     Some(ids)
 }
 
-/// Edge label ids to try for index/payload/vector fusion when `label_expr` cannot decompose
+/// Edge label ids to try for index/inline-property-bytes/vector fusion when `label_expr` cannot decompose
 /// to explicit names (wildcard, negation, etc.).
 pub(crate) fn catalog_edge_label_ids_for_predicate_fusion(
     execution: &GqlExecutionContext,

@@ -38,9 +38,9 @@ pub struct LabelBucket {
     inline_property_bytes_offset: u64,
     /// Physical byte width per edge inline value slot (`0` = no values).
     inline_property_byte_width: u16,
-    /// Wire byte for per-bucket payload overflow log head (`0xFF` = none).
+    /// Wire byte for per-bucket inline property bytes overflow log head (`0xFF` = none).
     inline_property_bytes_log_byte: u8,
-    /// Number of payload entries in this bucket's ordered suffix log.
+    /// Number of inline property bytes entries in this bucket's ordered suffix log.
     inline_property_bytes_log_len: u8,
 }
 
@@ -185,13 +185,13 @@ impl LabelBucket {
         self.inline_property_bytes_slab_slots
     }
 
-    /// Per-bucket payload overflow log head, or `-1` when all values are on the slab.
+    /// Per-bucket inline property bytes overflow log head, or `-1` when all values are on the slab.
     #[inline]
     pub fn inline_property_bytes_log_head(self) -> i32 {
         decode_overflow_log_byte(self.inline_property_bytes_log_byte)
     }
 
-    /// Number of values in the ordered payload-log suffix.
+    /// Number of values in the ordered inline-property-bytes-log suffix.
     #[inline]
     pub fn inline_property_bytes_log_len(self) -> u8 {
         self.inline_property_bytes_log_len
@@ -454,7 +454,7 @@ pub enum LabelBucketFieldError {
     InlinePropertyBytesLogLenOutOfRange,
     /// Value overflow log head and length disagree.
     InlinePropertyBytesLogStateMismatch,
-    /// Payload slots/log entries require a non-zero inline property schema width.
+    /// InlinePropertyBytes slots/log entries require a non-zero inline property schema width.
     InlinePropertyBytesStateWithoutSchema,
 }
 

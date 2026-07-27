@@ -77,7 +77,7 @@ impl<E> LabeledEdgeInlinePropertyBatchScratch<E> {
     }
 }
 
-/// Cached overflow-log replay from hybrid payload phase 1 for phase-2 topology reads.
+/// Cached overflow-log replay from hybrid inline-property-bytes phase 1 for phase-2 topology reads.
 ///
 /// When present, [`super::LabeledLaraGraph::read_out_edge_slots_for_label`] can decode
 /// matching overflow-log edges from the cached segment table instead of rebuilding the
@@ -132,9 +132,9 @@ impl HybridOverflowEdgeReplay {
 pub struct LabeledInlinePropertyValueBatchScratch {
     /// Absolute edge slot index per value chunk in `values`.
     pub slot_indices: Vec<u32>,
-    /// Flattened payload bytes: `slot_indices.len() * byte_width` when emitted.
+    /// Flattened inline property bytes: `slot_indices.len() * byte_width` when emitted.
     pub values: Vec<u8>,
-    /// Populated by hybrid overflow payload phase 1 for phase-2 slot reads.
+    /// Populated by hybrid overflow inline-property-bytes phase 1 for phase-2 slot reads.
     pub hybrid_overflow_replay: HybridOverflowEdgeReplay,
     /// Reusable bulk-read buffer for contiguous inline property bytes slab IO.
     pub(super) io_inline_property_bytes: Vec<u8>,
@@ -161,17 +161,17 @@ impl LabeledInlinePropertyValueBatchScratch {
     }
 }
 
-/// One batch of parallel payload bytes for a single label bucket (no edge rows).
+/// One batch of parallel inline property bytes for a single label bucket (no edge rows).
 pub struct LabeledInlinePropertyValueBatch<'a> {
     /// Label bucket visited by this batch.
     pub label_id: BucketLabelKey,
-    /// Physical byte width of each payload chunk in `values`.
+    /// Physical byte width of each inline property bytes chunk in `values`.
     pub byte_width: u16,
     /// Scan order used for `slot_indices` and `values`.
     pub order: OutEdgeOrder,
     /// Absolute edge slot index per value chunk.
     pub slot_indices: &'a [u32],
-    /// Flattened payload bytes in the same order as `slot_indices`.
+    /// Flattened inline property bytes in the same order as `slot_indices`.
     pub values: &'a [u8],
     /// `true` when values were read from a contiguous resident inline property bytes slab span.
     pub dense: bool,
@@ -195,10 +195,10 @@ pub struct LabeledEdgeInlinePropertyBatch<'a, E> {
 
 /// Streaming iterator over outgoing edges in a fixed scan order.
 ///
-/// Items are fallible because labeled edge rows may need to read payload bytes from stable
-/// payload storage. Use `collect::<Result<Vec<_>, _>>()` when materializing rows. For paging or
+/// Items are fallible because labeled edge rows may need to read inline property bytes from stable
+/// inline property bytes storage. Use `collect::<Result<Vec<_>, _>>()` when materializing rows. For paging or
 /// OFFSET-style traversal, prefer [`LabeledOutEdgesIter::try_advance_by`] over
-/// [`Iterator::nth`] or [`Iterator::skip`] so skipped rows do not read payload bytes.
+/// [`Iterator::nth`] or [`Iterator::skip`] so skipped rows do not read inline_property_bytes bytes.
 pub struct LabeledOutEdgesIter<'a, E: CsrEdgeTombstone, M: Memory> {
     pub(super) graph: &'a LabeledLaraGraph<E, M>,
     pub(super) src: VertexId,
@@ -352,7 +352,7 @@ where
         }
     }
 
-    /// Advances by live rows without reading skipped payload bytes.
+    /// Advances by live rows without reading skipped inline_property_bytes bytes.
     ///
     /// Returns `Ok(Err(left))` when the iterator ends before all `n` rows are skipped, and
     /// returns `Err` for storage/layout failures encountered while moving between bucket spans.

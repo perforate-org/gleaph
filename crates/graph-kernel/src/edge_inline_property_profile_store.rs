@@ -94,7 +94,7 @@ impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
         self.inner.iter().map(|entry| *entry.key()).collect()
     }
 
-    pub fn label_ids_with_nonzero_payload(&self) -> Vec<EdgeLabelId> {
+    pub fn label_ids_with_nonzero_inline_property_bytes(&self) -> Vec<EdgeLabelId> {
         self.inner
             .iter()
             .filter_map(|entry| {

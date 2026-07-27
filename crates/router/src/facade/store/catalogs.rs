@@ -584,7 +584,7 @@ impl RouterStore {
         table: &mut ResolvedLabelTable,
     ) -> Result<(), RouterError> {
         let fusion_ids = ROUTER_EDGE_INLINE_PROPERTY_PROFILES
-            .with_borrow(|store| store.label_ids_with_nonzero_payload(graph_id));
+            .with_borrow(|store| store.label_ids_with_nonzero_inline_property_bytes(graph_id));
         for id in fusion_ids {
             if table.edge.iter().any(|entry| entry.id == id) {
                 continue;

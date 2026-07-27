@@ -254,7 +254,7 @@ Graph must treat `inline_schema` as a read-only plan-scoped projection. It does 
 
 For a requested edge property:
 
-- If the concrete label's `inline_schema` is `Scalar { property_id }` and the resolved property id matches, Graph decodes the edge inline property bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported payloads fail closed; the sidecar property store is never consulted as fallback.
+- If the concrete label's `inline_schema` is `Scalar { property_id }` and the resolved property id matches, Graph decodes the edge inline property bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported inline property bytes fail closed; the sidecar property store is never consulted as fallback.
 - If the concrete label's `inline_schema` is `Struct { property_id, fields }` and the resolved property id matches the top-level struct property, Graph validates the field layout (non-empty, unique names, non-overlapping offsets, field-width sum equals inline property byte width) and decodes the inline property bytes into a declaration-ordered GQL `Value::Record`. Accessing an unknown nested field returns `Value::Null`; a malformed projection or inline property bytes fails closed before sidecar fallback.
 - Otherwise Graph falls back to the sidecar property store (`GraphStore::edge_property`), preserving existing non-inline behavior.
 
@@ -271,7 +271,7 @@ Graph classifies evaluated assignments using the `ResolvedEdgeLabel.inline_schem
 - For an `InlineStruct` schema, any edge mutation path (insert, `SET e.prop`, all-properties replacement, or `REMOVE e.prop`) is rejected fail-closed until Slice 26. This is a label-wide gate: even sidecar property SET/REMOVE on a Struct-labeled edge cannot fall through, because Slice 25 defines no mutation contract for that label shape. The top-level struct property is never written to sidecar state.
 - The inline property is encoded into the exact fixed-width inline property bytes using one Graph-owned scalar
   codec shared with read and predicate paths.
-- `InsertEdge` calls the existing inline-property-bytes-aware edge insert commits (`insert_*_edge_with_payload_bytes`)
+- `InsertEdge` calls the existing inline-property-bytes-aware edge insert commits (`insert_*_edge_with_inline_property_bytes`)
   with the encoded bytes; non-inline assignments are applied as ordinary sidecar properties.
 - `SET e.prop = val` for the inline property updates the inline property bytes through the existing mirrored
   inline property bytes update commit (`update_edge_inline_property_at_handle`). Non-matching properties continue to use

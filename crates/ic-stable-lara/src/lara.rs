@@ -35,7 +35,7 @@ mod bench;
 pub mod edge;
 #[expect(
     dead_code,
-    reason = "payload log helpers are used by targeted edge-value maintenance paths"
+    reason = "inline property bytes log helpers are used by targeted edge-value maintenance paths"
 )]
 pub mod edge_inline_property;
 pub mod maintenance;

@@ -1625,7 +1625,7 @@ pub async fn e2e_insert_directed_edge_with_inline_property(
             source,
             target,
             Some(label),
-            &args.inline_property,
+            &args.inline_property_bytes,
         )
         .map_err(|e| e.to_string());
     crate::edge_inline_property_schema::set_execution_resolved_labels(None);
@@ -1802,9 +1802,9 @@ pub async fn e2e_delete_directed_edge_with_property(
 
 /// Set a sidecar edge property on an existing directed edge (PocketIC E2E only).
 ///
-/// Used to test inline-payload precedence: the caller creates an edge with a payload through
+/// Used to test inline-property precedence: the caller creates an edge with inline property bytes through
 /// [`e2e_insert_directed_edge_with_inline_property`], then sets the same property id to a different
-/// sidecar value here, and finally reads `e.property` to prove payload bytes win.
+/// sidecar value here, and finally reads `e.property` to prove inline property bytes win.
 #[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_set_edge_property(
     args: super::types::E2eSetEdgePropertyArgs,

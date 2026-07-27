@@ -526,7 +526,7 @@ pub(crate) fn weighted_shortest_paths_between(
                 &mut inline_property_scratch,
                 |batch| {
                     let width = usize::from(batch.byte_width);
-                    for (edge, payload) in batch
+                    for (edge, inline_property_bytes) in batch
                         .edges
                         .iter()
                         .zip(batch.inline_property_bytes.chunks_exact(width))
@@ -562,7 +562,8 @@ pub(crate) fn weighted_shortest_paths_between(
                                 let _scope =
                                     bench_scope("weighted_shortest_hop_cost_decode_direct");
                                 decode_direct_gleaph_weight_hop_cost_from_inline_property(
-                                    decoder, payload,
+                                    decoder,
+                                    inline_property_bytes,
                                 )
                             },
                         )?;
@@ -770,7 +771,7 @@ fn weighted_shortest_k_paths_between(
                 &mut inline_property_scratch,
                 |batch| {
                     let width = usize::from(batch.byte_width);
-                    for (edge, payload) in batch
+                    for (edge, inline_property_bytes) in batch
                         .edges
                         .iter()
                         .zip(batch.inline_property_bytes.chunks_exact(width))
@@ -801,7 +802,8 @@ fn weighted_shortest_k_paths_between(
                             hop_edge,
                             || {
                                 decode_direct_gleaph_weight_hop_cost_from_inline_property(
-                                    decoder, payload,
+                                    decoder,
+                                    inline_property_bytes,
                                 )
                             },
                         )?;
@@ -954,9 +956,9 @@ fn relax_weighted_shortest_neighbor(
 
 fn decode_direct_gleaph_weight_hop_cost_from_inline_property(
     decoder: &PreparedWeightDecoder,
-    payload: &[u8],
+    inline_property_bytes: &[u8],
 ) -> Result<WeightedCost, PlanQueryError> {
-    if let Some(weight) = decoder.decode_raw_u16(payload) {
+    if let Some(weight) = decoder.decode_raw_u16(inline_property_bytes) {
         let weight = u128::from(weight);
         return Ok(WeightedCost {
             value: Value::Uint16(weight as u16),
@@ -967,12 +969,11 @@ fn decode_direct_gleaph_weight_hop_cost_from_inline_property(
             },
         });
     }
-    let weight =
-        decoder
-            .decode(payload)
-            .map_err(|e: WeightDecodeError| PlanQueryError::GleaphWeight {
-                message: format!("edge inline value decode failed: {e}"),
-            })?;
+    let weight = decoder
+        .decode(inline_property_bytes)
+        .map_err(|e: WeightDecodeError| PlanQueryError::GleaphWeight {
+            message: format!("edge inline value decode failed: {e}"),
+        })?;
     Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }
 

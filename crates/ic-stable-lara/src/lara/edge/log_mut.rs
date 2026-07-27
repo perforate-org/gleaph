@@ -520,18 +520,18 @@ mod tests {
         let edges = fresh_edges();
         let leaf = 0u32;
         let h = edges.log.header();
-        let payload = edge_inline_property(7);
+        let inline_property_bytes = edge_inline_property(7);
         edges
             .log
-            .write_entry_with_header(&h, leaf, 0, 2, &payload)
+            .write_entry_with_header(&h, leaf, 0, 2, &inline_property_bytes)
             .unwrap();
         edges
             .log
-            .write_entry_with_header(&h, leaf, 1, 0, &payload)
+            .write_entry_with_header(&h, leaf, 1, 0, &inline_property_bytes)
             .unwrap();
         edges
             .log
-            .write_entry_with_header(&h, leaf, 2, 1, &payload)
+            .write_entry_with_header(&h, leaf, 2, 1, &inline_property_bytes)
             .unwrap();
         edges.log.write_idx_with_header(&h, leaf, 3);
 
@@ -550,18 +550,18 @@ mod tests {
         let edges = fresh_edges();
         let leaf = 0u32;
         let h = edges.log.header();
-        let payload = edge_inline_property(7);
+        let inline_property_bytes = edge_inline_property(7);
         edges
             .log
-            .write_entry_with_header(&h, leaf, 0, -1, &payload)
+            .write_entry_with_header(&h, leaf, 0, -1, &inline_property_bytes)
             .unwrap();
         edges
             .log
-            .write_entry_with_header(&h, leaf, 1, 0, &payload)
+            .write_entry_with_header(&h, leaf, 1, 0, &inline_property_bytes)
             .unwrap();
         edges
             .log
-            .write_entry_with_header(&h, leaf, 2, 1, &payload)
+            .write_entry_with_header(&h, leaf, 2, 1, &inline_property_bytes)
             .unwrap();
         edges.log.write_idx_with_header(&h, leaf, 3);
 

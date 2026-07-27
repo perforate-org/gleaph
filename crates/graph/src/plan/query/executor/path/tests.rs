@@ -2540,7 +2540,7 @@ fn inline_cost_shortest_prefers_direct_edge_when_cheaper() {
 }
 
 #[test]
-fn inline_cost_shortest_reverse_reads_mirrored_payload() {
+fn inline_cost_shortest_reverse_reads_mirrored_inline_property_bytes() {
     let store = GraphStore::new();
     let a = store
         .insert_vertex_named(["InlineSrc"], Vec::<(&str, Value)>::new())
@@ -2558,7 +2558,7 @@ fn inline_cost_shortest_reverse_reads_mirrored_payload() {
     );
     crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
     let road = catalog_edge_label("InlineRoad");
-    // Only a->b exists with cost 7; reverse search b->a must read the same payload.
+    // Only a->b exists with cost 7; reverse search b->a must read the same inline property bytes.
     store
         .insert_directed_edge_with_inline_property_bytes(a, b, Some(road), &7u16.to_le_bytes())
         .expect("a->b");
@@ -2600,7 +2600,7 @@ fn inline_cost_shortest_reverse_reads_mirrored_payload() {
 }
 
 #[test]
-fn inline_cost_undirected_shortest_path_uses_payload_cost() {
+fn inline_cost_undirected_shortest_path_uses_inline_property_bytes_cost() {
     let store = GraphStore::new();
     let a = store
         .insert_vertex_named(["InlineSrc"], Vec::<(&str, Value)>::new())

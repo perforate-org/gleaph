@@ -1778,7 +1778,7 @@ fn leading_edge_index_scan_binds_matching_edges_and_endpoints() {
 }
 
 #[test]
-fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
+fn leading_edge_bind_endpoints_hop_aux_returns_inline_property_bytes() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -1797,9 +1797,14 @@ fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
     );
     let weight_prop = crate::test_labels::property_id_for_name("weight");
     let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
-    let payload = 7u16.to_le_bytes();
+    let inline_property_bytes = 7u16.to_le_bytes();
     let edge = store
-        .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), &payload)
+        .insert_directed_edge_with_inline_property_bytes(
+            a,
+            b,
+            Some(label_id),
+            &inline_property_bytes,
+        )
         .expect("edge");
     store
         .set_edge_property(edge, weight_prop, Value::Int64(7))
@@ -1835,7 +1840,7 @@ fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
     assert_eq!(result.rows.len(), 1);
     assert_eq!(
         result.rows[0].get("aux"),
-        Some(&Value::Bytes(payload.to_vec()))
+        Some(&Value::Bytes(inline_property_bytes.to_vec()))
     );
 }
 

@@ -30,7 +30,7 @@ pub enum EdgeInlinePropertyBytesScalarCodecError {
     FixedByteLengthMismatch { expected: usize, actual: usize },
     /// The decoded inline property byte width does not match the profile.
     WidthMismatch { expected: usize, actual: usize },
-    /// Decode produced a payload shape the scalar codec cannot map back to `Value`.
+    /// Decode produced a inline property bytes shape the scalar codec cannot map back to `Value`.
     UnsupportedDecodedShape,
 }
 
@@ -148,7 +148,7 @@ pub fn encode_edge_inline_property_scalar(
     Ok(bytes)
 }
 
-/// Decode fixed-width payload bytes into the exact GQL scalar `Value` for an inline profile.
+/// Decode fixed-width inline property bytes into the exact GQL scalar `Value` for an inline profile.
 pub fn decode_edge_inline_property_scalar(
     profile: &EdgeInlinePropertyProfile,
     bytes: &[u8],

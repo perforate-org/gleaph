@@ -96,7 +96,7 @@ pub(crate) fn edge_binding_for_scanned_expand(
         .map(|handle| EdgeBinding::from_edge(handle, edge))
 }
 
-/// Builds an edge handle for a scanned CSR row without copying stored payload bytes.
+/// Builds an edge handle for a scanned CSR row without copying stored inline property bytes.
 pub(crate) fn edge_binding_handle_for_scanned_expand(
     store: &GraphStore,
     probe_vertex_id: VertexId,

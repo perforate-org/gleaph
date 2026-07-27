@@ -1860,8 +1860,8 @@ where
     /// Roll back a one-orientation batch reservation without committing it.
     ///
     /// This consumes the reservation token, delegates to the forward or reverse
-    /// labeled graph, and restores the edge-store logical capacity and payload
-    /// occupied tail captured at reserve time.  Any payload bytes that were
+    /// labeled graph, and restores the edge-store logical capacity and inline property bytes
+    /// occupied tail captured at reserve time.  Any inline property bytes that were
     /// already appended are retired to the inline property free-list as reusable slack;
     /// the underlying stable-memory pages are not shrunk.  Canonical adjacency
     /// and bucket metadata are untouched.
@@ -2151,7 +2151,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
-    /// Visits forward outgoing payload bytes for one label in `order` (dense, hybrid, and sparse).
+    /// Visits forward outgoing inline property bytes for one label in `order` (dense, hybrid, and sparse).
     pub fn visit_out_inline_property_batches_for_label<Visit>(
         &self,
         src: VertexId,
@@ -2260,7 +2260,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Visits reverse outgoing payload bytes for one label in `order` (dense, hybrid, and sparse).
+    /// Visits reverse outgoing inline property bytes for one label in `order` (dense, hybrid, and sparse).
     pub fn visit_in_inline_property_batches_for_label<Visit>(
         &self,
         dst: VertexId,
@@ -2918,7 +2918,7 @@ where
         Ok(removal)
     }
 
-    /// Updates the edge-inline-property-bytes payload for one forward-out edge at `slot_index`.
+    /// Updates the edge inline property bytes for one forward-out edge at `slot_index`.
     pub fn update_forward_edge_inline_property_at_slot(
         &self,
         src: VertexId,
@@ -2942,7 +2942,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Updates the edge-inline-property-bytes payload for one reverse-store out edge at `slot_index`.
+    /// Updates the edge inline property bytes for one reverse-store out edge at `slot_index`.
     pub fn update_reverse_edge_inline_property_at_slot(
         &self,
         dst: VertexId,

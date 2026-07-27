@@ -1929,7 +1929,7 @@ fn bench_graph_expand_inline_property_skewed_2k_a_100b() -> canbench_rs::BenchRe
     )
 }
 
-/// ADR 0016 / M6: 48 noise + 24 payload matches on one overflow-log hub; payload-first selective expand.
+/// ADR 0016 / M6: 48 noise + 24 inline property bytes matches on one overflow-log hub; inline-property-bytes-first selective expand.
 #[bench(raw)]
 fn bench_graph_inline_property_bytes_first_log_backed_selective_match() -> canbench_rs::BenchResult
 {
@@ -1940,8 +1940,8 @@ fn bench_graph_inline_property_bytes_first_log_backed_selective_match() -> canbe
     )
 }
 
-/// Incoming mirror of `inline_property_bytes_first_log_backed_selective_match`: 48 noise + 24 payload matches
-/// point into one overflow-log hub; `PointingLeft` payload-first expand reuses the reverse phase-1
+/// Incoming mirror of `inline_property_bytes_first_log_backed_selective_match`: 48 noise + 24 inline property bytes matches
+/// point into one overflow-log hub; `PointingLeft` inline-property-bytes-first expand reuses the reverse phase-1
 /// hybrid replay for phase-2 slot reads (symmetry with the outgoing path).
 #[bench(raw)]
 fn bench_graph_inline_property_bytes_first_incoming_log_backed_selective_match()
@@ -2197,7 +2197,7 @@ fn bench_graph_search_join_10k_input_100_hits() -> canbench_rs::BenchResult {
 
 const DELETE_HUB_DEGREE: u32 = 24;
 
-/// Hub with `in_degree` payload-free directed in-edges (`n -> hub`) from distinct
+/// Hub with `in_degree` inline_property_bytes-free directed in-edges (`n -> hub`) from distinct
 /// sources. This is the reverse-adjacency purge path fixed in ADR 0021.
 fn setup_delete_hub_in_edges(store: &GraphStore, in_degree: u32) -> VertexId {
     let hub = store.insert_vertex().expect("hub");
@@ -2208,7 +2208,7 @@ fn setup_delete_hub_in_edges(store: &GraphStore, in_degree: u32) -> VertexId {
     hub
 }
 
-/// Hub with `out_degree` payload-free directed out-edges (`hub -> n`) to distinct
+/// Hub with `out_degree` inline_property_bytes-free directed out-edges (`hub -> n`) to distinct
 /// destinations (forward-adjacency purge path).
 fn setup_delete_hub_out_edges(store: &GraphStore, out_degree: u32) -> VertexId {
     let hub = store.insert_vertex().expect("hub");
@@ -2219,7 +2219,7 @@ fn setup_delete_hub_out_edges(store: &GraphStore, out_degree: u32) -> VertexId {
     hub
 }
 
-/// Detach-delete of a hub fed by 24 payload-free in-edges; the measured call
+/// Detach-delete of a hub fed by 24 inline_property_bytes-free in-edges; the measured call
 /// tombstones the row and drains the incident-edge purge (ADR 0021 Stage 2).
 #[bench(raw)]
 fn bench_graph_detach_delete_hub_in_edges_24() -> canbench_rs::BenchResult {
@@ -2925,12 +2925,17 @@ fn setup_inline_struct_edges(
             .insert_vertex_named(["BenchInlineStructDst"], Vec::<(&str, Value)>::new())
             .expect("dst");
         let score = ((i % 100) as f32) / 10.0;
-        let mut inline_property = Vec::with_capacity(usize::from(total_width));
-        inline_property.extend_from_slice(&score.to_le_bytes());
-        inline_property.extend_from_slice(&0.5f32.to_le_bytes());
-        inline_property.extend_from_slice(&((i % 100) as u64).to_le_bytes());
+        let mut inline_property_bytes = Vec::with_capacity(usize::from(total_width));
+        inline_property_bytes.extend_from_slice(&score.to_le_bytes());
+        inline_property_bytes.extend_from_slice(&0.5f32.to_le_bytes());
+        inline_property_bytes.extend_from_slice(&((i % 100) as u64).to_le_bytes());
         store
-            .insert_directed_edge_with_inline_property_bytes(src, dst, Some(label_id), &payload)
+            .insert_directed_edge_with_inline_property_bytes(
+                src,
+                dst,
+                Some(label_id),
+                &inline_property_bytes,
+            )
             .expect("edge");
     }
     (src, label_id)

@@ -247,7 +247,7 @@ fn setup_128_directed_edges(width: u16) -> (GraphStore, EdgeLabelId, Vec<BatchEd
         "BenchCleanSlabDirectedW8"
     });
     install_width_profile(label, width);
-    let payload = if width == 0 {
+    let inline_property_bytes = if width == 0 {
         vec![]
     } else {
         vec![0u8; width as usize]
@@ -269,7 +269,7 @@ fn setup_128_directed_edges(width: u16) -> (GraphStore, EdgeLabelId, Vec<BatchEd
             target_vertex_id: t,
             catalog_label: Some(label),
             directed: true,
-            inline_property_bytes: payload.clone(),
+            inline_property_bytes: inline_property_bytes.clone(),
         })
         .collect();
     (store, label, input)

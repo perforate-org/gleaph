@@ -36,12 +36,12 @@ fn affinity_profile() -> gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
     }
 }
 
-fn pack_stats_payload(score: f32, confidence: f32, updated_at: u64) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(16);
-    payload.extend_from_slice(&score.to_le_bytes());
-    payload.extend_from_slice(&confidence.to_le_bytes());
-    payload.extend_from_slice(&updated_at.to_le_bytes());
-    payload
+fn pack_stats_inline_property_bytes(score: f32, confidence: f32, updated_at: u64) -> Vec<u8> {
+    let mut inline_property_bytes = Vec::with_capacity(16);
+    inline_property_bytes.extend_from_slice(&score.to_le_bytes());
+    inline_property_bytes.extend_from_slice(&confidence.to_le_bytes());
+    inline_property_bytes.extend_from_slice(&updated_at.to_le_bytes());
+    inline_property_bytes
 }
 
 fn setup() -> FederationEnv {
@@ -78,7 +78,7 @@ fn insert_affinity(
         source,
         target,
         label_id,
-        pack_stats_payload(score, confidence, updated_at),
+        pack_stats_inline_property_bytes(score, confidence, updated_at),
         affinity_profile(),
     );
 }
@@ -154,7 +154,7 @@ fn scenario_order_by_sorts_by_struct_field(env: &FederationEnv, label_id: u16) {
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let first = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
     let second = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
-    // Insert out of order to prove ORDER BY reads the payload, not insertion order.
+    // Insert out of order to prove ORDER BY reads the inline property bytes, not insertion order.
     insert_affinity(env, source, second, label_id, 2.0, 0.50, 1_700_000_001);
     insert_affinity(env, source, first, label_id, 3.5, 0.75, 1_700_000_000);
 
@@ -202,7 +202,7 @@ fn scenario_aggregate_uses_struct_field(env: &FederationEnv, label_id: u16) {
     );
 }
 
-fn scenario_payload_wins_over_sidecar(env: &FederationEnv, label_id: u16) {
+fn scenario_inline_property_wins_over_sidecar(env: &FederationEnv, label_id: u16) {
     let source_label = admin_intern_vertex_label(env, "PrecedenceSource").raw();
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
@@ -273,7 +273,7 @@ fn inline_struct_read_access_suite() {
     scenario_filter_matches_struct_field(&env, affinity_label_id);
     scenario_order_by_sorts_by_struct_field(&env, affinity_label_id);
     scenario_aggregate_uses_struct_field(&env, affinity_label_id);
-    scenario_payload_wins_over_sidecar(&env, affinity_label_id);
+    scenario_inline_property_wins_over_sidecar(&env, affinity_label_id);
     scenario_unknown_struct_field_returns_null(&env, affinity_label_id);
     scenario_struct_index_create_rejects_inline_property(&env);
 }

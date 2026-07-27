@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn commit_multi_inline_property_run_offsets_match_read_back() {
-        // Two separate vertices with inline property bytes buckets; verify each run's payload
+        // Two separate vertices with inline property bytes buckets; verify each run's inline property bytes
         // is written at the correct offset by reading back values.
         let graph = segment16_inline_property_graph();
         for _ in 0..4 {

@@ -383,7 +383,7 @@ impl<M: Memory> LabelBucketStore<M> {
 
     /// Updates only the logical degree field of an existing bucket row.
     ///
-    /// Callers may use this only when every physical edge and payload field is unchanged.
+    /// Callers may use this only when every physical edge and inline property bytes field is unchanged.
     #[inline]
     pub(crate) fn write_label_bucket_degree(
         &self,

@@ -60,13 +60,13 @@ impl Hash for Edge {
 }
 
 impl Edge {
-    /// Returns the active payload byte slice.
+    /// Returns the active inline property bytes slice.
     #[inline]
     pub fn inline_property_bytes(&self) -> &[u8] {
         self.inline_property.as_slice()
     }
 
-    /// Sets the in-memory payload bytes.
+    /// Sets the in-memory inline property bytes.
     #[inline]
     pub fn with_inline_property_bytes(&self, bytes: &[u8]) -> Self {
         Self {

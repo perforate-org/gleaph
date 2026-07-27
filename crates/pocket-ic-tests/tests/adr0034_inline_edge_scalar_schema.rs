@@ -1,12 +1,12 @@
 //! PocketIC coverage for ADR 0034 Slice 20: scalar inline edge-property schema registration.
 //!
 //! Router-owned DDL records the canonical named inline slot; Graph consumes the derived physical
-//! profile on the existing payload execution path. This E2E uses `UINT16 INLINE` because
+//! profile on the existing inline property bytes execution path. This E2E uses `UINT16 INLINE` because
 //! `GLEAPH.WEIGHT(e)` only decodes legacy 2-byte weight encodings in Slice 20.
 //! Ordinary `e.distance` property access remains out of scope.
 //!
 //! All six former standalone contracts run as named, adversarially observable scenarios inside one
-//! fresh PocketIC fixture. Unauthorized and conflicting DDL attempts happen before any payload work,
+//! fresh PocketIC fixture. Unauthorized and conflicting DDL attempts happen before any inline property bytes work,
 //! proving the canonical schema stays fail-closed.
 
 use candid::{Decode, Encode, Principal};
@@ -28,7 +28,7 @@ fn inline_ddl() -> String {
     format!("CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }}")
 }
 
-fn road_payload(value: u16) -> Vec<u8> {
+fn road_inline_property_bytes(value: u16) -> Vec<u8> {
     value.to_le_bytes().to_vec()
 }
 
@@ -101,7 +101,7 @@ fn scenario_derived_profile_feeds_inline_property_predicate(env: &FederationEnv)
         source.local_vertex_id,
         target.local_vertex_id,
         label_id.raw(),
-        road_payload(3),
+        road_inline_property_bytes(3),
         road_profile(),
     );
 
@@ -125,7 +125,7 @@ fn scenario_width_mismatch_rejects_insert(env: &FederationEnv) {
         source_local_vertex_id: source.local_vertex_id,
         target_local_vertex_id: target.local_vertex_id,
         edge_label_id: label_id.raw(),
-        payload: vec![0u8, 0, 0, 0], // 4 bytes, does not match UINT16 profile
+        inline_property_bytes: vec![0u8, 0, 0, 0], // 4 bytes, does not match UINT16 profile
         inline_property_profile: road_profile(),
     };
     let bytes = env

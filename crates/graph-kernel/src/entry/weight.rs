@@ -1,14 +1,14 @@
-//! Edge-label weight profiles and prepared decoders for traversal-time inline u16 payloads.
+//! Edge-label weight profiles and prepared decoders for traversal-time inline u16 property bytes.
 //!
 //! [`EdgeWeightProfile`] is catalog metadata attached to an edge-capable label. At query preparation
 //! time it is compiled into a [`PreparedWeightDecoder`] so the traversal hot path only reads
-//! stored edge inline property bytes bytes (typically 2-byte u16) and applies the decoder.
+//! stored edge inline property bytes (typically 2-byte u16) and applies the decoder.
 
 use ic_stable_structures::storable::{Bound, Storable};
 use std::borrow::Cow;
 use thiserror::Error;
 
-/// Label-level configuration for interpreting stored edge-inline-property-bytes bytes as a traversal weight.
+/// Label-level configuration for interpreting stored edge inline property bytes as a traversal weight.
 #[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
 pub struct EdgeWeightProfile {
     pub encoding: WeightEncoding,
@@ -107,7 +107,7 @@ fn read_weight_u16(bytes: &[u8]) -> u16 {
 }
 
 impl PreparedWeightDecoder {
-    /// Decodes a raw `u16` payload without widening to `f32`.
+    /// Decodes a raw `u16` inline_property_bytes without widening to `f32`.
     ///
     /// Returns `None` when this decoder is not [`PreparedWeightDecoder::RawU16`].
     pub fn decode_raw_u16(&self, bytes: &[u8]) -> Option<u16> {
@@ -117,7 +117,7 @@ impl PreparedWeightDecoder {
         }
     }
 
-    /// Decodes stored edge-inline-property-bytes bytes into a validated non-negative finite `f32` weight.
+    /// Decodes stored edge inline property bytes into a validated non-negative finite `f32` weight.
     pub fn decode(&self, bytes: &[u8]) -> Result<f32, WeightDecodeError> {
         use half::f16;
         let v = match self {

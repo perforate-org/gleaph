@@ -37,7 +37,7 @@ pub(crate) enum BatchEdgeInsertResult {
     Committed {
         /// Aggregate edge slab slots written across all orientations.
         edge_slots_written: u64,
-        /// Aggregate payload slab slots written across all orientations.
+        /// Aggregate inline property bytes slab slots written across all orientations.
         inline_property_bytes_slots_written: u64,
         /// Paired physical locations keyed by the logical input ordinal.
         locations: Option<Vec<BatchEdgePhysicalLocation>>,
@@ -96,7 +96,7 @@ impl BatchEdgeInsertResult {
         }
     }
 
-    /// Total payload slab slots written across all committed orientations.
+    /// Total inline property bytes slab slots written across all committed orientations.
     pub(crate) fn total_inline_property_bytes_slots(&self) -> Option<u64> {
         match self {
             Self::Committed {
@@ -172,7 +172,7 @@ impl GraphStore {
     /// returns [`BatchEdgeInsertResult::Unsupported`] without writing any canonical
     /// adjacency. Any reservation that succeeded before the failure is rolled back
     /// by consuming its token; the rollback restores logical edge capacity and
-    /// the payload occupied tail, and retires any allocated payload bytes to the
+    /// the inline property bytes occupied tail, and retires any allocated inline property bytes to the
     /// free-list as reusable slack. The underlying stable-memory pages are not
     /// shrunk. This leaves no leaked capacity or tail before the caller falls
     /// back to the existing scalar path.
@@ -333,7 +333,7 @@ impl GraphStore {
                 .push(entry);
         }
 
-        // Ensure each run is sorted by logical ordinal so edge/payload alignment is
+        // Ensure each run is sorted by logical ordinal so edge/inline-property-bytes alignment is
         // deterministic. The LARA reserve step also checks this, but doing it here
         // keeps the GraphStore contract closer to the source of physical intents.
         for edges in runs_by_role.values_mut() {
@@ -567,8 +567,8 @@ mod tests {
         reverse_edge_capacity: u64,
         forward_edge_free: FreeSpanAllocatorStats,
         reverse_edge_free: FreeSpanAllocatorStats,
-        forward_payload: InlinePropertyBytesAllocatorStats,
-        reverse_payload: InlinePropertyBytesAllocatorStats,
+        forward_inline_property_bytes: InlinePropertyBytesAllocatorStats,
+        reverse_inline_property_bytes: InlinePropertyBytesAllocatorStats,
     }
 
     fn allocator_snapshot(store: &GraphStore) -> AllocatorSnapshot {
@@ -577,8 +577,8 @@ mod tests {
             reverse_edge_capacity: graph.reverse().edges().header().elem_capacity,
             forward_edge_free: graph.forward().edges().allocator_stats(),
             reverse_edge_free: graph.reverse().edges().allocator_stats(),
-            forward_payload: graph.forward().values().allocator_stats(),
-            reverse_payload: graph.reverse().values().allocator_stats(),
+            forward_inline_property_bytes: graph.forward().values().allocator_stats(),
+            reverse_inline_property_bytes: graph.reverse().values().allocator_stats(),
         })
     }
 
@@ -600,18 +600,24 @@ mod tests {
     }
 
     #[test]
-    fn clean_slab_directed_payload_success() {
+    fn clean_slab_directed_inline_property_bytes_success() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(1001);
         install_width(label, 8);
         let vertices = make_vertices(&store, 2);
         let source = vertices[0];
         let target = vertices[1];
-        let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let inline_property_bytes = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
 
         store.prepare_clean_slab_dir_buckets(source, target, label, 8);
 
-        let edges = vec![input(source, target, Some(label), true, payload.clone())];
+        let edges = vec![input(
+            source,
+            target,
+            Some(label),
+            true,
+            inline_property_bytes.clone(),
+        )];
         let result = store
             .try_insert_batch_edges_clean_slab_with_locations(&edges)
             .expect("plan/encode ok");
@@ -643,12 +649,18 @@ mod tests {
 
         for edge in store.directed_out_edges(source).expect("out") {
             if edge.label_id == label_raw {
-                assert_eq!(edge.edge_inline_property_bytes(), payload.as_slice());
+                assert_eq!(
+                    edge.edge_inline_property_bytes(),
+                    inline_property_bytes.as_slice()
+                );
             }
         }
         for edge in store.directed_in_edges(target).expect("in") {
             if edge.label_id == label_raw {
-                assert_eq!(edge.edge_inline_property_bytes(), payload.as_slice());
+                assert_eq!(
+                    edge.edge_inline_property_bytes(),
+                    inline_property_bytes.as_slice()
+                );
             }
         }
     }
@@ -661,11 +673,17 @@ mod tests {
         let vertices = make_vertices(&store, 2);
         let a = vertices[0];
         let b = vertices[1];
-        let payload = vec![7u8];
+        let inline_property_bytes = vec![7u8];
 
         store.prepare_clean_slab_undir_buckets(a, b, label, 1);
 
-        let edges = vec![input(a, b, Some(label), false, payload.clone())];
+        let edges = vec![input(
+            a,
+            b,
+            Some(label),
+            false,
+            inline_property_bytes.clone(),
+        )];
         let result = store
             .try_insert_batch_edges_clean_slab_with_locations(&edges)
             .expect("plan/encode ok");
@@ -707,11 +725,17 @@ mod tests {
         install_width(label, 4);
         let vertices = make_vertices(&store, 1);
         let a = vertices[0];
-        let payload = vec![9u8, 8, 7, 6];
+        let inline_property_bytes = vec![9u8, 8, 7, 6];
 
         store.prepare_clean_slab_undir_buckets(a, a, label, 4);
 
-        let edges = vec![input(a, a, Some(label), false, payload.clone())];
+        let edges = vec![input(
+            a,
+            a,
+            Some(label),
+            false,
+            inline_property_bytes.clone(),
+        )];
         let result = store
             .try_insert_batch_edges_clean_slab_with_locations(&edges)
             .expect("plan/encode ok");
@@ -870,19 +894,25 @@ mod tests {
         assert_eq!(after.forward_edge_capacity, before.forward_edge_capacity);
         assert_eq!(after.reverse_edge_capacity, before.reverse_edge_capacity);
         assert_eq!(
-            after.forward_payload.slab_occupied_tail,
-            before.forward_payload.slab_occupied_tail
+            after.forward_inline_property_bytes.slab_occupied_tail,
+            before.forward_inline_property_bytes.slab_occupied_tail
         );
         assert_eq!(
-            after.reverse_payload.slab_occupied_tail,
-            before.reverse_payload.slab_occupied_tail
+            after.reverse_inline_property_bytes.slab_occupied_tail,
+            before.reverse_inline_property_bytes.slab_occupied_tail
         );
-        assert!(after.forward_payload.free_bytes >= before.forward_payload.free_bytes);
-        assert_eq!(after.reverse_payload, before.reverse_payload);
+        assert!(
+            after.forward_inline_property_bytes.free_bytes
+                >= before.forward_inline_property_bytes.free_bytes
+        );
+        assert_eq!(
+            after.reverse_inline_property_bytes,
+            before.reverse_inline_property_bytes
+        );
     }
 
     /// Reserve both orientations of a inline-property-bearing directed edge (so both
-    /// forward and reverse payload allocations complete), then roll back both
+    /// forward and reverse inline property bytes allocations complete), then roll back both
     /// reservations and verify every logical allocator boundary is restored.
     ///
     /// This exercises the cross-orientation path where *multiple* orientations
@@ -891,11 +921,11 @@ mod tests {
     /// space; only the logical capacity, free-list accounting, and occupied
     /// tails are restored.
     #[test]
-    fn multi_orientation_payload_reserve_then_rollback_restores_allocator_state() {
+    fn multi_orientation_inline_property_bytes_reserve_then_rollback_restores_allocator_state() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(5003);
         install_width(label, 8);
-        let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let inline_property_bytes = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
         let vertices = make_vertices(&store, 3);
         let source = vertices[0];
         let target = vertices[1];
@@ -916,7 +946,13 @@ mod tests {
 
         // Build the physical intents for one directed edge.
         let intents = store
-            .expand_batch_edge_intents(&[input(source, target, Some(label), true, payload.clone())])
+            .expand_batch_edge_intents(&[input(
+                source,
+                target,
+                Some(label),
+                true,
+                inline_property_bytes.clone(),
+            )])
             .expect("intents ok");
         let requests = store
             .build_one_orientation_batch_plans(&intents, encode_intent_edge)
@@ -929,7 +965,7 @@ mod tests {
         );
 
         // Reserve both orientations.  Each reserve grows its own edge logical
-        // capacity and allocates payload bytes at its occupied tail.
+        // capacity and allocates inline property bytes at its occupied tail.
         let reservations = store
             .with_graph_mut(|graph| {
                 graph.reserve_batch_orientations(BidirectionalBatchPlan::Directed {
@@ -941,22 +977,30 @@ mod tests {
 
         let after_reserve = allocator_snapshot(&store);
 
-        // Reserve advanced at least one payload occupied tail (the edge
+        // Reserve advanced at least one inline property bytes occupied tail (the edge
         // logical capacity may already be large enough not to grow for a single
         // edge).
         assert!(
-            after_reserve.forward_payload.slab_occupied_tail
-                > before.forward_payload.slab_occupied_tail
-                || after_reserve.reverse_payload.slab_occupied_tail
-                    > before.reverse_payload.slab_occupied_tail,
-            "reserve must advance at least one payload occupied tail"
+            after_reserve
+                .forward_inline_property_bytes
+                .slab_occupied_tail
+                > before.forward_inline_property_bytes.slab_occupied_tail
+                || after_reserve
+                    .reverse_inline_property_bytes
+                    .slab_occupied_tail
+                    > before.reverse_inline_property_bytes.slab_occupied_tail,
+            "reserve must advance at least one inline property bytes occupied tail"
         );
         assert!(
-            after_reserve.forward_payload.slab_occupied_tail
-                > before.forward_payload.slab_occupied_tail
-                || after_reserve.reverse_payload.slab_occupied_tail
-                    > before.reverse_payload.slab_occupied_tail,
-            "reserve must advance at least one payload occupied tail"
+            after_reserve
+                .forward_inline_property_bytes
+                .slab_occupied_tail
+                > before.forward_inline_property_bytes.slab_occupied_tail
+                || after_reserve
+                    .reverse_inline_property_bytes
+                    .slab_occupied_tail
+                    > before.reverse_inline_property_bytes.slab_occupied_tail,
+            "reserve must advance at least one inline property bytes occupied tail"
         );
 
         // Roll back every reservation without committing.  The orchestration
@@ -966,7 +1010,7 @@ mod tests {
 
         let after_rollback = allocator_snapshot(&store);
 
-        // Logical edge capacity and payload tails are restored on both sides.
+        // Logical edge capacity and inline_property_bytes tails are restored on both sides.
         assert_eq!(
             after_rollback.forward_edge_capacity, before.forward_edge_capacity,
             "forward edge logical capacity must be restored"
@@ -976,14 +1020,18 @@ mod tests {
             "reverse edge logical capacity must be restored"
         );
         assert_eq!(
-            after_rollback.forward_payload.slab_occupied_tail,
-            before.forward_payload.slab_occupied_tail,
-            "forward payload occupied tail must be restored"
+            after_rollback
+                .forward_inline_property_bytes
+                .slab_occupied_tail,
+            before.forward_inline_property_bytes.slab_occupied_tail,
+            "forward inline_property_bytes occupied tail must be restored"
         );
         assert_eq!(
-            after_rollback.reverse_payload.slab_occupied_tail,
-            before.reverse_payload.slab_occupied_tail,
-            "reverse payload occupied tail must be restored"
+            after_rollback
+                .reverse_inline_property_bytes
+                .slab_occupied_tail,
+            before.reverse_inline_property_bytes.slab_occupied_tail,
+            "reverse inline_property_bytes occupied tail must be restored"
         );
 
         // Edge free-list shape is unchanged (no edge spans were retired).
@@ -996,44 +1044,56 @@ mod tests {
             "reverse edge free-list must be unchanged"
         );
 
-        // The allocated payload bytes from both orientations became exactly one
+        // The allocated inline_property_bytes bytes from both orientations became exactly one
         // free span per orientation.  Stable-memory backing capacity is not shrunk.
-        let expected_payload_bytes = u64::try_from(payload.len()).unwrap();
+        let expected_inline_property_bytes = u64::try_from(inline_property_bytes.len()).unwrap();
         assert_eq!(
-            after_rollback.forward_payload.free_bytes - before.forward_payload.free_bytes,
-            expected_payload_bytes,
-            "forward payload free bytes must increase by exactly the reserved run"
+            after_rollback.forward_inline_property_bytes.free_bytes
+                - before.forward_inline_property_bytes.free_bytes,
+            expected_inline_property_bytes,
+            "forward inline_property_bytes free bytes must increase by exactly the reserved run"
         );
         assert_eq!(
-            after_rollback.reverse_payload.free_bytes - before.reverse_payload.free_bytes,
-            expected_payload_bytes,
-            "reverse payload free bytes must increase by exactly the reserved run"
+            after_rollback.reverse_inline_property_bytes.free_bytes
+                - before.reverse_inline_property_bytes.free_bytes,
+            expected_inline_property_bytes,
+            "reverse inline_property_bytes free bytes must increase by exactly the reserved run"
         );
         assert_eq!(
-            after_rollback.forward_payload.free_span_count - before.forward_payload.free_span_count,
+            after_rollback.forward_inline_property_bytes.free_span_count
+                - before.forward_inline_property_bytes.free_span_count,
             1,
             "forward inline property free-list must gain one retired span"
         );
         assert_eq!(
-            after_rollback.reverse_payload.free_span_count - before.reverse_payload.free_span_count,
+            after_rollback.reverse_inline_property_bytes.free_span_count
+                - before.reverse_inline_property_bytes.free_span_count,
             1,
             "reverse inline property free-list must gain one retired span"
         );
         assert!(
-            after_rollback.forward_payload.largest_free_span >= expected_payload_bytes,
+            after_rollback
+                .forward_inline_property_bytes
+                .largest_free_span
+                >= expected_inline_property_bytes,
             "forward largest free span must cover the retired run"
         );
         assert!(
-            after_rollback.reverse_payload.largest_free_span >= expected_payload_bytes,
+            after_rollback
+                .reverse_inline_property_bytes
+                .largest_free_span
+                >= expected_inline_property_bytes,
             "reverse largest free span must cover the retired run"
         );
         assert!(
-            after_rollback.forward_payload.byte_capacity >= before.forward_payload.byte_capacity,
-            "forward stable-memory payload capacity must not shrink"
+            after_rollback.forward_inline_property_bytes.byte_capacity
+                >= before.forward_inline_property_bytes.byte_capacity,
+            "forward stable-memory inline_property_bytes capacity must not shrink"
         );
         assert!(
-            after_rollback.reverse_payload.byte_capacity >= before.reverse_payload.byte_capacity,
-            "reverse stable-memory payload capacity must not shrink"
+            after_rollback.reverse_inline_property_bytes.byte_capacity
+                >= before.reverse_inline_property_bytes.byte_capacity,
+            "reverse stable-memory inline_property_bytes capacity must not shrink"
         );
     }
 
@@ -1042,7 +1102,7 @@ mod tests {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(5002);
         install_width(label, 8);
-        let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let inline_property_bytes = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
         let vertices = make_vertices(&store, 3);
         let source = vertices[0];
         let target_with_bucket = vertices[1];
@@ -1051,7 +1111,7 @@ mod tests {
         // Prepare a forward bucket at source (and an unused reverse bucket at
         // target_with_bucket).  The edge below targets target_without_bucket, whose
         // reverse bucket does not exist, so reverse reserve fails after the forward
-        // payload allocation has already happened.
+        // inline_property_bytes allocation has already happened.
         store.prepare_clean_slab_dir_buckets(source, target_with_bucket, label, 8);
 
         let before = allocator_snapshot(&store);
@@ -1061,7 +1121,7 @@ mod tests {
             target_without_bucket,
             Some(label),
             true,
-            payload.clone(),
+            inline_property_bytes.clone(),
         )];
         let result = store
             .try_insert_batch_edges_clean_slab(&edges)
@@ -1093,40 +1153,50 @@ mod tests {
             "reverse edge free-list accounting must be unchanged"
         );
 
-        // Payload occupied tail is restored for both orientations.
+        // InlinePropertyBytes occupied tail is restored for both orientations.
         assert_eq!(
-            after.forward_payload.slab_occupied_tail, before.forward_payload.slab_occupied_tail,
-            "forward payload occupied tail must be restored"
+            after.forward_inline_property_bytes.slab_occupied_tail,
+            before.forward_inline_property_bytes.slab_occupied_tail,
+            "forward inline_property_bytes occupied tail must be restored"
         );
         assert_eq!(
-            after.reverse_payload.slab_occupied_tail, before.reverse_payload.slab_occupied_tail,
-            "reverse payload occupied tail must be restored"
+            after.reverse_inline_property_bytes.slab_occupied_tail,
+            before.reverse_inline_property_bytes.slab_occupied_tail,
+            "reverse inline_property_bytes occupied tail must be restored"
         );
 
-        // Reverse payload allocator state is untouched.
-        assert_eq!(after.reverse_payload, before.reverse_payload);
+        // Reverse inline_property_bytes allocator state is untouched.
+        assert_eq!(
+            after.reverse_inline_property_bytes,
+            before.reverse_inline_property_bytes
+        );
 
-        // The forward payload bytes that were allocated before the failure are
+        // The forward inline_property_bytes bytes that were allocated before the failure are
         // retired to the free-list as reusable slack. The stable-memory backing
         // capacity is not shrunk.
-        let expected_forward_payload_bytes = u64::try_from(payload.len()).unwrap();
+        let expected_forward_inline_property_bytes =
+            u64::try_from(inline_property_bytes.len()).unwrap();
         assert_eq!(
-            after.forward_payload.free_bytes - before.forward_payload.free_bytes,
-            expected_forward_payload_bytes,
-            "forward payload free bytes must increase by the allocated run length"
+            after.forward_inline_property_bytes.free_bytes
+                - before.forward_inline_property_bytes.free_bytes,
+            expected_forward_inline_property_bytes,
+            "forward inline_property_bytes free bytes must increase by the allocated run length"
         );
         assert_eq!(
-            after.forward_payload.free_span_count - before.forward_payload.free_span_count,
+            after.forward_inline_property_bytes.free_span_count
+                - before.forward_inline_property_bytes.free_span_count,
             1,
             "forward inline property free-list must gain exactly one retired span"
         );
         assert!(
-            after.forward_payload.largest_free_span >= expected_forward_payload_bytes,
-            "largest forward payload free span must cover the retired run"
+            after.forward_inline_property_bytes.largest_free_span
+                >= expected_forward_inline_property_bytes,
+            "largest forward inline_property_bytes free span must cover the retired run"
         );
         assert!(
-            after.forward_payload.byte_capacity >= before.forward_payload.byte_capacity,
-            "stable-memory payload capacity must not shrink on rollback"
+            after.forward_inline_property_bytes.byte_capacity
+                >= before.forward_inline_property_bytes.byte_capacity,
+            "stable-memory inline_property_bytes capacity must not shrink on rollback"
         );
     }
 

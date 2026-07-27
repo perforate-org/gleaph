@@ -202,7 +202,7 @@ where
         Ok(result)
     }
 
-    /// Returns payload live/reserved bytes and allocator-owned fragmentation data.
+    /// Returns inline property bytes live/reserved bytes and allocator-owned fragmentation data.
     pub fn inline_property_bytes_storage_stats(
         &self,
     ) -> Result<LabeledInlinePropertyBytesStorageStats, LabeledOperationError> {
@@ -242,7 +242,7 @@ where
     ///
     /// Compaction is needed only when the allocator has enough aggregate free
     /// bytes for the request but no single retired span can satisfy it. This
-    /// keeps fragmentation pressure separate from ordinary payload growth.
+    /// keeps fragmentation pressure separate from ordinary inline property bytes growth.
     pub fn inline_property_bytes_compaction_needed(
         &self,
         requested_bytes: u64,
@@ -380,7 +380,7 @@ where
                 bucket,
             )?
             .into_iter()
-            .map(|(_, payload)| payload)
+            .map(|(_, inline_property_bytes)| inline_property_bytes)
             .collect())
     }
 
@@ -399,10 +399,10 @@ where
             return dense
                 .into_iter()
                 .enumerate()
-                .map(|(slot, payload)| {
+                .map(|(slot, inline_property_bytes)| {
                     let slot = u32::try_from(slot)
                         .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-                    Ok((slot, payload))
+                    Ok((slot, inline_property_bytes))
                 })
                 .collect();
         }
@@ -446,7 +446,7 @@ where
         Ok(buf)
     }
 
-    /// Reads a contiguous span of payload bytes for a dense slab bucket.
+    /// Reads a contiguous span of inline property bytes for a dense slab bucket.
     ///
     /// `start_slot` and `slot_count` refer to bucket-local live ordinals (not physical slots).
     /// The caller must guarantee the bucket is dense and tombstone-free, i.e.
@@ -587,7 +587,7 @@ where
             .inline_property_bytes_offset()
             .checked_add(slab_bytes)
             .is_some_and(|end| end == self.values.header().slab_occupied_tail);
-        // Payload capacity is independent from the edge segment size.  A
+        // InlinePropertyBytes capacity is independent from the edge segment size.  A
         // inline-property-bearing bucket starts with one value-width entry and grows
         // in value-width byte units while its span remains extendable.  Once
         // a inline property bytes log exists, or the span is no longer at the slab tail,
@@ -742,7 +742,7 @@ where
         };
 
         // The retired tail no longer belongs to this bucket. Releasing it is
-        // payload-owned physical bookkeeping and does not touch edge metadata.
+        // inline-property-bytes-owned physical bookkeeping and does not touch edge metadata.
         let retired_offset = bucket
             .inline_property_bytes_offset()
             .checked_add(u64::from(new_slots) * u64::from(width))
@@ -965,7 +965,7 @@ where
         Ok(bucket)
     }
 
-    /// Updates the edge-inline-property-bytes payload for one live edge at `slot_index` inside `label_id`.
+    /// Updates the edge inline property bytes for one live edge at `slot_index` inside `label_id`.
     pub(crate) fn update_edge_inline_property_at_slot(
         &self,
         src: VertexId,
@@ -1134,7 +1134,7 @@ where
         self.attach_edge_inline_property_at_ordinal(src, &bucket, ordinal, edge, log_chains)
     }
 
-    /// Attaches payload at a known bucket-local live ordinal. Streaming scans already yield live
+    /// Attaches inline property bytes at a known bucket-local live ordinal. Streaming scans already yield live
     /// edges in ordinal order and must not rescan sparse edge state for every row.
     pub(super) fn attach_edge_inline_property_at_ordinal(
         &self,
@@ -1298,7 +1298,7 @@ mod tests {
     use crate::{VertexId, traverse::BucketEntryPosition};
     use std::ops::ControlFlow;
 
-    /// Move `road` off the payload-slab tail, then update its last edge.  The
+    /// Move `road` off the inline-property-bytes-slab tail, then update its last edge.  The
     /// update must use the independent inline property bytes log; this keeps log-oriented
     /// tests meaningful after inline property bytes slab growth stops being tied to the edge
     /// segment size.

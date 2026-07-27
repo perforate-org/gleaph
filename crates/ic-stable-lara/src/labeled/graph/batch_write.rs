@@ -12,7 +12,7 @@
 //!    returns a `BatchReservation` token that records the preflight snapshot
 //!    and required destination geometry.  If reserve fails part-way through
 //!    capacity reservation, it restores the logical edge-store capacity and the
-//!    inline property bytes occupied tail to their pre-reserve values.  Any payload bytes that
+//!    inline property bytes occupied tail to their pre-reserve values.  Any inline property bytes that
 //!    were already appended are retired to the inline property free-list as reusable
 //!    slack.  The underlying stable-memory pages are not shrunk.  Canonical
 //!    adjacency and bucket metadata are never modified.
@@ -57,7 +57,7 @@ pub struct OneOrientationBatchEdge<E>
 where
     E: CsrEdge,
 {
-    /// Stable logical ordinal from the caller's chunk; joins edge and payload.
+    /// Stable logical ordinal from the caller's chunk; joins edge and inline property bytes.
     pub logical_ordinal: u32,
     /// Vertex that owns the CSR row.
     pub owner_vertex_id: VertexId,
@@ -82,7 +82,7 @@ where
     pub owner_vertex_id: VertexId,
     /// Storage label, including directedness bit.
     pub label_id: BucketLabelKey,
-    /// Physical byte width per inline value slot (`0` = no payload).
+    /// Physical byte width per inline value slot (`0` = no inline_property_bytes).
     pub inline_property_width: u16,
     /// Edges in this bucket run, in strictly increasing logical ordinal order.
     pub edges: Vec<OneOrientationBatchEdge<E>>,
@@ -240,16 +240,16 @@ pub enum OneOrientationPhysicalLocation {
     Slab {
         /// Edge slab slot.
         edge_slot: u64,
-        /// Payload byte offset, when the edge carries an inline value.
+        /// InlinePropertyBytes byte offset, when the edge carries an inline value.
         inline_property_bytes_offset: Option<u64>,
     },
-    /// Edge overflow-log entry and optional payload-log entry.
+    /// Edge overflow-log entry and optional inline-property-bytes-log entry.
     OverflowLog {
         /// PMA leaf containing the log entry.
         leaf: u32,
         /// Edge overflow-log entry index.
         edge_entry_idx: u32,
-        /// Payload overflow-log entry index, when present.
+        /// InlinePropertyBytes overflow-log entry index, when present.
         inline_property_bytes_entry_idx: Option<u32>,
     },
 }
@@ -336,7 +336,7 @@ struct BatchReservationRun {
     bucket_fingerprint: BucketFingerprint,
     /// Number of edge slots reserved for the run.
     edge_slot_count: u32,
-    /// Byte width per inline value slot (`0` = no payload).
+    /// Byte width per inline value slot (`0` = no inline_property_bytes).
     inline_property_width: u16,
     /// Physical destination chosen at reservation time.
     destination: RunDestination,
@@ -391,9 +391,9 @@ pub enum OneOrientationBatchError {
     },
     /// Inline value width does not match the existing bucket schema.
     InlinePropertyBytesWidthMismatch {
-        /// Payload byte width declared by the label bucket.
+        /// InlinePropertyBytes byte width declared by the label bucket.
         bucket_width: u16,
-        /// Payload byte width carried by the edge.
+        /// InlinePropertyBytes byte width carried by the edge.
         edge_width: u16,
     },
     /// The slab window cannot hold the planned run.
@@ -406,14 +406,14 @@ pub enum OneOrientationBatchError {
         logical_ordinal: u32,
         /// Declared inline value width.
         expected_width: u16,
-        /// Actual payload byte length.
+        /// Actual inline property bytes length.
         actual_length: usize,
     },
-    /// Existing edge and payload overflow logs are not aligned by ordinal.
+    /// Existing edge and inline property bytes overflow logs are not aligned by ordinal.
     InlinePropertyBytesLogLengthMismatch {
         /// Number of resident edge overflow-log entries.
         edge_log_len: u32,
-        /// Number of resident payload overflow-log entries.
+        /// Number of resident inline property bytes overflow-log entries.
         inline_property_bytes_log_len: u32,
     },
     /// A stable-memory reservation or write failed.
@@ -431,10 +431,10 @@ enum RunDestination {
         edge_start_slot: u64,
         /// Byte offset in the inline property bytes slab where the run writes, if inline-property-bearing.
         inline_property_bytes_offset: Option<u64>,
-        /// Number of payload bytes reserved.
+        /// Number of inline property bytes reserved.
         inline_property_bytes_byte_count: u64,
     },
-    /// Append to the bucket's edge overflow log and, when applicable, payload overflow log.
+    /// Append to the bucket's edge overflow log and, when applicable, inline property bytes overflow log.
     OverflowLog {
         /// Index of the first reserved edge log entry.
         edge_log_start_idx: u32,
@@ -454,13 +454,13 @@ enum RunDestination {
         existing_bucket_slots: u32,
         /// Edge overflow-log entries that must be folded into the slab before writing.
         edge_log_len: u32,
-        /// Payload slab slots already resident (including any folded inline property bytes log).
+        /// InlinePropertyBytes slab slots already resident (including any folded inline property bytes log).
         existing_inline_property_bytes_slots: u32,
-        /// Payload overflow-log entries that must be folded before writing.
+        /// InlinePropertyBytes overflow-log entries that must be folded before writing.
         inline_property_bytes_log_len: u32,
         /// Byte offset in the inline property bytes slab where the bucket's expanded value span starts.
         inline_property_bytes_offset: Option<u64>,
-        /// Number of payload bytes reserved for the pending batch edges.
+        /// Number of inline property bytes reserved for the pending batch edges.
         inline_property_bytes_byte_count: u64,
     },
 }
@@ -546,8 +546,8 @@ where
     ///
     /// This is the `reserve` step of the ADR 0045 boundary.  It performs all
     /// fallible validation before any canonical write.  If reserve fails after
-    /// growing edge/payload backing capacity, it restores the logical edge-store
-    /// capacity and inline property bytes occupied tail to their pre-reserve values.  Payload
+    /// growing edge/inline-property-bytes backing capacity, it restores the logical edge-store
+    /// capacity and inline property bytes occupied tail to their pre-reserve values.  InlinePropertyBytes
     /// bytes that were already appended are retired to the inline property free-list
     /// as reusable slack; the underlying stable-memory pages are not shrunk.
     /// Canonical adjacency and bucket metadata are never modified.  On success
@@ -772,8 +772,8 @@ where
                     }
                 }
                 RunDestination::OverflowLog { .. } => {
-                    // Overflow-log runs do not allocate inline property bytes slab bytes; payload bytes
-                    // are written directly into the payload overflow log at commit time.
+                    // Overflow-log runs do not allocate inline property bytes slab bytes; inline property bytes
+                    // are written directly into the inline property bytes overflow log at commit time.
                     allocated_inline_property_bytes_offsets.push(None);
                 }
                 RunDestination::ExpandedSlab { .. } => {
@@ -860,7 +860,7 @@ where
                             {
                                 assert_eq!(
                                     actual_offset, offset,
-                                    "existing payload offset must not change during allocation"
+                                    "existing inline property bytes offset must not change during allocation"
                                 );
                             }
                             Some(actual_offset)
@@ -979,7 +979,7 @@ where
         Ok(())
     }
 
-    /// Roll back payload tail growth performed during a partially-failed reserve.
+    /// Roll back inline property bytes tail growth performed during a partially-failed reserve.
     ///
     /// All inline property bytes allocations in this batch append at the occupied tail, so the
     /// new bytes are exactly `[original_tail, current_tail)`.  We retire that
@@ -1113,7 +1113,7 @@ where
             .map_err(OneOrientationBatchError::from)?;
         // A bucket with an existing overflow chain must continue through the
         // log/fold path. Writing directly into its slab would leave the chain
-        // published alongside the new slab prefix and break edge/payload
+        // published alongside the new slab prefix and break edge/inline-property-bytes
         // ordinal alignment.
         if bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0 {
             return self.preflight_overflow_log_run(
@@ -1158,8 +1158,8 @@ where
                 .ok_or(OneOrientationBatchError::SlabCapacityExceeded)?;
         }
 
-        // Compute payload destination and allocation kind without mutating the
-        // payload store.  For a brand-new span we only record the required byte
+        // Compute inline property bytes destination and allocation kind without mutating the
+        // inline property bytes store.  For a brand-new span we only record the required byte
         // length; the actual offset is determined by the allocator in Phase 3.
         let mut inline_property_bytes_allocation = None;
         if run.inline_property_width > 0 {
@@ -1246,7 +1246,7 @@ where
             .ok_or(OneOrientationBatchError::LogCapacityExceeded)?;
 
         // Verify every inline-property-bearing edge matches the declared width and check
-        // payload overflow log capacity.
+        // inline property bytes overflow log capacity.
         let mut inline_property_bytes_byte_count: u64 = 0;
         let mut inline_property_bytes_log_start_idx = None;
         if run.inline_property_width > 0 {
@@ -1269,10 +1269,10 @@ where
 
             let inline_property_bytes_log_leaf =
                 self.inline_property_bytes_log_leaf(run.owner_vertex_id);
-            let (raw_payload_idx, inline_property_bytes_log_capacity) = self
+            let (raw_inline_property_bytes_idx, inline_property_bytes_log_capacity) = self
                 .values
                 .read_inline_property_bytes_log_state(inline_property_bytes_log_leaf);
-            let base_inline_property_bytes_idx = raw_payload_idx.max(0) as u32;
+            let base_inline_property_bytes_idx = raw_inline_property_bytes_idx.max(0) as u32;
             let inline_property_bytes_log_start_idx_virtual =
                 *inline_property_bytes_log_leaf_cursors
                     .entry(inline_property_bytes_log_leaf)
@@ -1691,7 +1691,7 @@ where
             .checked_add(total_edge_slots)
             .expect("reserve guaranteed num_edges overflow safety");
 
-        // First pass: write all edge and payload bytes.
+        // First pass: write all edge and inline property bytes.
         let mut edge_slots_written: u64 = 0;
         let mut edge_log_entries_written: u64 = 0;
         let mut inline_property_bytes_slots_written: u64 = 0;
@@ -1746,7 +1746,7 @@ where
                     }
 
                     if res.inline_property_width > 0 {
-                        let payload_offset = inline_property_bytes_offset.expect(
+                        let inline_property_bytes_offset = inline_property_bytes_offset.expect(
                             "reserve guaranteed an inline property byte offset for inline-property-bearing run",
                         );
                         let inline_property_bytes = run
@@ -1761,7 +1761,7 @@ where
                         );
                         graph
                             .values
-                            .write_bytes(payload_offset, &inline_property_bytes)
+                            .write_bytes(inline_property_bytes_offset, &inline_property_bytes)
                             .expect("reserve guaranteed inline property bytes slab capacity");
                         inline_property_bytes_slots_written = inline_property_bytes_slots_written
                             .checked_add(u64::from(res.edge_slot_count))
@@ -1967,7 +1967,7 @@ where
                         if bucket.inline_property_bytes_slab_slots() == 0 {
                             updated_bucket = updated_bucket.with_inline_property_bytes_offset(
                                 inline_property_bytes_offset.expect(
-                                    "reserve payload offset for new inline property bytes span",
+                                    "reserve inline_property_bytes offset for new inline property bytes span",
                                 ),
                             );
                         }
@@ -2167,7 +2167,7 @@ where
                         .checked_mul(inline_property_width)
                         .expect("reserve guaranteed pending inline property byte offset"),
                 )
-                .expect("reserve guaranteed pending payload offset")
+                .expect("reserve guaranteed pending inline_property_bytes offset")
         });
         let locations = if location_mode.captures() {
             run.edges
@@ -2216,10 +2216,10 @@ where
         let mut inline_property_bytes_slots_written: u64 = 0;
         if res.inline_property_width > 0 {
             let width = u64::from(res.inline_property_width);
-            let new_payload_offset = inline_property_bytes_offset
+            let new_inline_property_bytes_offset = inline_property_bytes_offset
                 .expect("reserve guaranteed inline property byte offset");
 
-            // Fold existing payload overflow-log entries into the slab.
+            // Fold existing inline property bytes overflow-log entries into the slab.
             if inline_property_bytes_log_len > 0 {
                 let inline_property_bytes_log_leaf = graph.inline_property_bytes_log_leaf(owner);
                 let chain = graph.values.inline_property_bytes_log_chain_asc_indices(
@@ -2237,7 +2237,7 @@ where
                             &mut buf,
                         )
                         .expect("reserve guaranteed inline property bytes log readability");
-                    let out_offset = new_payload_offset
+                    let out_offset = new_inline_property_bytes_offset
                         .checked_add(
                             u64::from(existing_inline_property_bytes_slots)
                                 .checked_add(offset as u64)
@@ -2245,7 +2245,7 @@ where
                                 .checked_mul(width)
                                 .expect("reserve guaranteed folded inline property byte offset"),
                         )
-                        .expect("reserve guaranteed folded payload offset");
+                        .expect("reserve guaranteed folded inline_property_bytes offset");
                     graph
                         .values
                         .write_bytes(out_offset, &buf)
@@ -2264,7 +2264,7 @@ where
                 inline_property_bytes_byte_count,
                 "reserve inline property byte count must match actual inline property bytes"
             );
-            let pending_payload_offset = new_payload_offset
+            let pending_inline_property_bytes_offset = new_inline_property_bytes_offset
                 .checked_add(
                     u64::from(existing_inline_property_bytes_slots)
                         .checked_add(u64::from(inline_property_bytes_log_len))
@@ -2272,10 +2272,13 @@ where
                         .checked_mul(width)
                         .expect("reserve guaranteed pending inline property byte offset"),
                 )
-                .expect("reserve guaranteed pending payload offset");
+                .expect("reserve guaranteed pending inline_property_bytes offset");
             graph
                 .values
-                .write_bytes(pending_payload_offset, &pending_inline_property_bytes)
+                .write_bytes(
+                    pending_inline_property_bytes_offset,
+                    &pending_inline_property_bytes,
+                )
                 .expect("reserve guaranteed inline property bytes slab capacity");
 
             let total_inline_property_bytes_slots = u64::from(existing_inline_property_bytes_slots)
@@ -2286,8 +2289,8 @@ where
                 .with_inline_property_bytes_slab_slots(total_inline_property_bytes_slots as u32)
                 .with_inline_property_bytes_log_head(-1);
             if existing_inline_property_bytes_slots == 0 {
-                updated_bucket =
-                    updated_bucket.with_inline_property_bytes_offset(new_payload_offset);
+                updated_bucket = updated_bucket
+                    .with_inline_property_bytes_offset(new_inline_property_bytes_offset);
             }
             inline_property_bytes_slots_written = u64::from(inline_property_bytes_log_len)
                 .checked_add(u64::from(res.edge_slot_count))
@@ -2347,11 +2350,11 @@ impl<E> BatchReservation<E>
 where
     E: CsrEdge,
 {
-    /// Roll back the capacity and payload reservations made by this reservation.
+    /// Roll back the capacity and inline property bytes reservations made by this reservation.
     ///
     /// This consumes the token and restores the edge-store logical capacity
     /// and inline property bytes occupied tail to the values captured before
-    /// `reserve_one_orientation_batch` mutated them.  Any payload bytes that
+    /// `reserve_one_orientation_batch` mutated them.  Any inline_property_bytes bytes that
     /// were already appended are retired to the inline property free-list as reusable
     /// slack; the underlying stable-memory pages are not shrunk.  Canonical
     /// adjacency and bucket metadata are untouched.  Because the token is
@@ -2377,7 +2380,7 @@ pub struct OneOrientationBatchResult {
     pub edge_log_entries_written: u32,
     /// Number of inline property bytes slab slots written.
     pub inline_property_bytes_slots_written: u32,
-    /// Number of payload overflow-log entries written.
+    /// Number of inline property bytes overflow-log entries written.
     pub inline_property_bytes_log_entries_written: u32,
     /// Exact physical locations when capture was requested. Aggregate-only
     /// commits leave this as `None` and do not allocate a location vector.
@@ -2460,7 +2463,7 @@ impl std::fmt::Display for OneOrientationBatchError {
             } => {
                 write!(
                     f,
-                    "payload length mismatch at ordinal {logical_ordinal}: expected {expected_width}, actual {actual_length}"
+                    "inline property bytes length mismatch at ordinal {logical_ordinal}: expected {expected_width}, actual {actual_length}"
                 )
             }
             Self::InlinePropertyBytesLogLengthMismatch {
@@ -2565,7 +2568,7 @@ mod tests {
     fn reserve_checks_total_edge_and_inline_property_bytes_slot_counts_fit_in_u32_results() {
         // `check_total_result_counts_fit_u32` rejects plans whose summed edge or
         // inline property bytes slot counts would not fit in the public `u32` result fields.
-        // Payload byte counts are irrelevant to this check; only slot counts matter.
+        // InlinePropertyBytes byte counts are irrelevant to this check; only slot counts matter.
         let check = |preflight: &[PreflightRun]| {
             super::LabeledLaraGraph::<GraphTestEdge, crate::VectorMemory>::check_total_result_counts_fit_u32(
                 preflight,

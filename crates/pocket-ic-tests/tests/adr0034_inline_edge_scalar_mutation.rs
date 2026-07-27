@@ -1,7 +1,7 @@
 //! PocketIC coverage for ADR 0034 Slice 22: ordinary GQL mutation packing into an inline scalar edge inline value.
 //!
 //! Router-resolved schema identifies the named inline property. Graph evaluates and validates the
-//! mutation value before writing, encodes it into the fixed-width payload, updates every physical
+//! mutation value before writing, encodes it into the fixed-width inline property bytes, updates every physical
 //! mirror of the logical edge, and never writes the matching property to the sidecar store.
 
 use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
@@ -40,7 +40,7 @@ fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, IcWireValue>> {
 // independently diagnosable phase that can be composed into fixture families.
 // ---------------------------------------------------------------------------
 
-fn scenario_insert_round_trips_through_payload(
+fn scenario_insert_round_trips_through_inline_property_bytes(
     env: &FederationEnv,
     value: u64,
     mutation_key: &str,
@@ -76,7 +76,7 @@ fn scenario_set_updates_inline_property(env: &FederationEnv, value: u64, mutatio
     );
 }
 
-fn scenario_remove_rejects_and_payload_unchanged(
+fn scenario_remove_rejects_and_inline_property_bytes_unchanged(
     env: &FederationEnv,
     expected: u64,
     mutation_key: &str,
@@ -165,7 +165,7 @@ fn scenario_insert_mixed_with_sidecar(env: &FederationEnv) {
 // ---------------------------------------------------------------------------
 // Fixture family 1: full successful mutation lifecycle over a single edge.
 // Former contracts preserved:
-//   - inline_scalar_insert_round_trips_through_payload
+//   - inline_scalar_insert_round_trips_through_inline_property_bytes
 //   - inline_scalar_set_updates_inline_property
 //   - inline_scalar_remove_rejects
 // ---------------------------------------------------------------------------
@@ -174,13 +174,21 @@ fn scenario_insert_mixed_with_sidecar(env: &FederationEnv) {
 fn inline_scalar_mutation_lifecycle() {
     let env = setup();
 
-    scenario_insert_round_trips_through_payload(&env, 7, "adr0034_inline_scalar_mutation_insert");
+    scenario_insert_round_trips_through_inline_property_bytes(
+        &env,
+        7,
+        "adr0034_inline_scalar_mutation_insert",
+    );
     scenario_assert_distance(&env, 7);
 
     scenario_set_updates_inline_property(&env, 9, "adr0034_inline_scalar_mutation_set");
     scenario_assert_distance(&env, 9);
 
-    scenario_remove_rejects_and_payload_unchanged(&env, 9, "adr0034_inline_scalar_mutation_remove");
+    scenario_remove_rejects_and_inline_property_bytes_unchanged(
+        &env,
+        9,
+        "adr0034_inline_scalar_mutation_remove",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +198,7 @@ fn inline_scalar_mutation_lifecycle() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn inline_scalar_mutation_mixed_persists_sidecar_and_payload() {
+fn inline_scalar_mutation_mixed_persists_sidecar_and_inline_property_bytes() {
     let env = setup();
     scenario_insert_mixed_with_sidecar(&env);
 }

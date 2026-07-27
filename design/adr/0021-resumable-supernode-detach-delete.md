@@ -292,8 +292,7 @@ into LARA:
   expand; `path.rs` for path finding; inline-property-bytes-batch visitors) — there is **no
   `_edges_iter` usage in the executor**. Switching to iterator-direct filtering
   would require rewriting expand/path execution **and** would lose the for_each
-  family's inline-property-bytes-batching / scratch-reuse optimizations (`_with_payloads`,
-  `_with_payload_slices_reusing`, edge/value batch paths), making
+  family's inline-property-bytes-batching / scratch-reuse optimizations (batched inline-property-bytes visitor closures, edge/value batch paths), making
   property-projecting traversals slower. The wrapper adds only ~1 inlined,
   gated branch per edge in steady state (off when `has_pending_vertex_purges()`).
 - **One predicate, few wrappers.** Visit shapes that carry the edge —
@@ -448,7 +447,7 @@ path is flipped to populate the set:
   budgeted purge leaves back-edges physically present but pending-gated
   (`vertex_hidden_by_pending_purge` true), then a full drain clears the pending set
   and removes every back-edge.
-- `detach_delete_hub_with_no_payload_in_edges_drains_every_back_edge`: end-to-end
+- `detach_delete_hub_with_no_inline_property_bytes_in_edges_drains_every_back_edge`: end-to-end
   public-API regression for the inline-property-bytes-free in-edge purge bug (8 distinct sources).
 - Combined with the Stage 2c gate tests (anonymous targets, expand candidates,
   end-to-end queries), this covers in-flight and post-completion visibility.

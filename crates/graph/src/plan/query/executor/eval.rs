@@ -3890,8 +3890,8 @@ mod tests {
             (EdgeInlinePropertyEncoding::RawI32, 4, &[0u8; 2]),
             (EdgeInlinePropertyEncoding::RawI64, 8, &[0u8; 4]),
         ];
-        for (encoding, width, payload) in cases {
-            let binding = inline_edge_binding(payload);
+        for (encoding, width, inline_property_bytes) in cases {
+            let binding = inline_edge_binding(inline_property_bytes);
             let table = resolved_label_table_with_inline(
                 7,
                 42,
@@ -3916,8 +3916,8 @@ mod tests {
             (EdgeInlinePropertyEncoding::RawU128, &[0u8; 8]),
             (EdgeInlinePropertyEncoding::RawI128, &[0u8; 8]),
         ];
-        for (encoding, payload) in cases {
-            let binding = inline_edge_binding(payload);
+        for (encoding, inline_property_bytes) in cases {
+            let binding = inline_edge_binding(inline_property_bytes);
             let table = resolved_label_table_with_inline(
                 7,
                 42,
@@ -3943,8 +3943,8 @@ mod tests {
             (EdgeInlinePropertyEncoding::F32, 4, &[0u8; 2]),
             (EdgeInlinePropertyEncoding::F64, 8, &[0u8; 4]),
         ];
-        for (encoding, width, payload) in cases {
-            let binding = inline_edge_binding(payload);
+        for (encoding, width, inline_property_bytes) in cases {
+            let binding = inline_edge_binding(inline_property_bytes);
             let table = resolved_label_table_with_inline(
                 7,
                 42,
@@ -3969,8 +3969,8 @@ mod tests {
             (EdgeInlinePropertyEncoding::RawFixed32, 32, &[0u8; 16]),
             (EdgeInlinePropertyEncoding::RawFixed64, 64, &[0u8; 32]),
         ];
-        for (encoding, width, payload) in cases {
-            let binding = inline_edge_binding(payload);
+        for (encoding, width, inline_property_bytes) in cases {
+            let binding = inline_edge_binding(inline_property_bytes);
             let table = resolved_label_table_with_inline(
                 7,
                 42,

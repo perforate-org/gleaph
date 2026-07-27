@@ -160,10 +160,12 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
         if error.is_some() {
             return;
         }
-        let Some(payload) = inline_property_bytes_by_slot.get(&edge.edge_slot_index.raw()) else {
+        let Some(inline_property_bytes) =
+            inline_property_bytes_by_slot.get(&edge.edge_slot_index.raw())
+        else {
             return;
         };
-        let edge = edge.with_inline_property_bytes(payload);
+        let edge = edge.with_inline_property_bytes(inline_property_bytes);
         match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
             Some(edge_dst) => {
                 push_scanned_value_expand_candidate(out, store, src_id, direction, edge_dst, edge)
@@ -569,7 +571,7 @@ fn expand_vector_dst_only_rows_combined_batch(
     Ok(())
 }
 
-/// Expand with index/payload/vector predicates decomposed across labels in `label_expr`.
+/// Expand with index/inline-property-bytes/vector predicates decomposed across labels in `label_expr`.
 ///
 /// Returns `true` when fusion ran (including zero matches). Returns `false` when the caller
 /// should use the generic `expand_candidates_into` path.

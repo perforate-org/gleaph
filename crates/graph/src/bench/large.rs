@@ -607,7 +607,7 @@ fn bench_graph_large_expand_skewed_noise_50k_a_1k_b() -> canbench_rs::BenchResul
 const DELETE_SUPERNODE_IN_L: u32 = 500;
 const DELETE_SUPERNODE_IN_XL: u32 = 1_000;
 
-/// Super-node detach-delete: hub fed by 500 payload-free in-edges. Measures the
+/// Super-node detach-delete: hub fed by 500 inline_property_bytes-free in-edges. Measures the
 /// full synchronous reverse-adjacency purge under one delete call (ADR 0021).
 #[bench(raw)]
 fn bench_graph_large_detach_delete_supernode_500in() -> canbench_rs::BenchResult {
@@ -623,7 +623,7 @@ fn bench_graph_large_detach_delete_supernode_500in() -> canbench_rs::BenchResult
     })
 }
 
-/// Super-node detach-delete: hub fed by 1,000 payload-free in-edges (ADR 0021).
+/// Super-node detach-delete: hub fed by 1,000 inline_property_bytes-free in-edges (ADR 0021).
 #[bench(raw)]
 fn bench_graph_large_detach_delete_supernode_1k_in() -> canbench_rs::BenchResult {
     let store = GraphStore::new();

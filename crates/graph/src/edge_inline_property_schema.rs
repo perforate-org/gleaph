@@ -64,10 +64,10 @@ pub(crate) fn edge_label_ids_for_predicate_fusion(
     labels: Option<&ResolvedLabelTable>,
 ) -> Vec<EdgeLabelId> {
     if let Some(table) = labels {
-        return table.edge_label_ids_with_nonzero_payload();
+        return table.edge_label_ids_with_nonzero_inline_property_bytes();
     }
     if let Some(table) = ACTIVE_RESOLVED_LABELS.with(|cell| cell.borrow().clone()) {
-        return table.edge_label_ids_with_nonzero_payload();
+        return table.edge_label_ids_with_nonzero_inline_property_bytes();
     }
     #[cfg(any(test, feature = "canbench"))]
     {

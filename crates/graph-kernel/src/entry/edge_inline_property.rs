@@ -532,10 +532,10 @@ mod tests {
         let profile = EdgeInlinePropertyProfile::opaque_bytes(12);
         profile.validate().expect("opaque width 12 valid");
         let dec = profile.prepare().expect("prepare");
-        let payload: Vec<u8> = (0..12).map(|i| i as u8).collect();
+        let inline_property_bytes: Vec<u8> = (0..12).map(|i| i as u8).collect();
         assert_eq!(
-            decode_edge_inline_property(&dec, &payload).expect("decode"),
-            DecodedEdgeInlinePropertyBytes::Bytes(payload)
+            decode_edge_inline_property(&dec, &inline_property_bytes).expect("decode"),
+            DecodedEdgeInlinePropertyBytes::Bytes(inline_property_bytes)
         );
     }
 

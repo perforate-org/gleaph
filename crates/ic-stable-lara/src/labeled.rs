@@ -114,7 +114,7 @@ pub struct InitialCapacities {
     pub bucket_slots: u64,
     /// Initial number of edge slots per orientation.
     pub edge_slots: u64,
-    /// Initial byte capacity of the inline-payload slab per orientation.
+    /// Initial byte capacity of the inline-property-bytes slab per orientation.
     pub inline_property_bytes: u64,
 }
 

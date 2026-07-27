@@ -186,7 +186,7 @@ pub trait CsrEdge: Clone {
         &[]
     }
 
-    /// Returns a copy with in-memory payload bytes attached (wire row unchanged).
+    /// Returns a copy with in-memory inline property bytes attached (wire row unchanged).
     #[inline]
     fn with_stored_inline_property_bytes(self, _width: u16, _bytes: &[u8]) -> Self {
         self

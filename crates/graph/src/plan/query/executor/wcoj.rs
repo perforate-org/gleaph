@@ -188,7 +188,10 @@ mod tests {
     use super::super::test_support::*;
     use gleaph_gql_planner::plan::PlanOp;
 
-    fn install_wcoj_triangle(store: &GraphStore, payload: &[u8]) -> (VertexId, VertexId, VertexId) {
+    fn install_wcoj_triangle(
+        store: &GraphStore,
+        inline_property_bytes: &[u8],
+    ) -> (VertexId, VertexId, VertexId) {
         use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
         let label_id = crate::test_labels::edge_label_id_for_name("WcojTriRel");
         crate::test_labels::install_test_edge_inline_property_profile(
@@ -208,13 +211,28 @@ mod tests {
             .insert_vertex_named(["WcojTriNode"], Vec::<(&str, Value)>::new())
             .expect("c");
         store
-            .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), payload)
+            .insert_directed_edge_with_inline_property_bytes(
+                a,
+                b,
+                Some(label_id),
+                inline_property_bytes,
+            )
             .expect("a-b");
         store
-            .insert_directed_edge_with_inline_property_bytes(b, c, Some(label_id), payload)
+            .insert_directed_edge_with_inline_property_bytes(
+                b,
+                c,
+                Some(label_id),
+                inline_property_bytes,
+            )
             .expect("b-c");
         store
-            .insert_directed_edge_with_inline_property_bytes(c, a, Some(label_id), payload)
+            .insert_directed_edge_with_inline_property_bytes(
+                c,
+                a,
+                Some(label_id),
+                inline_property_bytes,
+            )
             .expect("c-a");
         (a, b, c)
     }
@@ -222,8 +240,8 @@ mod tests {
     #[test]
     fn wcoj_triangle_finds_directed_cycle() {
         let store = GraphStore::new();
-        let payload = 3u16.to_le_bytes();
-        install_wcoj_triangle(&store, &payload);
+        let inline_property_bytes = 3u16.to_le_bytes();
+        install_wcoj_triangle(&store, &inline_property_bytes);
         let plan = plan_gql(
             "MATCH (a:WcojTriNode)-[:WcojTriRel]->(b:WcojTriNode)-[:WcojTriRel]->(c:WcojTriNode)-[:WcojTriRel]->(a) \
              RETURN a",
@@ -247,8 +265,8 @@ mod tests {
     #[test]
     fn wcoj_triangle_hop_aux_returns_referenced_edge_inline_property() {
         let store = GraphStore::new();
-        let payload = 9u16.to_le_bytes();
-        install_wcoj_triangle(&store, &payload);
+        let inline_property_bytes = 9u16.to_le_bytes();
+        install_wcoj_triangle(&store, &inline_property_bytes);
         let plan = plan_gql(
             "MATCH (a:WcojTriNode)-[e1:WcojTriRel]->(b:WcojTriNode)-[e2:WcojTriRel]->(c:WcojTriNode)-[e3:WcojTriRel]->(a) \
              RETURN e1__hop_aux AS aux",
@@ -270,7 +288,7 @@ mod tests {
             result
                 .rows
                 .iter()
-                .all(|row| row.get("aux") == Some(&Value::Bytes(payload.to_vec()))),
+                .all(|row| row.get("aux") == Some(&Value::Bytes(inline_property_bytes.to_vec()))),
             "rows={:?}",
             result.rows
         );

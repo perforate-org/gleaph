@@ -59,13 +59,13 @@ pub struct LabelBucketPlacementInfo {
     pub edge_overflow_log_head: i32,
     /// Number of edges stored in the per-bucket overflow log chain.
     pub edge_overflow_log_len: u32,
-    /// Physical byte width per inline value slot (`0` = no payload).
+    /// Physical byte width per inline value slot (`0` = no inline property bytes).
     pub inline_property_byte_width: u16,
     /// Inline-value slab slots reserved for this bucket.
     pub inline_property_bytes_slab_slots: u32,
-    /// Payload overflow log head, or `-1` when all values are on the slab.
+    /// InlinePropertyBytes overflow log head, or `-1` when all values are on the slab.
     pub inline_property_bytes_overflow_log_head: i32,
-    /// Number of values stored in the per-bucket payload overflow log chain.
+    /// Number of values stored in the per-bucket inline property bytes overflow log chain.
     pub inline_property_bytes_overflow_log_len: u32,
 }
 
@@ -681,7 +681,7 @@ where
             if vertex.is_default_edge_labeled() {
                 // Default-label bypass rows still occupy the shared edge PMA
                 // span/log for this leaf.  They have no label buckets or
-                // payload domain, but omitting their edge occupancy would make
+                // inline property bytes domain, but omitting their edge occupancy would make
                 // a labeled batch under-project leaf geometry.
                 stats.total_stored_edge_slots = stats
                     .total_stored_edge_slots

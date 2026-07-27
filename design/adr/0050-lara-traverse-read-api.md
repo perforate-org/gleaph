@@ -231,7 +231,7 @@ the condition to `Missing`. Width zero performs no property read and returns an 
 - names without a suffix return live topology only; and
 - names ending in `_with_inline_property` return `EdgeWithInlineProperty<E>` for each live row.
 
-Boolean `attach_payload`/`attach_inline_property` flags are private implementation details and are
+Boolean `attach_inline_property_bytes` flags are private implementation details and are
 not exposed in the consolidated surface.
 
 The target term `inline_property` is used consistently. `payload` is not used in new API names

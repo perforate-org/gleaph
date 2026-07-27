@@ -599,7 +599,7 @@ pub struct ResolvedVertexLabel {
 ///
 /// Router derives this from the canonical declaration order; Graph receives it as a plan-scoped
 /// projection and must not persist or infer it. Each descriptor carries only the data Graph needs
-/// to validate and decode the payload slice: field name, byte offset, and exact scalar profile.
+/// to validate and decode the inline property bytes slice: field name, byte offset, and exact scalar profile.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ResolvedInlineStructField {
     pub name: String,
@@ -725,7 +725,7 @@ impl ResolvedLabelTable {
         self.edge.iter().find(|entry| entry.id == id)
     }
 
-    pub fn edge_label_ids_with_nonzero_payload(&self) -> Vec<EdgeLabelId> {
+    pub fn edge_label_ids_with_nonzero_inline_property_bytes(&self) -> Vec<EdgeLabelId> {
         self.edge
             .iter()
             .filter(|entry| entry.inline_property_profile.required_byte_width() > 0)
