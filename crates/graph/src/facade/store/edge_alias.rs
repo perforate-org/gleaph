@@ -154,18 +154,16 @@ impl GraphStore {
         handle: EdgeHandle,
         orientation: LabeledOrientation,
     ) -> Result<EdgeHandle, CounterpartLookupError> {
+        self.scan_only_canonical_edge_handle_from_occurrence(handle.occurrence(orientation))
+    }
+
+    pub(crate) fn scan_only_canonical_edge_handle_from_occurrence(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+    ) -> Result<EdgeHandle, CounterpartLookupError> {
         GRAPH
             .with_borrow(|graph| {
-                counterpart::canonical_handle(
-                    graph.forward(),
-                    graph.reverse(),
-                    CanonicalEdgeOccurrence {
-                        orientation,
-                        owner_vertex_id: handle.owner_vertex_id,
-                        label_id: handle.label_id,
-                        slot_index: handle.slot_index.raw().into(),
-                    },
-                )
+                counterpart::canonical_handle(graph.forward(), graph.reverse(), occurrence)
             })
             .map(|canonical| {
                 EdgeHandle::at_slot(
@@ -174,6 +172,19 @@ impl GraphStore {
                     canonical.slot_index.raw(),
                 )
             })
+    }
+
+    /// Resolves the canonical sidecar handle for a [`CanonicalEdgeOccurrence`] and maps
+    /// [`CounterpartLookupError`] into the owning [`GraphStoreError`].
+    ///
+    /// This is the ADR 0048 CounterpartScan boundary used by the edge-property sidecar group;
+    /// it does not fall back to `EDGE_ALIASES`.
+    pub(crate) fn canonical_edge_handle_from_occurrence(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+    ) -> Result<EdgeHandle, GraphStoreError> {
+        self.scan_only_canonical_edge_handle_from_occurrence(occurrence)
+            .map_err(GraphStoreError::from)
     }
 
     /// Internal comparison bridge for the dormant ADR 0048 Published mate primitive.  Existing

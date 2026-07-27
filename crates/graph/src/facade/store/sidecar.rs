@@ -30,7 +30,8 @@ impl GraphStore {
     pub(super) fn commit_clear_edge_sidecars(&self, handle: EdgeHandle) {
         let handle = self.canonical_edge_handle_for_sidecar(handle);
         self.commit_clear_edge_local_indexes(handle);
-        self.commit_remove_all_edge_properties(handle);
+        let _ =
+            self.commit_remove_all_edge_properties(handle.occurrence(LabeledOrientation::Forward));
     }
 
     pub(super) fn clear_edge_sidecars(&self, handle: EdgeHandle) {
@@ -88,14 +89,33 @@ mod tests {
             .get_or_insert_property_id("weight")
             .expect("property id");
         store
-            .set_edge_property(handle, property, Value::Int64(7))
+            .set_edge_property(
+                handle.occurrence(LabeledOrientation::Forward),
+                property,
+                Value::Int64(7),
+            )
             .expect("set property");
-        assert_eq!(store.edge_property(handle, property), Some(Value::Int64(7)));
+        assert_eq!(
+            store
+                .edge_property(handle.occurrence(LabeledOrientation::Forward), property)
+                .unwrap(),
+            Some(Value::Int64(7))
+        );
 
         store.commit_clear_edge_sidecars(handle);
 
-        assert_eq!(store.edge_property(handle, property), None);
-        assert!(store.edge_properties(handle).is_empty());
+        assert_eq!(
+            store
+                .edge_property(handle.occurrence(LabeledOrientation::Forward), property)
+                .unwrap(),
+            None
+        );
+        assert!(
+            store
+                .edge_properties(handle.occurrence(LabeledOrientation::Forward))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -117,7 +137,11 @@ mod tests {
             .expect("property id");
         for (index, handle) in handles.into_iter().enumerate() {
             store
-                .set_edge_property(handle, property, Value::Int64(index as i64))
+                .set_edge_property(
+                    handle.occurrence(LabeledOrientation::Forward),
+                    property,
+                    Value::Int64(index as i64),
+                )
                 .expect("set property");
         }
 
@@ -140,15 +164,33 @@ mod tests {
         );
 
         assert_eq!(
-            store.edge_property(EdgeHandle::at_slot(owner, handles[0].label_id, 0), property),
+            store
+                .edge_property(
+                    EdgeHandle::at_slot(owner, handles[0].label_id, 0)
+                        .occurrence(LabeledOrientation::Forward),
+                    property
+                )
+                .unwrap(),
             Some(Value::Int64(1))
         );
         assert_eq!(
-            store.edge_property(EdgeHandle::at_slot(owner, handles[0].label_id, 1), property),
+            store
+                .edge_property(
+                    EdgeHandle::at_slot(owner, handles[0].label_id, 1)
+                        .occurrence(LabeledOrientation::Forward),
+                    property
+                )
+                .unwrap(),
             Some(Value::Int64(2))
         );
         assert_eq!(
-            store.edge_property(EdgeHandle::at_slot(owner, handles[0].label_id, 2), property),
+            store
+                .edge_property(
+                    EdgeHandle::at_slot(owner, handles[0].label_id, 2)
+                        .occurrence(LabeledOrientation::Forward),
+                    property
+                )
+                .unwrap(),
             None
         );
     }

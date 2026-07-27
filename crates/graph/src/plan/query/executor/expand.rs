@@ -9,6 +9,7 @@ use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIn
 use gleaph_graph_kernel::federation::GlobalVertexId;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::{CanonicalEdgeOccurrence, LabeledOrientation};
 use ic_stable_lara::traits::CsrEdge;
 use nohash_hasher::IntSet;
 
@@ -82,6 +83,40 @@ fn canonical_forward_owner_for_expand(
     })
 }
 
+/// Builds the orientation-aware physical occurrence for an expanded edge before
+/// CounterpartScan canonicalization.
+fn canonical_edge_occurrence_for_expand(
+    probe_vertex_id: VertexId,
+    direction: EdgeDirection,
+    edge: &Edge,
+) -> Result<CanonicalEdgeOccurrence, PlanQueryError> {
+    let label_id = LaraLabelId::from_raw(edge.label_id);
+    let slot_index = edge.edge_slot_index.raw().into();
+    Ok(match direction {
+        EdgeDirection::PointingRight => CanonicalEdgeOccurrence {
+            orientation: LabeledOrientation::Forward,
+            owner_vertex_id: probe_vertex_id,
+            label_id,
+            slot_index,
+        },
+        EdgeDirection::PointingLeft => CanonicalEdgeOccurrence {
+            orientation: LabeledOrientation::Reverse,
+            owner_vertex_id: probe_vertex_id,
+            label_id,
+            slot_index,
+        },
+        EdgeDirection::Undirected => CanonicalEdgeOccurrence {
+            orientation: LabeledOrientation::Forward,
+            // The scanned edge record came from the probe's own forward bucket, so the
+            // CounterpartScan source occurrence must be anchored there. The canonical handle
+            // is still derived by resolving the counterpart and choosing max(endpoint).
+            owner_vertex_id: probe_vertex_id,
+            label_id,
+            slot_index,
+        },
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    })
+}
 /// Builds an expand edge binding from an edge already returned by CSR traversal.
 ///
 /// Prefer this over [`edge_binding_for_expand`] on hot scan paths: the lookup variant
@@ -92,24 +127,18 @@ pub(crate) fn edge_binding_for_scanned_expand(
     direction: EdgeDirection,
     edge: Edge,
 ) -> Result<EdgeBinding, PlanQueryError> {
-    edge_binding_handle_for_scanned_expand(store, probe_vertex_id, direction, &edge)
-        .map(|handle| EdgeBinding::from_edge(handle, edge))
-}
-
-/// Builds an edge handle for a scanned CSR row without copying stored inline property bytes.
-pub(crate) fn edge_binding_handle_for_scanned_expand(
-    store: &GraphStore,
-    probe_vertex_id: VertexId,
-    direction: EdgeDirection,
-    edge: &Edge,
-) -> Result<EdgeHandle, PlanQueryError> {
     let owner_vertex_id =
-        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, edge)?;
-    Ok(EdgeHandle {
+        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, &edge)?;
+    let handle = EdgeHandle {
         owner_vertex_id,
         label_id: LaraLabelId::from_raw(edge.label_id),
         slot_index: edge.edge_slot_index.raw().into(),
-    })
+    };
+    let occurrence = canonical_edge_occurrence_for_expand(probe_vertex_id, direction, &edge)?;
+    let canonical_handle = store
+        .canonical_edge_handle_from_occurrence(occurrence)
+        .map_err(PlanQueryError::from)?;
+    Ok(EdgeBinding::from_edge(handle, edge).with_canonical_handle(canonical_handle))
 }
 
 pub(crate) fn edge_binding_for_expand(
@@ -129,7 +158,11 @@ pub(crate) fn edge_binding_for_expand(
         .find_outgoing_edge_record(handle)
         .map_err(PlanQueryError::from)?
         .unwrap_or_else(|| edge.clone());
-    Ok(EdgeBinding::from_edge(handle, record))
+    let occurrence = canonical_edge_occurrence_for_expand(probe_vertex_id, direction, &edge)?;
+    let canonical_handle = store
+        .canonical_edge_handle_from_occurrence(occurrence)
+        .map_err(PlanQueryError::from)?;
+    Ok(EdgeBinding::from_edge(handle, record).with_canonical_handle(canonical_handle))
 }
 
 fn push_expand_candidate(
@@ -324,20 +357,15 @@ fn edge_matches_indexed_equality(
     scan_value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<bool, PlanQueryError> {
+    let _ = (label_id, edge_slot_index);
     let Some(property_id) = execution.resolved_property_id(property) else {
         return Ok(false);
     };
     let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
         return Ok(false);
     };
-    let owner_vertex_id =
-        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, edge)?;
-    let handle = EdgeHandle {
-        owner_vertex_id,
-        label_id,
-        slot_index: edge_slot_index.raw().into(),
-    };
-    let Some(actual) = store.edge_property(handle, property_id) else {
+    let occurrence = canonical_edge_occurrence_for_expand(probe_vertex_id, direction, edge)?;
+    let Some(actual) = store.edge_property(occurrence, property_id)? else {
         return Ok(false);
     };
     let actual_bytes =
@@ -433,6 +461,7 @@ pub(crate) fn edge_matches_stream_filter(
     owner_vertex_id: VertexId,
     label_id: LaraLabelId,
     edge_slot_index: EdgeSlotIndex,
+    canonical_handle: EdgeHandle,
 ) -> Result<bool, PlanQueryError> {
     match filter {
         EdgeEqualityStreamFilter::None => Ok(true),
@@ -493,12 +522,11 @@ pub(crate) fn edge_matches_stream_filter(
             property_id,
             expected,
         } => {
-            let handle = EdgeHandle {
-                owner_vertex_id,
-                label_id,
-                slot_index: edge_slot_index.raw().into(),
-            };
-            let Some(actual) = store.edge_property(handle, *property_id) else {
+            let Some(actual) = store.edge_property(
+                canonical_handle.occurrence(LabeledOrientation::Forward),
+                *property_id,
+            )?
+            else {
                 return Ok(false);
             };
             let actual_bytes = value_to_index_key_bytes(&actual).map_err(|_| {

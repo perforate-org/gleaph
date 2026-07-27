@@ -156,11 +156,14 @@ mod tests {
         let handle = store
             .insert_directed_edge(owner, neighbor, None)
             .expect("edge");
-        let canonical = store.canonical_edge_handle(handle);
         let pid = PropertyId::from_raw(12);
         let _guard = enter_edge_indexed(&[pid]);
         store
-            .set_edge_property(canonical, pid, Value::Int64(3))
+            .set_edge_property(
+                handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                pid,
+                Value::Int64(3),
+            )
             .expect("set");
         let key = gleaph_gql::value_to_index_key_bytes(&Value::Int64(3))
             .unwrap()

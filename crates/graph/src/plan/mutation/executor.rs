@@ -20,7 +20,9 @@ use gleaph_graph_kernel::plan_exec::{
     ConstrainedPropertyDispatch, LabelStatsDelta, ResolvedInlineSchema,
 };
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::OutEdgeOrder;
+#[cfg(test)]
+use ic_stable_lara::bidirectional::counterpart::CounterpartLookupError;
+use ic_stable_lara::labeled::{LabeledOrientation, OutEdgeOrder};
 use ic_stable_lara::traits::CsrEdge;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -604,9 +606,11 @@ fn execute_set_item(
                         encode_inline_edge_property(execution, *edge, property_id, &value)?;
                     store.update_edge_inline_property_at_handle(*edge, &inline_property_bytes)?;
                 } else {
-                    store
-                        .set_edge_property(*edge, property_id, value)
-                        .map_err(GraphStoreError::from)?;
+                    store.set_edge_property(
+                        edge.occurrence(LabeledOrientation::Forward),
+                        property_id,
+                        value,
+                    )?;
                 }
                 return Ok(());
             }
@@ -689,16 +693,21 @@ fn execute_set_all_properties(
     if let Some(edge) = bindings.edges.get(variable.as_ref()) {
         let (inline_property_bytes, sidecar_fields) =
             prepare_edge_record_replacement(execution, *edge, fields)?;
-        for (property_id, _) in store.edge_properties(*edge) {
-            store.remove_edge_property(*edge, property_id);
+        for (property_id, _) in
+            store.edge_properties(edge.occurrence(LabeledOrientation::Forward))?
+        {
+            store
+                .remove_edge_property(edge.occurrence(LabeledOrientation::Forward), property_id)?;
         }
         if let Some(bytes) = inline_property_bytes {
             store.update_edge_inline_property_at_handle(*edge, &bytes)?;
         }
         for (property_id, value) in sidecar_fields {
-            store
-                .set_edge_property(*edge, property_id, value)
-                .map_err(GraphStoreError::from)?;
+            store.set_edge_property(
+                edge.occurrence(LabeledOrientation::Forward),
+                property_id,
+                value,
+            )?;
         }
         return Ok(());
     }
@@ -761,7 +770,10 @@ fn execute_remove_item(
                         property: property.to_string(),
                     });
                 }
-                store.remove_edge_property(*edge, property_id);
+                store.remove_edge_property(
+                    edge.occurrence(LabeledOrientation::Forward),
+                    property_id,
+                )?;
                 return Ok(());
             }
 
@@ -1618,7 +1630,12 @@ mod tests {
             Some(Value::Text("Alice".into()))
         );
         assert_eq!(edge.owner_vertex_id, a);
-        assert_eq!(store.edge_property(edge, since), Some(Value::Int64(2026)));
+        assert_eq!(
+            store
+                .edge_property(edge.occurrence(LabeledOrientation::Forward), since)
+                .unwrap(),
+            Some(Value::Int64(2026))
+        );
         assert!(
             store
                 .directed_out_edges(a)
@@ -1720,7 +1737,12 @@ mod tests {
             store.vertex_property(bindings.vertices["a"], name),
             Some(Value::Text("Alice".into()))
         );
-        assert_eq!(store.edge_property(edge, weight), Some(Value::Int64(7)));
+        assert_eq!(
+            store
+                .edge_property(edge.occurrence(LabeledOrientation::Forward), weight)
+                .unwrap(),
+            Some(Value::Int64(7))
+        );
     }
 
     #[test]
@@ -1782,7 +1804,12 @@ mod tests {
         let edge = bindings.edges["e"];
 
         assert_eq!(store.vertex_property(bindings.vertices["a"], name), None);
-        assert_eq!(store.edge_property(edge, weight), None);
+        assert_eq!(
+            store
+                .edge_property(edge.occurrence(LabeledOrientation::Forward), weight)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -1895,8 +1922,18 @@ mod tests {
         let weight = crate::test_labels::property_id_for_name("weight");
         let stale = crate::test_labels::property_id_for_name("stale");
 
-        assert_eq!(store.edge_property(edge, weight), Some(Value::Int64(9)));
-        assert_eq!(store.edge_property(edge, stale), None);
+        assert_eq!(
+            store
+                .edge_property(edge.occurrence(LabeledOrientation::Forward), weight)
+                .unwrap(),
+            Some(Value::Int64(9))
+        );
+        assert_eq!(
+            store
+                .edge_property(edge.occurrence(LabeledOrientation::Forward), stale)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -2866,7 +2903,17 @@ mod tests {
         let w = crate::test_labels::property_id_for_name("w");
         let e = bindings.edges["e"];
 
-        assert_eq!(store.edge_property(e, w), None);
+        // After the incident edge was deleted the original occurrence is stale;
+        // fail-closed resolution returns SourceNotFound instead of returning None.
+        assert!(
+            matches!(
+                store.edge_property(e.occurrence(LabeledOrientation::Forward), w),
+                Err(GraphStoreError::CounterpartLookup(
+                    CounterpartLookupError::SourceNotFound(_)
+                ))
+            ),
+            "stale edge handle must fail closed after detach delete"
+        );
         assert!(store.directed_in_edges(b).expect("in edges").is_empty());
         assert!(store.directed_out_edges(b).expect("out edges").is_empty());
 
@@ -2930,13 +2977,19 @@ mod tests {
                 .expect("out edges after delete")
                 .is_empty()
         );
-        assert_eq!(
-            store.edge_properties(EdgeHandle {
-                owner_vertex_id: a,
-                label_id: LaraLabelId::from_raw(0),
-                slot_index: 1.into(),
-            }),
-            Vec::<(PropertyId, Value)>::new()
+        // After the edge is deleted the original occurrence is stale; fail-closed
+        // resolution returns SourceNotFound instead of silently reading an empty vec.
+        assert!(
+            matches!(
+                store.edge_properties(
+                    EdgeHandle::at_slot(a, LaraLabelId::from_raw(0), 1)
+                        .occurrence(LabeledOrientation::Forward)
+                ),
+                Err(GraphStoreError::CounterpartLookup(
+                    CounterpartLookupError::SourceNotFound(_)
+                ))
+            ),
+            "stale edge handle must fail closed after delete"
         );
     }
 
@@ -2984,13 +3037,19 @@ mod tests {
 
         assert!(store.directed_out_edges(low).unwrap().is_empty());
         assert!(store.directed_out_edges(high).unwrap().is_empty());
-        assert_eq!(
-            store.edge_properties(EdgeHandle {
-                owner_vertex_id: owner,
-                label_id: LaraLabelId::from_raw(0),
-                slot_index: 1.into(),
-            }),
-            Vec::<(PropertyId, Value)>::new()
+        // After the edge is deleted the original occurrence is stale; fail-closed
+        // resolution returns SourceNotFound instead of silently reading an empty vec.
+        assert!(
+            matches!(
+                store.edge_properties(
+                    EdgeHandle::at_slot(owner, LaraLabelId::from_raw(0), 1)
+                        .occurrence(LabeledOrientation::Forward)
+                ),
+                Err(GraphStoreError::CounterpartLookup(
+                    CounterpartLookupError::SourceNotFound(_)
+                ))
+            ),
+            "stale edge handle must fail closed after delete"
         );
     }
 
@@ -3318,7 +3377,12 @@ mod tests {
             Some(7u16.to_le_bytes().to_vec())
         );
         // Sidecar must not contain the inline property.
-        assert_eq!(store.edge_properties(bindings.edges["e"]), Vec::new());
+        assert_eq!(
+            store
+                .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+                .unwrap(),
+            Vec::new()
+        );
     }
 
     #[test]
@@ -3471,7 +3535,12 @@ mod tests {
             find_in_edge_inline_property(&store, b, a),
             Some(9u16.to_le_bytes().to_vec())
         );
-        assert_eq!(store.edge_properties(bindings.edges["e"]), Vec::new());
+        assert_eq!(
+            store
+                .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+                .unwrap(),
+            Vec::new()
+        );
     }
 
     #[test]
@@ -3524,7 +3593,9 @@ mod tests {
             find_out_edge_inline_property(&store, a, b),
             Some(7u16.to_le_bytes().to_vec())
         );
-        let sidecar = store.edge_properties(bindings.edges["e"]);
+        let sidecar = store
+            .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+            .unwrap();
         assert_eq!(sidecar, vec![(note, Value::Text("hello".into()))]);
     }
 
@@ -3774,7 +3845,9 @@ mod tests {
             find_out_edge_inline_property(&store, a, b),
             Some(9u16.to_le_bytes().to_vec())
         );
-        let sidecar = store.edge_properties(bindings.edges["e"]);
+        let sidecar = store
+            .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+            .unwrap();
         assert_eq!(sidecar, vec![(note, Value::Text("new".into()))]);
     }
 
@@ -3882,7 +3955,9 @@ mod tests {
             Some(Vec::new())
         );
         assert_eq!(
-            store.edge_properties(bindings.edges["e"]),
+            store
+                .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+                .unwrap(),
             vec![(weight, Value::Int64(7))]
         );
     }
@@ -4061,7 +4136,9 @@ mod tests {
             Some(7u16.to_le_bytes().to_vec())
         );
         assert_eq!(
-            store.edge_properties(edge_handle),
+            store
+                .edge_properties(edge_handle.occurrence(LabeledOrientation::Forward))
+                .unwrap(),
             vec![(note, Value::Text("old".into()))]
         );
     }
@@ -4357,7 +4434,11 @@ mod tests {
 
         let note_property_id = resolve_property_id_or_name(&store, "note");
         store
-            .set_edge_property(handle, note_property_id, Value::Text("old".into()))
+            .set_edge_property(
+                handle.occurrence(LabeledOrientation::Forward),
+                note_property_id,
+                Value::Text("old".into()),
+            )
             .expect("seed sidecar value");
 
         let ops = vec![PlanOp::SetProperties {
@@ -4394,7 +4475,9 @@ mod tests {
         // Existing sidecar value must survive: preflight rejected the replacement before removing
         // any property.
         assert_eq!(
-            store.edge_properties(handle),
+            store
+                .edge_properties(handle.occurrence(LabeledOrientation::Forward))
+                .unwrap(),
             vec![(note_property_id, Value::Text("old".into()))]
         );
     }
@@ -4410,7 +4493,7 @@ mod tests {
         // sidecar property "note" is not the top-level inline property "stats"
         store
             .set_edge_property(
-                handle,
+                handle.occurrence(LabeledOrientation::Forward),
                 resolve_property_id_or_name(&store, "note"),
                 Value::Text("old".into()),
             )
@@ -4447,7 +4530,9 @@ mod tests {
 
         // Sidecar value must be untouched: the mutation failed before any store write.
         assert_eq!(
-            store.edge_properties(handle),
+            store
+                .edge_properties(handle.occurrence(LabeledOrientation::Forward))
+                .unwrap(),
             vec![(
                 resolve_property_id_or_name(&store, "note"),
                 Value::Text("old".into())
@@ -4470,7 +4555,11 @@ mod tests {
 
         let note_property_id = resolve_property_id_or_name(&store, "note");
         store
-            .set_edge_property(handle, note_property_id, Value::Text("old".into()))
+            .set_edge_property(
+                handle.occurrence(LabeledOrientation::Forward),
+                note_property_id,
+                Value::Text("old".into()),
+            )
             .expect("seed sidecar value");
 
         let ops = vec![PlanOp::RemoveProperties {
@@ -4503,7 +4592,9 @@ mod tests {
 
         // Sidecar value must survive: removal failed before touching the store.
         assert_eq!(
-            store.edge_properties(handle),
+            store
+                .edge_properties(handle.occurrence(LabeledOrientation::Forward))
+                .unwrap(),
             vec![(note_property_id, Value::Text("old".into()))]
         );
     }

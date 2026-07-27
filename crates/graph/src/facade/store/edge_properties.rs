@@ -1,54 +1,60 @@
 //! GraphStore `edge_properties` implementation.
 
-use super::super::VertexPropertyStoreError;
 use super::super::stable::EDGE_PROPERTIES;
 use super::super::stable::edge_properties::EdgePropertyKey;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
+use ic_stable_lara::labeled::CanonicalEdgeOccurrence;
 use ic_stable_structures::Storable;
 
 use super::GraphStore;
-use super::handle::EdgeHandle;
 
 impl GraphStore {
-    pub fn edge_property(&self, handle: EdgeHandle, property_id: PropertyId) -> Option<Value> {
-        let handle = self.canonical_edge_handle_for_sidecar(handle);
-        EDGE_PROPERTIES.with_borrow(|properties| {
+    pub fn edge_property(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+        property_id: PropertyId,
+    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
+        Ok(EDGE_PROPERTIES.with_borrow(|properties| {
             properties.get(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
                 handle.slot_index.raw(),
                 property_id,
             )
-        })
+        }))
     }
 
     pub fn set_edge_property(
         &self,
-        handle: EdgeHandle,
+        occurrence: CanonicalEdgeOccurrence,
         property_id: PropertyId,
         value: Value,
-    ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        self.commit_edge_property_write(handle, property_id, value)
+    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        self.commit_edge_property_write(occurrence, property_id, value)
     }
 
     pub fn remove_edge_property(
         &self,
-        handle: EdgeHandle,
+        occurrence: CanonicalEdgeOccurrence,
         property_id: PropertyId,
-    ) -> Option<Value> {
-        self.commit_edge_property_remove(handle, property_id)
+    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        self.commit_edge_property_remove(occurrence, property_id)
     }
 
-    pub fn edge_properties(&self, handle: EdgeHandle) -> Vec<(PropertyId, Value)> {
-        let handle = self.canonical_edge_handle_for_sidecar(handle);
-        EDGE_PROPERTIES.with_borrow(|properties| {
+    pub fn edge_properties(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+    ) -> Result<Vec<(PropertyId, Value)>, super::error::GraphStoreError> {
+        let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
+        Ok(EDGE_PROPERTIES.with_borrow(|properties| {
             properties.properties_for_edge(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
                 handle.slot_index.raw(),
             )
-        })
+        }))
     }
 
     pub(crate) fn edge_property_cursor(key: EdgePropertyKey) -> Vec<u8> {
@@ -136,9 +142,12 @@ impl GraphStore {
         });
     }
 
-    pub(crate) fn edge_properties_gql_record(&self, handle: EdgeHandle) -> Value {
-        let handle = self.canonical_edge_handle_for_sidecar(handle);
-        EDGE_PROPERTIES.with_borrow(|properties| {
+    pub(crate) fn edge_properties_gql_record(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+    ) -> Result<Value, super::error::GraphStoreError> {
+        let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
+        Ok(EDGE_PROPERTIES.with_borrow(|properties| {
             let mut fields: Vec<(String, Value)> = Vec::new();
             properties.for_each_property_for_edge(
                 handle.owner_vertex_id,
@@ -156,6 +165,6 @@ impl GraphStore {
             } else {
                 Value::Record(fields)
             }
-        })
+        }))
     }
 }

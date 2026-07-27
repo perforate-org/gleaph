@@ -50,6 +50,8 @@ pub enum GraphStoreError {
     /// before the vertex is tombstoned so a tracking failure can never leave a
     /// tombstoned vertex with ungated, visible incident edges.
     PendingPurgeTracking(BitmapError),
+    /// CounterpartScan failed to resolve the canonical edge occurrence.
+    CounterpartLookup(ic_stable_lara::bidirectional::counterpart::CounterpartLookupError),
 }
 
 impl fmt::Display for GraphStoreError {
@@ -111,6 +113,9 @@ impl fmt::Display for GraphStoreError {
             Self::PendingPurgeTracking(err) => {
                 write!(f, "failed to record vertex pending-purge: {err}")
             }
+            Self::CounterpartLookup(err) => {
+                write!(f, "edge counterpart lookup failed: {err}")
+            }
         }
     }
 }
@@ -124,6 +129,7 @@ impl std::error::Error for GraphStoreError {
             Self::PropertyValue(err) => Some(err),
             Self::Embedding(err) => Some(err),
             Self::PendingPurgeTracking(err) => Some(err),
+            Self::CounterpartLookup(err) => Some(err),
             Self::VertexNotDetached { .. }
             | Self::EdgeNotFound { .. }
             | Self::InvalidEdgeLabelId(_)
@@ -163,5 +169,11 @@ impl From<VertexPropertyStoreError> for GraphStoreError {
 impl From<VertexEmbeddingStoreError> for GraphStoreError {
     fn from(value: VertexEmbeddingStoreError) -> Self {
         Self::Embedding(value)
+    }
+}
+
+impl From<ic_stable_lara::bidirectional::counterpart::CounterpartLookupError> for GraphStoreError {
+    fn from(value: ic_stable_lara::bidirectional::counterpart::CounterpartLookupError) -> Self {
+        Self::CounterpartLookup(value)
     }
 }

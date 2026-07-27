@@ -15,7 +15,10 @@ use super::super::error::PlanQueryError;
 /// Edge variable binding for one traversal hop: stable handle plus stored inline property bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgeBinding {
+    /// Physical or alias-key handle produced by the traversal that produced this binding.
     pub handle: EdgeHandle,
+    /// Canonical forward sidecar handle for property reads and index postings.
+    pub canonical_handle: EdgeHandle,
     pub inline_property: EdgeInlinePropertyBytes,
 }
 
@@ -33,14 +36,23 @@ impl EdgeBinding {
     pub fn from_edge(handle: EdgeHandle, edge: Edge) -> Self {
         Self {
             handle,
+            canonical_handle: handle,
             inline_property: edge.inline_property,
         }
     }
 
+    /// Return a copy of this binding with the canonical sidecar handle replaced.
+    pub(crate) fn with_canonical_handle(mut self, canonical_handle: EdgeHandle) -> Self {
+        self.canonical_handle = canonical_handle;
+        self
+    }
+
     /// Edge binding from a federated wire hit on another shard (no local CSR hydration).
     pub fn from_federated_neighbor_hit(hit: &FederatedExpandNeighbor) -> Self {
+        let handle = edge_handle_from_federated_hit_wire(hit);
         Self {
-            handle: edge_handle_from_federated_hit_wire(hit),
+            handle,
+            canonical_handle: handle,
             inline_property: hit.inline_property(),
         }
     }

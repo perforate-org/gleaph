@@ -1,5 +1,6 @@
 use super::super::test_support::*;
 use crate::plan::query::executor::execute_plan_query_bindings_with_initial_rows;
+use ic_stable_lara::labeled::LabeledOrientation;
 use pollster;
 #[test]
 fn index_scan_skips_foreign_shard_hits_in_standalone_mode() {
@@ -1807,7 +1808,11 @@ fn leading_edge_bind_endpoints_hop_aux_returns_inline_property_bytes() {
         )
         .expect("edge");
     store
-        .set_edge_property(edge, weight_prop, Value::Int64(7))
+        .set_edge_property(
+            edge.occurrence(LabeledOrientation::Forward),
+            weight_prop,
+            Value::Int64(7),
+        )
         .expect("edge property");
 
     let plan = plan(vec![

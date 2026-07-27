@@ -245,11 +245,14 @@ mod tests {
         let handle = store
             .insert_directed_edge(owner, neighbor, None)
             .expect("edge");
-        let canonical = store.canonical_edge_handle(handle);
         let weight = PropertyId::from_raw(55);
         let _catalog = crate::index::catalog_context::enter_edge_indexed(&[weight]);
         store
-            .set_edge_property(canonical, weight, Value::Int64(9))
+            .set_edge_property(
+                handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                weight,
+                Value::Int64(9),
+            )
             .expect("weight");
 
         let result = pollster::block_on(backfill_edge_property_postings(
@@ -278,15 +281,22 @@ mod tests {
         let handle = store
             .insert_directed_edge(owner, neighbor, None)
             .expect("edge");
-        let canonical = store.canonical_edge_handle(handle);
         let weight = PropertyId::from_raw(55);
         let distance = PropertyId::from_raw(56);
         let _catalog = crate::index::catalog_context::enter_edge_indexed(&[weight, distance]);
         store
-            .set_edge_property(canonical, weight, Value::Int64(9))
+            .set_edge_property(
+                handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                weight,
+                Value::Int64(9),
+            )
             .expect("weight");
         store
-            .set_edge_property(canonical, distance, Value::Int64(12))
+            .set_edge_property(
+                handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                distance,
+                Value::Int64(12),
+            )
             .expect("distance");
 
         let result = pollster::block_on(backfill_edge_property_postings(

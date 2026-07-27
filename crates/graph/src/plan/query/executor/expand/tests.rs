@@ -7,6 +7,7 @@ use gleaph_gql_planner::plan::{
     EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, EdgeVectorMetric,
 };
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
+use ic_stable_lara::labeled::LabeledOrientation;
 use pollster;
 
 #[test]
@@ -1393,7 +1394,11 @@ fn indexed_edge_equality_expand_return_inline_property() {
         )
         .expect("match edge");
     store
-        .set_edge_property(match_edge, weight_prop, Value::Int64(5))
+        .set_edge_property(
+            match_edge.occurrence(LabeledOrientation::Forward),
+            weight_prop,
+            Value::Int64(5),
+        )
         .expect("match edge property");
     let miss_edge = store
         .insert_directed_edge_with_inline_property_bytes(
@@ -1404,7 +1409,11 @@ fn indexed_edge_equality_expand_return_inline_property() {
         )
         .expect("miss edge");
     store
-        .set_edge_property(miss_edge, weight_prop, Value::Int64(9))
+        .set_edge_property(
+            miss_edge.occurrence(LabeledOrientation::Forward),
+            weight_prop,
+            Value::Int64(9),
+        )
         .expect("miss edge property");
 
     let inline_property = prop("e", "distance");

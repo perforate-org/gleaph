@@ -5,10 +5,9 @@ use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
 use crate::property::{PropertyValueChange, dispatch_property_index_ops};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
-use ic_stable_lara::{VertexId, labeled::EdgeSlotMove};
+use ic_stable_lara::{VertexId, labeled::CanonicalEdgeOccurrence};
 
 use super::GraphStore;
-use super::handle::EdgeHandle;
 
 impl GraphStore {
     /// Write a vertex property and enqueue federated index maintenance when enabled.
@@ -54,13 +53,17 @@ impl GraphStore {
     }
 
     /// Write an edge property on a canonical handle and update local equality postings.
+    ///
+    /// The caller supplies an explicit orientation-aware [`CanonicalEdgeOccurrence`].
+    /// CounterpartScan resolves the canonical sidecar handle before any `EDGE_PROPERTIES`
+    /// mutation; a lookup failure leaves sidecar and index state unchanged.
     pub(super) fn commit_edge_property_write(
         &self,
-        handle: EdgeHandle,
+        occurrence: CanonicalEdgeOccurrence,
         property_id: PropertyId,
         value: Value,
-    ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        let handle = self.canonical_edge_handle_for_sidecar(handle);
+    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
         let prev = EDGE_PROPERTIES.with_borrow(|properties| {
             properties.get(
                 handle.owner_vertex_id,
@@ -69,15 +72,17 @@ impl GraphStore {
                 property_id,
             )
         });
-        let old = EDGE_PROPERTIES.with_borrow_mut(|properties| {
-            properties.set(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index.raw(),
-                property_id,
-                value.clone(),
-            )
-        })?;
+        let old = EDGE_PROPERTIES
+            .with_borrow_mut(|properties| {
+                properties.set(
+                    handle.owner_vertex_id,
+                    handle.label_id.raw(),
+                    handle.slot_index.raw(),
+                    property_id,
+                    value.clone(),
+                )
+            })
+            .map_err(super::error::GraphStoreError::from)?;
         dispatch_property_index_ops(PropertyValueChange::edge(
             handle.owner_vertex_id,
             handle.label_id.raw(),
@@ -92,10 +97,10 @@ impl GraphStore {
     /// Remove an edge property on a canonical handle and update local equality postings.
     pub(super) fn commit_edge_property_remove(
         &self,
-        handle: EdgeHandle,
+        occurrence: CanonicalEdgeOccurrence,
         property_id: PropertyId,
-    ) -> Option<Value> {
-        let handle = self.canonical_edge_handle_for_sidecar(handle);
+    ) -> Result<Option<Value>, super::error::GraphStoreError> {
+        let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
         let prev = EDGE_PROPERTIES.with_borrow(|properties| {
             properties.get(
                 handle.owner_vertex_id,
@@ -122,12 +127,18 @@ impl GraphStore {
                 None,
             ));
         }
-        removed
+        Ok(removed)
     }
 
     /// Remove every edge property on a canonical handle.
-    pub(super) fn commit_remove_all_edge_properties(&self, handle: EdgeHandle) {
-        let handle = self.canonical_edge_handle_for_sidecar(handle);
+    ///
+    /// The caller must supply an explicit orientation-aware occurrence; this method resolves the
+    /// canonical sidecar handle before the removal.
+    pub(super) fn commit_remove_all_edge_properties(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+    ) -> Result<(), super::error::GraphStoreError> {
+        let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
         EDGE_PROPERTIES.with_borrow_mut(|store| {
             store.remove_all_for_edge(
                 handle.owner_vertex_id,
@@ -135,11 +146,12 @@ impl GraphStore {
                 handle.slot_index.raw(),
             );
         });
+        Ok(())
     }
 
     pub(super) fn commit_move_edge_properties(
         owner_vertex_id: VertexId,
-        moved: EdgeSlotMove,
+        moved: ic_stable_lara::labeled::EdgeSlotMove,
     ) -> Vec<(PropertyId, Value)> {
         let label_id = moved.label_id.raw();
         EDGE_PROPERTIES.with_borrow_mut(|store| {

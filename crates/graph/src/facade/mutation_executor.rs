@@ -2,6 +2,7 @@ use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, Vertex, VertexLabelId};
 use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::LabeledOrientation;
 
 pub trait GraphMutationExecutor {
     fn insert_vertex_with(
@@ -90,7 +91,11 @@ impl GraphMutationExecutor for GraphStore {
         self.assert_local_vertex_writable(target_vertex_id)?;
         let handle = self.insert_directed_edge(source_vertex_id, target_vertex_id, label)?;
         for (property_id, value) in properties {
-            self.set_edge_property(handle, property_id, value)?;
+            self.set_edge_property(
+                handle.occurrence(LabeledOrientation::Forward),
+                property_id,
+                value,
+            )?;
         }
         Ok(handle)
     }
@@ -113,7 +118,11 @@ impl GraphMutationExecutor for GraphStore {
             inline_property_bytes,
         )?;
         for (property_id, value) in properties {
-            self.set_edge_property(handle, property_id, value)?;
+            self.set_edge_property(
+                handle.occurrence(LabeledOrientation::Forward),
+                property_id,
+                value,
+            )?;
         }
         Ok(handle)
     }
@@ -129,7 +138,11 @@ impl GraphMutationExecutor for GraphStore {
         self.assert_local_vertex_writable(endpoint_b)?;
         let handle = self.insert_undirected_edge(endpoint_a, endpoint_b, label)?;
         for (property_id, value) in properties {
-            self.set_edge_property(handle, property_id, value)?;
+            self.set_edge_property(
+                handle.occurrence(LabeledOrientation::Forward),
+                property_id,
+                value,
+            )?;
         }
         Ok(handle)
     }
@@ -152,7 +165,11 @@ impl GraphMutationExecutor for GraphStore {
             inline_property_bytes,
         )?;
         for (property_id, value) in properties {
-            self.set_edge_property(handle, property_id, value)?;
+            self.set_edge_property(
+                handle.occurrence(LabeledOrientation::Forward),
+                property_id,
+                value,
+            )?;
         }
         Ok(handle)
     }
@@ -162,7 +179,7 @@ impl GraphMutationExecutor for GraphStore {
 mod tests {
     use super::*;
     use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, TaggedEdgeLabelId};
-    use ic_stable_lara::{BucketLabelKey as LaraLabelId, CsrEdge};
+    use ic_stable_lara::{BucketLabelKey as LaraLabelId, CsrEdge, labeled::LabeledOrientation};
 
     #[test]
     fn inserts_edges_with_labels_and_properties() {
@@ -184,7 +201,9 @@ mod tests {
 
         assert_eq!(directed.owner_vertex_id, source);
         assert_eq!(
-            store.edge_property(directed, property),
+            store
+                .edge_property(directed.occurrence(LabeledOrientation::Forward), property)
+                .unwrap(),
             Some(Value::Text("knows".into()))
         );
         assert!(

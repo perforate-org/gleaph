@@ -1204,7 +1204,11 @@ fn forward_edge_compaction_moves_property_sidecars() {
         2,
     );
     store
-        .set_edge_property(old_third, property, Value::Int64(33))
+        .set_edge_property(
+            old_third.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(33),
+        )
         .expect("set property");
     store
         .delete_edge_by_handle(first_edge)
@@ -1238,10 +1242,17 @@ fn forward_edge_compaction_moves_property_sidecars() {
         moved.edge_slot_index.raw(),
     );
     assert_eq!(
-        store.edge_property(new_third, property),
+        store
+            .edge_property(new_third.occurrence(LabeledOrientation::Forward), property)
+            .unwrap(),
         Some(Value::Int64(33))
     );
-    assert_eq!(store.edge_property(old_third, property), None);
+    assert!(
+        store
+            .edge_property(old_third.occurrence(LabeledOrientation::Forward), property)
+            .is_err(),
+        "stale handle after compaction must fail closed"
+    );
 }
 
 #[test]
@@ -1271,7 +1282,11 @@ fn reverse_edge_compaction_moves_alias_keys() {
         .insert_directed_edge(second, target, Some(other_label))
         .expect("other label edge");
     store
-        .set_edge_property(third_edge, property, Value::Int64(44))
+        .set_edge_property(
+            third_edge.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(44),
+        )
         .expect("set property");
     let wire_label = lara_label(label.pack(EdgeDirectedness::Directed));
 
@@ -1295,7 +1310,9 @@ fn reverse_edge_compaction_moves_alias_keys() {
         .expect("maintenance");
 
     assert_eq!(
-        store.edge_property(third_edge, property),
+        store
+            .edge_property(third_edge.occurrence(LabeledOrientation::Forward), property)
+            .unwrap(),
         Some(Value::Int64(44)),
         "canonical forward handle keeps properties across reverse compaction"
     );
@@ -1312,7 +1329,12 @@ fn reverse_edge_compaction_moves_alias_keys() {
         "reverse CSR slot should still alias the canonical forward handle"
     );
     assert_eq!(
-        store.edge_property(reverse_third, property),
+        store
+            .edge_property(
+                reverse_third.occurrence(LabeledOrientation::Reverse),
+                property
+            )
+            .unwrap(),
         Some(Value::Int64(44))
     );
 }
@@ -1354,4 +1376,266 @@ fn post_insert_maintenance_reclaims_parallel_overflow_bucket_for_inline_properti
         48,
         "topology must stay intact after reclaim"
     );
+}
+
+#[test]
+fn edge_property_counterpart_scan_reads_forward_directed_edge() -> Result<(), GraphStoreError> {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label = crate::test_labels::edge_label_id_for_name("CounterpartForwardDirected");
+    let property = store.get_or_insert_property_id("weight").expect("property");
+    let handle = store
+        .insert_directed_edge(source, target, Some(label))
+        .expect("edge");
+
+    store
+        .set_edge_property(
+            handle.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(7),
+        )
+        .expect("set");
+
+    assert_eq!(
+        store.edge_property(handle.occurrence(LabeledOrientation::Forward), property)?,
+        Some(Value::Int64(7))
+    );
+    Ok(())
+}
+
+#[test]
+fn edge_property_counterpart_scan_reads_reverse_directed_edge() -> Result<(), GraphStoreError> {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label = crate::test_labels::edge_label_id_for_name("CounterpartReverseDirected");
+    let wire_label = lara_label(label.pack(EdgeDirectedness::Directed));
+    let property = store.get_or_insert_property_id("weight").expect("property");
+    let forward = store
+        .insert_directed_edge(source, target, Some(label))
+        .expect("edge");
+    store
+        .set_edge_property(
+            forward.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(9),
+        )
+        .expect("set");
+
+    let reverse = store
+        .find_first_reverse_handle_descending(target, wire_label, |edge| {
+            edge.neighbor_vid() == source
+        })
+        .expect("reverse scan")
+        .expect("reverse half");
+
+    assert_eq!(
+        store.edge_property(reverse.occurrence(LabeledOrientation::Reverse), property)?,
+        Some(Value::Int64(9))
+    );
+    Ok(())
+}
+
+#[test]
+fn edge_property_counterpart_scan_reads_directed_self_loop_from_both_orientations()
+-> Result<(), GraphStoreError> {
+    let store = GraphStore::new();
+    let vertex = store.insert_vertex().expect("vertex");
+    let label = crate::test_labels::edge_label_id_for_name("CounterpartDirectedSelfLoop");
+    let wire_label = lara_label(label.pack(EdgeDirectedness::Directed));
+    let property = store.get_or_insert_property_id("tag").expect("property");
+    let forward = store
+        .insert_directed_edge(vertex, vertex, Some(label))
+        .expect("self loop");
+    store
+        .set_edge_property(
+            forward.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(1),
+        )
+        .expect("set");
+
+    let reverse = store
+        .find_first_reverse_handle_descending(vertex, wire_label, |edge| {
+            edge.neighbor_vid() == vertex
+        })
+        .expect("reverse scan")
+        .expect("reverse half");
+
+    assert_eq!(
+        store.edge_property(forward.occurrence(LabeledOrientation::Forward), property)?,
+        Some(Value::Int64(1))
+    );
+    assert_eq!(
+        store.edge_property(reverse.occurrence(LabeledOrientation::Reverse), property)?,
+        Some(Value::Int64(1))
+    );
+    Ok(())
+}
+
+#[test]
+fn edge_property_counterpart_scan_reads_undirected_max_owner_edge() -> Result<(), GraphStoreError> {
+    let store = GraphStore::new();
+    let small = store.insert_vertex().expect("small");
+    let large = store.insert_vertex().expect("large");
+    let label = crate::test_labels::edge_label_id_for_name("CounterpartUndirectedMaxOwner");
+    let wire_label = lara_label(label.pack(EdgeDirectedness::Undirected));
+    let property = store.get_or_insert_property_id("shared").expect("property");
+    let owner = std::cmp::max(small, large);
+    let _handle = store
+        .insert_undirected_edge(small, large, Some(label))
+        .expect("edge");
+
+    store
+        .set_edge_property(
+            EdgeHandle::at_slot(owner, wire_label, 0).occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(42),
+        )
+        .expect("set at max-owner");
+
+    assert_eq!(
+        store.edge_property(
+            EdgeHandle::at_slot(owner, wire_label, 0).occurrence(LabeledOrientation::Forward),
+            property,
+        )?,
+        Some(Value::Int64(42))
+    );
+    Ok(())
+}
+
+#[test]
+fn edge_property_counterpart_scan_reads_undirected_self_loop() -> Result<(), GraphStoreError> {
+    let store = GraphStore::new();
+    let vertex = store.insert_vertex().expect("vertex");
+    let label = crate::test_labels::edge_label_id_for_name("CounterpartUndirectedSelfLoop");
+    let wire_label = lara_label(label.pack(EdgeDirectedness::Undirected));
+    let property = store.get_or_insert_property_id("loop").expect("property");
+    let handle = store
+        .insert_undirected_edge(vertex, vertex, Some(label))
+        .expect("self loop");
+
+    store
+        .set_edge_property(
+            handle.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(3),
+        )
+        .expect("set");
+
+    assert_eq!(
+        store.edge_property(
+            EdgeHandle::at_slot(vertex, wire_label, 0).occurrence(LabeledOrientation::Forward),
+            property,
+        )?,
+        Some(Value::Int64(3))
+    );
+    Ok(())
+}
+
+#[test]
+fn edge_property_counterpart_scan_distinguishes_parallel_edges() -> Result<(), GraphStoreError> {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label = crate::test_labels::edge_label_id_for_name("CounterpartParallelEdges");
+    let property = store.get_or_insert_property_id("order").expect("property");
+    let first = store
+        .insert_directed_edge(source, target, Some(label))
+        .expect("first");
+    let second = store
+        .insert_directed_edge(source, target, Some(label))
+        .expect("second");
+
+    store
+        .set_edge_property(
+            first.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(1),
+        )
+        .expect("set first");
+    store
+        .set_edge_property(
+            second.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(2),
+        )
+        .expect("set second");
+
+    assert_eq!(
+        store.edge_property(first.occurrence(LabeledOrientation::Forward), property)?,
+        Some(Value::Int64(1))
+    );
+    assert_eq!(
+        store.edge_property(second.occurrence(LabeledOrientation::Forward), property)?,
+        Some(Value::Int64(2))
+    );
+    Ok(())
+}
+
+#[test]
+fn edge_property_counterpart_scan_fails_closed_on_missing_source() -> Result<(), GraphStoreError> {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label = crate::test_labels::edge_label_id_for_name("CounterpartMissingSource");
+    let property = store.get_or_insert_property_id("weight").expect("property");
+    let forward = store
+        .insert_directed_edge(source, target, Some(label))
+        .expect("edge");
+    store
+        .set_edge_property(
+            forward.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(5),
+        )
+        .expect("set");
+
+    store.with_graph_mut(|graph| {
+        graph
+            .remove_forward_edge_at_slot(
+                forward.owner_vertex_id,
+                forward.label_id,
+                forward.slot_index.raw(),
+            )
+            .expect("remove edge")
+            .expect("edge existed");
+    });
+
+    let err = store
+        .edge_property(forward.occurrence(LabeledOrientation::Forward), property)
+        .expect_err("missing source must fail closed");
+    assert!(
+        format!("{err:?}").contains("SourceNotFound"),
+        "expected SourceNotFound, got {err:?}"
+    );
+    Ok(())
+}
+#[test]
+fn edge_property_write_fails_before_mutation_on_missing_source() -> Result<(), GraphStoreError> {
+    let store = GraphStore::new();
+    let vertex = store.insert_vertex().expect("vertex");
+    let label = crate::test_labels::edge_label_id_for_name("CounterpartMissingWrite");
+    let wire_label = lara_label(label.pack(EdgeDirectedness::Directed));
+    let property = store.get_or_insert_property_id("weight").expect("property");
+    let bogus = EdgeHandle::at_slot(vertex, wire_label, 99);
+
+    let err = store
+        .set_edge_property(
+            bogus.occurrence(LabeledOrientation::Forward),
+            property,
+            Value::Int64(1),
+        )
+        .expect_err("missing source must fail closed");
+    assert!(
+        format!("{err:?}").contains("SourceNotFound"),
+        "expected SourceNotFound, got {err:?}"
+    );
+
+    // Index postings and property store must remain unchanged.
+    let repeated = store.edge_property(bogus.occurrence(LabeledOrientation::Forward), property);
+    assert!(repeated.is_err(), "repeated lookup must remain failed");
+    assert_eq!(format!("{:?}", repeated.unwrap_err()), format!("{:?}", err));
+    Ok(())
 }

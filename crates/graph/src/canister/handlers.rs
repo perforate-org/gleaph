@@ -1668,7 +1668,6 @@ pub async fn e2e_insert_directed_edge_with_property(
     let handle = store
         .insert_directed_edge(source, target, Some(label))
         .map_err(|e| e.to_string())?;
-    let canonical = store.canonical_edge_handle(handle);
     let property_id = PropertyId::from_raw(args.property_id);
     let _catalog =
         crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
@@ -1676,7 +1675,11 @@ pub async fn e2e_insert_directed_edge_with_property(
             ..Default::default()
         });
     store
-        .set_edge_property(canonical, property_id, Value::Int64(args.value))
+        .set_edge_property(
+            handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+            property_id,
+            Value::Int64(args.value),
+        )
         .map_err(|e| e.to_string())?;
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
     let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
@@ -1705,7 +1708,6 @@ pub async fn e2e_insert_undirected_edge_with_property(
     let handle = store
         .insert_undirected_edge(source, target, Some(label))
         .map_err(|e| e.to_string())?;
-    let canonical = store.canonical_edge_handle(handle);
     let property_id = PropertyId::from_raw(args.property_id);
     let _catalog =
         crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
@@ -1713,7 +1715,11 @@ pub async fn e2e_insert_undirected_edge_with_property(
             ..Default::default()
         });
     store
-        .set_edge_property(canonical, property_id, Value::Int64(args.value))
+        .set_edge_property(
+            handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+            property_id,
+            Value::Int64(args.value),
+        )
         .map_err(|e| e.to_string())?;
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
     let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
@@ -1829,10 +1835,13 @@ pub async fn e2e_set_edge_property(
         LaraLabelId::from_raw(edge.label_id),
         edge.edge_slot_index.raw(),
     );
-    let canonical = store.canonical_edge_handle(handle);
     let property_id = PropertyId::from_raw(args.property_id);
     store
-        .set_edge_property(canonical, property_id, Value::Int64(args.value))
+        .set_edge_property(
+            handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+            property_id,
+            Value::Int64(args.value),
+        )
         .map_err(|e| e.to_string())?;
     // No index/catalog context: the inline read path must ignore this sidecar value regardless of
     // whether an index would have maintained postings for it.
@@ -1936,10 +1945,14 @@ pub fn e2e_reverse_resolved_edge_property(
         LaraLabelId::from_raw(in_edge.label_id),
         in_edge.edge_slot_index.raw(),
     );
-    match store.edge_property(reverse_handle, property_id) {
-        Some(Value::Int64(v)) => Ok(Some(v)),
-        Some(other) => Err(format!("unexpected edge property value: {other:?}")),
-        None => Ok(None),
+    match store.edge_property(
+        reverse_handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Reverse),
+        property_id,
+    ) {
+        Ok(Some(Value::Int64(v))) => Ok(Some(v)),
+        Ok(Some(other)) => Err(format!("unexpected edge property value: {other:?}")),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
 }
 

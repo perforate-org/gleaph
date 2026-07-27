@@ -364,32 +364,6 @@ where
         Orientation::Reverse => reverse,
     };
 
-    // Directed singleton fast path: PairOrdinal is 0 and the counterpart must be
-    // the single live edge at slot 0 of the opposite orientation. This avoids the
-    // streaming rank/select work for the common single-edge case.
-    if edge.label_id.is_directed() {
-        let is_singleton = source_graph
-            .label_bucket_is_singleton(edge.owner_vertex_id, edge.label_id, edge.slot_index)
-            .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?;
-        if is_singleton {
-            let slot0 = BucketEntryPosition::new(0);
-            return match counterpart_graph
-                .read_edge_state(counterpart_owner, edge.label_id, slot0)
-                .map_err(|err| CounterpartLookupError::ReadFailed(err.to_string()))?
-            {
-                EdgeSlotState::Live(row) if row.neighbor_vid() == edge.owner_vertex_id => {
-                    Ok(CanonicalEdgeOccurrence {
-                        orientation: counterpart_orientation,
-                        owner_vertex_id: counterpart_owner,
-                        label_id: edge.label_id,
-                        slot_index: slot0,
-                    })
-                }
-                _ => Err(CounterpartLookupError::CounterpartNotFound(edge)),
-            };
-        }
-    }
-
     // Undirected self-loop is its own counterpart.
     if edge.label_id.is_undirected() && target == edge.owner_vertex_id {
         return Ok(edge);
