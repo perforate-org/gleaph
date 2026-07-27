@@ -2726,7 +2726,7 @@ where
     {
         let mut visit = visit;
         self.forward
-            .visit_edges_with_inline_property(
+            .visit_edges_with_inline_property_unchecked(
                 src,
                 label_id,
                 OutEdgeOrder::Descending,
@@ -2758,7 +2758,7 @@ where
     {
         let mut visit = visit;
         self.reverse
-            .visit_edges_with_inline_property(
+            .visit_edges_with_inline_property_unchecked(
                 dst,
                 label_id,
                 OutEdgeOrder::Descending,

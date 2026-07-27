@@ -1314,15 +1314,48 @@ where
         owner: VertexId,
         label: BucketLabelKey,
         order: OutEdgeOrder,
-        mut visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
+        visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
         self.ensure_vertex(owner)?;
         let vertex = self.vertices.get(owner);
+        self.visit_edges_with_inline_property_impl(owner, &vertex, label, order, visit)
+    }
+
+    /// Unchecked variant of [`Self::visit_edges_with_inline_property`].
+    ///
+    /// The caller must ensure `owner` is within the vertex range.
+    #[inline]
+    pub(crate) fn visit_edges_with_inline_property_unchecked<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        debug_assert!(u32::from(owner) < self.vertices.len());
+        let vertex = self.vertices.get(owner);
+        self.visit_edges_with_inline_property_impl(owner, &vertex, label, order, visit)
+    }
+
+    fn visit_edges_with_inline_property_impl<B>(
+        &self,
+        owner: VertexId,
+        vertex: &LabeledVertex,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         if vertex.is_default_edge_labeled() {
-            if label != self.bypass_storage_label_for(&vertex) {
+            if label != self.bypass_storage_label_for(vertex) {
                 return Ok(ControlFlow::Continue(()));
             }
             return match order {
@@ -1361,7 +1394,7 @@ where
         let BucketSearch::Found {
             slot: bucket_slot,
             bucket,
-        } = self.find_bucket(owner, &vertex, label)?
+        } = self.find_bucket(owner, vertex, label)?
         else {
             return Ok(ControlFlow::Continue(()));
         };
@@ -1394,7 +1427,7 @@ where
             );
         }
 
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let bucket_index = Self::labeled_bucket_descriptor_index(vertex, bucket_slot)?;
 
         // Fast path for slab-only buckets with tombstones: bulk-read edge slab and
         // inline-property bytes, then skip deleted/tombstoned slots locally.  This avoids
@@ -1421,7 +1454,7 @@ where
         // Hybrid and other sparse buckets use the existing streaming labeled iterator,
         // which reads per-slot inline property bytes into the edge value.
         let mut iter =
-            self.labeled_bucket_span_iter(owner, order, &vertex, &[bucket], 0, bucket_index, true)?;
+            self.labeled_bucket_span_iter(owner, order, vertex, &[bucket], 0, bucket_index, true)?;
         while let Some(result) = iter.next_with_slot() {
             let (slot, edge) = result?;
             let inline_property = if width == 0 {
