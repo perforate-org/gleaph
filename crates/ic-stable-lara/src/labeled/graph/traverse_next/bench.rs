@@ -621,12 +621,11 @@ fn bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture()
         let mut count = 0u32;
         graph
             .visit_edges_with_inline_property(src, label, OutEdgeOrder::Ascending, |_slot, item| {
-                let edge = item.edge.with_stored_inline_property_bytes(
-                    item.inline_property.width,
-                    item.inline_property.bytes(),
+                count += u32::from(
+                    item.inline_property.width == INLINE_VALUE_WIDTH
+                        && item.inline_property.bytes().len() == usize::from(INLINE_VALUE_WIDTH),
                 );
-                count += u32::from(edge.edge_inline_property_byte_width() == INLINE_VALUE_WIDTH);
-                black_box(edge.edge_inline_property_bytes());
+                black_box(item.inline_property.bytes());
                 ControlFlow::<()>::Continue(())
             })
             .map(|_| ())
