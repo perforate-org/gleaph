@@ -20,6 +20,7 @@ use crate::{
 };
 use canbench_rs::{bench, bench_fn};
 use std::hint::black_box;
+use std::ops::ControlFlow;
 
 const DENSE_DEGREE: u32 = 256;
 const HYBRID_DEGREE: u32 = 256;
