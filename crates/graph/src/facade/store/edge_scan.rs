@@ -8,6 +8,7 @@ use ic_stable_lara::{
         BucketDirectedness, LabeledEdgeInlinePropertyBatch, LabeledEdgeInlinePropertyBatchScratch,
         OutEdgeOrder,
     },
+    traverse::BucketEntryPosition,
 };
 
 use super::GraphStore;
@@ -145,7 +146,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
-        slots: &[u32],
+        slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
@@ -161,7 +162,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
-        slots: &[u32],
+        slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
         scratch: &ic_stable_lara::labeled::LabeledInlinePropertyValueBatchScratch,
         visit: Visit,
@@ -184,7 +185,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
-        slots: &[u32],
+        slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
@@ -200,7 +201,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
-        slots: &[u32],
+        slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
         scratch: &ic_stable_lara::labeled::LabeledInlinePropertyValueBatchScratch,
         visit: Visit,
@@ -246,7 +247,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
-        slots: &[u32],
+        slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
         visit: Visit,
     ) -> Result<(), GraphStoreError>

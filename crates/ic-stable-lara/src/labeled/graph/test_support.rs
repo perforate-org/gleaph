@@ -463,8 +463,10 @@ pub fn exercise_labeled_hub_scan_paths(
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         let label = bucket.bucket_label_key();
         let _ = graph.iter_edges_for_label(hub, label).unwrap();
-        graph
-            .for_each_edges_for_label_unchecked(hub, label, |_| ())
+        let _ = graph
+            .visit_edges(hub, label, OutEdgeOrder::Descending, |_slot, _edge| {
+                ControlFlow::<()>::Continue(())
+            })
             .unwrap();
         graph
             .visit_out_edge_inline_property_batches_for_label_next(

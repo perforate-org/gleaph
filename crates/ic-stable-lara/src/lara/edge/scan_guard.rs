@@ -34,7 +34,7 @@ impl ScanPathGuard {
 
     /// Overflow-log chain rebuilds in the phase-2 selective edge read while the guard is active.
     ///
-    /// Incremented only on the sparse fallback of `read_out_edge_slots_for_label_with_replay`; a
+    /// Incremented only on the sparse fallback of `visit_edges_at_with_replay`; a
     /// reused hybrid replay returns before this point. Lets tests prove phase-2 replay reuse: a
     /// caller that reuses the phase-1 replay records `0`, the sparse fallback records `>= 1`.
     pub fn overflow_chain_rebuilds() -> u32 {

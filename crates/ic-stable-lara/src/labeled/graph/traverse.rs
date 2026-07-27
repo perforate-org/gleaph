@@ -410,54 +410,6 @@ where
         })?;
         Ok(())
     }
-
-    /// Like [`Self::for_each_edges_for_label_topology_ordered`], but skips vertex range checks.
-    pub fn for_each_edges_for_label_topology_unchecked<Visit>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        order: OutEdgeOrder,
-        mut visit: Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(E),
-    {
-        debug_assert!(u32::from(src) < self.vertices.len());
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            if label_id != self.bypass_storage_label_for(&vertex) {
-                return Ok(());
-            }
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _bench_scope = bench_scope("labeled_unchecked_bypass_slab");
-            return match order {
-                OutEdgeOrder::Descending => self
-                    .edges
-                    .visit_out_edges(
-                        &self.vertices,
-                        src,
-                        None,
-                        None,
-                        None::<&mut dyn FnMut(&[u8]) -> bool>,
-                        |_| true,
-                        |edge| visit(edge.with_label_id(label_id.raw())),
-                    )
-                    .map_err(Into::into),
-                OutEdgeOrder::Ascending => {
-                    for edge in self.edges.asc_out_edges(&self.vertices, src)? {
-                        visit(edge.with_label_id(label_id.raw()));
-                    }
-                    Ok(())
-                }
-            };
-        }
-        let _ = self.visit_edges(src, label_id, order, |_slot, edge| {
-            visit(edge.with_label_id(label_id.raw()));
-            ControlFlow::<()>::Continue(())
-        })?;
-        Ok(())
-    }
 }
 impl<E, M> LabeledLaraGraph<E, M>
 where
@@ -471,29 +423,6 @@ where
         order: OutEdgeOrder,
     ) -> Result<LabeledSpanIter<'_, E, M>, LabeledOperationError> {
         self.out_edges_iter_for_label_ordered_with_inline_property_bytes(src, label_id, order, true)
-    }
-
-    pub(crate) fn for_each_live_edge_slot_for_label_desc<Visit>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        mut visit: Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(u32, E),
-    {
-        let mut iter = self.out_edges_iter_for_label_ordered_with_inline_property_bytes(
-            src,
-            label_id,
-            OutEdgeOrder::Descending,
-            false,
-        )?;
-        while let Some(edge) = iter.next_with_slot() {
-            let (slot, edge) = edge?;
-            visit(slot, edge);
-        }
-        Ok(())
     }
 
     pub(super) fn out_edges_iter_for_label_ordered_with_inline_property_bytes(
@@ -1452,77 +1381,6 @@ where
         Visit: FnMut(E),
     {
         self.read_out_edge_slots_for_label_with_replay(src, label_id, slots, order, None, visit)
-    }
-
-    /// Reads one logical slot and distinguishes a tombstone from an absent slot.
-    pub(crate) fn read_edge_slot_state_for_label(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        slot_index: u32,
-    ) -> Result<EdgeSlotState<E>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            return Ok(EdgeSlotState::Missing);
-        }
-        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
-            return Ok(EdgeSlotState::Missing);
-        };
-        if slot_index >= self.bucket_reserved_edge_slots(src, &bucket) {
-            return Ok(EdgeSlotState::Missing);
-        }
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
-            self.edges.overflow_log_chain_asc_indices(
-                self.inline_property_bytes_log_leaf(src),
-                bucket.overflow_log_head(),
-            )
-        });
-        let state = self.read_out_edge_topology_state_at_slot(
-            src,
-            &vertex,
-            bucket_index,
-            &bucket,
-            slot_index,
-            label_id,
-            overflow_chain.as_deref(),
-        )?;
-        Ok(state)
-    }
-
-    /// Visits live edges for one label together with their exact local slot.
-    ///
-    /// This is intentionally a storage-facing scan primitive: the slot comes
-    /// from the requested range rather than from `E::with_slot_index`, whose
-    /// implementation is optional for generic CSR edge types.
-    pub fn for_each_live_edge_slot_for_label<Visit>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        visit: Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(u32, E),
-    {
-        let Some(info) = self.read_label_bucket_placement_info(src, label_id)? else {
-            return Ok(());
-        };
-        let logical_slots = info
-            .stored_edge_slots
-            .checked_add(info.edge_overflow_log_len)
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
-        if logical_slots == 0 {
-            return Ok(());
-        }
-
-        self.for_each_live_edge_slot_for_label_direct(src, label_id, logical_slots, visit)
     }
 
     /// Walks the canonical logical slot range without materializing slot indices.

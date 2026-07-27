@@ -13,6 +13,7 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::{
     LabeledEdgeInlinePropertyBatchScratch, LabeledInlinePropertyValueBatchScratch, OutEdgeOrder,
 };
+use ic_stable_lara::traverse::BucketEntryPosition;
 
 use super::label_expr::{
     catalog_edge_label_ids_for_predicate_fusion, fusion_edge_label_ids_for_expr,
@@ -94,7 +95,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
         return Ok(false);
     }
 
-    let mut pending_slots = Vec::new();
+    let mut pending_slots = Vec::<BucketEntryPosition>::new();
     let mut pending_inline_property_bytes = Vec::new();
     let mut value_scratch = LabeledInlinePropertyValueBatchScratch::default();
     let mut visit_values = |batch: ic_stable_lara::labeled::LabeledInlinePropertyValueBatch<'_>| {
@@ -112,7 +113,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
             };
             let inline_property_bytes_start = idx * batch_width;
             let inline_property_bytes_end = inline_property_bytes_start + batch_width;
-            pending_slots.push(slot);
+            pending_slots.push(BucketEntryPosition::new(slot));
             pending_inline_property_bytes.extend_from_slice(
                 &batch.values[inline_property_bytes_start..inline_property_bytes_end],
             );
@@ -152,7 +153,10 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
         .enumerate()
         .map(|(idx, &slot)| {
             let start = idx * width;
-            (slot, &pending_inline_property_bytes[start..start + width])
+            (
+                slot.raw(),
+                &pending_inline_property_bytes[start..start + width],
+            )
         })
         .collect();
     let mut error = None;
@@ -952,16 +956,19 @@ fn expand_candidates_via_equality_index(
         return Ok(false);
     }
 
-    let mut out_slots: BTreeSet<(u16, u32)> = BTreeSet::new();
-    let mut in_slots: BTreeSet<(u32, u16, u32)> = BTreeSet::new();
+    let mut out_slots: BTreeSet<(u16, BucketEntryPosition)> = BTreeSet::new();
+    let mut in_slots: BTreeSet<(u32, u16, BucketEntryPosition)> = BTreeSet::new();
     for posting in &postings {
         if posting.owner_vertex_id == src_id {
-            out_slots.insert((posting.label_id, posting.slot_index));
+            out_slots.insert((
+                posting.label_id,
+                BucketEntryPosition::new(posting.slot_index),
+            ));
         }
         in_slots.insert((
             u32::from(posting.owner_vertex_id),
             posting.label_id,
-            posting.slot_index,
+            BucketEntryPosition::new(posting.slot_index),
         ));
     }
 
@@ -971,7 +978,7 @@ fn expand_candidates_via_equality_index(
         EdgeDirection::PointingRight => {
             let wire_filter =
                 edge_label_id.map(|label_id| label_id.pack(EdgeDirectedness::Directed).raw());
-            let mut slots_by_label: BTreeMap<u16, Vec<u32>> = BTreeMap::new();
+            let mut slots_by_label: BTreeMap<u16, Vec<BucketEntryPosition>> = BTreeMap::new();
             for (label_id, slot_index) in &out_slots {
                 if wire_filter.is_some_and(|wire| wire != *label_id) {
                     continue;
@@ -1019,7 +1026,7 @@ fn expand_candidates_via_equality_index(
                     if !in_slots.contains(&(
                         u32::from(canonical.owner_vertex_id),
                         canonical.label_id.raw(),
-                        canonical.slot_index.raw(),
+                        canonical.slot_index,
                     )) {
                         return;
                     }
@@ -1051,7 +1058,7 @@ fn expand_candidates_via_equality_index(
                     if !in_slots.contains(&(
                         u32::from(canonical.owner_vertex_id),
                         canonical.label_id.raw(),
-                        canonical.slot_index.raw(),
+                        canonical.slot_index,
                     )) {
                         return;
                     }

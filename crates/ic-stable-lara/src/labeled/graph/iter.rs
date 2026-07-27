@@ -79,7 +79,7 @@ impl<E> LabeledEdgeInlinePropertyBatchScratch<E> {
 
 /// Cached overflow-log replay from hybrid inline-property-bytes phase 1 for phase-2 topology reads.
 ///
-/// When present, [`super::LabeledLaraGraph::read_out_edge_slots_for_label`] can decode
+/// When present, [`super::LabeledLaraGraph::visit_edges_at_with_replay`] can decode
 /// matching overflow-log edges from the cached segment table instead of rebuilding the
 /// ascending log chain and re-reading stable memory.
 #[derive(Clone, Debug, Default)]

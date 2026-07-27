@@ -26,17 +26,17 @@ use super::{
 
 #[cfg(test)]
 thread_local! {
-    static FORCE_PAYLOAD_COMPACTION_ERROR: Cell<bool> = const { Cell::new(false) };
+    static FORCE_INLINE_PROPERTY_BYTES_COMPACTION_ERROR: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
 pub(crate) fn force_next_inline_property_bytes_compaction_error() {
-    FORCE_PAYLOAD_COMPACTION_ERROR.with(|flag| flag.set(true));
+    FORCE_INLINE_PROPERTY_BYTES_COMPACTION_ERROR.with(|flag| flag.set(true));
 }
 
 #[cfg(test)]
 fn take_forced_inline_property_bytes_compaction_error() -> bool {
-    FORCE_PAYLOAD_COMPACTION_ERROR.with(|flag| flag.replace(false))
+    FORCE_INLINE_PROPERTY_BYTES_COMPACTION_ERROR.with(|flag| flag.replace(false))
 }
 
 pub(super) struct BucketInlinePropertyBytesDeletePlan {

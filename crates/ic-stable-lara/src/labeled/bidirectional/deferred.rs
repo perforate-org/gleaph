@@ -2178,12 +2178,12 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Reads forward outgoing edge rows for the requested slot indices (topology only).
+    /// Reads forward outgoing edge rows for the requested logical slot positions (topology only).
     pub fn read_out_edge_slots_for_label<Visit>(
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
-        slots: &[u32],
+        slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
         mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
@@ -2191,13 +2191,8 @@ where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
-        let positions: Vec<_> = slots
-            .iter()
-            .copied()
-            .map(BucketEntryPosition::new)
-            .collect();
         self.forward
-            .visit_edges_at(src, label_id, &positions, order, |_slot, edge| {
+            .visit_edges_at(src, label_id, slots, order, |_slot, edge| {
                 visit(edge.with_label_id(label_id.raw()));
                 ControlFlow::<()>::Continue(())
             })
@@ -2210,7 +2205,7 @@ where
         &self,
         src: VertexId,
         label_id: BucketLabelKey,
-        slots: &[u32],
+        slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
         replay: Option<&crate::labeled::HybridOverflowEdgeReplay>,
         mut visit: Visit,
@@ -2219,13 +2214,8 @@ where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
-        let positions: Vec<_> = slots
-            .iter()
-            .copied()
-            .map(BucketEntryPosition::new)
-            .collect();
         self.forward
-            .visit_edges_at_with_replay(src, label_id, &positions, order, replay, |_slot, edge| {
+            .visit_edges_at_with_replay(src, label_id, slots, order, replay, |_slot, edge| {
                 visit(edge.with_label_id(label_id.raw()));
                 ControlFlow::<()>::Continue(())
             })
@@ -2287,12 +2277,12 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
-    /// Reads reverse outgoing edge rows for the requested slot indices (topology only).
+    /// Reads reverse outgoing edge rows for the requested logical slot positions (topology only).
     pub fn read_in_edge_slots_for_label<Visit>(
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
-        slots: &[u32],
+        slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
         mut visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
@@ -2300,13 +2290,8 @@ where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
-        let positions: Vec<_> = slots
-            .iter()
-            .copied()
-            .map(BucketEntryPosition::new)
-            .collect();
         self.reverse
-            .visit_edges_at(dst, label_id, &positions, order, |_slot, edge| {
+            .visit_edges_at(dst, label_id, slots, order, |_slot, edge| {
                 visit(edge.with_label_id(label_id.raw()));
                 ControlFlow::<()>::Continue(())
             })
@@ -2321,7 +2306,7 @@ where
         &self,
         dst: VertexId,
         label_id: BucketLabelKey,
-        slots: &[u32],
+        slots: &[BucketEntryPosition],
         order: OutEdgeOrder,
         replay: Option<&crate::labeled::HybridOverflowEdgeReplay>,
         mut visit: Visit,
@@ -2330,13 +2315,8 @@ where
         E: CsrEdgeTombstone,
         Visit: FnMut(E),
     {
-        let positions: Vec<_> = slots
-            .iter()
-            .copied()
-            .map(BucketEntryPosition::new)
-            .collect();
         self.reverse
-            .visit_edges_at_with_replay(dst, label_id, &positions, order, replay, |_slot, edge| {
+            .visit_edges_at_with_replay(dst, label_id, slots, order, replay, |_slot, edge| {
                 visit(edge.with_label_id(label_id.raw()));
                 ControlFlow::<()>::Continue(())
             })
@@ -6459,14 +6439,20 @@ mod tests {
                 },
             )
             .unwrap();
+        let positions: Vec<_> = slots
+            .iter()
+            .copied()
+            .map(BucketEntryPosition::new)
+            .collect();
         let mut edges = Vec::new();
         graph
-            .read_in_edge_slots_for_label(hub, road, &slots, OutEdgeOrder::Ascending, |edge| {
+            .read_in_edge_slots_for_label(hub, road, &positions, OutEdgeOrder::Ascending, |edge| {
                 edges.push(edge)
             })
             .unwrap();
-        let rows: Vec<_> = slots
+        let rows: Vec<_> = positions
             .into_iter()
+            .map(|p| p.raw())
             .zip(edges)
             .zip(inline_property_values)
             .map(|((slot, edge), bytes)| (slot, edge.neighbor_vid(), bytes))
@@ -6526,6 +6512,11 @@ mod tests {
             )
             .unwrap();
         assert!(scratch.hybrid_overflow_replay.is_active());
+        let positions: Vec<_> = slots
+            .iter()
+            .copied()
+            .map(BucketEntryPosition::new)
+            .collect();
 
         let read_in = |replay: Option<&crate::labeled::HybridOverflowEdgeReplay>| {
             let mut sources = Vec::new();
@@ -6533,7 +6524,7 @@ mod tests {
                 .read_in_edge_slots_for_label_with_replay(
                     hub,
                     road,
-                    &slots,
+                    &positions,
                     OutEdgeOrder::Ascending,
                     replay,
                     |edge| sources.push(u32::from(edge.neighbor_vid())),
