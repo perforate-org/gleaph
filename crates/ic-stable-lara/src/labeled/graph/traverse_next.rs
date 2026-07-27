@@ -1178,6 +1178,85 @@ where
         )
     }
 
+    /// Visits every live edge of `owner` across all label buckets whose directedness
+    /// matches `directedness`, in the requested order, without reading inline-property
+    /// bytes.
+    #[inline]
+    pub(crate) fn visit_out_edges_by_directedness<B>(
+        &self,
+        owner: VertexId,
+        directedness: BucketDirectedness,
+        order: OutEdgeOrder,
+        mut visit: impl FnMut(E) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+
+        if vertex.is_default_edge_labeled() {
+            let label = self.bypass_storage_label_for(&vertex);
+            if label.directedness() != directedness {
+                return Ok(ControlFlow::Continue(()));
+            }
+            return self.visit_edges(owner, label, order, |_slot, edge| {
+                visit(edge.with_label_id(label.raw()))
+            });
+        }
+
+        let deg = vertex.degree();
+        if deg == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        let strategy = Self::directedness_partition_strategy(directedness, order.ascending());
+        let (lo, hi) = self.buckets.directedness_bucket_index_range(
+            vertex.base_slot_start(),
+            deg,
+            directedness,
+            strategy,
+        )?;
+        if lo >= hi {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let buckets = self.read_vertex_label_buckets_range(&vertex, lo, hi)?;
+
+        match order {
+            OutEdgeOrder::Ascending => {
+                for bucket in &buckets {
+                    if bucket.degree() == 0 {
+                        continue;
+                    }
+                    let label = bucket.bucket_label_key();
+                    if let ControlFlow::Break(value) =
+                        self.visit_edges(owner, label, order, |_slot, edge| {
+                            visit(edge.with_label_id(label.raw()))
+                        })?
+                    {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+            }
+            OutEdgeOrder::Descending => {
+                for bucket in buckets.iter().rev() {
+                    if bucket.degree() == 0 {
+                        continue;
+                    }
+                    let label = bucket.bucket_label_key();
+                    if let ControlFlow::Break(value) =
+                        self.visit_edges(owner, label, order, |_slot, edge| {
+                            visit(edge.with_label_id(label.raw()))
+                        })?
+                    {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
     fn visit_out_edges_by_directedness_with_inline_property_for_vertex<B>(
         &self,
         owner: VertexId,

@@ -2054,8 +2054,12 @@ where
         directedness: BucketDirectedness,
         order: OutEdgeOrder,
     ) -> Result<Vec<E>, LabeledOperationError> {
-        self.out_edges_by_directedness_iter(src, directedness, order)
-            .and_then(|iter| iter.collect())
+        let mut out = Vec::new();
+        let _ = self.visit_out_edges_by_directedness(src, directedness, order, |edge| {
+            out.push(edge);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(out)
     }
 
     /// Returns an iterator over outgoing edges whose bucket directedness matches `directedness`.
