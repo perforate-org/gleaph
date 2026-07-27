@@ -471,6 +471,8 @@ where
         label: BucketLabelKey,
         bucket: &LabelBucket,
         order: OutEdgeOrder,
+        inline_property_bytes: &[u8],
+        width: u16,
         mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
@@ -493,11 +495,19 @@ where
             OutEdgeOrder::Ascending => {
                 for slot in 0..degree {
                     let off = slot as usize * E::BYTES;
-                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                    let mut edge = E::read_from(&raw_edges[off..off + E::BYTES])
                         .with_slot_index(slot)
                         .with_label_id(label.raw());
                     if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                         continue;
+                    }
+                    if width > 0 {
+                        let start = slot as usize * usize::from(width);
+                        let end = start + usize::from(width);
+                        edge = edge.with_stored_inline_property_bytes(
+                            width,
+                            &inline_property_bytes[start..end],
+                        );
                     }
                     if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
                         return Ok(ControlFlow::Break(value));
@@ -507,11 +517,19 @@ where
             OutEdgeOrder::Descending => {
                 for slot in (0..degree).rev() {
                     let off = slot as usize * E::BYTES;
-                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                    let mut edge = E::read_from(&raw_edges[off..off + E::BYTES])
                         .with_slot_index(slot)
                         .with_label_id(label.raw());
                     if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                         continue;
+                    }
+                    if width > 0 {
+                        let start = slot as usize * usize::from(width);
+                        let end = start + usize::from(width);
+                        edge = edge.with_stored_inline_property_bytes(
+                            width,
+                            &inline_property_bytes[start..end],
+                        );
                     }
                     if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
                         return Ok(ControlFlow::Break(value));
@@ -572,7 +590,16 @@ where
         if bucket.overflow_log_head() < 0
             && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
         {
-            return self.visit_dense_label_bucket_edges(owner, label, &bucket, order, visit);
+            let inline_property_bytes: &[u8] = &[];
+            return self.visit_dense_label_bucket_edges(
+                owner,
+                label,
+                &bucket,
+                order,
+                inline_property_bytes,
+                0,
+                visit,
+            );
         }
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
         let mut iter = self.labeled_bucket_span_iter(
@@ -921,6 +948,8 @@ where
                 label,
                 &bucket,
                 order,
+                &inline_property_bytes,
+                width,
                 |slot, edge| {
                     let raw_slot = slot.raw();
                     let inline_property = if width == 0 {
