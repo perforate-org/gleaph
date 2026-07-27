@@ -260,12 +260,13 @@ constructors reject a width mismatch. Width zero is valid and is represented by 
 vector. The property-read owner, LARA, constructs this validated value after reading the exact
 ordinal for the live logical slot.
 
-This is an intentional breaking refactor. Existing callers are not given a compatibility field,
-compatibility constructor, or parallel legacy return type. Callers must migrate to the explicit
-topology-only or `_with_inline_property` API selected by their contract. The existing
-`CsrEdge::with_stored_inline_property_bytes` hook may remain only as an internal transition
-mechanism while the migration is implemented; it is not a compatibility guarantee and must not
-define the public read contract.
+This is an intentional breaking refactor. The topology-only identity of `Edge` (equality, hash,
+and `CsrEdge` liveness) is enforced; `InlinePropertyBytes` construction validates the exact
+width. The public `inline_property` field on `Edge` is retained as a transitional compatibility
+field while caller paths migrate to the explicit `EdgeWithInlineProperty` shape; it will be
+removed once the migration is complete (Plan 0187). Until then, existing callers are not given a
+new compatibility field or dual-shape API, and the `CsrEdge::with_stored_inline_property_bytes`
+hook remains only as an internal transition mechanism, not as the public read contract.
 
 The target term `inline_property` is used consistently. `payload` is not used in new API names
 because it is broader and can be confused with other edge inline property bytes or property-store

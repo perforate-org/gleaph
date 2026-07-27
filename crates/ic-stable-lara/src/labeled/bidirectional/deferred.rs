@@ -2026,7 +2026,7 @@ where
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
@@ -2055,7 +2055,7 @@ where
                 let edge = item
                     .edge
                     .with_stored_inline_property_bytes(
-                        item.inline_property.width,
+                        item.inline_property.width(),
                         item.inline_property.bytes(),
                     )
                     .with_label_id(label_id.raw());
@@ -2378,7 +2378,7 @@ where
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
@@ -2481,7 +2481,7 @@ where
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
@@ -2651,7 +2651,7 @@ where
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
@@ -2680,7 +2680,7 @@ where
                 let edge = item
                     .edge
                     .with_stored_inline_property_bytes(
-                        item.inline_property.width,
+                        item.inline_property.width(),
                         item.inline_property.bytes(),
                     )
                     .with_label_id(label_id.raw());
@@ -2734,7 +2734,7 @@ where
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());
@@ -2766,7 +2766,7 @@ where
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(label_id.raw());

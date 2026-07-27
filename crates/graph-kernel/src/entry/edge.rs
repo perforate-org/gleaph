@@ -40,22 +40,23 @@ pub struct Edge {
 }
 
 impl PartialEq for Edge {
+    /// Topology-only equality. Inline property bytes are intentionally excluded:
+    /// property-aware equality belongs to the explicit `EdgeWithInlineProperty` read path.
     fn eq(&self, other: &Self) -> bool {
         self.target == other.target
             && self.edge_slot_index == other.edge_slot_index
             && self.label_id == other.label_id
-            && self.inline_property == other.inline_property
     }
 }
 
 impl Eq for Edge {}
 
 impl Hash for Edge {
+    /// Topology-only hash. Inline property bytes are intentionally excluded.
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.target.hash(state);
         self.edge_slot_index.hash(state);
         self.label_id.hash(state);
-        self.inline_property.hash(state);
     }
 }
 
@@ -223,6 +224,20 @@ mod tests {
         assert_ne!(base, different_label);
         assert_ne!(hash(&base), hash(&different_slot));
         assert_ne!(hash(&base), hash(&different_label));
+    }
+
+    #[test]
+    fn edge_identity_is_topology_only() {
+        let topology = Edge {
+            target: VertexRef::local(VertexId::from(1)),
+            edge_slot_index: EdgeSlotIndex::from_raw(5),
+            label_id: 7,
+            inline_property: EdgeInlinePropertyBytes::EMPTY,
+        };
+        let with_property = topology.with_inline_property_bytes(&[1, 2, 3, 4]);
+
+        assert_eq!(topology, with_property);
+        assert_eq!(hash(&topology), hash(&with_property));
     }
 
     #[test]

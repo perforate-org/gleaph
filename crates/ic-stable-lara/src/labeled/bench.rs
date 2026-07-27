@@ -1328,7 +1328,7 @@ fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResul
                     label,
                     OutEdgeOrder::Descending,
                     |_slot, item| {
-                        count += usize::from(item.inline_property.width > 0);
+                        count += usize::from(item.inline_property.width() > 0);
                         ControlFlow::<()>::Continue(())
                     },
                 )

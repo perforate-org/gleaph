@@ -1650,7 +1650,7 @@ mod tests {
                         let edge = item
                             .edge
                             .with_stored_inline_property_bytes(
-                                item.inline_property.width,
+                                item.inline_property.width(),
                                 item.inline_property.bytes(),
                             )
                             .with_label_id(valued.raw());
@@ -1722,7 +1722,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -1794,7 +1794,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -1841,7 +1841,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -1895,7 +1895,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -1961,7 +1961,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -2022,7 +2022,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -2214,7 +2214,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -2336,7 +2336,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -2847,7 +2847,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -2982,7 +2982,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -3042,7 +3042,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(default.raw());
@@ -3193,7 +3193,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -3266,7 +3266,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -3310,7 +3310,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -3383,7 +3383,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -3568,7 +3568,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -3770,7 +3770,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -3855,7 +3855,7 @@ mod tests {
                     let edge = item
                         .edge
                         .with_stored_inline_property_bytes(
-                            item.inline_property.width,
+                            item.inline_property.width(),
                             item.inline_property.bytes(),
                         )
                         .with_label_id(road.raw());
@@ -3905,7 +3905,7 @@ mod tests {
                 let edge = item
                     .edge
                     .with_stored_inline_property_bytes(
-                        item.inline_property.width,
+                        item.inline_property.width(),
                         item.inline_property.bytes(),
                     )
                     .with_label_id(road.raw());

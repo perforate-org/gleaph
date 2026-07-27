@@ -89,14 +89,15 @@ pub use crate::traverse::BucketEntryPosition;
 
 /// Exact inline-property bytes for one live edge row.
 ///
-/// Width zero is represented by an empty byte slice and is a valid value;
-/// callers must not treat it as a missing property.  Small inline property byte slices (up to
-/// 16 bytes) are stored inline to avoid per-edge heap allocations during
-/// sparse traversals; larger ones fall back to a heap vector.
+/// This value enforces `bytes.len() == width`. Width zero is represented by an
+/// empty byte vector and is a valid value; callers must not treat it as a missing
+/// property. Small inline property byte slices (up to 16 bytes) are stored inline
+/// to avoid per-edge heap allocations during sparse traversals; larger ones fall
+/// back to a heap vector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InlinePropertyBytes {
     /// Declared byte width of the inline property for this edge's label bucket.
-    pub width: u16,
+    width: u16,
     storage: InlinePropertyBytesStorage,
 }
 
@@ -118,8 +119,18 @@ impl InlinePropertyBytes {
     }
 
     /// Creates an inline-property value from a borrowed byte slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `bytes.len() != width`. Callers that cannot guarantee the exact
+    /// width must use the LARA read path, which returns a typed width-mismatch error.
     #[inline]
     pub fn from_bytes(width: u16, bytes: &[u8]) -> Self {
+        assert_eq!(
+            bytes.len(),
+            usize::from(width),
+            "InlinePropertyBytes width must match byte length"
+        );
         if bytes.is_empty() {
             return Self::empty();
         }
@@ -139,6 +150,12 @@ impl InlinePropertyBytes {
                 storage: InlinePropertyBytesStorage::Heap(bytes.to_vec()),
             }
         }
+    }
+
+    /// Declared byte width of the inline property for this edge's label bucket.
+    #[inline]
+    pub fn width(&self) -> u16 {
+        self.width
     }
 
     /// Returns the exact byte contents of the inline property.
@@ -4239,6 +4256,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::super::LEAF_VERTEX_EDGE_SEGMENT_DENSITY;
+    #[test]
+    fn inline_property_bytes_zero_width_is_empty() {
+        let v = InlinePropertyBytes::empty();
+        assert_eq!(v.width(), 0);
+        assert_eq!(v.bytes(), &[] as &[u8]);
+        assert!(v.into_vec().is_empty());
+    }
+
+    #[test]
+    fn inline_property_bytes_enforces_width_match() {
+        let v = InlinePropertyBytes::from_bytes(4, &[1, 2, 3, 4]);
+        assert_eq!(v.width(), 4);
+        assert_eq!(v.bytes(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "InlinePropertyBytes width must match byte length")]
+    fn inline_property_bytes_rejects_width_mismatch() {
+        let _ = InlinePropertyBytes::from_bytes(4, &[1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "InlinePropertyBytes width must match byte length")]
+    fn inline_property_bytes_rejects_nonzero_width_with_empty_bytes() {
+        let _ = InlinePropertyBytes::from_bytes(2, &[]);
+    }
+
     use super::super::leaf_pin::labeled_leaf_physical_block_len;
     use super::super::test_support::*;
     use super::*;
