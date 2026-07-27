@@ -8,10 +8,7 @@ use crate::{
         record::{LabelBucket, LabeledVertex},
     },
     lara::{
-        edge::{
-            OutEdgeSlabIter, OutEdgeVisitWindow, OutEdgesIter, OutOverflowAscParts,
-            OutOverflowDescParts,
-        },
+        edge::{OutEdgeSlabIter, OutEdgeVisitWindow, OutOverflowAscParts, OutOverflowDescParts},
         operation_error::LaraOperationError,
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
@@ -25,7 +22,6 @@ use super::error::LabeledOperationError;
 use super::iter::{
     LabeledEdgeInlinePropertyBatch, LabeledEdgeInlinePropertyBatchScratch,
     LabeledInlinePropertyValueBatch, LabeledInlinePropertyValueBatchScratch,
-    LabeledOutEdgesIterKind,
 };
 use super::{BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, LabeledSpanIter, OutEdgeOrder};
 
@@ -376,111 +372,6 @@ where
     E: CsrEdgeTombstone,
     M: Memory,
 {
-    pub(super) fn out_edges_iter_for_label_ordered(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        order: OutEdgeOrder,
-    ) -> Result<LabeledSpanIter<'_, E, M>, LabeledOperationError> {
-        self.out_edges_iter_for_label_ordered_with_inline_property_bytes(src, label_id, order, true)
-    }
-
-    pub(super) fn out_edges_iter_for_label_ordered_with_inline_property_bytes(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        order: OutEdgeOrder,
-        attach_inline_property_bytes: bool,
-    ) -> Result<LabeledSpanIter<'_, E, M>, LabeledOperationError> {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            if label_id != self.bypass_storage_label_for(&vertex) {
-                return Ok(LabeledSpanIter::Empty);
-            }
-            return match order {
-                OutEdgeOrder::Descending => Ok(LabeledSpanIter::desc(
-                    self,
-                    src,
-                    vertex,
-                    0,
-                    LabelBucket::default(),
-                    label_id,
-                    None,
-                    true,
-                    self.edges.out_edges_iter(&self.vertices, src)?,
-                )),
-                OutEdgeOrder::Ascending => Ok(LabeledSpanIter::asc(
-                    self,
-                    src,
-                    vertex,
-                    0,
-                    LabelBucket::default(),
-                    label_id,
-                    None,
-                    true,
-                    self.edges.asc_out_edges_iter(&self.vertices, src)?,
-                )),
-            };
-        }
-        match self.find_bucket(src, &vertex, label_id)? {
-            BucketSearch::Found { slot, bucket } => {
-                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-                self.labeled_bucket_span_iter(
-                    src,
-                    order,
-                    &vertex,
-                    &[bucket],
-                    0,
-                    bucket_index,
-                    attach_inline_property_bytes,
-                )
-            }
-            BucketSearch::Missing { .. } => Ok(LabeledSpanIter::Empty),
-        }
-    }
-
-    pub(crate) fn out_edges_iter_for_label(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-    ) -> Result<OutEdgesIter<'_, E, M>, LabeledOperationError> {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            if label_id != self.bypass_storage_label_for(&vertex) {
-                return Ok(OutEdgesIter::empty(&self.edges));
-            }
-            return self
-                .edges
-                .out_edges_iter(&self.vertices, src)
-                .map_err(LabeledOperationError::Store);
-        }
-        match self.find_bucket(src, &vertex, label_id)? {
-            BucketSearch::Found { slot, bucket } => {
-                let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-                let successor_start = self.bucket_slab_window_end_exclusive_after_bucket(
-                    &vertex,
-                    bucket_index,
-                    &bucket,
-                )?;
-                self.edges
-                    .out_edges_iter(
-                        &LabelEdgeSpanAccess::with_bucket(
-                            &self.buckets,
-                            slot,
-                            bucket,
-                            successor_start,
-                            src,
-                        ),
-                        VertexId::from(0),
-                    )
-                    .map_err(LabeledOperationError::Store)
-            }
-            BucketSearch::Missing { .. } => Ok(OutEdgesIter::empty(&self.edges)),
-        }
-    }
-
     /// Visits outgoing edges for one label without checking that `src` is in range.
     pub fn for_each_edges_for_label_unchecked<Visit>(
         &self,
@@ -605,36 +496,28 @@ where
             return Ok(LabeledOutEdgesIter::empty(self, src, order));
         }
         if vertex.is_default_edge_labeled() {
+            let label = self.bypass_storage_label_for(&vertex);
             if let Some(directedness) = directedness
-                && self.bypass_storage_label_for(&vertex).directedness() != directedness
+                && label.directedness() != directedness
             {
                 return Ok(LabeledOutEdgesIter::empty(self, src, order));
             }
-            return match order {
-                OutEdgeOrder::Descending => Ok(LabeledOutEdgesIter {
-                    graph: self,
-                    src,
-                    order,
-                    kind: LabeledOutEdgesIterKind::BypassDesc {
-                        label_id: self.bypass_storage_label_for(&vertex),
-                        iter: OutEdgeSlabIter::try_new(
-                            &self.edges,
-                            vertex.base_slot_start(),
-                            vertex.stored_degree(),
-                            vertex.degree(),
-                        )?,
-                    },
-                }),
-                OutEdgeOrder::Ascending => Ok(LabeledOutEdgesIter {
-                    graph: self,
-                    src,
-                    order,
-                    kind: LabeledOutEdgesIterKind::BypassAsc {
-                        label_id: self.bypass_storage_label_for(&vertex),
-                        iter: self.edges.asc_out_edges_iter(&self.vertices, src)?,
-                    },
-                }),
-            };
+            // Bypass vertices use a single synthetic bucket so the iterator delegates
+            // to traverse_next on first `next()`.
+            let bucket = LabelBucket::from_parts(
+                label,
+                vertex.base_slot_start(),
+                vertex.degree(),
+                vertex.stored_degree(),
+                -1,
+            );
+            return Ok(LabeledOutEdgesIter::from_buckets(
+                self,
+                src,
+                order,
+                0,
+                vec![bucket],
+            ));
         }
 
         let (base_bucket_index, buckets) = if let Some(directedness) = directedness {
@@ -652,22 +535,13 @@ where
         } else {
             (0, self.read_vertex_label_buckets(&vertex)?)
         };
-        let next_bucket = match order {
-            OutEdgeOrder::Descending => buckets.len().checked_sub(1),
-            OutEdgeOrder::Ascending => (!buckets.is_empty()).then_some(0),
-        };
-        Ok(LabeledOutEdgesIter {
-            graph: self,
+        Ok(LabeledOutEdgesIter::from_buckets(
+            self,
             src,
             order,
-            kind: LabeledOutEdgesIterKind::Buckets {
-                vertex,
-                buckets,
-                base_bucket_index,
-                next_bucket,
-                current: LabeledSpanIter::Empty,
-            },
-        })
+            base_bucket_index,
+            buckets,
+        ))
     }
 
     pub(super) fn labeled_bucket_span_iter<'a>(

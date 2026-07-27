@@ -6,14 +6,11 @@ use crate::{
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
     },
-    lara::{
-        edge::{AscOutEdgesIter, OutEdgeSlabIter, OutEdgesIter},
-        operation_error::LaraOperationError,
-    },
+    lara::edge::{AscOutEdgesIter, OutEdgesIter},
     traits::{CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
-use std::{cell::Cell, iter::FusedIterator, num::NonZero, rc::Rc};
+use std::{cell::Cell, iter::FusedIterator, num::NonZero, ops::ControlFlow, rc::Rc};
 
 use super::{LabeledLaraGraph, LabeledOperationError, OutEdgeOrder};
 
@@ -197,32 +194,21 @@ pub struct LabeledEdgeInlinePropertyBatch<'a, E> {
 ///
 /// Items are fallible because labeled edge rows may need to read inline property bytes from stable
 /// inline property bytes storage. Use `collect::<Result<Vec<_>, _>>()` when materializing rows. For paging or
-/// OFFSET-style traversal, prefer [`LabeledOutEdgesIter::try_advance_by`] over
-/// [`Iterator::nth`] or [`Iterator::skip`] so skipped rows do not read inline_property_bytes bytes.
+/// Labeled outgoing-edge iterator that materializes one bucket at a time.
+///
+/// The iterator enumerates the requested label buckets once at construction and then
+/// lazily fills its edge buffer by delegating each bucket to
+/// [`super::traverse_next::LabeledLaraGraph::visit_edges_with_inline_property`].
+/// Storage errors therefore surface during iteration, matching the legacy streaming
+/// contract.
 pub struct LabeledOutEdgesIter<'a, E: CsrEdgeTombstone, M: Memory> {
-    pub(super) graph: &'a LabeledLaraGraph<E, M>,
-    pub(super) src: VertexId,
-    pub(super) order: OutEdgeOrder,
-    pub(super) kind: LabeledOutEdgesIterKind<'a, E, M>,
-}
-
-pub(super) enum LabeledOutEdgesIterKind<'a, E: CsrEdgeTombstone, M: Memory> {
-    Empty,
-    BypassDesc {
-        label_id: BucketLabelKey,
-        iter: OutEdgeSlabIter<'a, E, M>,
-    },
-    BypassAsc {
-        label_id: BucketLabelKey,
-        iter: AscOutEdgesIter<'a, E, M>,
-    },
-    Buckets {
-        vertex: LabeledVertex,
-        buckets: Vec<LabelBucket>,
-        base_bucket_index: u32,
-        next_bucket: Option<usize>,
-        current: LabeledSpanIter<'a, E, M>,
-    },
+    graph: &'a LabeledLaraGraph<E, M>,
+    src: VertexId,
+    order: OutEdgeOrder,
+    buckets: Vec<LabelBucket>,
+    base_bucket_index: u32,
+    next_bucket_local: Option<usize>,
+    current: std::vec::IntoIter<E>,
 }
 
 #[doc(hidden)]
@@ -258,61 +244,43 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            match &mut self.kind {
-                LabeledOutEdgesIterKind::Empty => return None,
-                LabeledOutEdgesIterKind::BypassDesc { label_id, iter } => {
-                    return iter
-                        .next()
-                        .map(|edge| Ok(edge.with_label_id(label_id.raw())));
-                }
-                LabeledOutEdgesIterKind::BypassAsc { label_id, iter } => {
-                    return iter
-                        .next()
-                        .map(|edge| Ok(edge.with_label_id(label_id.raw())));
-                }
-                LabeledOutEdgesIterKind::Buckets {
-                    vertex,
-                    buckets,
-                    base_bucket_index,
-                    next_bucket,
-                    current,
-                } => {
-                    if let Some(edge) = current.next() {
-                        return Some(edge);
-                    }
-                    let local = next_bucket.take()?;
-                    if self.order == OutEdgeOrder::Descending {
-                        *next_bucket = local.checked_sub(1);
-                    } else {
-                        let next = local + 1;
-                        if next < buckets.len() {
-                            *next_bucket = Some(next);
-                        }
-                    }
-                    if buckets[local].degree() == 0 {
-                        continue;
-                    }
-                    let Some(bucket_index) = base_bucket_index.checked_add(local as u32) else {
-                        self.kind = LabeledOutEdgesIterKind::Empty;
-                        return Some(Err(LaraOperationError::CollectAllocationOverflow.into()));
-                    };
-                    match self.graph.labeled_bucket_span_iter(
-                        self.src,
-                        self.order,
-                        vertex,
-                        buckets,
-                        local,
-                        bucket_index,
-                        true,
-                    ) {
-                        Ok(span) => *current = span,
-                        Err(err) => {
-                            self.kind = LabeledOutEdgesIterKind::Empty;
-                            return Some(Err(err));
-                        }
-                    }
-                }
+            if let Some(edge) = self.current.next() {
+                return Some(Ok(edge));
             }
+            let local = self.next_bucket_local?;
+            if self.order == OutEdgeOrder::Descending {
+                self.next_bucket_local = local.checked_sub(1);
+            } else {
+                let next = local + 1;
+                self.next_bucket_local = (next < self.buckets.len()).then_some(next);
+            }
+            if self.buckets[local].degree() == 0 {
+                continue;
+            }
+            let bucket = &self.buckets[local];
+            let label_id = bucket.bucket_label_key();
+            let mut buf = Vec::new();
+            let result = self.graph.visit_edges_with_inline_property_unchecked(
+                self.src,
+                label_id,
+                self.order,
+                |_slot, item| {
+                    let edge = item
+                        .edge
+                        .with_stored_inline_property_bytes(
+                            item.inline_property.width,
+                            item.inline_property.bytes(),
+                        )
+                        .with_label_id(label_id.raw());
+                    buf.push(edge);
+                    ControlFlow::<()>::Continue(())
+                },
+            );
+            if let Err(err) = result {
+                self.next_bucket_local = None;
+                return Some(Err(err));
+            }
+            self.current = buf.into_iter();
         }
     }
 
@@ -324,6 +292,17 @@ where
             }
         }
         self.next()
+    }
+
+    fn count(self) -> usize {
+        self.collect::<Vec<_>>().len()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Lower bound is the already-buffered edges; upper bound is unknown because
+        // each remaining bucket may yield up to its degree.
+        let buffered = self.current.len();
+        (buffered, None)
     }
 }
 
@@ -348,14 +327,39 @@ where
             graph,
             src,
             order,
-            kind: LabeledOutEdgesIterKind::Empty,
+            buckets: Vec::new(),
+            base_bucket_index: 0,
+            next_bucket_local: None,
+            current: Vec::new().into_iter(),
         }
     }
 
-    /// Advances by live rows without reading skipped inline_property_bytes bytes.
+    pub(super) fn from_buckets(
+        graph: &'a LabeledLaraGraph<E, M>,
+        src: VertexId,
+        order: OutEdgeOrder,
+        base_bucket_index: u32,
+        buckets: Vec<LabelBucket>,
+    ) -> Self {
+        let next_bucket_local = match order {
+            OutEdgeOrder::Descending => buckets.len().checked_sub(1),
+            OutEdgeOrder::Ascending => (!buckets.is_empty()).then_some(0),
+        };
+        Self {
+            graph,
+            src,
+            order,
+            buckets,
+            base_bucket_index,
+            next_bucket_local,
+            current: Vec::new().into_iter(),
+        }
+    }
+
+    /// Advances by up to `n` live rows.
     ///
-    /// Returns `Ok(Err(left))` when the iterator ends before all `n` rows are skipped, and
-    /// returns `Err` for storage/layout failures encountered while moving between bucket spans.
+    /// Returns `Ok(Err(left))` when the iterator ends before all `n` rows are skipped,
+    /// or `Err` if a storage/layout error is encountered while materializing a bucket.
     pub fn try_advance_by(
         &mut self,
         mut n: usize,
@@ -364,76 +368,23 @@ where
             return Ok(Ok(()));
         }
         loop {
-            match &mut self.kind {
-                LabeledOutEdgesIterKind::Empty => {
-                    return Ok(Err(NonZero::new(n).expect("n > 0")));
-                }
-                LabeledOutEdgesIterKind::BypassDesc { iter, .. } => {
-                    return Ok(iter.advance_by(n));
-                }
-                LabeledOutEdgesIterKind::BypassAsc { iter, .. } => {
-                    return Ok(iter.advance_by(n));
-                }
-                LabeledOutEdgesIterKind::Buckets { current, .. } => match current.try_advance_by(n)
-                {
-                    Ok(()) => return Ok(Ok(())),
-                    Err(left) => {
-                        n = left.get();
-                        *current = LabeledSpanIter::Empty;
-                        if self.roll_to_next_bucket_span()? {
-                            continue;
-                        }
-                        return Ok(Err(NonZero::new(n).expect("n > 0")));
+            let buffered = self.current.len();
+            if n <= buffered {
+                self.current.nth(n - 1);
+                return Ok(Ok(()));
+            }
+            n -= buffered;
+            self.current = Vec::new().into_iter();
+            match self.next() {
+                Some(Ok(_)) => {
+                    n -= 1;
+                    if n == 0 {
+                        return Ok(Ok(()));
                     }
-                },
-            }
-        }
-    }
-
-    /// Advances past the exhausted current span to the next non-empty bucket span.
-    fn roll_to_next_bucket_span(&mut self) -> Result<bool, LabeledOperationError> {
-        let LabeledOutEdgesIterKind::Buckets {
-            vertex,
-            buckets,
-            base_bucket_index,
-            next_bucket,
-            current,
-        } = &mut self.kind
-        else {
-            return Ok(false);
-        };
-        loop {
-            let local = match next_bucket.take() {
-                Some(l) => l,
-                None => {
-                    *current = LabeledSpanIter::Empty;
-                    return Ok(false);
                 }
-            };
-            if self.order == OutEdgeOrder::Descending {
-                *next_bucket = local.checked_sub(1);
-            } else {
-                let next = local + 1;
-                if next < buckets.len() {
-                    *next_bucket = Some(next);
-                }
+                Some(Err(err)) => return Err(err),
+                None => return Ok(Err(NonZero::new(n).expect("n > 0"))),
             }
-            if buckets[local].degree() == 0 {
-                continue;
-            }
-            let bucket_index = base_bucket_index
-                .checked_add(local as u32)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            *current = self.graph.labeled_bucket_span_iter(
-                self.src,
-                self.order,
-                vertex,
-                buckets,
-                local,
-                bucket_index,
-                true,
-            )?;
-            return Ok(true);
         }
     }
 }
