@@ -2853,176 +2853,41 @@ where
     pub fn find_out_edge_with_label_by_predicate<F>(
         &self,
         src: VertexId,
-        mut pred: F,
+        pred: F,
     ) -> Result<Option<(E, Option<BucketLabelKey>)>, LabeledOperationError>
     where
         F: FnMut(&E) -> bool,
     {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            if vertex.degree() == 0 {
-                return Ok(None);
-            }
-            let label = self.bypass_storage_label_for(&vertex);
-            let found = self.edges.find_first_out_edge_matching(
-                &self.vertices,
+        Ok(self
+            .find_nth_edge_with_inline_property_matching(
                 src,
-                None::<&mut dyn FnMut(&[u8]) -> bool>,
-                &mut pred,
-            )?;
-            return Ok(found.map(|e| (e.with_label_id(label.raw()), Some(label))));
-        }
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
-        if let Some(run) = Self::try_contiguous_tiled_labeled_out_edges(&vertex, &buckets) {
-            #[cfg(feature = "canbench")]
-            let _bench_scope = bench_scope("labeled_find_out_edge_with_label_tiled");
-            if run.total_edges() == 0 {
-                return Ok(None);
-            }
-            let nbytes = run.byte_len::<E>()?;
-            let mut raw = vec![0u8; nbytes];
-            self.edges.read_slots_contiguous(run.base(), &mut raw);
-            let mut bucket_rev_idx = buckets.len() as isize - 1;
-            let mut slot_rev: Option<u32> = None;
-            while bucket_rev_idx >= 0 {
-                let bidx = bucket_rev_idx as usize;
-                let bucket = &buckets[bidx];
-                if bucket.degree() == 0 {
-                    bucket_rev_idx -= 1;
-                    slot_rev = None;
-                    continue;
-                }
-                let slot = slot_rev.unwrap_or(bucket.degree().saturating_sub(1));
-                let chunk = run.edge_chunk::<E>(&raw, bucket, slot)?;
-                let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
-                let edge = self.attach_edge_inline_property(
-                    src,
-                    &vertex,
-                    bidx as u32,
-                    *bucket,
-                    slot,
-                    E::read_from(chunk).with_slot_index(slot),
-                    log_chains.as_ref(),
-                )?;
-                if pred(&edge) {
-                    return Ok(Some((
-                        edge.with_slot_index(slot)
-                            .with_label_id(bucket.bucket_label_key().raw()),
-                        Some(bucket.bucket_label_key()),
-                    )));
-                }
-                if slot == 0 {
-                    bucket_rev_idx -= 1;
-                    slot_rev = None;
-                } else {
-                    slot_rev = Some(slot - 1);
-                }
-            }
-            return Ok(None);
-        }
-        for bucket_index in (0..buckets.len()).rev() {
-            let bucket_index = bucket_index as u32;
-            let bucket = &buckets[bucket_index as usize];
-            let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-            let successor_start =
-                self.bucket_slab_window_end_exclusive_after_bucket(&vertex, bucket_index, bucket)?;
-            let acc = LabelEdgeSpanAccess::with_bucket(
-                &self.buckets,
-                slot,
-                *bucket,
-                successor_start,
-                src,
-            );
-            let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, bucket);
-            for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
-                let slot_index = edge.edge_slot_index_raw();
-                let edge = self.attach_edge_inline_property(
-                    src,
-                    &vertex,
-                    bucket_index,
-                    *bucket,
-                    slot_index,
-                    edge,
-                    log_chains.as_ref(),
-                )?;
-                if pred(&edge) {
-                    return Ok(Some((
-                        edge.with_label_id(bucket.bucket_label_key().raw()),
-                        Some(bucket.bucket_label_key()),
-                    )));
-                }
-            }
-        }
-        Ok(None)
+                super::traverse_next::EdgeFindScope::AllLabels,
+                OutEdgeOrder::Descending,
+                0,
+                pred,
+            )?
+            .map(|found| (found.edge, Some(found.label))))
     }
 
     /// Finds the first outgoing edge matching `pred`, returning its label and bucket slot index.
     pub fn find_out_edge_slot_with_label_by_predicate<F>(
         &self,
         src: VertexId,
-        mut pred: F,
+        pred: F,
     ) -> Result<Option<(E, BucketLabelKey, u32)>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
         F: FnMut(&E) -> bool,
     {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            if vertex.degree() == 0 {
-                return Ok(None);
-            }
-            let label = self.bypass_storage_label_for(&vertex);
-            let found =
-                self.edges
-                    .find_first_out_edge_slot_matching(&self.vertices, src, |edge| pred(edge))?;
-            return Ok(found.map(|(slot, edge)| (edge.with_label_id(label.raw()), label, slot)));
-        }
-
-        let buckets = self.read_vertex_label_buckets(&vertex)?;
-        for bucket_index in (0..buckets.len()).rev() {
-            let bucket_index = bucket_index as u32;
-            let mut bucket = buckets[bucket_index as usize];
-            if bucket.degree() == 0 {
-                continue;
-            }
-            if bucket.overflow_log_head() >= 0 {
-                let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                bucket = self.ensure_label_bucket_folded_to_slab(
-                    src,
-                    bucket_index,
-                    bucket_slot,
-                    bucket,
-                )?;
-            }
-            let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, &bucket);
-            for slot_index in (0..bucket.stored_slots).rev() {
-                let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let edge = self.edges.read_slot(edge_slot).with_slot_index(slot_index);
-                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                    continue;
-                }
-                let edge = self.attach_edge_inline_property(
-                    src,
-                    &vertex,
-                    bucket_index,
-                    bucket,
-                    slot_index,
-                    edge,
-                    log_chains.as_ref(),
-                )?;
-                if pred(&edge) {
-                    return Ok(Some((
-                        edge.with_label_id(bucket.bucket_label_key().raw()),
-                        bucket.bucket_label_key(),
-                        slot_index,
-                    )));
-                }
-            }
-        }
-        Ok(None)
+        Ok(self
+            .find_nth_edge_with_inline_property_matching(
+                src,
+                super::traverse_next::EdgeFindScope::AllLabels,
+                OutEdgeOrder::Descending,
+                0,
+                pred,
+            )?
+            .map(|found| (found.edge, found.label, found.slot.raw())))
     }
 
     /// Collects outgoing edges for one label.

@@ -804,80 +804,16 @@ where
         needle: &E,
     ) -> Result<Option<BucketLabelKey>, LabeledOperationError>
     where
-        E: PartialEq,
+        E: PartialEq + CsrEdgeTombstone,
     {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            if vertex.degree() == 0 {
-                return Ok(None);
-            }
-            let label = self.bypass_storage_label_for(&vertex);
-            if needle
-                .edge_label_id_raw()
-                .is_some_and(|needle_label| needle_label != label.raw())
-            {
-                return Ok(None);
-            }
-            let mut found = false;
-            self.edges.visit_out_edges(
-                &self.vertices,
-                src,
-                None,
-                None,
-                None::<&mut dyn FnMut(&[u8]) -> bool>,
-                |_| true,
-                |edge| {
-                    let edge = edge.with_label_id(label.raw());
-                    if Self::edge_matches_label_lookup(&edge, needle) {
-                        found = true;
-                    }
-                },
-            )?;
-            return Ok(found.then_some(label));
-        }
-        let deg = vertex.degree();
-        if deg == 0 {
-            return Ok(None);
-        }
-        let mut buckets = Vec::with_capacity(deg as usize);
-        for offset in 0..deg {
-            let slot = Self::labeled_vertex_bucket_slot(&vertex, offset)?;
-            let bucket = self
-                .buckets
-                .read_label_bucket_slot(slot)
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            buckets.push((slot, offset, bucket));
-        }
-        buckets.sort_by_key(|(_, _, bucket)| bucket.stored_slots);
-        for (slot, bucket_index, bucket) in buckets {
-            let successor =
-                self.bucket_slab_window_end_exclusive_after_bucket(&vertex, bucket_index, &bucket)?;
-            if needle
-                .edge_label_id_raw()
-                .is_some_and(|needle_label| needle_label != bucket.bucket_label_key().raw())
-            {
-                continue;
-            }
-            let log_chains = self.bucket_inline_property_bytes_log_chain_opt(src, &bucket);
-            let acc = LabelEdgeSpanAccess::with_bucket(&self.buckets, slot, bucket, successor, src);
-            for edge in self.edges.out_edges_iter(&acc, VertexId::from(0))? {
-                let slot_index = edge.edge_slot_index_raw();
-                let edge = self.attach_edge_inline_property(
-                    src,
-                    &vertex,
-                    bucket_index,
-                    bucket,
-                    slot_index,
-                    edge.with_label_id(bucket.bucket_label_key().raw()),
-                    log_chains.as_ref(),
-                )?;
-                if Self::edge_matches_label_lookup(&edge, needle) {
-                    return Ok(Some(bucket.bucket_label_key()));
-                }
-            }
-        }
-        Ok(None)
+        self.find_nth_edge_with_inline_property_matching(
+            src,
+            super::traverse_next::EdgeFindScope::AllLabels,
+            OutEdgeOrder::Descending,
+            0,
+            |edge| Self::edge_matches_label_lookup(edge, needle),
+        )
+        .map(|found| found.map(|f| f.label))
     }
 
     /// Returns the labels that currently have outgoing edges for `src`.
