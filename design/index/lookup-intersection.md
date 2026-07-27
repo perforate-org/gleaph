@@ -1,7 +1,7 @@
 # Index lookup intersection
 
-Last updated: 2026-07-15
-Anchor timestamp: 2026-07-15 08:58:08 UTC +0000
+Last updated: 2026-07-27
+Anchor timestamp: 2026-07-27 04:17:32 UTC +0000
 
 ## Status
 
@@ -187,6 +187,13 @@ for each shard_id in participating_shards:
 ```
 
 **Implemented** in `router/src/seed.rs` (`IndexAnchor`), `router/index_client.rs`, and `gql.rs` dispatch.
+
+With an ADR 0019 index cluster of more than one canister, `RouterIndexLookup::lookup_intersection`
+fans the same `IndexIntersectionRequest` out to every live index target, collects each target's
+`Vertices` or `Edges` result, and merges them with the same `(shard_id, vertex_id)` /
+`(shard_id, owner_vertex_id, label_id, slot_index)` deduplication and live-shard filtering used by
+`lookup_equal`. Each index canister still intersects the arms locally for the shard group it owns;
+the Router never performs a client-side set intersection.
 
 ## Graph executor
 

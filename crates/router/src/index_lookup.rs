@@ -524,20 +524,37 @@ impl IndexLookup for RouterIndexLookup {
         &self,
         req: IndexIntersectionRequest,
     ) -> Pin<Box<dyn Future<Output = Result<IndexIntersectionResult, String>> + '_>> {
-        let principal = match self.require_single_target("lookup_intersection") {
-            Ok(principal) => principal,
-            Err(err) => return Box::pin(async move { Err(err) }),
-        };
+        let targets = self.targets.clone();
         Box::pin(async move {
-            let client = RouterIndexClient::new(principal);
-            let result = collect_property_intersection_pages(&client, req.specs).await?;
-            Ok(match result {
-                IndexIntersectionResult::Vertices(hits) => IndexIntersectionResult::Vertices(
-                    merge_posting_hits(self.retain_live_vertex_hits(hits)),
-                ),
-                IndexIntersectionResult::Edges(hits) => IndexIntersectionResult::Edges(
-                    merge_edge_posting_hits(self.retain_live_edge_hits(hits)),
-                ),
+            if targets.is_empty() {
+                return Err("no index canister registered for logical graph".into());
+            }
+            let mut merged_vertices = Vec::new();
+            let mut merged_edges = Vec::new();
+            let mut shape = None;
+            for principal in targets {
+                let result = RouterIndexClient::new(principal)
+                    .lookup_intersection(req.clone())
+                    .await?;
+                match result {
+                    IndexIntersectionResult::Vertices(hits) => {
+                        shape.get_or_insert(false);
+                        merged_vertices.extend(hits);
+                    }
+                    IndexIntersectionResult::Edges(hits) => {
+                        shape.get_or_insert(true);
+                        merged_edges.extend(hits);
+                    }
+                }
+            }
+            Ok(if shape.unwrap_or(false) {
+                IndexIntersectionResult::Edges(merge_edge_posting_hits(
+                    self.retain_live_edge_hits(merged_edges),
+                ))
+            } else {
+                IndexIntersectionResult::Vertices(merge_posting_hits(
+                    self.retain_live_vertex_hits(merged_vertices),
+                ))
             })
         })
     }

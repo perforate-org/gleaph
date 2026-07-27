@@ -2736,6 +2736,72 @@ fn router_mutation_journal_tracks_shard_completion() {
 }
 
 #[test]
+fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let caller = graph_principal(42);
+
+    store
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            b"a".to_vec(),
+        )
+        .expect("mutation id");
+    let shards = vec![
+        RouterMutationShardV1::new(ShardId::new(0), graph_principal(1), Some(vec![1])),
+        RouterMutationShardV1::new(ShardId::new(1), graph_principal(2), None),
+    ];
+    store
+        .record_router_mutation_shards(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            ResolvedLabelTable::default(),
+            ResolvedPropertyTable::default(),
+            shards.clone(),
+        )
+        .expect("record initial envelope");
+
+    // Simulate the first shard completing before the saga retried.
+    store
+        .record_router_mutation_shard_completed(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            ShardId::new(0),
+            2,
+        )
+        .expect("complete shard 0");
+
+    // A retry rebuilds the same envelope from the durable record. The writer must
+    // accept it as idempotent, not conflict because the stored shard is completed.
+    store
+        .record_router_mutation_shards(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            ResolvedLabelTable::default(),
+            ResolvedPropertyTable::default(),
+            shards,
+        )
+        .expect("retry with the same envelope is idempotent");
+
+    let record = store
+        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
+        .expect("record");
+    let stored_shards = record.shards();
+    assert_eq!(stored_shards.len(), 2);
+    assert!(stored_shards[0].completed());
+    assert_eq!(stored_shards[0].row_count(), 2);
+    assert!(!stored_shards[1].completed());
+}
+
+#[test]
 fn amortized_gc_evicts_expired_and_keeps_fresh() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());

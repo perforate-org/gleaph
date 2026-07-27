@@ -686,22 +686,37 @@ impl RouterStore {
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
             // Only a pristine Scalar reservation may be replaced by the scalar shard envelope.
             // TypedSeedBulk and CompletedBulk must never be overwritten by a legacy writer.
-            match &record.as_v1().payload {
+            let existing = match &record.as_v1().payload {
                 RouterMutationPayloadV1::Scalar { shards }
-                    if shards.is_empty() && record.as_v1().completed_row_count.is_none() => {}
-                RouterMutationPayloadV1::Scalar { shards: existing }
-                    if existing == &shards
-                        && record.as_v1().resolved_labels.as_ref() == Some(&resolved_labels)
-                        && record.as_v1().resolved_properties.as_ref()
-                            == Some(&resolved_properties) =>
+                    if record.as_v1().completed_row_count.is_none() =>
                 {
-                    return Ok(());
+                    shards
                 }
                 _ => {
                     return Err(RouterError::Conflict(
                         "scalar shard writer requires a pristine Scalar payload".into(),
                     ));
                 }
+            };
+            if existing.is_empty() {
+                // First persistence of the dispatch envelope.
+            } else if existing.len() == shards.len()
+                && existing.iter().zip(&shards).all(|(e, s)| {
+                    e.shard_id == s.shard_id
+                        && e.graph_canister == s.graph_canister
+                        && e.seed_bindings_blob == s.seed_bindings_blob
+                })
+                && record.as_v1().resolved_labels.as_ref() == Some(&resolved_labels)
+                && record.as_v1().resolved_properties.as_ref() == Some(&resolved_properties)
+            {
+                // The durable envelope is already recorded. Leave the existing progress flags
+                // (completed / projection_advanced / row_count) untouched so a retry does not
+                // conflict with a partially-converged saga.
+                return Ok(());
+            } else {
+                return Err(RouterError::Conflict(
+                    "scalar shard writer requires a pristine Scalar payload".into(),
+                ));
             }
             record.as_v1_mut().resolved_labels = Some(resolved_labels);
             record.as_v1_mut().resolved_properties = Some(resolved_properties);
