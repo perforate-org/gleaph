@@ -64,10 +64,9 @@ pub(crate) mod leaf_pin;
 mod remove;
 #[cfg(test)]
 pub(crate) mod test_support;
-mod traverse;
-pub(crate) mod traverse_next;
+pub(crate) mod traverse;
 
-pub use traverse_next::BucketEntryPosition;
+pub use traverse::BucketEntryPosition;
 mod values;
 
 pub(crate) use crate::traverse::EdgeSlotState;

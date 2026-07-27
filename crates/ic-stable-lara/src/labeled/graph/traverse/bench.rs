@@ -1,4 +1,4 @@
-//! ADR 0050 Phase 2 dedicated benchmarks for the `traverse_next` read surface.
+//! ADR 0050 Phase 2 dedicated benchmarks for the `traverse` read surface.
 //!
 //! These benchmarks measure the consolidated logical read API in isolation.
 //! Each benchmark sets up its fixture outside the measured closure and then
@@ -10,7 +10,7 @@ use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, LabeledInlinePropertyValueBatchScratch,
     LabeledVertex, MateStorageMemories, OutEdgeOrder,
     graph::LabeledLaraGraph,
-    graph::traverse_next::{BucketEntryPosition, LabeledTraversalRequest},
+    graph::traverse::{BucketEntryPosition, LabeledTraversalRequest},
 };
 use crate::traverse::{Traversal, TraversalWindow};
 use crate::{

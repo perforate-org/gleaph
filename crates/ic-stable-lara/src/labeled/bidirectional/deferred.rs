@@ -20,7 +20,7 @@ use crate::{
             BatchLocationMode, BatchReservation, OneOrientationBatchError,
             OneOrientationBatchResult,
         },
-        graph::traverse_next::{EdgeFindScope, FoundEdge},
+        graph::traverse::{EdgeFindScope, FoundEdge},
         graph::{
             BucketEntryPosition, EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph,
             LabeledOperationError, OutEdgeOrder, ScalarInsertLocation,
@@ -6886,7 +6886,7 @@ mod tests {
             .visit_storage_edge_locations(source, label, |storage_ref, edge| {
                 if matches!(
                     storage_ref.location,
-                    crate::labeled::graph::traverse_next::StorageEdgeLocation::OverflowLogEntry(_)
+                    crate::labeled::graph::traverse::StorageEdgeLocation::OverflowLogEntry(_)
                 ) {
                     found = Some((storage_ref.location, edge));
                     return ControlFlow::Break(());
@@ -6899,7 +6899,7 @@ mod tests {
         assert!(
             matches!(
                 location,
-                crate::labeled::graph::traverse_next::StorageEdgeLocation::OverflowLogEntry(_)
+                crate::labeled::graph::traverse::StorageEdgeLocation::OverflowLogEntry(_)
             ),
             "expected an overflow-log entry"
         );

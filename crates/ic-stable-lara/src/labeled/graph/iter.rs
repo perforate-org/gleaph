@@ -198,7 +198,7 @@ pub struct LabeledEdgeInlinePropertyBatch<'a, E> {
 ///
 /// The iterator enumerates the requested label buckets once at construction and then
 /// lazily fills its edge buffer by delegating each bucket to
-/// [`super::traverse_next::LabeledLaraGraph::visit_edges_with_inline_property`].
+/// [`super::traverse::LabeledLaraGraph::visit_edges_with_inline_property`].
 /// Storage errors therefore surface during iteration, matching the legacy streaming
 /// contract.
 pub struct LabeledOutEdgesIter<'a, E: CsrEdgeTombstone, M: Memory> {

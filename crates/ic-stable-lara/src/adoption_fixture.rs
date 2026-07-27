@@ -26,8 +26,8 @@ use std::ops::ControlFlow;
 /// still distinguish overflow-log entries by their high bit. This encoding is intentionally
 /// kept inside the fixture and is not part of the public logical read contract.
 #[cfg(feature = "adoption-fixtures")]
-fn encoded_storage_slot(storage_ref: crate::labeled::graph::traverse_next::StorageEdgeRef) -> u32 {
-    use crate::labeled::graph::traverse_next::StorageEdgeLocation;
+fn encoded_storage_slot(storage_ref: crate::labeled::graph::traverse::StorageEdgeRef) -> u32 {
+    use crate::labeled::graph::traverse::StorageEdgeLocation;
     match storage_ref.location {
         StorageEdgeLocation::SlabSlot(slot) => slot,
         StorageEdgeLocation::OverflowLogEntry(entry_idx) => entry_idx | 0x8000_0000,

@@ -808,7 +808,7 @@ where
     {
         self.find_nth_edge_with_inline_property_matching(
             src,
-            super::traverse_next::EdgeFindScope::AllLabels,
+            super::traverse::EdgeFindScope::AllLabels,
             OutEdgeOrder::Descending,
             0,
             |edge| Self::edge_matches_label_lookup(edge, needle),
