@@ -7,8 +7,8 @@ use std::fmt;
 use super::{GlobalVertexId, LocalVertexId, ShardId};
 use crate::entry::EdgeInlinePropertyBytes;
 
-/// Maximum edge-inline-value bytes carried by one federated expand hit.
-pub const MAX_FEDERATED_EXPAND_INLINE_VALUE_BYTE_WIDTH: u16 = 4096;
+/// Maximum edge-inline-property-bytes bytes carried by one federated expand hit.
+pub const MAX_FEDERATED_EXPAND_INLINE_PROPERTY_BYTE_WIDTH: u16 = 4096;
 
 /// Direction of a federated expand probe on a graph shard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -33,14 +33,14 @@ pub struct FederatedExpandArgs {
 
 /// Rejects oversize federated expand value payloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FederatedExpandInlineValueError {
-    InlineValueBytesTooLong { len: usize, max: u16 },
+pub enum FederatedExpandInlinePropertyBytesError {
+    InlinePropertyBytesBytesTooLong { len: usize, max: u16 },
 }
 
-impl std::fmt::Display for FederatedExpandInlineValueError {
+impl std::fmt::Display for FederatedExpandInlinePropertyBytesError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InlineValueBytesTooLong { len, max } => {
+            Self::InlinePropertyBytesBytesTooLong { len, max } => {
                 write!(
                     f,
                     "federated expand inline_property_bytes length {len} exceeds max {max}"
@@ -50,7 +50,7 @@ impl std::fmt::Display for FederatedExpandInlineValueError {
     }
 }
 
-impl std::error::Error for FederatedExpandInlineValueError {}
+impl std::error::Error for FederatedExpandInlinePropertyBytesError {}
 
 /// One half-edge visible on the responding shard.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -83,13 +83,15 @@ impl FederatedExpandNeighbor {
     }
 
     /// Bounds-checks [`Self::inline_property_bytes`] before returning neighbors on the wire.
-    pub fn validate_wire(&self) -> Result<(), FederatedExpandInlineValueError> {
+    pub fn validate_wire(&self) -> Result<(), FederatedExpandInlinePropertyBytesError> {
         let len = self.inline_property_bytes.len();
-        if len > usize::from(MAX_FEDERATED_EXPAND_INLINE_VALUE_BYTE_WIDTH) {
-            return Err(FederatedExpandInlineValueError::InlineValueBytesTooLong {
-                len,
-                max: MAX_FEDERATED_EXPAND_INLINE_VALUE_BYTE_WIDTH,
-            });
+        if len > usize::from(MAX_FEDERATED_EXPAND_INLINE_PROPERTY_BYTE_WIDTH) {
+            return Err(
+                FederatedExpandInlinePropertyBytesError::InlinePropertyBytesBytesTooLong {
+                    len,
+                    max: MAX_FEDERATED_EXPAND_INLINE_PROPERTY_BYTE_WIDTH,
+                },
+            );
         }
         Ok(())
     }
@@ -124,7 +126,7 @@ mod tests {
         }
         .from_inline_property(inline_property);
         assert_eq!(restored.inline_property_bytes, vec![9, 8]);
-        // Candid round-trip preserves inline value bytes.
+        // Candid round-trip preserves inline property bytes bytes.
         let encoded = Encode!(&neighbor).expect("encode");
         let decoded: FederatedExpandNeighbor =
             Decode!(&encoded, FederatedExpandNeighbor).expect("decode");
@@ -136,7 +138,7 @@ mod tests {
 
     #[test]
     fn inline_property_bytes_reject_over_max_width() {
-        let oversized = vec![0u8; usize::from(MAX_FEDERATED_EXPAND_INLINE_VALUE_BYTE_WIDTH) + 1];
+        let oversized = vec![0u8; usize::from(MAX_FEDERATED_EXPAND_INLINE_PROPERTY_BYTE_WIDTH) + 1];
         let neighbor = FederatedExpandNeighbor {
             shard_id: ShardId::new(0),
             neighbor_vertex_id: GlobalVertexId::new(ShardId::new(0), 0),
@@ -148,7 +150,7 @@ mod tests {
         };
         assert!(matches!(
             neighbor.validate_wire(),
-            Err(FederatedExpandInlineValueError::InlineValueBytesTooLong { .. })
+            Err(FederatedExpandInlinePropertyBytesError::InlinePropertyBytesBytesTooLong { .. })
         ));
     }
 

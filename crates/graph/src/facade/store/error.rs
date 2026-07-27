@@ -30,9 +30,9 @@ pub enum GraphStoreError {
     },
     /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.
     InvalidEdgeLabelId(EdgeLabelId),
-    /// Edge inline value byte width is not supported by labeled edge-inline-value storage.
+    /// Edge inline value byte width is not supported by labeled edge-inline-property-bytes storage.
     InvalidEdgeInlinePropertyBytesWidth(usize),
-    /// Stored edge-inline-value bytes do not match the catalog label's configured width.
+    /// Stored edge-inline-property-bytes bytes do not match the catalog label's configured width.
     EdgeInlinePropertyBytesWidthMismatch {
         label: Option<EdgeLabelId>,
         expected: usize,
@@ -40,7 +40,7 @@ pub enum GraphStoreError {
     },
     /// Remote CSR edge endpoints are not supported without federation stable.
     RemoteEdgeNotSupported,
-    /// Federated expand returned or attempted to send invalid edge-inline-value bytes.
+    /// Federated expand returned or attempted to send invalid edge-inline-property-bytes bytes.
     FederatedExpandPayload {
         detail: String,
     },

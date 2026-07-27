@@ -1629,7 +1629,7 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
-    /// Visits outgoing edges and their parallel inline-value bytes for one label in batches.
+    /// Visits outgoing edges and their parallel inline-property-bytes bytes for one label in batches.
     pub(crate) fn visit_out_edge_inline_property_batches_for_label_next<B>(
         &self,
         owner: VertexId,

@@ -21,9 +21,9 @@ use std::borrow::Cow;
 /// [`LabeledVertex::stored_slots`]; this row tracks one label's slab prefix and optional
 /// overflow log.
 ///
-/// [`Self::degree`] is the logical live edge count. Edge and inline-value physical
+/// [`Self::degree`] is the logical live edge count. Edge and inline-property-bytes physical
 /// layouts are independent: [`Self::stored_slots`] counts edge slab slots, while
-/// [`Self::inline_property_bytes_slab_slots`] counts inline-value slab slots. Each store has
+/// [`Self::inline_property_bytes_slab_slots`] counts inline-property-bytes slab slots. Each store has
 /// its own overflow-log metadata and may fold or relocate without moving the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelBucket {
@@ -32,7 +32,7 @@ pub struct LabelBucket {
     pub degree: u32,
     /// Stored edge-slab width (may exceed [`Self::degree`] while tombstones await compaction).
     pub stored_slots: u32,
-    /// Stored inline-value slab slots. Always zero when the inline property byte width is zero.
+    /// Stored inline-property-bytes slab slots. Always zero when the inline property byte width is zero.
     inline_property_bytes_slab_slots: u32,
     /// Byte offset into [`EdgeInlinePropertyBytesStore`] where this bucket's value span starts.
     inline_property_bytes_offset: u64,
@@ -78,7 +78,7 @@ impl LabelBucket {
         .expect("LabelBucket::from_parts: invalid fields")
     }
 
-    /// Builds a row with edge-inline-value fields.
+    /// Builds a row with edge-inline-property-bytes fields.
     #[inline]
     pub fn from_parts_with_inline_property(
         bucket_label_key: BucketLabelKey,
@@ -179,7 +179,7 @@ impl LabelBucket {
         self.inline_property_bytes_offset
     }
 
-    /// Number of inline-value entries resident in the inline property bytes slab.
+    /// Number of inline-property-bytes entries resident in the inline property bytes slab.
     #[inline]
     pub fn inline_property_bytes_slab_slots(self) -> u32 {
         self.inline_property_bytes_slab_slots

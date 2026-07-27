@@ -30,7 +30,7 @@ impl GraphStore {
         }
     }
 
-    /// Updates the inline edge-inline-value bytes at `handle`.
+    /// Updates the inline edge-inline-property-bytes bytes at `handle`.
     pub(super) fn commit_update_edge_inline_property_at_handle(
         &self,
         handle: EdgeHandle,

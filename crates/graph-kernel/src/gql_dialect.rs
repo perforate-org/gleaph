@@ -10,7 +10,7 @@
 //! - `gleaph-gql-ic` owns `IC.PRINCIPAL` value encoding/decoding.
 //! - Graph execution owns `MSG_CALLER()` and runtime-function context.
 //! - Graph planner integration owns `GLEAPH.COST` and `GLEAPH.VECTOR.*` fusion helpers.
-//! - Graph execution owns `GLEAPH.WEIGHT` edge-inline-value decode and `GLEAPH.SEQUENCE` edge ordering.
+//! - Graph execution owns `GLEAPH.WEIGHT` edge-inline-property-bytes decode and `GLEAPH.SEQUENCE` edge ordering.
 //! - Graph mutation executor owns operational `GLEAPH.FINALIZE_*` / `GLEAPH.DRAIN_*` procedures.
 //! - Router owns planned `SEARCH`, `INLINE`, and `CREATE VECTOR INDEX` syntax.
 //!
@@ -59,7 +59,7 @@ pub enum GqlDialectExtensionKind {
     RuntimeFunction,
     /// Path-pattern extension such as `GLEAPH.COST`.
     PathExtension,
-    /// Function that reads a fixed-width edge-inline-value value.
+    /// Function that reads a fixed-width edge-inline-property-bytes value.
     EdgeInlinePropertyFunction,
     /// Function that reads Graph-owned edge insertion-order metadata.
     EdgeOrderingFunction,
@@ -226,21 +226,21 @@ pub const GLEAPH_DIALECT_EXTENSIONS: &[GqlDialectExtensionSpec] = &[
         kind: GqlDialectExtensionKind::EdgeInlinePropertyFunction,
         status: GqlDialectExtensionStatus::Compatibility,
         owner: GqlDialectExtensionOwner::GraphPlannerIntegration,
-        doc_anchor: "design/gql/extension-syntax.md#edge-inline-value-vector-predicates",
+        doc_anchor: "design/gql/extension-syntax.md#edge-inline-property-vector-predicates",
     },
     GqlDialectExtensionSpec {
         canonical_name: GLEAPH_VECTOR_COSINE_DISTANCE,
         kind: GqlDialectExtensionKind::EdgeInlinePropertyFunction,
         status: GqlDialectExtensionStatus::Compatibility,
         owner: GqlDialectExtensionOwner::GraphPlannerIntegration,
-        doc_anchor: "design/gql/extension-syntax.md#edge-inline-value-vector-predicates",
+        doc_anchor: "design/gql/extension-syntax.md#edge-inline-property-vector-predicates",
     },
     GqlDialectExtensionSpec {
         canonical_name: GLEAPH_VECTOR_DOT,
         kind: GqlDialectExtensionKind::EdgeInlinePropertyFunction,
         status: GqlDialectExtensionStatus::Compatibility,
         owner: GqlDialectExtensionOwner::GraphPlannerIntegration,
-        doc_anchor: "design/gql/extension-syntax.md#edge-inline-value-vector-predicates",
+        doc_anchor: "design/gql/extension-syntax.md#edge-inline-property-vector-predicates",
     },
     GqlDialectExtensionSpec {
         canonical_name: GLEAPH_FINALIZE_BULK_INGEST,
@@ -300,7 +300,7 @@ pub fn operational_procedures() -> impl Iterator<Item = &'static GqlDialectExten
         .filter(|spec| spec.kind == GqlDialectExtensionKind::OperationalProcedure)
 }
 
-/// Edge-inline-value functions declared in the manifest.
+/// Edge-inline-property-bytes functions declared in the manifest.
 pub fn edge_inline_property_functions() -> impl Iterator<Item = &'static GqlDialectExtensionSpec> {
     GLEAPH_DIALECT_EXTENSIONS
         .iter()

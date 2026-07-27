@@ -60,7 +60,7 @@ impl InlineScalarType {
         }
     }
 
-    /// The physical edge-inline-value profile this scalar declaration derives.
+    /// The physical edge-inline-property-bytes profile this scalar declaration derives.
     pub const fn edge_inline_property_profile(self) -> EdgeInlinePropertyProfile {
         use gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::*;
         match self {
@@ -135,9 +135,9 @@ pub const MAX_INLINE_STRUCT_FIELDS: usize = 64;
 
 /// Conservative execution-safe total byte width for an inline STRUCT.
 /// A struct wider than this cannot be transported through existing federated expand paths
-/// (`MAX_FEDERATED_EXPAND_INLINE_VALUE_BYTE_WIDTH`), so the schema commit rejects it fail-closed.
+/// (`MAX_FEDERATED_EXPAND_INLINE_PROPERTY_BYTE_WIDTH`), so the schema commit rejects it fail-closed.
 pub const MAX_INLINE_STRUCT_TOTAL_BYTES: u16 =
-    gleaph_graph_kernel::federation::MAX_FEDERATED_EXPAND_INLINE_VALUE_BYTE_WIDTH;
+    gleaph_graph_kernel::federation::MAX_FEDERATED_EXPAND_INLINE_PROPERTY_BYTE_WIDTH;
 
 /// Maximum encoded stable-record size for an inline STRUCT schema record.
 /// Must fit inside the [`EdgeInlinePropertySchemaRecord`] [`Storable::BOUND`] envelope.

@@ -5,7 +5,7 @@ use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 
 impl GraphStore {
-    /// Updates the inline edge-inline-value payload at `handle`.
+    /// Updates the inline edge-inline-property-bytes payload at `handle`.
     pub(crate) fn update_edge_inline_property_at_handle(
         &self,
         handle: EdgeHandle,

@@ -271,7 +271,7 @@ where
         &self.edges
     }
 
-    /// Returns the stable edge-inline-value store.
+    /// Returns the stable edge-inline-property-bytes store.
     pub fn values(&self) -> &EdgeInlinePropertyBytesStore<M> {
         &self.values
     }

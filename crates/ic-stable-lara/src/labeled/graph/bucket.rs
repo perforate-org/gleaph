@@ -37,9 +37,9 @@ pub struct LeafBucketPlacementStats {
     pub total_stored_edge_slots: u64,
     /// Sum of edge overflow-log entries across all buckets on this leaf.
     pub total_edge_overflow_log_slots: u64,
-    /// Sum of inline-value slab slots across all buckets on this leaf.
+    /// Sum of inline-property-bytes slab slots across all buckets on this leaf.
     pub total_inline_property_bytes_slab_slots: u64,
-    /// Sum of inline-value overflow-log entries across all buckets on this leaf.
+    /// Sum of inline-property-bytes overflow-log entries across all buckets on this leaf.
     pub total_inline_property_bytes_overflow_log_slots: u64,
     /// Non-zero inline property byte widths present on this leaf.
     pub inline_property_byte_widths: BTreeSet<u16>,

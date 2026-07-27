@@ -3,7 +3,7 @@
 use super::blob_id::EdgeInlinePropertyBytesBlobId;
 use std::fmt;
 
-/// Errors returned by edge-inline-value blob storage.
+/// Errors returned by edge-inline-property-bytes blob storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlobStoreError {
     /// The requested blob inline property bytes exceeds the blob store's representable size.

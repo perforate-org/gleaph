@@ -27,9 +27,9 @@ pub enum LabeledOperationError {
     },
     /// Underlying LARA store operation failed.
     Store(LaraOperationError),
-    /// Reading an edge-inline-value overflow-log entry failed.
+    /// Reading an edge-inline-property-bytes overflow-log entry failed.
     InlinePropertyBytesLogRead(InlinePropertyBytesLogReadError),
-    /// Writing an edge-inline-value overflow-log entry failed.
+    /// Writing an edge-inline-property-bytes overflow-log entry failed.
     InlinePropertyBytesLogWrite(InlinePropertyBytesLogWriteError),
     /// A default-label bypass was requested for a row that cannot use it.
     InvalidDefaultBypass,
@@ -162,7 +162,7 @@ pub enum InitError {
     Buckets(crate::labeled::LabelBucketStoreInitError),
     /// The edge subsystem could not be reopened.
     Edges(EdgeInitError),
-    /// The edge-inline-value byte slab could not be reopened.
+    /// The edge-inline-property-bytes byte slab could not be reopened.
     InlinePropertyBytes(ValueInitError),
     /// The graph-owned memories are partially initialized (some regions are empty
     /// while others are populated), so the graph must not be reopened or recreated.

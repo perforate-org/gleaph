@@ -660,7 +660,7 @@ where
     }
 
     /// Resolves an edge-store physical slot to the bucket-local live ordinal used
-    /// by the independent inline-value sequence.
+    /// by the independent inline-property-bytes sequence.
     pub(super) fn bucket_live_ordinal_at_edge_slot(
         &self,
         src: VertexId,
@@ -965,7 +965,7 @@ where
         Ok(bucket)
     }
 
-    /// Updates the edge-inline-value payload for one live edge at `slot_index` inside `label_id`.
+    /// Updates the edge-inline-property-bytes payload for one live edge at `slot_index` inside `label_id`.
     pub(crate) fn update_edge_inline_property_at_slot(
         &self,
         src: VertexId,

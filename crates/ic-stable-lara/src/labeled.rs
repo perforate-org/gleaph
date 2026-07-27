@@ -106,7 +106,7 @@ pub(crate) mod invariants;
 /// Initial physical capacities for the labeled graph's independent storage slabs.
 ///
 /// These values affect only fresh stores. Reopened stores use the capacities persisted in
-/// their own headers. Bucket descriptors, edge slots, and inline payload bytes have different
+/// their own headers. Bucket descriptors, edge slots, and inline property bytes have different
 /// growth behavior and therefore must not share one capacity value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InitialCapacities {

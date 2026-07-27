@@ -1,4 +1,4 @@
-//! Edge-label inline value profiles: physical width and semantic interpretation.
+//! Edge-label inline property bytes profiles: physical width and semantic interpretation.
 
 use candid::CandidType;
 use half::f16;
@@ -11,10 +11,10 @@ use super::weight::{
     EdgeWeightProfile, WeightDecodeError, WeightEncoding, WeightProfilePrepareError,
 };
 
-/// Maximum edge-inline-value byte width supported by labeled storage profiles.
+/// Maximum edge-inline-property-bytes byte width supported by labeled storage profiles.
 pub const MAX_EDGE_INLINE_PROPERTY_BYTES: usize = u16::MAX as usize;
 
-/// Stored edge-inline-value bytes (not part of the 4-byte labeled CSR row).
+/// Stored edge-inline-property-bytes bytes (not part of the 4-byte labeled CSR row).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default, CandidType)]
 pub struct EdgeInlinePropertyBytes(Vec<u8>);
 
@@ -31,7 +31,7 @@ impl EdgeInlinePropertyBytes {
         self.0.is_empty()
     }
 
-    /// Active inline value bytes as a slice.
+    /// Active inline property bytes bytes as a slice.
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
         &self.0
@@ -54,7 +54,7 @@ impl<'de> Deserialize<'de> for EdgeInlinePropertyBytes {
         let bytes: Vec<u8> = Deserialize::deserialize(deserializer)?;
         if bytes.len() > MAX_EDGE_INLINE_PROPERTY_BYTES {
             return Err(serde::de::Error::custom(format!(
-                "edge inline value length {} exceeds max {}",
+                "edge inline property bytes length {} exceeds max {}",
                 bytes.len(),
                 MAX_EDGE_INLINE_PROPERTY_BYTES
             )));
@@ -63,7 +63,7 @@ impl<'de> Deserialize<'de> for EdgeInlinePropertyBytes {
     }
 }
 
-/// Semantic interpretation of stored edge-inline-value bytes.
+/// Semantic interpretation of stored edge-inline-property-bytes bytes.
 #[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
 pub enum EdgeInlinePropertyEncoding {
     RawU8,
@@ -94,11 +94,11 @@ pub enum EdgeInlinePropertyEncoding {
         max: f32,
     },
     WeightBinary16,
-    /// Opaque fixed-width inline value; [`EdgeInlinePropertyProfile::byte_width`] may be any positive width.
+    /// Opaque fixed-width inline property bytes; [`EdgeInlinePropertyProfile::byte_width`] may be any positive width.
     RawBytes,
 }
 
-/// Label-level edge inline value configuration.
+/// Label-level edge inline property bytes configuration.
 #[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
 pub struct EdgeInlinePropertyProfile {
     pub byte_width: u16,
@@ -182,7 +182,7 @@ impl From<EdgeWeightProfile> for EdgeInlinePropertyProfile {
 }
 
 impl EdgeInlinePropertyProfile {
-    /// Returns a legacy [`EdgeWeightProfile`] when this inline value profile uses a weight encoding.
+    /// Returns a legacy [`EdgeWeightProfile`] when this inline property bytes profile uses a weight encoding.
     pub fn to_weight_profile(&self) -> Option<EdgeWeightProfile> {
         if self.byte_width != 2 {
             return None;
@@ -214,7 +214,7 @@ impl EdgeInlinePropertyProfile {
     pub const fn opaque_bytes(byte_width: u16) -> Self {
         assert!(
             byte_width > 0,
-            "opaque edge inline value byte width must be positive"
+            "opaque edge inline property bytes byte width must be positive"
         );
         Self {
             byte_width,
@@ -453,7 +453,7 @@ fn validate_weight_f32(v: f32) -> Result<(), WeightDecodeError> {
     Ok(())
 }
 
-/// Decodes traversal weight from edge-inline-value bytes using a prepared decoder.
+/// Decodes traversal weight from edge-inline-property-bytes bytes using a prepared decoder.
 pub fn decode_edge_weight(
     decoder: &PreparedEdgeInlinePropertyBytesDecoder,
     bytes: &[u8],

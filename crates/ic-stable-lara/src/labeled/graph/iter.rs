@@ -17,7 +17,7 @@ use std::{cell::Cell, iter::FusedIterator, num::NonZero, rc::Rc};
 
 use super::{LabeledLaraGraph, LabeledOperationError, OutEdgeOrder};
 
-/// Reusable buffers for labeled edge-inline-value batch traversal.
+/// Reusable buffers for labeled edge-inline-property-bytes batch traversal.
 #[derive(Clone, Debug)]
 pub struct LabeledEdgeInlinePropertyBatchScratch<E> {
     /// Edge rows in the same order as the parallel value byte chunks.
@@ -187,7 +187,7 @@ pub struct LabeledEdgeInlinePropertyBatch<'a, E> {
     pub order: OutEdgeOrder,
     /// Edge rows in scan order.
     pub edges: &'a [E],
-    /// Flattened edge-inline-value bytes in the same order as `edges`.
+    /// Flattened edge-inline-property-bytes bytes in the same order as `edges`.
     pub inline_property_bytes: &'a [u8],
     /// `true` when the batch was read from contiguous resident edge/inline property bytes slab spans.
     pub dense: bool,

@@ -55,7 +55,7 @@ pub enum BatchEdgeIntentRole {
 /// One physical half-edge intent produced by expanding a logical edge.
 ///
 /// Each intent carries a chunk-local ordinal that joins it with its sibling
-/// halves and with the eventual inline-value slot. The ordinal is stable within
+/// halves and with the eventual inline-property-bytes slot. The ordinal is stable within
 /// one planning call and never relies on post-insert neighbor search.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchEdgeIntent {
@@ -85,7 +85,7 @@ pub enum BatchPlacementError {
     /// An edge label id is not catalog-allocatable.
     InvalidEdgeLabelId(EdgeLabelId),
     /// Inline inline property byte width does not match the label profile.
-    InlineValueWidthMismatch {
+    InlinePropertyBytesWidthMismatch {
         label: Option<EdgeLabelId>,
         expected: usize,
         actual: usize,
@@ -119,7 +119,7 @@ impl std::fmt::Display for BatchPlacementError {
         match self {
             Self::VertexNotLive(vid) => write!(f, "vertex {vid:?} is not live"),
             Self::InvalidEdgeLabelId(id) => write!(f, "invalid edge label id {id:?}"),
-            Self::InlineValueWidthMismatch {
+            Self::InlinePropertyBytesWidthMismatch {
                 label,
                 expected,
                 actual,
@@ -166,7 +166,7 @@ impl BatchPlacementError {
                 label,
                 expected,
                 actual,
-            } => BatchPlacementError::InlineValueWidthMismatch {
+            } => BatchPlacementError::InlinePropertyBytesWidthMismatch {
                 label,
                 expected,
                 actual,
@@ -238,9 +238,9 @@ pub struct BatchPlacementGroup {
     pub resident_slab_edge_slots: u32,
     /// Existing edge overflow-log entries for this bucket, or zero if none.
     pub resident_log_edge_slots: u32,
-    /// Existing inline-value slab slots reserved for this bucket, or zero.
+    /// Existing inline-property-bytes slab slots reserved for this bucket, or zero.
     pub resident_slab_inline_property_bytes_slots: u32,
-    /// Existing inline-value overflow-log entries for this bucket, or zero.
+    /// Existing inline-property-bytes overflow-log entries for this bucket, or zero.
     pub resident_log_inline_property_bytes_slots: u32,
 }
 
@@ -255,7 +255,7 @@ impl BatchPlacementGroup {
             .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
     }
 
-    /// Minimum inline-value slots required to hold all resident and pending values.
+    /// Minimum inline-property-bytes slots required to hold all resident and pending values.
     pub fn projected_minimum_inline_property_bytes_slots(
         &self,
     ) -> Result<u64, BatchPlacementError> {
@@ -265,7 +265,7 @@ impl BatchPlacementGroup {
             .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
     }
 
-    /// Minimum inline-value bytes required to hold all resident and pending values.
+    /// Minimum inline-property-bytes bytes required to hold all resident and pending values.
     pub fn projected_minimum_payload_bytes(&self) -> Result<u64, BatchPlacementError> {
         let slots = self.projected_minimum_inline_property_bytes_slots()?;
         slots
@@ -303,15 +303,15 @@ pub struct BatchPlacementLeafSummary {
     pub full_leaf_resident_slab_edge_slots: u64,
     /// Sum of edge overflow-log slots reserved by **all** existing buckets on this leaf.
     pub full_leaf_resident_log_edge_slots: u64,
-    /// Sum of inline-value slab slots reserved by buckets targeted by this batch.
+    /// Sum of inline-property-bytes slab slots reserved by buckets targeted by this batch.
     pub target_resident_slab_inline_property_bytes_slots: u64,
-    /// Sum of inline-value overflow-log slots reserved by buckets targeted by this batch.
+    /// Sum of inline-property-bytes overflow-log slots reserved by buckets targeted by this batch.
     pub target_resident_log_inline_property_bytes_slots: u64,
     /// Number of pending payload intents targeting this leaf.
     pub pending_payload_intents: u64,
-    /// Sum of inline-value slab slots reserved by **all** existing buckets on this leaf.
+    /// Sum of inline-property-bytes slab slots reserved by **all** existing buckets on this leaf.
     pub full_leaf_resident_slab_inline_property_bytes_slots: u64,
-    /// Sum of inline-value overflow-log slots reserved by **all** existing buckets on this leaf.
+    /// Sum of inline-property-bytes overflow-log slots reserved by **all** existing buckets on this leaf.
     pub full_leaf_resident_log_inline_property_bytes_slots: u64,
     /// Payload widths represented by resident and pending payloads on this leaf.
     pub inline_property_byte_widths: BTreeSet<u16>,
@@ -328,7 +328,7 @@ impl BatchPlacementLeafSummary {
             .ok_or(BatchPlacementError::ProjectedCapacityOverflow)
     }
 
-    /// Minimum inline-value slots required to hold all leaf-wide resident and pending values.
+    /// Minimum inline-property-bytes slots required to hold all leaf-wide resident and pending values.
     pub fn projected_minimum_inline_property_bytes_slots(
         &self,
     ) -> Result<u64, BatchPlacementError> {
@@ -557,7 +557,7 @@ fn expand_logical_edge_to_intents(
     let actual = input.inline_property_bytes.len();
     let expected = usize::from(expected_width);
     if actual != expected {
-        return Err(BatchPlacementError::InlineValueWidthMismatch {
+        return Err(BatchPlacementError::InlinePropertyBytesWidthMismatch {
             label: input.catalog_label,
             expected,
             actual,
@@ -1028,7 +1028,7 @@ mod tests {
         let err = store.plan_batch_edge_insertion(&edges).expect_err("width");
         assert!(matches!(
             err,
-            BatchPlacementError::InlineValueWidthMismatch {
+            BatchPlacementError::InlinePropertyBytesWidthMismatch {
                 expected: 2,
                 actual: 1,
                 ..

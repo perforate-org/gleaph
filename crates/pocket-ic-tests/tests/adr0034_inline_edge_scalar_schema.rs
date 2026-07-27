@@ -112,7 +112,7 @@ fn scenario_derived_profile_feeds_inline_property_predicate(env: &FederationEnv)
     );
     assert_eq!(
         result.row_count, 1,
-        "predicate scenario: edge-inline-value predicate should see the 2-byte weight payload as 3"
+        "predicate scenario: edge-inline-property-bytes predicate should see the 2-byte weight inline property bytes as 3"
     );
 }
 

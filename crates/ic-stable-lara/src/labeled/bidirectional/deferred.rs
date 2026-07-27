@@ -1,7 +1,7 @@
 //! Deferred-maintenance bidirectional labeled LARA graph wrapper.
 //!
 //! Directed vs undirected adjacency is selected by [`BucketLabelKey`] / [`BucketDirectedness`]
-//! (bucket MSB), not edge-inline-value flags. Use [`Self::for_each_directed_out_edges`],
+//! (bucket MSB), not edge-inline-property-bytes flags. Use [`Self::for_each_directed_out_edges`],
 //! [`Self::for_each_undirected_edges`], and the matching `*_iter` helpers.
 
 use super::mate_enumeration::{MateLeafEnumerationError, default_mate_leaf_enumeration_policy};
@@ -1283,7 +1283,7 @@ where
             .collect()
     }
 
-    /// Ensures the inline-value schema for one orientation during reverse repair.
+    /// Ensures the inline-property-bytes schema for one orientation during reverse repair.
     ///
     /// The affected mate leaf is hidden before the canonical schema mutation. This method is
     /// intentionally a repair boundary, not a general-purpose single-orientation write API.
@@ -2065,7 +2065,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Like [`Self::for_each_out_edges_for_label_ordered`], but skips edge-inline-value reads.
+    /// Like [`Self::for_each_out_edges_for_label_ordered`], but skips edge-inline-property-bytes reads.
     pub fn for_each_out_edges_for_label_topology_ordered<Visit>(
         &self,
         src: VertexId,
@@ -2700,7 +2700,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
-    /// Like [`Self::for_each_in_edges_for_label_ordered`], but skips edge-inline-value reads.
+    /// Like [`Self::for_each_in_edges_for_label_ordered`], but skips edge-inline-property-bytes reads.
     pub fn for_each_in_edges_for_label_topology_ordered<Visit>(
         &self,
         dst: VertexId,
@@ -2918,7 +2918,7 @@ where
         Ok(removal)
     }
 
-    /// Updates the edge-inline-value payload for one forward-out edge at `slot_index`.
+    /// Updates the edge-inline-property-bytes payload for one forward-out edge at `slot_index`.
     pub fn update_forward_edge_inline_property_at_slot(
         &self,
         src: VertexId,
@@ -2942,7 +2942,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Updates the edge-inline-value payload for one reverse-store out edge at `slot_index`.
+    /// Updates the edge-inline-property-bytes payload for one reverse-store out edge at `slot_index`.
     pub fn update_reverse_edge_inline_property_at_slot(
         &self,
         dst: VertexId,

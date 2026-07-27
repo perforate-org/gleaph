@@ -1,4 +1,4 @@
-//! Width-dispatched edge-inline-value batch kernels.
+//! Width-dispatched edge-inline-property-bytes batch kernels.
 
 use std::cmp::Ordering;
 

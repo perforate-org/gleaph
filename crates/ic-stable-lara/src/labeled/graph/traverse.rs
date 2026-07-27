@@ -365,7 +365,7 @@ where
         Ok(())
     }
 
-    /// Like [`Self::for_each_edges_for_label_ordered`], but skips edge-inline-value reads.
+    /// Like [`Self::for_each_edges_for_label_ordered`], but skips edge-inline-property-bytes reads.
     pub fn for_each_edges_for_label_topology_ordered<Visit>(
         &self,
         src: VertexId,
