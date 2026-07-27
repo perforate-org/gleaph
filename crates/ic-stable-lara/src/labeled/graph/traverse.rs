@@ -1,6 +1,5 @@
 //! Labeled graph `traverse` implementation.
 
-use crate::traverse::EdgeSlotState;
 use crate::{
     VertexId,
     labeled::{
@@ -25,9 +24,9 @@ use std::ops::ControlFlow;
 
 use super::error::LabeledOperationError;
 use super::iter::{
-    HybridOverflowEdgeReplay, LabeledEdgeInlinePropertyBatch,
-    LabeledEdgeInlinePropertyBatchScratch, LabeledInlinePropertyValueBatch,
-    LabeledInlinePropertyValueBatchScratch, LabeledOutEdgesIterKind,
+    LabeledEdgeInlinePropertyBatch, LabeledEdgeInlinePropertyBatchScratch,
+    LabeledInlinePropertyValueBatch, LabeledInlinePropertyValueBatchScratch,
+    LabeledOutEdgesIterKind,
 };
 use super::{BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, LabeledSpanIter, OutEdgeOrder};
 
@@ -97,16 +96,6 @@ fn emit_inline_property_batch<'a, Visit>(
         values: &scratch.values,
         dense,
     });
-}
-
-fn order_slot_indices(slots: &[u32], order: OutEdgeOrder) -> Vec<u32> {
-    let mut ordered = slots.to_vec();
-    match order {
-        OutEdgeOrder::Ascending => ordered.sort_unstable(),
-        OutEdgeOrder::Descending => ordered.sort_unstable_by(|a, b| b.cmp(a)),
-    }
-    ordered.dedup();
-    ordered
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1167,403 +1156,15 @@ where
     ///
     /// Dense buckets bulk-read contiguous slab spans; sparse and log-backed buckets resolve each
     /// slot individually. Deleted and out-of-range slots are skipped without error.
-    pub fn read_out_edge_slots_for_label<Visit>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        slots: &[u32],
-        order: OutEdgeOrder,
-        visit: Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(E),
-    {
-        self.read_out_edge_slots_for_label_with_replay(src, label_id, slots, order, None, visit)
-    }
-
     /// Walks the canonical logical slot range without materializing slot indices.
     ///
     /// This path is intentionally limited to the ScanOnly rank/select primitive.  It resolves
     /// the bucket and overflow chain once, then streams the logical range through the canonical
     /// topology reader.  The public slice-reader retains its dense/replay optimizations; this
     /// helper exists to avoid allocating and sorting a full slot vector for every mate lookup.
-    fn for_each_live_edge_slot_for_label_direct<Visit>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        logical_slots: u32,
-        mut visit: Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(u32, E),
-    {
-        let _ = self.for_each_live_edge_slot_for_label_direct_with_control_flow::<(), _>(
-            src,
-            label_id,
-            logical_slots,
-            OutEdgeOrder::Ascending,
-            0,
-            |slot, edge| {
-                visit(slot, edge);
-                ControlFlow::Continue(())
-            },
-        )?;
-        Ok(())
-    }
-
     /// Streams live logical slots and stops the storage scan when the visitor breaks.
-    pub(super) fn for_each_live_edge_slot_for_label_direct_with_control_flow<B, Visit>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        logical_slots: u32,
-        order: OutEdgeOrder,
-        skip_live: u32,
-        mut visit: Visit,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(u32, E) -> ControlFlow<B>,
-    {
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            return Ok(ControlFlow::Continue(()));
-        }
-        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
-            return Ok(ControlFlow::Continue(()));
-        };
-        if bucket.degree() == 0 {
-            return Ok(ControlFlow::Continue(()));
-        }
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
-            #[cfg(test)]
-            crate::lara::edge::scan_guard::record_overflow_chain_rebuild();
-            self.edges.overflow_log_chain_asc_indices(
-                self.inline_property_bytes_log_leaf(src),
-                bucket.overflow_log_head(),
-            )
-        });
-        let skip_live = if bucket.degree() == logical_slots {
-            skip_live.min(logical_slots)
-        } else {
-            0
-        };
-        let slot_indices: Box<dyn Iterator<Item = u32>> = match order {
-            OutEdgeOrder::Ascending => Box::new(skip_live..logical_slots),
-            OutEdgeOrder::Descending => {
-                Box::new((0..logical_slots.saturating_sub(skip_live)).rev())
-            }
-        };
-        for slot_index in slot_indices {
-            if let EdgeSlotState::Live(edge) = self.read_out_edge_topology_state_at_slot(
-                src,
-                &vertex,
-                bucket_index,
-                &bucket,
-                slot_index,
-                label_id,
-                overflow_chain.as_deref(),
-            )? && let ControlFlow::Break(value) = visit(slot_index, edge)
-            {
-                return Ok(ControlFlow::Break(value));
-            }
-        }
-        Ok(ControlFlow::Continue(()))
-    }
-
     /// Like [`Self::read_out_edge_slots_for_label`], but may reuse hybrid overflow replay cached
     /// on the inline property bytes phase-1 scratch to avoid rebuilding the overflow log chain.
-    pub fn read_out_edge_slots_for_label_with_replay<Visit>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        slots: &[u32],
-        order: OutEdgeOrder,
-        replay: Option<&HybridOverflowEdgeReplay>,
-        mut visit: Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(E),
-    {
-        self.read_out_edge_slots_for_label_with_replay_and_slot(
-            src,
-            label_id,
-            slots,
-            order,
-            replay,
-            |_, edge| visit(edge),
-        )
-    }
-
-    pub(super) fn read_out_edge_slots_for_label_with_replay_and_slot<Visit>(
-        &self,
-        src: VertexId,
-        label_id: BucketLabelKey,
-        slots: &[u32],
-        order: OutEdgeOrder,
-        replay: Option<&HybridOverflowEdgeReplay>,
-        mut visit: Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(u32, E),
-    {
-        if slots.is_empty() {
-            return Ok(());
-        }
-        self.ensure_vertex(src)?;
-        let vertex = self.vertices.get(src);
-        if vertex.is_default_edge_labeled() {
-            return Ok(());
-        }
-        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
-            return Ok(());
-        };
-        if bucket.degree() == 0 {
-            return Ok(());
-        }
-        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        let visit_order = order_slot_indices(slots, order);
-        if super::super::invariants::bucket_dense_inline_property_batch_eligible(&bucket) {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _bench_scope = bench_scope("labeled_read_dense_out_edge_slots");
-            let mut loaded =
-                self.read_dense_out_edge_topology_slots(&bucket, label_id, &visit_order)?;
-            loaded.sort_unstable_by_key(|(slot, _)| *slot);
-            for slot in visit_order {
-                if let Ok(idx) = loaded.binary_search_by_key(&slot, |(s, _)| *s) {
-                    visit(slot, loaded[idx].1.clone());
-                }
-            }
-            return Ok(());
-        }
-
-        // Reuse the cached phase-1 replay only when it provably belongs to this exact
-        // `(src, bucket)` and the bucket has not mutated since phase 1. `src` is the owner identity:
-        // `leaf = src / segment_size` is shared by many vertices, so matching on `leaf` alone would
-        // wrongly adopt a replay built for a different vertex in the same leaf. `label_id` +
-        // `slab_slots` guard the slab/log split, and the `(degree, stored_slots, overflow_log_head,
-        // edge_start)` snapshot guards against an intervening mutation that keeps the split intact —
-        // notably an in-place overflow-log tombstone delete, which only decrements `degree` while
-        // the cached `log_table` would still decode the now-removed edge. On any mismatch we fall
-        // through to the sparse path, which resolves each slot from canonical state.
-        if let Some(replay) = replay
-            && replay.is_active()
-            && bucket.overflow_log_head() >= 0
-            && replay.src == src
-            && replay.label_id == label_id
-            && replay.slab_slots == self.bucket_slab_prefix_slots(src, &bucket)
-            && replay.degree == bucket.degree()
-            && replay.stored_slots == bucket.stored_slots
-            && replay.overflow_log_head == bucket.overflow_log_head()
-            && replay.edge_start == bucket.edge_start()
-        {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _bench_scope = bench_scope("labeled_read_hybrid_replay_out_edge_slots");
-            return self.read_out_edge_slots_with_hybrid_replay(
-                &bucket,
-                label_id,
-                &visit_order,
-                replay,
-                &mut visit,
-            );
-        }
-
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _bench_scope = bench_scope("labeled_read_sparse_out_edge_slots");
-        let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
-            #[cfg(test)]
-            crate::lara::edge::scan_guard::record_overflow_chain_rebuild();
-            self.edges.overflow_log_chain_asc_indices(
-                self.inline_property_bytes_log_leaf(src),
-                bucket.overflow_log_head(),
-            )
-        });
-        for slot_index in visit_order {
-            if let EdgeSlotState::Live(edge) = self.read_out_edge_topology_state_at_slot(
-                src,
-                &vertex,
-                bucket_index,
-                &bucket,
-                slot_index,
-                label_id,
-                overflow_chain.as_deref(),
-            )? {
-                visit(slot_index, edge);
-            }
-        }
-        Ok(())
-    }
-
-    fn read_out_edge_slots_with_hybrid_replay<Visit>(
-        &self,
-        bucket: &LabelBucket,
-        label_id: BucketLabelKey,
-        visit_order: &[u32],
-        replay: &HybridOverflowEdgeReplay,
-        visit: &mut Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: FnMut(u32, E),
-    {
-        let log_table = (!replay.log_table.is_empty()).then_some(replay.log_table.as_slice());
-        for &slot_index in visit_order {
-            if slot_index < replay.slab_slots {
-                if slab_slot_deleted(slot_index, &replay.deleted_slab_offsets) {
-                    continue;
-                }
-                let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-                let edge = self
-                    .edges
-                    .read_slot(edge_slot)
-                    .with_slot_index(slot_index)
-                    .with_label_id(label_id.raw());
-                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                    continue;
-                }
-                visit(slot_index, edge);
-                continue;
-            }
-            let Some(log_slot) = slot_index.checked_sub(replay.slab_slots) else {
-                continue;
-            };
-            let Some(Some(log_idx)) = replay.log_indices_by_slot.get(log_slot as usize) else {
-                continue;
-            };
-            let edge = self
-                .edges
-                .decode_overflow_log_edge_from_table(replay.leaf, *log_idx, log_table)
-                .with_slot_index(slot_index)
-                .with_label_id(label_id.raw());
-            if edge.is_tombstone_edge() {
-                continue;
-            }
-            visit(slot_index, edge);
-        }
-        Ok(())
-    }
-
-    fn read_dense_out_edge_topology_slots(
-        &self,
-        bucket: &LabelBucket,
-        label_id: BucketLabelKey,
-        slots: &[u32],
-    ) -> Result<Vec<(u32, E)>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        let mut asc = slots.to_vec();
-        asc.sort_unstable();
-        asc.dedup();
-        let mut loaded = Vec::with_capacity(asc.len());
-        for (first_slot, count) in super::super::invariants::ascending_contiguous_u32_runs(&asc) {
-            if first_slot >= bucket.stored_slots {
-                continue;
-            }
-            let take = count.min(bucket.stored_slots.saturating_sub(first_slot));
-            if take == 0 {
-                continue;
-            }
-            let mut raw_edges = vec![0u8; take as usize * E::BYTES];
-            self.edges
-                .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
-            for i in 0..take as usize {
-                let slot = first_slot + i as u32;
-                let edge_off = i * E::BYTES;
-                let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
-                    .with_slot_index(slot)
-                    .with_label_id(label_id.raw());
-                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                    continue;
-                }
-                loaded.push((slot, edge));
-            }
-        }
-        Ok(loaded)
-    }
-
-    fn read_out_edge_topology_state_at_slot(
-        &self,
-        src: VertexId,
-        _vertex: &LabeledVertex,
-        _bucket_index: u32,
-        bucket: &LabelBucket,
-        slot_index: u32,
-        label_id: BucketLabelKey,
-        overflow_chain: Option<&[u32]>,
-    ) -> Result<EdgeSlotState<E>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        if slot_index >= self.bucket_reserved_edge_slots(src, bucket) {
-            return Ok(EdgeSlotState::Missing);
-        }
-        if bucket.overflow_log_head() < 0 {
-            if slot_index >= bucket.stored_slots {
-                return Ok(EdgeSlotState::Missing);
-            }
-            let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let edge = self
-                .edges
-                .read_slot(edge_slot)
-                .with_slot_index(slot_index)
-                .with_label_id(label_id.raw());
-            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                return Ok(EdgeSlotState::Tombstone);
-            }
-            return Ok(EdgeSlotState::Live(edge));
-        }
-
-        let slab_prefix = self.bucket_slab_prefix_slots(src, bucket);
-        if slot_index < slab_prefix {
-            let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let edge = self
-                .edges
-                .read_slot(edge_slot)
-                .with_slot_index(slot_index)
-                .with_label_id(label_id.raw());
-            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                return Ok(EdgeSlotState::Tombstone);
-            }
-            return Ok(EdgeSlotState::Live(edge));
-        }
-
-        let log_ordinal = slot_index
-            .checked_sub(slab_prefix)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let leaf = self.inline_property_bytes_log_leaf(src);
-        let chain_storage;
-        let chain = match overflow_chain {
-            Some(chain) => chain,
-            None => {
-                chain_storage = self
-                    .edges
-                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
-                &chain_storage
-            }
-        };
-        let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
-            return Ok(EdgeSlotState::Missing);
-        };
-        let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-        if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-            return Ok(EdgeSlotState::Tombstone);
-        }
-        Ok(EdgeSlotState::Live(
-            edge.with_slot_index(slot_index)
-                .with_label_id(label_id.raw()),
-        ))
-    }
-
     fn visit_dense_out_edge_inline_property_batches_for_slab_prefix<Visit>(
         &self,
         bucket: LabelBucket,
@@ -2769,6 +2370,7 @@ mod tests {
     use super::super::{LEAF_VERTEX_EDGE_SEGMENT_DENSITY, *};
     use crate::VertexId;
     use std::num::NonZero;
+    use std::ops::ControlFlow;
 
     #[test]
     fn out_edges_iterator_streams_desc_order() {
@@ -3174,15 +2776,24 @@ mod tests {
 
         let read_a = |replay: Option<&crate::labeled::HybridOverflowEdgeReplay>| {
             let mut targets = Vec::new();
+            let positions_slots_a: Vec<_> = slots_a
+                .iter()
+                .copied()
+                .map(crate::traverse::BucketEntryPosition::new)
+                .collect();
             graph
-                .read_out_edge_slots_for_label_with_replay(
+                .visit_edges_at_with_replay(
                     a,
                     road,
-                    &slots_a,
+                    &positions_slots_a,
                     OutEdgeOrder::Ascending,
                     replay,
-                    |edge| targets.push(edge.target),
+                    |_slot, edge| {
+                        targets.push(edge.target);
+                        ControlFlow::<()>::Continue(())
+                    },
                 )
+                .map(|_| ())
                 .unwrap();
             targets
         };
@@ -3310,15 +2921,24 @@ mod tests {
 
         let read = |replay: Option<&crate::labeled::HybridOverflowEdgeReplay>| {
             let mut targets = Vec::new();
+            let positions_slots: Vec<_> = slots
+                .iter()
+                .copied()
+                .map(crate::traverse::BucketEntryPosition::new)
+                .collect();
             graph
-                .read_out_edge_slots_for_label_with_replay(
+                .visit_edges_at_with_replay(
                     src,
                     road,
-                    &slots,
+                    &positions_slots,
                     OutEdgeOrder::Ascending,
                     replay,
-                    |edge| targets.push(edge.target),
+                    |_slot, edge| {
+                        targets.push(edge.target);
+                        ControlFlow::<()>::Continue(())
+                    },
                 )
+                .map(|_| ())
                 .unwrap();
             targets
         };
@@ -3415,15 +3035,24 @@ mod tests {
 
         let read = |replay: Option<&crate::labeled::HybridOverflowEdgeReplay>| {
             let mut targets = Vec::new();
+            let positions_slots: Vec<_> = slots
+                .iter()
+                .copied()
+                .map(crate::traverse::BucketEntryPosition::new)
+                .collect();
             graph
-                .read_out_edge_slots_for_label_with_replay(
+                .visit_edges_at_with_replay(
                     src,
                     road,
-                    &slots,
+                    &positions_slots,
                     OutEdgeOrder::Ascending,
                     replay,
-                    |edge| targets.push(edge.target),
+                    |_slot, edge| {
+                        targets.push(edge.target);
+                        ControlFlow::<()>::Continue(())
+                    },
                 )
+                .map(|_| ())
                 .unwrap();
             targets
         };
