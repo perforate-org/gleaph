@@ -3560,7 +3560,7 @@ mod tests {
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
-            .expect_err("missing inline value");
+            .expect_err("missing inline property bytes");
         assert!(
             matches!(err, PlanMutationError::MissingRequiredInlineProperty { .. }),
             "got {err:?}"
@@ -3615,7 +3615,7 @@ mod tests {
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
-            .expect_err("duplicate inline value");
+            .expect_err("duplicate inline property bytes");
         assert!(
             matches!(
                 err,
@@ -3660,7 +3660,7 @@ mod tests {
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
-            .expect_err("null inline value");
+            .expect_err("null inline property bytes");
         assert!(
             matches!(err, PlanMutationError::NullInlineProperty { .. }),
             "got {err:?}"
@@ -3702,7 +3702,7 @@ mod tests {
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
-            .expect_err("overflow inline value");
+            .expect_err("overflow inline property bytes");
         assert!(
             matches!(err, PlanMutationError::InvalidInlinePropertyValue { .. }),
             "got {err:?}"

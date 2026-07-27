@@ -1,4 +1,4 @@
-//! PocketIC coverage for ADR 0034 Slice 22: ordinary GQL mutation packing into an inline scalar edge inline value.
+//! PocketIC coverage for ADR 0034 Slice 22: ordinary GQL mutation packing into an inline scalar edge inline property bytes.
 //!
 //! Router-resolved schema identifies the named inline property. Graph evaluates and validates the
 //! mutation value before writing, encodes it into the fixed-width inline property bytes, updates every physical
@@ -109,7 +109,7 @@ fn scenario_missing_value_rejects_insert(env: &FederationEnv, mutation_key: &str
     );
     assert!(
         matches!(err, RouterError::InvalidArgument(_)),
-        "expected missing inline value to fail with InvalidArgument, got {err:?}"
+        "expected missing inline property bytes to fail with InvalidArgument, got {err:?}"
     );
 }
 
@@ -121,7 +121,7 @@ fn scenario_null_value_rejects_insert(env: &FederationEnv, mutation_key: &str) {
     );
     assert!(
         matches!(err, RouterError::InvalidArgument(_)),
-        "expected NULL inline value to fail with InvalidArgument, got {err:?}"
+        "expected NULL inline property bytes to fail with InvalidArgument, got {err:?}"
     );
 }
 

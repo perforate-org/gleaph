@@ -427,7 +427,7 @@ impl fmt::Display for EdgeInlinePropertyProfileStoreError {
             Self::InvalidCatalogLabel(id) => {
                 write!(
                     f,
-                    "edge inline value profiles require catalog edge label id {}",
+                    "edge inline property profiles require catalog edge label id {}",
                     id.raw()
                 )
             }

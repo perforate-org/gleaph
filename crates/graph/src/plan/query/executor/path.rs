@@ -275,7 +275,7 @@ pub(crate) async fn execute_shortest_path(
     Ok(out)
 }
 
-/// Controls whether shortest-path expansion hydrates edge inline values and reuses batch scratch.
+/// Controls whether shortest-path expansion hydrates edge inline property bytes and reuses batch scratch.
 pub(crate) struct ShortestExpandOptions<'a> {
     pub load_inline_property_bytes: bool,
     pub inline_property_scratch: Option<&'a mut LabeledEdgeInlinePropertyBatchScratch<Edge>>,

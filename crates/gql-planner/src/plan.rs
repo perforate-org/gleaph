@@ -450,9 +450,9 @@ pub enum PlanOp {
         /// When set, expand by probing an indexed edge-property equality first (then
         /// binding the far endpoint), instead of scanning all incident edges.
         indexed_edge_equality: Option<(Str, ScanValue)>,
-        /// When set, fixed-label expand filters by the label's edge inline value bytes.
+        /// When set, fixed-label expand filters by the label's edge inline property bytes.
         edge_inline_property_predicate: Option<EdgeInlinePropertyPredicate>,
-        /// When set, fixed-label expand filters by SIMD vector scoring over edge inline values.
+        /// When set, fixed-label expand filters by SIMD vector scoring over edge inline property bytes.
         edge_inline_vector_predicate: Option<EdgeInlineVectorPredicate>,
         edge_property_projection: Option<Rc<[Str]>>,
         dst_property_projection: Option<Rc<[Str]>>,
@@ -486,7 +486,7 @@ pub enum PlanOp {
         var_len: Option<VarLenSpec>,
         /// When set, same indexed edge-property path as [`PlanOp::Expand`].
         indexed_edge_equality: Option<(Str, ScanValue)>,
-        /// When set, same edge inline value predicate path as [`PlanOp::Expand`].
+        /// When set, same edge inline property bytes predicate path as [`PlanOp::Expand`].
         edge_inline_property_predicate: Option<EdgeInlinePropertyPredicate>,
         /// When set, same edge inline vector predicate path as [`PlanOp::Expand`].
         edge_inline_vector_predicate: Option<EdgeInlineVectorPredicate>,
@@ -1193,14 +1193,14 @@ pub enum ScanValue {
 
 // CmpOp is re-exported from gleaph_gql::ast::CmpOp.
 
-/// A comparison that can be evaluated directly against fixed-width edge inline value bytes.
+/// A comparison that can be evaluated directly against fixed-width edge inline property bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdgeInlinePropertyPredicate {
     pub op: CmpOp,
     pub value: ScanValue,
 }
 
-/// Vector metric evaluated directly against fixed-width `VectorF32` edge inline value bytes.
+/// Vector metric evaluated directly against fixed-width `VectorF32` edge inline property bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeVectorMetric {
     Dot,
@@ -1208,7 +1208,7 @@ pub enum EdgeVectorMetric {
     CosineDistance,
 }
 
-/// A vector score comparison that can be evaluated directly against edge inline value bytes.
+/// A vector score comparison that can be evaluated directly against edge inline property bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdgeInlineVectorPredicate {
     pub metric: EdgeVectorMetric,

@@ -137,7 +137,7 @@ fn scenario_width_mismatch_rejects_insert(env: &FederationEnv) {
         .expect("decode e2e_insert_directed_edge_with_inline_property result");
     assert!(
         result.is_err(),
-        "width scenario: 4-byte inline value must be rejected against a 2-byte UINT16/RawU16 profile, got {result:?}"
+        "width scenario: 4-byte inline property bytes must be rejected against a 2-byte UINT16/RawU16 profile, got {result:?}"
     );
 }
 

@@ -11,7 +11,7 @@
 //! ```
 //!
 //! `target` is a [`VertexRef`] (local id plus optional remote bit). Relationship
-//! type, directionality, and per-edge inline values are carried by the labeled bucket layer
+//! type, directionality, and per-edge inline property bytes are carried by the labeled bucket layer
 //! and [`EdgeInlinePropertyBytesStore`], not this row.
 
 use super::edge_inline_property::EdgeInlinePropertyBytes;
@@ -35,7 +35,7 @@ pub struct Edge {
     pub target: VertexRef,
     pub edge_slot_index: EdgeSlotIndex,
     pub label_id: u16,
-    /// In-memory edge inline value (not persisted on the 4-byte wire row).
+    /// In-memory edge inline property bytes (not persisted on the 4-byte wire row).
     pub inline_property: EdgeInlinePropertyBytes,
 }
 

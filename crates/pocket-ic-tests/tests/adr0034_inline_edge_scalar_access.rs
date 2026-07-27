@@ -1,6 +1,6 @@
 //! PocketIC coverage for ADR 0034 Slice 21: ordinary read access to a scalar inline edge property.
 //!
-//! Router-resolved schema identifies the named inline property; Graph decodes the bound edge inline value
+//! Router-resolved schema identifies the named inline property; Graph decodes the bound edge inline property bytes
 //! into the exact GQL scalar value for projection, filtering, and ordering. The inline slot is the
 //! only read source for its `(label, property)` pair; a sidecar value with the same property id
 //! cannot override or rescue the read.
@@ -81,7 +81,7 @@ fn scenario_projection_returns_inline_property(env: &FederationEnv, road_label_i
     assert_eq!(
         rows[0].get("d"),
         Some(&IcWireValue::Uint64(7)),
-        "projection scenario: inline value must be returned"
+        "projection scenario: inline property bytes must be returned"
     );
 }
 
@@ -106,7 +106,7 @@ fn scenario_filter_matches_inline_property(env: &FederationEnv, road_label_id: u
     assert_eq!(
         rows[0].get("d"),
         Some(&IcWireValue::Uint64(7)),
-        "filter scenario: must not select the edge with inline value 9"
+        "filter scenario: must not select the edge with inline property bytes 9"
     );
 }
 
@@ -132,12 +132,12 @@ fn scenario_order_by_sorts_by_inline_property(env: &FederationEnv, road_label_id
     assert_eq!(
         rows[0].get("d"),
         Some(&IcWireValue::Uint64(7)),
-        "order scenario: first row must be the smaller inline value"
+        "order scenario: first row must be the smaller inline property bytes"
     );
     assert_eq!(
         rows[1].get("d"),
         Some(&IcWireValue::Uint64(9)),
-        "order scenario: second row must be the larger inline value"
+        "order scenario: second row must be the larger inline property bytes"
     );
 }
 
@@ -147,7 +147,7 @@ fn scenario_inline_property_wins_over_sidecar(env: &FederationEnv, road_label_id
     let target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
     insert_road(env, source, target, road_label_id, 7);
 
-    // Write a sidecar value with the same property id; the inline inline value must still win.
+    // Write a sidecar value with the same property id; the inline inline property bytes must still win.
     let property_id = admin_intern_property(env, PROPERTY).raw();
     e2e_set_edge_property(env, env.graph_source, source, target, property_id, 99);
 
@@ -164,7 +164,7 @@ fn scenario_inline_property_wins_over_sidecar(env: &FederationEnv, road_label_id
     assert_eq!(
         rows[0].get("d"),
         Some(&IcWireValue::Uint64(7)),
-        "precedence scenario: inline value must win over sidecar value 99"
+        "precedence scenario: inline property bytes must win over sidecar value 99"
     );
 }
 

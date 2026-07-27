@@ -391,7 +391,7 @@ fn large_expand_vector_bindings_bench(
     })
 }
 
-/// Fixed-label vector edge inline values over a medium fanout; L2 threshold selects 16 rows.
+/// Fixed-label vector edge inline property bytes over a medium fanout; L2 threshold selects 16 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_128scan_16match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -408,7 +408,7 @@ fn bench_graph_large_expand_vector_l2_128scan_16match() -> canbench_rs::BenchRes
     )
 }
 
-/// Fixed-label vector edge inline values over a medium fanout; DOT threshold selects 16 rows.
+/// Fixed-label vector edge inline property bytes over a medium fanout; DOT threshold selects 16 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_128scan_16match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -426,7 +426,7 @@ fn bench_graph_large_expand_vector_dot_128scan_16match() -> canbench_rs::BenchRe
     )
 }
 
-/// Fixed-label vector edge inline values over a larger fanout; L2 threshold selects 64 rows.
+/// Fixed-label vector edge inline property bytes over a larger fanout; L2 threshold selects 64 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_512scan_64match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -443,7 +443,7 @@ fn bench_graph_large_expand_vector_l2_512scan_64match() -> canbench_rs::BenchRes
     )
 }
 
-/// Fixed-label vector edge inline values over a larger fanout; DOT threshold selects 64 rows.
+/// Fixed-label vector edge inline property bytes over a larger fanout; DOT threshold selects 64 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_512scan_64match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -461,7 +461,7 @@ fn bench_graph_large_expand_vector_dot_512scan_64match() -> canbench_rs::BenchRe
     )
 }
 
-/// Fixed-label vector edge inline values over an xlarge logical scan; L2 threshold selects 512 rows.
+/// Fixed-label vector edge inline property bytes over an xlarge logical scan; L2 threshold selects 512 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_4096scan_512match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -478,7 +478,7 @@ fn bench_graph_large_expand_vector_l2_4096scan_512match() -> canbench_rs::BenchR
     )
 }
 
-/// Fixed-label vector edge inline values over an xlarge logical scan; DOT threshold selects 512 rows.
+/// Fixed-label vector edge inline property bytes over an xlarge logical scan; DOT threshold selects 512 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_4096scan_512match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -496,7 +496,7 @@ fn bench_graph_large_expand_vector_dot_4096scan_512match() -> canbench_rs::Bench
     )
 }
 
-/// Fixed-label vector edge inline values over an xxlarge logical scan; L2 threshold selects 2,048 rows.
+/// Fixed-label vector edge inline property bytes over an xxlarge logical scan; L2 threshold selects 2,048 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_16384scan_2048match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -513,7 +513,7 @@ fn bench_graph_large_expand_vector_l2_16384scan_2048match() -> canbench_rs::Benc
     )
 }
 
-/// Fixed-label vector edge inline values over an xxlarge logical scan; DOT threshold selects 2,048 rows.
+/// Fixed-label vector edge inline property bytes over an xxlarge logical scan; DOT threshold selects 2,048 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_16384scan_2048match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -582,7 +582,7 @@ fn bench_graph_large_expand_vector_bindings_l2_16384scan_2048match() -> canbench
     )
 }
 
-/// 9_500 noise + 500 matching inline value edges; edge inline value `Eq` predicate expand.
+/// 9_500 noise + 500 matching inline property bytes edges; edge inline property bytes `Eq` predicate expand.
 #[bench(raw)]
 fn bench_graph_large_expand_inline_property_skewed_10k_a_500b() -> canbench_rs::BenchResult {
     bench_expand_inline_property_skewed(
@@ -592,7 +592,7 @@ fn bench_graph_large_expand_inline_property_skewed_10k_a_500b() -> canbench_rs::
     )
 }
 
-/// 49_000 noise + 1_000 matching inline value edges; edge inline value `Eq` predicate expand.
+/// 49_000 noise + 1_000 matching inline property bytes edges; edge inline property bytes `Eq` predicate expand.
 #[bench(raw)]
 fn bench_graph_large_expand_inline_property_skewed_50k_a_1k_b() -> canbench_rs::BenchResult {
     bench_expand_inline_property_skewed(

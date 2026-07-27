@@ -238,26 +238,26 @@ fn edge_inline_property_bytes_from_value(
             return encode_edge_inline_property_scalar(profile, value)
                 .map(Some)
                 .map_err(|err| PlanQueryError::InvalidExpressionValue {
-                    expression: format!("edge inline value scalar literal: {err}"),
+                    expression: format!("edge inline property bytes scalar literal: {err}"),
                 });
         }
         EdgeInlinePropertyEncoding::VectorF32 { .. } => {
             return Err(PlanQueryError::UnsupportedOp(
-                "edge inline value predicate for vector encodings",
+                "edge inline property bytes predicate for vector encodings",
             ));
         }
         EdgeInlinePropertyEncoding::RawBytes => match value {
             Value::Bytes(bytes) => bytes.clone(),
             _ => {
                 return Err(PlanQueryError::InvalidExpressionValue {
-                    expression: "opaque edge inline value predicate literal".into(),
+                    expression: "opaque edge inline property bytes predicate literal".into(),
                 });
             }
         },
     };
     if bytes.len() != usize::from(profile.required_byte_width()) {
         return Err(PlanQueryError::InvalidExpressionValue {
-            expression: "edge inline value predicate byte width".into(),
+            expression: "edge inline property bytes predicate byte width".into(),
         });
     }
     Ok(Some(bytes))
@@ -282,7 +282,7 @@ fn u16_from_value(value: &Value) -> Result<u16, PlanQueryError> {
 
 fn invalid_u16_edge_inline_property() -> PlanQueryError {
     PlanQueryError::InvalidExpressionValue {
-        expression: "u16 edge inline value predicate literal".into(),
+        expression: "u16 edge inline property bytes predicate literal".into(),
     }
 }
 
@@ -292,7 +292,7 @@ fn f32_from_value(value: &Value) -> Result<f32, PlanQueryError> {
         Value::Float32(v) => Ok(*v),
         Value::Float64(v) if *v >= f32::MIN as f64 && *v <= f32::MAX as f64 => Ok(*v as f32),
         _ => Err(PlanQueryError::InvalidExpressionValue {
-            expression: "f32 edge inline value predicate literal".into(),
+            expression: "f32 edge inline property bytes predicate literal".into(),
         }),
     }
 }

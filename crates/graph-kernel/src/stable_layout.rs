@@ -857,7 +857,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "ROUTER_EDGE_INLINE_PROPERTY_PROFILES",
             21,
             StableMemoryClass::Catalog,
-            "edge inline value schema",
+            "edge inline property schema",
             "(GraphId, EdgeLabelId) → EdgeInlinePropertySchemaRecord (ADR 0008, ADR 0018, ADR 0034 Slice 20)",
             RebuildPath::None,
         ),

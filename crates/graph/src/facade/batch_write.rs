@@ -143,7 +143,7 @@ impl GraphStore {
         });
     }
 
-    /// Pre-create empty undirected buckets for `{a,b}` with the given inline value
+    /// Pre-create empty undirected buckets for `{a,b}` with the given inline property bytes
     /// width so a later clean-slab batch can consume the per-bucket initial quota.
     pub(crate) fn prepare_clean_slab_undir_buckets(
         &self,

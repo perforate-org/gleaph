@@ -3045,7 +3045,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Float32(3.5));
         // Scalar path still produces the exact value, not a single-field record.
         assert!(!matches!(value, Value::Record(_)));
@@ -3157,7 +3157,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode struct")
-            .expect("inline value");
+            .expect("inline property bytes");
         let Value::Record(fields) = value else {
             panic!("expected Value::Record, got {value:?}");
         };
@@ -3189,7 +3189,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode struct")
-            .expect("inline value");
+            .expect("inline property bytes");
         let Value::Record(ref fields) = value else {
             panic!("expected Value::Record, got {value:?}");
         };
@@ -3385,7 +3385,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode mixed struct")
-            .expect("inline value");
+            .expect("inline property bytes");
         let Value::Record(fields) = value else {
             panic!("expected Value::Record, got {value:?}");
         };
@@ -3422,7 +3422,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Float64(1.23456789));
     }
 
@@ -3439,7 +3439,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Int64(-7));
     }
 
@@ -3475,7 +3475,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Float16(f16::from_f32(1.5)));
     }
 
@@ -3492,7 +3492,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Uint8(42));
     }
 
@@ -3509,7 +3509,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Uint16(1000));
     }
 
@@ -3526,7 +3526,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Uint32(123_456_789));
     }
 
@@ -3543,7 +3543,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Uint64(u64::MAX));
     }
 
@@ -3560,7 +3560,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Uint128(u128::MAX));
     }
 
@@ -3577,7 +3577,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Int8(i8::MIN));
     }
 
@@ -3594,7 +3594,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Int16(i16::MIN));
     }
 
@@ -3611,7 +3611,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Int32(i32::MIN));
     }
 
@@ -3628,7 +3628,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Int64(i64::MIN));
     }
 
@@ -3650,7 +3650,7 @@ mod tests {
             let value =
                 try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
                     .expect("decode")
-                    .expect("inline value");
+                    .expect("inline property bytes");
             assert_eq!(value, expected);
         }
     }
@@ -3669,7 +3669,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Bytes(inline_property.to_vec()));
     }
 
@@ -3687,7 +3687,7 @@ mod tests {
         );
         let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect("decode")
-            .expect("inline value");
+            .expect("inline property bytes");
         assert_eq!(value, Value::Bytes(inline_property.to_vec()));
     }
 

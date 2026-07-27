@@ -541,7 +541,7 @@ where
 
     /// Collects outgoing edges for one label in the requested order.
     ///
-    /// Topology-only collection that does not attach edge inline values. Use
+    /// Topology-only collection that does not attach edge inline property bytes. Use
     /// [`Self::iter_edges_with_inline_property_for_label_next`] when the caller needs
     /// inline property bytes or comparisons that depend on them.
     pub(crate) fn iter_edges_for_label_next(
@@ -833,7 +833,7 @@ where
         }
 
         // Fast path for dense, tombstone-free buckets: bulk-read the topology slab in one
-        // call, and bulk-read the inline property bytes span when the bucket carries inline values. This
+        // call, and bulk-read the inline property bytes span when the bucket carries inline property bytes. This
         // avoids per-slot `read_slot` round-trips and preserves the performance contract of
         // `for_each_edges_for_label_ordered` for hot dense scans.
         if bucket.inline_property_bytes_log_head() < 0
@@ -915,7 +915,7 @@ where
             if label != self.bypass_storage_label_for(&vertex) {
                 return Ok(ControlFlow::Continue(()));
             }
-            // Default-label bypass edges have no inline values; emit nothing.
+            // Default-label bypass edges have no inline property bytes; emit nothing.
             return Ok(ControlFlow::Continue(()));
         }
         let BucketSearch::Found {
@@ -1647,7 +1647,7 @@ where
             if label != self.bypass_storage_label_for(&vertex) {
                 return Ok(ControlFlow::Continue(()));
             }
-            // Default-label bypass edges have no inline values; emit nothing.
+            // Default-label bypass edges have no inline property bytes; emit nothing.
             return Ok(ControlFlow::Continue(()));
         }
         let BucketSearch::Found {
@@ -1892,7 +1892,7 @@ where
         self.read_edge_slot_state_for_label(owner, label, slot.raw())
     }
 
-    /// Resolves the label bucket and, when the bucket stores inline values in a
+    /// Resolves the label bucket and, when the bucket stores inline property bytes in a
     /// suffix log, builds the ordered log chain used by
     /// [`Self::read_inline_property_bytes_for_ordinal`].
     fn resolve_label_bucket_and_inline_property_bytes_chains(

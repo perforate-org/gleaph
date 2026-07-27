@@ -181,7 +181,7 @@ pub struct LabeledInlinePropertyValueBatch<'a> {
 pub struct LabeledEdgeInlinePropertyBatch<'a, E> {
     /// Label bucket visited by this batch.
     pub label_id: BucketLabelKey,
-    /// Physical byte width of each edge inline value in this batch.
+    /// Physical byte width of each edge's inline property bytes in this batch.
     pub byte_width: u16,
     /// Scan order used for both `edges` and `inline_property_bytes`.
     pub order: OutEdgeOrder,

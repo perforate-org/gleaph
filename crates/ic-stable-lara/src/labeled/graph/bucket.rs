@@ -59,7 +59,7 @@ pub struct LabelBucketPlacementInfo {
     pub edge_overflow_log_head: i32,
     /// Number of edges stored in the per-bucket overflow log chain.
     pub edge_overflow_log_len: u32,
-    /// Physical byte width per inline value slot (`0` = no inline property bytes).
+    /// Physical byte width per edge inline property slot (`0` = no inline property bytes).
     pub inline_property_byte_width: u16,
     /// Inline-value slab slots reserved for this bucket.
     pub inline_property_bytes_slab_slots: u32,

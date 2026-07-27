@@ -30,7 +30,7 @@ pub enum GraphStoreError {
     },
     /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.
     InvalidEdgeLabelId(EdgeLabelId),
-    /// Edge inline value byte width is not supported by labeled edge-inline-property-bytes storage.
+    /// Edge inline property byte width is not supported by labeled edge-inline-property-bytes storage.
     InvalidEdgeInlinePropertyBytesWidth(usize),
     /// Stored edge-inline-property-bytes bytes do not match the catalog label's configured width.
     EdgeInlinePropertyBytesWidthMismatch {
@@ -78,7 +78,10 @@ impl fmt::Display for GraphStoreError {
                 id.raw()
             ),
             Self::InvalidEdgeInlinePropertyBytesWidth(width) => {
-                write!(f, "edge inline value byte width {width} is not supported")
+                write!(
+                    f,
+                    "edge inline property byte width {width} is not supported"
+                )
             }
             Self::EdgeInlinePropertyBytesWidthMismatch {
                 label,
@@ -99,7 +102,10 @@ impl fmt::Display for GraphStoreError {
                 write!(f, "remote CSR edge endpoints are not supported")
             }
             Self::FederatedExpandPayload { detail } => {
-                write!(f, "invalid federated expand edge inline value: {detail}")
+                write!(
+                    f,
+                    "invalid federated expand edge inline property bytes: {detail}"
+                )
             }
             Self::VertexTombstoned => write!(f, "vertex row is tombstoned on this shard"),
             Self::PendingPurgeTracking(err) => {

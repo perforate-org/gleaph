@@ -82,7 +82,7 @@ where
     pub owner_vertex_id: VertexId,
     /// Storage label, including directedness bit.
     pub label_id: BucketLabelKey,
-    /// Physical byte width per inline value slot (`0` = no inline_property_bytes).
+    /// Physical byte width per edge inline property slot (`0` = no inline_property_bytes).
     pub inline_property_width: u16,
     /// Edges in this bucket run, in strictly increasing logical ordinal order.
     pub edges: Vec<OneOrientationBatchEdge<E>>,
@@ -240,7 +240,7 @@ pub enum OneOrientationPhysicalLocation {
     Slab {
         /// Edge slab slot.
         edge_slot: u64,
-        /// InlinePropertyBytes byte offset, when the edge carries an inline value.
+        /// Inline property bytes byte offset, when the edge carries inline property bytes.
         inline_property_bytes_offset: Option<u64>,
     },
     /// Edge overflow-log entry and optional inline-property-bytes-log entry.
@@ -336,7 +336,7 @@ struct BatchReservationRun {
     bucket_fingerprint: BucketFingerprint,
     /// Number of edge slots reserved for the run.
     edge_slot_count: u32,
-    /// Byte width per inline value slot (`0` = no inline_property_bytes).
+    /// Byte width per edge inline property slot (`0` = no inline_property_bytes).
     inline_property_width: u16,
     /// Physical destination chosen at reservation time.
     destination: RunDestination,
@@ -404,7 +404,7 @@ pub enum OneOrientationBatchError {
     InlinePropertyBytesLengthMismatch {
         /// Logical ordinal of the offending edge.
         logical_ordinal: u32,
-        /// Declared inline value width.
+        /// Declared edge inline property byte width.
         expected_width: u16,
         /// Actual inline property bytes length.
         actual_length: usize,

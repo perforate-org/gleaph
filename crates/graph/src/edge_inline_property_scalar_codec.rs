@@ -1,4 +1,4 @@
-//! Graph-owned scalar codec for fixed-width inline edge inline values (ADR 0034 Slices 20-22).
+//! Graph-owned scalar codec for fixed-width edge inline property bytes (ADR 0034 Slices 20-22).
 //!
 //! Centralizes `Value <-> fixed-width bytes` for the raw scalar encodings that can be named
 //! inline by Router schema. Weight encodings, raw opaque bytes, and vectors are intentionally
@@ -13,7 +13,7 @@ use gleaph_graph_kernel::entry::{
 use half::f16;
 use std::fmt;
 
-/// Error encoding or decoding a scalar inline edge inline value.
+/// Error encoding or decoding a scalar edge inline property value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EdgeInlinePropertyBytesScalarCodecError {
     /// The profile uses an encoding this scalar codec does not own (weight, vector, raw bytes).

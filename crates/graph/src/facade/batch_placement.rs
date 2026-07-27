@@ -126,14 +126,14 @@ impl std::fmt::Display for BatchPlacementError {
             } => {
                 write!(
                     f,
-                    "inline value width mismatch for label {label:?}: expected {expected}, actual {actual}"
+                    "inline property byte width mismatch for label {label:?}: expected {expected}, actual {actual}"
                 )
             }
             Self::DuplicateEdgeTarget => write!(f, "duplicate edge target in batch"),
             Self::ConflictingDuplicateEdgeTarget => {
                 write!(
                     f,
-                    "duplicate edge target with conflicting inline value in batch"
+                    "duplicate edge target with conflicting inline property bytes in batch"
                 )
             }
             Self::OrdinalOverflow => write!(f, "batch logical ordinal overflow"),
@@ -427,7 +427,7 @@ impl BatchEdgeInput {
     /// Duplicate-detection key for the logical edge target.
     ///
     /// Payload is intentionally **not** part of the key: the same logical target
-    /// with different inline values is a conflicting duplicate and is rejected
+    /// with different inline property bytes is a conflicting duplicate and is rejected
     /// separately via [`BatchPlacementError::ConflictingDuplicateEdgeTarget`].
     fn target_key(&self) -> EdgeTargetKey {
         if self.directed {
@@ -550,7 +550,7 @@ fn expand_logical_edge_to_intents(
     }
     let catalog_label = input.catalog_label.expect("checked above");
 
-    // Validate catalog label and inline value width.
+    // Validate catalog label and inline property byte width.
     GraphStore::validate_catalog_edge_label(Some(catalog_label))
         .map_err(BatchPlacementError::from_graph_store_error_for_label)?;
     let expected_width = lookup_edge_inline_property_profile(catalog_label).required_byte_width();

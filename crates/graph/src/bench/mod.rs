@@ -930,7 +930,7 @@ const INLINE_VALUE_SKEW_NOISE_WEIGHT: u16 = 1;
 const INLINE_VALUE_FIRST_LOG_OVERFLOW_NOISE: u32 = 48;
 const PAYLOAD_FIRST_LOG_MATCH_OUT: u32 = 24;
 
-/// Single-label hub with skewed inline values; expand filters by edge inline value equality.
+/// Single-label hub with skewed inline property bytes; expand filters by edge inline property bytes equality.
 fn setup_expand_inline_property_skewed_graph_scaled(
     store: &GraphStore,
     noise: u32,
@@ -1876,7 +1876,7 @@ fn bench_graph_expand_hub_return_dst_1k_only() -> canbench_rs::BenchResult {
     bench_expand_hub_control(EXPAND_HUB_OUT_XL, "expand_hub_return_dst_1k")
 }
 
-/// 200 noise + 24 matching inline value edges on one label; edge inline value `Eq` predicate expand.
+/// 200 noise + 24 matching inline property bytes edges on one label; edge inline property bytes `Eq` predicate expand.
 #[bench(raw)]
 fn bench_graph_expand_inline_property_skewed_200a_24b() -> canbench_rs::BenchResult {
     bench_expand_inline_property_skewed(
@@ -1886,7 +1886,7 @@ fn bench_graph_expand_inline_property_skewed_200a_24b() -> canbench_rs::BenchRes
     )
 }
 
-/// 2_000 noise + 100 matching inline value edges; edge inline value `Eq` predicate expand.
+/// 2_000 noise + 100 matching inline property bytes edges; edge inline property bytes `Eq` predicate expand.
 #[bench(raw)]
 fn bench_graph_expand_inline_property_skewed_2k_a_100b() -> canbench_rs::BenchResult {
     bench_expand_inline_property_skewed(
@@ -1963,7 +1963,7 @@ fn bench_graph_expand_indexed_eq_selective_24match() -> canbench_rs::BenchResult
     })
 }
 
-/// 24 fixed-label vector edge inline values; L2 threshold selects 8 rows via SIMD vector scoring.
+/// 24 fixed-label vector edge inline property bytes; L2 threshold selects 8 rows via SIMD vector scoring.
 #[bench(raw)]
 fn bench_graph_expand_vector_l2_24scan_8match() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
@@ -1986,7 +1986,7 @@ fn bench_graph_expand_vector_l2_24scan_8match() -> canbench_rs::BenchResult {
     })
 }
 
-/// 24 fixed-label vector edge inline values; DOT threshold selects 8 rows via SIMD vector scoring.
+/// 24 fixed-label vector edge inline property bytes; DOT threshold selects 8 rows via SIMD vector scoring.
 #[bench(raw)]
 fn bench_graph_expand_vector_dot_24scan_8match() -> canbench_rs::BenchResult {
     let store = GraphStore::new();

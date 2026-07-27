@@ -191,7 +191,7 @@ pub(super) fn cmp_op_from_wire(op: u8) -> Result<CmpOp, String> {
         4 => Ok(CmpOp::Gt),
         5 => Ok(CmpOp::Ge),
         _ => Err(format!(
-            "invalid edge inline value predicate comparison op {op}"
+            "invalid edge inline property bytes predicate comparison op {op}"
         )),
     }
 }

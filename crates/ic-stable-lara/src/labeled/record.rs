@@ -36,7 +36,7 @@ pub struct LabelBucket {
     inline_property_bytes_slab_slots: u32,
     /// Byte offset into [`EdgeInlinePropertyBytesStore`] where this bucket's value span starts.
     inline_property_bytes_offset: u64,
-    /// Physical byte width per edge inline value slot (`0` = no values).
+    /// Physical byte width per edge edge inline property slot (`0` = no values).
     inline_property_byte_width: u16,
     /// Wire byte for per-bucket inline property bytes overflow log head (`0xFF` = none).
     inline_property_bytes_log_byte: u8,
@@ -197,7 +197,7 @@ impl LabelBucket {
         self.inline_property_bytes_log_len
     }
 
-    /// Physical byte width per edge inline value slot (`0` = no values).
+    /// Physical byte width per edge edge inline property slot (`0` = no values).
     #[inline]
     pub fn inline_property_byte_width(self) -> u16 {
         self.inline_property_byte_width
@@ -746,7 +746,7 @@ impl LabeledVertex {
         })
     }
 
-    /// Physical byte width reserved for edge inline values on this vertex.
+    /// Physical byte width reserved for edge inline property bytes on this vertex.
     #[inline]
     pub fn inline_property_bytes_allocated_bytes(self) -> u64 {
         self.inline_property_bytes_allocated_bytes

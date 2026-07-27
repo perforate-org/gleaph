@@ -74,7 +74,7 @@ const ROUTER_GRAPH_BY_ID: MemoryId = MemoryId::new(16);
 const ROUTER_INDEX_NAME_BY_NAME: MemoryId = MemoryId::new(17);
 const ROUTER_INDEX_NAME_BY_ID: MemoryId = MemoryId::new(18);
 
-// --- catalog: index planner + edge inline value + graph type ---
+// --- catalog: index planner + edge inline property bytes + graph type ---
 const ROUTER_NAMED_INDEXES: MemoryId = MemoryId::new(19);
 const ROUTER_INDEXED_PROPERTY_SET: MemoryId = MemoryId::new(20);
 const ROUTER_EDGE_INLINE_PROPERTY_PROFILES: MemoryId = MemoryId::new(21);

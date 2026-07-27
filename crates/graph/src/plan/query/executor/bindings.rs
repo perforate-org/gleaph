@@ -1,4 +1,4 @@
-//! Plan execution bindings: edge handles with stored inline value bytes.
+//! Plan execution bindings: edge handles with stored inline property bytes.
 
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 
 use super::super::error::PlanQueryError;
 
-/// Edge variable binding for one traversal hop: stable handle plus stored inline value bytes.
+/// Edge variable binding for one traversal hop: stable handle plus stored inline property bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgeBinding {
     pub handle: EdgeHandle,
@@ -119,7 +119,7 @@ pub(crate) fn edge_binding_for_federated_expand_hit(
     }
 }
 
-/// Per-hop auxiliary scalar for `{edge}__hop_aux` (inline edge inline value bytes).
+/// Per-hop auxiliary scalar for `{edge}__hop_aux` (edge inline property bytes).
 pub(crate) fn hop_aux_scalar(edge: &EdgeBinding) -> Value {
     let bytes = edge.inline_property_bytes_slice();
     if bytes.is_empty() {

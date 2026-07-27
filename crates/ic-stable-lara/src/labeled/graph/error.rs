@@ -33,7 +33,7 @@ pub enum LabeledOperationError {
     InlinePropertyBytesLogWrite(InlinePropertyBytesLogWriteError),
     /// A default-label bypass was requested for a row that cannot use it.
     InvalidDefaultBypass,
-    /// An edge inline value byte width did not match the label bucket inline property schema.
+    /// An edge inline property byte width did not match the label bucket inline property schema.
     InlinePropertyBytesWidthMismatch {
         /// Payload byte width declared by the label bucket.
         bucket_width: u16,
@@ -62,7 +62,7 @@ impl fmt::Display for LabeledOperationError {
                 edge_inline_property_width,
             } => write!(
                 f,
-                "edge inline value byte width {edge_inline_property_width} does not match label bucket inline property byte width {bucket_width}"
+                "edge inline property byte width {edge_inline_property_width} does not match label bucket inline property byte width {bucket_width}"
             ),
             Self::InvalidVertexRow(err) => write!(f, "invalid labeled vertex row: {err:?}"),
         }

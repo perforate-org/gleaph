@@ -174,13 +174,13 @@ pub trait CsrEdge: Clone {
         self.neighbor_vid().is_edge_tombstone_sentinel()
     }
 
-    /// Physical byte width of the in-memory edge inline value (0 when absent).
+    /// Physical byte width of the in-memory edge inline property bytes (0 when absent).
     #[inline]
     fn edge_inline_property_byte_width(&self) -> u16 {
         0
     }
 
-    /// In-memory edge inline value bytes; length must match [`Self::edge_inline_property_byte_width`].
+    /// In-memory edge inline property bytes; length must match [`Self::edge_inline_property_byte_width`].
     #[inline]
     fn edge_inline_property_bytes(&self) -> &[u8] {
         &[]
@@ -206,7 +206,7 @@ pub trait CsrEdge: Clone {
 /// bound preserve the same liveness contract. Older test edges may still use
 /// [`VertexId::EDGE_TOMBSTONE_SENTINEL`] as their sentinel.
 pub trait CsrEdgeTombstone: CsrEdge {
-    /// Encoded edge inline value for a tombstoned slab slot (must satisfy [`Self::is_tombstone_edge`]).
+    /// Encoded edge inline property bytes for a tombstoned slab slot (must satisfy [`Self::is_tombstone_edge`]).
     fn tombstone_edge() -> Self;
     /// Returns `true` when this slot holds a logical tombstone.
     #[inline]

@@ -189,11 +189,11 @@ fn inline_cost_by_lifecycle() {
 }
 
 // ---------------------------------------------------------------------------
-// Fixture family 2: symmetric directed pair proves inline value is read in both
+// Fixture family 2: symmetric directed pair proves inline property bytes is read in both
 // traversal directions.
 //
 // Two opposite directed edges (CitySrc->CityMid and CityMid->CitySrc) share the
-// same inline value.  We run two explicit directed COST BY queries so each
+// same inline property bytes.  We run two explicit directed COST BY queries so each
 // traversal direction is independently observable; an undirected query would
 // allow either edge to satisfy the path and would not test both directions.
 // Former contract preserved:
@@ -234,7 +234,7 @@ fn inline_cost_by_symmetric_directed_reads_same_inline_property() {
     let a = e2e_insert_vertex_with_label(&env, env.graph_source, src_label_id.raw());
     let b = e2e_insert_vertex_with_label(&env, env.graph_source, mid_label_id.raw());
 
-    // Model a symmetric edge pair (both directions) sharing the same inline value.
+    // Model a symmetric edge pair (both directions) sharing the same inline property bytes.
     // A true single undirected inline-property edge is covered by a Graph unit test;
     // this E2E test proves the cost value is read from the inline property bytes in each
     // traversal direction independently.  Only the start vertex is labeled in each

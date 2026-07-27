@@ -1,6 +1,6 @@
 //! PocketIC coverage for ADR 0034 Slice 25: ordinary read access to fixed-size inline edge STRUCTs.
 //!
-//! Router-resolved schema identifies the named inline STRUCT slot; Graph decodes the edge inline value
+//! Router-resolved schema identifies the named inline STRUCT slot; Graph decodes the edge inline property bytes
 //! into a GQL record so `e.stats.field` works in projection, filtering, aggregate input, and
 //! ordering. The inline slot is the only read source for its `(label, property)` pair; a sidecar
 //! value cannot override it.
@@ -208,7 +208,7 @@ fn scenario_inline_property_wins_over_sidecar(env: &FederationEnv, label_id: u16
     let target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
     insert_affinity(env, source, target, label_id, 3.5, 0.75, 1_700_000_000);
 
-    // Write a sidecar value with the same property id; the inline inline value must still win.
+    // Write a sidecar value with the same property id; the inline inline property bytes must still win.
     let property_id = admin_intern_property(env, PROPERTY).raw();
     e2e_set_edge_property(env, env.graph_source, source, target, property_id, 99);
 
@@ -225,7 +225,7 @@ fn scenario_inline_property_wins_over_sidecar(env: &FederationEnv, label_id: u16
     assert_eq!(
         rows[0].get("s"),
         Some(&IcWireValue::Float64(3.5)),
-        "precedence scenario: inline value must win over sidecar value"
+        "precedence scenario: inline property bytes must win over sidecar value"
     );
 }
 
