@@ -3597,7 +3597,11 @@ where
         for &label_id in &labels {
             let found = self
                 .forward
-                .iter_edges_for_label(src, label_id)
+                .iter_edges_with_inline_property_for_label_next(
+                    src,
+                    label_id,
+                    OutEdgeOrder::Descending,
+                )
                 .map_err(DeferredBidirectionalLabeledError::Forward)?
                 .iter()
                 .any(|candidate| edge_matches_remove_target(candidate, &edge, dst));
@@ -3689,7 +3693,11 @@ where
             }
             if self
                 .forward
-                .iter_edges_for_label(src, label_id)
+                .iter_edges_with_inline_property_for_label_next(
+                    src,
+                    label_id,
+                    OutEdgeOrder::Descending,
+                )
                 .map_err(DeferredBidirectionalLabeledError::Forward)?
                 .iter()
                 .any(|candidate| edge_matches_remove_target(candidate, edge, dst))
@@ -9038,7 +9046,11 @@ mod tests {
         assert_eq!(
             graph
                 .forward
-                .iter_edges_for_label(source, label)
+                .iter_edges_with_inline_property_for_label_next(
+                    source,
+                    label,
+                    OutEdgeOrder::Descending
+                )
                 .unwrap()
                 .len(),
             2
@@ -9092,7 +9104,11 @@ mod tests {
         assert_eq!(
             graph
                 .forward
-                .iter_edges_for_label(source, label)
+                .iter_edges_with_inline_property_for_label_next(
+                    source,
+                    label,
+                    OutEdgeOrder::Descending
+                )
                 .unwrap()
                 .len(),
             2
