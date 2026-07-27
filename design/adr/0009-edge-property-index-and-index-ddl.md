@@ -269,7 +269,7 @@ entry as `CREATE INDEX … ON (n.prop)` or is removed after DDL lands.
 |--------------|---------------------------|
 | `IndexScan` / `IndexIntersection` (vertex) | graph-index vertex postings; **registered properties only** |
 | `indexed_edge_equality` / `EdgeIndexScan` | graph-index edge postings; router seeds or federated lookup |
-| `edge_inline_property_predicate` (GLEAPH.WEIGHT bytes) | Unchanged — LARA inline property bytes path (ADR 0008), **not** property index |
+| `edge_inline_property_predicate` (edge inline property bytes) | Unchanged — LARA inline property bytes path (ADR 0008), **not** property index |
 
 ---
 

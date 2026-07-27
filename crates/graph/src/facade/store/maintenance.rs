@@ -167,9 +167,7 @@ fn dedup_vertex_ids(vertices: &[VertexId]) -> Vec<VertexId> {
 
 #[cfg(test)]
 mod tests {
-    use gleaph_graph_kernel::entry::{
-        EdgeInlinePropertyProfile, EdgeWeightProfile, WeightEncoding,
-    };
+    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgeInlinePropertyBatchScratch};
 
     use super::*;
@@ -181,9 +179,10 @@ mod tests {
         let label = crate::test_labels::edge_label_id_for_name("BulkFinalizeRoad");
         install_test_edge_inline_property_profile(
             label,
-            EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            }),
+            EdgeInlinePropertyProfile {
+                byte_width: 2,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
+            },
         );
 
         let mut prefixes = Vec::new();

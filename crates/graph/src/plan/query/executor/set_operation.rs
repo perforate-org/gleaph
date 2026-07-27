@@ -278,13 +278,7 @@ mod tests {
     fn otherwise_non_empty_left_skips_right_branch() {
         let store = GraphStore::new();
         let parameters = params();
-        let ctx = ExecuteCtx::new(
-            &store,
-            &parameters,
-            None,
-            GqlExecutionContext::default(),
-            None,
-        );
+        let ctx = ExecuteCtx::new(&store, &parameters, None, GqlExecutionContext::default());
         let right = project_var_as_plan("missing", "x");
         let left = vec![scalar_row("x", 1)];
         let right_input = vec![PlanRow::new()];
@@ -305,13 +299,7 @@ mod tests {
     fn otherwise_empty_left_executes_right_with_input() {
         let store = GraphStore::new();
         let parameters = params();
-        let ctx = ExecuteCtx::new(
-            &store,
-            &parameters,
-            None,
-            GqlExecutionContext::default(),
-            None,
-        );
+        let ctx = ExecuteCtx::new(&store, &parameters, None, GqlExecutionContext::default());
         let right = project_var_as_plan("n", "x");
         let right_input = vec![scalar_row("n", 42)];
 
@@ -332,13 +320,7 @@ mod tests {
     fn set_operation_right_branch_reads_input_bindings() {
         let store = GraphStore::new();
         let parameters = params();
-        let ctx = ExecuteCtx::new(
-            &store,
-            &parameters,
-            None,
-            GqlExecutionContext::default(),
-            None,
-        );
+        let ctx = ExecuteCtx::new(&store, &parameters, None, GqlExecutionContext::default());
         let right = project_var_as_plan("n", "x");
         let left = vec![scalar_row("x", 1)];
         let right_input = vec![scalar_row("n", 1)];

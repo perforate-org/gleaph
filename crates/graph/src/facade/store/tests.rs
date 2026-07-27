@@ -1,9 +1,7 @@
 use super::helpers::{edge_alias_slot_key, edge_storage_label, lara_label};
 use super::*;
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{
-    EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeWeightProfile, VertexRef, WeightEncoding,
-};
+use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, VertexRef};
 use ic_stable_lara::{
     MaintenanceBudget, OutEdgeOrder, VertexId,
     labeled::{
@@ -13,44 +11,38 @@ use ic_stable_lara::{
 };
 use std::collections::BTreeMap;
 
-fn install_w2_weight_profile(_store: &GraphStore, label_id: EdgeLabelId) {
+fn install_w2_inline_property_profile(_store: &GraphStore, label_id: EdgeLabelId) {
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
 }
 
 #[test]
-fn install_edge_label_weight_profile_stores_payload_and_derives_weight_view() {
+fn install_edge_label_inline_property_profile_stores_and_returns_profile() {
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
 
     let store = GraphStore::new();
-    let label_id = crate::test_labels::edge_label_id_for_name("WeightCompatView");
-    let weight = EdgeWeightProfile {
-        encoding: WeightEncoding::Linear {
-            min: 0.0,
-            max: 10.0,
-        },
+    let label_id = crate::test_labels::edge_label_id_for_name("InlinePropView");
+    let profile = EdgeInlinePropertyProfile {
+        byte_width: 4,
+        encoding: EdgeInlinePropertyEncoding::F32,
     };
-    let expected_payload = EdgeInlinePropertyProfile::from(weight.clone());
-    crate::test_labels::install_test_edge_inline_property_profile(
-        label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(weight.clone()),
-    );
+    crate::test_labels::install_test_edge_inline_property_profile(label_id, profile.clone());
 
-    assert_eq!(store.edge_label_weight_profile(label_id), Some(weight));
     assert_eq!(
         store.edge_label_inline_property_profile(label_id),
-        Some(expected_payload)
+        Some(profile)
     );
     assert!(matches!(
         store
             .edge_label_inline_property_profile(label_id)
             .expect("inline property bytes")
             .encoding,
-        EdgeInlinePropertyEncoding::WeightLinearU16 { .. }
+        EdgeInlinePropertyEncoding::F32
     ));
 }
 
@@ -147,7 +139,7 @@ fn insert_rejects_inline_property_bytes_when_profile_width_differs() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
 
@@ -327,7 +319,7 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let label_id = crate::test_labels::edge_label_id_for_name("UpdateDirectedValueBothRows");
-    install_w2_weight_profile(&store, label_id);
+    install_w2_inline_property_profile(&store, label_id);
 
     let forward = store
         .insert_directed_edge_with_inline_property_bytes(source, target, Some(label_id), &[1, 0])
@@ -391,7 +383,7 @@ fn updating_undirected_edge_inline_property_updates_both_storage_rows() {
     let low = store.insert_vertex().expect("low");
     let high = store.insert_vertex().expect("high");
     let label_id = crate::test_labels::edge_label_id_for_name("UpdateUndirectedValueBothRows");
-    install_w2_weight_profile(&store, label_id);
+    install_w2_inline_property_profile(&store, label_id);
 
     let handle = store
         .insert_undirected_edge_with_inline_property_bytes(low, high, Some(label_id), &[1, 0])
@@ -426,9 +418,10 @@ fn forward_edge_compaction_preserves_inline_propertys() {
     let label = crate::test_labels::edge_label_id_for_name("CompactionPreservesValues");
     crate::test_labels::install_test_edge_inline_property_profile(
         label,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
 
     let doomed = store
@@ -475,9 +468,10 @@ fn undirected_canonical_owner_carries_inline_property_bytes() {
     let label_id = crate::test_labels::edge_label_id_for_name("UndirectedValueOwner");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
 
     let handle = store
@@ -510,9 +504,10 @@ fn inline_edge_inline_propertys_round_trip_on_parallel_out_edges() {
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
     store
         .insert_directed_edge_with_inline_property_bytes(
@@ -563,9 +558,10 @@ fn weighted_road_parallel_out_edges_from_a_round_trip() {
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
     store
         .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), &1u16.to_le_bytes())
@@ -600,9 +596,10 @@ fn directed_out_edges_visit_attaches_inline_propertys() {
     let label_id = crate::test_labels::edge_label_id_for_name("VisitWgtRoad");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
     for weight in 1..=8u16 {
         let t = store.insert_vertex().expect("target");
@@ -633,7 +630,7 @@ fn delete_valued_directed_edge_by_handle_removes_reverse_alias_slot() {
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let label_id = crate::test_labels::edge_label_id_for_name("DeleteValuedDirected");
-    install_w2_weight_profile(&store, label_id);
+    install_w2_inline_property_profile(&store, label_id);
 
     let first = store
         .insert_directed_edge_with_inline_property_bytes(source, target, Some(label_id), &[1, 0])
@@ -671,7 +668,7 @@ fn directed_reverse_alias_does_not_require_matching_slot_index() {
     let target = store.insert_vertex().expect("target");
     let other_source = store.insert_vertex().expect("other source");
     let label_id = crate::test_labels::edge_label_id_for_name("DirectedAliasSlotSkew");
-    install_w2_weight_profile(&store, label_id);
+    install_w2_inline_property_profile(&store, label_id);
 
     store
         .insert_directed_edge_with_inline_property_bytes(
@@ -712,7 +709,7 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
     let low = store.insert_vertex().expect("low");
     let high = store.insert_vertex().expect("high");
     let label_id = crate::test_labels::edge_label_id_for_name("DeleteValuedUndirected");
-    install_w2_weight_profile(&store, label_id);
+    install_w2_inline_property_profile(&store, label_id);
 
     let first = store
         .insert_undirected_edge_with_inline_property_bytes(low, high, Some(label_id), &[1, 0])
@@ -786,9 +783,10 @@ fn valued_parallel_insert_returns_handles_for_each_value() {
     let label_id = crate::test_labels::edge_label_id_for_name("ParallelValuedHandles");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
 
     let first = store
@@ -820,9 +818,10 @@ fn lookup_edge_record_at_handle_includes_stored_inline_property_bytes() {
     let label_id = crate::test_labels::edge_label_id_for_name("LookupEdgeRecordValue");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
     let handle = store
         .insert_directed_edge_with_inline_property_bytes(source, target, Some(label_id), &[4, 0])
@@ -851,9 +850,10 @@ fn forward_out_lookup_ignores_reverse_in_alias_when_slots_collide() {
     let label_id = crate::test_labels::edge_label_id_for_name("ForwardOutReverseInSlotCollision");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
     store
         .insert_directed_edge_with_inline_property_bytes(s, a, Some(label_id), &[5, 0])
@@ -883,9 +883,10 @@ fn valued_insert_after_delete_returns_handle_for_new_edge() {
     let label_id = crate::test_labels::edge_label_id_for_name("TombstoneHandleLookup");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
 
     let doomed = store
@@ -1321,7 +1322,7 @@ fn post_insert_maintenance_reclaims_parallel_overflow_bucket_for_inline_properti
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let label = crate::test_labels::edge_label_id_for_name("PostInsertOverflowReclaim");
-    install_w2_weight_profile(&store, label);
+    install_w2_inline_property_profile(&store, label);
 
     for i in 0..48u16 {
         let target = store.insert_vertex().expect("target");

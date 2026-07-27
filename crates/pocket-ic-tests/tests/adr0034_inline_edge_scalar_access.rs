@@ -27,7 +27,7 @@ const PROPERTY: &str = "distance";
 fn road_profile() -> gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
     gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
         byte_width: 2,
-        encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::WeightRawU16,
+        encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
     }
 }
 

@@ -198,7 +198,7 @@ mod tests {
             label_id,
             EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
         let a = store

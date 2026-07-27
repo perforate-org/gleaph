@@ -4,7 +4,6 @@ mod edge_inline_property_batch_kernel;
 mod edge_vector_kernel;
 mod error;
 mod executor;
-mod gleaph_weight;
 mod live_vars;
 mod materialize;
 mod row;

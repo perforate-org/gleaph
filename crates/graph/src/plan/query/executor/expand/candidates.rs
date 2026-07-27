@@ -7,7 +7,7 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
     EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, ScanValue, Str,
 };
-use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
+use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::{
@@ -397,7 +397,6 @@ pub(super) fn expand_vector_dst_only_rows_into(
     dst_property_projection: Option<&[Str]>,
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     evaluator: &QueryExprEvaluator<'_>,
     predicate: &PreparedEdgeInlineVectorThreshold,
     out: &mut Vec<PlanRow>,
@@ -421,7 +420,6 @@ pub(super) fn expand_vector_dst_only_rows_into(
         dst_property_projection,
         parameters,
         caller,
-        gleaph_weight_decoders,
         evaluator,
         predicate,
         out,
@@ -442,7 +440,6 @@ fn push_vector_dst_only_row_for_edge(
     dst_property_projection: Option<&[Str]>,
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     evaluator: &QueryExprEvaluator<'_>,
     edge: Edge,
     out: &mut Vec<PlanRow>,
@@ -463,7 +460,6 @@ fn push_vector_dst_only_row_for_edge(
                 dst_id,
                 dst_filter,
                 caller,
-                gleaph_weight_decoders,
                 execution,
             )?
         {
@@ -497,7 +493,6 @@ fn expand_vector_dst_only_rows_combined_batch(
     dst_property_projection: Option<&[Str]>,
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     evaluator: &QueryExprEvaluator<'_>,
     predicate: &PreparedEdgeInlineVectorThreshold,
     out: &mut Vec<PlanRow>,
@@ -530,7 +525,6 @@ fn expand_vector_dst_only_rows_combined_batch(
                     dst_property_projection,
                     parameters,
                     caller,
-                    gleaph_weight_decoders,
                     evaluator,
                     edge,
                     out,

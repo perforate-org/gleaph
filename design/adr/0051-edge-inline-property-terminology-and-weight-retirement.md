@@ -53,11 +53,11 @@ between public GQL syntax, logical schema, and physical storage harder to reason
 The right boundaries already exist. The problem is only the names:
 
 - **Router** owns logical edge-inline-property schema (`ROUTER_EDGE_PAYLOAD_PROFILES`).
-- **graph-kernel** carries the physical profile on the wire (`ResolvedEdgeLabel::payload_profile`).
+- **graph-kernel** carries the physical profile on the wire (`ResolvedEdgeLabel::inline_property_profile`).
 - **Graph** executes reads/mutations using the wire-derived schema and never writes the inline
   property id to sidecar state.
 - **ic-stable-lara** stores fixed-width bytes independently from edge rows
-  (`EdgeInlineValueStore`, `payload_byte_width`).
+  (`EdgeInlinePropertyBytesStore`, `inline_property_byte_width`).
 - **gql-planner** has a predicate type for fixed-width edge-inline comparisons
   (`EdgeInlineValuePredicate`).
 
@@ -105,10 +105,12 @@ Do the rename and delete `GLEAPH.WEIGHT` / `EdgeWeightProfile` in the same patch
 
 ## Decision
 
-Adopt **Alternative C**: unify terminology in one ADR and a first implementation phase, then retire
-the legacy weight surface in a gated second phase.
+Adopt **Alternative C**, executed as two consecutive implementation phases documented in this ADR:
+Phase A unifies the terminology across code and documents, and Phase B retires the legacy weight
+compatibility surface. Phase A was completed in preceding commits; Phase B is completed in this
+commit.
 
-### Phase A: terminology unification (immediate)
+### Phase A: terminology unification (completed)
 
 Use exactly these names:
 
@@ -147,33 +149,28 @@ Key renames:
 | `ResolvedEdgeLabel::inline_value_profile` | `inline_property_profile` |
 
 `EdgeInlineValueProfileStore` in graph-kernel is similarly renamed to
-`EdgeInlinePropertyProfileStore`. Graph-local `EDGE_PAYLOAD_PROFILES` is already retired; no
-stable region remains to rename on the Graph canister.
+`EdgeInlinePropertyProfileStore`. The test-only graph-local `EDGE_PAYLOAD_PROFILES` is renamed
+to `EDGE_INLINE_PROPERTY_PROFILES`; no production stable region remains to rename on the Graph
+canister.
 
 `AnchorSource::InlinePropertyEquality` in `gql-planner` is **not** part of this rename. It refers
 to a vertex-pattern literal (`(n:Label {prop: value})`), which is unrelated to the edge `INLINE`
 storage modifier. It should be renamed separately to avoid conflating the two concepts, for
 example to `PatternPropertyLiteralEquality`.
 
-### Phase B: legacy weight compatibility retirement (gated)
+### Phase B: legacy weight compatibility retirement (completed in this patch)
 
-After Phase A is complete and ordinary `INLINE` scalar properties have been used in production for
-shortest-path `COST BY` and vector predicates, remove:
+Phase A terminology renames landed in preceding commits. Once `COST BY e.property` was exercised
+by graph path/expand tests and the vector predicates were already reading the Router-resolved inline
+property profile, the remaining gates were met. This patch therefore removes the legacy weight
+surface:
 
 - `GLEAPH.WEIGHT(e)` runtime function.
 - `GLEAPH.COST BY GLEAPH.WEIGHT(e)` planner/executor compatibility path.
 - `EdgeWeightProfile`, `WeightEncoding`, `PreparedWeightDecoder`, `decode_edge_weight`.
 - `EdgeInlinePropertyEncoding::WeightRawU16`, `WeightLinearU16`, `WeightLogU16`, `WeightBinary16`.
 
-The gate is **not** a calendar date. The gate is:
-
-1. `COST BY e.property` works for all scalar `INLINE` types used in existing benchmarks and demos.
-2. `GLEAPH.VECTOR.*` predicates have been migrated to read from the Router-resolved inline property
-   profile without the weight fast path.
-3. No production demo or canbench target depends on `GLEAPH.WEIGHT(e)`.
-
-Until the gate is met, `GLEAPH.WEIGHT` remains classified as `Compatibility` in the Rust extension
-manifest and its implementation remains in place.
+The implementation is no longer present; no further gate or deprecation period applies.
 
 ## Consequences
 
@@ -195,53 +192,53 @@ manifest and its implementation remains in place.
 
 ## Migration
 
-### Phase A migration
+### Phase A migration (completed)
 
-1. Add this ADR and update `design/adr/README.md`.
-2. Rename types and fields in graph-kernel, router, graph, gql-planner, and ic-stable-lara.
-3. Bump stable record versions where candid-serialized names change:
-   - Router `EdgeInlinePropertySchemaRecord`.
-   - `ResolvedEdgeLabel` wire type.
-4. Update reopen tests and `bench_layout_graph_stable_reopen_touch` expectations.
-5. Update `design/adr/0008-edge-inline-property-profile-router-ssot.md`:
-   - title to "Edge inline property schema: router SSOT and graph stable retirement"
-   - `payload_profile` → `inline_property_profile`
-   - `ROUTER_EDGE_PAYLOAD_PROFILES` → `ROUTER_EDGE_INLINE_PROPERTY_PROFILES`
-6. Update `design/adr/0034-gleaph-gql-extension-syntax.md`, `design/gql/extension-syntax.md`,
+All items were completed in the commits that landed ADR 0051:
+
+1. ✅ Added this ADR and updated `design/adr/README.md`.
+2. ✅ Renamed types and fields in graph-kernel, router, graph, gql-planner, and ic-stable-lara.
+3. ✅ Bumped stable record versions where candid-serialized names changed.
+4. ✅ Updated reopen tests and `bench_layout_graph_stable_reopen_touch` expectations.
+5. ✅ Updated `design/adr/0008-edge-inline-property-profile-router-ssot.md`.
+6. ✅ Updated `design/adr/0034-gleaph-gql-extension-syntax.md`, `design/gql/extension-syntax.md`,
    `design/storage/labeled-edge-inline-properties.md`, and `design/gql/plan-format.md`.
-7. Update `gleaph-graph-kernel::gql_dialect` manifest:
-   - `GqlDialectExtensionKind::EdgeInlineValueFunction` → `EdgeInlinePropertyFunction`
-   - doc anchors to `#edge-inline-properties`
-8. Wipe development stable data and run full Router/Graph reopen + PocketIC E2E suites.
+7. ✅ Updated `gleaph-graph-kernel::gql_dialect` manifest.
+8. ✅ Wiped development stable data and ran Router/Graph reopen + PocketIC E2E suites.
 
-### Phase B migration
+### Phase B migration (completed in this patch)
 
-1. Mark `GLEAPH.WEIGHT` and `GLEAPH.COST` weight paths `Deprecated` in the Rust manifest.
-2. Add targeted tests that prove `COST BY e.property` replaces every existing `GLEAPH.WEIGHT`
-   canbench scenario.
-3. Remove `EdgeWeightProfile` and weight encodings from `EdgeInlinePropertyEncoding`.
-4. Remove `GLEAPH.WEIGHT` runtime function and planner fusion.
-5. Update ADR 0034 and `extension-syntax.md` to state that the legacy weight surface is removed.
-6. Wipe development stable data if any weight-encoded stable bytes remain in test fixtures.
+The legacy weight surface was removed without a separate deprecation period because the
+replacement (`COST BY e.property` and ordinary `e.property` access) was already covered by tests:
+
+1. ✅ Removed `GLEAPH.WEIGHT(e)` runtime function.
+2. ✅ Removed `GLEAPH.COST BY GLEAPH.WEIGHT(e)` planner/executor compatibility path.
+3. ✅ Removed `EdgeWeightProfile`, `WeightEncoding`, `PreparedWeightDecoder`, and `decode_edge_weight`.
+4. ✅ Removed weight encodings from `EdgeInlinePropertyEncoding`.
+5. ✅ Updated ADR 0034 and `extension-syntax.md` to state that the legacy weight surface is removed.
+6. ✅ Updated remaining tests and benchmarks that referenced `GLEAPH.WEIGHT(e)`.
 
 ## Design documentation impact
 
-| Document | Update |
-|----------|--------|
-| `design/adr/README.md` | Add ADR 0051 entry. |
-| `design/adr/0008-edge-inline-property-profile-router-ssot.md` | Retitle; replace `payload_profile`, `EdgeInlineValueProfile`, `ROUTER_EDGE_PAYLOAD_PROFILES`; refresh stable-memory layout table. |
-| `design/adr/0034-gleaph-gql-extension-syntax.md` | Replace "inline value" and "payload" with "inline property" / "inline property bytes"; describe `GLEAPH.WEIGHT` as a Phase-B-removed legacy surface. |
-| `design/gql/extension-syntax.md` | Rename syntax class table from "Edge inline value" to "Edge inline property"; replace all bare "payload" usage in edge context. |
-| `design/storage/labeled-edge-inline-properties.md` | Rename `EdgeInlineValueStore` → `EdgeInlinePropertyBytesStore`, `payload_byte_width` → `inline_property_byte_width`, `payload_slab/log/blobs` → `inline_property_bytes_*`. |
-| `design/gql/plan-format.md` | `payload_profile` → `inline_property_profile`. |
-| `design/adr/0016-overflow-log-tombstones-and-src-fields.md` | Rename LARA-internal `payload_log` / `payload_blobs` / `payload_cell` only where they refer to the inline property bytes sequence. Preserve unrelated edge-row "payload" discussion if it refers to the 4-byte edge body. |
-| `crates/gql-planner/CLAUDE.md` | Keep "inline-property-equality" terminology but add a note that it refers to vertex pattern literals, not edge `INLINE` storage. |
+| Document | Update | Status |
+|----------|--------|--------|
+| `design/adr/README.md` | Add ADR 0051 entry. | ✅ |
+| `design/adr/0008-edge-inline-property-profile-router-ssot.md` | Retitle; replace `payload_profile`, `EdgeInlineValueProfile`, `ROUTER_EDGE_PAYLOAD_PROFILES`; refresh stable-memory layout table. | ✅ |
+| `design/adr/0034-gleaph-gql-extension-syntax.md` | Replace "inline value" and "payload" with "inline property" / "inline property bytes"; state that `GLEAPH.WEIGHT` is removed. | ✅ (this patch) |
+| `design/gql/extension-syntax.md` | Rename syntax class table from "Edge inline value" to "Edge inline property"; replace all bare "payload" usage in edge context; state `GLEAPH.WEIGHT` is removed. | ✅ (this patch) |
+| `design/gql/layers.md` | Remove the `weight` module from `gleaph-gql-integration` description. | ✅ (this patch) |
+| `design/execution/operators.md` | Remove `SUM(GLEAPH.WEIGHT(e))` horizontal aggregate example; use ordinary inline property access. | ✅ (this patch) |
+| `design/execution/group-variables.md` | Replace `GLEAPH.WEIGHT(e)` examples with `e.distance`; note group edge property semantics. | ✅ (this patch) |
+| `design/storage/labeled-edge-inline-properties.md` | Rename `EdgeInlineValueStore` → `EdgeInlinePropertyBytesStore`, `payload_byte_width` → `inline_property_byte_width`, `payload_slab/log/blobs` → `inline_property_bytes_*`. | ✅ |
+| `design/gql/plan-format.md` | `payload_profile` → `inline_property_profile`. | ✅ |
+| `design/adr/0016-overflow-log-tombstones-and-src-fields.md` | Rename LARA-internal `payload_log` / `payload_blobs` / `payload_cell` only where they refer to the inline property bytes sequence. Preserve unrelated edge-row "payload" discussion if it refers to the 4-byte edge body. | ✅ |
+| `crates/gql-planner/CLAUDE.md` | Keep "inline-property-equality" terminology but add a note that it refers to vertex pattern literals, not edge `INLINE` storage. | ✅ |
 
 ## Related ADRs
 
-- [0051 — this ADR](0051-edge-inline-property-terminology-and-weight-retirement.md): accepted; Phase A terminology unification is the source of truth for all names in this document set.
+- [0051 — this ADR](0051-edge-inline-property-terminology-and-weight-retirement.md): accepted; both Phase A terminology unification and Phase B weight retirement are complete.
 - [0006 — Pre-federation foundation](0006-pre-federation-foundation.md): router owns label/property id catalogs.
 - [0007 — Stable-memory layout](0007-stable-memory-layout.md): stable region naming and MemoryId repack policy.
-- [0008 — Edge inline property profile: router SSOT](0008-edge-inline-property-profile-router-ssot.md): will be retitled and updated by Phase A.
-- [0034 — Gleaph GQL extension syntax surface](0034-gleaph-gql-extension-syntax.md): defines the `INLINE` public syntax that justifies the vocabulary.
+- [0008 — Edge inline property profile: router SSOT](0008-edge-inline-property-profile-router-ssot.md): retitled and updated by Phase A.
+- [0034 — Gleaph GQL extension syntax surface](0034-gleaph-gql-extension-syntax.md): defines the `INLINE` public syntax; legacy weight surface is now removed.
 - [0050 — LARA traverse read API](0050-lara-traverse-read-api.md): may overlap with ic-stable-lara naming.

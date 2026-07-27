@@ -1,8 +1,6 @@
 //! Stable `EdgeLabelId → EdgeInlinePropertyProfile` map (router SSOT per ADR 0008).
 
-use crate::entry::{
-    EdgeInlinePropertyProfile, EdgeInlinePropertyProfileError, EdgeLabelId, EdgeWeightProfile,
-};
+use crate::entry::{EdgeInlinePropertyProfile, EdgeInlinePropertyProfileError, EdgeLabelId};
 use ic_stable_structures::{Memory, StableBTreeMap};
 use std::fmt;
 
@@ -78,14 +76,6 @@ impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
         self.insert(label, profile)
     }
 
-    pub fn insert_from_weight_profile(
-        &mut self,
-        label: EdgeLabelId,
-        profile: EdgeWeightProfile,
-    ) -> Result<(), EdgeInlinePropertyProfileStoreError> {
-        self.insert(label, EdgeInlinePropertyProfile::from(profile))
-    }
-
     pub fn remove(&mut self, label: EdgeLabelId) {
         self.inner.remove(&label);
     }
@@ -129,7 +119,7 @@ mod tests {
         let label = EdgeLabelId::from_raw(1);
         let profile = EdgeInlinePropertyProfile {
             byte_width: 4,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         };
         assert!(matches!(
             store.insert(label, profile),
@@ -145,7 +135,7 @@ mod tests {
         let label = EdgeLabelId::from_raw(2);
         let profile = EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         };
         store.insert(label, profile.clone()).expect("insert");
         assert_eq!(store.get(label), Some(profile));

@@ -1792,7 +1792,7 @@ fn leading_edge_bind_endpoints_hop_aux_returns_inline_property_bytes() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let weight_prop = crate::test_labels::property_id_for_name("weight");

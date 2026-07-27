@@ -236,7 +236,7 @@ Overflow predicate expand must scan **all** inline property bytes to filter (low
 | GraphStore edge scan | `crates/graph/src/facade/store/edge_scan.rs` |
 | Expand routing | `crates/graph/src/plan/query/executor/expand/candidates.rs` |
 | Shortest expand | `crates/graph/src/plan/query/executor/path.rs` |
-| Weight decode | `crates/graph/src/plan/query/gleaph_weight.rs` |
+| Inline property bytes decode | `crates/graph/src/edge_inline_property_scalar_codec.rs` |
 
 ## Related
 

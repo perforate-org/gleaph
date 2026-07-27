@@ -51,7 +51,6 @@ pub(crate) async fn execute_expand(
     let store = ctx.store;
     let parameters = ctx.parameters;
     let caller = ctx.caller();
-    let gleaph_weight_decoders = ctx.gleaph_weight_decoders;
     let label_id = match label {
         Some(label) => execution
             .resolved_edge_label_id(label)
@@ -147,7 +146,6 @@ pub(crate) async fn execute_expand(
                                     dst_id,
                                     dst_filter,
                                     caller,
-                                    gleaph_weight_decoders,
                                     &ctx.execution,
                                 )?
                             {
@@ -212,7 +210,6 @@ pub(crate) async fn execute_expand(
                         dst_property_projection,
                         parameters,
                         caller,
-                        gleaph_weight_decoders,
                         &evaluator,
                         predicate,
                         &mut out,
@@ -255,7 +252,6 @@ pub(crate) async fn execute_expand(
                                 dst_id,
                                 dst_filter,
                                 caller,
-                                gleaph_weight_decoders,
                                 &ctx.execution,
                             )?
                         {

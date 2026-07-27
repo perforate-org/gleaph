@@ -62,7 +62,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 |--------|--------|-------|
 | `Project` | Exec | DISTINCT, column list |
 | `Sort` / `Limit` / `TopK` | Exec | TopK fusion in planner |
-| `Aggregate` | Exec | Implicit `RETURN SUM(...)` etc.; horizontal `SUM(GLEAPH.WEIGHT(e))` over var-length **edge groups** per input row (see [group-variables.md](./group-variables.md)) |
+| `Aggregate` | Exec | Implicit `RETURN SUM(...)` etc.; horizontal aggregate over var-length **edge groups** per input row (see [group-variables.md](./group-variables.md)) |
 | `Materialize` | Exec | |
 | `SetOperation` | Exec | `UNION` / `EXCEPT` / `INTERSECT` (ALL and DISTINCT), `OTHERWISE` fallback |
 

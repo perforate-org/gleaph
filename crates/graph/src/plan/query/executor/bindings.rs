@@ -240,11 +240,10 @@ mod tests {
         let label_id = crate::test_labels::edge_label_id_for_name("RevExpandWgt");
         crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(
-                gleaph_graph_kernel::entry::EdgeWeightProfile {
-                    encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
-                },
-            ),
+            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+                byte_width: 2,
+                encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+            },
         );
         store
             .insert_directed_edge_with_inline_property_bytes(
@@ -261,12 +260,17 @@ mod tests {
         assert_eq!(binding.handle.owner_vertex_id, a);
         assert_eq!(binding.inline_property_bytes_slice(), &[42, 0]);
 
-        let weight = crate::plan::query::gleaph_weight::decode_traversal_edge_weight(
-            binding.handle,
-            binding.inline_property_len(),
+        let profile =
+            crate::edge_inline_property_schema::lookup_edge_inline_property_profile(label_id);
+        let decoder = profile.prepare().expect("prepare decoder");
+        let decoded = gleaph_graph_kernel::entry::decode_edge_inline_property(
+            &decoder,
             binding.inline_property_bytes_slice(),
         )
-        .expect("decode weight");
-        assert_eq!(weight, 42.0);
+        .expect("decode inline property");
+        assert_eq!(
+            decoded,
+            gleaph_graph_kernel::entry::DecodedEdgeInlinePropertyBytes::U16(42)
+        );
     }
 }

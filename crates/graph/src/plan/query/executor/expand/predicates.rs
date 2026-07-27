@@ -241,16 +241,6 @@ fn edge_inline_property_bytes_from_value(
                     expression: format!("edge inline value scalar literal: {err}"),
                 });
         }
-        EdgeInlinePropertyEncoding::WeightRawU16 => {
-            u16_from_value(value).map(|v| v.to_le_bytes().to_vec())?
-        }
-        EdgeInlinePropertyEncoding::WeightLinearU16 { .. }
-        | EdgeInlinePropertyEncoding::WeightLogU16 { .. }
-        | EdgeInlinePropertyEncoding::WeightBinary16 => {
-            return Err(PlanQueryError::UnsupportedOp(
-                "edge inline value predicate for transformed weight encodings",
-            ));
-        }
         EdgeInlinePropertyEncoding::VectorF32 { .. } => {
             return Err(PlanQueryError::UnsupportedOp(
                 "edge inline value predicate for vector encodings",

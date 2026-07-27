@@ -30,7 +30,7 @@ use gleaph_gql_planner::plan::{
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::{
     ConstraintNameId, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
-    EdgeWeightProfile, PropertyId, Vertex, WeightEncoding,
+    PropertyId, Vertex,
 };
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
 use gleaph_graph_kernel::plan_exec::{ResolvedSearchVertexHitWire, ResolvedSearchWire};
@@ -69,14 +69,6 @@ fn f32_vector_bytes(values: &[f32]) -> Vec<u8> {
 
 fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {
     PhysicalPlan::from_ops(ops)
-}
-
-fn gleaph_weight_call(edge_var: &str) -> Expr {
-    Expr::new(ExprKind::FunctionCall {
-        name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
-        args: vec![Expr::var(edge_var)],
-        distinct: false,
-    })
 }
 
 fn catalog_edge_label(label_name: &str) -> EdgeLabelId {
@@ -286,9 +278,14 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
     let label_id = crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
+    );
+    crate::test_labels::install_test_edge_inline_property(
+        label_id,
+        crate::test_labels::property_id_for_name("distance"),
     );
     let road = catalog_edge_label("BenchWspWgtEdge");
 
@@ -581,37 +578,7 @@ fn bench_graph_weighted_all_shortest_literal_frontier_branch4_depth4() -> canben
 }
 
 /// Hub convergence workload where many prefixes reach the same vertex and re-expand identical
-/// outgoing edges. Intended to measure hop-cost cache reuse for `GLEAPH.WEIGHT` decode plus
-/// expression evaluation.
-#[bench(raw)]
-fn bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out()
--> canbench_rs::BenchResult {
-    let store = GraphStore::new();
-    setup_repeated_edge_cost_cache_graph(&store);
-    let plan = weighted_shortest_plan(
-        "BenchWspCacheSrc",
-        "BenchWspCacheDst",
-        "BenchWspWgtEdge",
-        gleaph_weight_call("e"),
-        5,
-    );
-
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("weighted_shortest_edge_cost_cache");
-        let result = execute_shortest_plan(black_box(&store), black_box(&plan));
-        assert_eq!(
-            result.rows.len(),
-            1,
-            "edge-cost cache benchmark should find one path"
-        );
-        black_box(result.rows.len())
-    })
-}
-
-/// Same hub convergence workload as `bench_graph_weighted_shortest_repeated_edge_cost_cache`,
-/// but hop costs are sourced through the inline property reader (`COST BY e.distance`) rather
-/// than the direct `GLEAPH.WEIGHT(e)` decoder fast path. Measures the resolution/decode overhead
-/// of the Slice 23 path.
+/// outgoing edges. Hop costs are sourced through the inline property reader (`COST BY e.distance`).
 #[bench(raw)]
 fn bench_graph_weighted_shortest_inline_cost_48prefix_24hub_out() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
@@ -974,7 +941,7 @@ fn setup_expand_inline_property_skewed_graph_scaled(
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let noise_dst = store
@@ -1083,7 +1050,7 @@ fn setup_expand_inline_property_skewed_incoming_graph_scaled(
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let noise_src = store
@@ -3192,9 +3159,10 @@ mod bench_setup_tests {
         let label_id = crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
         crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            }),
+            EdgeInlinePropertyProfile {
+                byte_width: 2,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
+            },
         );
     }
 

@@ -8,7 +8,7 @@ use gleaph_gql::Value;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::BindingLayout;
 use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarLenSpec};
-use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
+use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch;
@@ -94,7 +94,6 @@ pub(crate) async fn execute_shortest_path(
     var_len: &Option<VarLenSpec>,
     cost: &ShortestPathCost,
     parameters: &BTreeMap<String, Value>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     remaining_ops: &[PlanOp],
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let label_id = if label_expr.is_some() {
@@ -170,7 +169,6 @@ pub(crate) async fn execute_shortest_path(
                 expr,
                 mode,
                 parameters,
-                gleaph_weight_decoders,
                 store_hop_edges,
                 emit_edge_binding,
             )?,

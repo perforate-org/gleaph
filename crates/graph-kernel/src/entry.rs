@@ -11,14 +11,13 @@ pub mod property_entity;
 pub mod remote_vertex_id;
 pub mod vertex;
 pub mod vertex_ref;
-pub mod weight;
 
 pub use constraint_name::{CONSTRAINT_NAME_CATALOG_MAX, ConstraintNameId};
 pub use edge::{Edge, EdgeMeta, EdgeSlotIndex};
 pub use edge_inline_property::{
     DecodedEdgeInlinePropertyBytes, EdgeInlinePropertyBytes, EdgeInlinePropertyEncoding,
     EdgeInlinePropertyProfile, EdgeInlinePropertyProfileError, MAX_EDGE_INLINE_PROPERTY_BYTES,
-    PreparedEdgeInlinePropertyBytesDecoder, decode_edge_inline_property, decode_edge_weight,
+    PreparedEdgeInlinePropertyBytesDecoder, decode_edge_inline_property,
 };
 pub use embedding_name::{EMBEDDING_NAME_CATALOG_MAX, EmbeddingNameId};
 pub use graph::GraphId;
@@ -33,7 +32,3 @@ pub use property_entity::PropertyEntity;
 pub use remote_vertex_id::{EdgeTarget, RemoteVertexId};
 pub use vertex::Vertex;
 pub use vertex_ref::VertexRef;
-pub use weight::{
-    EdgeWeightProfile, PreparedWeightDecoder, WeightDecodeError, WeightEncoding,
-    WeightProfilePrepareError,
-};

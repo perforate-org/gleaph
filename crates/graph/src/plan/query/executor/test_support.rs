@@ -40,8 +40,8 @@ pub use crate::facade::GraphStore;
 pub use crate::gql_execution_context::GqlExecutionContext;
 pub use gleaph_gql::ast::LetBinding;
 pub use gleaph_gql::ast::{
-    AggregateFunc, BinaryOp, CmpOp, Expr, ExprKind, NullOrder, ObjectName, OrderByClause,
-    SortDirection, SortItem, Statement, WhenClause,
+    AggregateFunc, CmpOp, Expr, ExprKind, NullOrder, OrderByClause, SortDirection, SortItem,
+    Statement, WhenClause,
 };
 pub use gleaph_gql::token::Span;
 pub use gleaph_gql::types::{EdgeDirection, LabelExpr};
@@ -483,7 +483,6 @@ pub fn eval_test_expr(expr: Expr) -> Value {
         caller: None,
         resolved_labels: None,
         resolved_properties: None,
-        gleaph_weight_decoders: None,
         element_id_key: gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
     };
     evaluator

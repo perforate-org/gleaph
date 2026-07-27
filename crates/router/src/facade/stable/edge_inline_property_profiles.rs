@@ -811,7 +811,7 @@ mod tests {
         let label = EdgeLabelId::from_raw(1);
         let profile = EdgeInlinePropertyProfile {
             byte_width: 4,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         };
         assert!(matches!(
             store.insert_unnamed_profile_profile(GraphId::from_raw(1), label, profile),
@@ -828,7 +828,7 @@ mod tests {
         let label = EdgeLabelId::from_raw(2);
         let profile = EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         };
         store
             .insert_unnamed_profile_profile(graph, label, profile.clone())
@@ -947,7 +947,7 @@ mod tests {
                 label,
                 EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::RawU16,
                 },
             )
             .expect("legacy");
@@ -974,7 +974,7 @@ mod tests {
                 label,
                 EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::RawU16,
                 },
             )
             .expect_err("conflict");
@@ -1041,7 +1041,7 @@ mod tests {
                 label,
                 EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::RawU16,
                 },
             )
             .expect("legacy");
@@ -1321,7 +1321,7 @@ mod tests {
                 label,
                 EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::RawU16,
                 },
             )
             .expect("legacy");
@@ -1352,7 +1352,7 @@ mod tests {
                 label,
                 EdgeInlinePropertyProfile {
                     byte_width: 2,
-                    encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                    encoding: EdgeInlinePropertyEncoding::RawU16,
                 },
             )
             .expect_err("conflict");

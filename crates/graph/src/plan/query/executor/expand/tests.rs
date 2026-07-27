@@ -53,13 +53,7 @@ fn federated_var_len_rejects_peer_expand_source() {
     seed.insert("a".to_owned(), PlanBinding::RemoteVertex(foreign));
 
     let parameters = params();
-    let ctx = ExecuteCtx::new(
-        &store,
-        &parameters,
-        None,
-        GqlExecutionContext::default(),
-        None,
-    );
+    let ctx = ExecuteCtx::new(&store, &parameters, None, GqlExecutionContext::default());
     let err = pollster::block_on(execute_var_len_expand(
         &ctx,
         vec![seed],
@@ -319,7 +313,7 @@ fn union_label_expr_edge_inline_property_predicate_fuses_per_label() {
     let likes_label = crate::test_labels::edge_label_id_for_name("UnionPayloadFusionLikes");
     let profile = EdgeInlinePropertyProfile {
         byte_width: 2,
-        encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+        encoding: EdgeInlinePropertyEncoding::RawU16,
     };
     for label_id in [knows_label, likes_label] {
         crate::test_labels::install_test_edge_inline_property_profile(label_id, profile.clone());
@@ -408,7 +402,7 @@ fn union_label_expr_edge_inline_property_predicate_fuses_per_label() {
                 value: ScanValue::Literal(Value::Int64(7)),
             }),
             edge_inline_vector_predicate: None,
-            edge_property_projection: None,
+            edge_property_projection: Some(Rc::from([Str::from("distance")])),
             dst_property_projection: None,
             hop_aux_binding: None,
             emit_edge_binding: true,
@@ -450,7 +444,7 @@ fn wildcard_label_expr_edge_inline_property_predicate_fuses_via_catalog_fallback
             label_id,
             EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
     }
@@ -502,7 +496,7 @@ fn wildcard_label_expr_edge_inline_property_predicate_fuses_via_catalog_fallback
     ]);
     let profile = EdgeInlinePropertyProfile {
         byte_width: 2,
-        encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+        encoding: EdgeInlinePropertyEncoding::RawU16,
     };
     let resolved_labels = gleaph_graph_kernel::plan_exec::ResolvedLabelTable {
         vertex: vec![gleaph_graph_kernel::plan_exec::ResolvedVertexLabel {
@@ -552,7 +546,7 @@ fn not_label_expr_edge_inline_property_predicate_fuses_via_catalog_fallback() {
             label_id,
             EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
     }
@@ -611,7 +605,7 @@ fn not_label_expr_edge_inline_property_predicate_fuses_via_catalog_fallback() {
     ]);
     let profile = EdgeInlinePropertyProfile {
         byte_width: 2,
-        encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+        encoding: EdgeInlinePropertyEncoding::RawU16,
     };
     let resolved_labels = gleaph_graph_kernel::plan_exec::ResolvedLabelTable {
         vertex: vec![gleaph_graph_kernel::plan_exec::ResolvedVertexLabel {
@@ -754,7 +748,7 @@ fn expand_hop_aux_binding_returns_edge_inline_property_bytes() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let inline_property_bytes = 7u16.to_le_bytes();
@@ -808,7 +802,7 @@ fn var_len_hop_aux_binding_returns_inline_property_bytes_list() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let hop1 = 3u16.to_le_bytes();
@@ -1368,7 +1362,7 @@ fn expand_indexed_edge_equality_filters_candidates() {
 }
 
 #[test]
-fn indexed_edge_equality_expand_return_gleaph_weight() {
+fn indexed_edge_equality_expand_return_inline_property() {
     let store = GraphStore::new();
     let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
@@ -1386,7 +1380,7 @@ fn indexed_edge_equality_expand_return_gleaph_weight() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let weight_prop = crate::test_labels::property_id_for_name("weight");
@@ -1413,11 +1407,7 @@ fn indexed_edge_equality_expand_return_gleaph_weight() {
         .set_edge_property(miss_edge, weight_prop, Value::Int64(9))
         .expect("miss edge property");
 
-    let gleaph_weight = Expr::new(ExprKind::FunctionCall {
-        name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
-        args: vec![var("e")],
-        distinct: false,
-    });
+    let inline_property = prop("e", "distance");
     let plan = plan(vec![
         PlanOp::NodeScan {
             variable: "a".into(),
@@ -1445,7 +1435,7 @@ fn indexed_edge_equality_expand_return_gleaph_weight() {
             emit_path_binding: false,
         },
         PlanOp::Project {
-            columns: vec![project(gleaph_weight, "w")],
+            columns: vec![project(inline_property, "w")],
             distinct: false,
         },
     ]);
@@ -1454,7 +1444,7 @@ fn indexed_edge_equality_expand_return_gleaph_weight() {
         .expect("indexed expand with gleaph weight return");
 
     assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(5.0)));
+    assert_eq!(result.rows[0].get("w"), Some(&Value::Uint16(5)));
 }
 
 #[test]
@@ -1577,9 +1567,8 @@ fn return_star_projects_vertex_and_edge_records() {
 }
 
 #[test]
-fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
+fn return_abs_inline_property_does_not_break_decoder_prep() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
     let a = store
         .insert_vertex_named(["AbsWgtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1589,24 +1578,25 @@ fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
     let label_id = crate::test_labels::edge_label_id_for_name("AbsWgtRoad");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
     store
         .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
         .expect("edge");
-    let gql = "MATCH (a:AbsWgtA)-[e:AbsWgtRoad]->(b:AbsWgtB) RETURN ABS(GLEAPH.WEIGHT(e)) AS w";
+    let gql = "MATCH (a:AbsWgtA)-[e:AbsWgtRoad]->(b:AbsWgtB) RETURN ABS(e.distance) AS w";
     let plan = plan_gql(gql);
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("abs gleaph weight return");
     assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(3.0)));
+    assert_eq!(result.rows[0].get("w"), Some(&Value::Uint16(3)));
 }
 
 #[test]
-fn gleaph_weight_accepts_edge_inline_property_profile_without_legacy_weight_profile() {
+fn inline_property_accepts_edge_inline_property_profile_without_legacy_weight_profile() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -1620,23 +1610,23 @@ fn gleaph_weight_accepts_edge_inline_property_profile_without_legacy_weight_prof
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     store
         .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), &[9, 0])
         .expect("edge");
 
-    let gql = "MATCH (a:PayloadProfileWgtA)-[e:PayloadProfileWgtRoad]->(b:PayloadProfileWgtB) RETURN GLEAPH.WEIGHT(e) AS w";
+    let gql = "MATCH (a:PayloadProfileWgtA)-[e:PayloadProfileWgtRoad]->(b:PayloadProfileWgtB) RETURN e.distance AS w";
     let plan = plan_gql(gql);
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("value-profile-only gleaph weight");
-    assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(9.0)));
+    assert_eq!(result.rows[0].get("w"), Some(&Value::Uint16(9)));
 }
 
 #[test]
-fn gql_union_label_expr_return_gleaph_weight_decodes_per_edge_label() {
+fn gql_union_label_expr_return_inline_property_decodes_per_edge_label() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -1655,7 +1645,7 @@ fn gql_union_label_expr_return_gleaph_weight_decodes_per_edge_label() {
             label_id,
             EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
     }
@@ -1668,19 +1658,19 @@ fn gql_union_label_expr_return_gleaph_weight_decodes_per_edge_label() {
 
     let plan = plan_gql(
         "MATCH (a:ExpandUnionWgtA)-[e:ExpandUnionWgtKnows|ExpandUnionWgtLikes]->(b:ExpandUnionWgtB) \
-         RETURN GLEAPH.WEIGHT(e) AS w ORDER BY w",
+         RETURN e.distance AS w ORDER BY w",
     );
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("union label_expr gleaph weight return");
 
     assert_eq!(result.rows.len(), 2);
-    assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(5.0)));
-    assert_eq!(result.rows[1].get("w"), Some(&Value::Float32(9.0)));
+    assert_eq!(result.rows[0].get("w"), Some(&Value::Uint16(5)));
+    assert_eq!(result.rows[1].get("w"), Some(&Value::Uint16(9)));
 }
 
 #[test]
-fn gql_union_label_expr_where_gleaph_weight_equality_fuses_and_filters() {
+fn gql_union_label_expr_where_inline_property_equality_fuses_and_filters() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -1699,7 +1689,7 @@ fn gql_union_label_expr_where_gleaph_weight_equality_fuses_and_filters() {
             label_id,
             EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
     }
@@ -1722,7 +1712,7 @@ fn gql_union_label_expr_where_gleaph_weight_equality_fuses_and_filters() {
 
     let plan = plan_gql(
         "MATCH (a:ExpandUnionWgtEqA)-[e:ExpandUnionWgtEqKnows|ExpandUnionWgtEqLikes]->(b:ExpandUnionWgtEqB) \
-         WHERE GLEAPH.WEIGHT(e) = 7 RETURN b",
+         WHERE e.distance = 7 RETURN b",
     );
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -1732,7 +1722,7 @@ fn gql_union_label_expr_where_gleaph_weight_equality_fuses_and_filters() {
 }
 
 #[test]
-fn gql_var_len_scalar_gleaph_weight_is_rejected() {
+fn gql_var_len_return_inline_property_list_on_group_edge() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -1749,7 +1739,7 @@ fn gql_var_len_scalar_gleaph_weight_is_rejected() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     store
@@ -1760,21 +1750,19 @@ fn gql_var_len_scalar_gleaph_weight_is_rejected() {
         .unwrap();
 
     let plan = plan_gql(
-        "MATCH (a:VarLenWgtA)-[e:VarLenWgtRoad]->{2,2}(c:VarLenWgtC) RETURN GLEAPH.WEIGHT(e) AS w",
+        "MATCH (a:VarLenWgtA)-[e:VarLenWgtRoad]->{2,2}(c:VarLenWgtC) RETURN e.distance AS w",
     );
-    let err = store
+    let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-        .expect_err("scalar gleaph weight on group edge var");
-    assert!(
-        err.to_string().contains("edge variable is a group")
-            || err.to_string().contains("binding is not an edge"),
-        "unexpected error: {err}"
-    );
+        .expect("group edge inline property return");
+    assert_eq!(result.rows.len(), 1);
+    let expected = Value::List(vec![Value::Uint16(3), Value::Uint16(7)]);
+    assert_eq!(result.rows[0].get("w"), Some(&expected));
 }
 
 #[cfg(feature = "cypher")]
 #[test]
-fn gql_var_len_return_gleaph_weight_decodes_indexed_last_hop_edge() {
+fn gql_var_len_return_inline_property_decodes_indexed_last_hop_edge() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -1791,7 +1779,7 @@ fn gql_var_len_return_gleaph_weight_decodes_indexed_last_hop_edge() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     store
@@ -1802,103 +1790,14 @@ fn gql_var_len_return_gleaph_weight_decodes_indexed_last_hop_edge() {
         .unwrap();
 
     let plan = plan_gql(
-        "MATCH (a:VarLenWgtA)-[e:VarLenWgtRoad]->{2,2}(c:VarLenWgtC) RETURN GLEAPH.WEIGHT(e[-1]) AS w",
+        "MATCH (a:VarLenWgtA)-[e:VarLenWgtRoad]->{2,2}(c:VarLenWgtC) RETURN e[-1].distance AS w",
     );
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("var_len gleaph weight return");
 
     assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(7.0)));
-}
-
-#[test]
-fn gql_var_len_return_sum_gleaph_weight_over_edge_group_via_let() {
-    let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
-    let a = store
-        .insert_vertex_named(["VarLenSumA"], Vec::<(&str, Value)>::new())
-        .expect("a");
-    let b = store
-        .insert_vertex_named(["VarLenSumMid"], Vec::<(&str, Value)>::new())
-        .expect("b");
-    let c = store
-        .insert_vertex_named(["VarLenSumC"], Vec::<(&str, Value)>::new())
-        .expect("c");
-    let label_id = crate::test_labels::edge_label_id_for_name("VarLenSumRoad");
-    crate::test_labels::install_test_edge_inline_property_profile(
-        label_id,
-        EdgeInlinePropertyProfile {
-            byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
-        },
-    );
-    store
-        .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
-        .unwrap();
-    store
-        .insert_directed_edge_with_inline_property_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
-        .unwrap();
-
-    let plan = plan_gql(
-        "MATCH (a:VarLenSumA)-[e:VarLenSumRoad]->{2,2}(c:VarLenSumC) \
-         LET total = SUM(GLEAPH.WEIGHT(e)) RETURN total, CARDINALITY(e) AS hops",
-    );
-    let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-        .expect("var_len sum gleaph weight");
-
-    assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0].get("total"), Some(&Value::Float32(10.0)));
-    assert_eq!(result.rows[0].get("hops"), Some(&Value::Int64(2)));
-}
-
-#[test]
-fn gql_var_len_return_sum_gleaph_weight_implicit_aggregate() {
-    let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
-    let a = store
-        .insert_vertex_named(["VarLenSumRetA"], Vec::<(&str, Value)>::new())
-        .expect("a");
-    let b = store
-        .insert_vertex_named(["VarLenSumRetMid"], Vec::<(&str, Value)>::new())
-        .expect("b");
-    let c = store
-        .insert_vertex_named(["VarLenSumRetC"], Vec::<(&str, Value)>::new())
-        .expect("c");
-    let label_id = crate::test_labels::edge_label_id_for_name("VarLenSumRetRoad");
-    crate::test_labels::install_test_edge_inline_property_profile(
-        label_id,
-        EdgeInlinePropertyProfile {
-            byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
-        },
-    );
-    store
-        .insert_directed_edge_with_inline_property_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
-        .unwrap();
-    store
-        .insert_directed_edge_with_inline_property_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
-        .unwrap();
-
-    let plan = plan_gql(
-        "MATCH (a:VarLenSumRetA)-[e:VarLenSumRetRoad]->{2,2}(c:VarLenSumRetC) \
-         RETURN SUM(GLEAPH.WEIGHT(e)) AS total, CARDINALITY(e) AS hops",
-    );
-    assert!(
-        plan.ops
-            .iter()
-            .any(|op| matches!(op, PlanOp::Aggregate { .. })),
-        "planner should emit implicit aggregate for RETURN SUM(...): {:?}",
-        plan.ops
-    );
-    let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-        .expect("var_len RETURN SUM gleaph weight");
-
-    assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0].get("total"), Some(&Value::Float32(10.0)));
-    assert_eq!(result.rows[0].get("hops"), Some(&Value::Int64(2)));
+    assert_eq!(result.rows[0].get("w"), Some(&Value::Uint16(7)));
 }
 
 #[test]
@@ -2025,7 +1924,7 @@ fn gql_var_len_path_var_binds_traversed_path() {
 
 #[cfg(feature = "cypher")]
 #[test]
-fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
+fn gql_var_len_where_inline_property_filters_on_last_hop_edge() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -2042,7 +1941,7 @@ fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     store
@@ -2057,14 +1956,14 @@ fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
 
     let plan = plan_gql(
         "MATCH (a:VarLenWgtEqA)-[e:VarLenWgtEqRoad]->{1,2}(c:VarLenWgtEqC) \
-         WHERE GLEAPH.WEIGHT(e) = 5 RETURN GLEAPH.WEIGHT(e[-1]) AS w",
+         WHERE e.distance = 5 RETURN e[-1].distance AS w",
     );
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("var_len gleaph weight where");
 
     assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(5.0)));
+    assert_eq!(result.rows[0].get("w"), Some(&Value::Uint16(5)));
 }
 
 #[test]
@@ -2085,7 +1984,7 @@ fn var_len_edge_inline_property_predicate_fuses_at_each_hop() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     store
@@ -2144,7 +2043,7 @@ fn var_len_edge_inline_property_predicate_fuses_at_each_hop() {
 }
 
 #[test]
-fn gql_var_len_where_gleaph_weight_fuses_inline_property_predicate_per_hop() {
+fn gql_where_inline_property_equality_filters_without_fusion_when_no_schema() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -2161,7 +2060,7 @@ fn gql_var_len_where_gleaph_weight_fuses_inline_property_predicate_per_hop() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     store
@@ -2172,38 +2071,36 @@ fn gql_var_len_where_gleaph_weight_fuses_inline_property_predicate_per_hop() {
         .unwrap();
 
     let plan = plan_gql(
-        "MATCH (a:VarLenFusGqlA)-[e:VarLenFusGqlRoad]->{2,2}(c:VarLenFusGqlC) \
-         WHERE GLEAPH.WEIGHT(e) = 5 RETURN c",
+        "MATCH (a:VarLenFusGqlA)-[e:VarLenFusGqlRoad]->(c:VarLenFusGqlMid) \
+         WHERE e.distance = 5 RETURN c",
     );
     let has_inline_property_fusion = plan.ops.iter().any(|op| {
         matches!(
             op,
             PlanOp::Expand {
                 edge_inline_property_predicate: Some(_),
-                var_len: Some(_),
                 ..
             } | PlanOp::ExpandFilter {
                 edge_inline_property_predicate: Some(_),
-                var_len: Some(_),
                 ..
             }
         )
     });
     assert!(
-        has_inline_property_fusion,
-        "planner should fuse GLEAPH.WEIGHT into var_len expand: {:?}",
+        !has_inline_property_fusion,
+        "planner without schema should not fuse e.distance into expand: {:?}",
         plan.ops
     );
 
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-        .expect("var_len gql inline property fusion");
+        .expect("execute query");
 
     assert_eq!(result.rows.len(), 1);
 }
 
 #[test]
-fn gql_gleaph_weight_equality_uses_edge_inline_property_predicate_expand() {
+fn gql_inline_property_equality_uses_edge_inline_property_predicate_expand() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -2220,7 +2117,7 @@ fn gql_gleaph_weight_equality_uses_edge_inline_property_predicate_expand() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     store
@@ -2232,7 +2129,7 @@ fn gql_gleaph_weight_equality_uses_edge_inline_property_predicate_expand() {
 
     let plan = plan_gql(
         "MATCH (a:GqlBatchEqualA)-[e:GqlBatchEqualRoad]->(b) \
-             WHERE GLEAPH.WEIGHT(e) = 7 RETURN b",
+             WHERE e.distance = 7 RETURN b",
     );
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -2242,7 +2139,7 @@ fn gql_gleaph_weight_equality_uses_edge_inline_property_predicate_expand() {
 }
 
 #[test]
-fn gql_gleaph_weight_gt_uses_edge_inline_property_predicate_expand() {
+fn gql_inline_property_gt_uses_edge_inline_property_predicate_expand() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -2259,7 +2156,7 @@ fn gql_gleaph_weight_gt_uses_edge_inline_property_predicate_expand() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     store
@@ -2271,7 +2168,7 @@ fn gql_gleaph_weight_gt_uses_edge_inline_property_predicate_expand() {
 
     let plan = plan_gql(
         "MATCH (a:GqlBatchGtA)-[e:GqlBatchGtRoad]->(b) \
-             WHERE GLEAPH.WEIGHT(e) > 7 RETURN b",
+             WHERE e.distance > 7 RETURN b",
     );
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -2794,7 +2691,7 @@ fn overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let storage_label =
@@ -2886,7 +2783,7 @@ fn incoming_overflow_hub_edge_inline_property_predicate_reuses_reverse_replay() 
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let storage_label =
@@ -3139,7 +3036,7 @@ fn ascending_forward_fixed_label_without_edge_inline_propertys_keeps_scalar_scan
 }
 
 #[test]
-fn gleaph_weight_rejects_edge_inline_property_width_mismatch() {
+fn inline_property_rejects_edge_inline_property_width_mismatch() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let a = store
@@ -3153,7 +3050,7 @@ fn gleaph_weight_rejects_edge_inline_property_width_mismatch() {
         label_id,
         EdgeInlinePropertyProfile {
             byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+            encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
     let err = store

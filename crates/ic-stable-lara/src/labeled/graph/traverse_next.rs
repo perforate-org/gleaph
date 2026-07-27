@@ -134,7 +134,7 @@ impl InlinePropertyBytes {
 
 /// A live edge row together with its exact inline-property bytes.
 /// Target inline property bytes per batch; matches the legacy traverse batch sizing.
-const EDGE_PAYLOAD_BATCH_TARGET_BYTES: usize = 2048;
+const EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES: usize = 2048;
 
 #[inline]
 fn slab_slot_deleted(slot: u32, deleted_slab_offsets: &[u32]) -> bool {
@@ -945,7 +945,7 @@ where
             self.labeled_bucket_span_iter(owner, order, &vertex, &[bucket], 0, bucket_index, true)?;
 
         let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         loop {
             scratch.clear();
             scratch.slot_indices.reserve(batch_edges);
@@ -1110,7 +1110,7 @@ where
             return Ok(ControlFlow::Continue(()));
         }
         let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         let label_id = bucket.bucket_label_key();
 
         // Fast path: when the caller has already verified the edge slab is live and
@@ -1239,7 +1239,7 @@ where
             return Ok(ControlFlow::Continue(()));
         }
         let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         let label_id = bucket.bucket_label_key();
         let mut remaining = end_ordinal - start_ordinal;
         while remaining > 0 {
@@ -1315,7 +1315,7 @@ where
         let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
         let label_id = bucket.bucket_label_key();
         let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         let reserved_log_slots = u32::try_from(replay_entries.len())
             .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
         let mut next_log_slot = slab_slots
@@ -1388,7 +1388,7 @@ where
         let slab_slots = self.bucket_slab_prefix_slots(owner, bucket);
         let label_id = bucket.bucket_label_key();
         let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         let mut next_inserted_log_slot = slab_slots;
         let mut next_inline_property_bytes_ordinal = slab_slots
             .saturating_sub(u32::try_from(deleted_slab_offsets.len()).unwrap_or(u32::MAX));
@@ -1532,7 +1532,7 @@ where
             true,
         )?;
         let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         loop {
             scratch.clear();
             scratch.slot_indices.reserve(batch_edges);
@@ -1577,7 +1577,7 @@ where
     {
         let degree = bucket.degree();
         let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         let inline_property_bytes =
             self.read_bucket_inline_property_bytes_span(owner, bucket, 0, degree)?;
         let mut remaining = degree;
@@ -1671,7 +1671,7 @@ where
             self.labeled_bucket_span_iter(owner, order, &vertex, &[bucket], 0, bucket_index, true)?;
 
         let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         loop {
             scratch.clear();
             scratch.edges.reserve(batch_edges);
@@ -1716,7 +1716,7 @@ where
     {
         let degree = bucket.degree();
         let width = usize::from(bucket.inline_property_byte_width());
-        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width.max(1)).max(1);
+        let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         let edge_bytes_len =
             (degree as usize)
                 .checked_mul(E::BYTES)

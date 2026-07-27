@@ -465,9 +465,7 @@ mod tests {
 
     #[test]
     fn rebuild_preserves_edge_inline_property() {
-        use gleaph_graph_kernel::entry::{
-            EdgeInlinePropertyProfile, EdgeWeightProfile, WeightEncoding,
-        };
+        use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
 
         let store = GraphStore::new();
         let source = store.insert_vertex().expect("source");
@@ -475,9 +473,10 @@ mod tests {
         let label_id = crate::test_labels::edge_label_id_for_name("RevRepairPayload");
         crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            }),
+            EdgeInlinePropertyProfile {
+                byte_width: 2,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
+            },
         );
         let label = lara_label(edge_storage_label(Some(label_id), false));
         let inline_property_bytes = 0xBEEFu16.to_le_bytes();

@@ -53,11 +53,32 @@ pub(crate) fn resolved_edge_label_with(
     if let Some(entry) = labels.and_then(|table| table.resolved_edge_label(label).cloned()) {
         return Some(entry);
     }
-    ACTIVE_RESOLVED_LABELS.with(|cell| {
+    if let Some(entry) = ACTIVE_RESOLVED_LABELS.with(|cell| {
         cell.borrow()
             .as_ref()
             .and_then(|table| table.resolved_edge_label(label).cloned())
-    })
+    }) {
+        return Some(entry);
+    }
+    #[cfg(any(test, feature = "canbench"))]
+    {
+        let profile = crate::test_labels::edge_inline_property_profile_for_id(label)?;
+        if profile.required_byte_width() == 0 {
+            return None;
+        }
+        let name = crate::test_labels::edge_label_name_for_id(label).unwrap_or_default();
+        let property_id = crate::test_labels::edge_inline_property_for_id(label);
+        Some(ResolvedEdgeLabel::with_inline_property(
+            name,
+            label,
+            profile,
+            property_id,
+        ))
+    }
+    #[cfg(not(any(test, feature = "canbench")))]
+    {
+        None
+    }
 }
 
 pub(crate) fn edge_label_ids_for_predicate_fusion(

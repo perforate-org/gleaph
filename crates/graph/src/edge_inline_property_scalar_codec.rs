@@ -76,7 +76,6 @@ impl From<EdgeInlinePropertyProfileError> for EdgeInlinePropertyBytesScalarCodec
                 expected: 0,
                 actual: 0,
             },
-            _ => Self::UnsupportedEncoding,
         }
     }
 }
@@ -552,7 +551,7 @@ mod tests {
 
     #[test]
     fn unsupported_encoding_rejected_for_scalar_codec() {
-        let p = profile(EdgeInlinePropertyEncoding::WeightRawU16, 2);
+        let p = profile(EdgeInlinePropertyEncoding::VectorF32 { dims: 2 }, 8);
         assert_eq!(
             encode_edge_inline_property_scalar(&p, &Value::Uint16(7)),
             Err(EdgeInlinePropertyBytesScalarCodecError::UnsupportedEncoding)

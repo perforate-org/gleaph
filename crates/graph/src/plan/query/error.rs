@@ -69,10 +69,6 @@ pub enum PlanQueryError {
         right: gleaph_gql::Value,
     },
     RuntimeFunction(RuntimeFunctionError),
-    /// `GLEAPH.WEIGHT` preparation or evaluation failed (message is user-facing).
-    GleaphWeight {
-        message: String,
-    },
     /// `GLEAPH.COST` shortest-path edge cost evaluation failed (message is user-facing).
     GleaphCost {
         message: String,
@@ -152,7 +148,6 @@ impl fmt::Display for PlanQueryError {
                 write!(f, "incomparable ORDER BY values: {left:?} and {right:?}")
             }
             Self::RuntimeFunction(err) => write!(f, "{err}"),
-            Self::GleaphWeight { message } => write!(f, "{message}"),
             Self::GleaphCost { message } => write!(f, "{message}"),
             Self::GleaphSequence { message } => write!(f, "{message}"),
         }

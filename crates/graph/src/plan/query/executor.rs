@@ -36,7 +36,6 @@ use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::OutputSchema;
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
-use gleaph_graph_kernel::entry::PreparedWeightDecoder;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
 use gleaph_graph_kernel::gql_dialect::GLEAPH_SEQUENCE;
 use ic_stable_lara::VertexId;
@@ -172,18 +171,7 @@ async fn execute_plan_query_bindings_with_initial_rows_inner(
     } else {
         plan.ops.as_slice()
     };
-    let gleaph_weight_decoders = {
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = bench_scope("plan_query_prepare_gleaph_weight");
-        super::gleaph_weight::prepare_gleaph_weight_decoders(&execution, ops)?
-    };
-    let ctx = ExecuteCtx::new(
-        store,
-        parameters,
-        index,
-        execution,
-        gleaph_weight_decoders.as_ref(),
-    );
+    let ctx = ExecuteCtx::new(store, parameters, index, execution);
     super::arena::QueryArena::with(|arena| arena.reset());
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     let _scope = bench_scope("plan_query_execute_ops");
@@ -346,7 +334,6 @@ pub(crate) fn vertex_row_matches_dst_filters(
     dst_id: VertexId,
     dst_filter: &[Expr],
     caller: Option<Principal>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     execution: &GqlExecutionContext,
 ) -> Result<bool, PlanQueryError> {
     let mut stub = PlanRow::new();
@@ -358,7 +345,6 @@ pub(crate) fn vertex_row_matches_dst_filters(
         caller,
         resolved_labels: execution.resolved_labels.as_ref(),
         resolved_properties: execution.resolved_properties.as_ref(),
-        gleaph_weight_decoders,
         element_id_key: *element_id_key,
     };
     row_matches_all(&evaluator, &stub, dst_filter)
@@ -562,11 +548,19 @@ pub(crate) fn gleaph_sequence_sort(
     if !is_gleaph_sequence_call(name, *distinct) || args.len() != 1 {
         return None;
     }
-    super::gleaph_weight::gleaph_weight_arg_edge_var(&args[0]).map(|edge_var| (edge_var, order))
+    sequence_arg_edge_var(&args[0]).map(|edge_var| (edge_var, order))
 }
 
 fn is_gleaph_sequence_call(name: &ObjectName, distinct: bool) -> bool {
     !distinct && GLEAPH_SEQUENCE.matches_ascii_case_insensitive(&name.parts)
+}
+
+fn sequence_arg_edge_var(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Paren(inner) => sequence_arg_edge_var(inner),
+        ExprKind::Variable(v) => Some(v.clone()),
+        _ => None,
+    }
 }
 
 fn vertex_binding(row: &PlanRow, variable: &str) -> Result<VertexId, PlanQueryError> {

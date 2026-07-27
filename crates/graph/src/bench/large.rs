@@ -235,9 +235,14 @@ fn setup_large_road_grid_graph(store: &GraphStore) {
     let label_id = crate::test_labels::edge_label_id_for_name("BenchLargeRoad");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
+    );
+    crate::test_labels::install_test_edge_inline_property(
+        label_id,
+        crate::test_labels::property_id_for_name("distance"),
     );
     let road = catalog_edge_label("BenchLargeRoad");
 
@@ -292,7 +297,10 @@ fn large_road_grid_weighted_shortest_plan() -> PhysicalPlan {
         "BenchLargeRoadSource",
         "BenchLargeRoadTarget",
         "BenchLargeRoad",
-        gleaph_weight_call("e"),
+        Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(Expr::var("e")),
+            property: "distance".into(),
+        }),
         ROAD_GRID_MAX_HOPS,
     )
 }

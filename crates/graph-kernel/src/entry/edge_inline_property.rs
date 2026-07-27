@@ -7,10 +7,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Cow;
 use thiserror::Error;
 
-use super::weight::{
-    EdgeWeightProfile, WeightDecodeError, WeightEncoding, WeightProfilePrepareError,
-};
-
 /// Maximum edge-inline-property-bytes byte width supported by labeled storage profiles.
 pub const MAX_EDGE_INLINE_PROPERTY_BYTES: usize = u16::MAX as usize;
 
@@ -84,16 +80,6 @@ pub enum EdgeInlinePropertyEncoding {
     VectorF32 {
         dims: u16,
     },
-    WeightRawU16,
-    WeightLinearU16 {
-        min: f32,
-        max: f32,
-    },
-    WeightLogU16 {
-        min: f32,
-        max: f32,
-    },
-    WeightBinary16,
     /// Opaque fixed-width inline property bytes; [`EdgeInlinePropertyProfile::byte_width`] may be any positive width.
     RawBytes,
 }
@@ -123,7 +109,6 @@ pub enum DecodedEdgeInlinePropertyBytes {
     F32(f32),
     F64(f64),
     VectorF32(Vec<f32>),
-    Weight(f32),
     Bytes(Vec<u8>),
 }
 
@@ -145,10 +130,6 @@ pub enum PreparedEdgeInlinePropertyBytesDecoder {
     RawFixed32,
     RawFixed64,
     VectorF32 { dims: u16 },
-    WeightRawU16,
-    WeightLinear { min: f32, scale: f32 },
-    WeightLog { min_ln: f32, scale: f32 },
-    WeightBinary16,
     RawBytes { byte_width: u16 },
 }
 
@@ -156,53 +137,9 @@ pub enum PreparedEdgeInlinePropertyBytesDecoder {
 pub enum EdgeInlinePropertyProfileError {
     #[error("encoding does not match physical width")]
     WidthEncodingMismatch,
-    #[error("{0}")]
-    WeightPrepare(#[from] WeightProfilePrepareError),
-    #[error("{0}")]
-    Decode(#[from] WeightDecodeError),
-}
-
-impl From<EdgeWeightProfile> for EdgeInlinePropertyProfile {
-    fn from(profile: EdgeWeightProfile) -> Self {
-        let encoding = match profile.encoding {
-            WeightEncoding::RawU16 => EdgeInlinePropertyEncoding::WeightRawU16,
-            WeightEncoding::Linear { min, max } => {
-                EdgeInlinePropertyEncoding::WeightLinearU16 { min, max }
-            }
-            WeightEncoding::Log { min, max } => {
-                EdgeInlinePropertyEncoding::WeightLogU16 { min, max }
-            }
-            WeightEncoding::Binary16 => EdgeInlinePropertyEncoding::WeightBinary16,
-        };
-        Self {
-            byte_width: 2,
-            encoding,
-        }
-    }
 }
 
 impl EdgeInlinePropertyProfile {
-    /// Returns a legacy [`EdgeWeightProfile`] when this inline property bytes profile uses a weight encoding.
-    pub fn to_weight_profile(&self) -> Option<EdgeWeightProfile> {
-        if self.byte_width != 2 {
-            return None;
-        }
-        let encoding = match self.encoding {
-            EdgeInlinePropertyEncoding::WeightRawU16 => WeightEncoding::RawU16,
-            EdgeInlinePropertyEncoding::WeightLinearU16 { min, max } => {
-                WeightEncoding::Linear { min, max }
-            }
-            EdgeInlinePropertyEncoding::WeightLogU16 { min, max } => {
-                WeightEncoding::Log { min, max }
-            }
-            EdgeInlinePropertyEncoding::WeightBinary16 => WeightEncoding::Binary16,
-            _ => return None,
-        };
-        let profile = EdgeWeightProfile { encoding };
-        profile.validate().ok()?;
-        Some(profile)
-    }
-
     pub const fn no_inline_property() -> Self {
         Self {
             byte_width: 0,
@@ -234,11 +171,7 @@ impl EdgeInlinePropertyProfile {
             EdgeInlinePropertyEncoding::RawU8 | EdgeInlinePropertyEncoding::RawI8 => w == 1,
             EdgeInlinePropertyEncoding::RawU16
             | EdgeInlinePropertyEncoding::RawI16
-            | EdgeInlinePropertyEncoding::F16
-            | EdgeInlinePropertyEncoding::WeightRawU16
-            | EdgeInlinePropertyEncoding::WeightLinearU16 { .. }
-            | EdgeInlinePropertyEncoding::WeightLogU16 { .. }
-            | EdgeInlinePropertyEncoding::WeightBinary16 => w == 2,
+            | EdgeInlinePropertyEncoding::F16 => w == 2,
             EdgeInlinePropertyEncoding::RawU32
             | EdgeInlinePropertyEncoding::RawI32
             | EdgeInlinePropertyEncoding::F32 => w == 4,
@@ -254,34 +187,6 @@ impl EdgeInlinePropertyProfile {
         };
         if !ok {
             return Err(EdgeInlinePropertyProfileError::WidthEncodingMismatch);
-        }
-        if matches!(
-            self.encoding,
-            EdgeInlinePropertyEncoding::WeightLinearU16 { .. }
-                | EdgeInlinePropertyEncoding::WeightLogU16 { .. }
-        ) {
-            self.validate_weight_ranges()?;
-        }
-        Ok(())
-    }
-
-    fn validate_weight_ranges(&self) -> Result<(), EdgeInlinePropertyProfileError> {
-        match &self.encoding {
-            EdgeInlinePropertyEncoding::WeightLinearU16 { min, max } => {
-                if !min.is_finite() || !max.is_finite() || min > max {
-                    return Err(WeightProfilePrepareError::InvalidLinearRange.into());
-                }
-            }
-            EdgeInlinePropertyEncoding::WeightLogU16 { min, max }
-                if (!min.is_finite()
-                    || !max.is_finite()
-                    || *min <= 0.0
-                    || *max <= 0.0
-                    || min > max) =>
-            {
-                return Err(WeightProfilePrepareError::InvalidLogRange.into());
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -312,30 +217,6 @@ impl EdgeInlinePropertyProfile {
             }
             EdgeInlinePropertyEncoding::VectorF32 { dims } => {
                 PreparedEdgeInlinePropertyBytesDecoder::VectorF32 { dims: *dims }
-            }
-            EdgeInlinePropertyEncoding::WeightRawU16 => {
-                PreparedEdgeInlinePropertyBytesDecoder::WeightRawU16
-            }
-            EdgeInlinePropertyEncoding::WeightLinearU16 { min, max } => {
-                let scale = if max > min {
-                    (max - min) / u16::MAX as f32
-                } else {
-                    0.0
-                };
-                PreparedEdgeInlinePropertyBytesDecoder::WeightLinear { min: *min, scale }
-            }
-            EdgeInlinePropertyEncoding::WeightLogU16 { min, max } => {
-                let min_ln = min.ln();
-                let max_ln = max.ln();
-                let scale = if max_ln > min_ln {
-                    (max_ln - min_ln) / u16::MAX as f32
-                } else {
-                    0.0
-                };
-                PreparedEdgeInlinePropertyBytesDecoder::WeightLog { min_ln, scale }
-            }
-            EdgeInlinePropertyEncoding::WeightBinary16 => {
-                PreparedEdgeInlinePropertyBytesDecoder::WeightBinary16
             }
             EdgeInlinePropertyEncoding::RawBytes => {
                 PreparedEdgeInlinePropertyBytesDecoder::RawBytes {
@@ -411,28 +292,6 @@ pub fn decode_edge_inline_property(
             }
             DecodedEdgeInlinePropertyBytes::VectorF32(values)
         }
-        PreparedEdgeInlinePropertyBytesDecoder::WeightRawU16 => {
-            let v = u16::from_le_bytes(read_fixed::<2>(bytes)) as f32;
-            validate_weight_f32(v)?;
-            DecodedEdgeInlinePropertyBytes::Weight(v)
-        }
-        PreparedEdgeInlinePropertyBytesDecoder::WeightLinear { min, scale } => {
-            let raw = u16::from_le_bytes(read_fixed::<2>(bytes)) as f32;
-            let v = min + scale * raw;
-            validate_weight_f32(v)?;
-            DecodedEdgeInlinePropertyBytes::Weight(v)
-        }
-        PreparedEdgeInlinePropertyBytesDecoder::WeightLog { min_ln, scale } => {
-            let raw = u16::from_le_bytes(read_fixed::<2>(bytes)) as f32;
-            let v = (min_ln + scale * raw).exp();
-            validate_weight_f32(v)?;
-            DecodedEdgeInlinePropertyBytes::Weight(v)
-        }
-        PreparedEdgeInlinePropertyBytesDecoder::WeightBinary16 => {
-            let v = f16::from_le_bytes(read_fixed::<2>(bytes)).to_f32();
-            validate_weight_f32(v)?;
-            DecodedEdgeInlinePropertyBytes::Weight(v)
-        }
         PreparedEdgeInlinePropertyBytesDecoder::RawBytes { byte_width } => {
             let w = usize::from(*byte_width);
             if bytes.len() != w {
@@ -441,27 +300,6 @@ pub fn decode_edge_inline_property(
             DecodedEdgeInlinePropertyBytes::Bytes(bytes.to_vec())
         }
     })
-}
-
-fn validate_weight_f32(v: f32) -> Result<(), WeightDecodeError> {
-    if !v.is_finite() {
-        return Err(WeightDecodeError::NonFinite);
-    }
-    if v < 0.0 {
-        return Err(WeightDecodeError::Negative);
-    }
-    Ok(())
-}
-
-/// Decodes traversal weight from edge-inline-property-bytes bytes using a prepared decoder.
-pub fn decode_edge_weight(
-    decoder: &PreparedEdgeInlinePropertyBytesDecoder,
-    bytes: &[u8],
-) -> Result<f32, EdgeInlinePropertyProfileError> {
-    match decode_edge_inline_property(decoder, bytes)? {
-        DecodedEdgeInlinePropertyBytes::Weight(w) => Ok(w),
-        _ => Err(EdgeInlinePropertyProfileError::WidthEncodingMismatch),
-    }
 }
 
 impl Storable for EdgeInlinePropertyProfile {
@@ -502,17 +340,6 @@ mod tests {
             decode_edge_inline_property(&dec, &bytes).expect("decode"),
             DecodedEdgeInlinePropertyBytes::I32(-42)
         );
-    }
-
-    #[test]
-    fn weight_u16_profile_decodes() {
-        let profile = EdgeInlinePropertyProfile {
-            byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightRawU16,
-        };
-        let dec = profile.prepare().expect("prepare");
-        let w = decode_edge_weight(&dec, &3u16.to_le_bytes()).expect("weight");
-        assert_eq!(w, 3.0);
     }
 
     #[test]
@@ -557,20 +384,6 @@ mod tests {
     }
 
     #[test]
-    fn weight_log_u16_decodes() {
-        let profile = EdgeInlinePropertyProfile {
-            byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightLogU16 {
-                min: 1.0,
-                max: 10.0,
-            },
-        };
-        let dec = profile.prepare().expect("prepare");
-        let w = decode_edge_weight(&dec, &u16::MAX.to_le_bytes()).expect("weight");
-        assert!((w - 10.0).abs() < 0.01);
-    }
-
-    #[test]
     fn f32_profile_round_trips() {
         let profile = EdgeInlinePropertyProfile {
             byte_width: 4,
@@ -585,17 +398,6 @@ mod tests {
     }
 
     #[test]
-    fn decode_edge_weight_rejects_non_weight_encoding() {
-        let profile = EdgeInlinePropertyProfile {
-            byte_width: 4,
-            encoding: EdgeInlinePropertyEncoding::RawI32,
-        };
-        let dec = profile.prepare().expect("prepare");
-        let err = decode_edge_weight(&dec, &42i32.to_le_bytes()).unwrap_err();
-        assert_eq!(err, EdgeInlinePropertyProfileError::WidthEncodingMismatch);
-    }
-
-    #[test]
     fn vector_f32_rejects_width_dimension_mismatch() {
         let profile = EdgeInlinePropertyProfile {
             byte_width: 32,
@@ -605,22 +407,6 @@ mod tests {
             profile.validate(),
             Err(EdgeInlinePropertyProfileError::WidthEncodingMismatch)
         );
-    }
-
-    #[test]
-    fn weight_linear_u16_decodes_scaled() {
-        let profile = EdgeInlinePropertyProfile {
-            byte_width: 2,
-            encoding: EdgeInlinePropertyEncoding::WeightLinearU16 {
-                min: 10.0,
-                max: 20.0,
-            },
-        };
-        let dec = profile.prepare().expect("prepare");
-        let w = decode_edge_weight(&dec, &u16::MAX.to_le_bytes()).expect("weight");
-        assert!((w - 20.0).abs() < 1e-4);
-        let w0 = decode_edge_weight(&dec, &0u16.to_le_bytes()).expect("weight min");
-        assert!((w0 - 10.0).abs() < 1e-4);
     }
 
     #[test]
@@ -640,30 +426,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edge_weight_profile_converts_to_inline_property_profile() {
-        use super::super::weight::{EdgeWeightProfile, WeightEncoding};
-        let weight = EdgeWeightProfile {
-            encoding: WeightEncoding::Linear { min: 0.0, max: 1.0 },
-        };
-        let profile = EdgeInlinePropertyProfile::from(weight.clone());
-        assert_eq!(profile.byte_width, 2);
-        assert!(matches!(
-            profile.encoding,
-            EdgeInlinePropertyEncoding::WeightLinearU16 { .. }
-        ));
-        profile.validate().expect("converted profile valid");
-        assert_eq!(profile.to_weight_profile(), Some(weight));
-    }
-
-    #[test]
-    fn non_weight_inline_property_profile_has_no_weight_view() {
-        let profile = EdgeInlinePropertyProfile {
-            byte_width: 4,
-            encoding: EdgeInlinePropertyEncoding::RawI32,
-        };
-        assert_eq!(profile.to_weight_profile(), None);
-    }
     #[test]
     fn f16_profile_decodes_to_f16_value() {
         let profile = EdgeInlinePropertyProfile {

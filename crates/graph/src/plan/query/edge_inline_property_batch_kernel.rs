@@ -3,10 +3,7 @@
 use std::cmp::Ordering;
 
 use gleaph_gql::ast::CmpOp;
-use gleaph_graph_kernel::entry::{
-    EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, PreparedEdgeInlinePropertyBytesDecoder,
-    decode_edge_weight,
-};
+use gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding;
 use half::f16;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,17 +69,6 @@ impl PreparedLabeledEdgeInlinePropertyBatchKernel {
         {
             return;
         }
-        if self.is_weight_encoding() {
-            collect_cmp_weight(
-                inline_property_bytes,
-                op,
-                needle,
-                self.byte_width,
-                &self.encoding,
-                out,
-            );
-            return;
-        }
         if matches!(self.encoding, EdgeInlinePropertyEncoding::F16) && width == 2 {
             collect_cmp_f16(inline_property_bytes, op, needle, out);
             return;
@@ -128,7 +114,6 @@ impl PreparedLabeledEdgeInlinePropertyBatchKernel {
                 | EdgeInlinePropertyEncoding::RawU32
                 | EdgeInlinePropertyEncoding::RawU64
                 | EdgeInlinePropertyEncoding::RawU128
-                | EdgeInlinePropertyEncoding::WeightRawU16
         )
     }
 
@@ -140,16 +125,6 @@ impl PreparedLabeledEdgeInlinePropertyBatchKernel {
                 | EdgeInlinePropertyEncoding::RawI32
                 | EdgeInlinePropertyEncoding::RawI64
                 | EdgeInlinePropertyEncoding::RawI128
-        )
-    }
-
-    fn is_weight_encoding(&self) -> bool {
-        matches!(
-            self.encoding,
-            EdgeInlinePropertyEncoding::WeightRawU16
-                | EdgeInlinePropertyEncoding::WeightLinearU16 { .. }
-                | EdgeInlinePropertyEncoding::WeightLogU16 { .. }
-                | EdgeInlinePropertyEncoding::WeightBinary16
         )
     }
 }
@@ -305,47 +280,6 @@ fn collect_cmp_f16(inline_property_bytes: &[u8], op: CmpOp, needle: &[u8], out: 
             out.push(idx);
         }
     }
-}
-
-fn collect_cmp_weight(
-    inline_property_bytes: &[u8],
-    op: CmpOp,
-    needle: &[u8],
-    width: u16,
-    encoding: &EdgeInlinePropertyEncoding,
-    out: &mut Vec<usize>,
-) {
-    let Ok(decoder) = weight_decoder(width, encoding) else {
-        return;
-    };
-    let Ok(needle) = decode_edge_weight(&decoder, needle) else {
-        return;
-    };
-    for (idx, chunk) in inline_property_bytes
-        .chunks_exact(usize::from(width))
-        .enumerate()
-    {
-        let Ok(value) = decode_edge_weight(&decoder, chunk) else {
-            continue;
-        };
-        if cmp_f64(op, f64::from(value), f64::from(needle)) {
-            out.push(idx);
-        }
-    }
-}
-
-fn weight_decoder(
-    width: u16,
-    encoding: &EdgeInlinePropertyEncoding,
-) -> Result<
-    PreparedEdgeInlinePropertyBytesDecoder,
-    gleaph_graph_kernel::entry::EdgeInlinePropertyProfileError,
-> {
-    EdgeInlinePropertyProfile {
-        byte_width: width,
-        encoding: encoding.clone(),
-    }
-    .prepare()
 }
 
 fn collect_cmp_f32(inline_property_bytes: &[u8], op: CmpOp, needle: &[u8], out: &mut Vec<usize>) {
@@ -683,10 +617,10 @@ mod tests {
     }
 
     #[test]
-    fn weight_ordering_uses_decoded_weight_semantics() {
+    fn raw_u16_ordering_uses_unsigned_integer_semantics() {
         let kernel = PreparedLabeledEdgeInlinePropertyBatchKernel::new(
             2,
-            EdgeInlinePropertyEncoding::WeightLinearU16 { min: 0.0, max: 1.0 },
+            EdgeInlinePropertyEncoding::RawU16,
         );
         let mut buf = Vec::new();
         buf.extend_from_slice(&255u16.to_le_bytes());

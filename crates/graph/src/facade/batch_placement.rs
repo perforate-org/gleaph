@@ -71,9 +71,9 @@ pub struct BatchEdgeIntent {
     pub neighbor_vertex_id: VertexId,
     /// Storage label, including directedness bit.
     pub storage_label: LaraLabelId,
-    /// Physical byte width per inline value slot (`0` = no payload).
+    /// Physical byte width per inline property slot (`0` = no inline property bytes).
     pub inline_property_width: u16,
-    /// Inline payload bytes carried by this half-edge.
+    /// Inline property bytes carried by this half-edge.
     pub inline_property_bytes: Vec<u8>,
 }
 
@@ -92,7 +92,7 @@ pub enum BatchPlacementError {
     },
     /// Duplicate logical edge target in the same unordered chunk.
     DuplicateEdgeTarget,
-    /// The same logical edge target was supplied with conflicting inline values.
+    /// The same logical edge target was supplied with conflicting inline property bytes.
     ConflictingDuplicateEdgeTarget,
     /// A logical ordinal overflowed the bounded chunk capacity.
     OrdinalOverflow,
@@ -104,7 +104,7 @@ pub enum BatchPlacementError {
     BatchTooLarge,
     /// A stable-memory read or placement observation failed.
     PlacementReadFailed(String),
-    /// A leaf contains payloads with incompatible inline widths.
+    /// A leaf contains inline property bytes with incompatible widths.
     PayloadWidthMixed,
     /// Default/unlabeled edges are not supported by the read-only batch planner.
     ///
@@ -190,7 +190,7 @@ pub struct BatchPlacementKey {
     pub owner_vertex_id: VertexId,
     /// Storage label, including directedness bit.
     pub storage_label: LaraLabelId,
-    /// Physical byte width per inline value slot (`0` = no payload).
+    /// Physical byte width per inline property slot (`0` = no inline property bytes).
     pub inline_property_width: u16,
 }
 

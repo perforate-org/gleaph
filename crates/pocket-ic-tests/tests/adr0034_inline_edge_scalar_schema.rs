@@ -2,8 +2,8 @@
 //!
 //! Router-owned DDL records the canonical named inline slot; Graph consumes the derived physical
 //! profile on the existing inline property bytes execution path. This E2E uses `UINT16 INLINE` because
-//! `GLEAPH.WEIGHT(e)` only decodes legacy 2-byte weight encodings in Slice 20.
-//! Ordinary `e.distance` property access remains out of scope.
+//! Ordinary `e.distance` property access uses the Router-resolved inline slot; the legacy
+//! `GLEAPH.WEIGHT(e)` compatibility surface has been removed (ADR 0051 Phase B).
 //!
 //! All six former standalone contracts run as named, adversarially observable scenarios inside one
 //! fresh PocketIC fixture. Unauthorized and conflicting DDL attempts happen before any inline property bytes work,
@@ -35,7 +35,7 @@ fn road_inline_property_bytes(value: u16) -> Vec<u8> {
 fn road_profile() -> EdgeInlinePropertyProfile {
     EdgeInlinePropertyProfile {
         byte_width: 2,
-        encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+        encoding: EdgeInlinePropertyEncoding::RawU16,
     }
 }
 
@@ -105,11 +105,7 @@ fn scenario_derived_profile_feeds_inline_property_predicate(env: &FederationEnv)
         road_profile(),
     );
 
-    // Slice 20 does not lower `e.distance`; use the existing `GLEAPH.WEIGHT` compatibility surface.
-    let result = gql_query_as_admin(
-        env,
-        "MATCH (a)-[e:ROAD]->(b) WHERE GLEAPH.WEIGHT(e) = 3 RETURN b",
-    );
+    let result = gql_query_as_admin(env, "MATCH (a)-[e:ROAD]->(b) WHERE e.distance = 3 RETURN b");
     assert_eq!(
         result.row_count, 1,
         "predicate scenario: edge-inline-property-bytes predicate should see the 2-byte weight inline property bytes as 3"
@@ -141,7 +137,7 @@ fn scenario_width_mismatch_rejects_insert(env: &FederationEnv) {
         .expect("decode e2e_insert_directed_edge_with_inline_property result");
     assert!(
         result.is_err(),
-        "width scenario: 4-byte inline value must be rejected against a 2-byte UINT16/WeightRawU16 profile, got {result:?}"
+        "width scenario: 4-byte inline value must be rejected against a 2-byte UINT16/RawU16 profile, got {result:?}"
     );
 }
 

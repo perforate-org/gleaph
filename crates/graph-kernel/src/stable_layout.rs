@@ -128,7 +128,7 @@ pub enum StableMemoryClass {
     /// justify removal (ADR 0007 P1).
     ///
     /// **Gleaph:** No stable region currently uses this class (P1 `EDGE_WEIGHT_PROFILES` retired
-    /// 2026-06-12; edge profiles are `EDGE_PAYLOAD_PROFILES` only).
+    /// 2026-06-12; edge profiles are `EDGE_INLINE_PROPERTY_PROFILES` only).
     Compatibility,
 }
 

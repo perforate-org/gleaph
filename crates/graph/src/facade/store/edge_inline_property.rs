@@ -1,11 +1,11 @@
-//! Inline edge inline value update public API (delegates to edge-profile domain commits).
+//! Inline edge inline property bytes update public API (delegates to edge-profile domain commits).
 
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 
 impl GraphStore {
-    /// Updates the inline edge-inline-property-bytes payload at `handle`.
+    /// Updates the inline property bytes at `handle`.
     pub(crate) fn update_edge_inline_property_at_handle(
         &self,
         handle: EdgeHandle,

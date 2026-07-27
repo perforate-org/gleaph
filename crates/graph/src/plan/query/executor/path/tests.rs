@@ -1,7 +1,5 @@
 use super::{
-    ShortestExpandOptions, ShortestFixedLabelExpand, local_shard_id,
-    materialize::materialize_path_from_search_states,
-    weighted::{WeightedCost, WeightedCostOrderKey, decode_direct_gleaph_weight_hop_cost},
+    local_shard_id, materialize::materialize_path_from_search_states, weighted::WeightedCost,
     weighted_shortest_can_use_hop_count, weighted_shortest_paths_between,
 };
 use crate::plan::query::executor::test_support::*;
@@ -9,7 +7,6 @@ use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, PropertyId,
 };
 use gleaph_graph_kernel::plan_exec::{ResolvedProperty, ResolvedPropertyTable};
-use ic_stable_lara::traits::CsrEdge;
 use path_test_helpers::*;
 
 mod path_test_helpers {
@@ -196,24 +193,14 @@ mod path_test_helpers {
         crate::test_labels::edge_label_id_for_name(label_name)
     }
 
-    pub fn gleaph_weight_call(edge_var: &str) -> Expr {
-        Expr::new(ExprKind::FunctionCall {
-            name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
-            args: vec![Expr::var(edge_var)],
-            distinct: false,
-        })
-    }
-
-    pub fn scaled_gleaph_weight_cost(edge_var: &str, scale_param: &str) -> Expr {
-        Expr::new(ExprKind::BinaryOp {
-            left: Box::new(gleaph_weight_call(edge_var)),
-            op: BinaryOp::Mul,
-            right: Box::new(Expr::new(ExprKind::Parameter(scale_param.to_owned()))),
+    pub fn inline_property_cost_call(edge_var: &str) -> Expr {
+        Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(Expr::var(edge_var)),
+            property: "distance".into(),
         })
     }
 
     pub fn setup_weighted_road_graph(store: &GraphStore) -> (VertexId, VertexId, VertexId) {
-        use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
         let a = store
             .insert_vertex_named(["WgtA"], Vec::<(&str, Value)>::new())
             .expect("insert a");
@@ -226,9 +213,10 @@ mod path_test_helpers {
         let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
         crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            }),
+            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+                byte_width: 2,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
+            },
         );
         let road = catalog_edge_label("WgtRoad");
         store
@@ -293,7 +281,7 @@ mod path_test_helpers {
 
     pub fn weighted_2_24_precision_cost_expr() -> Expr {
         Expr::new(ExprKind::CaseSimple {
-            operand: Box::new(gleaph_weight_call("e")),
+            operand: Box::new(inline_property_cost_call("e")),
             when_clauses: vec![
                 WhenClause {
                     span: Span::DUMMY,
@@ -321,7 +309,7 @@ mod path_test_helpers {
 
     pub fn weighted_2_24_precision_cost_expr_float32() -> Expr {
         Expr::new(ExprKind::CaseSimple {
-            operand: Box::new(gleaph_weight_call("e")),
+            operand: Box::new(inline_property_cost_call("e")),
             when_clauses: vec![
                 WhenClause {
                     span: Span::DUMMY,
@@ -347,7 +335,7 @@ mod path_test_helpers {
     pub fn weighted_decimal_precision_cost_expr() -> Expr {
         use gleaph_gql::types::Decimal;
         Expr::new(ExprKind::CaseSimple {
-            operand: Box::new(gleaph_weight_call("e")),
+            operand: Box::new(inline_property_cost_call("e")),
             when_clauses: vec![
                 WhenClause {
                     span: Span::DUMMY,
@@ -372,7 +360,7 @@ mod path_test_helpers {
 
     pub fn weighted_wide_integer_precision_cost_expr() -> Expr {
         Expr::new(ExprKind::CaseSimple {
-            operand: Box::new(gleaph_weight_call("e")),
+            operand: Box::new(inline_property_cost_call("e")),
             when_clauses: vec![
                 WhenClause {
                     span: Span::DUMMY,
@@ -1031,61 +1019,6 @@ fn shortest_path_union_label_expr_filters_edges() {
 }
 
 #[test]
-fn weighted_shortest_path_cost_expr_uses_query_parameters() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let plan = plan(vec![
-        PlanOp::NodeScan {
-            variable: "a".into(),
-            label: Some("WgtA".into()),
-            property_projection: None,
-        },
-        PlanOp::NodeScan {
-            variable: "c".into(),
-            label: Some("WgtC".into()),
-            property_projection: None,
-        },
-        PlanOp::ShortestPath {
-            src: "a".into(),
-            dst: "c".into(),
-            edge: "e".into(),
-            path_var: Some("p".into()),
-            emit_edge_binding: true,
-            emit_path_binding: true,
-            mode: ShortestMode::AnyShortest,
-            direction: EdgeDirection::PointingRight,
-            label: Some("WgtRoad".into()),
-            label_expr: None,
-            var_len: Some(VarLenSpec {
-                min: 1,
-                max: Some(5),
-            }),
-            cost: ShortestPathCost::EdgeCostExpr {
-                edge_var: "e".into(),
-                expr: scaled_gleaph_weight_cost("e", "scale"),
-            },
-        },
-        PlanOp::Project {
-            columns: vec![project(var("p"), "p")],
-            distinct: false,
-        },
-    ]);
-
-    let mut parameters = params();
-    parameters.insert("scale".into(), Value::Float32(1.0));
-    let result = store
-        .execute_plan_query(&plan, &parameters, GqlExecutionContext::default())
-        .expect("parameterized weighted shortest path");
-    let elements = path_column(&result, "p");
-    assert_eq!(
-        elements.len(),
-        5,
-        "GLEAPH.WEIGHT(e) * $scale with scale=1 should match unscaled weighted shortest path"
-    );
-    assert_path_vertex_local(&store, &elements[4], c);
-}
-
-#[test]
 fn weighted_shortest_any_prefers_exact_float64_cost_at_2_24() {
     let store = GraphStore::new();
     let (_a, _b, c) = setup_weighted_road_graph(&store);
@@ -1261,237 +1194,6 @@ fn weighted_shortest_wide_integer_cost_accumulates() {
 }
 
 #[test]
-fn weighted_shortest_path_floor_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Floor(Box::new(gleaph_weight_call("e"))));
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("floor-wrapped weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_cast_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Cast {
-        expr: Box::new(gleaph_weight_call("e")),
-        target: gleaph_gql::ast::ValueType::Float32 {
-            keyword: gleaph_gql::ast::Keyword::new("FLOAT32"),
-        },
-    });
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("cast-wrapped weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_float128_cast_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Cast {
-        expr: Box::new(gleaph_weight_call("e")),
-        target: gleaph_gql::ast::ValueType::Float128,
-    });
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("float128-cast weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_float256_cast_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Cast {
-        expr: Box::new(gleaph_weight_call("e")),
-        target: gleaph_gql::ast::ValueType::Float256,
-    });
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("float256-cast weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_int_precision_cast_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Cast {
-        expr: Box::new(gleaph_weight_call("e")),
-        target: gleaph_gql::ast::ValueType::IntPrecision {
-            keyword: gleaph_gql::ast::Keyword::new("INT"),
-            precision: 10,
-        },
-    });
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("int-precision-cast weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_float_precision_cast_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Cast {
-        expr: Box::new(gleaph_weight_call("e")),
-        target: gleaph_gql::ast::ValueType::FloatPrecision {
-            precision: 24,
-            scale: None,
-        },
-    });
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("float-precision-cast weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_int8_cast_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Cast {
-        expr: Box::new(gleaph_weight_call("e")),
-        target: gleaph_gql::ast::ValueType::Int8 {
-            keyword: gleaph_gql::ast::Keyword::new("INT8"),
-        },
-    });
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("int8-cast-wrapped weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_decimal_cast_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Cast {
-        expr: Box::new(gleaph_weight_call("e")),
-        target: gleaph_gql::ast::ValueType::Decimal {
-            keyword: gleaph_gql::ast::Keyword::new("DECIMAL"),
-            precision: None,
-            scale: None,
-        },
-    });
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("decimal-cast-wrapped weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_decimal_precision_cast_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Cast {
-        expr: Box::new(gleaph_weight_call("e")),
-        target: gleaph_gql::ast::ValueType::Decimal {
-            keyword: gleaph_gql::ast::Keyword::new("DECIMAL"),
-            precision: Some(10),
-            scale: Some(2),
-        },
-    });
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("decimal-precision-cast weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_coalesce_wrapped_cost_runs() {
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::Coalesce(vec![
-        gleaph_weight_call("e"),
-        Expr::new(ExprKind::Literal(Value::Float32(1.0))),
-    ]));
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("coalesce-wrapped weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
-fn weighted_shortest_path_case_wrapped_cost_runs() {
-    use gleaph_gql::ast::WhenClause;
-    use gleaph_gql::token::Span;
-    let store = GraphStore::new();
-    let (_a, _b, c) = setup_weighted_road_graph(&store);
-    let cost = Expr::new(ExprKind::CaseSimple {
-        operand: Box::new(Expr::var("e")),
-        when_clauses: vec![WhenClause {
-            span: Span::DUMMY,
-            condition: Expr::new(ExprKind::Literal(Value::Null)),
-            result: gleaph_weight_call("e"),
-        }],
-        else_clause: Some(Box::new(gleaph_weight_call("e"))),
-    });
-    let result = store
-        .execute_plan_query(
-            &weighted_shortest_plan_with_cost(cost),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect("case-wrapped weighted shortest path");
-    assert_eq!(path_column(&result, "p").len(), 5);
-    assert_path_vertex_local(&store, &path_column(&result, "p")[4], c);
-}
-
-#[test]
 fn weighted_shortest_path_prefers_lower_total_cost_over_fewer_hops() {
     let store = GraphStore::new();
     let (_a, _b, c) = setup_weighted_road_graph(&store);
@@ -1523,7 +1225,7 @@ fn weighted_shortest_path_prefers_lower_total_cost_over_fewer_hops() {
             }),
             cost: ShortestPathCost::EdgeCostExpr {
                 edge_var: "e".into(),
-                expr: gleaph_weight_call("e"),
+                expr: inline_property_cost_call("e"),
             },
         },
         PlanOp::Project {
@@ -1547,7 +1249,7 @@ fn weighted_shortest_k_returns_paths_by_total_cost() {
     let one = store
         .execute_plan_query(
             &weighted_shortest_plan_with_cost_mode(
-                gleaph_weight_call("e"),
+                inline_property_cost_call("e"),
                 ShortestMode::ShortestK(1),
             ),
             &params(),
@@ -1560,7 +1262,7 @@ fn weighted_shortest_k_returns_paths_by_total_cost() {
     let two = store
         .execute_plan_query(
             &weighted_shortest_plan_with_cost_mode(
-                gleaph_weight_call("e"),
+                inline_property_cost_call("e"),
                 ShortestMode::ShortestK(2),
             ),
             &params(),
@@ -1585,7 +1287,6 @@ fn weighted_shortest_k_returns_paths_by_total_cost() {
 
 #[test]
 fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
-    use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
     let store = GraphStore::new();
     let a = store
         .insert_vertex_named(["WgtUnionSrc"], Vec::<(&str, Value)>::new())
@@ -1604,9 +1305,10 @@ fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
     for label_id in [knows, likes] {
         crate::test_labels::install_test_edge_inline_property_profile(
             label_id,
-            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            }),
+            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+                byte_width: 2,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
+            },
         );
     }
     let knows_wire = catalog_edge_label("WgtUnionKnows");
@@ -1659,7 +1361,7 @@ fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
             }),
             cost: ShortestPathCost::EdgeCostExpr {
                 edge_var: "e".into(),
-                expr: gleaph_weight_call("e"),
+                expr: inline_property_cost_call("e"),
             },
         },
         PlanOp::Project {
@@ -1686,7 +1388,6 @@ fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
 
 #[test]
 fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
-    use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
     let store = GraphStore::new();
     let a = store
         .insert_vertex_named(["WgtKSource"], Vec::<(&str, Value)>::new())
@@ -1706,9 +1407,10 @@ fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
     let label_id = crate::test_labels::edge_label_id_for_name("WgtKRoad");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
     let road = catalog_edge_label("WgtKRoad");
     let cheap = 1u16.to_le_bytes();
@@ -1760,7 +1462,7 @@ fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
             }),
             cost: ShortestPathCost::EdgeCostExpr {
                 edge_var: "e".into(),
-                expr: gleaph_weight_call("e"),
+                expr: inline_property_cost_call("e"),
             },
         },
         PlanOp::Project {
@@ -1787,7 +1489,6 @@ fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
 /// Graph where a cheaper arrival at `x` exhausts the hop bound while a higher-cost arrival
 /// can still reach `dst` (s->x cost 2 depth 1, s->a->x cost 1 depth 2, x->dst cost 1, max=2).
 fn setup_hop_bound_cheaper_vertex_unusable_graph(store: &GraphStore) -> (VertexId, VertexId) {
-    use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
     let s = store
         .insert_vertex_named(["WgtA"], Vec::<(&str, Value)>::new())
         .expect("insert s");
@@ -1803,9 +1504,10 @@ fn setup_hop_bound_cheaper_vertex_unusable_graph(store: &GraphStore) -> (VertexI
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
     let road = catalog_edge_label("WgtRoad");
     store
@@ -1855,7 +1557,7 @@ fn weighted_shortest_higher_cost_vertex_state_can_still_reach_dst_under_hop_boun
             }),
             cost: ShortestPathCost::EdgeCostExpr {
                 edge_var: "e".into(),
-                expr: gleaph_weight_call("e"),
+                expr: inline_property_cost_call("e"),
             },
         },
         PlanOp::Project {
@@ -1875,7 +1577,6 @@ fn weighted_shortest_higher_cost_vertex_state_can_still_reach_dst_under_hop_boun
 /// Graph where a longer prefix reaches `mid` with lower total cost after a stale higher-cost
 /// entry is already in the heap; min-queue ordering and `found_min_cost` skip the stale pop.
 fn setup_stale_mid_diamond_graph(store: &GraphStore) -> (VertexId, VertexId) {
-    use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
     let s = store
         .insert_vertex_named(["WgtA"], Vec::<(&str, Value)>::new())
         .expect("insert s");
@@ -1891,9 +1592,10 @@ fn setup_stale_mid_diamond_graph(store: &GraphStore) -> (VertexId, VertexId) {
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
     crate::test_labels::install_test_edge_inline_property_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
+        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+            byte_width: 2,
+            encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+        },
     );
     let road = catalog_edge_label("WgtRoad");
     store
@@ -1912,206 +1614,12 @@ fn setup_stale_mid_diamond_graph(store: &GraphStore) -> (VertexId, VertexId) {
 }
 
 #[test]
-fn stale_mid_diamond_edge_bindings_carry_expected_weights() {
-    use gleaph_gql_planner::plan::{PlanOp, ShortestMode, VarLenSpec};
-    let store = GraphStore::new();
-    let (s, _dst) = setup_stale_mid_diamond_graph(&store);
-    let road = catalog_edge_label("WgtRoad");
-    let cost_expr = gleaph_weight_call("e");
-    let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
-        &crate::gql_execution_context::GqlExecutionContext::default(),
-        &[PlanOp::ShortestPath {
-            src: "a".into(),
-            dst: "c".into(),
-            edge: "e".into(),
-            path_var: None,
-            emit_edge_binding: true,
-            emit_path_binding: false,
-            mode: ShortestMode::AnyShortest,
-            direction: EdgeDirection::PointingRight,
-            label: Some("WgtRoad".into()),
-            label_expr: None,
-            var_len: Some(VarLenSpec {
-                min: 1,
-                max: Some(5),
-            }),
-            cost: gleaph_gql_planner::plan::ShortestPathCost::EdgeCostExpr {
-                edge_var: "e".into(),
-                expr: cost_expr.clone(),
-            },
-        }],
-    )
-    .expect("decoders")
-    .expect("table");
-    let _decoder = decoders.get("e").expect("edge decoder");
-    let mut weights = BTreeMap::new();
-    store
-        .for_each_directed_out_edges_for_label_unchecked(s, road, |edge| {
-            let neighbor = edge.neighbor_vid();
-            let binding = edge_binding_for_expand(&store, s, EdgeDirection::PointingRight, edge)
-                .expect("binding");
-            let w = crate::plan::query::gleaph_weight::decode_traversal_edge_weight(
-                binding.handle,
-                binding.inline_property_len(),
-                binding.inline_property_bytes_slice(),
-            )
-            .expect("decode");
-            weights.insert(neighbor, w);
-        })
-        .expect("for_each");
-    let mut sorted: Vec<_> = weights.into_values().collect();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    assert_eq!(sorted, vec![5.0, 10.0]);
-}
-
-#[test]
-fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
-    use gleaph_gql_planner::plan::{PlanOp, ShortestMode, VarLenSpec};
-    let store = GraphStore::new();
-    let (s, dst) = setup_stale_mid_diamond_graph(&store);
-    let road = catalog_edge_label("WgtRoad");
-    let cost_expr = gleaph_weight_call("e");
-    let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
-        &crate::gql_execution_context::GqlExecutionContext::default(),
-        &[PlanOp::ShortestPath {
-            src: "a".into(),
-            dst: "c".into(),
-            edge: "e".into(),
-            path_var: None,
-            emit_edge_binding: true,
-            emit_path_binding: false,
-            mode: ShortestMode::AnyShortest,
-            direction: EdgeDirection::PointingRight,
-            label: Some("WgtRoad".into()),
-            label_expr: None,
-            var_len: Some(VarLenSpec {
-                min: 1,
-                max: Some(5),
-            }),
-            cost: gleaph_gql_planner::plan::ShortestPathCost::EdgeCostExpr {
-                edge_var: "e".into(),
-                expr: cost_expr.clone(),
-            },
-        }],
-    )
-    .expect("decoders")
-    .expect("table");
-    let decoder = decoders.get("e").expect("edge decoder");
-    let prep = ShortestFixedLabelExpand::new(EdgeDirection::PointingRight, road).expect("prep");
-    let mut from_s = Vec::new();
-    prep.expand_into(
-        &store,
-        s,
-        &mut from_s,
-        ShortestExpandOptions {
-            load_inline_property_bytes: true,
-            inline_property_scratch: None,
-        },
-    )
-    .expect("from s");
-    let mut hop_costs = Vec::new();
-    for (edge_dst, binding) in from_s {
-        let hop = decode_direct_gleaph_weight_hop_cost(decoder, binding).expect("hop");
-        hop_costs.push((
-            u32::from(match edge_dst {
-                ExpandDst::Local(v) => v,
-                ExpandDst::Remote(_) => panic!("remote"),
-            }),
-            hop.order_key,
-        ));
-    }
-    hop_costs.sort_by_key(|(vid, _)| *vid);
-    assert_eq!(hop_costs.len(), 2);
-    assert!(
-        matches!(hop_costs[0].1, WeightedCostOrderKey::Uint128(5))
-            || matches!(hop_costs[0].1, WeightedCostOrderKey::Float64(v) if (v - 5.0).abs() < f64::EPSILON)
-    );
-    assert!(
-        matches!(hop_costs[1].1, WeightedCostOrderKey::Uint128(10))
-            || matches!(hop_costs[1].1, WeightedCostOrderKey::Float64(v) if (v - 10.0).abs() < f64::EPSILON)
-    );
-
-    let detour = hop_costs[0].0;
-    store
-        .for_each_directed_out_edges_for_label_unchecked(VertexId::from(detour), road, |edge| {
-            let inline_property_bytes = edge.inline_property_bytes().to_vec();
-            assert_eq!(inline_property_bytes, vec![1, 0]);
-            let handle = EdgeHandle {
-                owner_vertex_id: VertexId::from(detour),
-                label_id: ic_stable_lara::BucketLabelKey::from_raw(edge.label_id),
-                slot_index: edge.edge_slot_index.raw().into(),
-            };
-            let record = store
-                .find_outgoing_edge_record(handle)
-                .expect("lookup")
-                .expect("record");
-            assert_eq!(
-                record.inline_property_bytes(),
-                inline_property_bytes.as_slice(),
-                "find_outgoing_edge_record must match iterated edge bytes"
-            );
-        })
-        .expect("out from detour");
-    let mut from_detour = Vec::new();
-    prep.expand_into(
-        &store,
-        VertexId::from(detour),
-        &mut from_detour,
-        ShortestExpandOptions {
-            load_inline_property_bytes: true,
-            inline_property_scratch: None,
-        },
-    )
-    .expect("from detour");
-    assert_eq!(from_detour.len(), 1);
-    let binding = from_detour[0].1.clone();
-    assert_eq!(
-        binding.inline_property_bytes_slice(),
-        &[1, 0],
-        "binding inline_property_bytes for detour->mid"
-    );
-    let hop = decode_direct_gleaph_weight_hop_cost(decoder, binding).expect("detour hop");
-    assert!(
-        matches!(hop.order_key, WeightedCostOrderKey::Uint128(1))
-            || matches!(hop.order_key, WeightedCostOrderKey::Float64(v) if (v - 1.0).abs() < f64::EPSILON),
-        "detour->mid hop cost, got {:?}",
-        hop.order_key
-    );
-    let _ = dst;
-}
-
-#[test]
 fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
-    use gleaph_gql_planner::plan::{PlanOp, ShortestMode, VarLenSpec};
+    use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
     let store = GraphStore::new();
     let (s, dst) = setup_stale_mid_diamond_graph(&store);
     let road = catalog_edge_label("WgtRoad");
-    let cost_expr = gleaph_weight_call("e");
-    let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
-        &crate::gql_execution_context::GqlExecutionContext::default(),
-        &[PlanOp::ShortestPath {
-            src: "a".into(),
-            dst: "c".into(),
-            edge: "e".into(),
-            path_var: Some("p".into()),
-            emit_edge_binding: true,
-            emit_path_binding: true,
-            mode: ShortestMode::AnyShortest,
-            direction: EdgeDirection::PointingRight,
-            label: Some("WgtRoad".into()),
-            label_expr: None,
-            var_len: Some(VarLenSpec {
-                min: 1,
-                max: Some(5),
-            }),
-            cost: gleaph_gql_planner::plan::ShortestPathCost::EdgeCostExpr {
-                edge_var: "e".into(),
-                expr: cost_expr.clone(),
-            },
-        }],
-    )
-    .expect("decoders")
-    .expect("decoder table");
+    let cost_expr = inline_property_cost_call("e");
     let search = weighted_shortest_paths_between(
         &store,
         s,
@@ -2128,7 +1636,6 @@ fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
         &cost_expr,
         ShortestMode::AnyShortest,
         &BTreeMap::new(),
-        Some(&decoders),
         true,
         true,
     )
@@ -2198,7 +1705,7 @@ fn weighted_shortest_skips_stale_higher_cost_vertex_entries() {
             }),
             cost: ShortestPathCost::EdgeCostExpr {
                 edge_var: "e".into(),
-                expr: gleaph_weight_call("e"),
+                expr: inline_property_cost_call("e"),
             },
         },
         PlanOp::Project {
@@ -2213,96 +1720,6 @@ fn weighted_shortest_skips_stale_higher_cost_vertex_entries() {
     assert_eq!(elements.len(), 7, "expected s->a->mid->dst (3 edges)");
     assert_path_vertex_local(&store, &elements[6], dst);
     assert_path_vertex_local(&store, &elements[0], s);
-}
-
-#[test]
-fn weighted_shortest_prefers_zero_weight_detour_over_direct_edge() {
-    use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
-    let store = GraphStore::new();
-    let a = store
-        .insert_vertex_named(["WgtA"], Vec::<(&str, Value)>::new())
-        .expect("insert a");
-    let c = store
-        .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
-        .expect("insert c");
-    let d1 = store
-        .insert_vertex_named(["WgtD1"], Vec::<(&str, Value)>::new())
-        .expect("insert d1");
-    let d2 = store
-        .insert_vertex_named(["WgtD2"], Vec::<(&str, Value)>::new())
-        .expect("insert d2");
-    let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
-    crate::test_labels::install_test_edge_inline_property_profile(
-        label_id,
-        gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-            encoding: WeightEncoding::RawU16,
-        }),
-    );
-    let road = catalog_edge_label("WgtRoad");
-    store
-        .insert_directed_edge_with_inline_property_bytes(a, d1, Some(road), &0u16.to_le_bytes())
-        .expect("a->d1");
-    store
-        .insert_directed_edge_with_inline_property_bytes(a, d2, Some(road), &0u16.to_le_bytes())
-        .expect("a->d2");
-    store
-        .insert_directed_edge_with_inline_property_bytes(d1, d2, Some(road), &0u16.to_le_bytes())
-        .expect("d1->d2");
-    store
-        .insert_directed_edge_with_inline_property_bytes(d1, c, Some(road), &0u16.to_le_bytes())
-        .expect("d1->c");
-    store
-        .insert_directed_edge_with_inline_property_bytes(d2, c, Some(road), &0u16.to_le_bytes())
-        .expect("d2->c");
-    store
-        .insert_directed_edge_with_inline_property_bytes(a, c, Some(road), &50u16.to_le_bytes())
-        .expect("a->c direct");
-    let plan = plan(vec![
-        PlanOp::NodeScan {
-            variable: "a".into(),
-            label: Some("WgtA".into()),
-            property_projection: None,
-        },
-        PlanOp::NodeScan {
-            variable: "c".into(),
-            label: Some("WgtC".into()),
-            property_projection: None,
-        },
-        PlanOp::ShortestPath {
-            src: "a".into(),
-            dst: "c".into(),
-            edge: "e".into(),
-            path_var: Some("p".into()),
-            emit_edge_binding: true,
-            emit_path_binding: true,
-            mode: ShortestMode::AnyShortest,
-            direction: EdgeDirection::PointingRight,
-            label: Some("WgtRoad".into()),
-            label_expr: None,
-            var_len: Some(VarLenSpec {
-                min: 1,
-                max: Some(5),
-            }),
-            cost: ShortestPathCost::EdgeCostExpr {
-                edge_var: "e".into(),
-                expr: gleaph_weight_call("e"),
-            },
-        },
-        PlanOp::Project {
-            columns: vec![project(var("p"), "p")],
-            distinct: false,
-        },
-    ]);
-    let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-        .expect("zero-weight detour weighted shortest path");
-    let elements = path_column(&result, "p");
-    assert_eq!(
-        elements.len(),
-        5,
-        "expected 2-hop zero-cost detour a->d1->c, not 1-hop direct edge"
-    );
-    assert_path_vertex_local(&store, &elements[elements.len() - 1], c);
 }
 
 #[test]
@@ -2352,7 +1769,7 @@ fn hop_count_shortest_path_ignores_edge_weights() {
 }
 
 #[test]
-fn gleaph_weight_in_return_does_not_change_shortest_path_search() {
+fn inline_property_in_return_does_not_change_shortest_path_search() {
     let store = GraphStore::new();
     setup_weighted_road_graph(&store);
     let plan = plan(vec![
@@ -2386,7 +1803,7 @@ fn gleaph_weight_in_return_does_not_change_shortest_path_search() {
         PlanOp::Project {
             columns: vec![
                 project(var("p"), "p"),
-                project(gleaph_weight_call("e"), "w"),
+                project(inline_property_cost_call("e"), "w"),
             ],
             distinct: false,
         },
@@ -2394,14 +1811,14 @@ fn gleaph_weight_in_return_does_not_change_shortest_path_search() {
 
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-        .expect("shortest path with gleaph_weight in return");
+        .expect("shortest path with inline_property in return");
     let elements = path_column(&result, "p");
     assert_eq!(
         elements.len(),
         3,
-        "RETURN GLEAPH.WEIGHT must not affect hop-count search"
+        "RETURN e.distance must not affect hop-count search"
     );
-    assert!(matches!(result.rows[0].get("w"), Some(Value::Float32(_))));
+    assert!(matches!(result.rows[0].get("w"), Some(Value::Uint16(_))));
 }
 
 #[test]
@@ -2422,53 +1839,6 @@ fn weighted_shortest_path_literal_overflow_cost_errors() {
             message: msg
         } if msg == "shortest-path edge cost must be finite"
     ));
-}
-
-#[test]
-fn weighted_shortest_path_rejects_missing_weight_profile() {
-    let store = GraphStore::new();
-    let a = store
-        .insert_vertex_named(["WgtNoProfileA"], Vec::<(&str, Value)>::new())
-        .expect("a");
-    let c = store
-        .insert_vertex_named(["WgtNoProfileC"], Vec::<(&str, Value)>::new())
-        .expect("c");
-    crate::test_labels::edge_label_id_for_name("WgtNoProfileRoad");
-    let road = catalog_edge_label("WgtNoProfileRoad");
-    store.insert_directed_edge(a, c, Some(road)).expect("edge");
-    let plan = plan(vec![
-        PlanOp::NodeScan {
-            variable: "a".into(),
-            label: Some("WgtNoProfileA".into()),
-            property_projection: None,
-        },
-        PlanOp::NodeScan {
-            variable: "c".into(),
-            label: Some("WgtNoProfileC".into()),
-            property_projection: None,
-        },
-        PlanOp::ShortestPath {
-            src: "a".into(),
-            dst: "c".into(),
-            edge: "e".into(),
-            path_var: None,
-            emit_edge_binding: true,
-            emit_path_binding: true,
-            mode: ShortestMode::AnyShortest,
-            direction: EdgeDirection::PointingRight,
-            label: Some("WgtNoProfileRoad".into()),
-            label_expr: None,
-            var_len: None,
-            cost: ShortestPathCost::EdgeCostExpr {
-                edge_var: "e".into(),
-                expr: gleaph_weight_call("e"),
-            },
-        },
-    ]);
-    let err = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-        .expect_err("missing profile");
-    assert!(matches!(err, PlanQueryError::GleaphWeight { .. }));
 }
 
 #[test]

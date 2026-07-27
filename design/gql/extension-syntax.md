@@ -1,7 +1,7 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 09:54:43 UTC +0000
+Last updated: 2026-07-27
+Anchor timestamp: 2026-07-27 00:00:00 UTC +0000
 
 ## Status
 
@@ -41,8 +41,8 @@ semantics.
 | IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                                                                                                                                                                                                                                                                          | `gleaph-gql-ic` value extension                                                             |
 | IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                                                                                                                                                                                                                                                                          | Graph execution context                                                                     |
 | Edge inline property             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar `INLINE` schema registration, read access, mutation packing, and shortest-path `COST BY e.property` implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`, `INSERT ... {distance: 7}`, `SET e.distance = 9`, `ANY SHORTEST ... COST BY e.distance`); **fixed-size struct schema registration and ordinary struct field reads are implemented** (`CREATE EDGE LABEL ... { <property> { ... } INLINE }`; `e.stats` returns a record, `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence); struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, and nested structs remain planned | Router schema/catalog + Graph edge inline property execution                                        |
-| Shortest-path cost            | `COST BY e.distance`                                                      | **Implemented** for the bounded direct-property shape: one concrete edge label, one declared edge variable, and exactly `e.<inline-property>`; `GLEAPH.COST BY GLEAPH.WEIGHT(e)` compatibility surface preserved; compound expressions and label-expression costs remain planned | Graph query planner/executor                                                                |
-| Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph query executor                                                                        |
+| Shortest-path cost            | `COST BY e.distance`                                                      | **Implemented** for the bounded direct-property shape: one concrete edge label, one declared edge variable, and exactly `e.<inline-property>`; compound expressions and label-expression costs remain planned | Graph query planner/executor                                                                |
+| Legacy edge weight function   | `GLEAPH.WEIGHT(e)`                                                        | Removed (ADR 0051 Phase B); use ordinary `e.<inline-property>` access and `COST BY e.<inline-property>`                                                                                                                                                                                        | Graph query executor                                                                        |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
 | Edge-inline-property vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge inline property executor                                                |
 | Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to eight `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), two to eight `OR`-connected same-binding same-property numeric range predicates (one one-sided range per arm, union of `lookup_range_page` streams with interval merge within the property, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property numeric range predicates (one one-sided range per arm, per-property interval merge, union of `lookup_range_page` streams across distinct property ids, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding heterogeneous equality/range predicates (each leaf independently equality or one-sided numeric range, per-property range interval merge, union of `lookup_equal_page` and `lookup_range_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, text/bytes/temporal/boolean/collection/path range predicates, mixed OR/AND remain planned, and nine-or-more disjunctive arms are rejected fail-closed | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
@@ -68,8 +68,9 @@ CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()
 
 Compatibility surfaces also include existing query-time helpers whose current semantics are
 intentionally Gleaph-specific. Some may later be replaced by more ordinary GQL syntax, but their
-current names remain part of the implemented dialect contract: `GLEAPH.WEIGHT(e)`,
-`GLEAPH.SEQUENCE(e)`, `GLEAPH.COST`, and `GLEAPH.VECTOR.*`.
+current names remain part of the implemented dialect contract: `GLEAPH.SEQUENCE(e)`,
+`GLEAPH.COST`, and `GLEAPH.VECTOR.*`. The legacy `GLEAPH.WEIGHT(e)` surface has been removed
+(ADR 0051 Phase B).
 
 ## IC extensions
 
@@ -110,8 +111,9 @@ context must provide one or receive a runtime-function error.
 
 ### Target syntax
 
-**Status:** Planned target. Existing code still exposes `GLEAPH.WEIGHT(e)` and fixed-width edge
-inline property profiles.
+**Status:** Implemented. Scalar and fixed-size struct `INLINE` schema registration, ordinary
+read access, mutation packing, and `COST BY e.<inline-property>` are implemented. The legacy
+`GLEAPH.WEIGHT(e)` surface has been removed (ADR 0051 Phase B).
 
 `INLINE` is a storage/layout modifier for one edge-label property. It is not a logical type. The
 logical query surface is ordinary property access:
@@ -250,13 +252,13 @@ conflict on the same (label, property) are rejected before any catalog or schema
 field reads (`e.stats.score`), struct mutation packing, `COST BY` over a struct field, and generic
 `CREATE GRAPH TYPE ... INLINE` annotations remain planned.
 
-### Relationship to `GLEAPH.WEIGHT`
+### Relationship to the removed `GLEAPH.WEIGHT`
 
-`GLEAPH.WEIGHT(e)` is the implemented compatibility surface for fixed-width edge inline property weights.
-Ordinary inline property access (`e.distance`) and the existing edge-inline-property predicate surface
-(`GLEAPH.WEIGHT(e) = ...`) share the same Router-resolved `EdgeInlinePropertyProfile` and the same
-Graph inline-aware read helper. The target dialect
-replaces it with ordinary property access:
+`GLEAPH.WEIGHT(e)` was the legacy compatibility surface for fixed-width edge inline property weights.
+It has been removed in ADR 0051 Phase B. The ordinary inline property access (`e.distance`) and the
+edge-inline-property predicate surface (`e.distance = ...`) now share the same Router-resolved
+`EdgeInlinePropertyProfile` and the same Graph inline-aware read helper. The supported dialect shape
+is:
 
 ```gql
 MATCH ANY SHORTEST (a)-[e:ROAD]->{1,5}(b)
@@ -264,13 +266,7 @@ COST BY e.distance
 RETURN b
 ```
 
-The equivalent implementation-era shape is:
-
-```gql
-MATCH ANY SHORTEST (a)-[e:ROAD]->{1,5}(b)
-GLEAPH.COST BY GLEAPH.WEIGHT(e)
-RETURN b
-```
+The previous implementation-era shape (`GLEAPH.COST BY GLEAPH.WEIGHT(e)`) is no longer accepted.
 
 ## Edge insertion-order sequence
 
@@ -304,8 +300,8 @@ subplan does not bind `e` itself. The outer edge binding remains present on both
 rows, so Graph preserves its scan order. An optional subplan that binds `e` is a new ordering
 boundary and is not lowered as an order on the earlier edge.
 
-This function must be classified separately from `GLEAPH.WEIGHT(e)` and `GLEAPH.VECTOR.*` in the Rust
-manifest. Those helpers read or score fixed-width edge inline property bytes; `GLEAPH.SEQUENCE(e)` reads
+This function must be classified separately from `GLEAPH.VECTOR.*` in the Rust manifest. Those
+helpers read or score fixed-width edge inline property bytes; `GLEAPH.SEQUENCE(e)` reads
 Graph-owned edge ordering metadata.
 
 ## Edge-inline-property vector predicates
@@ -796,7 +792,7 @@ This expresses the intended flow:
 | 5     | Add result hydration from vector hits to graph vertex bindings                                         | Implemented via row-shaped `SeedBindingsWire`                                                                        |
 | 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared`      |
 | 7     | Add scalar `INLINE` edge-property schema syntax, ordinary read access (`e.inline_field`), ordinary mutation packing (`INSERT`/`SET`/`REMOVE` semantics), and bounded ordinary `COST BY e.inline_field` shortest-path cost into the inline property bytes; add fixed-size struct inline schema registration and ordinary struct field reads (`e.stats`, `e.stats.field`) | Implemented: scalar inline schema registration, read access, mutation packing, and bounded `COST BY e.property` are complete; fixed-size struct schema registration and ordinary struct field reads are complete; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, nested structs, and generic `CREATE GRAPH TYPE` `INLINE` annotations remain planned |
-| 8     | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available        | Planned                                                                                                              |
+| 8     | Remove daily-query use of `GLEAPH.WEIGHT`; ordinary inline property access is now required              | Removed (ADR 0051 Phase B)                                                                                           |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.
 

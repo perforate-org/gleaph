@@ -10,7 +10,7 @@
 //! - `gleaph-gql-ic` owns `IC.PRINCIPAL` value encoding/decoding.
 //! - Graph execution owns `MSG_CALLER()` and runtime-function context.
 //! - Graph planner integration owns `GLEAPH.COST` and `GLEAPH.VECTOR.*` fusion helpers.
-//! - Graph execution owns `GLEAPH.WEIGHT` edge-inline-property-bytes decode and `GLEAPH.SEQUENCE` edge ordering.
+//! - Graph execution owns `GLEAPH.SEQUENCE` edge ordering.
 //! - Graph mutation executor owns operational `GLEAPH.FINALIZE_*` / `GLEAPH.DRAIN_*` procedures.
 //! - Router owns planned `SEARCH`, `INLINE`, and `CREATE VECTOR INDEX` syntax.
 //!
@@ -132,9 +132,6 @@ pub const GLEAPH_COST: QualifiedName = QualifiedName::new(&["GLEAPH", "COST"]);
 /// `COST BY`
 pub const COST: QualifiedName = QualifiedName::new(&["COST"]);
 
-/// `GLEAPH.WEIGHT`
-pub const GLEAPH_WEIGHT: QualifiedName = QualifiedName::new(&["GLEAPH", "WEIGHT"]);
-
 /// `GLEAPH.SEQUENCE`
 pub const GLEAPH_SEQUENCE: QualifiedName = QualifiedName::new(&["GLEAPH", "SEQUENCE"]);
 
@@ -205,13 +202,6 @@ pub const GLEAPH_DIALECT_EXTENSIONS: &[GqlDialectExtensionSpec] = &[
         kind: GqlDialectExtensionKind::PathExtension,
         status: GqlDialectExtensionStatus::Compatibility,
         owner: GqlDialectExtensionOwner::GraphPlannerIntegration,
-        doc_anchor: "design/gql/extension-syntax.md#edge-inline-properties",
-    },
-    GqlDialectExtensionSpec {
-        canonical_name: GLEAPH_WEIGHT,
-        kind: GqlDialectExtensionKind::EdgeInlinePropertyFunction,
-        status: GqlDialectExtensionStatus::Compatibility,
-        owner: GqlDialectExtensionOwner::GraphExecution,
         doc_anchor: "design/gql/extension-syntax.md#edge-inline-properties",
     },
     GqlDialectExtensionSpec {
@@ -467,15 +457,15 @@ mod tests {
 
     #[test]
     fn qualified_name_rejects_wrong_length() {
-        assert!(!GLEAPH_WEIGHT.matches_exact(&["GLEAPH"]));
-        assert!(!GLEAPH_WEIGHT.matches_exact(&["GLEAPH", "WEIGHT", "EXTRA"]));
-        assert!(!GLEAPH_WEIGHT.matches_ascii_case_insensitive(&["gleaph"]));
+        assert!(!GLEAPH_COST.matches_exact(&["GLEAPH"]));
+        assert!(!GLEAPH_COST.matches_exact(&["GLEAPH", "WEIGHT", "EXTRA"]));
+        assert!(!GLEAPH_COST.matches_ascii_case_insensitive(&["gleaph"]));
     }
 
     #[test]
     fn helper_groups_are_consistent_with_manifest() {
         assert_eq!(operational_procedures().count(), 3);
-        assert_eq!(edge_inline_property_functions().count(), 4);
+        assert_eq!(edge_inline_property_functions().count(), 3);
         assert_eq!(edge_ordering_functions().count(), 1);
         assert_eq!(planned_extensions().count(), 1);
     }

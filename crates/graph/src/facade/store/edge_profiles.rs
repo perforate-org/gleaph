@@ -1,8 +1,6 @@
 //! Edge inline property bytes updates (schema from router wire per ADR 0008).
 
-use gleaph_graph_kernel::entry::{
-    EdgeInlinePropertyProfile, EdgeLabelId, EdgeTarget, EdgeWeightProfile,
-};
+use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId, EdgeTarget};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -11,12 +9,6 @@ use super::helpers::{catalog_edge_label_from_wire, validate_edge_inline_property
 use ic_stable_lara::traits::CsrEdge;
 
 impl GraphStore {
-    pub fn edge_label_weight_profile(&self, label: EdgeLabelId) -> Option<EdgeWeightProfile> {
-        let profile =
-            crate::edge_inline_property_schema::lookup_edge_inline_property_profile(label);
-        profile.to_weight_profile()
-    }
-
     pub fn edge_label_inline_property_profile(
         &self,
         label: EdgeLabelId,

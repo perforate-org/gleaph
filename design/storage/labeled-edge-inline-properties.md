@@ -163,7 +163,7 @@ does not vary among live slots in one bucket.
 
 ## Catalog
 
-`EdgeInlinePropertyProfile` pairs `byte_width: u16` with `EdgeInlinePropertyEncoding` (e.g. `RawI32`, `RawU16`, `F32`, `WeightLinearU16`). Legacy `EdgeWeightProfile` maps to weight encodings with 2-byte width.
+`EdgeInlinePropertyProfile` pairs `byte_width: u16` with `EdgeInlinePropertyEncoding` (e.g. `RawI32`, `RawU16`, `F32`). Legacy weight encodings such as `WeightLinearU16` were removed in ADR 0051 Phase B.
 
 **Ownership (implemented):** logical schema `(GraphId, EdgeLabelId) → EdgeInlinePropertySchemaRecord` is
 **router SSOT** (`ROUTER_EDGE_INLINE_PROPERTY_PROFILES`, router MemoryId 21). The record is a versioned

@@ -2,8 +2,8 @@
 
 Date: 2026-06-25
 Status: accepted (syntax design; Rust manifest implemented; SEARCH parser/planner and Router lowering implemented, including Slice 6 leading labeled `SEARCH ... WHERE` equality filter, Slice 7 non-leading `SEARCH ... WHERE` equality filter, Slice 8 one or two `AND`-connected same-binding equality conjuncts, Slice 9 one same-binding numeric range predicate for both leading and non-leading search, Slice 10 exactly two same-property range predicates (one lower, one upper) forming a two-sided numeric range, Slice 11 one equality predicate plus one one-sided numeric range predicate on distinct properties, Slice 12 one equality predicate plus two same-property range predicates (one lower and one upper) on a distinct property, Slice 13 bounded N-way (1..=8) same-binding equality conjunctions with provider-neutral Planner syntax, Slice 14 one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, Slice 15 bounded same-property equality disjunctions (2..=8 OR-connected arms) with provider-neutral Planner syntax and Router-owned union execution, Slice 16 bounded cross-property pure equality disjunctions (2..=8 OR-connected arms) with provider-neutral Planner syntax and Router-owned union execution, Slice 17 bounded same-property numeric range disjunctions (2..=8 OR-connected arms) with provider-neutral Planner syntax and Router-owned union execution, Slice 18 bounded cross-property numeric range disjunctions (2..=8 OR-connected arms) with provider-neutral Planner syntax and Router-owned per-property normalization and union execution, Slice 19 bounded heterogeneous equality/range disjunctions (2..=8 OR-connected arms, each leaf independently equality or one-sided numeric range) with provider-neutral Planner syntax and Router-owned per-property normalization and union execution; Slice 20 scalar `INLINE` edge-property schema registration, Slice 21 ordinary read access to that inline scalar, Slice 22 ordinary mutation packing of scalar values into the inline property bytes, Slice 23 ordinary `COST BY e.<inline-property>` shortest-path cost, and Slice 24 fixed-size inline edge struct schema registration implemented; Slice 25 ordinary read access to fixed-size inline edge struct fields implemented; struct mutation packing, `COST BY` over a struct field, generic `CREATE GRAPH TYPE` `INLINE` annotations, and vector-index DDL remain planned)
-Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 09:54:43 UTC +0000
+Last updated: 2026-07-27
+Anchor timestamp: 2026-07-27 00:00:00 UTC +0000
 
 > **Summary.** Gleaph needs a coherent public GQL dialect surface for IC values, graph-local inline
 > edge data, vector search, shortest-path costs, and operational procedures. This ADR accepts a
@@ -19,7 +19,7 @@ Gleaph already has several GQL-adjacent extensions:
 
 - `IC.PRINCIPAL` values in `gleaph-gql-ic`.
 - `MSG_CALLER()` as an IC runtime function in graph execution.
-- `GLEAPH.WEIGHT(e)` and `GLEAPH.COST BY ...` for edge inline property weights and shortest-path costs.
+- Ordinary `e.<inline-property>` access and `COST BY e.<inline-property>` for edge inline properties and shortest-path costs. The legacy `GLEAPH.WEIGHT(e)` compatibility surface has been removed (ADR 0051 Phase B).
 - `GLEAPH.SEQUENCE(e)` for Graph-owned edge insertion-order compensation in `ORDER BY`.
 - `GLEAPH.VECTOR.*` fused edge-inline-property vector predicates.
 - `CALL GLEAPH.FINALIZE_*` / `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()` for operational mutation
@@ -28,7 +28,7 @@ Gleaph already has several GQL-adjacent extensions:
 
 These decisions landed incrementally. Without a single dialect contract, future syntax could drift:
 vertex embedding search might be exposed as a procedure, edge inline property bytes might keep leaking through
-`GLEAPH.WEIGHT`, and IC-specific concepts might enter the generic `gleaph-gql` crates.
+special-purpose functions, and IC-specific concepts might enter the generic `gleaph-gql` crates.
 
 External syntax direction has also moved. Grafeo-style examples present vector similarity as part of
 the graph query rather than as an out-of-band API. Neo4j Cypher 25 introduced a `SEARCH` subclause for
@@ -44,7 +44,7 @@ Gleaph GQL dialect as a whole. The missing contract creates several risks:
 | Risk                                                                             | Impact                                                                      |
 | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | Procedure-shaped vector search becomes the public API                            | Harder to compose with `MATCH`, traversal, `WHERE`, and ranking             |
-| `GLEAPH.WEIGHT` / `GLEAPH.PAYLOAD` stay as daily query syntax                    | Edge inline property bytes storage details remain visible to users                        |
+| `GLEAPH.WEIGHT` / `GLEAPH.PAYLOAD` stay as daily query syntax                    | Edge inline property bytes storage details remain visible to users (fixed by ADR 0051 Phase B) |
 | `GLEAPH.VECTOR.*` is reused ambiguously                                          | Edge-inline-property vector predicates and vertex embedding search become conflated |
 | IC/runtime extensions are documented separately from search/traversal extensions | No single place explains what is part of the Gleaph dialect                 |
 | Gleaph-specific syntax lands in `gleaph-gql` without a boundary rule             | Portable GQL crates become coupled to Gleaph storage/canister concepts      |
@@ -105,9 +105,9 @@ This ADR records why that contract exists and the top-level policy:
 
 1. **Daily graph-query syntax should be declarative.** Vector search is a first-class `SEARCH`
    subclause, not a public `CALL GLEAPH.VECTOR_SEARCH(...)` procedure.
-2. **Edge-local fast values are ordinary property access with a schema/storage modifier.** New syntax
-   should prefer `e.distance`, `e.score`, or `e.stats.confidence` over `GLEAPH.WEIGHT(e)` /
-   `GLEAPH.PAYLOAD(e)`.
+2. **Edge-local fast values are ordinary property access with a schema/storage modifier.** Daily
+   syntax uses `e.distance`, `e.score`, or `e.stats.confidence`; the legacy `GLEAPH.WEIGHT(e)` /
+   `GLEAPH.PAYLOAD(e)` surfaces have been removed (ADR 0051 Phase B).
 3. **Embeddings are not inline properties.** Vertex embeddings belong to the canonical embedding store
    and derived vector-index model, not to edge inline property storage and not to ordinary variable-size
    property payloads.
@@ -142,9 +142,9 @@ This ADR records why that contract exists and the top-level policy:
 
 - The implementation may still lower this to the existing Router/vector-canister `vector_search`
   API. That lowering is internal, not the public GQL contract.
-- Existing `GLEAPH.WEIGHT`, `GLEAPH.SEQUENCE`, `GLEAPH.COST`, and `GLEAPH.VECTOR.*` remain valid
-  implementation-era surfaces until migration syntax lands; the new document marks their target
-  status explicitly.
+- `GLEAPH.SEQUENCE`, `GLEAPH.COST`, and `GLEAPH.VECTOR.*` remain valid implementation-era surfaces
+  where ordinary property access is not yet available; `GLEAPH.WEIGHT(e)` has been removed and is no
+  longer valid syntax.
 - Existing and planned extension names should be centralized in a pure Rust manifest before adding
   more syntax. The manifest should be dependency-light and contain descriptors/recognizers such as
   value types, runtime functions, path extensions, edge-inline-property vector predicates, search clauses,
@@ -170,14 +170,15 @@ Planned migration path:
 1. Document existing extensions and target syntax in `design/gql/extension-syntax.md` (done).
 2. Add the Rust extension manifest in `gleaph-graph-kernel::gql_dialect` without changing behavior (done):
    - represent canonical names such as `IC.PRINCIPAL`, `MSG_CALLER`, `GLEAPH.COST`,
-     `GLEAPH.WEIGHT`, `GLEAPH.SEQUENCE`, `GLEAPH.VECTOR.*`, and `GLEAPH.FINALIZE_*`;
+     `GLEAPH.SEQUENCE`, `GLEAPH.VECTOR.*`, and `GLEAPH.FINALIZE_*`;
    - classify planned syntax such as `SEARCH`, `INLINE`, and `CREATE VECTOR INDEX`;
    - expose exact and case-insensitive recognizers for owners that already parse extension names;
    - add tests that implemented Gleaph extension entry points are registered in the manifest.
 3. Replace scattered hard-coded Gleaph extension names with manifest helpers where this does not
    change behavior (done).
-4. Keep existing `GLEAPH.WEIGHT` / `GLEAPH.VECTOR.*` behavior while adding ordinary-property inline
-   syntax in schema/planner/executor slices.
+4. Add ordinary-property inline syntax in schema/planner/executor slices; remove `GLEAPH.WEIGHT(e)`
+   once `COST BY e.property` and ordinary inline property access cover the same use cases (completed
+   in ADR 0051 Phase B).
 5. Add `SEARCH` parser/planner support as a Gleaph dialect feature (done). Router lowering to the existing vector search API is implemented for the narrow leading `NodeScan + Search` prefix and for one top-level non-leading `SEARCH` after a bound vertex, vertex-only. `DISTANCE AS` is accepted for distance-only metrics and `SCORE AS` is accepted for exact-scan cosine indexes (`nlist == 1`); `SCORE AS` is rejected for metrics that have no natural score (e.g. `L2Squared`). Cosine partition-page scan (`nlist > 1`) is fail-closed in the vector canister in this slice. Non-leading `SEARCH` semantics are exactly `input rows INNER JOIN global vector top-k` on the bound vertex; vector search runs once per query, global top-k is computed before the join, and row multiplicity is preserved. Correlated/per-row `FOR`/`LIMIT`, nested/multiple search, and edge subjects remain planned.
 6. Add leading labeled `SEARCH ... WHERE` equality filter (ADR 0034 Slice 6, done). The planner accepts one same-binding property equality predicate (`d.category = $category` or `$category = d.category`) and carries it in `PlanOp::Search`; the Router proves exact label/property index coverage, resolves a bounded candidate allowlist from the Property Index, and asks Vector Index to rank exactly within that set. Empty candidates preserve the leading-search aggregate dispatch contract; candidate sets larger than 4096 fail explicitly.
 7. Add non-leading labeled `SEARCH ... WHERE` equality filter (ADR 0034 Slice 7, done). The planner now fuses the destination-node label into `ExpandFilter.dst_filter` so the Router can prove the searched label from the prefix. For any non-leading `SEARCH` with a filter, the Router requires exactly one positive simple label proof from the top-level prefix (`NodeScan` or `PropertyFilter`/`ExpandFilter` `IS LABELED`), reuses the same bounded Property Index candidate resolution as Slice 6, and dispatches an explicit empty resolved-search relation when candidates are empty so Graph still executes the prefix and global aggregates return one zero row. The relational contract remains one global filtered top-k before the prefix inner join; the result may contain fewer than `LIMIT` rows and one hit may produce multiple output rows.
@@ -200,7 +201,7 @@ Planned migration path:
 
 22. Add ordinary mutation packing of scalar values into a Slice 20 inline property bytes through standard GQL edge mutations (ADR 0034 Slice 22, implemented). For a concrete Router-resolved edge label with an `InlineScalar` schema, `INSERT` requires exactly one assignment for the named inline property, evaluates and validates it before creating any adjacency record, encodes it into the fixed-width inline property bytes, and inserts the edge through the existing directed/undirected inline-property-bytes-aware path. `SET e.inline_property = <expr>` and `SET e = { ... }` re-resolve the concrete label, require and encode the inline property exactly once, and update the inline property bytes through the existing mirrored forward/reverse/undirected commit. `REMOVE e.inline_property` is rejected because this slice has no absence representation. Non-inline properties on the same edge retain existing sidecar storage and index-maintenance behavior. Graph uses one shared scalar codec for encoding (mutation), decoding (read), and raw predicate-byte preparation; no second schema table or sidecar fallback is introduced. Invalid, missing, duplicate, or `NULL` inline propertys fail closed before any canonical write.
 
-23. Add ordinary `COST BY e.<inline-property>` shortest-path cost for a scalar `INLINE` edge property (ADR 0034 Slice 23, implemented). The bounded shape requires a shortest-path pattern with exactly one extension clause, a single concrete edge label, one declared edge variable, and a direct property access whose base is that edge variable. The Graph planner integration recognizes unqualified `COST BY` separately from the compatibility surface `GLEAPH.COST BY ...`; generic physical-plan property-use collection now includes properties referenced inside `PlanOp::ShortestPath::EdgeCostExpr`; and weighted hop evaluation receives the Router-resolved label and property tables. Graph resolves the property through `ResolvedPropertyTable`, proves it equals the scalar inline property id in the concrete label's `inline_schema`, and evaluates each hop through the shared inline-aware edge property reader. Validation, ordering, accumulation, finite/non-negative checks, and overflow handling remain owned by `WeightedCost`. Existing `GLEAPH.COST BY GLEAPH.WEIGHT(e)` behavior and its direct inline-property-bytes-decoder fast path are preserved.
+23. Add ordinary `COST BY e.<inline-property>` shortest-path cost for a scalar `INLINE` edge property (ADR 0034 Slice 23, implemented). The bounded shape requires a shortest-path pattern with exactly one extension clause, a single concrete edge label, one declared edge variable, and a direct property access whose base is that edge variable. The Graph planner integration recognizes unqualified `COST BY` separately from the compatibility surface `GLEAPH.COST BY ...`; generic physical-plan property-use collection now includes properties referenced inside `PlanOp::ShortestPath::EdgeCostExpr`; and weighted hop evaluation receives the Router-resolved label and property tables. Graph resolves the property through `ResolvedPropertyTable`, proves it equals the scalar inline property id in the concrete label's `inline_schema`, and evaluates each hop through the shared inline-aware edge property reader. Validation, ordering, accumulation, finite/non-negative checks, and overflow handling remain owned by `WeightedCost`. The legacy `GLEAPH.COST BY GLEAPH.WEIGHT(e)` compatibility surface has been removed (ADR 0051 Phase B).
 
 Slice 25 implements ordinary read access to Slice 24 fixed-size inline structs: `e.stats` returns a
 GQL record and `e.stats.score` works in projection, `WHERE`, comparisons, aggregate inputs, and

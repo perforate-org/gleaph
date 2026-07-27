@@ -16,7 +16,7 @@ use gleaph_graph_kernel::plan_exec::{ResolvedInlineSchema, ResolvedInlineStructF
 use ic_stable_lara::VertexId;
 
 static EDGE_LABEL_NAMES: Mutex<Option<HashMap<u16, String>>> = Mutex::new(None);
-static EDGE_PAYLOAD_PROFILES: Mutex<Option<HashMap<u16, EdgeInlinePropertyProfile>>> =
+static EDGE_INLINE_PROPERTY_PROFILES: Mutex<Option<HashMap<u16, EdgeInlinePropertyProfile>>> =
     Mutex::new(None);
 static EDGE_INLINE_PROPERTIES: Mutex<Option<HashMap<u16, PropertyId>>> = Mutex::new(None);
 static EDGE_INLINE_STRUCT_SCHEMAS: Mutex<Option<HashMap<u16, ResolvedInlineSchema>>> =
@@ -26,7 +26,7 @@ pub(crate) fn install_test_edge_inline_property_profile(
     label: EdgeLabelId,
     profile: EdgeInlinePropertyProfile,
 ) {
-    EDGE_PAYLOAD_PROFILES
+    EDGE_INLINE_PROPERTY_PROFILES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_with(HashMap::new)
@@ -36,7 +36,7 @@ pub(crate) fn install_test_edge_inline_property_profile(
 pub(crate) fn edge_inline_property_profile_for_id(
     label: EdgeLabelId,
 ) -> Option<EdgeInlinePropertyProfile> {
-    EDGE_PAYLOAD_PROFILES
+    EDGE_INLINE_PROPERTY_PROFILES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()?
@@ -91,16 +91,44 @@ pub(crate) fn edge_inline_struct_schema_for_id(label: EdgeLabelId) -> Option<Res
 }
 
 pub(crate) fn edge_inline_property_for_id(label: EdgeLabelId) -> Option<PropertyId> {
-    EDGE_INLINE_PROPERTIES
+    let edge_inline_properties = EDGE_INLINE_PROPERTIES
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()?
-        .get(&label.raw())
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(property_id) = edge_inline_properties
+        .as_ref()
+        .and_then(|m| m.get(&label.raw()))
         .copied()
+    {
+        return Some(property_id);
+    }
+    #[cfg(any(test, feature = "canbench"))]
+    {
+        // Test fixtures that install a scalar edge inline property bytes profile without an
+        // explicit property id are treated as exposing a single inline property named "distance".
+        // This mirrors the production Router-resolved inline schema without requiring every
+        // test/benchmark setup to also call `install_test_edge_inline_property`.
+        let profiles = EDGE_INLINE_PROPERTY_PROFILES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let profile = profiles
+            .as_ref()
+            .and_then(|m| m.get(&label.raw()))
+            .cloned()?;
+        if profile.required_byte_width() > 0
+            && !EDGE_INLINE_STRUCT_SCHEMAS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|m| m.contains_key(&label.raw()))
+        {
+            return Some(property_id_for_name("distance"));
+        }
+    }
+    None
 }
 
 pub(crate) fn edge_label_ids_with_inline_property_profiles() -> Vec<EdgeLabelId> {
-    EDGE_PAYLOAD_PROFILES
+    EDGE_INLINE_PROPERTY_PROFILES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()

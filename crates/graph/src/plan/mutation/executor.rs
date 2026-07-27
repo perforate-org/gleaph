@@ -3110,18 +3110,17 @@ mod tests {
     }
 
     fn setup_finalize_call_hub_graph(store: &GraphStore) -> VertexId {
-        use gleaph_graph_kernel::entry::{
-            EdgeInlinePropertyProfile, EdgeWeightProfile, WeightEncoding,
-        };
+        use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
 
         let src = store.insert_vertex().expect("src");
         let hub = store.insert_vertex().expect("hub");
         let label = crate::test_labels::edge_label_id_for_name("GqlFinalizeRoad");
         install_test_edge_inline_property_profile(
             label,
-            EdgeInlinePropertyProfile::from(EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            }),
+            EdgeInlinePropertyProfile {
+                byte_width: 2,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
+            },
         );
 
         let mut prefixes = Vec::new();

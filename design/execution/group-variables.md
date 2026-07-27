@@ -55,14 +55,13 @@ Triangle / cycle patterns fused to [`PlanOp::WorstCaseOptimalJoin`] carry `hop_a
 | `RETURN p` | OK → `Value::Path` (singleton) or `Value::List` of paths (`SHORTEST k GROUP`) |
 | `CARDINALITY(p)` | OK on `PathGroup` |
 | `CARDINALITY(e)`, `CARDINALITY(u)` | OK |
-| `GLEAPH.WEIGHT(e[-1])`, `u[0]`, `v[-1]` | OK only with the `cypher` feature (Cypher list index). Off by default: the canister build (`gleaph-graph`, and the `gleaph-gql`-parsing `gleaph-router`) ships without `cypher`, so these are rejected at parse time there. |
-| `LET x = SUM(GLEAPH.WEIGHT(e))` | OK (horizontal sum over group in one row) |
-| `RETURN SUM(GLEAPH.WEIGHT(e))` (implicit `PlanOp::Aggregate`) | OK (same horizontal fold per input row) |
-| `GLEAPH.WEIGHT(e)` | **Error** at evaluation (group, not singleton) |
-| `e.prop`, `u.prop` | **Error** (use indexed element first) |
-| `WHERE GLEAPH.WEIGHT(e) = …` on var_len | Planner may still **fuse** to per-hop `edge_inline_property_predicate` (search semantics unchanged) |
+| `e[-1].distance`, `u[0]`, `v[-1]` | OK only with the `cypher` feature (Cypher list index). Off by default: the canister build (`gleaph-graph`, and the `gleaph-gql`-parsing `gleaph-router`) ships without `cypher`, so these are rejected at parse time there. |
+| `e.distance` on a var-length group | Returns a `List` of per-hop values at execution; `GLEAPH.WEIGHT(e)` has been removed (ADR 0051 Phase B). |
+| `LET x = SUM(e.distance)` | Not yet supported for group edge property access; use element indexing (`e[-1].distance`) or aggregate after unnesting. |
+| `RETURN SUM(e.distance)` (implicit `PlanOp::Aggregate`) | Not yet supported for group edge property access. |
+| `WHERE e.distance = …` on var_len | Evaluated as an ordinary group-level predicate; the legacy `GLEAPH.WEIGHT` fusion path has been removed. |
 
-`SHORTEST … GLEAPH.COST(GLEAPH.WEIGHT(e))` uses singleton `e` inside the cost expression during path search; unrelated to post-match group bindings.
+`SHORTEST … COST BY e.distance` uses singleton `e` inside the cost expression during path search; unrelated to post-match group bindings.
 
 ## Wire format
 

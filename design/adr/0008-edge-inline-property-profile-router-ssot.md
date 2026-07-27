@@ -173,8 +173,8 @@ The graph executor must not invent schema by scanning its own stable map.
 
 - LARA inline property bytes and `LabelBucket::inline_property_byte_width` (physical materialization)
 - Validation that DML inline property bytes match **wire-resolved** profile for the label
-- Decode/prepare using plan-scoped profile from execution context (`GLEAPH.WEIGHT`, inline property bytes batch
-  scans, etc.)
+- Decode/prepare using plan-scoped profile from execution context (inline property bytes batch
+  scans, ordinary `e.property` access, `COST BY e.property`, etc.)
 
 **Heap-only optional cache:** graph may cache `EdgeLabelId → EdgeInlinePropertyProfile` for the duration
 of a single query or mutation batch (derived from wire). No persistence across upgrades.
@@ -196,7 +196,7 @@ Update `gleaph_graph_kernel::stable_layout`, `stable-memory-inventory.md`, and p
 | Phase | Deliverable | Verification |
 |-------|-------------|--------------|
 | **A — Wire + router store** | Router schema map; extend `ResolvedEdgeLabel`; admin/intern sets profile | Router unit tests; catalog + schema consistency |
-| **B — Graph read path** | Executor, `gleaph_weight`, expand fusion use execution context only | Existing expand/weight tests with wire injection |
+| **B — Graph read path** | Executor, expand fusion, and path cost evaluation use execution context only | Existing expand/shortest-path tests with wire injection |
 | **C — DML path** | Mutations validate against wire profile; remove graph install APIs | Facade store tests; pocket-ic DML |
 | **D — Stable retirement** | Delete graph region; repack ids; router region live | Reopen tests; `bench_layout_graph_stable_reopen_touch`; cold_touch **41** |
 | **E — Doc sync** | `labeled-edge-inline-properties.md`, ADR 0007 baseline table, roadmap | design-sync checklist |
@@ -241,8 +241,8 @@ Router SSOT + graph periodically syncs to `ROUTER_EDGE_INLINE_PROPERTY_PROFILES`
 
 ### B. Derive schema only from LARA `LabelBucket::inline_property_byte_width`
 
-**Rejected:** width alone loses encoding semantics (`RawU16` vs `F32` vs weight encodings); decode and
-`GLEAPH.WEIGHT` need `EdgeInlinePropertyProfile`.
+**Rejected:** width alone loses encoding semantics (`RawU16` vs `F32` vs legacy weight encodings); decode
+and ordinary inline property access need `EdgeInlinePropertyProfile`.
 
 ### C. Store profiles in graph-index or a new “schema canister”
 

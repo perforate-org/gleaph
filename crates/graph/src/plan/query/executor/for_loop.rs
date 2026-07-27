@@ -83,7 +83,6 @@ mod tests {
             caller: None,
             resolved_labels: None,
             resolved_properties: None,
-            gleaph_weight_decoders: None,
             element_id_key:
                 gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
         };
@@ -150,7 +149,6 @@ mod tests {
             caller: None,
             resolved_labels: None,
             resolved_properties: None,
-            gleaph_weight_decoders: None,
             element_id_key:
                 gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
         };

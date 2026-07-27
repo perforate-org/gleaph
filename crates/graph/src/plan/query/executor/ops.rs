@@ -447,7 +447,6 @@ pub(crate) fn execute_ops_from<'a>(
     Box::pin(async move {
         let store = ctx.store;
         let parameters = ctx.parameters;
-        let gwd = ctx.gleaph_weight_decoders;
         let set_operation_input = ops_contain_set_operation(ops).then(|| initial_rows.clone());
         let mut rows = initial_rows;
         // Index of the nearest preceding `PlanOp::Aggregate` for resolving
@@ -481,7 +480,6 @@ pub(crate) fn execute_ops_from<'a>(
                         ctx.parameters,
                         ctx.caller(),
                         &ctx.execution,
-                        ctx.gleaph_weight_decoders,
                         aggregate_specs,
                     );
                     match result {
@@ -508,7 +506,6 @@ pub(crate) fn execute_ops_from<'a>(
                         ctx.parameters,
                         ctx.caller(),
                         &ctx.execution,
-                        ctx.gleaph_weight_decoders,
                         aggregate_specs,
                     )?;
                     rows = result.rows;
@@ -821,7 +818,6 @@ pub(crate) fn execute_ops_from<'a>(
                         var_len,
                         cost,
                         parameters,
-                        gwd,
                         &ops[op_idx + 1..],
                     )
                     .await?
@@ -1373,26 +1369,29 @@ mod tests {
     }
 
     #[test]
-    fn optional_match_gleaph_weight_on_null_edge_returns_null() {
+    fn optional_match_inline_property_on_null_edge_returns_null() {
         let store = GraphStore::new();
-        crate::test_labels::edge_label_id_for_name("NullWgtRel");
+        let label_id = crate::test_labels::edge_label_id_for_name("NullWgtRel");
         crate::test_labels::install_test_edge_inline_property_profile(
-            crate::test_labels::edge_label_id_for_name("NullWgtRel"),
-            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::from(
-                gleaph_graph_kernel::entry::EdgeWeightProfile {
-                    encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
-                },
-            ),
+            label_id,
+            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
+                byte_width: 2,
+                encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawU16,
+            },
+        );
+        crate::test_labels::install_test_edge_inline_property(
+            label_id,
+            crate::test_labels::property_id_for_name("distance"),
         );
         store
             .insert_vertex_named(["NullWgtN"], Vec::<(&str, Value)>::new())
             .expect("insert n");
         let gql = "MATCH (n:NullWgtN) OPTIONAL MATCH (n)-[e:NullWgtRel]->(m) \
-                   RETURN GLEAPH.WEIGHT(e) AS w";
+                   RETURN e.distance AS w";
         let plan = plan_gql(gql);
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
-            .expect("gleaph weight on optional miss should return null");
+            .expect("inline property on optional miss should return null");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("w"), Some(&Value::Null));
     }

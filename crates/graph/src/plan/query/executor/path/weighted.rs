@@ -9,9 +9,7 @@ use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
-use gleaph_graph_kernel::entry::{
-    EdgeLabelId, EdgeTarget, PreparedWeightDecoder, PropertyId, WeightDecodeError,
-};
+use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use ic_stable_lara::VertexId;
 use nohash_hasher::IntMap;
@@ -34,13 +32,10 @@ use crate::plan::query::executor::bindings::EdgeBinding;
 use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::eval::try_read_inline_edge_property;
 use crate::plan::query::executor::expand::{
-    ExpandDst, edge_binding_handle_for_scanned_expand, edge_binding_matches_label_expr,
-    expand_candidates_into,
+    ExpandDst, edge_binding_matches_label_expr, expand_candidates_into,
 };
 use crate::plan::query::executor::{EdgeSequenceOrder, PlanBinding};
-use crate::plan::query::gleaph_weight;
 use crate::plan::query::row::PlanRow;
-use gleaph_graph_kernel::entry::EdgeInlinePropertyBytes;
 
 /// Pre-validates `COST BY e.property` for a concrete edge label.
 ///
@@ -48,7 +43,7 @@ use gleaph_graph_kernel::entry::EdgeInlinePropertyBytes;
 /// scalar inline property id in the concrete label's `inline_schema`, and returns the resolved
 /// `PropertyId` for per-hop reads. Struct inline schemas are excluded from `COST BY` in Slice 25.
 /// Returns `Ok(None)` when the expression is not a direct inline-property access (e.g.
-/// `GLEAPH.COST BY GLEAPH.WEIGHT(e)`), letting the caller fall back to the generic evaluator.
+/// a non-inline-property expression), letting the caller fall back to the generic evaluator.
 fn prepare_inline_property_cost(
     expr: &Expr,
     edge_var: &str,
@@ -405,9 +400,8 @@ pub(crate) fn weighted_shortest_paths_between(
     cost_expr: &Expr,
     mode: ShortestMode,
     parameters: &BTreeMap<String, Value>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     store_hop_edges: bool,
-    emit_edge_binding: bool,
+    _emit_edge_binding: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
     if let Some(k) = mode.shortest_k_limit() {
         return weighted_shortest_k_paths_between(
@@ -423,9 +417,8 @@ pub(crate) fn weighted_shortest_paths_between(
             edge_var,
             cost_expr,
             parameters,
-            gleaph_weight_decoders,
             store_hop_edges,
-            emit_edge_binding,
+            _emit_edge_binding,
         );
     }
 
@@ -455,11 +448,8 @@ pub(crate) fn weighted_shortest_paths_between(
     let mut found_min_cost: Option<WeightedCost> = None;
     let mut found = Vec::new();
     let mut hop_cost_cache: WeightedHopCostCache = IntMap::default();
-    let direct_gleaph_weight_decoder =
-        direct_gleaph_weight_hop_cost_decoder(cost_expr, edge_var, gleaph_weight_decoders)?;
     let prepared_inline_cost =
         prepare_inline_property_cost(cost_expr, edge_var, execution, label_id)?;
-    let use_hop_cost_cache = direct_gleaph_weight_decoder.is_none();
     let mut any_best_cost = if matches!(mode, ShortestMode::AnyShortest)
         && bounds.min <= 1
         && !matches!(cost_expr.kind, ExprKind::Literal(_))
@@ -511,166 +501,87 @@ pub(crate) fn weighted_shortest_paths_between(
             continue;
         }
 
-        if let (Some(prep), Some(decoder), false, None) = (
-            fixed_label_expand.as_ref(),
-            direct_gleaph_weight_decoder,
-            emit_edge_binding,
-            prepared_inline_cost,
-        ) {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _expand_scope = bench_scope("weighted_shortest_expand");
-            let base_cost = entry.cost.clone();
-            prep.expand_inline_property_batches(
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _expand_scope = bench_scope("weighted_shortest_expand");
+        candidates.clear();
+        match fixed_label_expand {
+            Some(prep) => prep.expand_into(
                 store,
                 current,
-                &mut inline_property_scratch,
-                |batch| {
-                    let width = usize::from(batch.byte_width);
-                    for (edge, inline_property_bytes) in batch
-                        .edges
-                        .iter()
-                        .zip(batch.inline_property_bytes.chunks_exact(width))
-                    {
-                        let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
-                            continue;
-                        };
-                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                        let _relax_scope = bench_scope("weighted_shortest_relax");
-                        let hop_edge = if store_hop_edges {
-                            Some(EdgeBinding {
-                                handle: edge_binding_handle_for_scanned_expand(
-                                    store, current, direction, edge,
-                                )?,
-                                inline_property: EdgeInlinePropertyBytes::EMPTY,
-                            })
-                        } else {
-                            None
-                        };
-                        relax_weighted_shortest_neighbor(
-                            next,
-                            &base_cost,
-                            depth,
-                            state_idx,
-                            &mut states,
-                            &mut heap,
-                            &mut tie,
-                            &mut found_min_cost,
-                            any_best_cost.as_mut(),
-                            hop_edge,
-                            || {
-                                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                                let _scope =
-                                    bench_scope("weighted_shortest_hop_cost_decode_direct");
-                                decode_direct_gleaph_weight_hop_cost_from_inline_property(
-                                    decoder,
-                                    inline_property_bytes,
-                                )
-                            },
-                        )?;
-                    }
-                    Ok(())
+                &mut candidates,
+                ShortestExpandOptions {
+                    load_inline_property_bytes: true,
+                    inline_property_scratch: Some(&mut inline_property_scratch),
                 },
-            )?;
-        } else {
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _expand_scope = bench_scope("weighted_shortest_expand");
-            candidates.clear();
-            match fixed_label_expand {
-                Some(prep) => prep.expand_into(
+            )?,
+            None => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _generic_scope = bench_scope("weighted_shortest_expand_generic");
+                expand_candidates_into(
                     store,
+                    &crate::gql_execution_context::GqlExecutionContext::default(),
                     current,
+                    direction,
+                    label_id,
+                    EdgeSequenceOrder::Descending,
+                    None,
+                    None,
+                    None,
+                    &BTreeMap::new(),
                     &mut candidates,
-                    ShortestExpandOptions {
-                        load_inline_property_bytes: true,
-                        inline_property_scratch: Some(&mut inline_property_scratch),
-                    },
-                )?,
-                None => {
-                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                    let _generic_scope = bench_scope("weighted_shortest_expand_generic");
-                    expand_candidates_into(
-                        store,
-                        &crate::gql_execution_context::GqlExecutionContext::default(),
-                        current,
-                        direction,
-                        label_id,
-                        EdgeSequenceOrder::Descending,
-                        None,
-                        None,
-                        None,
-                        &BTreeMap::new(),
-                        &mut candidates,
-                    )?;
-                }
-            }
-            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-            let _relax_scope = bench_scope("weighted_shortest_relax");
-            let base_cost = entry.cost.clone();
-            for (edge_dst, edge_binding) in &candidates {
-                if let Some(expr) = label_expr
-                    && !edge_binding_matches_label_expr(execution, expr, edge_binding)
-                {
-                    continue;
-                }
-                let ExpandDst::Local(next) = *edge_dst else {
-                    continue;
-                };
-                relax_weighted_shortest_neighbor(
-                    next,
-                    &base_cost,
-                    depth,
-                    state_idx,
-                    &mut states,
-                    &mut heap,
-                    &mut tie,
-                    &mut found_min_cost,
-                    any_best_cost.as_mut(),
-                    store_hop_edges.then(|| edge_binding.clone()),
-                    || {
-                        if use_hop_cost_cache {
-                            let outer = weighted_hop_cache_outer_key(edge_binding);
-                            let value_key = weighted_hop_cache_value_key(edge_binding);
-                            if let Some(cost) =
-                                hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key))
-                            {
-                                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                                let _scope = bench_scope("weighted_shortest_hop_cost_cache_hit");
-                                return Ok(cost.clone());
-                            }
-                            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                            let _scope = bench_scope("weighted_shortest_hop_cost_cache_miss");
-                            let cost = eval_shortest_hop_cost(
-                                store,
-                                execution,
-                                &element_id_key,
-                                cost_expr,
-                                edge_var,
-                                edge_binding.clone(),
-                                label_expr,
-                                parameters,
-                                gleaph_weight_decoders,
-                                prepared_inline_cost,
-                            )?;
-                            hop_cost_cache
-                                .entry(outer)
-                                .or_default()
-                                .insert(value_key, cost.clone());
-                            Ok(cost)
-                        } else if label_expr.is_some() {
-                            let w = gleaph_weight::decode_shortest_hop_cost_from_edge_binding(
-                                edge_binding,
-                            )?;
-                            Ok(WeightedCost::from_validated_non_negative_float32(w))
-                        } else {
-                            #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                            let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
-                            let decoder = direct_gleaph_weight_decoder
-                                .expect("direct GLEAPH.WEIGHT path requires prepared decoder");
-                            decode_direct_gleaph_weight_hop_cost(decoder, edge_binding.clone())
-                        }
-                    },
                 )?;
             }
+        }
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _relax_scope = bench_scope("weighted_shortest_relax");
+        let base_cost = entry.cost.clone();
+        for (edge_dst, edge_binding) in &candidates {
+            if let Some(expr) = label_expr
+                && !edge_binding_matches_label_expr(execution, expr, edge_binding)
+            {
+                continue;
+            }
+            let ExpandDst::Local(next) = *edge_dst else {
+                continue;
+            };
+            relax_weighted_shortest_neighbor(
+                next,
+                &base_cost,
+                depth,
+                state_idx,
+                &mut states,
+                &mut heap,
+                &mut tie,
+                &mut found_min_cost,
+                any_best_cost.as_mut(),
+                store_hop_edges.then(|| edge_binding.clone()),
+                || {
+                    let outer = weighted_hop_cache_outer_key(edge_binding);
+                    let value_key = weighted_hop_cache_value_key(edge_binding);
+                    if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key)) {
+                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                        let _scope = bench_scope("weighted_shortest_hop_cost_cache_hit");
+                        return Ok(cost.clone());
+                    }
+                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                    let _scope = bench_scope("weighted_shortest_hop_cost_cache_miss");
+                    let cost = eval_shortest_hop_cost(
+                        store,
+                        execution,
+                        &element_id_key,
+                        cost_expr,
+                        edge_var,
+                        edge_binding.clone(),
+                        parameters,
+                        prepared_inline_cost,
+                    )?;
+                    hop_cost_cache
+                        .entry(outer)
+                        .or_default()
+                        .insert(value_key, cost.clone());
+                    Ok(cost)
+                },
+            )?;
         }
     }
 
@@ -691,9 +602,8 @@ fn weighted_shortest_k_paths_between(
     edge_var: &str,
     cost_expr: &Expr,
     parameters: &BTreeMap<String, Value>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     store_hop_edges: bool,
-    emit_edge_binding: bool,
+    _emit_edge_binding: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
     let k = usize::try_from(k).map_err(|_| PlanQueryError::InvalidLimit {
         value: Value::Uint64(k),
@@ -731,11 +641,8 @@ fn weighted_shortest_k_paths_between(
     let mut found = Vec::with_capacity(k.min(8));
     let mut found_min_cost = None;
     let mut hop_cost_cache: WeightedHopCostCache = IntMap::default();
-    let direct_gleaph_weight_decoder =
-        direct_gleaph_weight_hop_cost_decoder(cost_expr, edge_var, gleaph_weight_decoders)?;
     let prepared_inline_cost =
         prepare_inline_property_cost(cost_expr, edge_var, execution, label_id)?;
-    let use_hop_cost_cache = direct_gleaph_weight_decoder.is_none();
     let mut candidates = Vec::new();
     let mut inline_property_scratch = LabeledEdgeInlinePropertyBatchScratch::<Edge>::default();
     let fixed_label_expand = match label_id {
@@ -758,147 +665,77 @@ fn weighted_shortest_k_paths_between(
             continue;
         }
 
-        if let (Some(prep), Some(decoder), false, None) = (
-            fixed_label_expand.as_ref(),
-            direct_gleaph_weight_decoder,
-            emit_edge_binding,
-            prepared_inline_cost,
-        ) {
-            let base_cost = entry.cost.clone();
-            prep.expand_inline_property_batches(
+        candidates.clear();
+        match fixed_label_expand {
+            Some(prep) => prep.expand_into(
                 store,
                 current,
-                &mut inline_property_scratch,
-                |batch| {
-                    let width = usize::from(batch.byte_width);
-                    for (edge, inline_property_bytes) in batch
-                        .edges
-                        .iter()
-                        .zip(batch.inline_property_bytes.chunks_exact(width))
-                    {
-                        let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
-                            continue;
-                        };
-                        let hop_edge = if store_hop_edges {
-                            Some(EdgeBinding {
-                                handle: edge_binding_handle_for_scanned_expand(
-                                    store, current, direction, edge,
-                                )?,
-                                inline_property: EdgeInlinePropertyBytes::EMPTY,
-                            })
-                        } else {
-                            None
-                        };
-                        relax_weighted_shortest_neighbor(
-                            next,
-                            &base_cost,
-                            depth,
-                            state_idx,
-                            &mut states,
-                            &mut heap,
-                            &mut tie,
-                            &mut found_min_cost,
-                            None,
-                            hop_edge,
-                            || {
-                                decode_direct_gleaph_weight_hop_cost_from_inline_property(
-                                    decoder,
-                                    inline_property_bytes,
-                                )
-                            },
-                        )?;
-                    }
-                    Ok(())
+                &mut candidates,
+                ShortestExpandOptions {
+                    load_inline_property_bytes: true,
+                    inline_property_scratch: Some(&mut inline_property_scratch),
                 },
-            )?;
-        } else {
-            candidates.clear();
-            match fixed_label_expand {
-                Some(prep) => prep.expand_into(
+            )?,
+            None => {
+                expand_candidates_into(
                     store,
+                    &crate::gql_execution_context::GqlExecutionContext::default(),
                     current,
-                    &mut candidates,
-                    ShortestExpandOptions {
-                        load_inline_property_bytes: true,
-                        inline_property_scratch: Some(&mut inline_property_scratch),
-                    },
-                )?,
-                None => {
-                    expand_candidates_into(
-                        store,
-                        &crate::gql_execution_context::GqlExecutionContext::default(),
-                        current,
-                        direction,
-                        label_id,
-                        EdgeSequenceOrder::Descending,
-                        None,
-                        None,
-                        None,
-                        &BTreeMap::new(),
-                        &mut candidates,
-                    )?;
-                }
-            }
-            let base_cost = entry.cost.clone();
-            for (edge_dst, edge_binding) in &candidates {
-                if let Some(expr) = label_expr
-                    && !edge_binding_matches_label_expr(execution, expr, edge_binding)
-                {
-                    continue;
-                }
-                let ExpandDst::Local(next) = *edge_dst else {
-                    continue;
-                };
-                relax_weighted_shortest_neighbor(
-                    next,
-                    &base_cost,
-                    depth,
-                    state_idx,
-                    &mut states,
-                    &mut heap,
-                    &mut tie,
-                    &mut found_min_cost,
+                    direction,
+                    label_id,
+                    EdgeSequenceOrder::Descending,
                     None,
-                    store_hop_edges.then(|| edge_binding.clone()),
-                    || {
-                        if use_hop_cost_cache {
-                            let outer = weighted_hop_cache_outer_key(edge_binding);
-                            let value_key = weighted_hop_cache_value_key(edge_binding);
-                            if let Some(cost) =
-                                hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key))
-                            {
-                                return Ok(cost.clone());
-                            }
-                            let cost = eval_shortest_hop_cost(
-                                store,
-                                execution,
-                                &element_id_key,
-                                cost_expr,
-                                edge_var,
-                                edge_binding.clone(),
-                                label_expr,
-                                parameters,
-                                gleaph_weight_decoders,
-                                prepared_inline_cost,
-                            )?;
-                            hop_cost_cache
-                                .entry(outer)
-                                .or_default()
-                                .insert(value_key, cost.clone());
-                            Ok(cost)
-                        } else if label_expr.is_some() {
-                            let w = gleaph_weight::decode_shortest_hop_cost_from_edge_binding(
-                                edge_binding,
-                            )?;
-                            Ok(WeightedCost::from_validated_non_negative_float32(w))
-                        } else {
-                            let decoder = direct_gleaph_weight_decoder
-                                .expect("direct GLEAPH.WEIGHT path requires prepared decoder");
-                            decode_direct_gleaph_weight_hop_cost(decoder, edge_binding.clone())
-                        }
-                    },
+                    None,
+                    None,
+                    &BTreeMap::new(),
+                    &mut candidates,
                 )?;
             }
+        }
+        let base_cost = entry.cost.clone();
+        for (edge_dst, edge_binding) in &candidates {
+            if let Some(expr) = label_expr
+                && !edge_binding_matches_label_expr(execution, expr, edge_binding)
+            {
+                continue;
+            }
+            let ExpandDst::Local(next) = *edge_dst else {
+                continue;
+            };
+            relax_weighted_shortest_neighbor(
+                next,
+                &base_cost,
+                depth,
+                state_idx,
+                &mut states,
+                &mut heap,
+                &mut tie,
+                &mut found_min_cost,
+                None,
+                store_hop_edges.then(|| edge_binding.clone()),
+                || {
+                    let outer = weighted_hop_cache_outer_key(edge_binding);
+                    let value_key = weighted_hop_cache_value_key(edge_binding);
+                    if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key)) {
+                        return Ok(cost.clone());
+                    }
+                    let cost = eval_shortest_hop_cost(
+                        store,
+                        execution,
+                        &element_id_key,
+                        cost_expr,
+                        edge_var,
+                        edge_binding.clone(),
+                        parameters,
+                        prepared_inline_cost,
+                    )?;
+                    hop_cost_cache
+                        .entry(outer)
+                        .or_default()
+                        .insert(value_key, cost.clone());
+                    Ok(cost)
+                },
+            )?;
         }
     }
 
@@ -954,29 +791,6 @@ fn relax_weighted_shortest_neighbor(
     Ok(())
 }
 
-fn decode_direct_gleaph_weight_hop_cost_from_inline_property(
-    decoder: &PreparedWeightDecoder,
-    inline_property_bytes: &[u8],
-) -> Result<WeightedCost, PlanQueryError> {
-    if let Some(weight) = decoder.decode_raw_u16(inline_property_bytes) {
-        let weight = u128::from(weight);
-        return Ok(WeightedCost {
-            value: Value::Uint16(weight as u16),
-            order_key: if weight == 0 {
-                WeightedCostOrderKey::Zero
-            } else {
-                WeightedCostOrderKey::Uint128(weight)
-            },
-        });
-    }
-    let weight = decoder
-        .decode(inline_property_bytes)
-        .map_err(|e: WeightDecodeError| PlanQueryError::GleaphWeight {
-            message: format!("edge inline value decode failed: {e}"),
-        })?;
-    Ok(WeightedCost::from_validated_non_negative_float32(weight))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn eval_shortest_hop_cost(
     store: &GraphStore,
@@ -985,23 +799,9 @@ fn eval_shortest_hop_cost(
     expr: &Expr,
     edge_var: &str,
     edge_binding: EdgeBinding,
-    label_expr: Option<&LabelExpr>,
     parameters: &BTreeMap<String, Value>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     prepared_inline_cost: Option<PropertyId>,
 ) -> Result<WeightedCost, PlanQueryError> {
-    if label_expr.is_some() {
-        let w = gleaph_weight::decode_shortest_hop_cost_from_edge_binding(&edge_binding)?;
-        return Ok(WeightedCost::from_validated_non_negative_float32(w));
-    }
-    if let Some(cost) = eval_direct_gleaph_weight_hop_cost(
-        expr,
-        edge_var,
-        edge_binding.clone(),
-        gleaph_weight_decoders,
-    )? {
-        return Ok(cost);
-    }
     if let Some(property_id) = prepared_inline_cost {
         let value = try_read_inline_edge_property(
             &edge_binding,
@@ -1022,68 +822,8 @@ fn eval_shortest_hop_cost(
         caller: execution.caller,
         resolved_labels: execution.resolved_labels.as_ref(),
         resolved_properties: execution.resolved_properties.as_ref(),
-        gleaph_weight_decoders,
         element_id_key: *element_id_key,
     };
     let value = evaluator.eval_expr(&row, expr)?;
     WeightedCost::from_value(value)
-}
-
-fn eval_direct_gleaph_weight_hop_cost(
-    expr: &Expr,
-    edge_var: &str,
-    edge_binding: EdgeBinding,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
-) -> Result<Option<WeightedCost>, PlanQueryError> {
-    let Some(decoder) =
-        direct_gleaph_weight_hop_cost_decoder(expr, edge_var, gleaph_weight_decoders)?
-    else {
-        return Ok(None);
-    };
-    decode_direct_gleaph_weight_hop_cost(decoder, edge_binding).map(Some)
-}
-
-fn direct_gleaph_weight_hop_cost_decoder<'a>(
-    expr: &Expr,
-    edge_var: &str,
-    gleaph_weight_decoders: Option<&'a BTreeMap<String, PreparedWeightDecoder>>,
-) -> Result<Option<&'a PreparedWeightDecoder>, PlanQueryError> {
-    let ExprKind::FunctionCall {
-        name,
-        args,
-        distinct,
-    } = &expr.kind
-    else {
-        return Ok(None);
-    };
-    if !gleaph_weight::is_gleaph_weight_call(name, *distinct) {
-        return Ok(None);
-    }
-    let Some(arg) = gleaph_weight::gleaph_weight_single_arg(args) else {
-        return Ok(None);
-    };
-    let Some(arg_edge_var) = gleaph_weight::gleaph_weight_arg_edge_var(arg) else {
-        return Ok(None);
-    };
-    if arg_edge_var != edge_var {
-        return Ok(None);
-    }
-    gleaph_weight_decoders
-        .and_then(|decoders| decoders.get(edge_var))
-        .ok_or_else(|| PlanQueryError::GleaphWeight {
-            message: format!(
-                "GLEAPH.WEIGHT({edge_var}): no prepared decoder for this edge variable"
-            ),
-        })
-        .map(Some)
-}
-
-pub(crate) fn decode_direct_gleaph_weight_hop_cost(
-    decoder: &PreparedWeightDecoder,
-    edge_binding: EdgeBinding,
-) -> Result<WeightedCost, PlanQueryError> {
-    decode_direct_gleaph_weight_hop_cost_from_inline_property(
-        decoder,
-        edge_binding.inline_property_bytes_slice(),
-    )
 }

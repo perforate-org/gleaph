@@ -214,16 +214,11 @@ pub(super) fn plan_edge_filter_fusion(
 }
 
 fn find_first_edge_inline_property_predicate_in_conjunctions(
-    conjuncts: &[Expr],
-    edge_var: &str,
+    _conjuncts: &[Expr],
+    _edge_var: &str,
 ) -> Option<(usize, EdgeInlinePropertyPredicate)> {
-    for (i, c) in conjuncts.iter().enumerate() {
-        if let Some((v, pred)) = parse_gleaph_weight_predicate(c)
-            && v == edge_var
-        {
-            return Some((i, pred));
-        }
-    }
+    // The legacy `GLEAPH.WEIGHT(e) = value` fusion path has been removed (ADR 0051 Phase B).
+    // Equality on an edge inline property is now evaluated as an ordinary expression predicate.
     None
 }
 
@@ -286,22 +281,6 @@ fn vector_metric_accepts_cmp(metric: EdgeVectorMetric, op: CmpOp) -> bool {
     }
 }
 
-fn parse_gleaph_weight_predicate(expr: &Expr) -> Option<(String, EdgeInlinePropertyPredicate)> {
-    let ExprKind::Compare { left, op, right } = &expr.kind else {
-        return None;
-    };
-    if let Some(edge_var) = gleaph_weight_edge_var(left) {
-        return anchor::scan_value_from_expr(right)
-            .map(|value| (edge_var, EdgeInlinePropertyPredicate { op: *op, value }));
-    }
-    if let Some(edge_var) = gleaph_weight_edge_var(right) {
-        let flipped = flip_cmp_op(*op)?;
-        return anchor::scan_value_from_expr(left)
-            .map(|value| (edge_var, EdgeInlinePropertyPredicate { op: flipped, value }));
-    }
-    None
-}
-
 fn gleaph_vector_call(expr: &Expr) -> Option<(String, EdgeVectorMetric, ScanValue)> {
     let ExprKind::FunctionCall {
         name,
@@ -345,30 +324,6 @@ fn flip_cmp_op(op: CmpOp) -> Option<CmpOp> {
         CmpOp::Gt => CmpOp::Lt,
         CmpOp::Ge => CmpOp::Le,
     })
-}
-
-fn gleaph_weight_edge_var(expr: &Expr) -> Option<String> {
-    let ExprKind::FunctionCall {
-        name,
-        args,
-        distinct,
-    } = &expr.kind
-    else {
-        return None;
-    };
-    if *distinct
-        || name.parts.len() != 2
-        || !name.parts[0].eq_ignore_ascii_case("gleaph")
-        || !name.parts[1].eq_ignore_ascii_case("weight")
-        || args.len() != 1
-    {
-        return None;
-    }
-    match &args[0].kind {
-        ExprKind::Variable(v) => Some(v.clone()),
-        ExprKind::Paren(inner) => gleaph_weight_edge_var(inner),
-        _ => None,
-    }
 }
 
 fn find_first_indexed_edge_eq_in_conjunctions(

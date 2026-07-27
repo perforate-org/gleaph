@@ -16,7 +16,7 @@ pub(crate) trait PlanRowExprEval {
     fn eval_expr_for_row(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError>;
 
     /// When set, folds one aggregate operand over a variable-length edge group in-row
-    /// (e.g. `SUM(GLEAPH.WEIGHT(e))` with `e` bound to [`PlanBinding::EdgeGroup`]).
+    /// (e.g. `SUM(e.distance)` with `e` bound to [`PlanBinding::EdgeGroup`]).
     fn try_eval_horizontal_sum_operand(
         &self,
         _row: &PlanRow,

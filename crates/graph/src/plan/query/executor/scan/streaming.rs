@@ -7,7 +7,7 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
     AggregateSpec, EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, PlanOp, ScanValue, Str,
 };
-use gleaph_graph_kernel::entry::{Edge, PreparedWeightDecoder};
+use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrVertexTombstone;
@@ -111,7 +111,6 @@ pub(crate) fn execute_limited_streaming_prefix(
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
     execution: &GqlExecutionContext,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     aggregate_specs: Option<&[AggregateSpec]>,
 ) -> Result<super::LimitedStreamingPrefixResult, PlanQueryError> {
     let Some((PlanOp::Limit { count, offset }, streaming_ops)) = ops.split_last() else {
@@ -127,7 +126,6 @@ pub(crate) fn execute_limited_streaming_prefix(
         caller,
         resolved_labels: execution.resolved_labels.as_ref(),
         resolved_properties: execution.resolved_properties.as_ref(),
-        gleaph_weight_decoders,
         element_id_key: crate::element_id_encoding::resolve_or_host_fixture(
             execution.element_id_encoding_key(),
         ),
@@ -163,7 +161,6 @@ pub(crate) fn execute_limited_streaming_prefix(
             parameters,
             caller,
             execution,
-            gleaph_weight_decoders,
             &evaluator,
             &mut sink,
             &mut clears_active_aggregate,
@@ -187,7 +184,6 @@ fn stream_row_through_ops(
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
     execution: &GqlExecutionContext,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
@@ -210,7 +206,6 @@ fn stream_row_through_ops(
             execution,
             parameters,
             caller,
-            gleaph_weight_decoders,
             evaluator,
             sink,
             clears_active_aggregate,
@@ -225,7 +220,6 @@ fn stream_row_through_ops(
                     parameters,
                     caller,
                     execution,
-                    gleaph_weight_decoders,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -248,7 +242,6 @@ fn stream_row_through_ops(
                 parameters,
                 caller,
                 execution,
-                gleaph_weight_decoders,
                 evaluator,
                 sink,
                 clears_active_aggregate,
@@ -264,7 +257,6 @@ fn stream_row_through_ops(
                     parameters,
                     caller,
                     execution,
-                    gleaph_weight_decoders,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -285,7 +277,6 @@ fn stream_row_through_ops(
                 parameters,
                 caller,
                 execution,
-                gleaph_weight_decoders,
                 evaluator,
                 sink,
                 clears_active_aggregate,
@@ -340,7 +331,6 @@ fn stream_row_through_ops(
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
                     caller,
-                    gleaph_weight_decoders,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -370,7 +360,6 @@ fn stream_row_through_ops(
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
                     caller,
-                    gleaph_weight_decoders,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -427,7 +416,6 @@ fn stream_row_through_ops(
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
                     caller,
-                    gleaph_weight_decoders,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -457,7 +445,6 @@ fn stream_row_through_ops(
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
                     caller,
-                    gleaph_weight_decoders,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -479,7 +466,6 @@ fn stream_node_scan(
     execution: &GqlExecutionContext,
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
@@ -519,7 +505,6 @@ fn stream_node_scan(
             parameters,
             caller,
             execution,
-            gleaph_weight_decoders,
             evaluator,
             sink,
             clears_active_aggregate,
@@ -574,7 +559,6 @@ fn stream_var_len_expand(
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
     caller: Option<Principal>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
@@ -637,7 +621,6 @@ fn stream_var_len_expand(
             parameters,
             caller,
             execution,
-            gleaph_weight_decoders,
             evaluator,
             sink,
             clears_active_aggregate,
@@ -672,7 +655,6 @@ fn stream_expand(
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
     caller: Option<Principal>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
@@ -756,7 +738,6 @@ fn stream_expand(
                 parameters,
                 caller,
                 execution,
-                gleaph_weight_decoders,
                 evaluator,
                 sink,
                 clears_active_aggregate,
@@ -823,7 +804,6 @@ fn stream_expand(
                         dst_id,
                         dst_filter,
                         caller,
-                        gleaph_weight_decoders,
                         execution,
                     )?
                 {
@@ -856,7 +836,6 @@ fn stream_expand(
                 parameters,
                 caller,
                 execution,
-                gleaph_weight_decoders,
                 evaluator,
                 sink,
                 clears_active_aggregate,
@@ -905,7 +884,6 @@ fn stream_expand(
                     dst_id,
                     dst_filter,
                     caller,
-                    gleaph_weight_decoders,
                     execution,
                 )?
             {
@@ -938,7 +916,6 @@ fn stream_expand(
             parameters,
             caller,
             execution,
-            gleaph_weight_decoders,
             evaluator,
             sink,
             clears_active_aggregate,

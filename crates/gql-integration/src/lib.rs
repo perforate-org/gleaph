@@ -5,8 +5,6 @@
 //!
 //! - `path_extension::GLEAPH_PATH_EXTENSION_HANDLER` translates Gleaph path-extension clauses
 //!   (e.g. `GLEAPH COST`) into planner concepts consumed by Router and Graph planning;
-//! - `weight::GleaphWeightEdgeRef` and `weight::is_gleaph_weight_call` provide pure expression-shape
-//!   classification for `GLEAPH WEIGHT(...)` calls consumed by Graph execution.
 //! - `typed_batch::classify_typed_batch_eligibility` decides whether a homogeneous bulk group may
 //!   use the typed V1 inter-canister envelope (ADR 0047).
 //!
@@ -14,7 +12,6 @@
 
 pub mod path_extension;
 pub mod typed_batch;
-pub mod weight;
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -31,14 +28,6 @@ mod test_support {
 
     pub fn cost_extension() -> ObjectName {
         ObjectName::simple("COST")
-    }
-
-    pub fn gleaph_weight(edge_var: &str) -> Expr {
-        Expr::new(ExprKind::FunctionCall {
-            name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
-            args: vec![Expr::var(edge_var)],
-            distinct: false,
-        })
     }
 
     pub fn cost_property(edge_var: &str, property: &str) -> Expr {

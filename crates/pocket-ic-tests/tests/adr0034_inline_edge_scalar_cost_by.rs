@@ -2,8 +2,8 @@
 //!
 //! Router-resolved schema identifies the named inline scalar property; Graph evaluates each hop
 //! through the shared inline-aware edge property reader while preserving `WeightedCost` validation,
-//! ordering, and accumulation. The compatibility surface `GLEAPH.COST BY GLEAPH.WEIGHT(e)` remains
-//! unchanged.
+//! ordering, and accumulation. The legacy `GLEAPH.COST BY GLEAPH.WEIGHT(e)` compatibility
+//! surface has been removed (ADR 0051 Phase B).
 
 use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
 use gleaph_graph_kernel::federation::RouterError;

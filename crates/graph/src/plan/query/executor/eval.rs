@@ -6,14 +6,10 @@ use jiff::Unit;
 
 use crate::edge_inline_property_scalar_codec::decode_edge_inline_property_scalar;
 use gleaph_gql::Value;
-use gleaph_gql::ast::{
-    AggregateFunc, CmpOp, DurationQualifier, Expr, ExprKind, ObjectName, TruthValue,
-};
+use gleaph_gql::ast::{CmpOp, DurationQualifier, Expr, ExprKind, TruthValue};
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
-use gleaph_graph_kernel::entry::{
-    EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, PropertyId, Vertex,
-};
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PropertyId, Vertex};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::{
@@ -74,19 +70,6 @@ pub(crate) fn eval_sort_expr(
         }
         Err(err) => Err(err),
     }
-}
-
-fn decode_gleaph_weight_for_edge_binding(
-    decoder: &PreparedWeightDecoder,
-    edge: &EdgeBinding,
-) -> Result<f32, PlanQueryError> {
-    super::super::gleaph_weight::decode_shortest_hop_cost_from_edge_binding(edge).or_else(|_| {
-        super::super::gleaph_weight::decode_traversal_edge_weight_prepared(
-            decoder,
-            edge.inline_property_len(),
-            edge.inline_property_bytes_slice(),
-        )
-    })
 }
 
 #[cfg(feature = "cypher")]
@@ -171,141 +154,6 @@ fn list_index_into_value(list: &Value, index: i64) -> Result<Value, PlanQueryErr
         .get(usize::try_from(idx).unwrap_or(items.len()))
         .cloned()
         .unwrap_or(Value::Null))
-}
-
-fn try_eval_horizontal_sum_gleaph_weight(
-    evaluator: &QueryExprEvaluator<'_>,
-    row: &PlanRow,
-    inner: &Expr,
-) -> Result<Option<Value>, PlanQueryError> {
-    let ExprKind::FunctionCall {
-        name,
-        args,
-        distinct,
-    } = &inner.kind
-    else {
-        return Ok(None);
-    };
-    if !super::super::gleaph_weight::is_gleaph_weight_call(name, *distinct)
-        || args.len() != 1
-        || *distinct
-    {
-        return Ok(None);
-    }
-    let Some(super::super::gleaph_weight::GleaphWeightEdgeRef::SingletonVar(group_var)) =
-        super::super::gleaph_weight::gleaph_weight_edge_ref(&args[0])
-    else {
-        return Ok(None);
-    };
-    let Some(PlanBinding::EdgeGroup(edges)) = row.get(group_var.as_str()) else {
-        return Ok(None);
-    };
-    let decoder = evaluator
-        .gleaph_weight_decoders
-        .as_ref()
-        .and_then(|map| map.get(&group_var))
-        .ok_or_else(|| PlanQueryError::GleaphWeight {
-            message: format!(
-                "SUM(GLEAPH.WEIGHT({group_var})): no prepared decoder for this edge variable"
-            ),
-        })?;
-    let mut sum = 0.0f32;
-    for edge in edges.iter() {
-        sum += decode_gleaph_weight_for_edge_binding(decoder, edge)?;
-    }
-    Ok(Some(Value::Float32(sum)))
-}
-
-// `evaluator` is only consulted by the cypher list-index (`GroupElement`) arm.
-#[cfg_attr(not(feature = "cypher"), allow(unused_variables))]
-fn try_eval_gleaph_weight(
-    decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
-    name: &ObjectName,
-    args: &[Expr],
-    distinct: bool,
-    row: &PlanRow,
-    evaluator: &QueryExprEvaluator<'_>,
-) -> Result<Option<Value>, PlanQueryError> {
-    if !super::super::gleaph_weight::is_gleaph_weight_call(name, distinct) {
-        return Ok(None);
-    }
-    // Inline edge weights decode to FLOAT32; cost expressions may widen via casts or arithmetic.
-    if distinct {
-        return Err(PlanQueryError::GleaphWeight {
-            message: "GLEAPH.WEIGHT does not support DISTINCT".into(),
-        });
-    }
-    let map = decoders.ok_or_else(|| PlanQueryError::GleaphWeight {
-        message: "GLEAPH.WEIGHT requires query preparation (no decoder table)".into(),
-    })?;
-    if args.len() != 1 {
-        return Err(PlanQueryError::GleaphWeight {
-            message: format!("GLEAPH.WEIGHT expects 1 argument, got {}", args.len()),
-        });
-    }
-    let Some(edge_ref) = super::super::gleaph_weight::gleaph_weight_edge_ref(&args[0]) else {
-        return Err(PlanQueryError::GleaphWeight {
-            message: "GLEAPH.WEIGHT argument must be an edge variable or indexed group element"
-                .into(),
-        });
-    };
-    match edge_ref {
-        super::super::gleaph_weight::GleaphWeightEdgeRef::SingletonVar(edge_var) => {
-            let decoder = map
-                .get(&edge_var)
-                .ok_or_else(|| PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH.WEIGHT({edge_var}): no prepared decoder for this edge variable"
-                    ),
-                })?;
-            let binding =
-                row.get(edge_var.as_str())
-                    .ok_or_else(|| PlanQueryError::MissingBinding {
-                        variable: edge_var.clone(),
-                    })?;
-            match binding {
-                PlanBinding::Value(Value::Null) => Ok(Some(Value::Null)),
-                PlanBinding::Edge(edge) => {
-                    let w = decode_gleaph_weight_for_edge_binding(decoder, edge)?;
-                    Ok(Some(Value::Float32(w)))
-                }
-                PlanBinding::EdgeGroup(_) => Err(PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH.WEIGHT({edge_var}): edge variable is a group; \
-                         use an element index such as GLEAPH.WEIGHT({edge_var}[-1]) \
-                         or SUM(GLEAPH.WEIGHT({edge_var}))"
-                    ),
-                }),
-                _ => Err(PlanQueryError::GleaphWeight {
-                    message: format!("GLEAPH.WEIGHT({edge_var}): binding is not an edge"),
-                }),
-            }
-        }
-        #[cfg(feature = "cypher")]
-        super::super::gleaph_weight::GleaphWeightEdgeRef::GroupElement { group_var, index } => {
-            let decoder = map
-                .get(&group_var)
-                .ok_or_else(|| PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH.WEIGHT({group_var}[…]): no prepared decoder for this edge variable"
-                    ),
-                })?;
-            let Some(PlanBinding::EdgeGroup(edges)) = row.get(group_var.as_str()) else {
-                return Err(PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH.WEIGHT({group_var}[…]): binding is not a variable-length edge group"
-                    ),
-                });
-            };
-            let index_value = evaluator.eval_expr(row, &index)?;
-            let idx = list_index_to_i64(&index_value)?;
-            let Some(edge) = edge_group_element_at_index(edges, idx) else {
-                return Ok(Some(Value::Null));
-            };
-            let w = decode_gleaph_weight_for_edge_binding(decoder, edge)?;
-            Ok(Some(Value::Float32(w)))
-        }
-    }
 }
 
 /// Reads an inline edge property if `(label_id, property_id)` matches the Router-resolved
@@ -714,21 +562,7 @@ impl QueryExprEvaluator<'_> {
                 .map(|(name, expr)| self.eval_expr(row, expr).map(|value| (name.clone(), value)))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Record),
-            ExprKind::Aggregate {
-                func,
-                expr: inner,
-                distinct,
-                filter,
-                ..
-            } => {
-                if !*distinct
-                    && filter.is_none()
-                    && *func == AggregateFunc::Sum
-                    && let Some(inner) = inner
-                    && let Some(value) = try_eval_horizontal_sum_gleaph_weight(self, row, inner)?
-                {
-                    return Ok(value);
-                }
+            ExprKind::Aggregate { .. } => {
                 let Some(specs) = self.aggregate_specs else {
                     return Err(PlanQueryError::UnsupportedExpression {
                         expression: "aggregate".to_owned(),
@@ -781,25 +615,13 @@ impl QueryExprEvaluator<'_> {
                 name,
                 args,
                 distinct,
-            } => {
-                if let Some(v) = try_eval_gleaph_weight(
-                    self.gleaph_weight_decoders,
-                    name,
-                    args,
-                    *distinct,
-                    row,
-                    self,
-                )? {
-                    return Ok(v);
-                }
-                match try_eval_runtime_function_call(self.caller, name, args, *distinct) {
-                    Ok(Some(value)) => Ok(value),
-                    Ok(None) => Err(PlanQueryError::UnsupportedExpression {
-                        expression: format!("{:?}", expr.kind),
-                    }),
-                    Err(e) => Err(e.into()),
-                }
-            }
+            } => match try_eval_runtime_function_call(self.caller, name, args, *distinct) {
+                Ok(Some(value)) => Ok(value),
+                Ok(None) => Err(PlanQueryError::UnsupportedExpression {
+                    expression: format!("{:?}", expr.kind),
+                }),
+                Err(e) => Err(e.into()),
+            },
             ExprKind::CurrentTimestamp => Ok(current_datetime_value()),
             ExprKind::CurrentLocalTimestamp => Ok(current_local_datetime_value()),
             ExprKind::CurrentDate => Ok(current_date_value()),
@@ -1068,14 +890,6 @@ impl QueryExprEvaluator<'_> {
 impl super::super::aggregate::PlanRowExprEval for QueryExprEvaluator<'_> {
     fn eval_expr_for_row(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
         QueryExprEvaluator::eval_expr(self, row, expr)
-    }
-
-    fn try_eval_horizontal_sum_operand(
-        &self,
-        row: &PlanRow,
-        expr: &Expr,
-    ) -> Result<Option<Value>, PlanQueryError> {
-        try_eval_horizontal_sum_gleaph_weight(self, row, expr)
     }
 
     fn eval_sort_key_for_row(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
@@ -1963,7 +1777,6 @@ mod tests {
                 caller: None,
                 resolved_labels: None,
                 resolved_properties: None,
-                gleaph_weight_decoders: None,
                 element_id_key: key,
             }
         };

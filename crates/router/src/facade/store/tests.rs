@@ -548,7 +548,7 @@ fn unregister_graph_cascades_vocabulary_partitions() {
             "KNOWS",
             EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         )
         .expect("inline property profile");
@@ -1307,7 +1307,7 @@ fn resolve_plan_attaches_edge_inline_property_profile() {
 
     let profile = EdgeInlinePropertyProfile {
         byte_width: 2,
-        encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+        encoding: EdgeInlinePropertyEncoding::RawU16,
     };
     store
         .admin_intern_edge_label(admin, "tenant.main", "KNOWS")
@@ -3380,7 +3380,7 @@ fn inline_scalar_schema_conflicts_with_legacy_profile() {
             "ROAD",
             EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         )
         .expect("legacy profile");
@@ -3420,7 +3420,7 @@ fn legacy_profile_setter_conflicts_with_inline_scalar() {
             "ROAD",
             EdgeInlinePropertyProfile {
                 byte_width: 2,
-                encoding: EdgeInlinePropertyEncoding::WeightRawU16,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         )
         .expect_err("conflict");

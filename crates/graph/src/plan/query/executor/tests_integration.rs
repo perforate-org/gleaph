@@ -58,7 +58,6 @@ fn explicit_empty_resolved_table_fails_labeled_expand() {
             resolved_search: None,
             write_journal: true,
         },
-        None,
     );
     let err = pollster::block_on(execute_expand(
         &ctx,
