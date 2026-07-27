@@ -103,7 +103,6 @@ mod visit_window;
 pub use error::InitError;
 pub(crate) use iter::OutEdgeSlabIter;
 pub use iter::{AscOutEdgesIter, OutEdgesIter};
-pub(crate) use iter::{OutOverflowAscParts, OutOverflowDescParts};
 pub(crate) use targets::{DeleteTarget, EdgeLayout, InsertLocation};
 pub(crate) use visit_window::OutEdgeVisitWindow;
 
