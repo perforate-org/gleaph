@@ -126,6 +126,60 @@ fn next_insert_edge_reuses_matched_vertices() {
 }
 
 #[test]
+fn disconnected_match_paths_use_cartesian_product() {
+    // Two independent paths in one MATCH must be combined with a CartesianProduct,
+    // not emitted as sequential leading scans, so federated execution can run the plan
+    // without requiring a multi-variable seed relation.
+    let block = parse_block(
+        "MATCH (a:Post {id: 'a'}), (b:Topic {id: 'b'}) RETURN a NEXT INSERT (a)-[:TAGGED]->(b)",
+    );
+    let plan = build_block_plan(&block, None).expect("plan should build");
+
+    // The very first op must be a CartesianProduct wrapping the two independent scans.
+    assert!(
+        matches!(plan.ops.first(), Some(PlanOp::CartesianProduct { .. })),
+        "disconnected MATCH paths must start with a CartesianProduct, got {:?}",
+        plan.ops.first()
+    );
+
+    // Both scans must still exist inside the product arms.
+    let mut found_a = false;
+    let mut found_b = false;
+    for op in &plan.ops {
+        if let PlanOp::CartesianProduct { left, right } = op {
+            for child in left.iter().chain(right.iter()) {
+                if let PlanOp::NodeScan {
+                    variable, label, ..
+                } = child
+                {
+                    if variable.as_ref() == "a"
+                        && label.as_ref().is_some_and(|l| l.name.as_ref() == "Post")
+                    {
+                        found_a = true;
+                    }
+                    if variable.as_ref() == "b"
+                        && label.as_ref().is_some_and(|l| l.name.as_ref() == "Topic")
+                    {
+                        found_b = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(found_a, "CartesianProduct must contain NodeScan for a");
+    assert!(found_b, "CartesianProduct must contain NodeScan for b");
+
+    // The insert still references both matched vertices.
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::InsertEdge { src, dst, .. } if src.as_ref() == "a" && dst.as_ref() == "b"
+        )),
+        "InsertEdge must reference the matched endpoints"
+    );
+}
+
+#[test]
 fn next_call_before_insert_reuses_matched_vertex() {
     let block = parse_block(
         "MATCH (a:BindNextUser {id: 'alice'}) RETURN a NEXT CALL GLEAPH.FINALIZE_FORWARD_EDGE_SPAN(a) RETURN a NEXT INSERT (a)-[:BIND_NEXT_FOLLOWS]->(a)",
@@ -180,5 +234,47 @@ fn next_insert_edge_without_yield_preserves_all_typed_bindings() {
     assert!(
         hidden_names.contains("a") && hidden_names.contains("b") && hidden_names.contains("c"),
         "boundary projection must keep all matched typed bindings, not only RETURN items"
+    );
+}
+
+#[test]
+fn disconnected_three_match_paths_use_cartesian_product() {
+    let block = parse_block(
+        "MATCH (a:Post {id: 'a'}), (b:Topic {id: 'b'}), (c:Tag {id: 'c'}) RETURN a NEXT INSERT (a)-[:TAGGED]->(b)",
+    );
+    let plan = build_block_plan(&block, None).expect("plan should build");
+    assert!(
+        matches!(plan.ops.first(), Some(PlanOp::CartesianProduct { .. })),
+        "disconnected MATCH paths must start with a CartesianProduct, got {:?}",
+        plan.ops.first()
+    );
+
+    fn collect_nodes(ops: &[PlanOp], out: &mut std::collections::HashSet<(String, String)>) {
+        for op in ops {
+            match op {
+                PlanOp::CartesianProduct { left, right } => {
+                    collect_nodes(left, out);
+                    collect_nodes(right, out);
+                }
+                PlanOp::NodeScan {
+                    variable,
+                    label: Some(l),
+                    ..
+                } => {
+                    out.insert((variable.to_string(), l.name.to_string()));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut found = std::collections::HashSet::new();
+    collect_nodes(&plan.ops, &mut found);
+    assert!(
+        found.contains(&("a".to_string(), "Post".to_string()))
+            && found.contains(&("b".to_string(), "Topic".to_string()))
+            && found.contains(&("c".to_string(), "Tag".to_string())),
+        "CartesianProduct must contain NodeScan for a:Post, b:Topic, c:Tag: {:?}",
+        found
     );
 }

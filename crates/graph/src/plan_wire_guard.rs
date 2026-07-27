@@ -204,6 +204,35 @@ mod tests {
     }
 
     #[test]
+    fn accepts_unseeded_federated_cartesian_product_of_label_scans() {
+        // Disconnected MATCH paths are planned as a CartesianProduct of independent
+        // leading scans. The federated guard must not reject the top-level join operator.
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::CartesianProduct {
+                    left: vec![PlanOp::NodeScan {
+                        variable: "a".into(),
+                        label: Some("Post".into()),
+                        property_projection: None,
+                    }],
+                    right: vec![PlanOp::NodeScan {
+                        variable: "b".into(),
+                        label: Some("Topic".into()),
+                        property_projection: None,
+                    }],
+                },
+                PlanOp::Project {
+                    columns: vec![],
+                    distinct: false,
+                },
+            ],
+            ..Default::default()
+        };
+        ensure_federated_seeds_for_index_anchors(None, true, std::slice::from_ref(&plan))
+            .expect("cartesian product of label scans should pass federated seed guard");
+    }
+
+    #[test]
     fn accepts_unseeded_federated_node_scan_without_label() {
         ensure_federated_seeds_for_index_anchors(None, true, &[read_only_plan()]).expect("ok");
     }

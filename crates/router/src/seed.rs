@@ -330,6 +330,35 @@ pub(crate) fn parse_seed_anchor_prefix_multi(
     let mut variables: Vec<VariableAnchor> = Vec::new();
     let mut i = 0usize;
     while i < ops.len() {
+        // ADR 0046 Phase 1: disconnected MATCH paths are planned as a CartesianProduct of
+        // independent leading scans. Recurse into each arm so the Router can still resolve a
+        // complete-row seed relation across the disconnected variables.
+        if let PlanOp::CartesianProduct { left, right } = &ops[i] {
+            let left_vars = parse_seed_anchor_prefix_multi(left, params, store, stats)?;
+            let right_vars = parse_seed_anchor_prefix_multi(right, params, store, stats)?;
+            if let (Some(left_vars), Some(right_vars)) = (left_vars, right_vars) {
+                let mut seen: std::collections::BTreeSet<String> =
+                    variables.iter().map(|v| v.variable.clone()).collect();
+                let mut added_any = false;
+                // ADR 0046: CartesianProduct arms are expected to be variable-disjoint.
+                // A duplicate variable means the planner produced an unsupported shape; stop
+                // extraction so the caller falls back to Graph-local execution instead of
+                // merging potentially conflicting anchors for the same variable.
+                for v in left_vars.into_iter().chain(right_vars) {
+                    if !seen.insert(v.variable.clone()) {
+                        break;
+                    }
+                    variables.push(v);
+                    added_any = true;
+                }
+                if added_any {
+                    i += 1;
+                    continue;
+                }
+            }
+            break;
+        }
+
         // Try to extract the next variable's anchor prefix starting at `i`.
         let prefix = parse_seed_anchor_prefix_single(&ops[i..], params, store, stats)?;
         let Some(prefix) = prefix else {
@@ -1228,6 +1257,66 @@ mod tests {
                 .iter()
                 .any(|anchor| matches!(anchor, IndexAnchor::Equal(_)))
         );
+    }
+
+    #[test]
+    fn seed_anchor_set_extracts_multi_variable_anchors_from_cartesian_product() {
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "Post",
+            )
+            .expect("intern Post");
+        store
+            .admin_intern_vertex_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "Topic",
+            )
+            .expect("intern Topic");
+        store
+            .admin_intern_property(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "demo_id",
+            )
+            .expect("intern demo_id");
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["demo_id"]);
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::CartesianProduct {
+                left: vec![PlanOp::IndexScan {
+                    variable: Rc::from("a"),
+                    property: Rc::from("demo_id"),
+                    value: ScanValue::Literal(Value::Text("post-demo".into())),
+                    cmp: CmpOp::Eq,
+                    property_projection: None,
+                }],
+                right: vec![PlanOp::IndexScan {
+                    variable: Rc::from("b"),
+                    property: Rc::from("demo_id"),
+                    value: ScanValue::Literal(Value::Text("topic-gql".into())),
+                    cmp: CmpOp::Eq,
+                    property_projection: None,
+                }],
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ]);
+        let set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            &stats,
+        )
+        .expect("anchors")
+        .expect("cartesian anchors");
+        let vars: Vec<&str> = set.variables.iter().map(|v| v.variable.as_str()).collect();
+        assert_eq!(vars, vec!["a", "b"]);
+        assert!(set.is_selective_complete_row_seed());
     }
 
     #[test]

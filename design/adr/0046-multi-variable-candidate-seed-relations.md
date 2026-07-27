@@ -2,8 +2,8 @@
 
 Date: 2026-07-21
 Status: Proposed
-Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 00:40:15 UTC +0000
+Last revised: 2026-07-27
+Anchor timestamp: 2026-07-27 03:37:14 UTC +0000
 
 ## Context
 
@@ -324,6 +324,7 @@ single-variable anchored mutations was implemented the same day.
 Phase 1 implementation (multi-variable):
 
 - `SeedAnchorSet` parses multiple independently anchored variables from the leading read prefix.
+- Disconnected `MATCH` path patterns are grouped under a top-level `CartesianProduct` so the plan does not present several sequential leading scans to the federated execution guard. `SeedAnchorSet` recursion into `CartesianProduct` arms preserves multi-variable anchor extraction, and requires the arms to be variable-disjoint; a duplicate variable stops extraction so the query falls back to Graph-local execution rather than merging potentially conflicting anchors.
 - Multi-variable prefixes require every anchored variable to have at least one non-label equality
   anchor; label-only multi-variable prefixes still fall back to Graph-local execution.
 - The bulk path detects multi-variable seeds and resolves per-item per-shard candidate domains,
