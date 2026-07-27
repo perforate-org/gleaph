@@ -736,13 +736,7 @@ fn bench_labeled_for_each_edges_for_label_48_x51() -> canbench_rs::BenchResult {
                     label,
                     OutEdgeOrder::Descending,
                     |_slot, item| {
-                        let edge = item
-                            .edge
-                            .with_stored_inline_property_bytes(
-                                item.inline_property.width,
-                                item.inline_property.bytes(),
-                            )
-                            .with_label_id(label.raw());
+                        let edge = item.edge.with_label_id(label.raw());
                         count += usize::from(edge.neighbor_vid().0 > 0);
                         ControlFlow::<()>::Continue(())
                     },
@@ -768,13 +762,7 @@ fn bench_labeled_for_each_edges_for_label_24_x51() -> canbench_rs::BenchResult {
                     label,
                     OutEdgeOrder::Descending,
                     |_slot, item| {
-                        let edge = item
-                            .edge
-                            .with_stored_inline_property_bytes(
-                                item.inline_property.width,
-                                item.inline_property.bytes(),
-                            )
-                            .with_label_id(label.raw());
+                        let edge = item.edge.with_label_id(label.raw());
                         count += usize::from(edge.neighbor_vid().0 > 0);
                         ControlFlow::<()>::Continue(())
                     },
@@ -1340,14 +1328,7 @@ fn bench_labeled_direct_unlink_log_delete_then_scan() -> canbench_rs::BenchResul
                     label,
                     OutEdgeOrder::Descending,
                     |_slot, item| {
-                        let edge = item
-                            .edge
-                            .with_stored_inline_property_bytes(
-                                item.inline_property.width,
-                                item.inline_property.bytes(),
-                            )
-                            .with_label_id(label.raw());
-                        count += usize::from(edge.inline_property_len > 0);
+                        count += usize::from(item.inline_property.width > 0);
                         ControlFlow::<()>::Continue(())
                     },
                 )
