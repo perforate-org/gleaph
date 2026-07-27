@@ -20,6 +20,7 @@ use crate::{
             BatchLocationMode, BatchReservation, OneOrientationBatchError,
             OneOrientationBatchResult,
         },
+        graph::traverse_next::{EdgeFindScope, FoundEdge},
         graph::{
             BucketEntryPosition, EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph,
             LabeledOperationError, OutEdgeOrder, ScalarInsertLocation,
@@ -2808,53 +2809,60 @@ where
     where
         E: PartialEq,
     {
-        self.forward
-            .find_edge_label(src, needle)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
+        Ok(self
+            .forward
+            .find_nth_edge_with_inline_property_matching(
+                src,
+                EdgeFindScope::AllLabels,
+                OutEdgeOrder::Descending,
+                0,
+                |edge| <LabeledLaraGraph<E, M>>::edge_matches_label_lookup(edge, needle),
+            )
+            .map_err(DeferredBidirectionalLabeledError::Forward)?
+            .map(|found| found.label))
     }
 
-    /// Finds the first forward outgoing edge accepted by `pred` in [`Self::asc_out_edges`]
-    /// order, together with its label bucket id when applicable.
-    pub fn find_forward_out_edge_with_label_by_predicate<F>(
-        &self,
-        src: VertexId,
-        pred: F,
-    ) -> Result<Option<(E, Option<BucketLabelKey>)>, DeferredBidirectionalLabeledError>
-    where
-        F: FnMut(&E) -> bool,
-    {
-        self.forward
-            .find_out_edge_with_label_by_predicate(src, pred)
-            .map_err(DeferredBidirectionalLabeledError::Forward)
-    }
-
-    /// Finds the first forward outgoing edge accepted by `pred` in default descending order,
-    /// returning the edge, label id, and physical slot index inside that label row.
+    /// Finds the first forward outgoing edge accepted by `pred` in `order`,
+    /// returning the edge together with its label and logical slot.
     pub fn find_forward_out_edge_slot_with_label_by_predicate<F>(
         &self,
         src: VertexId,
+        order: OutEdgeOrder,
         pred: F,
-    ) -> Result<Option<(E, BucketLabelKey, u32)>, DeferredBidirectionalLabeledError>
+    ) -> Result<Option<FoundEdge<E>>, DeferredBidirectionalLabeledError>
     where
         F: FnMut(&E) -> bool,
     {
         self.forward
-            .find_out_edge_slot_with_label_by_predicate(src, pred)
+            .find_nth_edge_with_inline_property_matching(
+                src,
+                EdgeFindScope::AllLabels,
+                order,
+                0,
+                pred,
+            )
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Finds the first reverse-store outgoing edge accepted by `pred` in default descending order,
-    /// returning the edge, label id, and physical slot index inside that reverse label row.
+    /// Finds the first reverse-store outgoing edge accepted by `pred` in `order`,
+    /// returning the edge together with its label and logical slot.
     pub fn find_reverse_out_edge_slot_with_label_by_predicate<F>(
         &self,
         dst: VertexId,
+        order: OutEdgeOrder,
         pred: F,
-    ) -> Result<Option<(E, BucketLabelKey, u32)>, DeferredBidirectionalLabeledError>
+    ) -> Result<Option<FoundEdge<E>>, DeferredBidirectionalLabeledError>
     where
         F: FnMut(&E) -> bool,
     {
         self.reverse
-            .find_out_edge_slot_with_label_by_predicate(dst, pred)
+            .find_nth_edge_with_inline_property_matching(
+                dst,
+                EdgeFindScope::AllLabels,
+                order,
+                0,
+                pred,
+            )
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 

@@ -35,7 +35,7 @@ where
         self.edges.header().segment_size
     }
 
-    pub(super) fn edge_matches_label_lookup(candidate: &E, needle: &E) -> bool
+    pub(crate) fn edge_matches_label_lookup(candidate: &E, needle: &E) -> bool
     where
         E: PartialEq,
     {

@@ -36,6 +36,28 @@ use super::iter::{
     LabeledInlinePropertyValueBatchScratch,
 };
 
+/// Scope for edge-finding operations: either a single label bucket or all buckets
+/// owned by one vertex.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeFindScope {
+    /// Search every label bucket of the source vertex in the requested order.
+    AllLabels,
+    /// Search only the specified label bucket.
+    Label(BucketLabelKey),
+}
+
+/// A live edge found by a predicate search, together with its logical identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundEdge<E> {
+    /// The fully materialized edge value (topology plus inline property bytes when
+    /// requested by the search variant).
+    pub edge: E,
+    /// The label bucket that owns the edge.
+    pub label: BucketLabelKey,
+    /// The logical slot of the edge within that bucket.
+    pub slot: BucketEntryPosition,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct LabeledTraversalRequest {
     pub(crate) owner: VertexId,
@@ -753,6 +775,195 @@ where
             ControlFlow::<()>::Continue(())
         })?;
         Ok(out)
+    }
+
+    /// Returns the n-th live edge (0-based) matching `pred` under `scope` and `order`.
+    ///
+    /// This is a rank/select primitive over the logical edge order: it counts
+    /// matching live rows in the requested order and stops at the `nth` match.
+    /// Inline-property bytes are read so that predicates may depend on them and the
+    /// returned edge is fully materialized. Dense/hybrid/sparse fast paths inside
+    /// [`Self::visit_edges_with_inline_property`] apply automatically.
+    #[inline]
+    pub(crate) fn find_nth_edge_with_inline_property_matching<F>(
+        &self,
+        owner: VertexId,
+        scope: EdgeFindScope,
+        order: OutEdgeOrder,
+        nth: u32,
+        mut pred: F,
+    ) -> Result<Option<FoundEdge<E>>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        F: FnMut(&E) -> bool,
+    {
+        let mut matched = 0u32;
+        let mut found: Option<FoundEdge<E>> = None;
+        let mut visit = |label, slot, edge| {
+            if pred(&edge) {
+                if matched == nth {
+                    found = Some(FoundEdge { edge, label, slot });
+                    return ControlFlow::<()>::Break(());
+                }
+                matched = matched.saturating_add(1);
+            }
+            ControlFlow::<()>::Continue(())
+        };
+
+        match scope {
+            EdgeFindScope::Label(label) => {
+                let _ =
+                    self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
+                        let edge = item
+                            .edge
+                            .with_stored_inline_property_bytes(
+                                item.inline_property.width,
+                                item.inline_property.bytes(),
+                            )
+                            .with_label_id(label.raw());
+                        visit(label, slot, edge)
+                    })?;
+            }
+            EdgeFindScope::AllLabels => {
+                let _ = self.find_visit_all_label_buckets(owner, order, |label, slot, edge| {
+                    visit(label, slot, edge)
+                })?;
+            }
+        }
+        Ok(found)
+    }
+
+    /// Like [`Self::find_nth_edge_with_inline_property_matching`], but visits only
+    /// topology values and does not read inline-property bytes. Use this when the
+    /// predicate does not depend on inline-property bytes and materializing them
+    /// would be wasted work.
+    #[inline]
+    pub(crate) fn find_nth_edge_matching<F>(
+        &self,
+        owner: VertexId,
+        scope: EdgeFindScope,
+        order: OutEdgeOrder,
+        nth: u32,
+        mut pred: F,
+    ) -> Result<Option<FoundEdge<E>>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        F: FnMut(&E) -> bool,
+    {
+        let mut matched = 0u32;
+        let mut found: Option<FoundEdge<E>> = None;
+        let mut visit = |label, slot, edge| {
+            if pred(&edge) {
+                if matched == nth {
+                    found = Some(FoundEdge { edge, label, slot });
+                    return ControlFlow::<()>::Break(());
+                }
+                matched = matched.saturating_add(1);
+            }
+            ControlFlow::<()>::Continue(())
+        };
+
+        match scope {
+            EdgeFindScope::Label(label) => {
+                let _ = self.visit_edges(owner, label, order, |slot, edge| {
+                    let edge = edge.with_label_id(label.raw());
+                    visit(label, slot, edge)
+                })?;
+            }
+            EdgeFindScope::AllLabels => {
+                let _ = self.find_visit_all_label_buckets(owner, order, |label, slot, edge| {
+                    visit(label, slot, edge)
+                })?;
+            }
+        }
+        Ok(found)
+    }
+
+    /// Visits every live edge of `owner` across all label buckets in the requested
+    /// bucket order and slot order. Used by the all-label `find_nth_*` variants.
+    ///
+    /// Within each bucket the existing inline-property visitor is reused so
+    /// dense/hybrid/sparse fast paths apply automatically.
+    fn find_visit_all_label_buckets<B, V>(
+        &self,
+        owner: VertexId,
+        order: OutEdgeOrder,
+        mut visit: V,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        V: FnMut(BucketLabelKey, BucketEntryPosition, E) -> ControlFlow<B>,
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+
+        if vertex.is_default_edge_labeled() {
+            let label = self.bypass_storage_label_for(&vertex);
+            return self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
+                let edge = item
+                    .edge
+                    .with_stored_inline_property_bytes(
+                        item.inline_property.width,
+                        item.inline_property.bytes(),
+                    )
+                    .with_label_id(label.raw());
+                visit(label, slot, edge)
+            });
+        }
+
+        let deg = vertex.degree();
+        if deg == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        match order {
+            OutEdgeOrder::Ascending => {
+                for bucket in &buckets {
+                    if bucket.degree() == 0 {
+                        continue;
+                    }
+                    let label = bucket.bucket_label_key();
+                    if let ControlFlow::Break(value) =
+                        self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
+                            let edge = item
+                                .edge
+                                .with_stored_inline_property_bytes(
+                                    item.inline_property.width,
+                                    item.inline_property.bytes(),
+                                )
+                                .with_label_id(label.raw());
+                            visit(label, slot, edge)
+                        })?
+                    {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+            }
+            OutEdgeOrder::Descending => {
+                for bucket in buckets.iter().rev() {
+                    if bucket.degree() == 0 {
+                        continue;
+                    }
+                    let label = bucket.bucket_label_key();
+                    if let ControlFlow::Break(value) =
+                        self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
+                            let edge = item
+                                .edge
+                                .with_stored_inline_property_bytes(
+                                    item.inline_property.width,
+                                    item.inline_property.bytes(),
+                                )
+                                .with_label_id(label.raw());
+                            visit(label, slot, edge)
+                        })?
+                    {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+            }
+        }
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Visits outgoing edges whose bucket directedness matches `directedness` in the
