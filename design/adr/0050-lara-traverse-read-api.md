@@ -234,6 +234,39 @@ the condition to `Missing`. Width zero performs no property read and returns an 
 Boolean `attach_inline_property_bytes` flags are private implementation details and are
 not exposed in the consolidated surface.
 
+### 3a. Concrete edge value split and compatibility policy
+
+The Graph Kernel concrete edge value follows the same boundary without a compatibility shape:
+
+```rust
+pub struct Edge {
+    pub target: VertexRef,
+    pub edge_slot_index: EdgeSlotIndex,
+    pub label_id: u16,
+}
+
+pub struct EdgeWithInlineProperty<E> {
+    pub edge: E,
+    pub inline_property: InlinePropertyBytes,
+}
+```
+
+`Edge` is topology-only. It must not contain an optional, empty, or compatibility inline-property
+field. `EdgeWithInlineProperty<E>` is the only value shape that exposes an attached inline
+property. For the Graph Kernel adapter, `E` is the topology-only `Edge`.
+
+`InlinePropertyBytes` owns the invariant `bytes.len() == width`. Its fields are private and its
+constructors reject a width mismatch. Width zero is valid and is represented by an empty byte
+vector. The property-read owner, LARA, constructs this validated value after reading the exact
+ordinal for the live logical slot.
+
+This is an intentional breaking refactor. Existing callers are not given a compatibility field,
+compatibility constructor, or parallel legacy return type. Callers must migrate to the explicit
+topology-only or `_with_inline_property` API selected by their contract. The existing
+`CsrEdge::with_stored_inline_property_bytes` hook may remain only as an internal transition
+mechanism while the migration is implemented; it is not a compatibility guarantee and must not
+define the public read contract.
+
 The target term `inline_property` is used consistently. `payload` is not used in new API names
 because it is broader and can be confused with other edge inline property bytes or property-store
 concepts.
@@ -648,6 +681,12 @@ demonstrated problem and would put performance policy into a generic framework.
 Adoption is phased. The temporary module, its tests, and its benchmark module are authoritative for
 new work during migration; the legacy `traverse` module remains authoritative only for callers not
 yet migrated. The final rename happens only after all callers and validation gates pass.
+
+The concrete `Edge` value split is not a compatibility migration. Once implemented, topology-only
+callers use `Edge`, property-aware callers use `EdgeWithInlineProperty<Edge>`, and old callers that
+depend on inline-property fields on `Edge` are updated in the same change. No deprecated alias,
+dual-shape wrapper, or long-lived adapter is retained after the refactor. The migration is complete
+only when the old field and its property-bearing `Edge` constructors are removed from the tree.
 
 ADR 0048 remains the owner of `CanonicalEdgeOccurrence`, `EdgeHandle`, `PairOrdinal`, and counterpart
 resolution. ADR 0023 remains the owner of sidecar/index re-key after `EdgeSlotMove`. This ADR only
