@@ -1,7 +1,7 @@
 # 0051. Edge inline property terminology unification and legacy weight compatibility retirement
 
 Date: 2026-07-26
-Status: accepted
+Status: implemented
 Last revised: 2026-07-27
 Anchor timestamp: 2026-07-26 20:03:57 UTC +0000
 
@@ -37,13 +37,13 @@ redundant.
 
 ## Problem
 
-| Issue | Effect |
-|-------|--------|
-| Three names for one concept | Reviewers and new contributors cannot tell whether a field or document refers to the GQL syntax, the schema profile, or the physical bytes. |
-| `payload` is overloaded | "payload" also means bundle payloads, procedure arguments, IC message payloads, and generic value-extension payloads. In the edge context it is indistinguishable from those. |
-| `inline value` is ambiguous | Does it mean a GQL value, a prepared decoder value, or raw stored bytes? |
-| Legacy weight surface lingers | `GLEAPH.WEIGHT(e)` keeps the old weight encoder alive and signals that edge-local fast data is still a special "weight" concept rather than an ordinary `INLINE` property. |
-| Documents disagree | ADR 0008 is titled "Edge payload profile schema", `gql_dialect.rs` classifies `GLEAPH.WEIGHT` as an `EdgeInlineValueFunction`, and `extension-syntax.md` calls the feature "Edge inline properties". |
+| Issue                         | Effect                                                                                                                                                                                               |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Three names for one concept   | Reviewers and new contributors cannot tell whether a field or document refers to the GQL syntax, the schema profile, or the physical bytes.                                                          |
+| `payload` is overloaded       | "payload" also means bundle payloads, procedure arguments, IC message payloads, and generic value-extension payloads. In the edge context it is indistinguishable from those.                        |
+| `inline value` is ambiguous   | Does it mean a GQL value, a prepared decoder value, or raw stored bytes?                                                                                                                             |
+| Legacy weight surface lingers | `GLEAPH.WEIGHT(e)` keeps the old weight encoder alive and signals that edge-local fast data is still a special "weight" concept rather than an ordinary `INLINE` property.                           |
+| Documents disagree            | ADR 0008 is titled "Edge payload profile schema", `gql_dialect.rs` classifies `GLEAPH.WEIGHT` as an `EdgeInlineValueFunction`, and `extension-syntax.md` calls the feature "Edge inline properties". |
 
 This is not a functional bug. It is an architectural vocabulary drift that makes the boundary
 between public GQL syntax, logical schema, and physical storage harder to reason about.
@@ -70,6 +70,7 @@ and stable-region names, it is a breaking change regardless of whether functiona
 ## Alternatives
 
 ### A. Do nothing
+
 Keep the three terms. Treat `payload` as context-dependent, `inline value` as a physical concept,
 and `inline property` as the GQL syntax.
 
@@ -78,6 +79,7 @@ and `inline property` as the GQL syntax.
   data will re-encounter the same naming confusion.
 
 ### B. Rename only in new code
+
 Introduce `inline property` names for new features but leave existing `payload` / `inline value`
 names in place.
 
@@ -86,6 +88,7 @@ names in place.
   hottest paths (storage, planner, wire), so the confusion is not resolved.
 
 ### C. Unify all names to `inline property` / `inline property bytes` now, and retire weight later
+
 Rename types, fields, stable-region names, and documents to a single vocabulary. Schedule the
 removal of `GLEAPH.WEIGHT(e)` and `EdgeWeightProfile` for a later phase after ordinary `INLINE`
 properties fully cover the same use cases.
@@ -96,6 +99,7 @@ properties fully cover the same use cases.
   updates.
 
 ### D. Unify names and remove weight immediately
+
 Do the rename and delete `GLEAPH.WEIGHT` / `EdgeWeightProfile` in the same patch.
 
 - **Benefit:** One disruptive window instead of two.
@@ -114,14 +118,14 @@ commit.
 
 Use exactly these names:
 
-| Concept | Canonical term | Notes |
-|--------|----------------|-------|
-| GQL syntax / user-facing idea | **inline property** | `CREATE EDGE LABEL ... { <prop> <type> INLINE }`, `e.prop`. |
-| Logical schema / catalog record | **inline property schema** | Router SSOT: `(GraphId, EdgeLabelId) → schema record`. |
-| Physical byte width + encoding | **inline property profile** | Wire-carried profile consumed by Graph. |
-| Stored fixed-width bytes | **inline property bytes** | LARA slab/log/blob bytes. Avoid "payload". |
-| Per-edge byte width | `inline_property_byte_width` | Replaces `payload_byte_width`. |
-| Storage store | `EdgeInlinePropertyBytesStore` | Replaces `EdgeInlineValueStore`. |
+| Concept                         | Canonical term                 | Notes                                                       |
+| ------------------------------- | ------------------------------ | ----------------------------------------------------------- |
+| GQL syntax / user-facing idea   | **inline property**            | `CREATE EDGE LABEL ... { <prop> <type> INLINE }`, `e.prop`. |
+| Logical schema / catalog record | **inline property schema**     | Router SSOT: `(GraphId, EdgeLabelId) → schema record`.      |
+| Physical byte width + encoding  | **inline property profile**    | Wire-carried profile consumed by Graph.                     |
+| Stored fixed-width bytes        | **inline property bytes**      | LARA slab/log/blob bytes. Avoid "payload".                  |
+| Per-edge byte width             | `inline_property_byte_width`   | Replaces `payload_byte_width`.                              |
+| Storage store                   | `EdgeInlinePropertyBytesStore` | Replaces `EdgeInlineValueStore`.                            |
 
 Eliminate:
 
@@ -131,22 +135,22 @@ Eliminate:
 
 Key renames:
 
-| Old | New |
-|-----|-----|
-| `EdgeInlineValueProfile` | `EdgeInlinePropertyProfile` |
-| `EdgeInlineValueEncoding` | `EdgeInlinePropertyEncoding` |
-| `EdgeInlineValue` | `EdgeInlinePropertyBytes` |
-| `MAX_EDGE_INLINE_VALUE_BYTES` | `MAX_EDGE_INLINE_PROPERTY_BYTES` |
-| `PreparedEdgeInlineValueDecoder` | `PreparedEdgeInlinePropertyBytesDecoder` |
-| `DecodedEdgeInlineValue` | `DecodedEdgeInlinePropertyBytes` |
-| `EdgeInlineValuePredicate` (gql-planner) | `EdgeInlinePropertyPredicate` |
-| `EdgeInlineValueSchemaRecord` (router) | `EdgeInlinePropertySchemaRecord` |
-| `EdgeInlineValueProfileStore` (router) | `EdgeInlinePropertyProfileStore` |
-| `ROUTER_EDGE_PAYLOAD_PROFILES` | `ROUTER_EDGE_INLINE_PROPERTY_PROFILES` |
-| `EdgeInlineValueStore` (ic-stable-lara) | `EdgeInlinePropertyBytesStore` |
-| `payload_byte_width` (LabelBucket) | `inline_property_byte_width` |
+| Old                                              | New                                                    |
+| ------------------------------------------------ | ------------------------------------------------------ |
+| `EdgeInlineValueProfile`                         | `EdgeInlinePropertyProfile`                            |
+| `EdgeInlineValueEncoding`                        | `EdgeInlinePropertyEncoding`                           |
+| `EdgeInlineValue`                                | `EdgeInlinePropertyBytes`                              |
+| `MAX_EDGE_INLINE_VALUE_BYTES`                    | `MAX_EDGE_INLINE_PROPERTY_BYTES`                       |
+| `PreparedEdgeInlineValueDecoder`                 | `PreparedEdgeInlinePropertyBytesDecoder`               |
+| `DecodedEdgeInlineValue`                         | `DecodedEdgeInlinePropertyBytes`                       |
+| `EdgeInlineValuePredicate` (gql-planner)         | `EdgeInlinePropertyPredicate`                          |
+| `EdgeInlineValueSchemaRecord` (router)           | `EdgeInlinePropertySchemaRecord`                       |
+| `EdgeInlineValueProfileStore` (router)           | `EdgeInlinePropertyProfileStore`                       |
+| `ROUTER_EDGE_PAYLOAD_PROFILES`                   | `ROUTER_EDGE_INLINE_PROPERTY_PROFILES`                 |
+| `EdgeInlineValueStore` (ic-stable-lara)          | `EdgeInlinePropertyBytesStore`                         |
+| `payload_byte_width` (LabelBucket)               | `inline_property_byte_width`                           |
 | `payload_slab` / `payload_log` / `payload_blobs` | `inline_property_bytes_slab` / `..._log` / `..._blobs` |
-| `ResolvedEdgeLabel::inline_value_profile` | `inline_property_profile` |
+| `ResolvedEdgeLabel::inline_value_profile`        | `inline_property_profile`                              |
 
 `EdgeInlineValueProfileStore` in graph-kernel is similarly renamed to
 `EdgeInlinePropertyProfileStore`. The test-only graph-local `EDGE_PAYLOAD_PROFILES` is renamed
@@ -220,19 +224,19 @@ replacement (`COST BY e.property` and ordinary `e.property` access) was already 
 
 ## Design documentation impact
 
-| Document | Update | Status |
-|----------|--------|--------|
-| `design/adr/README.md` | Add ADR 0051 entry. | ✅ |
-| `design/adr/0008-edge-inline-property-profile-router-ssot.md` | Retitle; replace `payload_profile`, `EdgeInlineValueProfile`, `ROUTER_EDGE_PAYLOAD_PROFILES`; refresh stable-memory layout table. | ✅ |
-| `design/adr/0034-gleaph-gql-extension-syntax.md` | Replace "inline value" and "payload" with "inline property" / "inline property bytes"; state that `GLEAPH.WEIGHT` is removed. | ✅ (this patch) |
-| `design/gql/extension-syntax.md` | Rename syntax class table from "Edge inline value" to "Edge inline property"; replace all bare "payload" usage in edge context; state `GLEAPH.WEIGHT` is removed. | ✅ (this patch) |
-| `design/gql/layers.md` | Remove the `weight` module from `gleaph-gql-integration` description. | ✅ (this patch) |
-| `design/execution/operators.md` | Remove `SUM(GLEAPH.WEIGHT(e))` horizontal aggregate example; use ordinary inline property access. | ✅ (this patch) |
-| `design/execution/group-variables.md` | Replace `GLEAPH.WEIGHT(e)` examples with `e.distance`; note group edge property semantics. | ✅ (this patch) |
-| `design/storage/labeled-edge-inline-properties.md` | Rename `EdgeInlineValueStore` → `EdgeInlinePropertyBytesStore`, `payload_byte_width` → `inline_property_byte_width`, `payload_slab/log/blobs` → `inline_property_bytes_*`. | ✅ |
-| `design/gql/plan-format.md` | `payload_profile` → `inline_property_profile`. | ✅ |
-| `design/adr/0016-overflow-log-tombstones-and-src-fields.md` | Rename LARA-internal `payload_log` / `payload_blobs` / `payload_cell` only where they refer to the inline property bytes sequence. Preserve unrelated edge-row "payload" discussion if it refers to the 4-byte edge body. | ✅ |
-| `crates/gql-planner/CLAUDE.md` | Keep "inline-property-equality" terminology but add a note that it refers to vertex pattern literals, not edge `INLINE` storage. | ✅ |
+| Document                                                      | Update                                                                                                                                                                                                                    | Status          |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `design/adr/README.md`                                        | Add ADR 0051 entry.                                                                                                                                                                                                       | ✅              |
+| `design/adr/0008-edge-inline-property-profile-router-ssot.md` | Retitle; replace `payload_profile`, `EdgeInlineValueProfile`, `ROUTER_EDGE_PAYLOAD_PROFILES`; refresh stable-memory layout table.                                                                                         | ✅              |
+| `design/adr/0034-gleaph-gql-extension-syntax.md`              | Replace "inline value" and "payload" with "inline property" / "inline property bytes"; state that `GLEAPH.WEIGHT` is removed.                                                                                             | ✅ (this patch) |
+| `design/gql/extension-syntax.md`                              | Rename syntax class table from "Edge inline value" to "Edge inline property"; replace all bare "payload" usage in edge context; state `GLEAPH.WEIGHT` is removed.                                                         | ✅ (this patch) |
+| `design/gql/layers.md`                                        | Remove the `weight` module from `gleaph-gql-integration` description.                                                                                                                                                     | ✅ (this patch) |
+| `design/execution/operators.md`                               | Remove `SUM(GLEAPH.WEIGHT(e))` horizontal aggregate example; use ordinary inline property access.                                                                                                                         | ✅ (this patch) |
+| `design/execution/group-variables.md`                         | Replace `GLEAPH.WEIGHT(e)` examples with `e.distance`; note group edge property semantics.                                                                                                                                | ✅ (this patch) |
+| `design/storage/labeled-edge-inline-properties.md`            | Rename `EdgeInlineValueStore` → `EdgeInlinePropertyBytesStore`, `payload_byte_width` → `inline_property_byte_width`, `payload_slab/log/blobs` → `inline_property_bytes_*`.                                                | ✅              |
+| `design/gql/plan-format.md`                                   | `payload_profile` → `inline_property_profile`.                                                                                                                                                                            | ✅              |
+| `design/adr/0016-overflow-log-tombstones-and-src-fields.md`   | Rename LARA-internal `payload_log` / `payload_blobs` / `payload_cell` only where they refer to the inline property bytes sequence. Preserve unrelated edge-row "payload" discussion if it refers to the 4-byte edge body. | ✅              |
+| `crates/gql-planner/CLAUDE.md`                                | Keep "inline-property-equality" terminology but add a note that it refers to vertex pattern literals, not edge `INLINE` storage.                                                                                          | ✅              |
 
 ## Related ADRs
 
