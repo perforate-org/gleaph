@@ -1026,6 +1026,32 @@ where
         }
 
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+
+        // Fast path for slab-only buckets with tombstones: bulk-read edge slab and
+        // inline-property bytes, then skip deleted/tombstoned slots locally.  This avoids
+        // per-slot Vec<u8> allocations and redundant copies into the edge value.
+        if bucket.overflow_log_head() < 0 && bucket.inline_property_bytes_log_head() < 0 {
+            let reserved = self.bucket_reserved_edge_slots(owner, &bucket);
+            let inline_property_bytes = if width > 0 {
+                self.read_bucket_inline_property_bytes_span(owner, &bucket, 0, reserved)?
+            } else {
+                Vec::new()
+            };
+            return self.visit_slab_only_label_bucket_edges_with_inline_property(
+                owner,
+                label,
+                &bucket,
+                order,
+                reserved,
+                &inline_property_bytes,
+                width,
+                visit,
+            );
+        }
+
+        // Generic hybrid path: use the streaming labeled iterator which reads per-slot
+        // inline property bytes into the edge value, then copy them back into
+        // `InlinePropertyBytes`.  Kept for correctness while hybrid fast paths are added.
         let mut iter =
             self.labeled_bucket_span_iter(owner, order, &vertex, &[bucket], 0, bucket_index, true)?;
         while let Some(result) = iter.next_with_slot() {
@@ -1043,6 +1069,118 @@ where
                 },
             ) {
                 return Ok(ControlFlow::Break(value));
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
+    /// Visits every live edge together with its inline-property bytes in a slab-only
+    /// label bucket by bulk-reading the edge slab and inline-property bytes span once each.
+    ///
+    /// `reserved` is the number of logical slots reserved by the edge store.  When there
+    /// are tombstones, `reserved > degree` and we skip deleted/tombstoned slots.  The bucket
+    /// must have no edge overflow log and no inline-property-bytes overflow log.
+    ///
+    /// The inline-property bytes span is indexed by **live ordinal**, not by physical slot
+    /// index, so this path recomputes the live ordinal for each non-deleted slot it yields.
+    #[inline]
+    fn visit_slab_only_label_bucket_edges_with_inline_property<B>(
+        &self,
+        _owner: VertexId,
+        label: BucketLabelKey,
+        bucket: &LabelBucket,
+        order: OutEdgeOrder,
+        reserved: u32,
+        inline_property_bytes: &[u8],
+        width: u16,
+        mut visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if reserved == 0 || bucket.degree() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let stored_slots = bucket.stored_slots;
+        let edge_bytes_len =
+            (stored_slots as usize)
+                .checked_mul(E::BYTES)
+                .ok_or(LabeledOperationError::from(
+                    LaraOperationError::CollectAllocationOverflow,
+                ))?;
+        let mut raw_edges = vec![0u8; edge_bytes_len];
+        self.edges
+            .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
+
+        // Walk slots in the requested scan order, maintaining the live ordinal that
+        // indexes the dense inline-property-bytes span.
+        match order {
+            OutEdgeOrder::Ascending => {
+                let mut ordinal = 0u32;
+                for slot in 0..reserved {
+                    let off = slot as usize * E::BYTES;
+                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                        .with_slot_index(slot)
+                        .with_label_id(label.raw());
+                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                        continue;
+                    }
+                    let inline_property = if width == 0 {
+                        InlinePropertyBytes::empty()
+                    } else {
+                        let start = ordinal as usize * usize::from(width);
+                        let end = start + usize::from(width);
+                        InlinePropertyBytes::from_bytes(width, &inline_property_bytes[start..end])
+                    };
+                    if let ControlFlow::Break(value) = visit(
+                        BucketEntryPosition::new(slot),
+                        EdgeWithInlineProperty {
+                            edge,
+                            inline_property,
+                        },
+                    ) {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                    ordinal = ordinal.saturating_add(1);
+                }
+            }
+            OutEdgeOrder::Descending => {
+                // First pass: count live ordinals so we can walk them in reverse.
+                let mut live_count = 0u32;
+                for slot in 0..reserved {
+                    let off = slot as usize * E::BYTES;
+                    let edge = E::read_from(&raw_edges[off..off + E::BYTES]);
+                    if !edge.is_deleted_slot() && !edge.is_tombstone_edge() {
+                        live_count = live_count.saturating_add(1);
+                    }
+                }
+                let mut ordinal = live_count;
+                for slot in (0..reserved).rev() {
+                    let off = slot as usize * E::BYTES;
+                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                        .with_slot_index(slot)
+                        .with_label_id(label.raw());
+                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                        continue;
+                    }
+                    ordinal = ordinal.saturating_sub(1);
+                    let inline_property = if width == 0 {
+                        InlinePropertyBytes::empty()
+                    } else {
+                        let start = ordinal as usize * usize::from(width);
+                        let end = start + usize::from(width);
+                        InlinePropertyBytes::from_bytes(width, &inline_property_bytes[start..end])
+                    };
+                    if let ControlFlow::Break(value) = visit(
+                        BucketEntryPosition::new(slot),
+                        EdgeWithInlineProperty {
+                            edge,
+                            inline_property,
+                        },
+                    ) {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
             }
         }
         Ok(ControlFlow::Continue(()))
