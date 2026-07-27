@@ -15,7 +15,7 @@ use crate::{
         bucket_label_key::{BucketDirectedness, BucketLabelKey},
         record::{LabelBucket, LabeledVertex},
     },
-    lara::operation_error::LaraOperationError,
+    lara::{edge::OutEdgeSlabIter, operation_error::LaraOperationError},
     traits::CsrVertex,
     traits::{CsrEdge, CsrEdgeTombstone},
 };
@@ -988,16 +988,31 @@ where
 
         if vertex.is_default_edge_labeled() {
             let label = self.bypass_storage_label_for(&vertex);
-            return self.visit_edges_with_inline_property(owner, label, order, |_slot, item| {
-                let edge = item
-                    .edge
-                    .with_stored_inline_property_bytes(
-                        item.inline_property.width,
-                        item.inline_property.bytes(),
-                    )
-                    .with_label_id(label.raw());
-                visit(edge)
-            });
+            return match order {
+                OutEdgeOrder::Ascending => {
+                    for edge in self.edges.asc_out_edges(&self.vertices, owner)? {
+                        if let ControlFlow::Break(value) = visit(edge.with_label_id(label.raw())) {
+                            return Ok(ControlFlow::Break(value));
+                        }
+                    }
+                    Ok(ControlFlow::Continue(()))
+                }
+                OutEdgeOrder::Descending => {
+                    let mut edges = OutEdgeSlabIter::try_new(
+                        &self.edges,
+                        vertex.base_slot_start(),
+                        vertex.stored_degree(),
+                        vertex.degree(),
+                    )?;
+                    let mut no_raw_matches = None;
+                    while let Some(edge) = edges.next_live_edge_filtered(&mut no_raw_matches) {
+                        if let ControlFlow::Break(value) = visit(edge.with_label_id(label.raw())) {
+                            return Ok(ControlFlow::Break(value));
+                        }
+                    }
+                    Ok(ControlFlow::Continue(()))
+                }
+            };
         }
 
         let deg = vertex.degree();

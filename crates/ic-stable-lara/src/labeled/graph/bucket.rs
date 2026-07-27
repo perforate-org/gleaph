@@ -298,6 +298,9 @@ where
         Ok(())
     }
 
+    // Keep the hot scalar lookup path inlined after the large traverse_next
+    // implementation is compiled into the same Wasm module.
+    #[inline(always)]
     pub(crate) fn find_bucket(
         &self,
         src: VertexId,
