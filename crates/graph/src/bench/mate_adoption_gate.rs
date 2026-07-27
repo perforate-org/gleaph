@@ -14,7 +14,6 @@ use super::mate_compression::{
 };
 use super::mate_footprint::{MateFootprintInput, MateMode, MateSharedOverhead};
 use canbench_rs::{bench, bench_fn};
-use ic_stable_lara::traits::CsrEdge;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::hint::black_box;
@@ -2625,40 +2624,7 @@ fn extract_sparse_identities(
         ic_stable_lara::adoption_fixture::FixtureMemory,
     >,
 ) -> Result<Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>, String> {
-    let label = ic_stable_lara::labeled::BucketLabelKey::directed_from_index(1);
-    let mut identities = Vec::new();
-    graph
-        .forward()
-        .for_each_live_physical_edge_location_for_label(
-            ic_stable_lara::VertexId::from(0),
-            label,
-            |slot, edge| {
-                identities.push(ic_stable_lara::adoption_fixture::PhysicalIdentity {
-                    owner: 0,
-                    target: u32::from(edge.neighbor_vid()),
-                    orientation: 0,
-                    slot,
-                })
-            },
-        )
-        .map_err(|error| format!("sparse forward extract failed: {error}"))?;
-    graph
-        .reverse()
-        .for_each_live_physical_edge_location_for_label(
-            ic_stable_lara::VertexId::from(1),
-            label,
-            |slot, edge| {
-                identities.push(ic_stable_lara::adoption_fixture::PhysicalIdentity {
-                    owner: 1,
-                    target: u32::from(edge.neighbor_vid()),
-                    orientation: 1,
-                    slot,
-                })
-            },
-        )
-        .map_err(|error| format!("sparse reverse extract failed: {error}"))?;
-    identities.sort();
-    Ok(identities)
+    ic_stable_lara::adoption_fixture::extract_sparse_slot_fixture_identities(graph)
 }
 
 #[cfg(feature = "canbench")]
@@ -2721,39 +2687,7 @@ fn extract_mixed_label_identities(
     >,
     label: ic_stable_lara::labeled::BucketLabelKey,
 ) -> Result<Vec<ic_stable_lara::adoption_fixture::PhysicalIdentity>, String> {
-    let mut identities = Vec::new();
-    graph
-        .forward()
-        .for_each_live_physical_edge_location_for_label(
-            ic_stable_lara::VertexId::from(0),
-            label,
-            |slot, edge| {
-                identities.push(ic_stable_lara::adoption_fixture::PhysicalIdentity {
-                    owner: 0,
-                    target: u32::from(edge.neighbor_vid()),
-                    orientation: 0,
-                    slot,
-                })
-            },
-        )
-        .map_err(|error| format!("mixed forward extract failed: {error}"))?;
-    graph
-        .reverse()
-        .for_each_live_physical_edge_location_for_label(
-            ic_stable_lara::VertexId::from(1),
-            label,
-            |slot, edge| {
-                identities.push(ic_stable_lara::adoption_fixture::PhysicalIdentity {
-                    owner: 1,
-                    target: u32::from(edge.neighbor_vid()),
-                    orientation: 1,
-                    slot,
-                })
-            },
-        )
-        .map_err(|error| format!("mixed reverse extract failed: {error}"))?;
-    identities.sort();
-    Ok(identities)
+    ic_stable_lara::adoption_fixture::extract_mixed_label_fixture_identities(graph, label)
 }
 
 #[cfg(feature = "canbench")]

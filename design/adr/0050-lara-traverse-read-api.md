@@ -2,8 +2,8 @@
 
 Date: 2026-07-25
 Status: partially implemented
-Implementation status: Phase 1/2 substrate implemented in `labeled::graph::traverse_next`; CounterpartScan now consumes `read_edge_state` and `visit_edges`; first bounded Graph caller group (scan-only canonicalization) migrated; remaining reverse-facade, sidecar, and alias callers remain pending
-Adoption status: partially activated (CounterpartScan + first Graph scan-only caller)
+Implementation status: Phase 4 in progress. Phase 1/2 substrate (`labeled::graph::traverse_next`) and Phase 2 benchmarks are in place; CounterpartScan consumes `read_edge_state` and `visit_edges`; the physical-location reader `visit_storage_edge_locations` is implemented and the legacy `read_physical_edge_at_slot_for_label` / `for_each_live_physical_edge_location_for_label` methods are deleted; adoption-fixture and mate-adoption-gate physical scans are migrated to the new surface. Remaining work: ADR 0048 alias-removal gate, final caller migration (sidecar/remaining alias paths), and the `traverse_next` -> `traverse` rename.
+Adoption status: partially activated (CounterpartScan + first Graph scan-only caller + physical-location adoption fixtures)
 
 ## Context
 

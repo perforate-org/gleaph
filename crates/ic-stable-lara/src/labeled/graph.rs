@@ -65,7 +65,7 @@ mod remove;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod traverse;
-mod traverse_next;
+pub(crate) mod traverse_next;
 
 pub use traverse_next::BucketEntryPosition;
 mod values;

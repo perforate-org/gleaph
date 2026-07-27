@@ -20,7 +20,7 @@ use crate::gql_run::{GqlCanisterExecutionMode, run_wire_plan_last_read_row_count
 use crate::plan::query::{PlanQueryResult, execute_plan_query, execute_plan_query_bindings};
 use canbench_rs::bench;
 use gleaph_gql::Value;
-use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName};
+use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{
     EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, EdgeVectorMetric, PhysicalPlan, PlanOp,

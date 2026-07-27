@@ -6825,15 +6825,15 @@ mod tests {
         for slot in locations {
             let row = graph
                 .forward()
-                .read_out_edge_slot_for_label(source, label, slot)
+                .read_edge(source, label, BucketEntryPosition::new(slot))
                 .unwrap()
-                .expect("live physical slot");
+                .expect("live logical slot");
             assert_eq!(row.neighbor_vid(), target);
         }
         assert!(
             graph
                 .forward()
-                .read_out_edge_slot_for_label(source, label, u32::MAX)
+                .read_edge(source, label, BucketEntryPosition::new(u32::MAX))
                 .unwrap()
                 .is_none()
         );
@@ -6841,7 +6841,7 @@ mod tests {
 
     #[cfg(feature = "adoption-fixtures")]
     #[test]
-    fn direct_physical_slot_reader_handles_overflow_log_locations() {
+    fn storage_edge_location_reader_handles_overflow_log_locations() {
         let graph = valued_bidirectional_graph();
         graph.push_vertex().unwrap();
         graph.push_vertex().unwrap();
@@ -6863,30 +6863,28 @@ mod tests {
                 )
                 .unwrap();
         }
-        let mut physical = Vec::new();
-        graph
+        let mut found = None;
+        let _ = graph
             .forward()
-            .for_each_live_physical_edge_location_for_label(source, label, |slot, edge| {
-                physical.push((slot, edge.neighbor_vid()))
+            .visit_storage_edge_locations(source, label, |storage_ref, edge| {
+                if matches!(
+                    storage_ref.location,
+                    crate::labeled::graph::traverse_next::StorageEdgeLocation::OverflowLogEntry(_)
+                ) {
+                    found = Some((storage_ref.location, edge));
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(())
             })
             .unwrap();
-        let (slot, neighbor) = physical
-            .iter()
-            .find(|(slot, _)| *slot & 0x8000_0000 != 0)
-            .copied()
-            .expect("overflow physical location");
-        let row = graph
-            .forward()
-            .read_physical_edge_at_slot_for_label(source, label, slot)
-            .unwrap()
-            .expect("live overflow physical slot");
-        assert_eq!(row.neighbor_vid(), neighbor);
+        let (location, edge) = found.expect("overflow storage location");
+        assert_eq!(edge.neighbor_vid(), target);
         assert!(
-            graph
-                .forward()
-                .read_physical_edge_at_slot_for_label(source, label, u32::MAX)
-                .unwrap()
-                .is_none()
+            matches!(
+                location,
+                crate::labeled::graph::traverse_next::StorageEdgeLocation::OverflowLogEntry(_)
+            ),
+            "expected an overflow-log entry"
         );
     }
 

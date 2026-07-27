@@ -18,6 +18,21 @@ use ic_stable_structures::{
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
 };
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
+
+/// Encode a [`StorageEdgeRef`] back into the legacy slab/overflow slot representation.
+///
+/// Adoption fixtures use this to build measurement-only [`PhysicalIdentity`] values that
+/// still distinguish overflow-log entries by their high bit. This encoding is intentionally
+/// kept inside the fixture and is not part of the public logical read contract.
+#[cfg(feature = "adoption-fixtures")]
+fn encoded_storage_slot(storage_ref: crate::labeled::graph::traverse_next::StorageEdgeRef) -> u32 {
+    use crate::labeled::graph::traverse_next::StorageEdgeLocation;
+    match storage_ref.location {
+        StorageEdgeLocation::SlabSlot(slot) => slot,
+        StorageEdgeLocation::OverflowLogEntry(entry_idx) => entry_idx | 0x8000_0000,
+    }
+}
 
 /// In-memory virtual region used by one measurement fixture.
 pub type FixtureMemory = VirtualMemory<DefaultMemoryImpl>;
@@ -683,30 +698,7 @@ pub fn build_sparse_slot_published_fixture(
                 .map_err(|error| format!("sparse-slot fixture mate publish failed: {error}"))?;
         }
     }
-    let mut identities = Vec::new();
-    graph
-        .forward()
-        .for_each_live_physical_edge_location_for_label(VertexId::from(0), label, |slot, edge| {
-            identities.push(PhysicalIdentity {
-                owner: 0,
-                target: u32::from(edge.neighbor_vid()),
-                orientation: 0,
-                slot,
-            });
-        })
-        .map_err(|error| format!("sparse-slot forward identity scan failed: {error}"))?;
-    graph
-        .reverse()
-        .for_each_live_physical_edge_location_for_label(VertexId::from(1), label, |slot, edge| {
-            identities.push(PhysicalIdentity {
-                owner: 1,
-                target: u32::from(edge.neighbor_vid()),
-                orientation: 1,
-                slot,
-            });
-        })
-        .map_err(|error| format!("sparse-slot reverse identity scan failed: {error}"))?;
-    identities.sort();
+    let identities = extract_sparse_slot_fixture_identities(&graph)?;
     let expected =
         usize::try_from(inserted_edges).map_err(|_| "sparse count overflow".to_owned())?;
     if identities.len() != expected
@@ -721,6 +713,84 @@ pub fn build_sparse_slot_published_fixture(
         identities,
         representation: FixtureRepresentation::Published,
     })
+}
+
+/// Extract physical identities from a sparse-slot published fixture.
+///
+/// This is a measurement-only helper for adoption benchmarks. It uses the
+/// crate-internal [`visit_storage_edge_locations`] primitive and re-encodes the
+/// decoded storage location back into the legacy slab/overflow slot representation
+/// so existing ranked-blob probes can compare results unchanged.
+#[cfg(feature = "adoption-fixtures")]
+pub fn extract_sparse_slot_fixture_identities(
+    graph: &DeferredBidirectionalLabeledLaraGraph<PublishedEdge, FixtureMemory>,
+) -> Result<Vec<PhysicalIdentity>, String> {
+    let label = BucketLabelKey::directed_from_index(1);
+    let mut identities = Vec::new();
+    let _ = graph
+        .forward()
+        .visit_storage_edge_locations(VertexId::from(0), label, |storage_ref, edge| {
+            identities.push(PhysicalIdentity {
+                owner: 0,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 0,
+                slot: encoded_storage_slot(storage_ref),
+            });
+            ControlFlow::<()>::Continue(())
+        })
+        .map_err(|error| format!("sparse forward identity scan failed: {error}"))?;
+    let _ = graph
+        .reverse()
+        .visit_storage_edge_locations(VertexId::from(1), label, |storage_ref, edge| {
+            identities.push(PhysicalIdentity {
+                owner: 1,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 1,
+                slot: encoded_storage_slot(storage_ref),
+            });
+            ControlFlow::<()>::Continue(())
+        })
+        .map_err(|error| format!("sparse reverse identity scan failed: {error}"))?;
+    identities.sort();
+    Ok(identities)
+}
+
+/// Extract physical identities for one label from a mixed-label published fixture.
+///
+/// Like [`extract_sparse_slot_fixture_identities`], this is a measurement-only helper
+/// for adoption benchmarks and preserves the legacy encoded slot representation.
+#[cfg(feature = "adoption-fixtures")]
+pub fn extract_mixed_label_fixture_identities(
+    graph: &DeferredBidirectionalLabeledLaraGraph<PublishedEdge, FixtureMemory>,
+    label: BucketLabelKey,
+) -> Result<Vec<PhysicalIdentity>, String> {
+    let mut identities = Vec::new();
+    let _ = graph
+        .forward()
+        .visit_storage_edge_locations(VertexId::from(0), label, |storage_ref, edge| {
+            identities.push(PhysicalIdentity {
+                owner: 0,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 0,
+                slot: encoded_storage_slot(storage_ref),
+            });
+            ControlFlow::<()>::Continue(())
+        })
+        .map_err(|error| format!("mixed forward identity scan failed: {error}"))?;
+    let _ = graph
+        .reverse()
+        .visit_storage_edge_locations(VertexId::from(1), label, |storage_ref, edge| {
+            identities.push(PhysicalIdentity {
+                owner: 1,
+                target: u32::from(edge.neighbor_vid()),
+                orientation: 1,
+                slot: encoded_storage_slot(storage_ref),
+            });
+            ControlFlow::<()>::Continue(())
+        })
+        .map_err(|error| format!("mixed reverse identity scan failed: {error}"))?;
+    identities.sort();
+    Ok(identities)
 }
 
 /// Build an undirected Published fixture and publish forward mate leaves.
@@ -1153,10 +1223,11 @@ mod tests {
         assert_eq!(slots, (1..=8).collect::<Vec<_>>());
 
         let mut physical_slots = Vec::new();
-        graph
+        let _ = graph
             .forward()
-            .for_each_live_physical_edge_location_for_label(VertexId::from(0), label, |slot, _| {
-                physical_slots.push(slot)
+            .visit_storage_edge_locations(VertexId::from(0), label, |storage_ref, _| {
+                physical_slots.push(encoded_storage_slot(storage_ref));
+                ControlFlow::<()>::Continue(())
             })
             .expect("physical scan");
         assert_eq!(physical_slots.len(), 8);
