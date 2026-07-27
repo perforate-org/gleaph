@@ -471,8 +471,6 @@ where
         label: BucketLabelKey,
         bucket: &LabelBucket,
         order: OutEdgeOrder,
-        inline_property_bytes: &[u8],
-        width: u16,
         mut visit: impl FnMut(BucketEntryPosition, E) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
@@ -495,19 +493,11 @@ where
             OutEdgeOrder::Ascending => {
                 for slot in 0..degree {
                     let off = slot as usize * E::BYTES;
-                    let mut edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
                         .with_slot_index(slot)
                         .with_label_id(label.raw());
                     if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                         continue;
-                    }
-                    if width > 0 {
-                        let start = slot as usize * usize::from(width);
-                        let end = start + usize::from(width);
-                        edge = edge.with_stored_inline_property_bytes(
-                            width,
-                            &inline_property_bytes[start..end],
-                        );
                     }
                     if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
                         return Ok(ControlFlow::Break(value));
@@ -517,21 +507,111 @@ where
             OutEdgeOrder::Descending => {
                 for slot in (0..degree).rev() {
                     let off = slot as usize * E::BYTES;
-                    let mut edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
                         .with_slot_index(slot)
                         .with_label_id(label.raw());
                     if edge.is_deleted_slot() || edge.is_tombstone_edge() {
                         continue;
                     }
-                    if width > 0 {
+                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
+    /// Visits every live edge together with its inline-property bytes in a dense,
+    /// tombstone-free label bucket by bulk-reading both the topology slab and the
+    /// inline-property bytes span in one call each.
+    ///
+    /// The returned [`EdgeWithInlineProperty`] carries the bytes in the dedicated
+    /// wrapper; the edge itself is *not* redundantly modified via
+    /// [`CsrEdge::with_stored_inline_property_bytes`], eliminating a per-edge byte copy.
+    #[inline]
+    fn visit_dense_label_bucket_edges_with_inline_property<B>(
+        &self,
+        _owner: VertexId,
+        label: BucketLabelKey,
+        bucket: &LabelBucket,
+        order: OutEdgeOrder,
+        inline_property_bytes: &[u8],
+        width: u16,
+        mut visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        debug_assert_eq!(
+            inline_property_bytes.len(),
+            bucket.degree() as usize * usize::from(width),
+            "inline property span length must match dense degree times width"
+        );
+        let degree = bucket.degree();
+        if degree == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let edge_bytes_len =
+            (degree as usize)
+                .checked_mul(E::BYTES)
+                .ok_or(LabeledOperationError::from(
+                    LaraOperationError::CollectAllocationOverflow,
+                ))?;
+        let mut raw_edges = vec![0u8; edge_bytes_len];
+        self.edges
+            .read_slots_contiguous(bucket.edge_start(), &mut raw_edges);
+        match order {
+            OutEdgeOrder::Ascending => {
+                for slot in 0..degree {
+                    let off = slot as usize * E::BYTES;
+                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                        .with_slot_index(slot)
+                        .with_label_id(label.raw());
+                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                        continue;
+                    }
+                    let inline_property = if width == 0 {
+                        InlinePropertyBytes::empty()
+                    } else {
                         let start = slot as usize * usize::from(width);
                         let end = start + usize::from(width);
-                        edge = edge.with_stored_inline_property_bytes(
-                            width,
-                            &inline_property_bytes[start..end],
-                        );
+                        InlinePropertyBytes::from_bytes(width, &inline_property_bytes[start..end])
+                    };
+                    if let ControlFlow::Break(value) = visit(
+                        BucketEntryPosition::new(slot),
+                        EdgeWithInlineProperty {
+                            edge,
+                            inline_property,
+                        },
+                    ) {
+                        return Ok(ControlFlow::Break(value));
                     }
-                    if let ControlFlow::Break(value) = visit(BucketEntryPosition::new(slot), edge) {
+                }
+            }
+            OutEdgeOrder::Descending => {
+                for slot in (0..degree).rev() {
+                    let off = slot as usize * E::BYTES;
+                    let edge = E::read_from(&raw_edges[off..off + E::BYTES])
+                        .with_slot_index(slot)
+                        .with_label_id(label.raw());
+                    if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                        continue;
+                    }
+                    let inline_property = if width == 0 {
+                        InlinePropertyBytes::empty()
+                    } else {
+                        let start = slot as usize * usize::from(width);
+                        let end = start + usize::from(width);
+                        InlinePropertyBytes::from_bytes(width, &inline_property_bytes[start..end])
+                    };
+                    if let ControlFlow::Break(value) = visit(
+                        BucketEntryPosition::new(slot),
+                        EdgeWithInlineProperty {
+                            edge,
+                            inline_property,
+                        },
+                    ) {
                         return Ok(ControlFlow::Break(value));
                     }
                 }
@@ -590,16 +670,7 @@ where
         if bucket.overflow_log_head() < 0
             && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
         {
-            let inline_property_bytes: &[u8] = &[];
-            return self.visit_dense_label_bucket_edges(
-                owner,
-                label,
-                &bucket,
-                order,
-                inline_property_bytes,
-                0,
-                visit,
-            );
+            return self.visit_dense_label_bucket_edges(owner, label, &bucket, order, visit);
         }
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
         let mut iter = self.labeled_bucket_span_iter(
@@ -943,31 +1014,14 @@ where
             } else {
                 Vec::new()
             };
-            return self.visit_dense_label_bucket_edges(
+            return self.visit_dense_label_bucket_edges_with_inline_property(
                 owner,
                 label,
                 &bucket,
                 order,
                 &inline_property_bytes,
                 width,
-                |slot, edge| {
-                    let raw_slot = slot.raw();
-                    let inline_property = if width == 0 {
-                        InlinePropertyBytes::empty()
-                    } else {
-                        let start =
-                            usize::try_from(raw_slot).unwrap_or(usize::MAX) * usize::from(width);
-                        let end = start + usize::from(width);
-                        InlinePropertyBytes::from_bytes(width, &inline_property_bytes[start..end])
-                    };
-                    visit(
-                        slot,
-                        EdgeWithInlineProperty {
-                            edge,
-                            inline_property,
-                        },
-                    )
-                },
+                visit,
             );
         }
 
