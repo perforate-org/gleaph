@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 10:31:50 UTC +0000
+Anchor timestamp: 2026-07-28 10:34:58 UTC +0000
 
 ## Context
 
@@ -1529,6 +1529,9 @@ not rewritten as though unfinished unordered product behavior shipped.
     inserts remain planned. Directed, undirected owner/alias, and self-loop
     canonical-owner tests now cover the location/property boundary, including
     a mixed multi-item batch whose properties remain joined by logical ordinal.
+    A property-bearing batch following an existing equal-neighbor edge also
+    verifies that CounterpartScan resolves the new reverse row by pair rank,
+    not by matching the forward slot.
     The post-commit sidecar path traps on a violated preflight invariant rather
     than returning a recoverable error.
 11. Replace Router V1 request identity/payload in place; implement exhaustive

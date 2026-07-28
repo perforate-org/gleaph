@@ -1062,6 +1062,64 @@ mod tests {
     }
 
     #[test]
+    fn batch_parallel_edge_uses_existing_equal_neighbor_pair_rank() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4007);
+        let property_id = PropertyId::from_raw(93);
+        let vertices = make_vertices(&store, 2);
+        let source = vertices[0];
+        let target = vertices[1];
+        let first = store
+            .insert_directed_edge(source, target, Some(label))
+            .expect("existing parallel edge");
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+
+        let mut second = input(source, target, Some(label), true, vec![]);
+        second.initial_edge_properties = vec![(property_id, Value::Int64(903))];
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()])
+            .expect("parallel batch edge");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        let location = &locations[0];
+        let second_occurrence = location.canonical_occurrence(&second);
+        let second_counterpart = store
+            .counterpart_edge_occurrence(second_occurrence)
+            .expect("second counterpart");
+        let first_counterpart = store
+            .counterpart_edge_occurrence(first.occurrence(LabeledOrientation::Forward))
+            .expect("first counterpart");
+        let reverse_location = match location {
+            BatchEdgePhysicalLocation::Directed { reverse, .. } => reverse,
+            other => panic!("expected directed location, got {other:?}"),
+        };
+
+        assert_eq!(second_counterpart.owner_vertex_id, target);
+        assert_eq!(
+            second_counterpart.slot_index.raw(),
+            reverse_location.logical_slot
+        );
+        assert_ne!(
+            second_counterpart.slot_index, first_counterpart.slot_index,
+            "parallel edges must resolve to distinct pair ranks"
+        );
+        let second_handle = EdgeHandle::at_slot(
+            second_occurrence.owner_vertex_id,
+            second_occurrence.label_id,
+            second_occurrence.slot_index,
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(second_handle, property_id),
+            Some(Value::Int64(903))
+        );
+    }
+
+    #[test]
     fn duplicate_initial_sidecar_is_rejected_before_batch_write() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(4003);
