@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 12:16:40 UTC +0000
+Anchor timestamp: 2026-07-28 12:21:23 UTC +0000
 
 ## Context
 
@@ -1572,11 +1572,13 @@ not rewritten as though unfinished unordered product behavior shipped.
     `OrderedEdgeBatchGraphRequest::V1` envelope now carries the resolved
     Graph-owned item sequence, target identity, inline bytes, and initial
     sidecars with structural validation and Candid round-trip coverage. The
-    full fresh ordered mutation planner/write path and Router caller
-    integration remain planned. The Graph canister now exposes a guarded
-    journal-first ordered execution handler: it verifies the target envelope
-    fingerprint and returns an exact durable replay, while a journal miss
-    fails closed rather than entering an unordered executor. The Graph-kernel
+    full fresh ordered mutation commit path and Router caller integration
+    remain planned. The Graph canister now exposes a guarded journal-first
+    ordered execution handler: it verifies the target envelope fingerprint,
+    returns an exact durable replay, and on a journal miss decodes immutable
+    items into the existing `BatchEdgeInput` form for read-only planner
+    admission. It then fails closed before canonical write rather than entering
+    an unordered executor. The Graph-kernel
     now owns the manual V1 Graph request encoder,
     the `gleaph:ordered-edge-graph:v1` SHA-256 domain separator, and the
     order-sensitive fingerprint helper; reorder and payload-change tests

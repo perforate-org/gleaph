@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
+use crate::facade::{BatchEdgeInput, FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::gql_run::{
     extend_delta_seq_range, kernel_execution_mode, run_wire_plans_last_read_row_count,
@@ -298,7 +298,40 @@ pub fn execute_ordered_edge_batch(
     {
         return Ok(result);
     }
-    Err("ordered Graph fresh execution is not implemented yet".into())
+    let edges = request
+        .items
+        .iter()
+        .map(|item| {
+            let initial_edge_properties = item
+                .resolved_initial_edge_properties
+                .iter()
+                .map(|property| {
+                    let value = Value::from_binary_bytes(&property.value).map_err(|error| {
+                        format!(
+                            "ordered Graph property {} value decode failed: {error}",
+                            property.property_id.raw()
+                        )
+                    })?;
+                    Ok((property.property_id, value))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(BatchEdgeInput {
+                source_vertex_id: item.source_local_vertex_id.into(),
+                target_vertex_id: item.target_local_vertex_id.into(),
+                catalog_label: item.catalog_edge_label_id,
+                directed: item.directed,
+                inline_property_bytes: item.inline_property_bytes.clone(),
+                initial_edge_properties,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    store
+        .plan_batch_edge_insertion(&edges)
+        .map_err(|error| format!("ordered Graph planner admission failed: {error}"))?;
+    Err(
+        "ordered Graph planner admitted the request; canonical write path is not implemented yet"
+            .into(),
+    )
 }
 
 pub async fn execute_plan_update_batch(
@@ -2634,7 +2667,7 @@ mod tests {
         });
         let fresh_error =
             execute_ordered_edge_batch(args.clone()).expect_err("fresh path is deferred");
-        assert!(fresh_error.contains("fresh execution is not implemented"));
+        assert!(fresh_error.contains("planner admission failed"));
 
         GraphStore::new().commit_record_completed_ordered_edge_batch_journal_at(
             0,
