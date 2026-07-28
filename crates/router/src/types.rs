@@ -43,6 +43,85 @@ pub struct MutationStatus {
     pub next_action: String,
 }
 
+/// Versioned public request for the order-preserving edge-insert API (ADR 0049).
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum OrderedEdgeBatchPublicRequest {
+    V1(OrderedEdgeBatchPublicRequestV1),
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OrderedEdgeBatchPublicRequestV1 {
+    pub logical_graph_name: String,
+    pub items: Vec<OrderedEdgeInsertPublicItemV1>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OrderedEdgeInsertPublicItemV1 {
+    /// Candid bytes for the encoded global vertex identifier.
+    pub source: Vec<u8>,
+    /// Candid bytes for the encoded global vertex identifier.
+    pub target: Vec<u8>,
+    pub directed: bool,
+    pub edge_label_name: Option<String>,
+    pub inline_property: Option<Vec<u8>>,
+    pub initial_edge_properties: Vec<OrderedEdgePropertyPublicV1>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OrderedEdgePropertyPublicV1 {
+    pub property_name: String,
+    pub value: Vec<u8>,
+}
+
+impl OrderedEdgeBatchPublicRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        let OrderedEdgeBatchPublicRequest::V1(request) = self;
+        if request.logical_graph_name.is_empty() {
+            return Err("ordered edge batch logical graph name must not be empty".into());
+        }
+        if request.items.is_empty() || request.items.len() > 1_024 {
+            return Err("ordered edge batch item count must be 1..=1024".into());
+        }
+        for (ordinal, item) in request.items.iter().enumerate() {
+            for (endpoint_name, endpoint) in [("source", &item.source), ("target", &item.target)] {
+                if endpoint.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES {
+                    return Err(format!(
+                        "ordered edge item {ordinal} {endpoint_name} must be exactly {} bytes",
+                        gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+                    ));
+                }
+            }
+            if let Some(bytes) = &item.inline_property
+                && bytes.len() > gleaph_graph_kernel::entry::MAX_EDGE_INLINE_PROPERTY_BYTES
+            {
+                return Err(format!(
+                    "ordered edge item {ordinal} inline property exceeds the byte bound"
+                ));
+            }
+            for property in &item.initial_edge_properties {
+                if property.property_name.is_empty() {
+                    return Err(format!(
+                        "ordered edge item {ordinal} contains an empty property name"
+                    ));
+                }
+                if property.value.len()
+                    > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+                {
+                    return Err(format!(
+                        "ordered edge item {ordinal} property value exceeds the payload bound"
+                    ));
+                }
+            }
+        }
+        let encoded =
+            Encode!(self).map_err(|error| format!("ordered edge batch encode: {error}"))?;
+        if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("ordered edge batch exceeds the safe payload bound".into());
+        }
+        Ok(())
+    }
+}
+
 impl MutationStatus {
     pub fn from_record(record: &RouterMutationRecord) -> Self {
         let phase = record.lifecycle_phase();
@@ -844,6 +923,48 @@ mod tests {
         assert_eq!(status.phase, MutationLifecyclePhase::Completed);
         assert_eq!(status.target_shard, None);
         assert_eq!(status.next_action, "none");
+    }
+
+    #[test]
+    fn ordered_public_request_round_trips_and_validates() {
+        let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+            logical_graph_name: "tenant.main".into(),
+            items: vec![OrderedEdgeInsertPublicItemV1 {
+                source: vec![1; 8],
+                target: vec![2; 8],
+                directed: true,
+                edge_label_name: Some("KNOWS".into()),
+                inline_property: Some(vec![1, 2]),
+                initial_edge_properties: vec![OrderedEdgePropertyPublicV1 {
+                    property_name: "weight".into(),
+                    value: vec![3, 4],
+                }],
+            }],
+        });
+        request.validate().expect("valid ordered public request");
+        let bytes = Encode!(&request).expect("encode ordered public request");
+        let decoded: OrderedEdgeBatchPublicRequest =
+            Decode!(&bytes, OrderedEdgeBatchPublicRequest).expect("decode ordered public request");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn ordered_public_request_rejects_empty_property_name() {
+        let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+            logical_graph_name: "tenant.main".into(),
+            items: vec![OrderedEdgeInsertPublicItemV1 {
+                source: vec![1; 8],
+                target: vec![2; 8],
+                directed: true,
+                edge_label_name: None,
+                inline_property: None,
+                initial_edge_properties: vec![OrderedEdgePropertyPublicV1 {
+                    property_name: String::new(),
+                    value: Vec::new(),
+                }],
+            }],
+        });
+        assert!(request.validate().is_err());
     }
 }
 

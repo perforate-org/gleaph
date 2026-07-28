@@ -1641,10 +1641,14 @@ not rewritten as though unfinished unordered product behavior shipped.
     tests. Keep `RouterMutationRecord::V1` as the sole durable version envelope;
     do not add nested version enums around its identity, payload, progress,
     diagnostic, failure, or stored receipt types.
-12. Add the Router/Graph ordered edge-insert public wire, single-request
-    admission, independently versioned Graph result and retirement
-    acknowledgement envelopes, aggregate receipt, SDK packing, and PocketIC
-    coverage. Do not expose non-edge or unordered specialized batch operations.
+12. **Partially implemented (2026-07-28 13:55:41 UTC +0000):** Router now owns
+    the versioned `OrderedEdgeBatchPublicRequest::V1` wire with bounded item,
+    endpoint, inline-property, property-value, and encoded-request validation,
+    plus Candid round-trip and invalid-property tests. Single-request admission,
+    logical-graph/shard/catalog resolution, independently versioned Graph result
+    and retirement acknowledgement envelopes, aggregate receipt, SDK packing,
+    and PocketIC coverage remain planned. Do not expose non-edge or unordered
+    specialized batch operations.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.
