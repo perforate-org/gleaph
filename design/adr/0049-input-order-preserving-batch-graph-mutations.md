@@ -1701,11 +1701,22 @@ not rewritten as though unfinished unordered product behavior shipped.
     `-[ ]-`. Graph candidate expansion composes each composite direction from
     the existing simple-direction paths, and the mixed PocketIC case exercises
     every pattern plus the alias.
-13. Run ordered-versus-scalar canbench gates and Router replay-record
-    insert/replace benchmarks at small and maximum reachable shapes, including
-    the current ADR 0045 physical batch substrate as the replacement baseline.
-    Compare an unordered candidate separately only if a real reordering
-    optimization exists.
+13. **Partially implemented (2026-07-28 20:36:43 UTC +0000):** the Graph
+    canbench suite now compares the current ordered physical batch substrate
+    with scalar insertion using the same prepared fixture at 128 and 1,024
+    directed items. It covers both dispersed source buckets and same-source
+    fan-out, with zero-width payloads; the dispersed fixture also covers
+    fixed-width eight-byte payloads. The persisted measurements show the
+    intended shape boundary rather than a universal batch win: same-bucket
+    fan-out is lighter for batch (128: 3.98M vs 7.53M instructions; 1,024:
+    33.94M vs 63.17M), while one-item-per-source-bucket is lighter for scalar
+    (128 width 0: 7.18M vs 2.55M; 1,024 width 0: 62.94M vs 22.52M; 1,024
+    width 8: 71.35M vs 50.75M). These are Graph physical-path baselines, not
+    the completed ADR 0049 activation gate: Router replay-record
+    insert/replace, projection/retirement, overflow/expansion/relocation,
+    tombstone-heavy, and property-bearing end-to-end comparisons remain
+    planned. Compare an unordered candidate separately only if a real
+    reordering optimization exists.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

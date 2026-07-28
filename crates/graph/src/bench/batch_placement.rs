@@ -243,7 +243,10 @@ fn bench_batch_plan_fan_out_256_width_0() -> canbench_rs::BenchResult {
     })
 }
 
-fn setup_128_directed_edges(width: u16) -> (GraphStore, EdgeLabelId, Vec<BatchEdgeInput>) {
+fn setup_directed_edges(
+    count: usize,
+    width: u16,
+) -> (GraphStore, EdgeLabelId, Vec<BatchEdgeInput>) {
     let store = GraphStore::new();
     let label = label_id(if width == 0 {
         "BenchCleanSlabDirectedW0"
@@ -256,9 +259,9 @@ fn setup_128_directed_edges(width: u16) -> (GraphStore, EdgeLabelId, Vec<BatchEd
     } else {
         vec![0u8; width as usize]
     };
-    let mut sources = Vec::with_capacity(128);
-    let mut targets = Vec::with_capacity(128);
-    for _ in 0..128 {
+    let mut sources = Vec::with_capacity(count);
+    let mut targets = Vec::with_capacity(count);
+    for _ in 0..count {
         sources.push(store.insert_vertex().expect("src"));
         targets.push(store.insert_vertex().expect("dst"));
     }
@@ -271,6 +274,49 @@ fn setup_128_directed_edges(width: u16) -> (GraphStore, EdgeLabelId, Vec<BatchEd
         .map(|(&s, &t)| BatchEdgeInput {
             source_vertex_id: s,
             target_vertex_id: t,
+            catalog_label: Some(label),
+            directed: true,
+            inline_property_bytes: inline_property_bytes.clone(),
+            initial_edge_properties: Vec::new(),
+        })
+        .collect();
+    (store, label, input)
+}
+
+fn setup_128_directed_edges(width: u16) -> (GraphStore, EdgeLabelId, Vec<BatchEdgeInput>) {
+    setup_directed_edges(128, width)
+}
+
+fn setup_fan_out_directed_edges(
+    count: usize,
+    width: u16,
+) -> (GraphStore, EdgeLabelId, Vec<BatchEdgeInput>) {
+    let store = GraphStore::new();
+    let label = label_id(if width == 0 {
+        "BenchFanOutDirectedW0"
+    } else {
+        "BenchFanOutDirectedW8"
+    });
+    install_width_profile(label, width);
+    let source = store.insert_vertex().expect("source");
+    let targets = make_vertices(
+        &store,
+        count.try_into().expect("fan-out benchmark count fits u32"),
+    );
+    let inline_property_bytes = if width == 0 {
+        Vec::new()
+    } else {
+        vec![0u8; width as usize]
+    };
+    for &target in &targets {
+        store.prepare_clean_slab_dir_buckets(source, target, label, width);
+        store.prepare_clean_slab_dir_buckets(target, source, label, width);
+    }
+    let input = targets
+        .into_iter()
+        .map(|target| BatchEdgeInput {
+            source_vertex_id: source,
+            target_vertex_id: target,
             catalog_label: Some(label),
             directed: true,
             inline_property_bytes: inline_property_bytes.clone(),
@@ -354,6 +400,111 @@ fn bench_scalar_directed_128_width_8() -> canbench_rs::BenchResult {
                     Some(label),
                     &edge.inline_property_bytes,
                 )
+                .expect("scalar insert");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_clean_slab_directed_1024_width_0() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_directed_edges(1024, 0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("clean_slab_directed_1024_w0");
+        let result = store
+            .try_insert_batch_edges_clean_slab(&input)
+            .expect("batch");
+        assert!(result.total_edge_slots().is_some());
+    })
+}
+
+#[bench(raw)]
+fn bench_scalar_directed_1024_width_0() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_directed_edges(1024, 0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("scalar_directed_1024_w0");
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_clean_slab_directed_1024_width_8() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_directed_edges(1024, 8);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("clean_slab_directed_1024_w8");
+        let result = store
+            .try_insert_batch_edges_clean_slab(&input)
+            .expect("batch");
+        assert!(result.total_edge_slots().is_some());
+    })
+}
+
+#[bench(raw)]
+fn bench_scalar_directed_1024_width_8() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_directed_edges(1024, 8);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("scalar_directed_1024_w8");
+        for edge in &input {
+            store
+                .insert_directed_edge_with_inline_property_bytes(
+                    edge.source_vertex_id,
+                    edge.target_vertex_id,
+                    Some(label),
+                    &edge.inline_property_bytes,
+                )
+                .expect("scalar insert");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_clean_slab_fan_out_128_width_0() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_fan_out_directed_edges(128, 0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("clean_slab_fan_out_128_w0");
+        let result = store
+            .try_insert_batch_edges_clean_slab(&input)
+            .expect("batch");
+        assert!(result.total_edge_slots().is_some());
+    })
+}
+
+#[bench(raw)]
+fn bench_scalar_fan_out_128_width_0() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_fan_out_directed_edges(128, 0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("scalar_fan_out_128_w0");
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_clean_slab_fan_out_1024_width_0() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_fan_out_directed_edges(1024, 0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("clean_slab_fan_out_1024_w0");
+        let result = store
+            .try_insert_batch_edges_clean_slab(&input)
+            .expect("batch");
+        assert!(result.total_edge_slots().is_some());
+    })
+}
+
+#[bench(raw)]
+fn bench_scalar_fan_out_1024_width_0() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_fan_out_directed_edges(1024, 0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("scalar_fan_out_1024_w0");
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
                 .expect("scalar insert");
         }
     })
