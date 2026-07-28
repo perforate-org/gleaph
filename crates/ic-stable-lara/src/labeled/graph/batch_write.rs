@@ -4247,4 +4247,178 @@ mod tests {
         assert_eq!(pending.edge_inline_property_bytes(), 3000i32.to_le_bytes());
         assert_eq!(edges.len(), expected_slots as usize + 1);
     }
+
+    #[test]
+    fn inline_property_relocation_folds_multiple_buckets_in_one_leaf() {
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        for _ in 0..34 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        let label_a = BucketLabelKey::from_raw(2);
+        let label_b = BucketLabelKey::from_raw(3);
+        let pin_label = BucketLabelKey::from_raw(4);
+        for label in [label_a, label_b] {
+            graph
+                .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
+                .unwrap();
+        }
+        graph
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), pin_label, 0)
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                pin_label,
+                InlinePropertyTestEdge::with_bytes(2, &[]),
+            )
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(32),
+                pin_label,
+                InlinePropertyTestEdge::with_bytes(33, &[]),
+            )
+            .unwrap();
+
+        let header = graph.edges().header();
+        let leaf =
+            LabeledLaraGraph::<InlinePropertyTestEdge, crate::VectorMemory>::leaf_index_for_vid(
+                VertexId::from(0),
+                header.segment_size,
+            );
+        let edge_log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+        let inline_log_capacity =
+            graph.values.read_inline_property_bytes_log_state(leaf).1 as usize;
+        assert_eq!(edge_log_capacity, inline_log_capacity);
+        let bucket_log_capacity = edge_log_capacity / 2;
+
+        let write_bucket_logs = |label, edge_base: u32, value_base: i32, log_start: usize| {
+            let edge_entries = (0..bucket_log_capacity)
+                .map(|i| {
+                    (
+                        if i == 0 {
+                            -1
+                        } else {
+                            (log_start + i - 1) as i32
+                        },
+                        InlinePropertyTestEdge::with_i32(
+                            edge_base + i as u32,
+                            value_base + i as i32,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+            graph
+                .edges()
+                .write_overflow_log_entries(leaf, log_start as u32, &edge_entries)
+                .unwrap();
+            let inline_bytes = (0..bucket_log_capacity)
+                .flat_map(|i| (value_base + i as i32).to_le_bytes())
+                .collect::<Vec<_>>();
+            graph
+                .values
+                .write_inline_property_bytes_log_entries(
+                    leaf,
+                    log_start as u32,
+                    -1,
+                    4,
+                    &inline_bytes,
+                )
+                .unwrap();
+
+            let vertex = graph.vertices.get(VertexId::from(0));
+            let (slot, bucket) = match graph
+                .find_bucket(VertexId::from(0), &vertex, label)
+                .unwrap()
+            {
+                BucketSearch::Found { slot, bucket } => (slot, bucket),
+                _ => panic!("inline-property bucket must exist"),
+            };
+            let log_head = (log_start + bucket_log_capacity - 1) as i32;
+            let edge_log_len = graph.edges().overflow_log_chain_len(leaf, log_head);
+            let inline_log_len = graph
+                .values
+                .inline_property_bytes_log_chain_asc_indices(leaf, log_head)
+                .len() as u8;
+            graph
+                .buckets()
+                .write_label_bucket_slot(
+                    slot,
+                    bucket
+                        .with_overflow_log_head(log_head)
+                        .with_degree_field(
+                            bucket
+                                .stored_slots
+                                .checked_add(edge_log_len)
+                                .expect("test edge degree fits"),
+                        )
+                        .try_with_inline_property_bytes_log(log_head, inline_log_len)
+                        .unwrap(),
+                )
+                .unwrap();
+        };
+
+        write_bucket_logs(label_a, 100, 1000, 0);
+        write_bucket_logs(label_b, 200, 2000, bucket_log_capacity);
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_a,
+                    inline_property_width: 4,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(3000),
+                        label_id: label_a,
+                        edge: InlinePropertyTestEdge::with_i32(3000, 3000),
+                    }],
+                },
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_b,
+                    inline_property_width: 4,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 1,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(4000),
+                        label_id: label_b,
+                        edge: InlinePropertyTestEdge::with_i32(4000, 4000),
+                    }],
+                },
+            ],
+        };
+        let (old_start, _) = graph
+            .labeled_leaf_physical_range(VertexId::from(0))
+            .expect("leaf must be pinned before relocation");
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("same-leaf inline-property relocation must succeed");
+        let (new_start, _) = graph
+            .labeled_leaf_physical_range(VertexId::from(0))
+            .expect("leaf must remain pinned after relocation");
+        assert_ne!(new_start, old_start);
+
+        for (label, expected_tail, value_base) in
+            [(label_a, 3000, 1000i32), (label_b, 4000, 2000i32)]
+        {
+            let mut edges = Vec::new();
+            graph
+                .for_each_edges_for_label_ordered(
+                    VertexId::from(0),
+                    label,
+                    OutEdgeOrder::Ascending,
+                    |edge| edges.push(edge),
+                )
+                .unwrap();
+            assert_eq!(edges.len(), bucket_log_capacity + 1);
+            assert_eq!(edges.last().map(|edge| edge.target), Some(expected_tail));
+            assert_eq!(
+                edges[0].edge_inline_property_bytes(),
+                value_base.to_le_bytes(),
+                "each bucket must retain its own folded inline-property bytes"
+            );
+        }
+    }
 }

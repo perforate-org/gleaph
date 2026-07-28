@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 08:34:44 UTC +0000
+Anchor timestamp: 2026-07-28 08:59:40 UTC +0000
 
 ## Context
 
@@ -1503,7 +1503,9 @@ not rewritten as though unfinished unordered product behavior shipped.
    planner; same-leaf multi-bucket coverage checks both folded sequences
    independently. Inline-property-bearing relocation now copies a non-tail
    value span during reservation, folds edge/inline-property logs, and verifies
-   replacement-offset and pending-value read-back after commit.
+   replacement-offset and pending-value read-back after commit. A dedicated
+   same-leaf multi-bucket fixture also verifies that each bucket's edge and
+   inline-property log folds independently while the leaf relocates once.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
 10. Integrate mandatory internal location capture, canonical sidecar writes, and
