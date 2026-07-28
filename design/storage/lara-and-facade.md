@@ -38,8 +38,9 @@ flowchart TB
 - Labeled graphs, bidirectional deferred views
 - **Partially implemented (ADR 0048):** `CounterpartScan` is now live on the ADR 0050 logical-slot
   surface (`read_edge_state`, `visit_edges`, typed `BucketEntryPosition`) for edge-property
-  sidecars and live inline-edge-property mutation; returned insert locations and the remaining
-  mutation/alias-removal work are still pending
+  sidecars, live inline-edge-property mutation, and vertex-deletion observer cleanup. The latter
+  receives exact removed locations before LARA emits slot-move notifications; returned insert
+  locations and the remaining mutation/alias-removal work are still pending
 - **Partially implemented (ADR 0050):** canonical logical-slot traversal (`visit_edges`) and
   selected-slot reads are active and used by CounterpartScan; the broader forward/reverse facade
   migration and legacy removal remain pending
@@ -79,11 +80,12 @@ Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR
 
 **Current transitional implementation:** Graph-side `EdgeHandle` and related wire/index records
 carry an owner, label, and logical `BucketEntryPosition` slot. `EDGE_ALIASES` and the existing
-`mate`-named paths remain active for deletion cleanup, local-index maintenance, reverse repair,
-and other pending callers. The scan-only canonical-edge-handle helper, edge-property sidecar
-group, and live inline-edge-property mutation use LARA CounterpartScan on the ADR 0050 read
-surface. Reverse-store inline-property callers use explicit orientation because a logical slot
-alone cannot identify the physical store.
+`mate`-named paths remain active for local-index maintenance, reverse repair, ordinary scalar
+deletion, and other pending callers. The scan-only canonical-edge-handle helper, edge-property
+sidecar group, live inline-edge-property mutation, and vertex-deletion observer cleanup use LARA
+CounterpartScan or exact deletion locations on the ADR 0050 read surface. Reverse-store
+inline-property callers use explicit orientation because a logical slot alone cannot identify the
+physical store.
 
 **Target contract:** ADR 0048 makes `BucketEntryPosition` the only slot accepted by LARA
 `EdgeHandle`/`CanonicalEdgeOccurrence`; raw slab/log locations remain inside LARA. Counterpart resolution is

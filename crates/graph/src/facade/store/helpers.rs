@@ -8,8 +8,8 @@ use gleaph_graph_kernel::entry::{
 use ic_stable_lara::{
     VertexId,
     labeled::{
-        BucketLabelKey as LaraLabelId, DeleteEdgeObserver, EdgeSlotMove, EdgeSlotMoveObserver,
-        LabeledOrientation,
+        BucketLabelKey as LaraLabelId, DeleteEdgeObserver, DeletedEdge, EdgeSlotMove,
+        EdgeSlotMoveObserver, LabeledOrientation,
     },
     traits::CsrEdge,
     traverse::BucketEntryPosition,
@@ -79,28 +79,38 @@ pub(super) struct GraphDeleteEdgeObserver {
 }
 
 impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
-    fn on_delete_outgoing_edge(&mut self, source: VertexId, edge: Edge) {
-        let owner = if TaggedEdgeLabelId::from_raw(edge.label_id).is_undirected() {
-            canonical_undirected_owner(source, edge.neighbor_vid())
+    fn on_delete_edge(
+        &mut self,
+        removed: DeletedEdge<Edge>,
+        counterpart: Option<DeletedEdge<Edge>>,
+    ) {
+        let canonical = if removed.label_id.is_directed() {
+            match removed.orientation {
+                LabeledOrientation::Forward => removed,
+                LabeledOrientation::Reverse => {
+                    let Some(counterpart) = counterpart else {
+                        // A directed self-loop is reported once from its forward row.
+                        return;
+                    };
+                    counterpart
+                }
+            }
         } else {
-            source
+            match counterpart {
+                Some(counterpart) if removed.owner_vertex_id >= counterpart.owner_vertex_id => {
+                    removed
+                }
+                Some(counterpart) => counterpart,
+                None if removed.edge.neighbor_vid() == removed.owner_vertex_id => removed,
+                None => return,
+            }
         };
-        self.store.clear_edge_sidecars(EdgeHandle {
-            owner_vertex_id: owner,
-            label_id: LaraLabelId::from_raw(edge.label_id),
-            slot_index: edge.edge_slot_index.raw().into(),
-        });
-    }
-
-    fn on_delete_incoming_edge(&mut self, _destination: VertexId, edge: Edge) {
-        // Reverse out-edges are always directed (undirected edges live only in the
-        // forward store), so the sidecar owner is the forward source. The reverse
-        // slot is canonicalized to the forward handle inside `clear_edge_sidecars`.
-        self.store.clear_edge_sidecars(EdgeHandle {
-            owner_vertex_id: edge.neighbor_vid(),
-            label_id: LaraLabelId::from_raw(edge.label_id),
-            slot_index: edge.edge_slot_index.raw().into(),
-        });
+        self.store
+            .commit_clear_edge_sidecars_at_canonical(EdgeHandle {
+                owner_vertex_id: canonical.owner_vertex_id,
+                label_id: LaraLabelId::from_raw(canonical.label_id.raw()),
+                slot_index: canonical.slot_index,
+            });
     }
 
     fn on_vertex_purge_completed(&mut self, vid: VertexId) {

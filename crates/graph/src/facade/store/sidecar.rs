@@ -29,9 +29,12 @@ impl GraphStore {
 
     pub(super) fn commit_clear_edge_sidecars(&self, handle: EdgeHandle) {
         let handle = self.canonical_edge_handle_for_sidecar(handle);
-        self.commit_clear_edge_local_indexes(handle);
-        let _ =
-            self.commit_remove_all_edge_properties(handle.occurrence(LabeledOrientation::Forward));
+        self.commit_clear_edge_sidecars_at_canonical(handle);
+    }
+
+    pub(super) fn commit_clear_edge_sidecars_at_canonical(&self, handle: EdgeHandle) {
+        self.commit_clear_edge_local_indexes_at_canonical(handle);
+        self.commit_remove_all_edge_properties_at_canonical(handle);
     }
 
     pub(super) fn clear_edge_sidecars(&self, handle: EdgeHandle) {

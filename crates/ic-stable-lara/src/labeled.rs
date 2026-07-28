@@ -134,7 +134,7 @@ pub(crate) mod traits;
 
 pub use bidirectional::{
     CanonicalEdgeOccurrence, DeferredBidirectionalLabeledError,
-    DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver, EdgeSlotMoveObserver,
+    DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver, DeletedEdge, EdgeSlotMoveObserver,
     LabeledBidirectionalMaintenanceReport, MateLookupError, MateStorageInitError,
     MateStorageMemories, Orientation as LabeledOrientation, ScalarInsertPair,
 };

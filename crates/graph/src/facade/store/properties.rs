@@ -139,6 +139,14 @@ impl GraphStore {
         occurrence: CanonicalEdgeOccurrence,
     ) -> Result<(), super::error::GraphStoreError> {
         let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
+        self.commit_remove_all_edge_properties_at_canonical(handle);
+        Ok(())
+    }
+
+    pub(super) fn commit_remove_all_edge_properties_at_canonical(
+        &self,
+        handle: super::handle::EdgeHandle,
+    ) {
         EDGE_PROPERTIES.with_borrow_mut(|store| {
             store.remove_all_for_edge(
                 handle.owner_vertex_id,
@@ -146,7 +154,6 @@ impl GraphStore {
                 handle.slot_index.raw(),
             );
         });
-        Ok(())
     }
 
     pub(super) fn commit_move_edge_properties(

@@ -63,6 +63,10 @@ impl GraphStore {
 
     pub(super) fn commit_clear_edge_local_indexes(&self, handle: EdgeHandle) {
         let handle = self.canonical_edge_handle_for_sidecar(handle);
+        self.commit_clear_edge_local_indexes_at_canonical(handle);
+    }
+
+    pub(super) fn commit_clear_edge_local_indexes_at_canonical(&self, handle: EdgeHandle) {
         edge_pending::enqueue_removals_for_edge(
             handle.owner_vertex_id,
             handle.label_id.raw(),

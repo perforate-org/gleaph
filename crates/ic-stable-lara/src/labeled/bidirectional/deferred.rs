@@ -136,14 +136,27 @@ impl EdgeSlotMoveObserver for NoopEdgeSlotMoveObserver {
     }
 }
 
-/// Observer for edges removed by resumable [`MaintenanceWorkItem::DeleteVertex`]
+/// One physical edge row removed by resumable vertex-delete maintenance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeletedEdge<E> {
+    /// Store orientation owning the removed row.
+    pub orientation: Orientation,
+    /// Vertex owning the removed label bucket.
+    pub owner_vertex_id: VertexId,
+    /// Label bucket containing the removed row.
+    pub label_id: BucketLabelKey,
+    /// Logical slot of the row before any slot-move notification.
+    pub slot_index: BucketEntryPosition,
+    /// Removed edge payload.
+    pub edge: E,
+}
+
+/// Observer for edge pairs removed by resumable [`MaintenanceWorkItem::DeleteVertex`]
 /// jobs, and for the completion of a vertex purge (ADR 0021).
 pub trait DeleteEdgeObserver<E> {
-    /// Called when a delete step removes one outgoing edge of the deleted vertex.
-    fn on_delete_outgoing_edge(&mut self, _source: VertexId, _edge: E) {}
-
-    /// Called when a delete step removes one incoming edge of the deleted vertex.
-    fn on_delete_incoming_edge(&mut self, _destination: VertexId, _edge: E) {}
+    /// Called after both physical rows are removed but before their survivor slot moves are
+    /// reported. `counterpart` is `None` for self-loops and an absent counterpart.
+    fn on_delete_edge(&mut self, _removed: DeletedEdge<E>, _counterpart: Option<DeletedEdge<E>>) {}
 
     /// Called once after the deleted vertex's rows are cleared and it is tombstoned.
     fn on_vertex_purge_completed(&mut self, _vid: VertexId) {}
@@ -4024,8 +4037,13 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)?
         {
             let dst = edge.neighbor_vid();
-            // Clear the removed canonical sidecars before any survivor is shifted into its slot.
-            delete_observer.on_delete_outgoing_edge(vid, edge.clone());
+            let removed = DeletedEdge {
+                orientation: Orientation::Forward,
+                owner_vertex_id: vid,
+                label_id: label,
+                slot_index: edge.edge_slot_index_raw().into(),
+                edge: edge.clone(),
+            };
             if dst != vid {
                 if label.is_undirected() {
                     self.invalidate_mate_leaf_for_vertex(Orientation::Forward, dst)?;
@@ -4036,9 +4054,19 @@ where
                         })
                         .map_err(DeferredBidirectionalLabeledError::Forward)?
                     {
+                        let counterpart = DeletedEdge {
+                            orientation: Orientation::Forward,
+                            owner_vertex_id: dst,
+                            label_id: label,
+                            slot_index: removal.removed.edge_slot_index_raw().into(),
+                            edge: removal.removed.clone(),
+                        };
+                        delete_observer.on_delete_edge(removed, Some(counterpart));
                         for moved in removal.moves {
                             move_observer.edge_slot_moved(Orientation::Forward, dst, moved);
                         }
+                    } else {
+                        delete_observer.on_delete_edge(removed, None);
                     }
                 } else {
                     self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
@@ -4049,11 +4077,23 @@ where
                         })
                         .map_err(DeferredBidirectionalLabeledError::Reverse)?
                     {
+                        let counterpart = DeletedEdge {
+                            orientation: Orientation::Reverse,
+                            owner_vertex_id: dst,
+                            label_id: label,
+                            slot_index: removal.removed.edge_slot_index_raw().into(),
+                            edge: removal.removed.clone(),
+                        };
+                        delete_observer.on_delete_edge(removed, Some(counterpart));
                         for moved in removal.moves {
                             move_observer.edge_slot_moved(Orientation::Reverse, dst, moved);
                         }
+                    } else {
+                        delete_observer.on_delete_edge(removed, None);
                     }
                 }
+            } else {
+                delete_observer.on_delete_edge(removed, None);
             }
             return Ok((next_item(removed_edges), true, false));
         }
@@ -4067,8 +4107,13 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)?
         {
             let src = edge.neighbor_vid();
-            // The counterpart forward unlink may shift a survivor into the removed canonical slot.
-            delete_observer.on_delete_incoming_edge(vid, edge.clone());
+            let removed = DeletedEdge {
+                orientation: Orientation::Reverse,
+                owner_vertex_id: vid,
+                label_id: label,
+                slot_index: edge.edge_slot_index_raw().into(),
+                edge: edge.clone(),
+            };
             if src != vid {
                 self.invalidate_mate_leaf_for_vertex(Orientation::Forward, src)?;
                 if let Some(removal) = self
@@ -4076,10 +4121,22 @@ where
                     .remove_edge_matching_with_move(src, label, |cand| cand.neighbor_vid() == vid)
                     .map_err(DeferredBidirectionalLabeledError::Forward)?
                 {
+                    let counterpart = DeletedEdge {
+                        orientation: Orientation::Forward,
+                        owner_vertex_id: src,
+                        label_id: label,
+                        slot_index: removal.removed.edge_slot_index_raw().into(),
+                        edge: removal.removed.clone(),
+                    };
+                    delete_observer.on_delete_edge(removed, Some(counterpart));
                     for moved in removal.moves {
                         move_observer.edge_slot_moved(Orientation::Forward, src, moved);
                     }
+                } else {
+                    delete_observer.on_delete_edge(removed, None);
                 }
+            } else {
+                delete_observer.on_delete_edge(removed, None);
             }
             return Ok((next_item(removed_edges), true, false));
         }

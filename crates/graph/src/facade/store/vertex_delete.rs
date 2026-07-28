@@ -77,7 +77,8 @@ impl GraphStore {
 mod tests {
     use super::*;
     use crate::facade::vertex_hidden_by_pending_purge;
-    use ic_stable_lara::{MaintenanceBudget, traits::CsrEdge};
+    use gleaph_gql::Value;
+    use ic_stable_lara::{MaintenanceBudget, labeled::LabeledOrientation, traits::CsrEdge};
 
     fn one_step_delete_budget() -> MaintenanceBudget {
         MaintenanceBudget {
@@ -185,6 +186,40 @@ mod tests {
             neighbors_pointing_to(&store, &neighbors, hub),
             0,
             "no neighbor keeps a dangling forward edge to the deleted hub"
+        );
+    }
+
+    #[test]
+    fn detach_delete_undirected_self_loop_clears_canonical_sidecars_once() {
+        let store = GraphStore::new();
+        let vertex = store.insert_vertex().expect("vertex");
+        let handle = store
+            .insert_undirected_edge(vertex, vertex, None)
+            .expect("self-loop");
+        let property = store
+            .get_or_insert_property_id("delete_self_loop")
+            .expect("property");
+        store
+            .set_edge_property(
+                handle.occurrence(LabeledOrientation::Forward),
+                property,
+                Value::Int64(7),
+            )
+            .expect("set property");
+
+        store.detach_delete_vertex(vertex).expect("detach delete");
+
+        let remaining = super::super::super::stable::EDGE_PROPERTIES.with_borrow(|properties| {
+            properties.get(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index.raw(),
+                property,
+            )
+        });
+        assert!(
+            remaining.is_none(),
+            "self-loop sidecar must be cleared once"
         );
     }
 }
