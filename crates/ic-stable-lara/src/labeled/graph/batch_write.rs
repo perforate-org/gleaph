@@ -503,8 +503,6 @@ where
 pub enum OneOrientationPhysicalLocation {
     /// Edge slab slot and optional inline property bytes byte offset.
     Slab {
-        /// Logical slot within the owning bucket row.
-        logical_slot: u32,
         /// Edge slab slot.
         edge_slot: u64,
         /// Inline property bytes byte offset, when the edge carries inline property bytes.
@@ -512,8 +510,6 @@ pub enum OneOrientationPhysicalLocation {
     },
     /// Edge overflow-log entry and optional inline-property-bytes-log entry.
     OverflowLog {
-        /// Logical slot within the owning bucket row.
-        logical_slot: u32,
         /// PMA leaf containing the log entry.
         leaf: u32,
         /// Edge overflow-log entry index.
@@ -530,6 +526,8 @@ pub struct OneOrientationBatchLocation {
     pub logical_ordinal: u32,
     /// CSR row owner used to distinguish two same-orientation undirected halves.
     pub owner_vertex_id: VertexId,
+    /// Logical slot within the owning bucket row, including tombstone positions.
+    pub logical_slot: u32,
     /// Exact LARA physical location.
     pub location: OneOrientationPhysicalLocation,
 }
@@ -2235,10 +2233,10 @@ where
                             OneOrientationBatchLocation {
                                 logical_ordinal: edge.logical_ordinal,
                                 owner_vertex_id: edge.owner_vertex_id,
+                                logical_slot: logical_slot_base
+                                    .checked_add(offset as u32)
+                                    .expect("reserve guaranteed logical slot"),
                                 location: OneOrientationPhysicalLocation::Slab {
-                                    logical_slot: logical_slot_base
-                                        .checked_add(offset as u32)
-                                        .expect("reserve guaranteed logical slot"),
                                     edge_slot: edge_start_slot
                                         .checked_add(offset as u64)
                                         .expect("reserve guaranteed edge location"),
@@ -2349,10 +2347,10 @@ where
                             OneOrientationBatchLocation {
                                 logical_ordinal: edge.logical_ordinal,
                                 owner_vertex_id: edge.owner_vertex_id,
+                                logical_slot: logical_slot_base
+                                    .checked_add(offset as u32)
+                                    .expect("reserve guaranteed logical slot"),
                                 location: OneOrientationPhysicalLocation::OverflowLog {
-                                    logical_slot: logical_slot_base
-                                        .checked_add(offset as u32)
-                                        .expect("reserve guaranteed logical slot"),
                                     leaf,
                                     edge_entry_idx: edge_log_start_idx
                                         .checked_add(offset as u32)
@@ -2711,11 +2709,11 @@ where
                 .map(|(offset, edge)| OneOrientationBatchLocation {
                     logical_ordinal: edge.logical_ordinal,
                     owner_vertex_id: edge.owner_vertex_id,
+                    logical_slot: existing_bucket_slots
+                        .checked_add(edge_log_len)
+                        .and_then(|slot| slot.checked_add(offset as u32))
+                        .expect("reserve guaranteed relocated logical slot"),
                     location: OneOrientationPhysicalLocation::Slab {
-                        logical_slot: existing_bucket_slots
-                            .checked_add(edge_log_len)
-                            .and_then(|slot| slot.checked_add(offset as u32))
-                            .expect("reserve guaranteed relocated logical slot"),
                         edge_slot: pending_start
                             .checked_add(offset as u64)
                             .expect("reserve guaranteed relocated edge location"),
@@ -2964,11 +2962,11 @@ where
                 .map(|(offset, edge)| OneOrientationBatchLocation {
                     logical_ordinal: edge.logical_ordinal,
                     owner_vertex_id: edge.owner_vertex_id,
+                    logical_slot: existing_bucket_slots
+                        .checked_add(edge_log_len)
+                        .and_then(|slot| slot.checked_add(offset as u32))
+                        .expect("reserve guaranteed expanded logical slot"),
                     location: OneOrientationPhysicalLocation::Slab {
-                        logical_slot: existing_bucket_slots
-                            .checked_add(edge_log_len)
-                            .and_then(|slot| slot.checked_add(offset as u32))
-                            .expect("reserve guaranteed expanded logical slot"),
                         edge_slot: pending_start
                             .checked_add(offset as u64)
                             .expect("reserve guaranteed edge location"),
@@ -3783,10 +3781,8 @@ mod tests {
         assert!(matches!(
             result.locations.as_deref(),
             Some([OneOrientationBatchLocation {
-                location: OneOrientationPhysicalLocation::OverflowLog {
-                    logical_slot,
-                    ..
-                },
+                logical_slot,
+                location: OneOrientationPhysicalLocation::OverflowLog { .. },
                 ..
             }]) if *logical_slot == expected_logical_slot
         ));

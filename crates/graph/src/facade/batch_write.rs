@@ -12,8 +12,9 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::batch_write::BatchReservation;
 use ic_stable_lara::labeled::batch_write::{
     BatchLocationMode, BatchLogicalPair, BatchLogicalPairKind, BidirectionalBatchPlan,
-    OneOrientationBatchEdge, OneOrientationBatchPlan, OneOrientationBatchResult,
-    OneOrientationBucketRun, OneOrientationPhysicalLocation, UndirectedBatchPair,
+    OneOrientationBatchEdge, OneOrientationBatchLocation, OneOrientationBatchPlan,
+    OneOrientationBatchResult, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+    UndirectedBatchPair,
 };
 use ic_stable_lara::{CsrEdge, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
@@ -54,17 +55,17 @@ pub(crate) enum BatchEdgeInsertResult {
 pub(crate) enum BatchEdgePhysicalLocation {
     Directed {
         logical_ordinal: u32,
-        forward: OneOrientationPhysicalLocation,
-        reverse: OneOrientationPhysicalLocation,
+        forward: OneOrientationBatchLocation,
+        reverse: OneOrientationBatchLocation,
     },
     Undirected {
         logical_ordinal: u32,
-        owner: OneOrientationPhysicalLocation,
-        alias: OneOrientationPhysicalLocation,
+        owner: OneOrientationBatchLocation,
+        alias: OneOrientationBatchLocation,
     },
     UndirectedSelfLoop {
         logical_ordinal: u32,
-        location: OneOrientationPhysicalLocation,
+        location: OneOrientationBatchLocation,
     },
 }
 
@@ -503,7 +504,7 @@ fn join_physical_locations(
                     owner_vertex_id: location.owner_vertex_id,
                 })?;
             let key = (location.logical_ordinal, role);
-            if by_key.insert(key, location.location).is_some() {
+            if by_key.insert(key, *location).is_some() {
                 return Err(BatchLocationJoinError::Duplicate {
                     logical_ordinal: location.logical_ordinal,
                     role,
@@ -831,12 +832,18 @@ mod tests {
         assert!(matches!(
             locations.as_ref().expect("capture locations").as_slice(),
             [BatchEdgePhysicalLocation::Directed {
-                forward: OneOrientationPhysicalLocation::Slab {
-                    inline_property_bytes_offset: Some(_),
+                forward: OneOrientationBatchLocation {
+                    location: OneOrientationPhysicalLocation::Slab {
+                        inline_property_bytes_offset: Some(_),
+                        ..
+                    },
                     ..
                 },
-                reverse: OneOrientationPhysicalLocation::Slab {
-                    inline_property_bytes_offset: Some(_),
+                reverse: OneOrientationBatchLocation {
+                    location: OneOrientationPhysicalLocation::Slab {
+                        inline_property_bytes_offset: Some(_),
+                        ..
+                    },
                     ..
                 },
                 ..
@@ -1655,8 +1662,13 @@ mod tests {
                     ..
                 } if locations.as_ref().expect("capture locations").iter().all(|location| match location {
                     BatchEdgePhysicalLocation::Directed { forward, reverse, .. } => {
-                        matches!(forward, OneOrientationPhysicalLocation::OverflowLog { .. })
-                            && matches!(reverse, OneOrientationPhysicalLocation::OverflowLog { .. })
+                        matches!(
+                            forward.location,
+                            OneOrientationPhysicalLocation::OverflowLog { .. }
+                        ) && matches!(
+                            reverse.location,
+                            OneOrientationPhysicalLocation::OverflowLog { .. }
+                        )
                     }
                     _ => false,
                 })
@@ -1695,8 +1707,8 @@ mod tests {
         let location = OneOrientationBatchLocation {
             logical_ordinal: forward.logical_ordinal,
             owner_vertex_id: forward.owner_vertex_id,
+            logical_slot: 0,
             location: OneOrientationPhysicalLocation::Slab {
-                logical_slot: 0,
                 edge_slot: 10,
                 inline_property_bytes_offset: None,
             },
