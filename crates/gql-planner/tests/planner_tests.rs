@@ -110,6 +110,30 @@ fn test_simple_match_return() {
 }
 
 #[test]
+fn edge_direction_patterns_are_preserved_in_expand_plan() {
+    let cases = [
+        ("<-[e:ROAD]-(b)", EdgeDirection::PointingLeft),
+        ("~[e:ROAD]~(b)", EdgeDirection::Undirected),
+        ("-[e:ROAD]->(b)", EdgeDirection::PointingRight),
+        ("<~[e:ROAD]~(b)", EdgeDirection::LeftOrUndirected),
+        ("~[e:ROAD]~>(b)", EdgeDirection::UndirectedOrRight),
+        ("<-[e:ROAD]->(b)", EdgeDirection::LeftOrRight),
+        ("-[e:ROAD]-(b)", EdgeDirection::AnyDirection),
+        ("<~[e:ROAD]~>(b)", EdgeDirection::AnyDirection),
+    ];
+    for (pattern, expected) in cases {
+        let plan = plan_query(&format!("MATCH (a){pattern} RETURN e"));
+        let direction = plan.ops.iter().find_map(|op| match op {
+            PlanOp::Expand { direction, .. } | PlanOp::ExpandFilter { direction, .. } => {
+                Some(*direction)
+            }
+            _ => None,
+        });
+        assert_eq!(direction, Some(expected), "pattern {pattern}");
+    }
+}
+
+#[test]
 fn test_match_with_edge() {
     let plan = plan_query("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a, b");
 

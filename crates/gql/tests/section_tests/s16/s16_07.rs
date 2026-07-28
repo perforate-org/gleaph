@@ -137,14 +137,13 @@ mod edge_pattern {
         }
     }
 
-    /// MATCH (a)-[e]-(b) RETURN a — AnyDirection (parsed as PointingRight by the parser)
+    /// MATCH (a)-[e]-(b) RETURN a — AnyDirection
     #[test]
     fn edge_any_direction() {
         let fs = factors("MATCH (a)-[e]-(b) RETURN a");
         match &fs[1].primary {
             PathPrimary::Edge(ep) => {
-                // Parser treats -[e]- the same as -[e]-> (PointingRight)
-                assert_eq!(ep.direction, EdgeDirection::PointingRight);
+                assert_eq!(ep.direction, EdgeDirection::AnyDirection);
             }
             other => panic!("expected Edge, got {other:?}"),
         }
@@ -162,27 +161,37 @@ mod edge_pattern {
         }
     }
 
-    /// MATCH (a)~[e]~>(b) RETURN a — UndirectedOrRight (parsed as Undirected by the parser)
+    /// MATCH (a)~[e]~>(b) RETURN a — UndirectedOrRight
     #[test]
     fn edge_undirected_or_right() {
         let fs = factors("MATCH (a)~[e]~>(b) RETURN a");
         match &fs[1].primary {
             PathPrimary::Edge(ep) => {
-                // Parser treats ~[e]~> as Undirected
-                assert_eq!(ep.direction, EdgeDirection::Undirected);
+                assert_eq!(ep.direction, EdgeDirection::UndirectedOrRight);
             }
             other => panic!("expected Edge, got {other:?}"),
         }
     }
 
-    /// MATCH (a)<-[e]->(b) RETURN a — LeftOrRight (parsed as PointingLeft by the parser)
+    /// MATCH (a)<-[e]->(b) RETURN a — LeftOrRight
     #[test]
     fn edge_left_or_right() {
         let fs = factors("MATCH (a)<-[e]->(b) RETURN a");
         match &fs[1].primary {
             PathPrimary::Edge(ep) => {
-                // Parser treats <-[e]-> as PointingLeft
-                assert_eq!(ep.direction, EdgeDirection::PointingLeft);
+                assert_eq!(ep.direction, EdgeDirection::LeftOrRight);
+            }
+            other => panic!("expected Edge, got {other:?}"),
+        }
+    }
+
+    /// MATCH (a)<~[e]~>(b) RETURN a — AnyDirection alias
+    #[test]
+    fn edge_tilde_both_is_any_direction() {
+        let fs = factors("MATCH (a)<~[e]~>(b) RETURN a");
+        match &fs[1].primary {
+            PathPrimary::Edge(ep) => {
+                assert_eq!(ep.direction, EdgeDirection::AnyDirection);
             }
             other => panic!("expected Edge, got {other:?}"),
         }

@@ -1693,6 +1693,14 @@ not rewritten as though unfinished unordered product behavior shipped.
     inline values remain paired with their logical items, exact replay remains
     idempotent, and directed versus undirected GQL reads verify the expected
     forward/reverse projection counts.
+    **Partially implemented (2026-07-28 20:14:54 UTC +0000):** GQL parsing now
+    consumes both edge delimiters and preserves all seven direction patterns:
+    left-only, undirected-only, right-only, left-or-undirected,
+    undirected-or-right, directed-only, and all-directions. The symmetric
+    spelling `<~[ ]~>` is normalized to the same `AnyDirection` contract as
+    `-[ ]-`. Graph candidate expansion composes each composite direction from
+    the existing simple-direction paths, and the mixed PocketIC case exercises
+    every pattern plus the alias.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.

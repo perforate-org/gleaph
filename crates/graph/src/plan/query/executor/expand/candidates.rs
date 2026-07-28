@@ -632,6 +632,44 @@ pub(crate) fn expand_candidates_for_expand_op_into(
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
+    let composite_directions: Option<&'static [EdgeDirection]> = match direction {
+        EdgeDirection::LeftOrUndirected => {
+            Some(&[EdgeDirection::PointingLeft, EdgeDirection::Undirected])
+        }
+        EdgeDirection::UndirectedOrRight => {
+            Some(&[EdgeDirection::Undirected, EdgeDirection::PointingRight])
+        }
+        EdgeDirection::LeftOrRight => {
+            Some(&[EdgeDirection::PointingLeft, EdgeDirection::PointingRight])
+        }
+        EdgeDirection::AnyDirection => Some(&[
+            EdgeDirection::PointingLeft,
+            EdgeDirection::Undirected,
+            EdgeDirection::PointingRight,
+        ]),
+        EdgeDirection::PointingRight | EdgeDirection::PointingLeft | EdgeDirection::Undirected => {
+            None
+        }
+    };
+    if let Some(directions) = composite_directions {
+        for direction in directions {
+            expand_candidates_for_expand_op_into(
+                store,
+                execution,
+                src_id,
+                *direction,
+                edge_label_id,
+                label_expr,
+                sequence_order,
+                indexed_edge_equality,
+                edge_inline_property_predicate,
+                edge_inline_vector_predicate,
+                parameters,
+                out,
+            )?;
+        }
+        return Ok(());
+    }
     if edge_label_id.is_none()
         && let Some(expr) = label_expr
         && expand_candidates_with_label_expr_fusion_into(

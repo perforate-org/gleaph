@@ -677,85 +677,7 @@ impl Parser<'_> {
 
     /// Parses a full edge pattern with bracket notation.
     pub fn parse_edge_pattern(&mut self) -> Result<EdgePattern, GqlError> {
-        let start = self.save();
-        let (direction, closing_tokens) = self.parse_edge_opening()?;
-        let (variable, is_or_colon, label, properties, where_clause) =
-            self.parse_element_pattern_filler()?;
-        self.expect_edge_closing(&closing_tokens)?;
-
-        Ok(EdgePattern {
-            span: self.span_since(start),
-            direction,
-            variable,
-            is_or_colon,
-            label,
-            properties,
-            where_clause,
-        })
-    }
-
-    /// Parses the opening token of a full edge and returns (direction, expected
-    /// closing token(s)).
-    fn parse_edge_opening(&mut self) -> Result<(EdgeDirection, Token), GqlError> {
-        match self.peek() {
-            Some(Token::MinusLeftBracket) => {
-                self.advance();
-                // Could be `-[…]->` (right) or `-[…]-` (any direction).
-                // We decide at closing time.
-                // Peek ahead after filler to determine direction.
-                // For now, return a placeholder; we'll resolve at closing.
-                Ok((EdgeDirection::PointingRight, Token::BracketRightArrow))
-            }
-            Some(Token::LeftArrowBracket) => {
-                self.advance();
-                // Could be `<-[…]-` (left) or `<-[…]->` (left or right).
-                Ok((EdgeDirection::PointingLeft, Token::RightBracketMinus))
-            }
-            Some(Token::TildeLeftBracket) => {
-                self.advance();
-                // Could be `~[…]~` (undirected) or `~[…]~>` (undirected or right).
-                Ok((EdgeDirection::Undirected, Token::RightBracketTilde))
-            }
-            Some(Token::LeftArrowTildeBracket) => {
-                self.advance();
-                // `<~[…]~` (left or undirected)
-                Ok((EdgeDirection::LeftOrUndirected, Token::RightBracketTilde))
-            }
-            _ => Err(self.expected("edge opening token")),
-        }
-    }
-
-    /// Consumes the closing token of a full edge pattern and may adjust
-    /// direction based on what closing was actually found.
-    fn expect_edge_closing(&mut self, expected: &Token) -> Result<EdgeDirection, GqlError> {
-        // The opening gives a "default" expected close. However, some openings
-        // are ambiguous:
-        //   `-[` can close with `]->` (right) or `]-` (any direction)
-        //   `<-[` can close with `]-` (left) or `]->` (left or right)
-        //   `~[` can close with `]~` (undirected) or `]~>` (undirected or right)
-
-        match self.peek() {
-            Some(Token::BracketRightArrow) => {
-                self.advance();
-                Ok(EdgeDirection::PointingRight)
-            }
-            Some(Token::RightBracketMinus) => {
-                self.advance();
-                Ok(EdgeDirection::PointingLeft) // or LeftOrUndirectedOrRight, resolved below
-            }
-            Some(Token::RightBracketTilde) => {
-                self.advance();
-                Ok(EdgeDirection::Undirected)
-            }
-            Some(Token::BracketTildeRightArrow) => {
-                self.advance();
-                Ok(EdgeDirection::UndirectedOrRight)
-            }
-            _ => {
-                self.expect_token(expected)?;
-                Ok(EdgeDirection::AnyDirection)
-            }
-        }
+        self.parse_full_edge_pattern()
     }
 
     /// Re-parses a full edge pattern, correctly resolving direction from
@@ -801,6 +723,10 @@ impl Parser<'_> {
             // <~[…]~ : left or undirected
             (Token::LeftArrowTildeBracket, Token::RightBracketTilde) => {
                 Ok(EdgeDirection::LeftOrUndirected)
+            }
+            // <~[…]~> is the symmetric spelling of an all-direction pattern.
+            (Token::LeftArrowTildeBracket, Token::BracketTildeRightArrow) => {
+                Ok(EdgeDirection::AnyDirection)
             }
             _ => Err(GqlError::Parse(format!(
                 "invalid edge bracket combination: {:?} … {:?}",

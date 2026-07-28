@@ -210,20 +210,40 @@ fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
     assert_eq!(replay.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.mutation_id, status.mutation_id);
 
-    assert_eq!(
-        query_scores(
-            &env,
-            "MATCH (a)-[e:ROAD]->(b) RETURN e.score AS score ORDER BY score ASC"
+    for (name, edge_pattern, expected_scores) in [
+        ("left only", "<-[e:ROAD]-", vec![10, 20]),
+        ("undirected only", "~[e:ROAD]~", vec![30, 30, 40]),
+        ("right only", "-[e:ROAD]->", vec![10, 20]),
+        (
+            "left or undirected",
+            "<~[e:ROAD]~",
+            vec![10, 20, 30, 30, 40],
         ),
-        vec![10, 20]
-    );
-    assert_eq!(
-        query_scores(
-            &env,
-            "MATCH (a)~[e:ROAD]~(b) RETURN e.score AS score ORDER BY score ASC"
+        (
+            "undirected or right",
+            "~[e:ROAD]~>",
+            vec![10, 20, 30, 30, 40],
         ),
-        vec![30, 30, 40]
-    );
+        ("directed only", "<-[e:ROAD]->", vec![10, 10, 20, 20]),
+        (
+            "all directions",
+            "-[e:ROAD]-",
+            vec![10, 10, 20, 20, 30, 30, 40],
+        ),
+        (
+            "all directions alias",
+            "<~[e:ROAD]~>",
+            vec![10, 10, 20, 20, 30, 30, 40],
+        ),
+    ] {
+        let query =
+            format!("MATCH (a){edge_pattern}(b) RETURN e.score AS score ORDER BY score ASC");
+        assert_eq!(
+            query_scores(&env, &query),
+            expected_scores,
+            "edge pattern {name}"
+        );
+    }
     for (score, distance, edge_pattern, expected_rows) in [
         (10, 1, "-[e:ROAD]->", 1),
         (20, 2, "-[e:ROAD]->", 1),
