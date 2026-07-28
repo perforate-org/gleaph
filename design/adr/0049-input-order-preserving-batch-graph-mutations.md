@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 11:27:47 UTC +0000
+Anchor timestamp: 2026-07-28 11:31:57 UTC +0000
 
 ## Context
 
@@ -1561,8 +1561,10 @@ not rewritten as though unfinished unordered product behavior shipped.
     identity, stable/wire retirement state, bounded aggregate receipt, and
     canonical hot-vertex validation. The stable and wire journal records now
     carry those identity/retirement fields with round-trip coverage. The
-    journal-first endpoint, identity comparison, receipt commit, and replay
-    algorithm remain planned.
+    shared Graph-kernel validator now rejects ordered continuation/partial
+    states, row-count mismatches, and retirement on PlanExecution entries at
+    the stable codec and wire-accessor boundaries. The journal-first endpoint,
+    identity comparison, receipt commit, and replay algorithm remain planned.
     The post-commit sidecar path traps on a violated preflight invariant rather
     than returning a recoverable error. The explicit stable-memory reservation
     remains blocked by the current `EdgePropertyStore` boundary: its

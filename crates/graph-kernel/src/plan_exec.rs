@@ -448,6 +448,47 @@ pub enum GraphMutationRetirementWireV1 {
     Retired,
 }
 
+/// Validate the request-kind-specific combinations allowed in the Graph journal.
+///
+/// PlanExecution retains the existing scalar/bulk state machine. OrderedEdgeBatch is a
+/// single completed request and therefore cannot carry continuation or partial-progress state.
+pub fn validate_graph_mutation_journal_fields(
+    identity: &GraphMutationRequestIdentityV1,
+    retirement: GraphMutationRetirementWireV1,
+    state: MutationJournalState,
+    row_count: u64,
+    next_index: Option<u32>,
+    bulk_progress: &Option<GraphBulkMutationProgress>,
+) -> Result<(), &'static str> {
+    match identity {
+        GraphMutationRequestIdentityV1::PlanExecution => {
+            if retirement != GraphMutationRetirementWireV1::NotApplicable {
+                return Err("PlanExecution journal entry must not have retirement state");
+            }
+        }
+        GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            logical_item_count, ..
+        } => {
+            if retirement == GraphMutationRetirementWireV1::NotApplicable {
+                return Err("ordered journal entry must have retirement state");
+            }
+            if state != MutationJournalState::Completed {
+                return Err("ordered journal entry must be completed");
+            }
+            if next_index.is_some() {
+                return Err("ordered journal entry must not have next_index");
+            }
+            if bulk_progress.is_some() {
+                return Err("ordered journal entry must not have bulk progress");
+            }
+            if row_count != u64::from(*logical_item_count) {
+                return Err("ordered journal row_count must equal logical_item_count");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Maximum canonical forward vertices retained in an ordered batch receipt.
 pub const MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES: usize = 2_048;
 
@@ -589,10 +630,26 @@ impl GraphMutationJournalEntryWire {
         &self.as_v1().bulk_progress
     }
     pub fn request_identity(&self) -> &GraphMutationRequestIdentityV1 {
+        self.validate()
+            .expect("invalid graph mutation journal wire entry");
         &self.as_v1().request_identity
     }
     pub fn retirement(&self) -> GraphMutationRetirementWireV1 {
+        self.validate()
+            .expect("invalid graph mutation journal wire entry");
         self.as_v1().retirement
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let entry = self.as_v1();
+        validate_graph_mutation_journal_fields(
+            &entry.request_identity,
+            entry.retirement,
+            entry.state,
+            entry.row_count,
+            entry.next_index,
+            &entry.bulk_progress,
+        )
     }
 
     pub fn set_state(&mut self, state: MutationJournalState) {
@@ -990,6 +1047,54 @@ mod tests {
             Decode!(&bytes, GraphMutationJournalEntryWire).expect("decode journal wire");
         assert_eq!(decoded.request_identity(), &identity);
         assert_eq!(decoded.retirement(), GraphMutationRetirementWireV1::Retired);
+    }
+
+    #[test]
+    fn ordered_journal_validation_rejects_continuation_and_wrong_row_count() {
+        let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [0; 32],
+            logical_item_count: 2,
+        };
+        let no_progress = None;
+        assert_eq!(
+            validate_graph_mutation_journal_fields(
+                &identity,
+                GraphMutationRetirementWireV1::Active,
+                MutationJournalState::Completed,
+                2,
+                Some(0),
+                &no_progress,
+            ),
+            Err("ordered journal entry must not have next_index")
+        );
+        assert_eq!(
+            validate_graph_mutation_journal_fields(
+                &identity,
+                GraphMutationRetirementWireV1::Active,
+                MutationJournalState::Completed,
+                1,
+                None,
+                &no_progress,
+            ),
+            Err("ordered journal row_count must equal logical_item_count")
+        );
+    }
+
+    #[test]
+    fn plan_execution_journal_validation_rejects_retirement() {
+        let no_progress = None;
+        assert_eq!(
+            validate_graph_mutation_journal_fields(
+                &GraphMutationRequestIdentityV1::PlanExecution,
+                GraphMutationRetirementWireV1::Active,
+                MutationJournalState::Completed,
+                0,
+                None,
+                &no_progress,
+            ),
+            Err("PlanExecution journal entry must not have retirement state")
+        );
     }
 
     #[test]

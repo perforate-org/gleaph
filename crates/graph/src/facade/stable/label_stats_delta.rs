@@ -6,6 +6,7 @@ use gleaph_graph_kernel::plan_exec::{
     GraphBulkMutationProgress, GraphBulkMutationProgressV1, GraphMutationJournalEntryWire,
     GraphMutationRequestIdentityV1, GraphMutationRetirementV1, GraphMutationRetirementWireV1,
     LabelStatsDeltaEventWire, MutationId, MutationJournalState, ShardEventSeq,
+    validate_graph_mutation_journal_fields,
 };
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
@@ -181,6 +182,8 @@ impl GraphMutationJournalEntry {
             GraphMutationRetirementV1::Active => GraphMutationRetirementWireV1::Active,
             GraphMutationRetirementV1::Retired { .. } => GraphMutationRetirementWireV1::Retired,
         });
+        wire.validate()
+            .expect("invalid graph mutation journal entry");
         wire
     }
 
@@ -356,6 +359,20 @@ fn decode_retirement(bytes: &[u8], offset: &mut usize) -> GraphMutationRetiremen
 }
 
 fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
+    let retirement = match &v1.retirement {
+        GraphMutationRetirementV1::NotApplicable => GraphMutationRetirementWireV1::NotApplicable,
+        GraphMutationRetirementV1::Active => GraphMutationRetirementWireV1::Active,
+        GraphMutationRetirementV1::Retired { .. } => GraphMutationRetirementWireV1::Retired,
+    };
+    validate_graph_mutation_journal_fields(
+        &v1.request_identity,
+        retirement,
+        v1.state,
+        v1.row_count,
+        v1.next_index,
+        &v1.bulk_progress,
+    )
+    .expect("invalid graph mutation journal entry");
     let mut buf = Vec::with_capacity(JOURNAL_PRIMARY_SIZE);
 
     encode_u8(&mut buf, JOURNAL_LAYOUT_VERSION);
@@ -582,7 +599,7 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         appendix_len
     );
 
-    GraphMutationJournalEntryV1 {
+    let entry = GraphMutationJournalEntryV1 {
         mutation_id,
         state,
         row_count,
@@ -594,7 +611,22 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         bulk_progress,
         request_identity,
         retirement,
-    }
+    };
+    let retirement_wire = match entry.retirement {
+        GraphMutationRetirementV1::NotApplicable => GraphMutationRetirementWireV1::NotApplicable,
+        GraphMutationRetirementV1::Active => GraphMutationRetirementWireV1::Active,
+        GraphMutationRetirementV1::Retired { .. } => GraphMutationRetirementWireV1::Retired,
+    };
+    validate_graph_mutation_journal_fields(
+        &entry.request_identity,
+        retirement_wire,
+        entry.state,
+        entry.row_count,
+        entry.next_index,
+        &entry.bulk_progress,
+    )
+    .expect("invalid graph mutation journal entry");
+    entry
 }
 
 const JOURNAL_MAX_APPENDIX: u32 = {
@@ -1104,6 +1136,29 @@ mod tests {
         let wire = decoded.wire();
         assert_eq!(wire.request_identity(), original.request_identity());
         assert_eq!(wire.retirement(), GraphMutationRetirementWireV1::Retired);
+    }
+
+    #[test]
+    #[should_panic(expected = "ordered journal row_count must equal logical_item_count")]
+    fn ordered_journal_codec_rejects_wrong_row_count() {
+        let entry = GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
+            mutation_id: 124,
+            state: MutationJournalState::Completed,
+            row_count: 1,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: Vec::new(),
+            recorded_at_ns: Some(77),
+            next_index: None,
+            bulk_progress: None,
+            request_identity: GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                canonical_encoding_version: 1,
+                graph_request_fingerprint: [6; 32],
+                logical_item_count: 2,
+            },
+            retirement: GraphMutationRetirementV1::Active,
+        });
+        let _ = entry.into_bytes();
     }
 
     #[test]
