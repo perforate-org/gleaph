@@ -1,7 +1,10 @@
 //! Edge inline property bytes updates (schema from router wire per ADR 0008).
 
-use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId, EdgeTarget};
-use ic_stable_lara::traits::CsrEdge;
+use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId};
+use ic_stable_lara::{
+    labeled::{CanonicalEdgeOccurrence, LabeledOrientation},
+    traits::CsrEdge,
+};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -28,23 +31,39 @@ impl GraphStore {
         handle: EdgeHandle,
         inline_property_bytes: &[u8],
     ) -> Result<(), GraphStoreError> {
-        let catalog_label = catalog_edge_label_from_wire(handle.label_id);
+        self.commit_update_edge_inline_property_at_occurrence(
+            handle.occurrence(LabeledOrientation::Forward),
+            inline_property_bytes,
+        )
+    }
+
+    pub(super) fn commit_update_edge_inline_property_at_occurrence(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+        inline_property_bytes: &[u8],
+    ) -> Result<(), GraphStoreError> {
+        let catalog_label = catalog_edge_label_from_wire(occurrence.label_id);
         validate_edge_inline_property_bytes_for_label(catalog_label, inline_property_bytes)?;
 
-        let reverse_canonical = self.canonical_reverse_in_edge_handle(handle);
-        let forward = if reverse_canonical != handle {
-            reverse_canonical
-        } else {
-            self.canonical_edge_handle(handle)
-        };
+        let counterpart = self.counterpart_edge_occurrence(occurrence)?;
+        let canonical = ic_stable_lara::bidirectional::counterpart::canonical_from_counterpart(
+            occurrence,
+            counterpart,
+        );
+        let canonical = EdgeHandle::at_slot(
+            canonical.owner_vertex_id,
+            canonical.label_id,
+            canonical.slot_index,
+        );
+        let canonical_occurrence = canonical.occurrence(LabeledOrientation::Forward);
 
-        let (edge, _) = self
-            .lookup_edge_entry(forward)?
-            .ok_or(GraphStoreError::EdgeNotFound {
-                owner_vertex_id: forward.owner_vertex_id,
-                label_id: forward.label_id,
-                slot_index: forward.slot_index.raw(),
-            })?;
+        let (edge, _) =
+            self.lookup_edge_entry(canonical)?
+                .ok_or(GraphStoreError::EdgeNotFound {
+                    owner_vertex_id: canonical.owner_vertex_id,
+                    label_id: canonical.label_id,
+                    slot_index: canonical.slot_index.raw(),
+                })?;
         let new_edge = edge.clone().with_stored_inline_property_bytes(
             u16::try_from(inline_property_bytes.len()).map_err(|_| {
                 GraphStoreError::InvalidEdgeInlinePropertyBytesWidth(inline_property_bytes.len())
@@ -52,73 +71,41 @@ impl GraphStore {
             inline_property_bytes,
         );
 
-        let mut updated = self
-            .with_graph_mut(|graph| {
-                graph.update_forward_edge_inline_property_at_slot(
-                    forward.owner_vertex_id,
-                    forward.label_id,
-                    forward.slot_index.raw(),
+        let update_occurrence = |occurrence: CanonicalEdgeOccurrence| {
+            self.with_graph_mut(|graph| match occurrence.orientation {
+                LabeledOrientation::Forward => graph.update_forward_edge_inline_property_at_slot(
+                    occurrence.owner_vertex_id,
+                    occurrence.label_id,
+                    occurrence.slot_index.raw(),
                     new_edge.clone(),
-                )
+                ),
+                LabeledOrientation::Reverse => graph.update_reverse_edge_inline_property_at_slot(
+                    occurrence.owner_vertex_id,
+                    occurrence.label_id,
+                    occurrence.slot_index.raw(),
+                    new_edge.clone(),
+                ),
             })
-            .map_err(GraphStoreError::from)?;
-        if updated {
-            if forward.label_id.is_directed() {
-                if let Some(EdgeTarget::Local(target)) = edge.edge_target()
-                    && let Some(reverse) = self.find_reverse_alias_for_canonical(
-                        forward,
-                        target,
-                        forward.owner_vertex_id,
-                    )?
-                {
-                    updated |= self
-                        .with_graph_mut(|graph| {
-                            graph.update_reverse_edge_inline_property_at_slot(
-                                reverse.owner_vertex_id,
-                                reverse.label_id,
-                                reverse.slot_index.raw(),
-                                new_edge.clone(),
-                            )
-                        })
-                        .map_err(GraphStoreError::from)?;
-                }
-            } else if let Some(EdgeTarget::Local(alias_owner)) = edge.edge_target()
-                && alias_owner != forward.owner_vertex_id
-                && let Some(alias) = self.find_first_forward_handle_descending(
-                    alias_owner,
-                    forward.label_id,
-                    |edge| edge.neighbor_vid() == forward.owner_vertex_id,
-                )?
-            {
-                updated |= self
-                    .with_graph_mut(|graph| {
-                        graph.update_forward_edge_inline_property_at_slot(
-                            alias.owner_vertex_id,
-                            alias.label_id,
-                            alias.slot_index.raw(),
-                            new_edge.clone(),
-                        )
-                    })
-                    .map_err(GraphStoreError::from)?;
-            }
-        } else {
-            let reverse = self.canonical_reverse_in_edge_handle(handle);
-            updated = self
-                .with_graph_mut(|graph| {
-                    graph.update_reverse_edge_inline_property_at_slot(
-                        reverse.owner_vertex_id,
-                        reverse.label_id,
-                        reverse.slot_index.raw(),
-                        new_edge.clone(),
-                    )
-                })
-                .map_err(GraphStoreError::from)?;
-        }
-        if !updated {
+            .map_err(GraphStoreError::from)
+        };
+
+        if !update_occurrence(canonical_occurrence)? {
             return Err(GraphStoreError::EdgeNotFound {
-                owner_vertex_id: handle.owner_vertex_id,
-                label_id: handle.label_id,
-                slot_index: handle.slot_index.raw(),
+                owner_vertex_id: occurrence.owner_vertex_id,
+                label_id: occurrence.label_id,
+                slot_index: occurrence.slot_index.raw(),
+            });
+        }
+        let mirrored = if occurrence == canonical_occurrence {
+            counterpart
+        } else {
+            occurrence
+        };
+        if mirrored != canonical_occurrence && !update_occurrence(mirrored)? {
+            return Err(GraphStoreError::EdgeNotFound {
+                owner_vertex_id: mirrored.owner_vertex_id,
+                label_id: mirrored.label_id,
+                slot_index: mirrored.slot_index.raw(),
             });
         }
 

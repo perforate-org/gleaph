@@ -355,7 +355,10 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
     );
 
     store
-        .update_edge_inline_property_at_handle(reverse, &[5, 0])
+        .update_edge_inline_property_at_occurrence(
+            reverse.occurrence(LabeledOrientation::Reverse),
+            &[5, 0],
+        )
         .expect("reverse update");
     assert_eq!(
         store
@@ -406,6 +409,116 @@ fn updating_undirected_edge_inline_property_updates_both_storage_rows() {
         .expect("high row");
     assert_eq!(low_edge.edge_inline_property_bytes(), &[8, 0]);
     assert_eq!(high_edge.edge_inline_property_bytes(), &[8, 0]);
+}
+
+#[test]
+fn updating_directed_self_loop_inline_property_updates_both_orientations() {
+    let store = GraphStore::new();
+    let vertex = store.insert_vertex().expect("vertex");
+    let label_id = crate::test_labels::edge_label_id_for_name("UpdateDirectedSelfLoopInline");
+    install_w2_inline_property_profile(&store, label_id);
+    let handle = store
+        .insert_directed_edge_with_inline_property_bytes(vertex, vertex, Some(label_id), &[1, 0])
+        .expect("self-loop");
+
+    store
+        .update_edge_inline_property_at_handle(handle, &[7, 0])
+        .expect("update self-loop");
+
+    let outgoing = store
+        .directed_out_edges(vertex)
+        .expect("outgoing self-loop");
+    let incoming = store.directed_in_edges(vertex).expect("incoming self-loop");
+    assert_eq!(outgoing.len(), 1);
+    assert_eq!(incoming.len(), 1);
+    assert_eq!(outgoing[0].edge_inline_property_bytes(), &[7, 0]);
+    assert_eq!(incoming[0].edge_inline_property_bytes(), &[7, 0]);
+}
+
+#[test]
+fn updating_undirected_self_loop_inline_property_updates_one_row() {
+    let store = GraphStore::new();
+    let vertex = store.insert_vertex().expect("vertex");
+    let label_id = crate::test_labels::edge_label_id_for_name("UpdateUndirectedSelfLoopInline");
+    install_w2_inline_property_profile(&store, label_id);
+    let handle = store
+        .insert_undirected_edge_with_inline_property_bytes(vertex, vertex, Some(label_id), &[1, 0])
+        .expect("self-loop");
+
+    store
+        .update_edge_inline_property_at_handle(handle, &[8, 0])
+        .expect("update self-loop");
+
+    let edges = store
+        .undirected_edges(vertex)
+        .expect("undirected self-loop");
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].edge_inline_property_bytes(), &[8, 0]);
+}
+
+#[test]
+fn updating_parallel_directed_edge_uses_pair_ordinal() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label_id = crate::test_labels::edge_label_id_for_name("UpdateParallelInline");
+    install_w2_inline_property_profile(&store, label_id);
+    let first = store
+        .insert_directed_edge_with_inline_property_bytes(source, target, Some(label_id), &[1, 0])
+        .expect("first edge");
+    let second = store
+        .insert_directed_edge_with_inline_property_bytes(source, target, Some(label_id), &[2, 0])
+        .expect("second edge");
+
+    store
+        .update_edge_inline_property_at_handle(second, &[9, 0])
+        .expect("update second parallel edge");
+
+    assert_eq!(
+        store
+            .find_outgoing_edge_record(first)
+            .expect("first lookup")
+            .expect("first edge")
+            .edge_inline_property_bytes(),
+        &[1, 0]
+    );
+    assert_eq!(
+        store
+            .find_outgoing_edge_record(second)
+            .expect("second lookup")
+            .expect("second edge")
+            .edge_inline_property_bytes(),
+        &[9, 0]
+    );
+    let mut reverse_values = store
+        .directed_in_edges(target)
+        .expect("reverse edges")
+        .into_iter()
+        .map(|edge| edge.edge_inline_property_bytes().to_vec())
+        .collect::<Vec<_>>();
+    reverse_values.sort();
+    assert_eq!(reverse_values, vec![vec![1, 0], vec![9, 0]]);
+}
+
+#[test]
+fn inline_property_update_fails_closed_on_missing_occurrence() {
+    let store = GraphStore::new();
+    let vertex = store.insert_vertex().expect("vertex");
+    let label_id = crate::test_labels::edge_label_id_for_name("UpdateMissingInline");
+    install_w2_inline_property_profile(&store, label_id);
+    let wire_label = lara_label(label_id.pack(EdgeDirectedness::Directed));
+    let bogus = EdgeHandle::at_slot(vertex, wire_label, 99);
+
+    let err = store
+        .update_edge_inline_property_at_occurrence(
+            bogus.occurrence(LabeledOrientation::Forward),
+            &[4, 0],
+        )
+        .expect_err("missing occurrence must fail closed");
+    assert!(
+        format!("{err:?}").contains("SourceNotFound"),
+        "expected SourceNotFound, got {err:?}"
+    );
 }
 
 #[test]

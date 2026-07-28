@@ -37,8 +37,9 @@ flowchart TB
 - `FreeSpanStore` for retired segment physical blocks (core LARA — see [lara.md](./lara.md))
 - Labeled graphs, bidirectional deferred views
 - **Partially implemented (ADR 0048):** `CounterpartScan` is now live on the ADR 0050 logical-slot
-  surface (`read_edge_state`, `visit_edges`, typed `BucketEntryPosition`); returned insert locations
-  and the remaining mutation/alias-removal work are still pending
+  surface (`read_edge_state`, `visit_edges`, typed `BucketEntryPosition`) for edge-property
+  sidecars and live inline-edge-property mutation; returned insert locations and the remaining
+  mutation/alias-removal work are still pending
 - **Partially implemented (ADR 0050):** canonical logical-slot traversal (`visit_edges`) and
   selected-slot reads are active and used by CounterpartScan; the broader forward/reverse facade
   migration and legacy removal remain pending
@@ -78,9 +79,11 @@ Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR
 
 **Current transitional implementation:** Graph-side `EdgeHandle` and related wire/index records
 carry an owner, label, and logical `BucketEntryPosition` slot. `EDGE_ALIASES` and the existing
-`mate`-named paths remain active for sidecar lookup paths and other pending callers. The first
-bounded Graph ordinary-caller group — the scan-only canonical-edge-handle helper in
-`edge_alias.rs` — has migrated to LARA `counterpart::canonical_handle` on the ADR 0050 read surface.
+`mate`-named paths remain active for deletion cleanup, local-index maintenance, reverse repair,
+and other pending callers. The scan-only canonical-edge-handle helper, edge-property sidecar
+group, and live inline-edge-property mutation use LARA CounterpartScan on the ADR 0050 read
+surface. Reverse-store inline-property callers use explicit orientation because a logical slot
+alone cannot identify the physical store.
 
 **Target contract:** ADR 0048 makes `BucketEntryPosition` the only slot accepted by LARA
 `EdgeHandle`/`CanonicalEdgeOccurrence`; raw slab/log locations remain inside LARA. Counterpart resolution is

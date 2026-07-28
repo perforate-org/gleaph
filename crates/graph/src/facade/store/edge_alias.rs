@@ -278,6 +278,20 @@ impl GraphStore {
         })
     }
 
+    /// Resolves the physical counterpart for a live occurrence without consulting
+    /// `EDGE_ALIASES`. The caller supplies the orientation because a logical slot
+    /// alone cannot distinguish the forward and reverse stores.
+    pub(crate) fn counterpart_edge_occurrence(
+        &self,
+        occurrence: CanonicalEdgeOccurrence,
+    ) -> Result<CanonicalEdgeOccurrence, GraphStoreError> {
+        GRAPH
+            .with_borrow(|graph| {
+                counterpart::counterpart_of(graph.forward(), graph.reverse(), occurrence)
+            })
+            .map_err(GraphStoreError::from)
+    }
+
     pub(crate) fn find_outgoing_edge_with_bucket_label(
         &self,
         handle: EdgeHandle,
