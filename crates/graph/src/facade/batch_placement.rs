@@ -113,12 +113,6 @@ pub enum BatchPlacementError {
     },
     /// Physical projections for one logical item disagree on shared metadata.
     PhysicalProjectionMetadataMismatch { logical_ordinal: u32 },
-    /// Default/unlabeled edges are not supported by the read-only batch planner.
-    ///
-    /// The default-label bypass path has its own stable layout; supporting it in
-    /// the planner requires a separate read-only occupancy accessor. Plan 0121
-    /// rejects the path rather than silently under-count existing occupancy.
-    DefaultLabelUnsupported,
     /// An initial sidecar property id is reserved and cannot be persisted.
     InvalidInitialPropertyId(PropertyId),
     /// An initial sidecar property value cannot be persisted.
@@ -157,12 +151,6 @@ impl std::fmt::Display for BatchPlacementError {
             Self::BatchTooLarge => write!(f, "batch logical edge count exceeds the bounded limit"),
             Self::PlacementReadFailed(detail) => {
                 write!(f, "placement read failed: {detail}")
-            }
-            Self::DefaultLabelUnsupported => {
-                write!(
-                    f,
-                    "default/unlabeled edges are not supported by batch placement"
-                )
             }
             Self::InvalidInitialPropertyId(id) => {
                 write!(f, "initial property id {} is reserved", id.raw())
@@ -572,18 +560,15 @@ fn expand_logical_edge_to_intents(
         return Err(BatchPlacementError::VertexNotLive(input.target_vertex_id));
     }
 
-    // Plan 0121 only supports catalog-labeled edges. Default/unlabeled bypass
-    // has a distinct stable layout and is rejected rather than silently under-
-    // counting existing occupancy.
-    if input.catalog_label.is_none() {
-        return Err(BatchPlacementError::DefaultLabelUnsupported);
+    // Validate a catalog label when present; the absent label uses the default zero-width profile.
+    if let Some(catalog_label) = input.catalog_label {
+        GraphStore::validate_catalog_edge_label(Some(catalog_label))
+            .map_err(BatchPlacementError::from_graph_store_error_for_label)?;
     }
-    let catalog_label = input.catalog_label.expect("checked above");
-
-    // Validate catalog label and inline property byte width.
-    GraphStore::validate_catalog_edge_label(Some(catalog_label))
-        .map_err(BatchPlacementError::from_graph_store_error_for_label)?;
-    let expected_width = lookup_edge_inline_property_profile(catalog_label).required_byte_width();
+    let expected_width = input
+        .catalog_label
+        .map(lookup_edge_inline_property_profile)
+        .map_or(0, |profile| profile.required_byte_width());
     let actual = input.inline_property_bytes.len();
     let expected = usize::from(expected_width);
     if actual != expected {
@@ -594,7 +579,7 @@ fn expand_logical_edge_to_intents(
         });
     }
 
-    let storage_label = lara_label(edge_storage_label(Some(catalog_label), !input.directed));
+    let storage_label = lara_label(edge_storage_label(input.catalog_label, !input.directed));
 
     if input.directed {
         // Directed: canonical forward at source, derived reverse at target.
@@ -1192,14 +1177,20 @@ mod tests {
     }
 
     #[test]
-    fn default_label_edge_is_rejected_by_planner() {
+    fn default_label_edge_is_planned_with_default_storage_bucket() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let edges = vec![input(v[0], v[1], None, true, vec![])];
-        let err = store
+        let summary = store
             .plan_batch_edge_insertion(&edges)
-            .expect_err("default label");
-        assert!(matches!(err, BatchPlacementError::DefaultLabelUnsupported));
+            .expect("default label batch plan");
+        assert_eq!(summary.total_pending_edge_intents(), 2);
+        assert!(
+            summary
+                .groups
+                .keys()
+                .all(|key| key.storage_label == LaraLabelId::UNLABELED_DIRECTED)
+        );
     }
 
     #[test]

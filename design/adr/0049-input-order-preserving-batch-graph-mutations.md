@@ -1673,6 +1673,10 @@ not rewritten as though unfinished unordered product behavior shipped.
     exact client-key replay, and missing-label rejection before reservation.
     The Graph canister's self-principal guard was updated to the current
     `ic_cdk::api::canister_self()` API required by the PocketIC build.
+    **Partially implemented (2026-07-28 14:37:45 UTC +0000):** Graph batch
+    placement now admits unlabeled edges through the default directed/undirected
+    storage buckets with zero-width inline payloads. Planner and PocketIC tests
+    cover unlabeled planning, completed public admission, and exact-key replay.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.

@@ -3,7 +3,7 @@
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, RouterError, encode_global_vertex_id};
 use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, admin_intern_edge_label, e2e_insert_vertex, execute_ordered_edge_batch_as_admin,
+    FederationEnv, e2e_insert_vertex, execute_ordered_edge_batch_as_admin,
     federation_graph_element_id_encoding_key_bytes, install_single_shard_federation,
 };
 use gleaph_router::types::{
@@ -11,7 +11,6 @@ use gleaph_router::types::{
 };
 
 fn ordered_request(env: &FederationEnv) -> OrderedEdgeBatchPublicRequest {
-    admin_intern_edge_label(env, "KNOWS");
     let source = e2e_insert_vertex(env, env.graph_source).global_vertex_id;
     let target = e2e_insert_vertex(env, env.graph_source).global_vertex_id;
     let key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(env));
@@ -24,7 +23,7 @@ fn ordered_request(env: &FederationEnv) -> OrderedEdgeBatchPublicRequest {
             source: source.0.to_vec(),
             target: target.0.to_vec(),
             directed: true,
-            edge_label_name: Some("KNOWS".into()),
+            edge_label_name: None,
             inline_property: None,
             initial_edge_properties: Vec::new(),
         }],
