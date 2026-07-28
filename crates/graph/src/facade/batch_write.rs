@@ -203,6 +203,7 @@ impl GraphStore {
             return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
         }
 
+        self.commit_ordered_edge_batch_initial_sidecars(edges, &result);
         Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
     }
 
@@ -220,6 +221,7 @@ impl GraphStore {
             return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
         }
 
+        self.commit_ordered_edge_batch_initial_sidecars(edges, &result);
         Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
     }
 
@@ -339,13 +341,50 @@ impl GraphStore {
             None => self.try_insert_ordered_edge_batch_clean_slab(&batch_edges),
         };
         match batch_result {
-            Ok(BatchEdgeInsertResult::Committed { .. }) => {
+            Ok(result @ BatchEdgeInsertResult::Committed { .. }) => {
+                self.commit_ordered_edge_batch_initial_sidecars(&batch_edges, &result);
                 self.execute_ordered_scalar_edges(&scalar_edges);
                 Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
             }
             Ok(BatchEdgeInsertResult::RecoverableGeometry { .. }) => Ok(self
                 .execute_ordered_edge_batch_scalar_fallback(mutation_id, request_identity, edges)),
             Err(error) => Err(OrderedEdgeBatchExecutionError::Validation(error)),
+        }
+    }
+
+    fn commit_ordered_edge_batch_initial_sidecars(
+        &self,
+        edges: &[BatchEdgeInput],
+        result: &BatchEdgeInsertResult,
+    ) {
+        if !edges
+            .iter()
+            .any(|edge| !edge.initial_edge_properties.is_empty())
+        {
+            return;
+        }
+        let BatchEdgeInsertResult::Committed {
+            locations: Some(locations),
+            ..
+        } = result
+        else {
+            panic!("property-bearing ordered batch must capture canonical locations");
+        };
+        assert_eq!(
+            locations.len(),
+            edges.len(),
+            "ordered batch sidecar locations must align with logical items"
+        );
+        for (edge, location) in edges.iter().zip(locations) {
+            let occurrence = location.canonical_occurrence(edge);
+            self.commit_edge_property_writes_at_canonical(
+                EdgeHandle::at_slot(
+                    occurrence.owner_vertex_id,
+                    occurrence.label_id,
+                    occurrence.slot_index,
+                ),
+                &edge.initial_edge_properties,
+            );
         }
     }
 

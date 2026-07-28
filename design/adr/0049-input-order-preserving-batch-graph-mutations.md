@@ -1818,6 +1818,14 @@ not rewritten as though unfinished unordered product behavior shipped.
     duplicating either canonical rows or the delta. The test uses the existing
     singleton planner fallback, while recoverable LARA geometry remains
     classified independently at the reservation boundary.
+    **Implemented (2026-07-28 23:10:02 UTC +0000):** the ordered Graph commit
+    path now writes captured initial-property sidecars for full and partitioned
+    batch commits before publishing the receipt and journal. This closes the
+    property-bearing Router path for reverse/undirected reads; the PocketIC
+    suite verifies exact replay, canonical-receipt recovery, inline and
+    sidecar values, mixed direction shapes, parallel properties, and missing
+    catalog rejection (5/5 passing). Reverse alias read-back is also asserted
+    for a batch-created sidecar.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

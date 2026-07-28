@@ -134,10 +134,22 @@ pub(crate) fn edge_binding_for_scanned_expand(
         label_id: LaraLabelId::from_raw(edge.label_id),
         slot_index: edge.edge_slot_index.raw().into(),
     };
-    // Canonicalization is only needed by a property-store lookup. Performing the
-    // CounterpartScan here would add a bucket traversal to every ordinary expand,
-    // including topology-only and inline-property paths.
-    Ok(EdgeBinding::from_edge(handle, edge))
+    // The traversal handle identifies the row that was actually scanned. The
+    // sidecar handle is a separate contract: reverse and undirected rows may
+    // have a different logical slot from their canonical owner, so derive it
+    // through CounterpartScan instead of reusing the scanned slot.
+    let canonical_handle = match direction {
+        EdgeDirection::PointingRight => handle,
+        EdgeDirection::PointingLeft | EdgeDirection::Undirected => store
+            .canonical_edge_handle_from_occurrence(canonical_edge_occurrence_for_expand(
+                probe_vertex_id,
+                direction,
+                &edge,
+            )?)
+            .map_err(PlanQueryError::from)?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    };
+    Ok(EdgeBinding::from_edge(handle, edge).with_canonical_handle(canonical_handle))
 }
 
 pub(crate) fn edge_binding_for_expand(

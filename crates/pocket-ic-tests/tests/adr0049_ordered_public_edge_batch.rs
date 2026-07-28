@@ -5,7 +5,7 @@ use gleaph_graph_kernel::federation::{ElementIdEncodingKey, RouterError, encode_
 use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
 use gleaph_pocket_ic_tests::{
     FederationEnv, admin_intern_edge_label, admin_intern_property, arm_router_fault,
-    e2e_insert_vertex, execute_ordered_edge_batch_as_admin,
+    e2e_insert_vertex, e2e_reverse_resolved_edge_property, execute_ordered_edge_batch_as_admin,
     federation_graph_element_id_encoding_key_bytes, gql_execute_idempotent_as_admin,
     gql_query_as_admin, install_single_shard_federation, mutation_status_as_admin,
     run_router_recovery_timer,
@@ -42,13 +42,15 @@ fn query_scores(env: &FederationEnv, query: &str) -> Vec<i128> {
     .expect("decode rows")
     .try_into_value_rows()
     .expect("convert rows");
-    rows.into_iter()
-        .map(|row| {
-            row.get("score")
-                .and_then(Value::as_i128)
-                .expect("score value")
-        })
-        .collect()
+    let values = rows
+        .iter()
+        .map(|row| row.get("score").and_then(Value::as_i128))
+        .collect::<Vec<_>>();
+    assert!(
+        values.iter().all(Option::is_some),
+        "score value missing in {query}: rows={rows:?}"
+    );
+    values.into_iter().map(Option::unwrap).collect()
 }
 
 #[test]
@@ -149,10 +151,12 @@ fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
         "adr0049-mixed-schema",
     );
     admin_intern_edge_label(&env, "ROAD");
-    admin_intern_property(&env, "score");
+    let score = admin_intern_property(&env, "score");
 
-    let source = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
-    let target = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
+    let source_result = e2e_insert_vertex(&env, env.graph_source);
+    let source = source_result.global_vertex_id;
+    let target_result = e2e_insert_vertex(&env, env.graph_source);
+    let target = target_result.global_vertex_id;
     let other = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
     let loop_vertex = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
     let key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(&env));
@@ -209,6 +213,17 @@ fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
         .expect("mixed ordered batch replay must be idempotent");
     assert_eq!(replay.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.mutation_id, status.mutation_id);
+    assert_eq!(
+        e2e_reverse_resolved_edge_property(
+            &env,
+            env.graph_source,
+            source_result.local_vertex_id,
+            target_result.local_vertex_id,
+            score.raw(),
+        ),
+        Some(10),
+        "batch sidecar must resolve through the reverse alias path"
+    );
 
     for (name, edge_pattern, expected_scores) in [
         ("left only", "<-[e:ROAD]-", vec![10, 20]),
