@@ -5,8 +5,9 @@ use crate::facade::stable::label_stats_delta::GraphMutationJournalEntry;
 use crate::facade::stable::{GRAPH_MUTATION_JOURNAL, LABEL_STATS_DELTA_LOG, LABEL_STATS_DELTA_SEQ};
 use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
-    GraphBulkMutationProgress, GraphMutationJournalEntryWire, LabelStatsDelta,
-    LabelStatsDeltaEventWire, MutationId, MutationJournalState, ShardEventSeq,
+    GraphBulkMutationProgress, GraphMutationJournalEntryWire, GraphMutationRequestIdentityV1,
+    GraphMutationRetirementV1, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
+    MutationJournalState, ShardEventSeq,
 };
 use std::cell::RefCell;
 
@@ -64,6 +65,28 @@ impl GraphStore {
         mutation_id: MutationId,
     ) -> Option<GraphMutationJournalEntry> {
         GRAPH_MUTATION_JOURNAL.with_borrow(|m| m.get(mutation_id))
+    }
+
+    /// Journal-first lookup for a request whose identity is already decoded and bounded.
+    ///
+    /// `None` is the only result that permits a caller to continue into mutable planning and
+    /// catalog validation. An existing entry must carry the exact same request-kind identity;
+    /// otherwise the caller must fail before any canonical write.
+    pub(crate) fn mutation_journal_entry_for_replay(
+        &self,
+        mutation_id: MutationId,
+        expected_identity: &GraphMutationRequestIdentityV1,
+    ) -> Result<Option<GraphMutationJournalEntry>, &'static str> {
+        let Some(entry) = self.mutation_journal_entry(mutation_id) else {
+            return Ok(None);
+        };
+        if entry.request_identity() != expected_identity {
+            return Err("mutation journal identity conflicts with replay request");
+        }
+        // Re-validate the durable state at the owner boundary before exposing it to a replay
+        // caller. This also rejects an ordered entry that was somehow persisted incompletely.
+        entry.wire().validate()?;
+        Ok(Some(entry))
     }
 
     pub fn get_mutation_journal_entry(
@@ -165,6 +188,37 @@ impl GraphStore {
             #[cfg(feature = "canbench")]
             drop(_scope_gc);
         }
+    }
+
+    /// Atomically record the completed identity and receipt fields for an ordered edge batch.
+    /// Ordered batches never use the PlanExecution continuation state.
+    pub(crate) fn commit_record_completed_ordered_edge_batch_journal_at(
+        &self,
+        now_ns: u64,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<LocalVertexId>,
+    ) {
+        let mut entry = GraphMutationJournalEntry::completed(
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+            now_ns,
+        );
+        entry.set_request_identity(request_identity);
+        entry.set_retirement(GraphMutationRetirementV1::Active);
+        entry
+            .wire()
+            .validate()
+            .expect("invalid ordered journal entry");
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| {
+            m.insert(entry);
+        });
     }
 
     /// Record a bulk mutation journal entry with an operation cursor and progress metadata
@@ -439,5 +493,56 @@ mod tests {
         assert_eq!(wire.emitted_delta_first_seq(), Some(event.shard_event_seq));
         assert_eq!(wire.emitted_delta_last_seq(), Some(event.shard_event_seq));
         assert_eq!(wire.hot_forward_vertices().to_vec(), vec![7, 42]);
+    }
+
+    #[test]
+    fn ordered_journal_replay_requires_exact_identity_before_writes() {
+        let store = GraphStore::new();
+        let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [8; 32],
+            logical_item_count: 2,
+        };
+        store.commit_record_completed_ordered_edge_batch_journal_at(
+            12,
+            12_000,
+            identity.clone(),
+            2,
+            Some(4),
+            Some(5),
+            vec![3, 9],
+        );
+
+        let replay = store
+            .mutation_journal_entry_for_replay(12_000, &identity)
+            .expect("matching identity should be accepted")
+            .expect("journal entry should exist");
+        assert_eq!(replay.row_count(), 2);
+        assert_eq!(replay.retirement(), &GraphMutationRetirementV1::Active);
+
+        let conflicting = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [9; 32],
+            logical_item_count: 2,
+        };
+        assert_eq!(
+            store.mutation_journal_entry_for_replay(12_000, &conflicting),
+            Err("mutation journal identity conflicts with replay request")
+        );
+        assert!(store.mutation_journal_entry(12_000).is_some());
+    }
+
+    #[test]
+    fn ordered_journal_replay_allows_absence_for_fresh_execution() {
+        let store = GraphStore::new();
+        let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [10; 32],
+            logical_item_count: 1,
+        };
+        assert_eq!(
+            store.mutation_journal_entry_for_replay(12_001, &identity),
+            Ok(None)
+        );
     }
 }

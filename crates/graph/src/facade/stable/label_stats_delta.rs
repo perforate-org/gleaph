@@ -162,6 +162,12 @@ impl GraphMutationJournalEntry {
     pub fn set_bulk_progress(&mut self, bulk_progress: Option<GraphBulkMutationProgress>) {
         self.as_v1_mut().bulk_progress = bulk_progress;
     }
+    pub fn set_request_identity(&mut self, request_identity: GraphMutationRequestIdentityV1) {
+        self.as_v1_mut().request_identity = request_identity;
+    }
+    pub fn set_retirement(&mut self, retirement: GraphMutationRetirementV1) {
+        self.as_v1_mut().retirement = retirement;
+    }
 
     pub fn wire(&self) -> GraphMutationJournalEntryWire {
         let mut wire = GraphMutationJournalEntryWire::new(
