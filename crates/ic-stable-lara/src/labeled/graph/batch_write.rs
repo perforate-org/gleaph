@@ -3127,16 +3127,61 @@ mod tests {
         assert_eq!(result.edge_log_entries_written, 1);
         assert_eq!(result.inline_property_bytes_slots_written, 0);
 
-        let out = graph.out_edges(VertexId::from(0)).unwrap();
+        let out = graph.asc_out_edges(VertexId::from(0)).unwrap();
         assert_eq!(
             out.len(),
             4,
             "expected four out-edges after overflow append"
         );
-        assert!(
-            out.iter().any(|e| e.target == 10),
-            "overflow-log edge must be visible in read-back"
+        assert_eq!(
+            out.iter().map(|edge| edge.target).collect::<Vec<_>>(),
+            vec![1, 2, 3, 10],
+            "overflow-log append must preserve ascending live order"
         );
+    }
+
+    #[test]
+    fn slab_batch_appends_after_interior_tombstone_without_reordering_live_edges() {
+        let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
+        for _ in 0..5 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        let label = BucketLabelKey::directed_from_index(1);
+        for target in 1..=3 {
+            graph
+                .insert_edge(VertexId::from(0), label, GraphTestEdge { target })
+                .unwrap();
+        }
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 1)
+            .unwrap()
+            .expect("middle edge must be tombstoned");
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(4),
+                    label_id: label,
+                    edge: GraphTestEdge { target: 4 },
+                }],
+            }],
+        };
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("append after interior tombstone");
+
+        let live_targets = graph
+            .asc_out_edges(VertexId::from(0))
+            .unwrap()
+            .into_iter()
+            .map(|edge| edge.target)
+            .collect::<Vec<_>>();
+        assert_eq!(live_targets, vec![1, 3, 4]);
     }
 
     #[test]

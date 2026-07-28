@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 07:05:41 UTC +0000
+Anchor timestamp: 2026-07-28 07:11:20 UTC +0000
 
 ## Context
 
@@ -711,9 +711,10 @@ canonical write; an invariant failure traps so canister message rollback
 preserves shard-local atomicity. Calling today's scalar method repeatedly and
 returning its first error is not a valid fallback.
 
-The current `DefaultLabelUnsupported` and mixed-shape rejection remain truthful
-implementation limitations until this matrix is implemented. They are not the
-target public contract. Fallback is a correctness and incremental-delivery
+The current `DefaultLabelUnsupported` and unsupported-geometry classifications
+remain truthful implementation limitations. Mixed shape is no longer rejected
+by the internal clean-slab path; unsupported bucket geometry still returns
+before canonical write. These are not the target public contract. Fallback is a correctness and incremental-delivery
 mechanism, not the final performance design, and may not weaken ordering,
 atomicity, pair rank, counterpart invalidation, sidecar, or derived-event behavior.
 
