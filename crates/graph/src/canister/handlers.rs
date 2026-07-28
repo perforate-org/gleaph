@@ -2806,7 +2806,7 @@ mod tests {
     }
 
     #[test]
-    fn ordered_handler_uses_batch_path_for_unprepared_geometry() {
+    fn ordered_handler_scalar_fallback_publishes_once_and_replays() {
         let store = GraphStore::new();
         let source = store.insert_vertex().expect("source vertex");
         let first_target = store.insert_vertex().expect("first target vertex");
@@ -2846,7 +2846,7 @@ mod tests {
             request,
         });
 
-        let result = execute_ordered_edge_batch(args).expect("ordered batch execution");
+        let result = execute_ordered_edge_batch(args.clone()).expect("ordered batch execution");
         let receipt = match result {
             GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) => {
                 receipt
@@ -2854,13 +2854,45 @@ mod tests {
             _ => panic!("expected completed receipt"),
         };
         assert_eq!(receipt.logical_edge_count, 2);
-        assert!(
-            store.mutation_journal_entry(mutation_id).is_some(),
-            "scalar fallback must persist the ordered journal"
+        let journal = store
+            .mutation_journal_entry(mutation_id)
+            .expect("scalar fallback must persist the ordered journal");
+        assert_eq!(journal.row_count(), 2);
+        let first_delta_count = store
+            .pending_label_stats_deltas(0, 1_000)
+            .into_iter()
+            .filter(|event| event.mutation_id == mutation_id)
+            .count();
+        assert_eq!(
+            first_delta_count, 1,
+            "scalar fallback must publish exactly one label delta"
         );
         let outgoing = store.directed_out_edges(source).expect("outgoing edges");
         assert_eq!(outgoing[0].neighbor_vid(), first_target);
         assert_eq!(outgoing[1].neighbor_vid(), second_target);
+
+        let replay = execute_ordered_edge_batch(args).expect("ordered scalar fallback replay");
+        assert!(matches!(
+            replay,
+            GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(_))
+        ));
+        let replay_delta_count = store
+            .pending_label_stats_deltas(0, 1_000)
+            .into_iter()
+            .filter(|event| event.mutation_id == mutation_id)
+            .count();
+        assert_eq!(
+            replay_delta_count, 1,
+            "journal replay must not publish a second label delta"
+        );
+        assert_eq!(
+            store
+                .directed_out_edges(source)
+                .expect("outgoing edges after replay")
+                .len(),
+            2,
+            "journal replay must not write canonical edges again"
+        );
     }
 }
 

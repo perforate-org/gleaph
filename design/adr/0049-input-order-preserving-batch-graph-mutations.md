@@ -1811,6 +1811,13 @@ not rewritten as though unfinished unordered product behavior shipped.
     missing-pinned-leaf and property-span-relocation cases are recoverable;
     empty plans, capacity/log exhaustion, and invalid orientation pairs remain
     fatal typed errors.
+    **Implemented (2026-07-28 22:50:42 UTC +0000):** the Graph handler's
+    scalar fallback path now has an end-to-end replay test. The first execution
+    publishes the canonical edges, exactly one label-stats delta, and one
+    completed journal entry; an exact retry returns the journal result without
+    duplicating either canonical rows or the delta. The test uses the existing
+    singleton planner fallback, while recoverable LARA geometry remains
+    classified independently at the reservation boundary.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh
