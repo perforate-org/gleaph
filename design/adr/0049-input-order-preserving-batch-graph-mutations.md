@@ -743,12 +743,13 @@ The final contract permits multiple new logical edges with the same endpoint
 pair when the Graph data model permits parallel edges. Their logical ordinals,
 inline properties, properties, and exact returned locations distinguish them.
 
-The Graph planner now admits parallel logical targets as distinct ordered
-items. Same-batch directed and undirected parallel inputs preserve their
-logical ordinals and may carry distinct or identical inline properties. The
-Graph facade also co-writes per-item initial sidecars and resolves each
-counterpart by live pair rank. Durable replay and stable-memory reservation
-remain separate activation gates.
+The internal Graph planner now admits parallel logical targets as distinct
+ordered items. Same-batch directed and undirected parallel inputs preserve
+their logical ordinals and may carry distinct or identical inline properties.
+The Graph facade also co-writes per-item initial sidecars and resolves each
+counterpart by live pair rank. This does not activate a public ordered batch
+endpoint: the current Graph journal has no request fingerprint or aggregate
+receipt for this payload, so durable exact replay remains a separate gate.
 
 Existing edge/vertex updates are absent from the v1 operation set. A future
 operation that permits conflicting updates must define deterministic sequential
@@ -1519,7 +1520,7 @@ not rewritten as though unfinished unordered product behavior shipped.
    inline-property log folds independently while the leaf relocates once.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
-10. **Partially implemented (2026-07-28 11:13:16 UTC +0000):** the Graph facade now accepts
+10. **Partially implemented (2026-07-28 11:16:55 UTC +0000):** the Graph facade now accepts
     request-local initial sidecar values, validates ids/values/duplicate ids
     before reservation, derives one canonical `CanonicalEdgeOccurrence` from
     the joined captured location for directed, undirected, and self-loop
@@ -1547,9 +1548,11 @@ not rewritten as though unfinished unordered product behavior shipped.
     An overflow-log batch append with an initial sidecar also verifies that
     the captured bucket logical slot, rather than the raw log location, owns
     the canonical sidecar.
-    Parallel logical targets are now admitted by the planner and covered by
-    same-batch directed and undirected ordinal/pair-rank tests, including
-    distinct per-item sidecar values.
+    Parallel logical targets are now admitted by the internal planner and
+    covered by same-batch directed and undirected ordinal/pair-rank tests,
+    including distinct per-item sidecar values. Public exact replay remains
+    planned because the current journal cannot identify or return this batch
+    payload durably.
     The post-commit sidecar path traps on a violated preflight invariant rather
     than returning a recoverable error. The explicit stable-memory reservation
     remains blocked by the current `EdgePropertyStore` boundary: its
