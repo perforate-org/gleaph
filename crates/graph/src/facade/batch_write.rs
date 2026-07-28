@@ -1125,6 +1125,104 @@ mod tests {
     }
 
     #[test]
+    fn clean_slab_preserves_order_across_both_directed_orientations_through_graph_facade() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(3151);
+        let filler_labels = (0..7)
+            .map(|index| EdgeLabelId::from_raw(3151 + index))
+            .collect::<Vec<_>>();
+        for filler_label in &filler_labels {
+            install_width(*filler_label, 0);
+        }
+        let vertices = make_vertices(&store, 66);
+        let source = vertices[0];
+        let target = vertices[32];
+        let later_source = vertices[64];
+        let later_target = vertices[65];
+
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+        store.prepare_clean_slab_dir_buckets(source, vertices[33], label, 0);
+        store.prepare_clean_slab_dir_buckets(later_source, later_target, label, 0);
+
+        // Fill shared leaf logs through ordinary GraphStore writes so the
+        // facade test exercises slab and overflow destinations together.
+        for (label_index, filler_label) in filler_labels.iter().enumerate() {
+            let end = if label_index == 6 { 51 } else { 64 };
+            for target_raw in 34..end {
+                store
+                    .insert_directed_edge(source, VertexId::from(target_raw), Some(*filler_label))
+                    .expect("fill forward and reverse slab windows");
+            }
+        }
+        for target_raw in 1..=31 {
+            store
+                .insert_directed_edge(source, VertexId::from(target_raw), Some(label))
+                .expect("fill the forward batch bucket");
+        }
+        for target_raw in 64..=65 {
+            store
+                .insert_directed_edge(source, VertexId::from(target_raw), Some(label))
+                .expect("fill the forward batch bucket");
+        }
+        for source_raw in 1..=65 {
+            store
+                .insert_directed_edge(VertexId::from(source_raw), target, Some(label))
+                .expect("fill the reverse batch bucket");
+            store
+                .insert_directed_edge(VertexId::from(source_raw), vertices[33], Some(label))
+                .expect("fill the second reverse batch bucket");
+        }
+        store
+            .insert_directed_edge(later_source, later_target, Some(label))
+            .expect("pin a later leaf");
+
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_locations(&[
+                input(source, target, Some(label), true, vec![]),
+                input(source, vertices[33], Some(label), true, vec![]),
+            ])
+            .expect("plan/encode ok");
+        assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
+
+        let label_raw = storage_label_for(Some(label), true);
+        let forward_targets = store
+            .directed_out_edges(source)
+            .expect("forward edges")
+            .into_iter()
+            .filter(|edge| edge.label_id == label_raw)
+            .map(|edge| edge.neighbor_vid())
+            .collect::<Vec<_>>();
+        let reverse_sources = store
+            .directed_in_edges(target)
+            .expect("reverse edges")
+            .into_iter()
+            .filter(|edge| edge.label_id == label_raw)
+            .map(|edge| edge.neighbor_vid())
+            .collect::<Vec<_>>();
+        let mut expected_forward_targets = (34..64).map(VertexId::from).collect::<Vec<_>>();
+        expected_forward_targets.extend((1..=31).map(VertexId::from));
+        expected_forward_targets.extend([VertexId::from(64), VertexId::from(65)]);
+        expected_forward_targets.extend([target, vertices[33]]);
+        assert_eq!(forward_targets.len(), 65);
+        assert_eq!(forward_targets, expected_forward_targets);
+        assert_eq!(reverse_sources.len(), 66);
+        assert_eq!(reverse_sources.last(), Some(&source));
+        assert_eq!(
+            store
+                .directed_in_edges(vertices[33])
+                .expect("second reverse edge")
+                .into_iter()
+                .filter(|edge| edge.label_id == label_raw)
+                .map(|edge| edge.neighbor_vid())
+                .collect::<Vec<_>>(),
+            (1..=65)
+                .map(VertexId::from)
+                .chain([source])
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn unsupported_new_bucket_falls_back_to_scalar() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(4001);
