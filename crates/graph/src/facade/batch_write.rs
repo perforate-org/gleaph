@@ -2339,6 +2339,34 @@ mod tests {
     }
 
     #[test]
+    fn asymmetric_new_bucket_uses_lara_batch_reservation() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4002);
+        install_width(label, 0);
+        let vertices = make_vertices(&store, 2);
+        let source = vertices[0];
+        let target = vertices[1];
+        let storage_label = lara_label(edge_storage_label(Some(label), false));
+
+        store.with_graph_mut(|graph| {
+            graph
+                .ensure_forward_edge_inline_property_width(source, storage_label, 0)
+                .expect("forward bucket");
+        });
+
+        let result = store
+            .try_insert_batch_edges_clean_slab(&[input(source, target, Some(label), true, vec![])])
+            .expect("plan/encode ok");
+        assert!(
+            matches!(result, BatchEdgeInsertResult::Committed { .. }),
+            "expected committed asymmetric new-bucket batch, got {result:?}"
+        );
+        let label_raw = storage_label_for(Some(label), true);
+        assert_eq!(count_labeled_dir_edges(&store, source, label_raw, true), 1);
+        assert_eq!(count_labeled_dir_edges(&store, target, label_raw, false), 1);
+    }
+
+    #[test]
     fn reserve_failure_leaves_canonical_state_unchanged() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(5001);
