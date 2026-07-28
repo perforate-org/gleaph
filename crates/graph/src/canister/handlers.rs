@@ -354,7 +354,7 @@ pub fn execute_ordered_edge_batch(
         }
     } else {
         store
-            .plan_batch_edge_insertion_with_intents(&edges, &classification.intents)
+            .plan_batch_edge_insertion_with_classification(&edges, &classification)
             .map_err(|error| format!("ordered Graph planner admission failed: {error}"))
             .and_then(|summary| {
                 let batch_ordinals = summary.logical_ordinals_requiring_batch();

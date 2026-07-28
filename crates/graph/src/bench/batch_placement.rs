@@ -658,7 +658,7 @@ fn bench_ordered_partitioned_mixed_256_width_0_with_planner() -> canbench_rs::Be
             .classify_batch_edge_insertion(&input)
             .expect("ordered classification");
         let summary = store
-            .plan_batch_edge_insertion_with_intents(&input, &classification.intents)
+            .plan_batch_edge_insertion_with_classification(&input, &classification)
             .expect("ordered plan");
         black_box(
             store

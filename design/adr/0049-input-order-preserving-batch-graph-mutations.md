@@ -1776,7 +1776,16 @@ not rewritten as though unfinished unordered product behavior shipped.
     prepared-intent rebase removed the second intent expansion, but does not
     yet remove the batch-subset plan construction. This confirms that the next
     large mixed-request optimization must reduce planner admission work rather
-    than only reuse input vectors.
+    than only reuse input vectors. **Implemented and measured (2026-07-28
+    21:54:00 UTC +0000):** classification now retains the existing per-run
+    ordinal vectors and passes their lengths into the mixed planner, avoiding a
+    second pending-count map allocation and population. The full 256-item mixed
+    path decreased to 14.35M instructions (3.31% improvement); classifier
+    grouping decreased to 1.22M instructions (31.55% improvement), with heap
+    increase at two pages and stable-memory increase at 20 pages unchanged.
+    The planner still reads full-leaf occupancy and remains the next larger
+    optimization boundary; scalar writes have not been moved past their
+    existing preflight contract.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

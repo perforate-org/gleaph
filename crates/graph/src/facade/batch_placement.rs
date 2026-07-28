@@ -404,6 +404,7 @@ pub struct BatchPlacementSummary {
 pub(crate) struct BatchEdgeClassification {
     pub(crate) intents: Vec<BatchEdgeIntent>,
     pub(crate) logical_ordinals_with_multi_runs: BTreeSet<u32>,
+    pub(crate) pending_intents_by_run: RapidHashMap<BatchPlacementKey, Vec<u32>>,
 }
 
 /// Key for leaf-level summaries.
@@ -578,13 +579,14 @@ impl GraphStore {
                 .push(intent.logical_ordinal);
         }
         let logical_ordinals_with_multi_runs = ordinals_by_run
-            .into_values()
+            .values()
             .filter(|ordinals| ordinals.len() > 1)
-            .flatten()
+            .flat_map(|ordinals| ordinals.iter().copied())
             .collect();
         Ok(BatchEdgeClassification {
             intents,
             logical_ordinals_with_multi_runs,
+            pending_intents_by_run: ordinals_by_run,
         })
     }
 
@@ -603,7 +605,29 @@ impl GraphStore {
         edges: &[BatchEdgeInput],
         intents: &[BatchEdgeIntent],
     ) -> Result<BatchPlacementSummary, BatchPlacementError> {
-        let (groups, leaf_summaries) = group_intents_for_placement(intents)?;
+        self.plan_batch_edge_insertion_with_intents_and_run_counts(edges, intents, None)
+    }
+
+    pub(crate) fn plan_batch_edge_insertion_with_classification(
+        &self,
+        edges: &[BatchEdgeInput],
+        classification: &BatchEdgeClassification,
+    ) -> Result<BatchPlacementSummary, BatchPlacementError> {
+        self.plan_batch_edge_insertion_with_intents_and_run_counts(
+            edges,
+            &classification.intents,
+            Some(&classification.pending_intents_by_run),
+        )
+    }
+
+    fn plan_batch_edge_insertion_with_intents_and_run_counts(
+        &self,
+        edges: &[BatchEdgeInput],
+        intents: &[BatchEdgeIntent],
+        pending_intents_by_run: Option<&RapidHashMap<BatchPlacementKey, Vec<u32>>>,
+    ) -> Result<BatchPlacementSummary, BatchPlacementError> {
+        let (groups, leaf_summaries) =
+            group_intents_for_placement(intents, pending_intents_by_run)?;
         let logical_ordinals_with_multi_runs = intents
             .iter()
             .filter_map(|intent| {
@@ -727,6 +751,7 @@ fn expand_logical_edge_to_intents(
 
 fn group_intents_for_placement(
     intents: &[BatchEdgeIntent],
+    pending_intents_by_run: Option<&RapidHashMap<BatchPlacementKey, Vec<u32>>>,
 ) -> Result<
     (
         BTreeMap<BatchPlacementKey, BatchPlacementGroup>,
@@ -745,7 +770,10 @@ fn group_intents_for_placement(
             let existing = read_existing_bucket_placement(key)?;
             slot.insert(BatchPlacementGroup {
                 key,
-                pending_edge_intents: 0,
+                pending_edge_intents: pending_intents_by_run
+                    .and_then(|counts| counts.get(&key).map(|ordinals| ordinals.len()))
+                    .map(|count| u64::try_from(count).expect("batch run count fits u64"))
+                    .unwrap_or(0),
                 resident_slab_edge_slots: existing.map(|e| e.stored_edge_slots).unwrap_or(0),
                 resident_log_edge_slots: existing.map(|e| e.edge_overflow_log_len).unwrap_or(0),
                 resident_slab_inline_property_bytes_slots: existing
@@ -757,10 +785,12 @@ fn group_intents_for_placement(
             });
         }
         let group = groups.get_mut(&key).expect("group inserted above");
-        group.pending_edge_intents = group
-            .pending_edge_intents
-            .checked_add(1)
-            .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
+        if pending_intents_by_run.is_none() {
+            group.pending_edge_intents = group
+                .pending_edge_intents
+                .checked_add(1)
+                .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
+        }
 
         // Aggregate pending counts into leaf summary. Resident counts are added once per
         // bucket group below, after all intents have been counted.
