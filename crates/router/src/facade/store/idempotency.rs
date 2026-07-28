@@ -153,7 +153,10 @@ pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
                 operation_row_counts,
             };
         }
-        RouterMutationPayloadV1::CompletedBulk { .. } => {}
+        RouterMutationPayloadV1::OrderedEdgeBatchRouting
+        | RouterMutationPayloadV1::OrderedEdgeBatch(_)
+        | RouterMutationPayloadV1::CompletedBulk { .. }
+        | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. } => {}
     }
 }
 
@@ -573,6 +576,9 @@ impl RouterStore {
                     || matches!(
                         record.payload(),
                         crate::facade::stable::label_stats::RouterMutationPayloadV1::TypedSeedBulk(
+                            _
+                        )
+                        | crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(
                             _
                         )
                     );
