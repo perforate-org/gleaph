@@ -2,8 +2,8 @@
 
 Date: 2026-07-23
 Status: Partially Implemented
-Last revised: 2026-07-24
-Anchor timestamp: 2026-07-24 00:23:37 UTC +0000
+Last revised: 2026-07-28
+Anchor timestamp: 2026-07-28 07:38:39 UTC +0000
 
 Planned successor: [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md)
 will, after ADR 0048 completion, retain this ADR's physical placement,
@@ -164,6 +164,9 @@ try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   canbench coverage are included; malformed edge/inline property bytes log lengths reject
   before allocation. New bucket creation, non-tail relocation, and full public
   wire integration remain planned for later slices.
+- The storage owner now exposes a mutation-free relocation target planner shared
+  by scalar relocation and the future batch relocation reservation. Batch
+  admission still does not allocate or publish a relocation target.
 - ADR 0048's persistent mate index is still planned. Plan 0129 implements only
   the internal returned-slot boundary: LARA owns exact physical locations and
   GraphStore joins them by ordinal without a post-insert adjacency scan. Plan

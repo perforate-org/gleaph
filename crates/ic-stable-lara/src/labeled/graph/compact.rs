@@ -55,6 +55,20 @@ impl Drop for LabeledRebalanceResolveGuard {
     }
 }
 
+/// Storage-owned target geometry for relocating one labeled PMA leaf.
+///
+/// Batch reservation may use this plan to reserve a destination without
+/// duplicating the leaf's resident/log/slack projection. The plan contains no
+/// allocator mutation; allocation and publication remain owned by the commit
+/// path that consumes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LabeledLeafRelocationTarget {
+    pub(crate) leaf: u32,
+    pub(crate) old_start: u64,
+    pub(crate) old_len: u64,
+    pub(crate) new_len: u64,
+}
+
 // Test-only leaf/footprint release metrics. These are thread-local rather than process-global so
 // the `reset` + delta assertions in parallel tests cannot contaminate one another: every release is
 // recorded synchronously on the same thread that runs the graph operation under test, so a release
@@ -939,59 +953,12 @@ where
         E: CsrEdgeTombstone,
     {
         let _relocate_guard = LabeledLeafRelocateGuard::new();
+        let target = self.plan_labeled_leaf_relocation(src)?;
         let pinned_range = self.labeled_leaf_physical_range(src);
-        let (old_start, old_len) = pinned_range.unwrap_or((0, 0));
-        let header = self.edges.header();
-        let seg = header.segment_size.max(1);
-        let leaf = Self::leaf_index_for_vid(src, header.segment_size);
-
-        let counts = self.leaf_segment_counts_for_vid(src);
-        let used = counts.actual.max(0) as u64;
-        let start_vid = leaf.saturating_mul(seg);
-        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
-        let active_vertices = (start_vid..end_vid)
-            .filter(|vid_u| {
-                let vertex = self.vertices.get(VertexId::from(*vid_u));
-                !vertex.is_default_edge_labeled() && vertex.degree() > 0
-            })
-            .count() as u64;
-        let mut resident_geometry = 0u64;
-        for vid_u in start_vid..end_vid {
-            let vertex = self.vertices.get(VertexId::from(vid_u));
-            if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
-                continue;
-            }
-            let buckets = self.read_vertex_label_buckets(&vertex)?;
-            let mut resident_slots = 0u32;
-            for bucket in &buckets {
-                let log_slots = if bucket.overflow_log_head() >= 0 {
-                    self.edges
-                        .overflow_log_chain_len(leaf, bucket.overflow_log_head())
-                } else {
-                    0
-                };
-                resident_slots = resident_slots
-                    .checked_add(
-                        bucket
-                            .stored_slots
-                            .checked_add(log_slots)
-                            .ok_or(LaraOperationError::RowDegreeOverflow)?,
-                    )
-                    .ok_or(LaraOperationError::RowDegreeOverflow)?;
-            }
-            resident_geometry = resident_geometry.saturating_add(u64::from(resident_slots));
-        }
-        let block_len = super::leaf_pin::labeled_leaf_physical_block_len(seg);
-        let geometric_slack = resident_geometry.div_ceil(8).max(u64::from(seg));
-        let raw_len = resident_geometry
-            .saturating_add(active_vertices)
-            .saturating_add(geometric_slack)
-            .max(used.saturating_add(active_vertices))
-            .max(old_len.saturating_add(1));
-        let new_len = raw_len
-            .div_ceil(block_len)
-            .saturating_mul(block_len)
-            .max(block_len);
+        let old_start = target.old_start;
+        let old_len = target.old_len;
+        let leaf = target.leaf;
+        let new_len = target.new_len;
 
         let grew_in_place = if pinned_range.is_some() {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -1063,6 +1030,78 @@ where
                 .map_err(LabeledOperationError::from)?;
         }
         Ok(())
+    }
+
+    /// Computes one relocation target from the leaf's current resident geometry.
+    ///
+    /// This is deliberately mutation-free. Callers that need admission
+    /// atomicity can reserve the returned destination before publishing the new
+    /// segment start; the scalar relocation path consumes the same target.
+    pub(crate) fn plan_labeled_leaf_relocation(
+        &self,
+        src: VertexId,
+    ) -> Result<LabeledLeafRelocationTarget, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let pinned_range = self.labeled_leaf_physical_range(src);
+        let (old_start, old_len) = pinned_range.unwrap_or((0, 0));
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        let leaf = Self::leaf_index_for_vid(src, header.segment_size);
+        let counts = self.leaf_segment_counts_for_vid(src);
+        let used = counts.actual.max(0) as u64;
+        let start_vid = leaf.saturating_mul(seg);
+        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
+        let active_vertices = (start_vid..end_vid)
+            .filter(|vid_u| {
+                let vertex = self.vertices.get(VertexId::from(*vid_u));
+                !vertex.is_default_edge_labeled() && vertex.degree() > 0
+            })
+            .count() as u64;
+        let mut resident_geometry = 0u64;
+        for vid_u in start_vid..end_vid {
+            let vertex = self.vertices.get(VertexId::from(vid_u));
+            if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
+                continue;
+            }
+            let buckets = self.read_vertex_label_buckets(&vertex)?;
+            let mut resident_slots = 0u32;
+            for bucket in &buckets {
+                let log_slots = if bucket.overflow_log_head() >= 0 {
+                    self.edges
+                        .overflow_log_chain_len(leaf, bucket.overflow_log_head())
+                } else {
+                    0
+                };
+                resident_slots = resident_slots
+                    .checked_add(
+                        bucket
+                            .stored_slots
+                            .checked_add(log_slots)
+                            .ok_or(LaraOperationError::RowDegreeOverflow)?,
+                    )
+                    .ok_or(LaraOperationError::RowDegreeOverflow)?;
+            }
+            resident_geometry = resident_geometry.saturating_add(u64::from(resident_slots));
+        }
+        let block_len = super::leaf_pin::labeled_leaf_physical_block_len(seg);
+        let geometric_slack = resident_geometry.div_ceil(8).max(u64::from(seg));
+        let raw_len = resident_geometry
+            .saturating_add(active_vertices)
+            .saturating_add(geometric_slack)
+            .max(used.saturating_add(active_vertices))
+            .max(old_len.saturating_add(1));
+        let new_len = raw_len
+            .div_ceil(block_len)
+            .saturating_mul(block_len)
+            .max(block_len);
+        Ok(LabeledLeafRelocationTarget {
+            leaf,
+            old_start,
+            old_len,
+            new_len,
+        })
     }
 
     pub(crate) fn rebalance_labeled_leaf_weighted_slide_in_block(

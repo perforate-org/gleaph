@@ -3235,6 +3235,12 @@ mod tests {
         let (old_start, old_len) = graph
             .labeled_leaf_physical_range(VertexId::from(0))
             .expect("source leaf must be pinned before relocation");
+        let relocation_target = graph
+            .plan_labeled_leaf_relocation(VertexId::from(0))
+            .expect("relocation target must be computable without mutation");
+        assert_eq!(relocation_target.old_start, old_start);
+        assert_eq!(relocation_target.old_len, old_len);
+        assert!(relocation_target.new_len > old_len);
         graph
             .relocate_labeled_leaf_physical_block(VertexId::from(0))
             .expect("scalar relocation must succeed");

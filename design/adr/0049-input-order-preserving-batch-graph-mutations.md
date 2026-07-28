@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 07:32:57 UTC +0000
+Anchor timestamp: 2026-07-28 07:38:39 UTC +0000
 
 ## Context
 
@@ -1498,9 +1498,10 @@ not rewritten as though unfinished unordered product behavior shipped.
    invisible while folded live rows and pending rows retain order. Overflow-log
    tombstone append now checks the same live-tail rule and edge/inline-property
    alignment. A batch append after an already completed scalar relocation also
-   preserves the live tail. Non-tail relocation admission from within the
-   batch reservation remains planned and is still fail-closed without mutating
-   canonical state.
+   preserves the live tail. Storage now exposes one mutation-free relocation
+   target planner shared by scalar relocation and future batch admission.
+   Non-tail relocation admission from within the batch reservation remains
+   planned and is still fail-closed without mutating canonical state.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
 10. Integrate mandatory internal location capture, canonical sidecar writes, and
