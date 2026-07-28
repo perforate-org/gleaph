@@ -260,14 +260,17 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
     });
 
     // Remove every existing reverse in-edge half for this key.
-    while store
-        .with_graph_mut(|graph| {
-            graph.remove_reverse_edge_matching(target, wire, |edge| {
-                matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == source)
-            })
-        })?
-        .is_some()
-    {}
+    while let Some(removal) = store.with_graph_mut(|graph| {
+        graph.remove_reverse_edge_matching_with_move(target, wire, |edge| {
+            matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == source)
+        })
+    })? {
+        GraphStore::apply_edge_slot_moves(
+            ic_stable_lara::labeled::LabeledOrientation::Reverse,
+            target,
+            removal.moves,
+        );
+    }
 
     // Re-insert one reverse half per forward out-edge and recreate its directed alias, matching the
     // live `commit_directed_edge_insert` sequence.

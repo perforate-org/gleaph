@@ -10,7 +10,7 @@ use super::handle::EdgeHandle;
 use crate::facade::stable::GRAPH;
 
 impl GraphStore {
-    pub(super) fn apply_edge_slot_moves(
+    pub(crate) fn apply_edge_slot_moves(
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moves: impl IntoIterator<Item = EdgeSlotMove>,
