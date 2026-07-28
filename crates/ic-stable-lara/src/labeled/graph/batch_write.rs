@@ -3185,7 +3185,7 @@ mod tests {
     }
 
     #[test]
-    fn reserve_rejects_log_capacity_exceeded() {
+    fn reserve_rejects_non_tail_relocation_without_mutation() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         // Push enough vertices to cover two PMA leaves (segment_size = 32).
         for _ in 0..34 {
@@ -3244,10 +3244,16 @@ mod tests {
             }],
         };
 
+        let before_vertex = graph.vertices.get(VertexId::from(0));
+        let before_edges = graph.out_edges(VertexId::from(0)).unwrap();
+        let before_capacity = graph.edges().header().elem_capacity;
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
             matches!(err, OneOrientationBatchError::LogCapacityExceeded),
-            "expected LogCapacityExceeded, got {err}"
+            "non-tail relocation must remain fail-closed, got {err}"
         );
+        assert_eq!(graph.vertices.get(VertexId::from(0)), before_vertex);
+        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), before_edges);
+        assert_eq!(graph.edges().header().elem_capacity, before_capacity);
     }
 }
