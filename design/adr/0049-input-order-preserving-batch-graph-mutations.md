@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 07:46:51 UTC +0000
+Anchor timestamp: 2026-07-28 07:57:06 UTC +0000
 
 ## Context
 
@@ -1500,8 +1500,9 @@ not rewritten as though unfinished unordered product behavior shipped.
    alignment. A batch append after an already completed scalar relocation also
    preserves the live tail. Edge-only non-tail relocation is now admitted once
    per leaf during batch commit using the storage-owned mutation-free target
-   planner. Inline-property-bearing relocation remains fail-closed without
-   mutating canonical state and remains planned.
+   planner; same-leaf multi-bucket coverage checks both folded sequences
+   independently. Inline-property-bearing relocation remains fail-closed
+   without mutating canonical state and remains planned.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
 10. Integrate mandatory internal location capture, canonical sidecar writes, and

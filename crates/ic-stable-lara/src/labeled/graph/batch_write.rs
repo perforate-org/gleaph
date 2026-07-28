@@ -2940,12 +2940,38 @@ mod tests {
         InlinePropertyTestEdge, TestEdge as GraphTestEdge,
         inline_property_test_graph_with_capacity, test_graph_with_default,
     };
+    use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
     use crate::labeled::record::LabeledVertex;
 
     use super::{
         BidirectionalBatchPlan, OneOrientationBatchEdge, OneOrientationBatchError,
         OneOrientationBatchPlan, OneOrientationBucketRun, PreflightRun,
     };
+
+    fn segment16_graph() -> LabeledLaraGraph<GraphTestEdge, crate::VectorMemory> {
+        use crate::test_support::vector_memory;
+        LabeledLaraGraph::<GraphTestEdge, crate::VectorMemory>::new_with_segment_size(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            crate::labeled::InitialCapacities::uniform(256),
+            BucketLabelKey::directed_from_index(1),
+            16,
+        )
+        .unwrap()
+    }
 
     fn one_edge_plan(
         owner: VertexId,
@@ -3573,5 +3599,161 @@ mod tests {
         let after_edges = graph.asc_out_edges(VertexId::from(0)).unwrap();
         assert_eq!(after_edges.len(), before_edges.len() + 1);
         assert_eq!(after_edges.last().map(|edge| edge.target), Some(10));
+    }
+
+    #[test]
+    fn batch_relocates_same_leaf_once_for_multiple_buckets() {
+        let graph = segment16_graph();
+        for _ in 0..17 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        let label_a = BucketLabelKey::directed_from_index(1);
+        let label_b = BucketLabelKey::directed_from_index(2);
+        graph
+            .insert_edge(VertexId::from(0), label_a, GraphTestEdge { target: 1 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(0), label_b, GraphTestEdge { target: 2 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(16), label_a, GraphTestEdge { target: 33 })
+            .unwrap();
+
+        let header = graph.edges().header();
+        let leaf = LabeledLaraGraph::<GraphTestEdge, crate::VectorMemory>::leaf_index_for_vid(
+            VertexId::from(0),
+            header.segment_size,
+        );
+        let log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+        let a_count = log_capacity / 2;
+        let b_count = log_capacity - a_count;
+        let a_entries: Vec<(i32, GraphTestEdge)> = (0..a_count)
+            .map(|i| {
+                (
+                    if i == 0 { -1 } else { (i - 1) as i32 },
+                    GraphTestEdge {
+                        target: 100 + i as u32,
+                    },
+                )
+            })
+            .collect();
+        let b_entries: Vec<(i32, GraphTestEdge)> = (0..b_count)
+            .map(|i| {
+                (
+                    if i == 0 { -1 } else { (a_count + i - 1) as i32 },
+                    GraphTestEdge {
+                        target: 200 + i as u32,
+                    },
+                )
+            })
+            .collect();
+        graph
+            .edges()
+            .write_overflow_log_entries(leaf, 0, &a_entries)
+            .unwrap();
+        graph
+            .edges()
+            .write_overflow_log_entries(leaf, a_count as u32, &b_entries)
+            .unwrap();
+
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let (slot_a, bucket_a) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label_a)
+            .unwrap()
+        {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("bucket A must exist"),
+        };
+        let (slot_b, bucket_b) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label_b)
+            .unwrap()
+        {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("bucket B must exist"),
+        };
+        graph
+            .buckets()
+            .write_label_bucket_slot(
+                slot_a,
+                bucket_a
+                    .with_overflow_log_head((a_count - 1) as i32)
+                    .with_degree_field((a_count + 1) as u32),
+            )
+            .unwrap();
+        graph
+            .buckets()
+            .write_label_bucket_slot(
+                slot_b,
+                bucket_b
+                    .with_overflow_log_head((log_capacity - 1) as i32)
+                    .with_degree_field(b_count as u32),
+            )
+            .unwrap();
+
+        let (old_start, _) = graph
+            .labeled_leaf_physical_range(VertexId::from(0))
+            .expect("leaf must be pinned before relocation");
+        let plan = OneOrientationBatchPlan {
+            runs: vec![
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_a,
+                    inline_property_width: 0,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(300),
+                        label_id: label_a,
+                        edge: GraphTestEdge { target: 300 },
+                    }],
+                },
+                OneOrientationBucketRun {
+                    owner_vertex_id: VertexId::from(0),
+                    label_id: label_b,
+                    inline_property_width: 0,
+                    edges: vec![OneOrientationBatchEdge {
+                        logical_ordinal: 1,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(301),
+                        label_id: label_b,
+                        edge: GraphTestEdge { target: 301 },
+                    }],
+                },
+            ],
+        };
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("same-leaf multi-bucket relocation must succeed");
+        let (new_start, _) = graph
+            .labeled_leaf_physical_range(VertexId::from(0))
+            .expect("leaf must remain pinned after relocation");
+        assert_ne!(new_start, old_start);
+
+        let collect = |label| {
+            let mut targets = Vec::new();
+            graph
+                .for_each_edges_for_label_ordered(
+                    VertexId::from(0),
+                    label,
+                    OutEdgeOrder::Ascending,
+                    |edge| targets.push(edge.target),
+                )
+                .unwrap();
+            targets
+        };
+        assert_eq!(
+            collect(label_a),
+            (std::iter::once(1u32))
+                .chain((0..a_count).map(|i| 100 + i as u32))
+                .chain([300])
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            collect(label_b),
+            (0..b_count)
+                .map(|i| 200 + i as u32)
+                .chain([301])
+                .collect::<Vec<_>>()
+        );
     }
 }
