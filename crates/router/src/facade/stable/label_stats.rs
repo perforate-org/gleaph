@@ -222,7 +222,13 @@ pub enum RouterMutationRecord {
 /// ordered payload from reusing the untyped fingerprint field.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum RouterMutationRequestIdentityV1 {
-    PlanExecution { request_fingerprint: Vec<u8> },
+    PlanExecution {
+        request_fingerprint: Vec<u8>,
+    },
+    OrderedEdgeBatch {
+        public_fingerprint: [u8; 32],
+        public_item_count: u32,
+    },
 }
 
 impl RouterMutationRequestIdentityV1 {
@@ -231,6 +237,18 @@ impl RouterMutationRequestIdentityV1 {
             Self::PlanExecution {
                 request_fingerprint,
             } => request_fingerprint,
+            Self::OrderedEdgeBatch {
+                public_fingerprint, ..
+            } => public_fingerprint,
+        }
+    }
+
+    pub fn public_item_count(&self) -> Option<u32> {
+        match self {
+            Self::PlanExecution { .. } => None,
+            Self::OrderedEdgeBatch {
+                public_item_count, ..
+            } => Some(*public_item_count),
         }
     }
 }
@@ -739,6 +757,25 @@ mod tests {
         assert_eq!(decoded, record);
         assert_eq!(decoded.as_v1().mutation_id, 1);
         assert!(decoded.as_v1().routing_in_progress);
+    }
+
+    #[test]
+    fn ordered_request_identity_round_trips_without_a_payload_variant() {
+        let mut record = RouterMutationRecord::new(2, 42, vec![9, 8]);
+        record.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+            public_fingerprint: [7; 32],
+            public_item_count: 3,
+        };
+        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
+        assert_eq!(decoded, record);
+        assert_eq!(
+            decoded.as_v1().request_identity.request_fingerprint(),
+            [7; 32]
+        );
+        assert_eq!(
+            decoded.as_v1().request_identity.public_item_count(),
+            Some(3)
+        );
     }
 
     fn shard(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShardV1 {
