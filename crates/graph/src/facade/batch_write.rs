@@ -158,7 +158,7 @@ impl GraphStore {
         });
     }
 
-    /// Attempt to insert a bounded unordered batch of logical edges through the
+    /// Attempt to insert a bounded batch of logical edges through the optimized
     /// clean-slab one-orientation path.
     ///
     /// This is the GraphStore orchestration entry point for Plan 0123. It:

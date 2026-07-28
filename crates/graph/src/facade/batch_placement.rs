@@ -3,7 +3,7 @@
 //! This module models how a bounded set of logical edges expands into ordinal-
 //! tagged physical half-edge intents and computes a projected LARA ownership/
 //! capacity summary without publishing canonical state. It is the first slice of
-//! the unordered batch mutation path; no slab write, overflow-log append,
+//! the optimized batch mutation path; no slab write, overflow-log append,
 //! rebalance, relocation, alias, sidecar, or derived-index mutation occurs here.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,7 +19,7 @@ use super::{GraphStore, GraphStoreError, stable::GRAPH};
 use crate::edge_inline_property_schema::lookup_edge_inline_property_profile;
 use rapidhash::{HashMapExt, RapidHashMap};
 
-/// One logical edge supplied by a client for unordered batch planning.
+/// One logical edge supplied for optimized batch planning.
 ///
 /// The planner expands this into one or two physical intents owned by LARA.
 /// Forward/reverse halves and undirected canonical/alias halves are derived, not
@@ -90,7 +90,7 @@ pub enum BatchPlacementError {
         expected: usize,
         actual: usize,
     },
-    /// Duplicate logical edge target in the same unordered chunk.
+    /// Duplicate logical edge target in the same batch.
     DuplicateEdgeTarget,
     /// The same logical edge target was supplied with conflicting inline property bytes.
     ConflictingDuplicateEdgeTarget,
@@ -362,7 +362,7 @@ impl BatchPlacementLeafSummary {
     }
 }
 
-/// Read-only placement summary for a bounded unordered edge batch.
+/// Read-only placement summary for a bounded edge batch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchPlacementSummary {
     /// Number of logical edges supplied as input.
@@ -432,7 +432,7 @@ impl BatchPlacementSummary {
 /// Internal duplicate-detection key for a logical edge target.
 ///
 /// ADR 0045 rejects duplicate mutations targeting the same logical edge in one
-/// unordered chunk, regardless of inline property bytes. Directed edges are keyed by
+/// batch, regardless of inline property bytes. Directed edges are keyed by
 /// (source, target, label). Undirected edges are keyed by canonical endpoint pair
 /// (higher id first) and label, so `(a,b)` and `(b,a)` collide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -481,7 +481,7 @@ impl BatchEdgeInput {
 }
 
 impl GraphStore {
-    /// Read-only planning entry point for an unordered edge batch.
+    /// Read-only planning entry point for an optimized edge batch.
     ///
     /// Validates vertices, label widths, and duplicate targets; expands each
     /// logical edge into physical intents; groups by LARA ownership; and reads
@@ -494,7 +494,7 @@ impl GraphStore {
     /// budgets are measured.
     pub const MAX_LOGICAL_EDGES: u32 = 1024 * 1024;
 
-    /// Validate a bounded unordered batch and expand it into physical half-edge
+    /// Validate a bounded batch and expand it into physical half-edge
     /// intents. This is reusable by callers that need the intents without the
     /// full placement summary.
     pub(crate) fn expand_batch_edge_intents(

@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 08:59:40 UTC +0000
+Anchor timestamp: 2026-07-28 09:02:35 UTC +0000
 
 ## Context
 
@@ -1488,8 +1488,10 @@ not rewritten as though unfinished unordered product behavior shipped.
    remain planned.
 6. Add bucket-local order and pair-ordinal adversarial tests to the existing
    ADR 0045 planner/write fixtures without changing the public wire.
-7. Reclassify and rename internal unordered terminology where it denotes a
-   semantic contract rather than reusable placement machinery.
+7. **Partially implemented (2026-07-28):** reclassify the Graph facade's
+   optimized placement comments so they no longer imply an unordered semantic
+   contract. The remaining ADR 0045 historical names stay in the decision
+   record; no public unordered endpoint is introduced.
 8. **Partially implemented (2026-07-28):** extend placement reservations with
    explicit append/live-order validation for clean slab, overflow-log append,
    expanded-slab growth, folded logs, and tombstone-heavy cases. Same-leaf
