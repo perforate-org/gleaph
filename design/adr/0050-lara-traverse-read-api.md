@@ -531,11 +531,33 @@ Replay/scratch reuse remains an optimized LARA capability. The replay object is 
 `(owner, label, bucket fingerprint)` before use, and falls back to canonical reads on mismatch. It
 must not become a second source of truth.
 
-The borrowed `visit_edges_at_with_inline_property` capability resolves small selected logical
-slot sets directly instead of filtering a full-bucket visitor. It reuses one property buffer for
-overflow-log rows and bulk-reads the selected slab ordinal span when possible. For larger
-overflow-log selections it retains the canonical bulk-friendly visitor, avoiding a per-slot stable
-memory read storm; property bytes remain borrowed only for the callback.
+The borrowed `visit_edges_at_with_inline_property` capability resolves selected logical slot sets
+through an adaptive range choice. It reuses one property buffer for overflow-log rows and
+bulk-reads the selected slab ordinal span when possible. When an overflow-backed bucket has a
+compact requested range, it uses the canonical bulk-friendly visitor and stops after the requested
+range; sparse or tail selections use direct slot reads to avoid unrelated logical slots. Property
+bytes remain borrowed only for the callback, and user `ControlFlow::Break` values are preserved.
+
+### 7a. Future research: block-aware selected traversal
+
+**Planned; not implemented and not part of the current persistence format.**
+
+The current range choice uses an inexpensive estimated scan length and a measured heuristic. A
+future research slice may partition the logical bucket extent into fixed-size blocks (for example,
+16 or 32 slots), group selected slots into block runs, and choose canonical scanning or direct
+reads per run. A block directory could skip empty or irrelevant blocks while preserving the
+existing logical-slot and tombstone contracts.
+
+This candidate is inspired by partitioned posting-list and adaptive set-intersection techniques,
+including [Fast Set Intersection in Memory](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/vldb11intersection.pdf),
+[Faster Adaptive Set Intersections](https://users.dcc.uchile.cl/~jbarbay/Publications/2006-WEA-FasterAdaptiveSetIntersectionsForTextSearching-BarbayLopezOrtizLu.pdf),
+and the sequential adjacency-scan design in [LiveGraph](https://arxiv.org/abs/1910.05773). It must
+be evaluated against LARA's stable-memory costs rather than comparison counts alone.
+The research must compare prefix, suffix, descending, sparse, tombstoned, and mixed slab/overflow
+selections. It must not add per-edge counterpart metadata, make derived block state authoritative,
+or replace the canonical direct-read fallback without measured runtime, stable-read, rebuild, and
+failure-atomicity evidence. Any adopted block directory requires a separate ADR or an explicit
+amendment to this ADR.
 
 ### 8. Batched inline-property reads remain specialized
 
