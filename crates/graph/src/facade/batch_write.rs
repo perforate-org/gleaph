@@ -169,7 +169,7 @@ impl GraphStore {
         edges: &[BatchEdgeInput],
     ) -> Result<GraphOrderedEdgeBatchResult, String> {
         let result = self
-            .try_insert_batch_edges_clean_slab_with_initial_properties(edges)
+            .try_insert_ordered_edge_batch_clean_slab(edges)
             .map_err(|error| format!("ordered Graph batch validation failed: {error}"))?;
         if let BatchEdgeInsertResult::Unsupported { reason } = result {
             return Err(format!(
@@ -254,7 +254,7 @@ impl GraphStore {
             .map(|(_, edge)| edge.clone())
             .collect();
 
-        match self.try_insert_batch_edges_clean_slab_with_initial_properties(&batch_edges) {
+        match self.try_insert_ordered_edge_batch_clean_slab(&batch_edges) {
             Ok(BatchEdgeInsertResult::Committed { .. }) => {
                 self.execute_ordered_scalar_edges(&scalar_edges);
                 Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
@@ -305,6 +305,25 @@ impl GraphStore {
             hot_forward_vertices,
         );
         GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt))
+    }
+
+    /// Select the cheapest clean-slab location mode needed by an ordered batch.
+    ///
+    /// Ordered receipts only need aggregate counts. Exact canonical locations are needed only
+    /// when initial edge properties must be written after the LARA commit; inline property bytes
+    /// are already part of the canonical batch input and do not require location capture.
+    fn try_insert_ordered_edge_batch_clean_slab(
+        &self,
+        edges: &[BatchEdgeInput],
+    ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
+        if edges
+            .iter()
+            .any(|edge| !edge.initial_edge_properties.is_empty())
+        {
+            self.try_insert_batch_edges_clean_slab_with_initial_properties(edges)
+        } else {
+            self.try_insert_batch_edges_clean_slab(edges)
+        }
     }
 
     /// Pre-create empty directed buckets for `src -> dst` with the given inline
@@ -551,12 +570,9 @@ impl GraphStore {
                 .push(entry);
         }
 
-        // Ensure each run is sorted by logical ordinal so edge/inline-property-bytes alignment is
-        // deterministic. The LARA reserve step also checks this, but doing it here
-        // keeps the GraphStore contract closer to the source of physical intents.
-        for edges in runs_by_role.values_mut() {
-            edges.sort_by_key(|e| e.logical_ordinal);
-        }
+        // `expand_batch_edge_intents` emits intents in logical-input order. HashMap grouping
+        // changes only which run is visited, not the order of entries within a run, so each run
+        // is already ordinal-sorted when it reaches the LARA reserve contract.
 
         let mut grouped: RapidHashMap<
             BatchEdgeIntentRole,
@@ -614,9 +630,7 @@ impl GraphStore {
                 edge: encode_edge(intent)?,
             });
         }
-        for edges in runs.values_mut() {
-            edges.sort_by_key(|edge| edge.logical_ordinal);
-        }
+        // Intent expansion preserves logical-input order within each grouped run.
         let mut by_orientation: RapidHashMap<
             u8,
             RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>>,
@@ -2470,7 +2484,7 @@ mod tests {
     }
 
     #[test]
-    fn reserve_failure_leaves_canonical_state_unchanged() {
+    fn batch_reservation_prepares_missing_reverse_buckets() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(5001);
         install_width(label, 0);
@@ -2479,7 +2493,8 @@ mod tests {
         let target_with_bucket = vertices[1];
         let target_without_bucket = vertices[2];
 
-        // Forward bucket at source and reverse bucket at target_with_bucket only.
+        // The reverse bucket for target_without_bucket is intentionally absent; LARA
+        // prepares it as part of the batch reservation.
         store.prepare_clean_slab_dir_buckets(source, target_with_bucket, label, 0);
 
         let label_raw = storage_label_for(Some(label), true);
@@ -2494,24 +2509,24 @@ mod tests {
             .try_insert_batch_edges_clean_slab(&edges)
             .expect("plan/encode ok");
         assert!(
-            matches!(result, BatchEdgeInsertResult::Unsupported { .. }),
-            "expected unsupported after partial reserve, got {result:?}"
+            matches!(result, BatchEdgeInsertResult::Committed { .. }),
+            "expected committed batch with prepared bucket, got {result:?}"
         );
 
         assert_eq!(
             count_labeled_dir_edges(&store, source, label_raw, true),
-            out_before,
-            "forward canonical state must not be partially published"
+            out_before + 2,
+            "both forward edges must be committed"
         );
         assert_eq!(
             count_labeled_dir_edges(&store, target_without_bucket, label_raw, false,),
-            in_before,
-            "reverse canonical state must remain absent"
+            in_before + 1,
+            "the missing reverse bucket must be prepared and committed"
         );
     }
 
     #[test]
-    fn owner_batch_second_orientation_failure_restores_allocator_state() {
+    fn batch_reservation_prepares_missing_reverse_bucket_with_inline_bytes() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(5002);
         install_width(label, 8);
@@ -2520,8 +2535,6 @@ mod tests {
         let prepared_target = vertices[1];
         let target = vertices[2];
         store.prepare_clean_slab_dir_buckets(source, prepared_target, label, 8);
-        let before = allocator_snapshot(&store);
-
         let result = store
             .try_insert_batch_edges_clean_slab(&[input(
                 source,
@@ -2531,26 +2544,7 @@ mod tests {
                 vec![1, 2, 3, 4, 5, 6, 7, 8],
             )])
             .expect("plan/encode ok");
-        assert!(matches!(result, BatchEdgeInsertResult::Unsupported { .. }));
-        let after = allocator_snapshot(&store);
-        assert_eq!(after.forward_edge_capacity, before.forward_edge_capacity);
-        assert_eq!(after.reverse_edge_capacity, before.reverse_edge_capacity);
-        assert_eq!(
-            after.forward_inline_property_bytes.slab_occupied_tail,
-            before.forward_inline_property_bytes.slab_occupied_tail
-        );
-        assert_eq!(
-            after.reverse_inline_property_bytes.slab_occupied_tail,
-            before.reverse_inline_property_bytes.slab_occupied_tail
-        );
-        assert!(
-            after.forward_inline_property_bytes.free_bytes
-                >= before.forward_inline_property_bytes.free_bytes
-        );
-        assert_eq!(
-            after.reverse_inline_property_bytes,
-            before.reverse_inline_property_bytes
-        );
+        assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
     }
 
     /// Reserve both orientations of a inline-property-bearing directed edge (so both
@@ -2736,109 +2730,6 @@ mod tests {
             after_rollback.reverse_inline_property_bytes.byte_capacity
                 >= before.reverse_inline_property_bytes.byte_capacity,
             "reverse stable-memory inline_property_bytes capacity must not shrink"
-        );
-    }
-
-    #[test]
-    fn reserve_failure_restores_allocator_state() {
-        let store = fresh_store();
-        let label = EdgeLabelId::from_raw(5002);
-        install_width(label, 8);
-        let inline_property_bytes = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
-        let vertices = make_vertices(&store, 3);
-        let source = vertices[0];
-        let target_with_bucket = vertices[1];
-        let target_without_bucket = vertices[2];
-
-        // Prepare a forward bucket at source (and an unused reverse bucket at
-        // target_with_bucket).  The edge below targets target_without_bucket, whose
-        // reverse bucket does not exist, so reverse reserve fails after the forward
-        // inline_property_bytes allocation has already happened.
-        store.prepare_clean_slab_dir_buckets(source, target_with_bucket, label, 8);
-
-        let before = allocator_snapshot(&store);
-
-        let edges = vec![input(
-            source,
-            target_without_bucket,
-            Some(label),
-            true,
-            inline_property_bytes.clone(),
-        )];
-        let result = store
-            .try_insert_batch_edges_clean_slab(&edges)
-            .expect("plan/encode ok");
-        assert!(
-            matches!(result, BatchEdgeInsertResult::Unsupported { .. }),
-            "expected unsupported after partial reserve, got {result:?}"
-        );
-
-        let after = allocator_snapshot(&store);
-
-        // Logical edge capacity is restored for both orientations.
-        assert_eq!(
-            after.forward_edge_capacity, before.forward_edge_capacity,
-            "forward edge capacity must be restored"
-        );
-        assert_eq!(
-            after.reverse_edge_capacity, before.reverse_edge_capacity,
-            "reverse edge capacity must be restored"
-        );
-
-        // Edge free-list accounting is unchanged; no edge free spans were created.
-        assert_eq!(
-            after.forward_edge_free, before.forward_edge_free,
-            "forward edge free-list accounting must be unchanged"
-        );
-        assert_eq!(
-            after.reverse_edge_free, before.reverse_edge_free,
-            "reverse edge free-list accounting must be unchanged"
-        );
-
-        // InlinePropertyBytes occupied tail is restored for both orientations.
-        assert_eq!(
-            after.forward_inline_property_bytes.slab_occupied_tail,
-            before.forward_inline_property_bytes.slab_occupied_tail,
-            "forward inline_property_bytes occupied tail must be restored"
-        );
-        assert_eq!(
-            after.reverse_inline_property_bytes.slab_occupied_tail,
-            before.reverse_inline_property_bytes.slab_occupied_tail,
-            "reverse inline_property_bytes occupied tail must be restored"
-        );
-
-        // Reverse inline_property_bytes allocator state is untouched.
-        assert_eq!(
-            after.reverse_inline_property_bytes,
-            before.reverse_inline_property_bytes
-        );
-
-        // The forward inline_property_bytes bytes that were allocated before the failure are
-        // retired to the free-list as reusable slack. The stable-memory backing
-        // capacity is not shrunk.
-        let expected_forward_inline_property_bytes =
-            u64::try_from(inline_property_bytes.len()).unwrap();
-        assert_eq!(
-            after.forward_inline_property_bytes.free_bytes
-                - before.forward_inline_property_bytes.free_bytes,
-            expected_forward_inline_property_bytes,
-            "forward inline_property_bytes free bytes must increase by the allocated run length"
-        );
-        assert_eq!(
-            after.forward_inline_property_bytes.free_span_count
-                - before.forward_inline_property_bytes.free_span_count,
-            1,
-            "forward inline property free-list must gain exactly one retired span"
-        );
-        assert!(
-            after.forward_inline_property_bytes.largest_free_span
-                >= expected_forward_inline_property_bytes,
-            "largest forward inline_property_bytes free span must cover the retired run"
-        );
-        assert!(
-            after.forward_inline_property_bytes.byte_capacity
-                >= before.forward_inline_property_bytes.byte_capacity,
-            "stable-memory inline_property_bytes capacity must not shrink on rollback"
         );
     }
 

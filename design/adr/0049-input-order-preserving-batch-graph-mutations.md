@@ -1733,8 +1733,19 @@ not rewritten as though unfinished unordered product behavior shipped.
     256-item mixed fixture containing 128 multi-run items and 128 singleton
     items completed in 7.48M instructions through the partitioned path,
     versus 12.03M for all-batch and 11.51M for all-scalar execution, with
-    receipt, label delta, and journal work included. Compare an unordered
-    candidate separately only if a real reordering optimization exists.
+    receipt, label delta, and journal work included. **Implemented and
+    measured (2026-07-28 21:06:32 UTC +0000):** property-free ordered batch
+    portions now use aggregate-only location mode; exact location capture is
+    retained only when initial edge properties need post-commit sidecar
+    writes. The same mixed fixture decreased to 7.16M instructions, with heap
+    increase reduced from one page to zero and stable-memory increase from 84
+    pages to 20 pages. **Implemented and measured (2026-07-28 21:16:11 UTC
+    +0000):** per-run ordinal sorting was removed after confirming that intent
+    expansion preserves input order within each grouped run; the updated mixed
+    fixture measured 7.14M instructions. The reservation tests now cover the
+    current LARA new-bucket contract rather than the obsolete missing-bucket
+    rejection. Compare an unordered candidate separately only if a real
+    reordering optimization exists.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh
