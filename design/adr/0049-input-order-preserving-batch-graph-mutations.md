@@ -1624,6 +1624,12 @@ not rewritten as though unfinished unordered product behavior shipped.
     the projection watermark and aggregate row count while dropping resolved
     tables. The public retirement driver, background recovery, and final
     compaction policy remain planned.
+    **Partially implemented (2026-07-28 13:49:42 UTC +0000):** the wasm Router
+    recovery driver now recognizes ordered replay records, refuses to
+    redispatch `CanonicalPending` records, and can converge committed ordered
+    records through projection, fingerprint-bound Graph retirement, and the
+    durable completed state. Public admission retry and independent journal
+    reconciliation remain planned.
     Replace Router V1 request identity/payload in place; implement exhaustive
     ordered routing/envelope/target progress, resolved-table authority transfer,
     bounded typed retry diagnostics and terminal failures, a bounded record in

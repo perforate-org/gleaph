@@ -203,6 +203,8 @@ use crate::federation::{
     split_label_and_property_anchors, try_aggregate_index_fast_path,
     try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
+#[cfg(target_family = "wasm")]
+use crate::graph_client::retire_ordered_mutation_on_graph;
 use crate::graph_client::{
     ack_label_stats_deltas_through, ack_unique_effects, execute_plan_batch_on_graph,
     execute_plan_batch_typed_v1_on_graph, execute_plan_on_graph, get_mutation_journal_entries,
@@ -5272,6 +5274,132 @@ async fn recover_typed_bulk_record(
 }
 
 #[cfg(target_family = "wasm")]
+/// Projection/retirement recovery for a durable ordered edge batch.
+///
+/// A `CanonicalPending` ordered record is deliberately not redispatched by the background
+/// driver: canonical replay remains an explicit client retry boundary. Once the Graph receipt is
+/// durable, recovery may advance Router-owned projection and issue the exact retirement call.
+async fn recover_ordered_edge_batch_record(
+    store: &RouterStore,
+    key: &crate::facade::stable::label_stats::ClientMutationKey,
+    record: &crate::facade::stable::label_stats::RouterMutationRecord,
+) -> Result<(), RouterError> {
+    use crate::facade::stable::label_stats::{
+        OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
+    };
+    use gleaph_graph_kernel::plan_exec::{
+        OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1,
+    };
+
+    let replay = match record.payload() {
+        RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay.clone(),
+        _ => return Ok(()),
+    };
+    let target = &replay.target;
+    let graph = target.request.target_graph_canister;
+    let shard_id = target.request.target_shard_id;
+    let mutation_id = record.as_v1().mutation_id;
+    let fingerprint = target.graph_request_fingerprint;
+    let receipt = match &target.progress {
+        OrderedEdgeBatchTargetProgressV1::CanonicalPending => {
+            store.record_router_mutation_last_error(
+                key,
+                "ordered canonical write pending; explicit retry is required".into(),
+            )?;
+            return Ok(());
+        }
+        OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt)
+        | OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt)
+        | OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt)
+        | OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt) => receipt.clone(),
+    };
+
+    if matches!(
+        target.progress,
+        OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(_)
+    ) {
+        store.record_ordered_edge_batch_projection_pending(
+            key.caller,
+            key.graph_id,
+            &key.client_key,
+            mutation_id,
+            fingerprint,
+        )?;
+    }
+    if matches!(
+        target.progress,
+        OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(_)
+            | OrderedEdgeBatchTargetProgressV1::ProjectionPending(_)
+    ) {
+        advance_label_stats_projection_through(
+            store,
+            key.graph_id,
+            graph,
+            shard_id,
+            receipt.emitted_delta_last_seq,
+        )
+        .await?;
+        store.record_ordered_edge_batch_projection_advanced(
+            key.caller,
+            key.graph_id,
+            &key.client_key,
+            mutation_id,
+            fingerprint,
+            gleaph_graph_kernel::plan_exec::MutationTokenShard {
+                shard_id,
+                label_stats_seq: receipt.emitted_delta_last_seq,
+            },
+        )?;
+    }
+
+    let current = store
+        .router_mutation_record(key.caller, key.graph_id, &key.client_key)
+        .ok_or_else(|| RouterError::Internal("ordered recovery record disappeared".into()))?;
+    if matches!(
+        current.payload(),
+        RouterMutationPayloadV1::OrderedEdgeBatch(replay)
+            if matches!(
+                replay.target.progress,
+                OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_)
+            )
+    ) {
+        store.record_ordered_edge_batch_retirement_pending(
+            key.caller,
+            key.graph_id,
+            &key.client_key,
+            mutation_id,
+            fingerprint,
+        )?;
+    }
+
+    let ack = retire_ordered_mutation_on_graph(
+        graph,
+        OrderedMutationRetirementArgs::V1(OrderedMutationRetirementArgsV1 {
+            mutation_id,
+            graph_request_fingerprint: fingerprint,
+        }),
+    )
+    .await?;
+    let gleaph_graph_kernel::plan_exec::OrderedMutationRetirementAck::V1(ack) = ack;
+    if ack.mutation_id != mutation_id
+        || ack.graph_request_fingerprint != fingerprint
+        || ack.receipt != receipt
+    {
+        return Err(RouterError::InvalidArgument(
+            "ordered retirement acknowledgement does not match durable target".into(),
+        ));
+    }
+    store.record_ordered_edge_batch_retired(
+        key.caller,
+        key.graph_id,
+        &key.client_key,
+        mutation_id,
+        fingerprint,
+        ack.receipt,
+    )
+}
+
+#[cfg(target_family = "wasm")]
 pub(crate) async fn recover_mutation_record(
     store: &RouterStore,
     key: &ClientMutationKey,
@@ -5291,6 +5419,19 @@ pub(crate) async fn recover_mutation_record(
         crate::facade::stable::label_stats::RouterMutationPayloadV1::TypedSeedBulk(_)
     ) {
         return recover_typed_bulk_record(store, key, &record).await;
+    }
+
+    if matches!(
+        record.payload(),
+        crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(_)
+    ) {
+        return match recover_ordered_edge_batch_record(store, key, &record).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                store.record_router_mutation_last_error(key, error.to_string())?;
+                Ok(())
+            }
+        };
     }
 
     for shard in record.shards() {
