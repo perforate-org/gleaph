@@ -1839,6 +1839,13 @@ not rewritten as though unfinished unordered product behavior shipped.
     index events after the primary writes. This preserves scalar error
     propagation while removing per-property borrow/setup overhead; directed and
     undirected multi-property tests cover the path.
+    **Measured (2026-07-28 23:25:59 UTC +0000):** the dedicated scalar sidecar
+    benchmark uses the same 128-edge fixture and four properties for both
+    paths. Bulk canonical-sidecar writes measured 27.42M instructions versus
+    40.48M for per-property writes, a 32.3% reduction. Heap growth was zero and
+    stable-memory growth was 64 pages in both paths. This is a property-bearing
+    scalar microbenchmark, separate from the singleton batch/scalar placement
+    gate.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

@@ -4,10 +4,12 @@
 //! benches include the corresponding canonical adjacency, label-delta, and journal work so the
 //! ordered partition comparison is not a setup-only proxy.
 
+use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{BatchEdgeInput, GraphStore};
 use canbench_rs::bench;
+use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
-    EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
+    EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId, PropertyId,
 };
 use gleaph_graph_kernel::plan_exec::GraphMutationRequestIdentityV1;
 use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
@@ -487,6 +489,58 @@ fn bench_scalar_directed_128_width_8() -> canbench_rs::BenchResult {
                     &edge.inline_property_bytes,
                 )
                 .expect("scalar insert");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_scalar_directed_128_sidecar_4_bulk() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_128_directed_edges(0);
+    let properties = [
+        (PropertyId::from_raw(9_901), Value::Int64(1)),
+        (PropertyId::from_raw(9_902), Value::Int64(2)),
+        (PropertyId::from_raw(9_903), Value::Int64(3)),
+        (PropertyId::from_raw(9_904), Value::Int64(4)),
+    ];
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("scalar_directed_128_sidecar_4_bulk");
+        for edge in &input {
+            GraphMutationExecutor::insert_directed_edge_with(
+                &store,
+                edge.source_vertex_id,
+                edge.target_vertex_id,
+                Some(label),
+                properties.iter().cloned(),
+            )
+            .expect("scalar sidecar insert");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_scalar_directed_128_sidecar_4_per_property() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_128_directed_edges(0);
+    let properties = [
+        (PropertyId::from_raw(9_901), Value::Int64(1)),
+        (PropertyId::from_raw(9_902), Value::Int64(2)),
+        (PropertyId::from_raw(9_903), Value::Int64(3)),
+        (PropertyId::from_raw(9_904), Value::Int64(4)),
+    ];
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("scalar_directed_128_sidecar_4_per_property");
+        for edge in &input {
+            let handle = store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+            for (property_id, value) in properties.iter().cloned() {
+                store
+                    .set_edge_property(
+                        handle.occurrence(LabeledOrientation::Forward),
+                        property_id,
+                        value,
+                    )
+                    .expect("scalar sidecar property");
+            }
         }
     })
 }
