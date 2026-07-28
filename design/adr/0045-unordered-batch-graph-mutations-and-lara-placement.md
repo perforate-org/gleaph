@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 07:38:39 UTC +0000
+Anchor timestamp: 2026-07-28 07:46:51 UTC +0000
 
 Planned successor: [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md)
 will, after ADR 0048 completion, retain this ADR's physical placement,
@@ -118,9 +118,11 @@ Implementation status as of 2026-07-23 07:12:03 UTC +0000:
   such a transaction boundary do not receive the same atomicity guarantee.
   Supported geometries are existing buckets whose run fits the current planned
   slab window (including the first bucket's vertex quota), plus pinned-leaf
-  expansion when the edge/inline property bytes logs are full. Fixed-width inline property bytes spans may
-  be reused or grown at the occupied tail; non-tail relocation remains
-  unsupported.
+  expansion when the edge/inline property bytes logs are full. Edge-only
+  non-tail leaf relocation is admitted once per leaf and committed before the
+  pending slab append; fixed-width inline property bytes spans may be reused or
+  grown at the occupied tail, while inline-property-bearing non-tail relocation
+  remains unsupported.
 - Plan 0123 GraphStore clean-slab orchestration is implemented: `GraphStore::
 try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   existing read-only planner, reserves every orientation before committing any
@@ -152,8 +154,8 @@ try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   degree, and leaves stored_slots and vertex slab span unchanged. Cross-
   orientation reserve-all-then-commit and rollback remain unchanged. Scalar
   fallback remains for new buckets, default/unlabeled promotion,
-  rebalance/relocation, dynamic leaf expansion, tombstone reuse, and other
-  unsupported geometry. Focused unit tests cover successful edge/inline property bytes log
+  inline-property-bearing relocation, tombstone reuse, and other unsupported
+  geometry. Focused unit tests cover successful edge/inline property bytes log
   append, log capacity exhaustion, multi-run and multi-orientation rollback,
   read-back order, and unchanged canonical/allocator state after rejection.
 - Plan 0125 pending-aware one-shot leaf expansion is implemented for existing
@@ -162,11 +164,12 @@ try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   edge/inline property bytes logs and writes aligned slab values, and rollback restores the
   inline property bytes tail/free-list and edge allocator state. Payload read-back and full
   canbench coverage are included; malformed edge/inline property bytes log lengths reject
-  before allocation. New bucket creation, non-tail relocation, and full public
-  wire integration remain planned for later slices.
-- The storage owner now exposes a mutation-free relocation target planner shared
-  by scalar relocation and the future batch relocation reservation. Batch
-  admission still does not allocate or publish a relocation target.
+  before allocation. New bucket creation, inline-property-bearing non-tail
+  relocation, and full public wire integration remain planned for later slices.
+- The storage owner exposes a mutation-free relocation target planner shared by
+  scalar relocation and batch admission. Edge-only batch relocation consumes
+  that target once per leaf during commit; inline-property-bearing relocation
+  remains fail-closed.
 - ADR 0048's persistent mate index is still planned. Plan 0129 implements only
   the internal returned-slot boundary: LARA owns exact physical locations and
   GraphStore joins them by ordinal without a post-insert adjacency scan. Plan

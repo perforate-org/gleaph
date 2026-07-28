@@ -1040,10 +1040,7 @@ where
     pub(crate) fn plan_labeled_leaf_relocation(
         &self,
         src: VertexId,
-    ) -> Result<LabeledLeafRelocationTarget, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
+    ) -> Result<LabeledLeafRelocationTarget, LabeledOperationError> {
         let pinned_range = self.labeled_leaf_physical_range(src);
         let (old_start, old_len) = pinned_range.unwrap_or((0, 0));
         let header = self.edges.header();

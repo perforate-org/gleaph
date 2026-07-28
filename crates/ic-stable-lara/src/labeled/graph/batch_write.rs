@@ -31,13 +31,15 @@
 //! Empty plans are rejected by `reserve_one_orientation_batch`; the batch
 //! boundary does not define a no-op success path.
 //!
-//! The current slice supports existing buckets through one of three paths:
+//! The current slice supports existing buckets through one of four paths:
 //! - direct slab append when the bucket's window has room;
 //! - per-leaf overflow-log append when the slab is full but the log has room;
 //! - one in-place PMA leaf expansion when neither slab nor log can absorb the
 //!   projected geometry. Fixed-width inline property bytes spans are folded and extended
 //!   together with the edge slab when the existing span is reusable or grows at
-//!   the occupied tail. Relocation to a brand-new physical block, new-bucket
+//!   the occupied tail;
+//! - one edge-only relocation to a brand-new physical block per affected leaf,
+//!   followed by slab append. Inline-property-bearing relocation, new-bucket
 //!   creation, default/unlabeled promotion, and maintenance compaction remain
 //!   unsupported and fall back to the scalar path.
 
@@ -48,6 +50,7 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
+use super::compact::LabeledLeafRelocationTarget;
 use super::error::LabeledOperationError;
 use super::{BucketSearch, LabeledLaraGraph};
 
@@ -546,6 +549,9 @@ where
     /// Cumulative in-place leaf expansions reserved for this batch; consumed on
     /// rollback to restore the free-span store shape.
     leaf_expansions: std::collections::BTreeMap<u32, LeafExpansionState>,
+    /// Leaf relocation targets admitted for this reservation. Each leaf is
+    /// consumed once during commit before any pending row is written.
+    leaf_relocations: std::collections::BTreeMap<u32, LabeledLeafRelocationTarget>,
 }
 
 impl<E> BatchReservation<E>
@@ -572,9 +578,12 @@ where
     /// Whether this reservation uses the pending-aware one-shot leaf expansion
     /// path rather than a direct slab or overflow-log destination.
     pub fn uses_expansion(&self) -> bool {
-        self.runs
-            .iter()
-            .any(|run| matches!(run.destination, RunDestination::ExpandedSlab { .. }))
+        self.runs.iter().any(|run| {
+            matches!(
+                run.destination,
+                RunDestination::ExpandedSlab { .. } | RunDestination::RelocatedSlab { .. }
+            )
+        })
     }
 }
 
@@ -725,6 +734,14 @@ enum RunDestination {
         /// Number of inline property bytes reserved for the pending batch edges.
         inline_property_bytes_byte_count: u64,
     },
+    /// Relocate one pinned PMA leaf, fold its existing rows, then append the
+    /// pending edge rows at each affected bucket's slab tail.
+    RelocatedSlab {
+        /// PMA leaf relocated once for this reservation.
+        leaf: u32,
+        /// Target leaf length used by the relocation plan.
+        new_leaf_len: u64,
+    },
 }
 
 /// Intermediate preflight record for one run before any mutation.
@@ -836,6 +853,8 @@ where
             std::collections::BTreeMap::new();
         let mut leaf_expansion_cursors: std::collections::BTreeMap<u32, LeafExpansionState> =
             std::collections::BTreeMap::new();
+        let mut leaf_relocations: std::collections::BTreeMap<u32, LabeledLeafRelocationTarget> =
+            std::collections::BTreeMap::new();
         for run in &plan.runs {
             let p = self.preflight_run(
                 run,
@@ -902,8 +921,22 @@ where
                 }
             }
             if !grown {
-                Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
-                return Err(OneOrientationBatchError::LogCapacityExceeded);
+                let has_inline_property_bytes = preflight.iter().any(|p| {
+                    let p_leaf = Self::leaf_index_for_vid(p.owner_vertex_id, header.segment_size);
+                    p_leaf == *leaf && p.inline_property_width > 0
+                });
+                if has_inline_property_bytes {
+                    return Err(OneOrientationBatchError::LogCapacityExceeded);
+                }
+                let target = self
+                    .plan_labeled_leaf_relocation(VertexId::from(start_vid))
+                    .map_err(OneOrientationBatchError::from)?;
+                let target = LabeledLeafRelocationTarget {
+                    new_len: target.new_len.max(state.new_leaf_len),
+                    ..target
+                };
+                leaf_relocations.insert(*leaf, target);
+                continue;
             }
             let delta = state.new_leaf_len - state.old_leaf_len;
             let adjacent_start = match leaf_start.checked_add(state.old_leaf_len) {
@@ -949,6 +982,19 @@ where
                 ));
             }
             state.leaf_total_delta = delta_i64;
+        }
+
+        for preflight_run in &mut preflight {
+            let RunDestination::ExpandedSlab { leaf, .. } = preflight_run.destination else {
+                continue;
+            };
+            let Some(target) = leaf_relocations.get(&leaf) else {
+                continue;
+            };
+            preflight_run.destination = RunDestination::RelocatedSlab {
+                leaf,
+                new_leaf_len: target.new_len,
+            };
         }
 
         // Phase 2.5: prove that the total result counts fit in the public u32 fields.
@@ -1101,6 +1147,13 @@ where
                         allocated_inline_property_bytes_offsets.push(None);
                     }
                 }
+                RunDestination::RelocatedSlab { .. } => {
+                    debug_assert!(
+                        p.inline_property_bytes_allocation.is_none(),
+                        "edge-only relocated run must not allocate inline property bytes"
+                    );
+                    allocated_inline_property_bytes_offsets.push(None);
+                }
             }
         }
 
@@ -1180,6 +1233,16 @@ where
                             inline_property_bytes_byte_count: p.inline_property_bytes_byte_count,
                         }
                     }
+                    RunDestination::RelocatedSlab {
+                        leaf,
+                        new_leaf_len,
+                    } => {
+                        assert!(
+                            allocated.is_none(),
+                            "edge-only relocated run must not have an inline property allocation"
+                        );
+                        RunDestination::RelocatedSlab { leaf, new_leaf_len }
+                    }
                 };
                 BatchReservationRun {
                     bucket_slot: p.bucket_slot,
@@ -1203,6 +1266,7 @@ where
             edge_capacity_before,
             inline_property_bytes_tail_before,
             leaf_expansions: leaf_expansion_cursors,
+            leaf_relocations,
         })
     }
 
@@ -1943,6 +2007,16 @@ where
                         .and_then(|x| x.checked_add(res.edge_slot_count))
                         .expect("reserve guaranteed expanded stored_slots overflow safety");
                 }
+                RunDestination::RelocatedSlab { .. } => {
+                    assert_eq!(
+                        res.inline_property_width, 0,
+                        "edge-only relocation is the only admitted batch relocation"
+                    );
+                    let _updated_stored_slots = bucket
+                        .stored_slots
+                        .checked_add(res.edge_slot_count)
+                        .expect("reserve guaranteed relocated stored_slots overflow safety");
+                }
             }
         }
 
@@ -1961,6 +2035,17 @@ where
         let mut locations = location_mode
             .captures()
             .then(|| Vec::with_capacity(self.plan.runs.iter().map(|r| r.edges.len()).sum()));
+
+        for target in self.leaf_relocations.values() {
+            graph
+                .relocate_labeled_leaf_physical_block(VertexId::from(
+                    target
+                        .leaf
+                        .saturating_mul(graph.edges.header().segment_size.max(1)),
+                ))
+                .expect("reserve guaranteed batch leaf relocation");
+        }
+
         for (run, res) in self.plan.runs.iter().zip(self.runs.iter()) {
             match &res.destination {
                 RunDestination::Slab {
@@ -2179,13 +2264,26 @@ where
                         .checked_add(inline_property_bytes_written)
                         .expect("reserve guaranteed expanded inline property bytes slot count");
                 }
+                RunDestination::RelocatedSlab { .. } => {
+                    let (edge_written, run_locations) =
+                        Self::commit_relocated_slab_run::<M>(graph, run, res, location_mode);
+                    if let Some(locations) = locations.as_mut() {
+                        locations.extend(run_locations);
+                    }
+                    edge_slots_written = edge_slots_written
+                        .checked_add(edge_written)
+                        .expect("reserve guaranteed relocated edge slot count");
+                }
             }
         }
 
         // Second pass: publish all bucket metadata and segment counts for paths
         // that did not already publish them during the first pass.
         for res in &self.runs {
-            if matches!(res.destination, RunDestination::ExpandedSlab { .. }) {
+            if matches!(
+                res.destination,
+                RunDestination::ExpandedSlab { .. } | RunDestination::RelocatedSlab { .. }
+            ) {
                 continue;
             }
             let vertex = graph.vertices.get(res.bucket_fingerprint.owner_vertex_id);
@@ -2265,6 +2363,7 @@ where
                     }
                 }
                 RunDestination::ExpandedSlab { .. } => unreachable!(),
+                RunDestination::RelocatedSlab { .. } => unreachable!(),
             }
             graph
                 .buckets
@@ -2332,6 +2431,83 @@ where
             .expect("reserve guaranteed total inline property bytes log entries fit in u32"),
             locations,
         }
+    }
+
+    /// Commit one edge-only run after its leaf was relocated and existing logs
+    /// were folded by the storage owner.
+    fn commit_relocated_slab_run<M: Memory>(
+        graph: &LabeledLaraGraph<E, M>,
+        run: &OneOrientationBucketRun<E>,
+        res: &BatchReservationRun,
+        location_mode: BatchLocationMode,
+    ) -> (u64, Vec<OneOrientationBatchLocation>) {
+        assert_eq!(
+            res.inline_property_width, 0,
+            "relocated batch runs must be edge-only"
+        );
+        let owner = res.bucket_fingerprint.owner_vertex_id;
+        let vertex = graph.vertices.get(owner);
+        let (bucket_slot, bucket) = match graph
+            .find_bucket(owner, &vertex, res.bucket_fingerprint.label_id)
+            .expect("relocated reservation bucket lookup")
+        {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            BucketSearch::Missing { .. } => panic!("relocated bucket disappeared during commit"),
+        };
+        assert!(
+            bucket.overflow_log_head() < 0,
+            "relocation must fold the existing edge overflow log before append"
+        );
+        let pending_start =
+            checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
+                .expect("reserve guaranteed relocated pending start");
+        let mut edge_bytes = Vec::with_capacity(run.edges.len() * E::BYTES);
+        for edge in &run.edges {
+            let mut buf = vec![0u8; E::BYTES];
+            edge.edge.write_to(&mut buf);
+            edge_bytes.extend_from_slice(&buf);
+        }
+        graph
+            .edges
+            .write_slots_contiguous(pending_start, &edge_bytes)
+            .expect("reserve guaranteed relocated slab capacity");
+
+        let locations = if location_mode.captures() {
+            run.edges
+                .iter()
+                .enumerate()
+                .map(|(offset, edge)| OneOrientationBatchLocation {
+                    logical_ordinal: edge.logical_ordinal,
+                    owner_vertex_id: edge.owner_vertex_id,
+                    location: OneOrientationPhysicalLocation::Slab {
+                        edge_slot: pending_start
+                            .checked_add(offset as u64)
+                            .expect("reserve guaranteed relocated edge location"),
+                        inline_property_bytes_offset: None,
+                    },
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let updated_bucket = bucket
+            .with_stored_slots(
+                bucket
+                    .stored_slots
+                    .checked_add(res.edge_slot_count)
+                    .expect("reserve guaranteed relocated stored slot count"),
+            )
+            .with_degree_field(
+                bucket
+                    .degree
+                    .checked_add(res.edge_slot_count)
+                    .expect("reserve guaranteed relocated degree"),
+            );
+        graph
+            .buckets
+            .write_label_bucket_slot(bucket_slot, updated_bucket)
+            .expect("reserve guaranteed relocated bucket write");
+        (u64::from(res.edge_slot_count), locations)
     }
 
     /// Commit one expanded-slab run.
@@ -3325,7 +3501,7 @@ mod tests {
     }
 
     #[test]
-    fn reserve_rejects_non_tail_relocation_without_mutation() {
+    fn batch_relocates_non_tail_leaf_once_before_append() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         // Push enough vertices to cover two PMA leaves (segment_size = 32).
         for _ in 0..34 {
@@ -3340,8 +3516,7 @@ mod tests {
                 .unwrap();
         }
         // Pin a second leaf after leaf 0 so leaf 0 is not at the allocation tail
-        // and cannot expand via tail growth.  This keeps the test on the
-        // no-admission path.
+        // and cannot expand via tail growth.
         graph
             .insert_edge(VertexId::from(32), label, GraphTestEdge { target: 1 })
             .unwrap();
@@ -3384,16 +3559,19 @@ mod tests {
             }],
         };
 
-        let before_vertex = graph.vertices.get(VertexId::from(0));
-        let before_edges = graph.out_edges(VertexId::from(0)).unwrap();
-        let before_capacity = graph.edges().header().elem_capacity;
-        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
-        assert!(
-            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
-            "non-tail relocation must remain fail-closed, got {err}"
-        );
-        assert_eq!(graph.vertices.get(VertexId::from(0)), before_vertex);
-        assert_eq!(graph.out_edges(VertexId::from(0)).unwrap(), before_edges);
-        assert_eq!(graph.edges().header().elem_capacity, before_capacity);
+        let before_edges = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        let (old_start, _) = graph
+            .labeled_leaf_physical_range(VertexId::from(0))
+            .expect("leaf must be pinned before batch relocation");
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("edge-only batch relocation must succeed");
+        let (new_start, _) = graph
+            .labeled_leaf_physical_range(VertexId::from(0))
+            .expect("leaf must remain pinned after batch relocation");
+        assert_ne!(new_start, old_start);
+        let after_edges = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        assert_eq!(after_edges.len(), before_edges.len() + 1);
+        assert_eq!(after_edges.last().map(|edge| edge.target), Some(10));
     }
 }
