@@ -1611,7 +1611,15 @@ not rewritten as though unfinished unordered product behavior shipped.
     property schema. The implementation therefore retains full preflight and
     invariant-trap behavior until the property store gains a real reservation
     mechanism.
-11. Replace Router V1 request identity/payload in place; implement exhaustive
+11. **Partially implemented (2026-07-28 13:39:36 UTC +0000):** Router's fresh V1
+    mutation record now has typed `PlanExecution`/`OrderedEdgeBatch` request
+    identity, ordered routing/replay payload states, Graph request fingerprint
+    validation, and idempotent `CanonicalPending` → `CanonicalCommitted` →
+    `ProjectionPending` → `ProjectionAdvanced` transitions with a durable
+    projection watermark. Public ordered admission, retry diagnostics and
+    terminal failures, Graph retirement, compaction, and background recovery
+    remain planned.
+    Replace Router V1 request identity/payload in place; implement exhaustive
     ordered routing/envelope/target progress, resolved-table authority transfer,
     bounded typed retry diagnostics and terminal failures, a bounded record in
     every lifecycle state while retaining the physical unbounded-Storable

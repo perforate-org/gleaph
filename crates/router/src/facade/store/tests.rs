@@ -2071,6 +2071,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         graph_request_fingerprint: graph_fingerprint,
         request,
         progress: OrderedEdgeBatchTargetProgressV1::CanonicalPending,
+        projection_watermark: None,
     };
     store
         .transition_to_ordered_edge_batch(
@@ -2130,13 +2131,47 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
             receipt,
         )
         .expect("idempotent canonical completion");
+    store
+        .record_ordered_edge_batch_projection_pending(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+        )
+        .expect("projection pending");
+    let watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
+        shard_id: ShardId::new(0),
+        label_stats_seq: None,
+    };
+    store
+        .record_ordered_edge_batch_projection_advanced(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+            watermark.clone(),
+        )
+        .expect("projection advanced");
+    store
+        .record_ordered_edge_batch_projection_advanced(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+            watermark,
+        )
+        .expect("idempotent projection advancement");
     let record = store
         .router_mutation_record(caller, tenant_main_graph_id(), client_key)
         .expect("completed ordered record");
     assert!(matches!(
         record.payload(),
         RouterMutationPayloadV1::OrderedEdgeBatch(replay)
-            if matches!(replay.target.progress, OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(_))
+            if matches!(replay.target.progress, OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_))
+                && replay.target.projection_watermark.is_some()
     ));
 }
 

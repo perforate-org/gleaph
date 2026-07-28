@@ -294,6 +294,8 @@ pub struct RouterOrderedEdgeBatchTargetV1 {
     pub graph_request_fingerprint: [u8; 32],
     pub request: OrderedEdgeBatchGraphRequestV1,
     pub progress: OrderedEdgeBatchTargetProgressV1,
+    /// Projection watermark retained until the ordered mutation is retired.
+    pub projection_watermark: Option<MutationTokenShard>,
 }
 
 impl RouterOrderedEdgeBatchTargetV1 {
@@ -305,6 +307,23 @@ impl RouterOrderedEdgeBatchTargetV1 {
         if fingerprint != self.graph_request_fingerprint {
             return Err(RouterError::Conflict(
                 "ordered Graph request fingerprint mismatch in Router replay target".into(),
+            ));
+        }
+        let watermark_required = matches!(
+            self.progress,
+            OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_)
+                | OrderedEdgeBatchTargetProgressV1::RetirementPending(_)
+        );
+        if self.projection_watermark.is_some() != watermark_required {
+            return Err(RouterError::Conflict(
+                "ordered projection watermark does not match target progress".into(),
+            ));
+        }
+        if let Some(watermark) = &self.projection_watermark
+            && watermark.shard_id != self.request.target_shard_id
+        {
+            return Err(RouterError::Conflict(
+                "ordered projection watermark targets a different shard".into(),
             ));
         }
         self.progress.validate()
@@ -895,6 +914,7 @@ mod tests {
                     hot_forward_vertices: Vec::new(),
                 },
             ),
+            projection_watermark: None,
         };
         target.validate().expect("valid ordered replay target");
     }
