@@ -65,12 +65,14 @@ impl GraphStore {
         &self,
         handle: EdgeHandle,
     ) -> Result<(), GraphStoreError> {
-        let canonical = self.canonical_edge_handle_for_sidecar(handle);
+        let canonical = self
+            .scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward)
+            .map_err(GraphStoreError::from)?;
         self.ensure_vertex_id(canonical.owner_vertex_id)
             .map_err(GraphStoreError::from)?;
         let is_undirected = TaggedEdgeLabelId::from_raw(canonical.label_id.raw()).is_undirected();
         let alias = self.alias_for_canonical_edge(canonical);
-        self.commit_clear_edge_sidecars(handle);
+        self.commit_clear_edge_sidecars_at_canonical(canonical);
         let removal = self.with_graph_mut(|graph| {
             graph.remove_forward_edge_at_slot_with_move(
                 canonical.owner_vertex_id,
