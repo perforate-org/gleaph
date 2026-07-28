@@ -645,6 +645,32 @@ fn bench_ordered_partitioned_mixed_256_width_0() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
+fn bench_ordered_partitioned_mixed_256_width_0_with_planner() -> canbench_rs::BenchResult {
+    let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
+    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: [0x56; 32],
+        logical_item_count: input.len() as u32,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("ordered_partitioned_mixed_256_w0_with_planner");
+        let summary = store
+            .plan_batch_edge_insertion(&input)
+            .expect("ordered plan");
+        black_box(
+            store
+                .execute_ordered_edge_batch_partitioned(
+                    5_300_004,
+                    identity.clone(),
+                    &input,
+                    summary.logical_ordinals_requiring_batch(),
+                )
+                .expect("planned partitioned ordered batch"),
+        );
+    })
+}
+
+#[bench(raw)]
 fn bench_ordered_all_batch_mixed_256_width_0() -> canbench_rs::BenchResult {
     let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
     let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {

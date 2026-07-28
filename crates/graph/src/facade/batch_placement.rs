@@ -530,6 +530,8 @@ impl GraphStore {
         &self,
         edges: &[BatchEdgeInput],
     ) -> Result<Vec<BatchEdgeIntent>, BatchPlacementError> {
+        #[cfg(feature = "canbench")]
+        let _scope = canbench_rs::bench_scope("ordered_batch_expand_intents");
         let logical_count =
             u32::try_from(edges.len()).map_err(|_| BatchPlacementError::BatchTooLarge)?;
         if logical_count > Self::MAX_LOGICAL_EDGES {
@@ -551,6 +553,8 @@ impl GraphStore {
         &self,
         edges: &[BatchEdgeInput],
     ) -> Result<BatchPlacementSummary, BatchPlacementError> {
+        #[cfg(feature = "canbench")]
+        let _scope = canbench_rs::bench_scope("ordered_batch_plan_placement");
         let intents = self.expand_batch_edge_intents(edges)?;
         let (groups, leaf_summaries) = group_intents_for_placement(&intents)?;
         let logical_ordinals_with_multi_runs = intents

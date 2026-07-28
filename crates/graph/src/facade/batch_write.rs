@@ -450,7 +450,11 @@ impl GraphStore {
 
         let intents = self.expand_batch_edge_intents(edges)?;
         let owner_plan = if homogeneous {
-            let requests = self.build_one_orientation_batch_plans(&intents, encode_intent_edge)?;
+            let requests = {
+                #[cfg(feature = "canbench")]
+                let _scope = canbench_rs::bench_scope("ordered_batch_build_orientation_plans");
+                self.build_one_orientation_batch_plans(&intents, encode_intent_edge)?
+            };
             let undirected_pairs = (!directed && !undirected_self_loop)
                 .then(|| build_undirected_batch_pairs(&intents))
                 .transpose()?;
@@ -487,8 +491,11 @@ impl GraphStore {
             }
         } else {
             BidirectionalBatchPlan::Mixed {
-                physical: self
-                    .build_merged_orientation_batch_plans(&intents, encode_intent_edge)?,
+                physical: {
+                    #[cfg(feature = "canbench")]
+                    let _scope = canbench_rs::bench_scope("ordered_batch_build_merged_plans");
+                    self.build_merged_orientation_batch_plans(&intents, encode_intent_edge)?
+                },
                 pairs: build_mixed_batch_pairs(edges, &intents)?,
             }
         };
@@ -496,22 +503,31 @@ impl GraphStore {
         // Reserve every orientation first. If any orientation is unsupported, roll
         // back every previously successful reservation before returning unsupported.
         // No canonical write occurs on this path.
-        let reservations =
-            match self.with_graph_mut(|graph| graph.reserve_batch_orientations(owner_plan)) {
-                Ok(reservations) => reservations,
-                Err(err) => {
-                    return Ok(BatchEdgeInsertResult::Unsupported {
-                        reason: format!("{err}"),
-                    });
-                }
-            };
+        let reservation_result = {
+            #[cfg(feature = "canbench")]
+            let _scope = canbench_rs::bench_scope("ordered_batch_reserve_orientations");
+            self.with_graph_mut(|graph| graph.reserve_batch_orientations(owner_plan))
+        };
+        let reservations = match reservation_result {
+            Ok(reservations) => reservations,
+            Err(err) => {
+                return Ok(BatchEdgeInsertResult::Unsupported {
+                    reason: format!("{err}"),
+                });
+            }
+        };
 
         // All reservations succeeded: commit each orientation.
         let used_expansion = reservations
             .iter()
             .any(|(_, reservation)| reservation.uses_expansion());
-        let results = self
-            .with_graph_mut(|graph| graph.commit_batch_orientations(reservations, location_mode));
+        let results = {
+            #[cfg(feature = "canbench")]
+            let _scope = canbench_rs::bench_scope("ordered_batch_commit_orientations");
+            self.with_graph_mut(|graph| {
+                graph.commit_batch_orientations(reservations, location_mode)
+            })
+        };
 
         let edge_slots_written = results
             .iter()

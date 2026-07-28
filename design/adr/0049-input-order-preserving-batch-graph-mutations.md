@@ -1745,7 +1745,14 @@ not rewritten as though unfinished unordered product behavior shipped.
     fixture measured 7.14M instructions. The reservation tests now cover the
     current LARA new-bucket contract rather than the obsolete missing-bucket
     rejection. Compare an unordered candidate separately only if a real
-    reordering optimization exists.
+    reordering optimization exists. **Measured (2026-07-28 21:22:16 UTC
+    +0000):** feature-gated canbench scopes split the full mixed ordered path:
+    the read-only planner consumed 5.74M of 12.94M instructions, while
+    mutation-side intent expansion, plan construction, reservation, and commit
+    consumed approximately 0.56M, 0.69M, 1.48M, and 1.44M respectively. The
+    next optimization target is therefore reusing a prepared planner result
+    or replacing full occupancy planning with a cheaper admission classifier;
+    LARA reservation/commit is not the dominant cost in this fixture.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh
