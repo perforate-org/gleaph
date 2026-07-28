@@ -58,6 +58,34 @@ pub(crate) enum BatchEdgeInsertResult {
     },
 }
 
+#[derive(Debug)]
+pub(crate) enum OrderedEdgeBatchExecutionError {
+    Validation(BatchPlacementError),
+    RecoverableGeometry(OneOrientationBatchError),
+}
+
+impl OrderedEdgeBatchExecutionError {
+    pub(crate) fn is_recoverable_geometry(&self) -> bool {
+        matches!(self, Self::RecoverableGeometry(_))
+    }
+}
+
+impl std::fmt::Display for OrderedEdgeBatchExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Validation(error) => write!(f, "ordered Graph batch validation failed: {error}"),
+            Self::RecoverableGeometry(error) => {
+                write!(
+                    f,
+                    "ordered Graph clean-slab geometry is unsupported: {error}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for OrderedEdgeBatchExecutionError {}
+
 /// Physical locations for one logical edge after the orientation join.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BatchEdgePhysicalLocation {
@@ -168,14 +196,12 @@ impl GraphStore {
         mutation_id: MutationId,
         request_identity: GraphMutationRequestIdentityV1,
         edges: &[BatchEdgeInput],
-    ) -> Result<GraphOrderedEdgeBatchResult, String> {
+    ) -> Result<GraphOrderedEdgeBatchResult, OrderedEdgeBatchExecutionError> {
         let result = self
             .try_insert_ordered_edge_batch_clean_slab(edges)
-            .map_err(|error| format!("ordered Graph batch validation failed: {error}"))?;
+            .map_err(OrderedEdgeBatchExecutionError::Validation)?;
         if let BatchEdgeInsertResult::Unsupported { error } = result {
-            return Err(format!(
-                "ordered Graph clean-slab geometry is unsupported: {error}"
-            ));
+            return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
         }
 
         Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
@@ -187,14 +213,12 @@ impl GraphStore {
         request_identity: GraphMutationRequestIdentityV1,
         edges: &[BatchEdgeInput],
         intents: &[BatchEdgeIntent],
-    ) -> Result<GraphOrderedEdgeBatchResult, String> {
+    ) -> Result<GraphOrderedEdgeBatchResult, OrderedEdgeBatchExecutionError> {
         let result = self
             .try_insert_ordered_edge_batch_clean_slab_with_intents(edges, intents)
-            .map_err(|error| format!("ordered Graph batch validation failed: {error}"))?;
+            .map_err(OrderedEdgeBatchExecutionError::Validation)?;
         if let BatchEdgeInsertResult::Unsupported { error } = result {
-            return Err(format!(
-                "ordered Graph clean-slab geometry is unsupported: {error}"
-            ));
+            return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
         }
 
         Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
@@ -260,7 +284,7 @@ impl GraphStore {
         request_identity: GraphMutationRequestIdentityV1,
         edges: &[BatchEdgeInput],
         batch_ordinals: &BTreeSet<u32>,
-    ) -> Result<GraphOrderedEdgeBatchResult, String> {
+    ) -> Result<GraphOrderedEdgeBatchResult, OrderedEdgeBatchExecutionError> {
         self.execute_ordered_edge_batch_partitioned_with_intents(
             mutation_id,
             request_identity,
@@ -277,7 +301,7 @@ impl GraphStore {
         edges: &[BatchEdgeInput],
         batch_ordinals: &BTreeSet<u32>,
         prepared_intents: Option<&[BatchEdgeIntent]>,
-    ) -> Result<GraphOrderedEdgeBatchResult, String> {
+    ) -> Result<GraphOrderedEdgeBatchResult, OrderedEdgeBatchExecutionError> {
         let (batch_edges, scalar_edges): (Vec<_>, Vec<_>) = edges
             .iter()
             .enumerate()
@@ -322,9 +346,7 @@ impl GraphStore {
             }
             Ok(BatchEdgeInsertResult::Unsupported { .. }) => Ok(self
                 .execute_ordered_edge_batch_scalar_fallback(mutation_id, request_identity, edges)),
-            Err(error) => Err(format!(
-                "ordered Graph mixed batch validation failed: {error}"
-            )),
+            Err(error) => Err(OrderedEdgeBatchExecutionError::Validation(error)),
         }
     }
 
@@ -522,9 +544,9 @@ impl GraphStore {
     ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
         Self::validate_batch_initial_edge_properties(edges)?;
         if edges.is_empty() {
-            return Ok(BatchEdgeInsertResult::Unsupported {
-                error: OneOrientationBatchError::EmptyPlan,
-            });
+            return Err(BatchPlacementError::BatchWrite(
+                OneOrientationBatchError::EmptyPlan,
+            ));
         }
 
         let directed = edges[0].directed;
@@ -571,11 +593,11 @@ impl GraphStore {
                     }
                 }
                 _ => {
-                    return Ok(BatchEdgeInsertResult::Unsupported {
-                        error: OneOrientationBatchError::InvalidOrientationPair(
+                    return Err(BatchPlacementError::BatchWrite(
+                        OneOrientationBatchError::InvalidOrientationPair(
                             "physical intent roles do not form one logical batch shape".into(),
                         ),
-                    });
+                    ));
                 }
             }
         } else {
@@ -600,7 +622,10 @@ impl GraphStore {
         let reservations = match reservation_result {
             Ok(reservations) => reservations,
             Err(err) => {
-                return Ok(BatchEdgeInsertResult::Unsupported { error: err });
+                if err.is_recoverable_geometry() {
+                    return Ok(BatchEdgeInsertResult::Unsupported { error: err });
+                }
+                return Err(BatchPlacementError::BatchWrite(err));
             }
         };
 
@@ -2952,10 +2977,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_batch_is_unsupported() {
+    fn empty_batch_is_typed_validation_error() {
         let store = fresh_store();
-        let result = store.try_insert_batch_edges_clean_slab(&[]).expect("ok");
-        assert!(matches!(result, BatchEdgeInsertResult::Unsupported { .. }));
+        let error = store
+            .try_insert_batch_edges_clean_slab(&[])
+            .expect_err("empty batch must not enter scalar fallback");
+        assert!(matches!(
+            error,
+            BatchPlacementError::BatchWrite(OneOrientationBatchError::EmptyPlan)
+        ));
     }
 
     #[test]

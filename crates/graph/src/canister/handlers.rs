@@ -341,16 +341,9 @@ pub fn execute_ordered_edge_batch(
             &classification.intents,
         ) {
             Ok(result) => Ok(result),
-            Err(error)
-                if error.starts_with("ordered Graph clean-slab geometry is unsupported:") =>
-            {
-                Ok(store.execute_ordered_edge_batch_scalar_fallback(
-                    args.mutation_id,
-                    identity,
-                    &edges,
-                ))
-            }
-            Err(error) => Err(error),
+            Err(error) if error.is_recoverable_geometry() => Ok(store
+                .execute_ordered_edge_batch_scalar_fallback(args.mutation_id, identity, &edges)),
+            Err(error) => Err(error.to_string()),
         }
     } else {
         store
@@ -367,13 +360,15 @@ pub fn execute_ordered_edge_batch(
                 }
 
                 if batch_ordinals.len() < edges.len() {
-                    return store.execute_ordered_edge_batch_partitioned_with_intents(
-                        args.mutation_id,
-                        identity,
-                        &edges,
-                        batch_ordinals,
-                        Some(&classification.intents),
-                    );
+                    return store
+                        .execute_ordered_edge_batch_partitioned_with_intents(
+                            args.mutation_id,
+                            identity,
+                            &edges,
+                            batch_ordinals,
+                            Some(&classification.intents),
+                        )
+                        .map_err(|error| error.to_string());
                 }
 
                 match store.execute_ordered_edge_batch_clean_slab(
@@ -382,17 +377,13 @@ pub fn execute_ordered_edge_batch(
                     &edges,
                 ) {
                     Ok(result) => Ok(result),
-                    Err(error)
-                        if error
-                            .starts_with("ordered Graph clean-slab geometry is unsupported:") =>
-                    {
-                        Ok(store.execute_ordered_edge_batch_scalar_fallback(
+                    Err(error) if error.is_recoverable_geometry() => Ok(store
+                        .execute_ordered_edge_batch_scalar_fallback(
                             args.mutation_id,
                             identity,
                             &edges,
-                        ))
-                    }
-                    Err(error) => Err(error),
+                        )),
+                    Err(error) => Err(error.to_string()),
                 }
             })
     };

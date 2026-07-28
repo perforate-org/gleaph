@@ -19,6 +19,7 @@ use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara
 use super::{GraphStore, GraphStoreError, stable::GRAPH};
 use crate::edge_inline_property_schema::lookup_edge_inline_property_profile;
 use crate::edge_inline_property_schema::resolved_edge_label_with;
+use ic_stable_lara::labeled::batch_write::OneOrientationBatchError;
 use rapidhash::RapidHashMap;
 
 /// One logical edge supplied for optimized batch planning.
@@ -82,7 +83,7 @@ pub struct BatchEdgeIntent {
 }
 
 /// Error returned when batch planning cannot produce a read-only summary.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum BatchPlacementError {
     /// A referenced vertex does not exist or is not live.
     VertexNotLive(VertexId),
@@ -131,6 +132,8 @@ pub enum BatchPlacementError {
         logical_ordinal: u32,
         property_id: PropertyId,
     },
+    /// The one-orientation writer rejected a non-recoverable batch condition.
+    BatchWrite(OneOrientationBatchError),
 }
 
 impl std::fmt::Display for BatchPlacementError {
@@ -177,6 +180,7 @@ impl std::fmt::Display for BatchPlacementError {
                 "logical ordinal {logical_ordinal} repeats inline property id {}",
                 property_id.raw()
             ),
+            Self::BatchWrite(error) => write!(f, "batch writer failed: {error}"),
             Self::PayloadWidthMixed => {
                 write!(f, "inline property byte widths are mixed within one leaf")
             }
@@ -1411,10 +1415,10 @@ mod tests {
             full_leaf_resident_log_inline_property_bytes_slots: 1,
             inline_property_byte_widths: [1u16, 8u16].into_iter().collect(),
         };
-        assert_eq!(
+        assert!(matches!(
             summary.projected_minimum_inline_property_bytes_slots(),
             Err(BatchPlacementError::PayloadWidthMixed)
-        );
+        ));
     }
 
     #[test]

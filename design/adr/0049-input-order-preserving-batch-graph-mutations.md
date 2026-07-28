@@ -1797,6 +1797,14 @@ not rewritten as though unfinished unordered product behavior shipped.
     requirements, capacity/log failures, and storage errors. Existing
     overflow-log full cases now test successful expansion/rollback rather than
     the obsolete unconditional `LogCapacityExceeded` expectation.
+    **Implemented (2026-07-28 22:19:26 UTC +0000):** the fallback boundary is
+    now typed end to end. Only `MissingPinnedLeafForExpansion` and
+    `InlinePropertyBytesSpanRequiresRelocation` are recoverable geometry and
+    may select whole-request scalar fallback. Empty or malformed plans,
+    capacity exhaustion, overflow-log metadata mismatch, invalid orientation
+    pairs, and stable-memory failures propagate as typed batch-write errors;
+    the handler no longer recognizes fallback eligibility through a formatted
+    error-string prefix.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

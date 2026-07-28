@@ -3379,6 +3379,16 @@ impl std::fmt::Display for OneOrientationBatchError {
 
 impl std::error::Error for OneOrientationBatchError {}
 
+impl OneOrientationBatchError {
+    /// Whether the batch can safely fall back to the scalar owner boundary.
+    pub fn is_recoverable_geometry(&self) -> bool {
+        matches!(
+            self,
+            Self::MissingPinnedLeafForExpansion | Self::InlinePropertyBytesSpanRequiresRelocation
+        )
+    }
+}
+
 impl From<LabeledOperationError> for OneOrientationBatchError {
     fn from(err: LabeledOperationError) -> Self {
         Self::StorageError(err)
