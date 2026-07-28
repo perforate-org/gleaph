@@ -563,6 +563,18 @@ impl OrderedMutationRetirementAck {
     }
 }
 
+/// Arguments for the internal Router-to-Graph ordered retirement call.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum OrderedMutationRetirementArgs {
+    V1(OrderedMutationRetirementArgsV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct OrderedMutationRetirementArgsV1 {
+    pub mutation_id: MutationId,
+    pub graph_request_fingerprint: [u8; 32],
+}
+
 /// Versioned graph shard mutation idempotency journal entry (ADR 0015, ADR 0044).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum GraphMutationJournalEntryWire {

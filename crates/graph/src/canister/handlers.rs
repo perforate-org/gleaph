@@ -26,7 +26,8 @@ use gleaph_gql_planner::PhysicalPlan;
 
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
-    ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode, MutationId, ResolvedSearchWire,
+    ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode, MutationId,
+    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, ResolvedSearchWire,
     SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
 };
 
@@ -997,6 +998,17 @@ pub fn get_mutation_journal_entry(
     mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
 ) -> Option<gleaph_graph_kernel::plan_exec::GraphMutationJournalEntryWire> {
     GraphStore::new().get_mutation_journal_entry(mutation_id)
+}
+
+/// Router → graph: retire an exact ordered mutation after projection convergence (ADR 0049).
+pub fn retire_ordered_mutation(
+    args: OrderedMutationRetirementArgs,
+) -> Result<OrderedMutationRetirementAck, String> {
+    let OrderedMutationRetirementArgs::V1(args) = args;
+    GraphStore::new()
+        .retire_ordered_mutation(args.mutation_id, args.graph_request_fingerprint)
+        .map_err(str::to_string)?
+        .ok_or_else(|| "ordered mutation journal entry not found".to_string())
 }
 
 pub fn get_mutation_journal_entries(

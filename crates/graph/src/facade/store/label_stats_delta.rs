@@ -319,6 +319,14 @@ impl GraphStore {
         })
     }
 
+    pub(crate) fn retire_ordered_mutation(
+        &self,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<Option<OrderedMutationRetirementAck>, &'static str> {
+        self.retire_ordered_mutation_at(ic_time_ns(), mutation_id, graph_request_fingerprint)
+    }
+
     /// Record a bulk mutation journal entry with an operation cursor and progress metadata
     /// (ADR 0044). `next_index` is the first unexecuted operation; `completed_count` is the number of
     /// operations whose canonical write has already committed.

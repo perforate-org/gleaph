@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 11:48:36 UTC +0000
+Anchor timestamp: 2026-07-28 11:52:47 UTC +0000
 
 ## Context
 
@@ -1567,7 +1567,9 @@ not rewritten as though unfinished unordered product behavior shipped.
     ordered completed-entry commit boundary and a journal-first lookup that
     returns `Absent` only when no entry exists, accepts only an exact identity,
     and preserves the existing entry on conflicts. The public endpoint,
-    current-caller authorization and public endpoint wiring remain planned.
+    current-caller authorization for the canister guard and the ordered
+    retirement update are now wired; the full ordered execute endpoint and
+    Router caller integration remain planned.
     Graph-owned `GraphOrderedEdgeBatchResult::V1` and
     `OrderedMutationRetirementAck::V1` envelopes now project active/retired
     entries; exact retirement is idempotent and fingerprint-conflict-safe.
