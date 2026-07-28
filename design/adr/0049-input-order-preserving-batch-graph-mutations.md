@@ -1826,6 +1826,13 @@ not rewritten as though unfinished unordered product behavior shipped.
     sidecar values, mixed direction shapes, parallel properties, and missing
     catalog rejection (5/5 passing). Reverse alias read-back is also asserted
     for a batch-created sidecar.
+    **Implemented (2026-07-28 23:19:24 UTC +0000):** the existing scalar edge
+    property path now reuses the canonical handle returned by scalar insertion
+    instead of reconstructing an orientation and running CounterpartScan for
+    every initial property. This preserves the singleton scalar fallback
+    boundary while carrying the batch path's exact-location ownership into the
+    scalar path. Existing scalar directed/undirected property tests and the
+    128-item scalar baselines remain unchanged within benchmark noise.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh
