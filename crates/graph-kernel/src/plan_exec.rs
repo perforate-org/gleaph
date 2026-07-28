@@ -8,12 +8,13 @@
 
 use candid::{CandidType, Encode, Principal};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 use crate::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 
 use crate::entry::{
-    ConstraintNameId, EdgeInlinePropertyProfile, EdgeLabelId, GraphId,
+    ConstraintNameId, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId, GraphId,
     MAX_EDGE_INLINE_PROPERTY_BYTES, PropertyId, VertexLabelId,
 };
 use crate::federation::{LocalVertexId, ShardId};
@@ -246,6 +247,136 @@ impl OrderedEdgeBatchGraphRequest {
         }
         Ok(())
     }
+}
+
+pub const ORDERED_EDGE_GRAPH_FINGERPRINT_DOMAIN: &[u8] = b"gleaph:ordered-edge-graph:v1\0";
+
+fn encode_len_prefixed_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn encode_string(out: &mut Vec<u8>, value: &str) {
+    encode_len_prefixed_bytes(out, value.as_bytes());
+}
+
+fn encode_inline_encoding(out: &mut Vec<u8>, encoding: &EdgeInlinePropertyEncoding) {
+    let tag = match encoding {
+        EdgeInlinePropertyEncoding::RawU8 => 0,
+        EdgeInlinePropertyEncoding::RawU16 => 1,
+        EdgeInlinePropertyEncoding::RawU32 => 2,
+        EdgeInlinePropertyEncoding::RawU64 => 3,
+        EdgeInlinePropertyEncoding::RawI8 => 4,
+        EdgeInlinePropertyEncoding::RawI16 => 5,
+        EdgeInlinePropertyEncoding::RawI32 => 6,
+        EdgeInlinePropertyEncoding::RawI64 => 7,
+        EdgeInlinePropertyEncoding::F16 => 8,
+        EdgeInlinePropertyEncoding::F32 => 9,
+        EdgeInlinePropertyEncoding::F64 => 10,
+        EdgeInlinePropertyEncoding::RawU128 => 11,
+        EdgeInlinePropertyEncoding::RawI128 => 12,
+        EdgeInlinePropertyEncoding::RawFixed32 => 13,
+        EdgeInlinePropertyEncoding::RawFixed64 => 14,
+        EdgeInlinePropertyEncoding::VectorF32 { .. } => 15,
+        EdgeInlinePropertyEncoding::RawBytes => 16,
+    };
+    out.push(tag);
+    if let EdgeInlinePropertyEncoding::VectorF32 { dims } = encoding {
+        out.extend_from_slice(&dims.to_le_bytes());
+    }
+}
+
+fn encode_inline_profile(out: &mut Vec<u8>, profile: &EdgeInlinePropertyProfile) {
+    out.extend_from_slice(&profile.byte_width.to_le_bytes());
+    encode_inline_encoding(out, &profile.encoding);
+}
+
+fn encode_resolved_labels(out: &mut Vec<u8>, labels: &ResolvedLabelTable) {
+    out.extend_from_slice(&(labels.vertex.len() as u32).to_le_bytes());
+    for label in &labels.vertex {
+        encode_string(out, &label.name);
+        out.extend_from_slice(&label.id.raw().to_le_bytes());
+    }
+    out.extend_from_slice(&(labels.edge.len() as u32).to_le_bytes());
+    for label in &labels.edge {
+        encode_string(out, &label.name);
+        out.extend_from_slice(&label.id.raw().to_le_bytes());
+        encode_inline_profile(out, &label.inline_property_profile);
+        match &label.inline_schema {
+            None => out.push(0),
+            Some(ResolvedInlineSchema::Scalar { property_id }) => {
+                out.push(1);
+                out.extend_from_slice(&property_id.raw().to_le_bytes());
+            }
+            Some(ResolvedInlineSchema::Struct {
+                property_id,
+                fields,
+            }) => {
+                out.push(2);
+                out.extend_from_slice(&property_id.raw().to_le_bytes());
+                out.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+                for field in fields {
+                    encode_string(out, &field.name);
+                    out.extend_from_slice(&field.byte_offset.to_le_bytes());
+                    encode_inline_profile(out, &field.profile);
+                }
+            }
+        }
+    }
+}
+
+fn encode_resolved_properties(out: &mut Vec<u8>, properties: &ResolvedPropertyTable) {
+    out.extend_from_slice(&(properties.properties.len() as u32).to_le_bytes());
+    for property in &properties.properties {
+        encode_string(out, &property.name);
+        out.extend_from_slice(&property.id.raw().to_le_bytes());
+    }
+}
+
+/// Encode the exact Graph request without its derived fingerprint or mutation id.
+pub fn encode_ordered_edge_batch_graph_request(
+    request: &OrderedEdgeBatchGraphRequest,
+) -> Result<Vec<u8>, String> {
+    request.validate()?;
+    let OrderedEdgeBatchGraphRequest::V1(request) = request;
+    let mut out = Vec::new();
+    out.push(1); // outer Graph request V1 envelope
+    out.extend_from_slice(&request.graph_id.raw().to_le_bytes());
+    out.extend_from_slice(&request.target_shard_id.raw().to_le_bytes());
+    encode_len_prefixed_bytes(&mut out, request.target_graph_canister.as_slice());
+    encode_resolved_labels(&mut out, &request.resolved_labels);
+    encode_resolved_properties(&mut out, &request.resolved_properties);
+    out.extend_from_slice(&(request.items.len() as u32).to_le_bytes());
+    for item in &request.items {
+        out.extend_from_slice(&item.source_local_vertex_id.to_le_bytes());
+        out.extend_from_slice(&item.target_local_vertex_id.to_le_bytes());
+        out.push(u8::from(item.directed));
+        match item.catalog_edge_label_id {
+            None => out.push(0),
+            Some(label_id) => {
+                out.push(1);
+                out.extend_from_slice(&label_id.raw().to_le_bytes());
+            }
+        }
+        encode_len_prefixed_bytes(&mut out, &item.inline_property_bytes);
+        out.extend_from_slice(&(item.resolved_initial_edge_properties.len() as u32).to_le_bytes());
+        for property in &item.resolved_initial_edge_properties {
+            out.extend_from_slice(&property.property_id.raw().to_le_bytes());
+            encode_len_prefixed_bytes(&mut out, &property.value);
+        }
+    }
+    Ok(out)
+}
+
+/// Compute the order-sensitive Graph request fingerprint from the immutable envelope.
+pub fn ordered_edge_batch_graph_request_fingerprint(
+    request: &OrderedEdgeBatchGraphRequest,
+) -> Result<[u8; 32], String> {
+    let bytes = encode_ordered_edge_batch_graph_request(request)?;
+    let mut hasher = Sha256::new();
+    hasher.update(ORDERED_EDGE_GRAPH_FINGERPRINT_DOMAIN);
+    hasher.update(bytes);
+    Ok(hasher.finalize().into())
 }
 
 impl ExecutePlanBatchTypedArgs {
@@ -1228,6 +1359,46 @@ mod tests {
                 .validate()
                 .unwrap_err()
                 .contains("repeats property id")
+        );
+    }
+
+    #[test]
+    fn ordered_graph_fingerprint_changes_with_item_order_and_payload() {
+        let item = |source, target| OrderedEdgeBatchGraphItemV1 {
+            source_local_vertex_id: source,
+            target_local_vertex_id: target,
+            directed: true,
+            catalog_edge_label_id: None,
+            inline_property_bytes: Vec::new(),
+            resolved_initial_edge_properties: Vec::new(),
+        };
+        let request = |items| {
+            OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
+                graph_id: GraphId::from_raw(7),
+                target_shard_id: ShardId::new(2),
+                target_graph_canister: Principal::management_canister(),
+                resolved_labels: ResolvedLabelTable::default(),
+                resolved_properties: ResolvedPropertyTable::default(),
+                items,
+            })
+        };
+        let ordered = request(vec![item(1, 2), item(3, 4)]);
+        let reordered = request(vec![item(3, 4), item(1, 2)]);
+        let changed = request(vec![item(1, 2), item(3, 5)]);
+        let ordered_fingerprint =
+            ordered_edge_batch_graph_request_fingerprint(&ordered).expect("fingerprint");
+        assert_ne!(
+            ordered_fingerprint,
+            ordered_edge_batch_graph_request_fingerprint(&reordered)
+                .expect("reordered fingerprint")
+        );
+        assert_ne!(
+            ordered_fingerprint,
+            ordered_edge_batch_graph_request_fingerprint(&changed).expect("changed fingerprint")
+        );
+        assert_eq!(
+            ordered_fingerprint,
+            ordered_edge_batch_graph_request_fingerprint(&ordered).expect("repeat fingerprint")
         );
     }
 

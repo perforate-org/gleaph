@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 11:58:21 UTC +0000
+Anchor timestamp: 2026-07-28 12:02:24 UTC +0000
 
 ## Context
 
@@ -1572,8 +1572,11 @@ not rewritten as though unfinished unordered product behavior shipped.
     `OrderedEdgeBatchGraphRequest::V1` envelope now carries the resolved
     Graph-owned item sequence, target identity, inline bytes, and initial
     sidecars with structural validation and Candid round-trip coverage. The
-    full ordered execute endpoint, fingerprint recomputation, and Router
-    caller integration remain planned.
+    full ordered execute endpoint and Router caller integration remain
+    planned. The Graph-kernel now owns the manual V1 Graph request encoder,
+    the `gleaph:ordered-edge-graph:v1` SHA-256 domain separator, and the
+    order-sensitive fingerprint helper; reorder and payload-change tests
+    prove distinct fingerprints while repeated encoding remains stable.
     Graph-owned `GraphOrderedEdgeBatchResult::V1` and
     `OrderedMutationRetirementAck::V1` envelopes now project active/retired
     entries; exact retirement is idempotent and fingerprint-conflict-safe.

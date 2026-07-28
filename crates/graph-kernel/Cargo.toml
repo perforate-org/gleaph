@@ -20,6 +20,7 @@ half.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-structures.workspace = true
 serde.workspace = true
+sha2 = "0.11"
 thiserror.workspace = true
 
 canbench-rs = { workspace = true, optional = true }
