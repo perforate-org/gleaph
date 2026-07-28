@@ -21,9 +21,7 @@ use super::GraphStore;
 use super::batch_placement::{
     BatchEdgeInput, BatchEdgeIntent, BatchEdgeIntentRole, BatchPlacementError, BatchPlacementKey,
 };
-use super::store::helpers::{
-    build_edge_to, build_edge_to_with_inline_property_bytes, edge_storage_label, lara_label,
-};
+use super::store::helpers::{build_edge_to, edge_storage_label, lara_label};
 
 /// Result of attempting a clean-slab batch edge insert through GraphStore.
 ///
@@ -385,10 +383,12 @@ fn encode_intent_edge(intent: &BatchEdgeIntent) -> Result<Edge, BatchPlacementEr
     if intent.inline_property_width == 0 {
         Ok(build_edge_to(intent.neighbor_vertex_id))
     } else {
-        Ok(build_edge_to_with_inline_property_bytes(
-            intent.neighbor_vertex_id,
-            &intent.inline_property_bytes,
-        ))
+        Ok(
+            build_edge_to(intent.neighbor_vertex_id).with_stored_inline_property_bytes(
+                intent.inline_property_width,
+                &intent.inline_property_bytes,
+            ),
+        )
     }
 }
 

@@ -177,6 +177,43 @@ impl InlinePropertyBytes {
             InlinePropertyBytesStorage::Heap(bytes) => bytes,
         }
     }
+
+    /// Borrows the exact bytes without allocating or copying them.
+    #[inline]
+    pub fn as_ref(&self) -> InlinePropertyBytesRef<'_> {
+        InlinePropertyBytesRef {
+            width: self.width,
+            bytes: self.bytes(),
+        }
+    }
+}
+
+/// Borrowed view of inline-property bytes valid only for the duration of the
+/// traversal callback that produced it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InlinePropertyBytesRef<'a> {
+    width: u16,
+    bytes: &'a [u8],
+}
+
+impl<'a> InlinePropertyBytesRef<'a> {
+    #[inline]
+    fn from_parts(width: u16, bytes: &'a [u8]) -> Self {
+        debug_assert_eq!(bytes.len(), usize::from(width));
+        Self { width, bytes }
+    }
+
+    /// Declared inline-property byte width.
+    #[inline]
+    pub fn width(self) -> u16 {
+        self.width
+    }
+
+    /// Exact inline-property bytes.
+    #[inline]
+    pub fn bytes(self) -> &'a [u8] {
+        self.bytes
+    }
 }
 
 /// A live edge row together with its exact inline-property bytes.
@@ -194,6 +231,20 @@ pub struct EdgeWithInlineProperty<E> {
     pub edge: E,
     /// Exact inline-property bytes belonging to this row.
     pub inline_property: InlinePropertyBytes,
+}
+
+/// A live edge row with a borrowed view of its inline-property bytes.
+///
+/// The edge row remains an owned value because rows are decoded from fixed-width
+/// storage as they are visited. The property bytes are borrowed and are valid only
+/// for the callback invocation. Dense and slab-only paths borrow directly from their
+/// bulk-read buffer; sparse/hybrid paths borrow from a reusable per-callback read buffer.
+#[derive(Debug, PartialEq, Eq)]
+pub struct EdgeWithInlinePropertyRef<'a, E> {
+    /// Topology edge row.
+    pub edge: E,
+    /// Borrowed inline-property bytes and width.
+    pub inline_property: InlinePropertyBytesRef<'a>,
 }
 
 /// Raw storage location of a live edge row, contextualized by its owning bucket.
@@ -1644,6 +1695,147 @@ where
         self.visit_edges_with_inline_property_impl(owner, &vertex, label, order, visit)
     }
 
+    /// Visits every live edge with inline-property bytes borrowed for the callback.
+    ///
+    /// Dense buckets borrow directly from the bulk-read property span. Sparse and
+    /// hybrid buckets read into one reusable buffer and borrow that buffer for each
+    /// callback, avoiding attachment of property bytes to `E`.
+    pub(crate) fn visit_edges_with_inline_property_ref<B>(
+        &self,
+        owner: VertexId,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: impl for<'a> FnMut(
+            BucketEntryPosition,
+            EdgeWithInlinePropertyRef<'a, E>,
+        ) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        if vertex.is_default_edge_labeled() {
+            if label != self.bypass_storage_label_for(&vertex) {
+                return Ok(ControlFlow::Continue(()));
+            }
+            let empty = InlinePropertyBytesRef::from_parts(0, &[]);
+            return match order {
+                OutEdgeOrder::Ascending => {
+                    let mut edges = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
+                    let indexed = std::iter::from_fn(move || {
+                        edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
+                    });
+                    try_visit_indexed(indexed, |slot, edge| {
+                        visit(
+                            BucketEntryPosition::new(slot),
+                            EdgeWithInlinePropertyRef {
+                                edge,
+                                inline_property: empty,
+                            },
+                        )
+                    })
+                }
+                OutEdgeOrder::Descending => {
+                    let mut edges = self.edges.out_edges_iter(&self.vertices, owner)?;
+                    let indexed = std::iter::from_fn(move || {
+                        edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
+                    });
+                    try_visit_indexed(indexed, |slot, edge| {
+                        visit(
+                            BucketEntryPosition::new(slot),
+                            EdgeWithInlinePropertyRef {
+                                edge,
+                                inline_property: empty,
+                            },
+                        )
+                    })
+                }
+            };
+        }
+
+        let BucketSearch::Found {
+            slot: bucket_slot,
+            bucket,
+        } = self.find_bucket(owner, &vertex, label)?
+        else {
+            return Ok(ControlFlow::Continue(()));
+        };
+        let width = bucket.inline_property_byte_width();
+        if bucket.degree() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        if bucket.inline_property_bytes_log_head() < 0
+            && bucket.overflow_log_head() < 0
+            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
+        {
+            let inline_property_bytes = if width > 0 {
+                self.read_bucket_inline_property_bytes_span(owner, &bucket, 0, bucket.degree())?
+            } else {
+                Vec::new()
+            };
+            return self.visit_dense_label_bucket_edges(
+                owner,
+                label,
+                &bucket,
+                order,
+                |slot, edge| {
+                    let byte_width = usize::from(width);
+                    let start = slot.raw() as usize * byte_width;
+                    let end = start + byte_width;
+                    visit(
+                        slot,
+                        EdgeWithInlinePropertyRef {
+                            edge,
+                            inline_property: InlinePropertyBytesRef::from_parts(
+                                width,
+                                &inline_property_bytes[start..end],
+                            ),
+                        },
+                    )
+                },
+            );
+        }
+
+        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
+        let mut iter =
+            self.single_bucket_span_iter(owner, &vertex, bucket_slot, &bucket, order, false)?;
+        let mut inline_property_bytes = Vec::new();
+        let mut ordinal = match order {
+            OutEdgeOrder::Ascending => 0,
+            OutEdgeOrder::Descending => bucket.degree().saturating_sub(1),
+        };
+        while let Some(result) = iter.next_with_slot() {
+            let (slot, edge) = result?;
+            self.read_bucket_inline_property_bytes_for_slot_into(
+                owner,
+                &bucket,
+                ordinal,
+                log_chains.as_ref(),
+                &mut inline_property_bytes,
+            )?;
+            let flow = visit(
+                BucketEntryPosition::new(slot),
+                EdgeWithInlinePropertyRef {
+                    edge,
+                    inline_property: InlinePropertyBytesRef::from_parts(
+                        width,
+                        &inline_property_bytes,
+                    ),
+                },
+            );
+            if let ControlFlow::Break(value) = flow {
+                return Ok(ControlFlow::Break(value));
+            }
+            match order {
+                OutEdgeOrder::Ascending => ordinal = ordinal.saturating_add(1),
+                OutEdgeOrder::Descending => ordinal = ordinal.saturating_sub(1),
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
     /// Visits one label's edges while materializing inline properties directly on the edge.
     ///
     /// This preserves the allocation-free dense-bucket path used by the legacy public API.
@@ -2833,48 +3025,35 @@ where
 
         let width = usize::from(bucket.inline_property_byte_width());
         let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
-        let result =
-            self.visit_edges_with_inline_property(owner, label, order, |_slot, item| {
-                if scratch.edges.len() == batch_edges {
-                    if let ControlFlow::Break(value) = visit(LabeledEdgeInlinePropertyBatch {
-                        label_id: label,
-                        byte_width: bucket.inline_property_byte_width(),
-                        order,
-                        edges: &scratch.edges,
-                        inline_property_bytes: &scratch.inline_property_bytes,
-                        dense: false,
-                    }) {
-                        return ControlFlow::Break(value);
-                    }
-                    scratch.clear();
-                }
-                let edge = item
-                    .edge
-                    .with_stored_inline_property_bytes(
-                        item.inline_property.width,
-                        item.inline_property.bytes(),
-                    )
-                    .with_label_id(label.raw());
+        let mut iter =
+            self.single_bucket_span_iter(owner, &vertex, _bucket_slot, &bucket, order, true)?;
+        loop {
+            scratch.clear();
+            scratch.edges.reserve(batch_edges);
+            scratch.inline_property_bytes.reserve(batch_edges * width);
+            for _ in 0..batch_edges {
+                let Some(result) = iter.next_with_slot() else {
+                    break;
+                };
+                let (_, edge) = result?;
                 scratch
                     .inline_property_bytes
                     .extend_from_slice(edge.edge_inline_property_bytes());
-                scratch.edges.push(edge);
-                ControlFlow::Continue(())
-            })?;
-        if let ControlFlow::Break(value) = result {
-            return Ok(ControlFlow::Break(value));
-        }
-        if !scratch.edges.is_empty()
-            && let ControlFlow::Break(value) = visit(LabeledEdgeInlinePropertyBatch {
+                scratch.edges.push(edge.with_label_id(label.raw()));
+            }
+            if scratch.edges.is_empty() {
+                break;
+            }
+            if let ControlFlow::Break(value) = visit(LabeledEdgeInlinePropertyBatch {
                 label_id: label,
                 byte_width: bucket.inline_property_byte_width(),
                 order,
                 edges: &scratch.edges,
                 inline_property_bytes: &scratch.inline_property_bytes,
                 dense: false,
-            })
-        {
-            return Ok(ControlFlow::Break(value));
+            }) {
+                return Ok(ControlFlow::Break(value));
+            }
         }
         Ok(ControlFlow::Continue(()))
     }
@@ -4674,6 +4853,31 @@ mod tests {
                 (1, 7, 20u16.to_le_bytes().to_vec()),
             ]
         );
+
+        let mut borrowed_rows = Vec::new();
+        let _ = graph
+            .visit_edges_with_inline_property_ref::<()>(
+                src,
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, item| {
+                    borrowed_rows.push((
+                        slot.raw(),
+                        item.edge.target,
+                        item.inline_property.width(),
+                        item.inline_property.bytes().to_vec(),
+                    ));
+                    ControlFlow::Continue(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            borrowed_rows,
+            vec![
+                (0, 7, 2, 10u16.to_le_bytes().to_vec()),
+                (1, 7, 2, 20u16.to_le_bytes().to_vec()),
+            ]
+        );
     }
 
     #[test]
@@ -4755,6 +4959,24 @@ mod tests {
             .unwrap();
         assert_eq!(flow, ControlFlow::Continue(()));
         assert_eq!(streamed, slots.len() as u32);
+
+        let mut borrowed_streamed = 0u32;
+        let flow = graph
+            .visit_edges_with_inline_property_ref::<()>(
+                src,
+                label,
+                OutEdgeOrder::Descending,
+                |_slot, item| {
+                    let expected = (item.edge.target * 7).to_le_bytes();
+                    assert_eq!(item.inline_property.width(), 4);
+                    assert_eq!(item.inline_property.bytes(), &expected);
+                    borrowed_streamed += 1;
+                    ControlFlow::Continue(())
+                },
+            )
+            .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(borrowed_streamed, slots.len() as u32);
 
         // A second full traversal still sees exact bytes after an early break.
         let mut stopped_after = 0u32;

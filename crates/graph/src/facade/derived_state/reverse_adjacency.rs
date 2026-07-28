@@ -189,17 +189,14 @@ pub(crate) fn rebuild_reverse_adjacency(store: &GraphStore) -> Result<(), GraphS
 /// Builds a reverse in-edge half pointing back at `source`, carrying `inline_property_bytes` (empty for unlabeled
 /// or inline_property_bytes-free directed edges). Mirrors the reverse edge shape built by the live insert path.
 fn reverse_edge_to(source: VertexId, inline_property_bytes: &[u8]) -> Edge {
-    let edge = Edge {
+    use ic_stable_lara::traits::CsrEdge;
+    Edge {
         target: VertexRef::local(source),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
         label_id: 0,
         inline_property: EdgeInlinePropertyBytes::EMPTY,
-    };
-    if inline_property_bytes.is_empty() {
-        edge
-    } else {
-        edge.with_inline_property_bytes(inline_property_bytes)
     }
+    .with_stored_inline_property_bytes(inline_property_bytes.len() as u16, inline_property_bytes)
 }
 
 /// Captures the forward out-edges of one diverged key as `(forward_slot, inline_property_bytes)`, copying

@@ -1,6 +1,8 @@
 //! GraphStore `edge_insert` implementation.
 
-use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, EdgeSlotIndex, VertexRef};
+use gleaph_graph_kernel::entry::{
+    Edge, EdgeInlinePropertyBytes, EdgeLabelId, EdgeSlotIndex, VertexRef,
+};
 use ic_stable_lara::{VertexId, traits::CsrEdge};
 
 use super::GraphStore;
@@ -8,9 +10,8 @@ use super::adjacency::{EdgeInsertSpec, journal_edge_insert};
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
-    build_edge_to, build_edge_to_with_inline_property_bytes, canonical_undirected_owner,
-    edge_matches_local_neighbor, edge_storage_label, lara_label,
-    validate_edge_inline_property_bytes_for_label,
+    build_edge_to, canonical_undirected_owner, edge_matches_local_neighbor, edge_storage_label,
+    lara_label, validate_edge_inline_property_bytes_for_label,
 };
 
 impl GraphStore {
@@ -62,21 +63,15 @@ impl GraphStore {
 
         let label = lara_label(edge_storage_label(catalog_label, false));
         let inline_property_width = Self::edge_inline_property_width_u16(inline_property_bytes)?;
-        let forward = if inline_property_bytes.is_empty() {
-            build_edge_to(target_vertex_id)
-        } else {
-            build_edge_to_with_inline_property_bytes(target_vertex_id, inline_property_bytes)
-        };
-        let reverse = if inline_property_bytes.is_empty() {
-            Edge {
-                target: VertexRef::local(source_vertex_id),
-                edge_slot_index: EdgeSlotIndex::from_raw(0),
-                label_id: 0,
-                inline_property: gleaph_graph_kernel::entry::EdgeInlinePropertyBytes::EMPTY,
-            }
-        } else {
-            build_edge_to_with_inline_property_bytes(source_vertex_id, inline_property_bytes)
-        };
+        let forward = build_edge_to(target_vertex_id)
+            .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
+        let reverse = Edge {
+            target: VertexRef::local(source_vertex_id),
+            edge_slot_index: EdgeSlotIndex::from_raw(0),
+            label_id: 0,
+            inline_property: EdgeInlinePropertyBytes::EMPTY,
+        }
+        .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
         let locations = self.with_graph_mut(|graph| {
             if inline_property_width != 0 {
                 graph.ensure_directed_edge_inline_property_width(
@@ -150,8 +145,10 @@ impl GraphStore {
 
         let label = lara_label(edge_storage_label(catalog_label, true));
         let inline_property_width = Self::edge_inline_property_width_u16(inline_property_bytes)?;
-        let edge_ab = build_edge_to_with_inline_property_bytes(endpoint_b, inline_property_bytes);
-        let edge_ba = build_edge_to_with_inline_property_bytes(endpoint_a, inline_property_bytes);
+        let edge_ab = build_edge_to(endpoint_b)
+            .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
+        let edge_ba = build_edge_to(endpoint_a)
+            .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
         let locations = self.with_graph_mut(|graph| {
             if inline_property_width != 0 {
                 graph.ensure_undirected_edge_inline_property_width(

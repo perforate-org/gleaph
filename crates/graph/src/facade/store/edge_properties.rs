@@ -10,6 +10,23 @@ use ic_stable_structures::Storable;
 use super::GraphStore;
 
 impl GraphStore {
+    /// Reads a sidecar entry for a handle already known to be canonical.
+    /// Hot query paths use this to avoid repeating CounterpartScan.
+    pub(crate) fn edge_property_at_canonical_handle(
+        &self,
+        handle: super::handle::EdgeHandle,
+        property_id: PropertyId,
+    ) -> Option<Value> {
+        EDGE_PROPERTIES.with_borrow(|properties| {
+            properties.get(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index.raw(),
+                property_id,
+            )
+        })
+    }
+
     pub fn edge_property(
         &self,
         occurrence: CanonicalEdgeOccurrence,
@@ -166,5 +183,26 @@ impl GraphStore {
                 Value::Record(fields)
             }
         }))
+    }
+
+    pub(crate) fn edge_properties_gql_record_at_canonical_handle(
+        &self,
+        handle: super::handle::EdgeHandle,
+    ) -> Value {
+        EDGE_PROPERTIES.with_borrow(|properties| {
+            let mut fields = Vec::new();
+            properties.for_each_property_for_edge(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index.raw(),
+                |property_id, value| {
+                    let name = self
+                        .property_name(property_id)
+                        .unwrap_or_else(|| property_id.raw().to_string());
+                    fields.push((name, value));
+                },
+            );
+            Value::Record(fields)
+        })
     }
 }

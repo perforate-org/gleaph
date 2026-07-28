@@ -14,7 +14,7 @@
 //! type, directionality, and per-edge inline property bytes are carried by the labeled bucket layer
 //! and [`EdgeInlinePropertyBytesStore`], not this row.
 
-use super::edge_inline_property::EdgeInlinePropertyBytes;
+use super::EdgeInlinePropertyBytes;
 use super::remote_vertex_id::EdgeTarget;
 use super::vertex_ref::VertexRef;
 use ic_stable_lara::{
@@ -30,12 +30,16 @@ pub use id::EdgeSlotIndex;
 pub use meta::EdgeMeta;
 
 /// Fixed-size adjacency entry stored in one labeled CSR slab slot.
+///
+/// This value is intentionally topology-only. Inline property bytes are attached
+/// at the read boundary via [`ic_stable_lara::labeled::graph::traverse::EdgeWithInlineProperty`].
 #[derive(Clone, Debug)]
 pub struct Edge {
     pub target: VertexRef,
     pub edge_slot_index: EdgeSlotIndex,
     pub label_id: u16,
-    /// In-memory edge inline property bytes (not persisted on the 4-byte wire row).
+    /// In-memory inline property bytes attached by the LARA read boundary.
+    /// Not part of topology identity: excluded from PartialEq/Hash.
     pub inline_property: EdgeInlinePropertyBytes,
 }
 
@@ -61,25 +65,19 @@ impl Hash for Edge {
 }
 
 impl Edge {
-    /// Returns the active inline property bytes slice.
+    /// Resolves the stored neighbor as a local or remote [`EdgeTarget`].
     #[inline]
-    pub fn inline_property_bytes(&self) -> &[u8] {
-        self.inline_property.as_slice()
+    pub fn edge_target(&self) -> Option<EdgeTarget> {
+        self.target.edge_target()
     }
 
-    /// Sets the in-memory inline property bytes.
+    /// Returns a copy with the given inline property bytes attached.
     #[inline]
     pub fn with_inline_property_bytes(&self, bytes: &[u8]) -> Self {
         Self {
             inline_property: EdgeInlinePropertyBytes::from_slice(bytes),
             ..self.clone()
         }
-    }
-
-    /// Resolves the stored neighbor as a local or remote [`EdgeTarget`].
-    #[inline]
-    pub fn edge_target(&self) -> Option<EdgeTarget> {
-        self.target.edge_target()
     }
 }
 
@@ -142,14 +140,6 @@ impl CsrEdge for Edge {
         Self { label_id, ..self }
     }
 
-    fn edge_label_id_raw(&self) -> Option<u16> {
-        Some(self.label_id)
-    }
-
-    fn is_deleted_slot(&self) -> bool {
-        self.target.is_tombstone()
-    }
-
     fn edge_inline_property_byte_width(&self) -> u16 {
         u16::try_from(self.inline_property.len()).unwrap_or(u16::MAX)
     }
@@ -158,9 +148,19 @@ impl CsrEdge for Edge {
         self.inline_property.as_slice()
     }
 
-    fn with_stored_inline_property_bytes(mut self, _width: u16, bytes: &[u8]) -> Self {
-        self.inline_property = EdgeInlinePropertyBytes::from_slice(bytes);
-        self
+    fn with_stored_inline_property_bytes(self, _width: u16, bytes: &[u8]) -> Self {
+        Self {
+            inline_property: EdgeInlinePropertyBytes::from_slice(bytes),
+            ..self
+        }
+    }
+
+    fn edge_label_id_raw(&self) -> Option<u16> {
+        Some(self.label_id)
+    }
+
+    fn is_deleted_slot(&self) -> bool {
+        self.target.is_tombstone()
     }
 
     fn edge_slot_index_raw(&self) -> u32 {
@@ -194,7 +194,7 @@ mod tests {
             target: VertexRef::local(VertexId::from(1)),
             edge_slot_index: EdgeSlotIndex::from_raw(slot),
             label_id,
-            inline_property: EdgeInlinePropertyBytes::from_slice(&7u16.to_le_bytes()),
+            inline_property: EdgeInlinePropertyBytes::EMPTY,
         }
     }
 
@@ -234,10 +234,10 @@ mod tests {
             label_id: 7,
             inline_property: EdgeInlinePropertyBytes::EMPTY,
         };
-        let with_property = topology.with_inline_property_bytes(&[1, 2, 3, 4]);
+        let copy = topology.clone();
 
-        assert_eq!(topology, with_property);
-        assert_eq!(hash(&topology), hash(&with_property));
+        assert_eq!(topology, copy);
+        assert_eq!(hash(&topology), hash(&copy));
     }
 
     #[test]
@@ -246,7 +246,7 @@ mod tests {
             target: VertexRef::remote_vertex(RemoteVertexId::from_raw(0x1234_5678)),
             edge_slot_index: EdgeSlotIndex::from_raw(0xA1B2_C3D4),
             label_id: 0,
-            inline_property: EdgeInlinePropertyBytes::from_slice(&0x9A8Bu16.to_le_bytes()),
+            inline_property: EdgeInlinePropertyBytes::EMPTY,
         };
         let mut bytes = [0u8; Edge::BYTES];
         edge.write_to(&mut bytes);
@@ -258,7 +258,6 @@ mod tests {
         let bytes = [0x78, 0x56, 0x34, 0x12];
         let edge = Edge::read_from(&bytes);
         assert_eq!(edge.target, VertexRef::local(VertexId::from(0x1234_5678)));
-        assert!(edge.inline_property.is_empty());
 
         let mut round_trip = [0u8; Edge::BYTES];
         edge.write_to(&mut round_trip);
@@ -270,11 +269,5 @@ mod tests {
         let edge = Edge::tombstone_edge();
         assert!(edge.is_tombstone_edge());
         assert!(edge.target.is_tombstone());
-    }
-
-    #[test]
-    fn with_inline_property_bytes_round_trips() {
-        let edge = Edge::tombstone_edge().with_inline_property_bytes(&[1, 2, 3, 4]);
-        assert_eq!(edge.inline_property_bytes(), &[1, 2, 3, 4]);
     }
 }

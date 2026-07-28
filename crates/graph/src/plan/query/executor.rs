@@ -39,7 +39,6 @@ use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
 use gleaph_graph_kernel::gql_dialect::GLEAPH_SEQUENCE;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::LabeledOrientation;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use std::collections::BTreeMap;
 
@@ -301,16 +300,9 @@ pub(crate) fn edge_to_projected_record(
             )? {
                 value
             } else {
-                match store.edge_property(
-                    binding
-                        .canonical_handle
-                        .occurrence(LabeledOrientation::Forward),
-                    property_id,
-                ) {
-                    Ok(Some(value)) => value,
-                    Ok(None) => Value::Null,
-                    Err(err) => return Err(PlanQueryError::from(err)),
-                }
+                store
+                    .edge_property_at_canonical_handle(binding.canonical_handle, property_id)
+                    .unwrap_or(Value::Null)
             }
         } else {
             Value::Null

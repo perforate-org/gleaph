@@ -127,10 +127,10 @@ pub(crate) async fn execute_expand(
                                 .as_ref()
                                 .expect("filter exists with fast path"),
                             direction,
+                            src_id,
                             edge_binding.handle.owner_vertex_id,
                             LaraLabelId::from_raw(label_id),
                             slot_index,
-                            edge_binding.canonical_handle,
                         )? {
                             return Ok(false);
                         }

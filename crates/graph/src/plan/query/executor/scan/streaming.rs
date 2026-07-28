@@ -783,10 +783,10 @@ fn stream_expand(
                 store,
                 &edge_equality_filter,
                 direction,
+                src_id,
                 edge_binding.handle.owner_vertex_id,
                 LaraLabelId::from_raw(label_id),
                 slot_index,
-                edge_binding.canonical_handle,
             )? {
                 return Ok(false);
             }

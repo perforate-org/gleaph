@@ -20,7 +20,7 @@ use crate::{
             BatchLocationMode, BatchReservation, OneOrientationBatchError,
             OneOrientationBatchResult,
         },
-        graph::traverse::{EdgeFindScope, FoundEdge},
+        graph::traverse::{EdgeFindScope, EdgeWithInlinePropertyRef, FoundEdge},
         graph::{
             BucketEntryPosition, EdgeRemoval, EdgeSlotMove, InitError, LabeledLaraGraph,
             LabeledOperationError, OutEdgeOrder, ScalarInsertLocation,
@@ -2018,22 +2018,9 @@ where
     {
         let mut visit = visit;
         self.forward
-            .visit_edges_with_inline_property(
-                src,
-                label_id,
-                OutEdgeOrder::Descending,
-                |_slot, item| {
-                    let edge = item
-                        .edge
-                        .with_stored_inline_property_bytes(
-                            item.inline_property.width(),
-                            item.inline_property.bytes(),
-                        )
-                        .with_label_id(label_id.raw());
-                    visit(edge);
-                    ControlFlow::<()>::Continue(())
-                },
-            )
+            .visit_edges_for_label(src, label_id, OutEdgeOrder::Descending, |edge| {
+                visit(edge.with_label_id(label_id.raw()));
+            })
             .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
@@ -2051,18 +2038,29 @@ where
     {
         let mut visit = visit;
         self.forward
-            .visit_edges_with_inline_property(src, label_id, order, |_slot, item| {
-                let edge = item
-                    .edge
-                    .with_stored_inline_property_bytes(
-                        item.inline_property.width(),
-                        item.inline_property.bytes(),
-                    )
-                    .with_label_id(label_id.raw());
-                visit(edge);
-                ControlFlow::<()>::Continue(())
+            .visit_edges_for_label(src, label_id, order, |edge| {
+                visit(edge.with_label_id(label_id.raw()));
             })
             .map(|_| ())
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Visits forward outgoing edges with inline-property bytes borrowed for the
+    /// callback. The bytes must not escape the callback.
+    pub fn visit_out_edges_with_inline_property_ref<B, Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<ControlFlow<B>, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+        Visit:
+            for<'a> FnMut(BucketEntryPosition, EdgeWithInlinePropertyRef<'a, E>) -> ControlFlow<B>,
+    {
+        self.forward
+            .visit_edges_with_inline_property_ref(src, label_id, order, visit)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2643,22 +2641,9 @@ where
     {
         let mut visit = visit;
         self.reverse
-            .visit_edges_with_inline_property(
-                dst,
-                label_id,
-                OutEdgeOrder::Descending,
-                |_slot, item| {
-                    let edge = item
-                        .edge
-                        .with_stored_inline_property_bytes(
-                            item.inline_property.width(),
-                            item.inline_property.bytes(),
-                        )
-                        .with_label_id(label_id.raw());
-                    visit(edge);
-                    ControlFlow::<()>::Continue(())
-                },
-            )
+            .visit_edges_for_label(dst, label_id, OutEdgeOrder::Descending, |edge| {
+                visit(edge.with_label_id(label_id.raw()));
+            })
             .map(|_| ())
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
@@ -2676,18 +2661,29 @@ where
     {
         let mut visit = visit;
         self.reverse
-            .visit_edges_with_inline_property(dst, label_id, order, |_slot, item| {
-                let edge = item
-                    .edge
-                    .with_stored_inline_property_bytes(
-                        item.inline_property.width(),
-                        item.inline_property.bytes(),
-                    )
-                    .with_label_id(label_id.raw());
-                visit(edge);
-                ControlFlow::<()>::Continue(())
+            .visit_edges_for_label(dst, label_id, order, |edge| {
+                visit(edge.with_label_id(label_id.raw()));
             })
             .map(|_| ())
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Visits reverse outgoing edges with inline-property bytes borrowed for the
+    /// callback. The bytes must not escape the callback.
+    pub fn visit_in_edges_with_inline_property_ref<B, Visit>(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<ControlFlow<B>, DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+        Visit:
+            for<'a> FnMut(BucketEntryPosition, EdgeWithInlinePropertyRef<'a, E>) -> ControlFlow<B>,
+    {
+        self.reverse
+            .visit_edges_with_inline_property_ref(dst, label_id, order, visit)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 

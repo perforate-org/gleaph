@@ -1,8 +1,9 @@
 //! Graph store helpers and edge-alias key encoding.
 
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeInlinePropertyProfile, EdgeLabelId, EdgeSlotIndex, EdgeTarget,
-    RemoteVertexId, TaggedEdgeLabelId, VertexRef,
+    Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeInlinePropertyProfile, EdgeLabelId,
+    EdgeSlotIndex, EdgeTarget, EdgeWithInlinePropertyBytes, RemoteVertexId, TaggedEdgeLabelId,
+    VertexRef,
 };
 use ic_stable_lara::{
     VertexId,
@@ -153,15 +154,18 @@ pub(crate) fn build_edge_to(target: VertexId) -> Edge {
         target: VertexRef::local(target),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
         label_id: 0,
-        inline_property: gleaph_graph_kernel::entry::EdgeInlinePropertyBytes::EMPTY,
+        inline_property: EdgeInlinePropertyBytes::EMPTY,
     }
 }
 
 pub(crate) fn build_edge_to_with_inline_property_bytes(
     target: VertexId,
     inline_property_bytes: &[u8],
-) -> Edge {
-    build_edge_to(target).with_inline_property_bytes(inline_property_bytes)
+) -> EdgeWithInlinePropertyBytes {
+    EdgeWithInlinePropertyBytes::with_inline_property_bytes(
+        build_edge_to(target),
+        inline_property_bytes,
+    )
 }
 
 pub(super) fn build_edge_to_remote(remote_vertex_id: RemoteVertexId) -> Edge {
@@ -169,15 +173,18 @@ pub(super) fn build_edge_to_remote(remote_vertex_id: RemoteVertexId) -> Edge {
         target: VertexRef::remote_vertex(remote_vertex_id),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
         label_id: 0,
-        inline_property: gleaph_graph_kernel::entry::EdgeInlinePropertyBytes::EMPTY,
+        inline_property: EdgeInlinePropertyBytes::EMPTY,
     }
 }
 
 pub(super) fn build_edge_to_remote_with_inline_property_bytes(
     remote_vertex_id: RemoteVertexId,
     inline_property_bytes: &[u8],
-) -> Edge {
-    build_edge_to_remote(remote_vertex_id).with_inline_property_bytes(inline_property_bytes)
+) -> EdgeWithInlinePropertyBytes {
+    EdgeWithInlinePropertyBytes::with_inline_property_bytes(
+        build_edge_to_remote(remote_vertex_id),
+        inline_property_bytes,
+    )
 }
 
 pub(super) fn validate_edge_inline_property_bytes(
@@ -214,6 +221,16 @@ pub(super) fn validate_edge_inline_property_bytes_for_label(
 }
 
 fn edge_inline_property_bytes_match(edge: &Edge, inline_property_bytes: &[u8]) -> bool {
+    // Topology-only Edge no longer carries inline property bytes; comparison for
+    // mutation-time identity now relies on the caller-supplied bytes.
+    edge.edge_inline_property_bytes() == inline_property_bytes
+}
+
+/// Compares the inline property bytes stored on a mutation-time edge wrapper with a slice.
+pub(super) fn inline_property_bytes_match(
+    edge: &EdgeWithInlinePropertyBytes,
+    inline_property_bytes: &[u8],
+) -> bool {
     edge.inline_property_bytes() == inline_property_bytes
 }
 

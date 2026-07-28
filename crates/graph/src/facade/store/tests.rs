@@ -217,7 +217,7 @@ fn i32_edge_inline_property_profile_round_trip() {
         .into_iter()
         .find(|edge| edge.neighbor_vid() == target)
         .expect("inserted edge");
-    assert_eq!(edge.inline_property_bytes(), &100i32.to_le_bytes());
+    assert_eq!(edge.edge_inline_property_bytes(), &100i32.to_le_bytes());
 }
 
 #[test]
@@ -340,7 +340,7 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
             .find_outgoing_edge_record(forward)
             .expect("forward lookup")
             .expect("forward edge")
-            .inline_property_bytes(),
+            .edge_inline_property_bytes(),
         &[9, 0]
     );
     assert_eq!(
@@ -350,7 +350,7 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
             .into_iter()
             .find(|edge| edge.neighbor_vid() == source)
             .expect("reverse row")
-            .inline_property_bytes(),
+            .edge_inline_property_bytes(),
         &[9, 0]
     );
 
@@ -362,7 +362,7 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
             .find_outgoing_edge_record(forward)
             .expect("forward lookup after reverse update")
             .expect("forward edge after reverse update")
-            .inline_property_bytes(),
+            .edge_inline_property_bytes(),
         &[5, 0]
     );
     assert_eq!(
@@ -372,7 +372,7 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
             .into_iter()
             .find(|edge| edge.neighbor_vid() == source)
             .expect("reverse row after reverse update")
-            .inline_property_bytes(),
+            .edge_inline_property_bytes(),
         &[5, 0]
     );
 }
@@ -404,8 +404,8 @@ fn updating_undirected_edge_inline_property_updates_both_storage_rows() {
         .into_iter()
         .find(|edge| edge.neighbor_vid() == low)
         .expect("high row");
-    assert_eq!(low_edge.inline_property_bytes(), &[8, 0]);
-    assert_eq!(high_edge.inline_property_bytes(), &[8, 0]);
+    assert_eq!(low_edge.edge_inline_property_bytes(), &[8, 0]);
+    assert_eq!(high_edge.edge_inline_property_bytes(), &[8, 0]);
 }
 
 #[test]
@@ -457,7 +457,7 @@ fn forward_edge_compaction_preserves_inline_propertys() {
         .into_iter()
         .find(|edge| edge.neighbor_vid() == third)
         .expect("third edge after compaction");
-    assert_eq!(third_edge.inline_property_bytes(), &[33, 0]);
+    assert_eq!(third_edge.edge_inline_property_bytes(), &[33, 0]);
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn undirected_canonical_owner_carries_inline_property_bytes() {
         .find_outgoing_edge_record(handle)
         .expect("lookup")
         .expect("edge record");
-    assert_eq!(edge.inline_property_bytes(), &[7, 0]);
+    assert_eq!(edge.edge_inline_property_bytes(), &[7, 0]);
     assert_eq!(owner, high, "higher vid owns undirected forward CSR row");
 
     let alias = store
@@ -491,7 +491,7 @@ fn undirected_canonical_owner_carries_inline_property_bytes() {
         .into_iter()
         .find(|edge| edge.neighbor_vid() == high)
         .expect("alias half");
-    assert_eq!(alias.inline_property_bytes(), &[7, 0]);
+    assert_eq!(alias.edge_inline_property_bytes(), &[7, 0]);
 }
 
 #[test]
@@ -541,7 +541,7 @@ fn inline_edge_inline_propertys_round_trip_on_parallel_out_edges() {
     store
         .for_each_directed_out_edges_for_label_unchecked(s, label_id, |edge| {
             weights.push(u16::from_le_bytes(
-                edge.inline_property_bytes().try_into().unwrap(),
+                edge.edge_inline_property_bytes().try_into().unwrap(),
             ));
         })
         .expect("out edges");
@@ -581,7 +581,7 @@ fn weighted_road_parallel_out_edges_from_a_round_trip() {
     store
         .for_each_directed_out_edges_for_label_unchecked(a, label_id, |edge| {
             weights.push(u16::from_le_bytes(
-                edge.inline_property_bytes().try_into().unwrap(),
+                edge.edge_inline_property_bytes().try_into().unwrap(),
             ));
         })
         .expect("out edges from a");
@@ -616,7 +616,7 @@ fn directed_out_edges_visit_attaches_inline_propertys() {
     store
         .for_each_directed_out_edges(a, OutEdgeOrder::Ascending, |edge| {
             weights.push(u16::from_le_bytes(
-                edge.inline_property_bytes().try_into().unwrap(),
+                edge.edge_inline_property_bytes().try_into().unwrap(),
             ));
         })
         .expect("out edges");
@@ -658,7 +658,7 @@ fn delete_valued_directed_edge_by_handle_removes_reverse_alias_slot() {
         .find_outgoing_edge_record(canonical)
         .expect("remaining forward lookup")
         .expect("remaining forward edge");
-    assert_eq!(remaining.inline_property_bytes(), &[2, 0]);
+    assert_eq!(remaining.edge_inline_property_bytes(), &[2, 0]);
 }
 
 #[test]
@@ -700,7 +700,7 @@ fn directed_reverse_alias_does_not_require_matching_slot_index() {
         .find_outgoing_edge_record(reverse)
         .expect("edge lookup")
         .expect("canonicalized edge");
-    assert_eq!(edge.inline_property_bytes(), &[42, 0]);
+    assert_eq!(edge.edge_inline_property_bytes(), &[42, 0]);
 }
 
 #[test]
@@ -725,7 +725,7 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
             .undirected_edges(vertex)
             .expect("undirected edges")
             .into_iter()
-            .map(|edge| u16::from_le_bytes(edge.inline_property_bytes().try_into().unwrap()))
+            .map(|edge| u16::from_le_bytes(edge.edge_inline_property_bytes().try_into().unwrap()))
             .collect();
         weights.sort_unstable();
         weights
@@ -743,7 +743,7 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
         .find_outgoing_edge_record(canonical)
         .expect("remaining canonical lookup")
         .expect("remaining canonical edge");
-    assert_eq!(remaining.inline_property_bytes(), &[2, 0]);
+    assert_eq!(remaining.edge_inline_property_bytes(), &[2, 0]);
 }
 
 #[test]
@@ -802,7 +802,7 @@ fn valued_parallel_insert_returns_handles_for_each_value() {
         .for_each_directed_out_edges_for_label_unchecked(source, label_id, |edge| {
             values_by_slot.insert(
                 edge.edge_slot_index.raw(),
-                edge.inline_property_bytes().to_vec(),
+                edge.edge_inline_property_bytes().to_vec(),
             );
         })
         .expect("out edges");
@@ -830,7 +830,7 @@ fn lookup_edge_record_at_handle_includes_stored_inline_property_bytes() {
         .find_outgoing_edge_record(handle)
         .expect("lookup")
         .expect("edge record");
-    assert_eq!(edge.inline_property_bytes(), &[4, 0]);
+    assert_eq!(edge.edge_inline_property_bytes(), &[4, 0]);
 }
 
 #[test]
@@ -871,7 +871,7 @@ fn forward_out_lookup_ignores_reverse_in_alias_when_slots_collide() {
         .find_outgoing_edge_record(a_to_mid)
         .expect("lookup")
         .expect("edge");
-    assert_eq!(edge.inline_property_bytes(), &[1, 0]);
+    assert_eq!(edge.edge_inline_property_bytes(), &[1, 0]);
 }
 
 #[test]
@@ -906,7 +906,7 @@ fn valued_insert_after_delete_returns_handle_for_new_edge() {
         .into_iter()
         .find(|edge| edge.edge_slot_index.raw() == replacement.slot_index.raw())
         .expect("replacement edge record");
-    assert_eq!(edge.inline_property_bytes(), &[9, 0]);
+    assert_eq!(edge.edge_inline_property_bytes(), &[9, 0]);
     assert_eq!(edge.neighbor_vid(), target_a);
     assert_eq!(
         store.directed_in_edges(target_a).expect("in edges").len(),

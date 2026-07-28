@@ -3303,7 +3303,7 @@ mod tests {
             .ok()?
             .into_iter()
             .find(|edge| edge.neighbor_vid() == source)
-            .map(|edge| edge.inline_property_bytes().to_vec())
+            .map(|edge| edge.edge_inline_property_bytes().to_vec())
     }
 
     fn find_out_edge_inline_property(
@@ -3317,7 +3317,7 @@ mod tests {
             .ok()?
             .into_iter()
             .find(|edge| edge.neighbor_vid() == target)
-            .map(|edge| edge.inline_property_bytes().to_vec())
+            .map(|edge| edge.edge_inline_property_bytes().to_vec())
     }
 
     fn find_undirected_edge_inline_property(
@@ -3331,7 +3331,7 @@ mod tests {
             .ok()?
             .into_iter()
             .find(|edge| edge.neighbor_vid() == other)
-            .map(|edge| edge.inline_property_bytes().to_vec())
+            .map(|edge| edge.edge_inline_property_bytes().to_vec())
     }
 
     fn inline_edge_scalar_insert_directed() {

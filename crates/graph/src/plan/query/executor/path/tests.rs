@@ -7,6 +7,7 @@ use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, PropertyId,
 };
 use gleaph_graph_kernel::plan_exec::{ResolvedProperty, ResolvedPropertyTable};
+use ic_stable_lara::traits::CsrEdge;
 use path_test_helpers::*;
 
 mod path_test_helpers {
@@ -1667,7 +1668,7 @@ fn weighted_shortest_skips_stale_higher_cost_vertex_entries() {
     store
         .for_each_directed_out_edges_for_label_unchecked(s, road, |edge| {
             weights.push(u16::from_le_bytes(
-                edge.inline_property_bytes().try_into().unwrap(),
+                edge.edge_inline_property_bytes().try_into().unwrap(),
             ));
         })
         .expect("out edges from s");

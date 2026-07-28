@@ -17,7 +17,6 @@ use gleaph_graph_kernel::plan_exec::{
 };
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::LabeledOrientation;
 
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
@@ -800,15 +799,10 @@ impl QueryExprEvaluator<'_> {
                     }
                     match property_id {
                         None => Ok(Value::Null),
-                        Some(property_id) => match self.store.edge_property(
-                            edge.canonical_handle
-                                .occurrence(LabeledOrientation::Forward),
-                            property_id,
-                        ) {
-                            Ok(Some(value)) => Ok(value),
-                            Ok(None) => Ok(Value::Null),
-                            Err(err) => Err(PlanQueryError::from(err)),
-                        },
+                        Some(property_id) => Ok(self
+                            .store
+                            .edge_property_at_canonical_handle(edge.canonical_handle, property_id)
+                            .unwrap_or(Value::Null)),
                     }
                 }
                 Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
@@ -1126,11 +1120,7 @@ fn edge_to_value(
             Value::Bool(storage.is_undirected()),
         ),
         ("properties".to_owned(), {
-            store.edge_properties_gql_record(
-                binding
-                    .canonical_handle
-                    .occurrence(LabeledOrientation::Forward),
-            )?
+            store.edge_properties_gql_record_at_canonical_handle(binding.canonical_handle)
         }),
     ]))
 }

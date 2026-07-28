@@ -92,27 +92,27 @@ fn canonical_edge_occurrence_for_expand(
 ) -> Result<CanonicalEdgeOccurrence, PlanQueryError> {
     let label_id = LaraLabelId::from_raw(edge.label_id);
     let slot_index = edge.edge_slot_index.raw().into();
+    canonical_edge_occurrence_for_slot(probe_vertex_id, direction, label_id, slot_index)
+}
+
+fn canonical_edge_occurrence_for_slot(
+    probe_vertex_id: VertexId,
+    direction: EdgeDirection,
+    label_id: LaraLabelId,
+    slot_index: EdgeSlotIndex,
+) -> Result<CanonicalEdgeOccurrence, PlanQueryError> {
     Ok(match direction {
-        EdgeDirection::PointingRight => CanonicalEdgeOccurrence {
+        EdgeDirection::PointingRight | EdgeDirection::Undirected => CanonicalEdgeOccurrence {
             orientation: LabeledOrientation::Forward,
             owner_vertex_id: probe_vertex_id,
             label_id,
-            slot_index,
+            slot_index: slot_index.raw().into(),
         },
         EdgeDirection::PointingLeft => CanonicalEdgeOccurrence {
             orientation: LabeledOrientation::Reverse,
             owner_vertex_id: probe_vertex_id,
             label_id,
-            slot_index,
-        },
-        EdgeDirection::Undirected => CanonicalEdgeOccurrence {
-            orientation: LabeledOrientation::Forward,
-            // The scanned edge record came from the probe's own forward bucket, so the
-            // CounterpartScan source occurrence must be anchored there. The canonical handle
-            // is still derived by resolving the counterpart and choosing max(endpoint).
-            owner_vertex_id: probe_vertex_id,
-            label_id,
-            slot_index,
+            slot_index: slot_index.raw().into(),
         },
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     })
@@ -134,11 +134,10 @@ pub(crate) fn edge_binding_for_scanned_expand(
         label_id: LaraLabelId::from_raw(edge.label_id),
         slot_index: edge.edge_slot_index.raw().into(),
     };
-    let occurrence = canonical_edge_occurrence_for_expand(probe_vertex_id, direction, &edge)?;
-    let canonical_handle = store
-        .canonical_edge_handle_from_occurrence(occurrence)
-        .map_err(PlanQueryError::from)?;
-    Ok(EdgeBinding::from_edge(handle, edge).with_canonical_handle(canonical_handle))
+    // Canonicalization is only needed by a property-store lookup. Performing the
+    // CounterpartScan here would add a bucket traversal to every ordinary expand,
+    // including topology-only and inline-property paths.
+    Ok(EdgeBinding::from_edge(handle, edge))
 }
 
 pub(crate) fn edge_binding_for_expand(
@@ -158,11 +157,7 @@ pub(crate) fn edge_binding_for_expand(
         .find_outgoing_edge_record(handle)
         .map_err(PlanQueryError::from)?
         .unwrap_or_else(|| edge.clone());
-    let occurrence = canonical_edge_occurrence_for_expand(probe_vertex_id, direction, &edge)?;
-    let canonical_handle = store
-        .canonical_edge_handle_from_occurrence(occurrence)
-        .map_err(PlanQueryError::from)?;
-    Ok(EdgeBinding::from_edge(handle, record).with_canonical_handle(canonical_handle))
+    Ok(EdgeBinding::from_edge(handle, record))
 }
 
 fn push_expand_candidate(
@@ -364,8 +359,14 @@ fn edge_matches_indexed_equality(
     let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
         return Ok(false);
     };
-    let occurrence = canonical_edge_occurrence_for_expand(probe_vertex_id, direction, edge)?;
-    let Some(actual) = store.edge_property(occurrence, property_id)? else {
+    let owner_vertex_id =
+        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, edge)?;
+    let handle = EdgeHandle {
+        owner_vertex_id,
+        label_id,
+        slot_index: edge_slot_index.raw().into(),
+    };
+    let Some(actual) = store.edge_property_at_canonical_handle(handle, property_id) else {
         return Ok(false);
     };
     let actual_bytes =
@@ -458,10 +459,10 @@ pub(crate) fn edge_matches_stream_filter(
     store: &GraphStore,
     filter: &EdgeEqualityStreamFilter,
     direction: EdgeDirection,
+    probe_vertex_id: VertexId,
     owner_vertex_id: VertexId,
     label_id: LaraLabelId,
     edge_slot_index: EdgeSlotIndex,
-    canonical_handle: EdgeHandle,
 ) -> Result<bool, PlanQueryError> {
     match filter {
         EdgeEqualityStreamFilter::None => Ok(true),
@@ -522,11 +523,25 @@ pub(crate) fn edge_matches_stream_filter(
             property_id,
             expected,
         } => {
-            let Some(actual) = store.edge_property(
-                canonical_handle.occurrence(LabeledOrientation::Forward),
-                *property_id,
-            )?
-            else {
+            let actual = if direction == EdgeDirection::PointingRight {
+                store.edge_property_at_canonical_handle(
+                    EdgeHandle {
+                        owner_vertex_id: probe_vertex_id,
+                        label_id,
+                        slot_index: edge_slot_index.raw().into(),
+                    },
+                    *property_id,
+                )
+            } else {
+                let occurrence = canonical_edge_occurrence_for_slot(
+                    probe_vertex_id,
+                    direction,
+                    label_id,
+                    edge_slot_index,
+                )?;
+                store.edge_property(occurrence, *property_id)?
+            };
+            let Some(actual) = actual else {
                 return Ok(false);
             };
             let actual_bytes = value_to_index_key_bytes(&actual).map_err(|_| {

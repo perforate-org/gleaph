@@ -13,6 +13,7 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::{
     LabeledEdgeInlinePropertyBatchScratch, LabeledInlinePropertyValueBatchScratch, OutEdgeOrder,
 };
+use ic_stable_lara::traits::CsrEdge;
 use ic_stable_lara::traverse::BucketEntryPosition;
 
 use super::label_expr::{
@@ -169,7 +170,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
         else {
             return;
         };
-        let edge = edge.with_inline_property_bytes(inline_property_bytes);
+        let edge = edge.with_stored_inline_property_bytes(width as u16, inline_property_bytes);
         match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
             Some(edge_dst) => {
                 push_scanned_value_expand_candidate(out, store, src_id, direction, edge_dst, edge)
@@ -242,7 +243,8 @@ fn expand_matching_edge_inline_property_combined_batch(
                 };
                 let inline_property_bytes_start = idx * width;
                 let inline_property_bytes_end = inline_property_bytes_start + width;
-                let edge = edge.with_inline_property_bytes(
+                let edge = edge.with_stored_inline_property_bytes(
+                    width as u16,
                     &batch.inline_property_bytes
                         [inline_property_bytes_start..inline_property_bytes_end],
                 );
@@ -339,7 +341,8 @@ fn expand_matching_edge_vector_threshold_combined_batch(
                 };
                 let inline_property_bytes_start = idx * width;
                 let inline_property_bytes_end = inline_property_bytes_start + width;
-                let edge = edge.with_inline_property_bytes(
+                let edge = edge.with_stored_inline_property_bytes(
+                    width as u16,
                     &batch.inline_property_bytes
                         [inline_property_bytes_start..inline_property_bytes_end],
                 );

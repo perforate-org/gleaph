@@ -8,6 +8,7 @@ use ic_stable_lara::{
         BucketDirectedness, LabeledEdgeInlinePropertyBatch, LabeledEdgeInlinePropertyBatchScratch,
         OutEdgeOrder,
     },
+    traits::CsrEdge,
     traverse::BucketEntryPosition,
 };
 
@@ -380,7 +381,7 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
         } else {
             self.for_each_directed_out_edges_for_label(vertex_id, label, order, |edge| {
-                visit(&edge, edge.inline_property_bytes());
+                visit(&edge, edge.edge_inline_property_bytes());
             })
         }
     }
@@ -402,7 +403,12 @@ impl GraphStore {
             label,
             order,
             scratch,
-            |edge, value| visit(edge.with_inline_property_bytes(value)),
+            |edge, value| {
+                visit(
+                    edge.clone()
+                        .with_stored_inline_property_bytes(value.len() as u16, value),
+                )
+            },
         )
     }
 
@@ -508,7 +514,7 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
         } else {
             self.for_each_directed_in_edges_for_label(vertex_id, label, order, |edge| {
-                visit(&edge, edge.inline_property_bytes());
+                visit(&edge, edge.edge_inline_property_bytes());
             })
         }
     }
@@ -530,7 +536,12 @@ impl GraphStore {
             label,
             order,
             scratch,
-            |edge, value| visit(edge.with_inline_property_bytes(value)),
+            |edge, value| {
+                visit(
+                    edge.clone()
+                        .with_stored_inline_property_bytes(value.len() as u16, value),
+                )
+            },
         )
     }
 

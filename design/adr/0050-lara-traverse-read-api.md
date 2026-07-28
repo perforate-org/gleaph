@@ -214,6 +214,26 @@ pub struct EdgeWithInlineProperty<E> {
     pub edge: E,
     pub inline_property: InlinePropertyBytes,
 }
+
+For callback-only consumers, the traversal surface also exposes a borrowed view:
+
+```rust
+pub struct InlinePropertyBytesRef<'a> {
+    pub width: u16,
+    pub bytes: &'a [u8],
+}
+
+pub struct EdgeWithInlinePropertyRef<'a, E> {
+    pub edge: E,
+    pub inline_property: InlinePropertyBytesRef<'a>,
+}
+```
+
+The borrowed view is valid only during the callback. Dense buckets borrow directly from the
+bulk-read property span, while sparse and hybrid paths borrow from one reusable property read
+buffer per callback. None of these paths constructs an owned inline-property value for the
+borrowed API. Callers that retain an edge result (for example an execution binding) must
+explicitly materialize owned bytes.
 ```
 
 LARA constructs `InlinePropertyBytes` and enforces `bytes.len() == width`. Width zero is a valid

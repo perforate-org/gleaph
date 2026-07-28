@@ -1,12 +1,12 @@
 //! Edge inline property bytes updates (schema from router wire per ADR 0008).
 
 use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId, EdgeTarget};
+use ic_stable_lara::traits::CsrEdge;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{catalog_edge_label_from_wire, validate_edge_inline_property_bytes_for_label};
-use ic_stable_lara::traits::CsrEdge;
 
 impl GraphStore {
     pub fn edge_label_inline_property_profile(
@@ -45,7 +45,12 @@ impl GraphStore {
                 label_id: forward.label_id,
                 slot_index: forward.slot_index.raw(),
             })?;
-        let new_edge = edge.with_inline_property_bytes(inline_property_bytes);
+        let new_edge = edge.clone().with_stored_inline_property_bytes(
+            u16::try_from(inline_property_bytes.len()).map_err(|_| {
+                GraphStoreError::InvalidEdgeInlinePropertyBytesWidth(inline_property_bytes.len())
+            })?,
+            inline_property_bytes,
+        );
 
         let mut updated = self
             .with_graph_mut(|graph| {
