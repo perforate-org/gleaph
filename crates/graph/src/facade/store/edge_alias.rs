@@ -154,6 +154,13 @@ impl GraphStore {
         handle: EdgeHandle,
         orientation: LabeledOrientation,
     ) -> Result<EdgeHandle, CounterpartLookupError> {
+        // For directed edges the forward occurrence is canonical by definition.
+        // Avoid a read/rank/select of the reverse bucket for the overwhelmingly
+        // common forward lookup; reverse occurrences and undirected edges still
+        // use CounterpartScan below.
+        if handle.label_id.is_directed() && orientation == LabeledOrientation::Forward {
+            return Ok(handle);
+        }
         self.scan_only_canonical_edge_handle_from_occurrence(handle.occurrence(orientation))
     }
 
