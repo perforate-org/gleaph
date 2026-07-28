@@ -1212,6 +1212,39 @@ fn vertex_and_edge_labels_with_same_name_get_distinct_ids() {
 }
 
 #[test]
+fn ordered_catalog_resolution_is_read_only_and_deduplicates_names() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let edge_id = store
+        .admin_intern_edge_label(admin, "tenant.main", "KNOWS")
+        .expect("edge label");
+    let property_id = store
+        .admin_intern_property(admin, "tenant.main", "weight")
+        .expect("property");
+
+    let (labels, properties) = store
+        .resolve_ordered_edge_catalogs(
+            tenant_main_graph_id(),
+            vec![Some("KNOWS".into()), Some("KNOWS".into()), None],
+            vec!["weight".into(), "weight".into()],
+        )
+        .expect("resolve ordered catalogs");
+    assert_eq!(labels.edge.len(), 1);
+    assert_eq!(labels.edge[0].id, edge_id);
+    assert_eq!(properties.properties.len(), 1);
+    assert_eq!(properties.properties[0].id, property_id);
+    assert!(
+        store
+            .lookup_edge_label_id(tenant_main_graph_id(), "MISSING")
+            .is_err()
+    );
+}
+
+#[test]
 fn read_plan_requires_existing_label() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());

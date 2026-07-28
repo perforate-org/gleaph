@@ -37,6 +37,47 @@ fn map_edge_inline_property_profile_err(err: EdgeInlinePropertyProfileStoreError
 }
 
 impl RouterStore {
+    /// Resolve the names carried by the ordered public edge wire without interning anything.
+    /// Ordered admission must be read-only until the mutation reservation owns the request.
+    #[allow(
+        dead_code,
+        reason = "wired into the ordered public admission endpoint in the next slice"
+    )]
+    pub(crate) fn resolve_ordered_edge_catalogs(
+        &self,
+        graph_id: GraphId,
+        edge_label_names: impl IntoIterator<Item = Option<String>>,
+        property_names: impl IntoIterator<Item = String>,
+    ) -> Result<(ResolvedLabelTable, ResolvedPropertyTable), RouterError> {
+        let mut labels = ResolvedLabelTable::default();
+        for name in edge_label_names.into_iter().flatten() {
+            validate_metadata_name(&name)?;
+            if labels.edge.iter().any(|entry| entry.name == name) {
+                continue;
+            }
+            let id = self.lookup_edge_label_id(graph_id, &name)?;
+            let (profile, inline_schema) =
+                self.lookup_edge_inline_property_profile_and_inline_schema(graph_id, id);
+            labels.edge.push(ResolvedEdgeLabel::with_inline_schema(
+                name,
+                id,
+                profile,
+                inline_schema,
+            ));
+        }
+
+        let mut properties = ResolvedPropertyTable::default();
+        for name in property_names {
+            validate_metadata_name(&name)?;
+            if properties.properties.iter().any(|entry| entry.name == name) {
+                continue;
+            }
+            let id = self.lookup_property_id(graph_id, &name)?;
+            properties.properties.push(ResolvedProperty { name, id });
+        }
+        Ok((labels, properties))
+    }
+
     pub(crate) fn commit_intern_graph_type_vocabulary(
         graph_id: GraphId,
         def: &gleaph_gql::ast::GraphTypeDefinition,

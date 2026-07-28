@@ -1657,6 +1657,11 @@ not rewritten as though unfinished unordered product behavior shipped.
     read-only wire admission helper now decodes endpoint bytes with the
     graph-specific encoding key and rejects both cross-endpoint-shard and
     cross-batch-shard geometry before catalog resolution or reservation.
+    **Partially implemented (2026-07-28 14:11:10 UTC +0000):** Router now
+    resolves existing edge-label/property names read-only, preserves inline
+    schema projections, and converts decoded local endpoints plus canonical
+    property bytes into the immutable Graph request envelope. Catalog interning,
+    mutation reservation, and Graph dispatch remain the next admission step.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.

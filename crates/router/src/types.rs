@@ -3,6 +3,7 @@
 use candid::{CandidType, Decode, Encode, Principal};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 
 pub use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 pub use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
@@ -121,6 +122,15 @@ impl OrderedEdgeBatchPublicRequest {
                     ));
                 }
             }
+            let mut property_names = BTreeSet::new();
+            for property in &item.initial_edge_properties {
+                if !property_names.insert(&property.property_name) {
+                    return Err(format!(
+                        "ordered edge item {ordinal} repeats property name {}",
+                        property.property_name
+                    ));
+                }
+            }
         }
         let encoded =
             Encode!(self).map_err(|error| format!("ordered edge batch encode: {error}"))?;
@@ -189,6 +199,93 @@ impl OrderedEdgeBatchPublicRequest {
             decoded.push((source, target));
         }
         Ok(decoded)
+    }
+
+    /// Convert a resolved public request into the immutable Router → Graph request envelope.
+    pub fn into_graph_request(
+        &self,
+        graph_id: GraphId,
+        target_shard_id: ShardId,
+        target_graph_canister: Principal,
+        endpoints: &[(GlobalVertexId, GlobalVertexId)],
+        resolved_labels: gleaph_graph_kernel::plan_exec::ResolvedLabelTable,
+        resolved_properties: gleaph_graph_kernel::plan_exec::ResolvedPropertyTable,
+    ) -> Result<gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequest, String> {
+        self.validate()?;
+        let Self::V1(request) = self;
+        if endpoints.len() != request.items.len() {
+            return Err("ordered endpoint resolution count does not match public items".into());
+        }
+        let items = request
+            .items
+            .iter()
+            .zip(endpoints)
+            .enumerate()
+            .map(|(ordinal, (item, (source, target)))| {
+                if source.shard_id != target_shard_id || target.shard_id != target_shard_id {
+                    return Err(format!(
+                        "ordered edge item {ordinal} does not target the selected shard"
+                    ));
+                }
+                let catalog_edge_label_id = item
+                    .edge_label_name
+                    .as_ref()
+                    .map(|name| {
+                        resolved_labels
+                            .edge
+                            .iter()
+                            .find(|entry| entry.name == *name)
+                            .map(|entry| entry.id)
+                            .ok_or_else(|| format!("ordered edge label {name} was not resolved"))
+                    })
+                    .transpose()?;
+                let resolved_initial_edge_properties = item
+                    .initial_edge_properties
+                    .iter()
+                    .map(|property| {
+                        let property_id = resolved_properties
+                            .properties
+                            .iter()
+                            .find(|entry| entry.name == property.property_name)
+                            .map(|entry| entry.id)
+                            .ok_or_else(|| {
+                                format!(
+                                    "ordered edge property {} was not resolved",
+                                    property.property_name
+                                )
+                            })?;
+                        Ok(
+                            gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                                property_id,
+                                value: property.value.clone(),
+                            },
+                        )
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(
+                    gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphItemV1 {
+                        source_local_vertex_id: source.local_vertex_id,
+                        target_local_vertex_id: target.local_vertex_id,
+                        directed: item.directed,
+                        catalog_edge_label_id,
+                        inline_property_bytes: item.inline_property.clone().unwrap_or_default(),
+                        resolved_initial_edge_properties,
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let request = gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequest::V1(
+            gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequestV1 {
+                graph_id,
+                target_shard_id,
+                target_graph_canister,
+                resolved_labels,
+                resolved_properties,
+                items,
+            },
+        );
+        request.validate()?;
+        Ok(request)
     }
 }
 
@@ -1064,7 +1161,10 @@ mod tests {
                 directed: false,
                 edge_label_name: None,
                 inline_property: None,
-                initial_edge_properties: Vec::new(),
+                initial_edge_properties: vec![OrderedEdgePropertyPublicV1 {
+                    property_name: "weight".into(),
+                    value: vec![7, 8],
+                }],
             }],
         });
         assert_eq!(
@@ -1073,6 +1173,33 @@ mod tests {
                 GlobalVertexId::new(ShardId::new(3), 11),
                 GlobalVertexId::new(ShardId::new(3), 12),
             )]
+        );
+
+        let graph_request = request
+            .into_graph_request(
+                GraphId::from_raw(7),
+                ShardId::new(3),
+                Principal::self_authenticating([9; 32]),
+                &[(
+                    GlobalVertexId::new(ShardId::new(3), 11),
+                    GlobalVertexId::new(ShardId::new(3), 12),
+                )],
+                gleaph_graph_kernel::plan_exec::ResolvedLabelTable::default(),
+                gleaph_graph_kernel::plan_exec::ResolvedPropertyTable {
+                    properties: vec![gleaph_graph_kernel::plan_exec::ResolvedProperty {
+                        name: "weight".into(),
+                        id: PropertyId::from_raw(4),
+                    }],
+                },
+            )
+            .unwrap();
+        let gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequest::V1(graph_request) =
+            graph_request;
+        assert_eq!(graph_request.graph_id, GraphId::from_raw(7));
+        assert_eq!(graph_request.items[0].source_local_vertex_id, 11);
+        assert_eq!(
+            graph_request.items[0].resolved_initial_edge_properties[0].property_id,
+            PropertyId::from_raw(4)
         );
     }
 }
