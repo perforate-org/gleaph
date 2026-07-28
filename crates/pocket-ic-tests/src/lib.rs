@@ -12,7 +12,7 @@ use gleaph_provision::types::DeploymentBinding;
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingArgs, AdminRegisterShardArgs,
-    GqlExecuteIdempotentBatchItem, RegisterVectorIndexArgs,
+    GqlExecuteIdempotentBatchItem, OrderedEdgeBatchPublicRequest, RegisterVectorIndexArgs,
 };
 use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
 use pocket_ic::{PocketIc, PocketIcBuilder};
@@ -1959,6 +1959,24 @@ pub fn mutation_status_as_admin(
         )
         .unwrap_or_else(|e| panic!("mutation_status on router: {e:?}"));
     Decode!(&bytes, Result<MutationStatus, RouterError>).expect("decode mutation_status")
+}
+
+/// Execute one ADR 0049 ordered public edge batch as the bootstrap admin.
+pub fn execute_ordered_edge_batch_as_admin(
+    env: &FederationEnv,
+    request: OrderedEdgeBatchPublicRequest,
+) -> Result<gleaph_router::types::MutationStatus, gleaph_graph_kernel::federation::RouterError> {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "execute_ordered_edge_batch",
+            Encode!(&request).expect("encode execute_ordered_edge_batch"),
+        )
+        .unwrap_or_else(|e| panic!("execute_ordered_edge_batch on router: {e:?}"));
+    Decode!(&bytes, Result<gleaph_router::types::MutationStatus, gleaph_graph_kernel::federation::RouterError>)
+        .expect("decode execute_ordered_edge_batch")
 }
 
 /// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga under `client_mutation_key`

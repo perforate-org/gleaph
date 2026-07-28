@@ -1668,6 +1668,11 @@ not rewritten as though unfinished unordered product behavior shipped.
     receipt, label-stats projection, fingerprint-bound retirement, and completed
     state. Retry response shaping, public aggregate receipt, and multi-shard
     admission remain planned.
+    **Partially implemented (2026-07-28 14:29:28 UTC +0000):** PocketIC now
+    covers the active single-shard public endpoint with an existing edge label,
+    exact client-key replay, and missing-label rejection before reservation.
+    The Graph canister's self-principal guard was updated to the current
+    `ic_cdk::api::canister_self()` API required by the PocketIC build.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.

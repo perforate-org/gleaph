@@ -280,7 +280,7 @@ pub fn execute_ordered_edge_batch(
         .map_err(|error| format!("ordered Graph request validation: {error}"))?;
     let OrderedEdgeBatchGraphRequest::V1(request) = &args.request;
     #[cfg(target_family = "wasm")]
-    if request.target_graph_canister != ic_cdk::api::id() {
+    if request.target_graph_canister != ic_cdk::api::canister_self() {
         return Err("ordered Graph request target canister does not match receiver".into());
     }
 
