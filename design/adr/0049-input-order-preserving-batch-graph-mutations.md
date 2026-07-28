@@ -1662,6 +1662,12 @@ not rewritten as though unfinished unordered product behavior shipped.
     schema projections, and converts decoded local endpoints plus canonical
     property bytes into the immutable Graph request envelope. Catalog interning,
     mutation reservation, and Graph dispatch remain the next admission step.
+    **Partially implemented (2026-07-28 14:20:10 UTC +0000):** the Router
+    update path now reserves the public idempotency key, persists the ordered
+    replay target, dispatches the single Graph request, and advances canonical
+    receipt, label-stats projection, fingerprint-bound retirement, and completed
+    state. Retry response shaping, public aggregate receipt, and multi-shard
+    admission remain planned.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.

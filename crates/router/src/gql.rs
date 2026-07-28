@@ -187,6 +187,9 @@ use crate::execution_path::check_adhoc_execution_path;
 #[cfg(target_family = "wasm")]
 use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::label_stats::RouterMutationShardV1;
+use crate::facade::stable::label_stats::{
+    OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1, RouterOrderedEdgeBatchTargetV1,
+};
 use crate::facade::stable::reservation_catalog::ConfirmOutcome;
 use crate::facade::store::uniqueness::{
     ConstrainedDispatchSplit, LocalUniqueClaim, plan_can_release,
@@ -203,13 +206,12 @@ use crate::federation::{
     split_label_and_property_anchors, try_aggregate_index_fast_path,
     try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
-#[cfg(target_family = "wasm")]
-use crate::graph_client::retire_ordered_mutation_on_graph;
 use crate::graph_client::{
-    ack_label_stats_deltas_through, ack_unique_effects, execute_plan_batch_on_graph,
-    execute_plan_batch_typed_v1_on_graph, execute_plan_on_graph, get_mutation_journal_entries,
-    get_mutation_journal_entry, index_pending_min_mutation_id, list_pending_label_stats_deltas,
-    read_unique_effect_proof, read_unique_release_effects,
+    ack_label_stats_deltas_through, ack_unique_effects, execute_ordered_edge_batch_on_graph,
+    execute_plan_batch_on_graph, execute_plan_batch_typed_v1_on_graph, execute_plan_on_graph,
+    get_mutation_journal_entries, get_mutation_journal_entry, index_pending_min_mutation_id,
+    list_pending_label_stats_deltas, read_unique_effect_proof, read_unique_release_effects,
+    retire_ordered_mutation_on_graph,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -1237,6 +1239,244 @@ pub async fn gql_execute_idempotent(
     client_mutation_key: String,
 ) -> Result<GqlQueryResult, RouterError> {
     gql_execute_idempotent_with_batch(query, params, client_mutation_key).await
+}
+
+/// Admit and execute one public ordered edge batch (ADR 0049).
+///
+/// V1 intentionally requires one existing catalog vocabulary and one target Graph shard. The
+/// durable Router record is installed before the canonical Graph call, then the ordered lifecycle
+/// is advanced through projection and fingerprint-bound retirement.
+pub(crate) async fn execute_ordered_edge_batch_public(
+    request: crate::types::OrderedEdgeBatchPublicRequest,
+) -> Result<crate::types::MutationStatus, RouterError> {
+    let caller = msg_caller();
+    let public_fingerprint = request
+        .public_fingerprint()
+        .map_err(RouterError::InvalidArgument)?;
+    let public_item_count = match &request {
+        crate::types::OrderedEdgeBatchPublicRequest::V1(request) => request.items.len() as u32,
+    };
+    let client_key = match &request {
+        crate::types::OrderedEdgeBatchPublicRequest::V1(request) => {
+            request.client_mutation_key.clone()
+        }
+    };
+    let logical_graph_name = match &request {
+        crate::types::OrderedEdgeBatchPublicRequest::V1(request) => {
+            request.logical_graph_name.clone()
+        }
+    };
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
+    let endpoints = request
+        .decode_same_shard_endpoints(&encoding_key)
+        .map_err(RouterError::InvalidArgument)?;
+    let target_shard_id = endpoints
+        .first()
+        .map(|(source, _)| source.shard_id)
+        .ok_or_else(|| {
+            RouterError::InvalidArgument("ordered edge batch has no endpoints".into())
+        })?;
+
+    let catalog_result = match &request {
+        crate::types::OrderedEdgeBatchPublicRequest::V1(request) => store
+            .resolve_ordered_edge_catalogs(
+                graph_id,
+                request
+                    .items
+                    .iter()
+                    .map(|item| item.edge_label_name.clone()),
+                request.items.iter().flat_map(|item| {
+                    item.initial_edge_properties
+                        .iter()
+                        .map(|property| property.property_name.clone())
+                }),
+            ),
+    };
+    let (resolved_labels, resolved_properties) = match catalog_result {
+        Ok(catalogs) => catalogs,
+        Err(error) => return Err(error),
+    };
+    let target_shard = match store.resolve_shard(graph_id, target_shard_id) {
+        Ok(shard) => shard,
+        Err(error) => return Err(error),
+    };
+    let graph_request = match request.into_graph_request(
+        graph_id,
+        target_shard_id,
+        target_shard.graph_canister,
+        &endpoints,
+        resolved_labels.clone(),
+        resolved_properties.clone(),
+    ) {
+        Ok(request) => request,
+        Err(error) => return Err(RouterError::InvalidArgument(error)),
+    };
+    let graph_request_fingerprint =
+        gleaph_graph_kernel::plan_exec::ordered_edge_batch_graph_request_fingerprint(
+            &graph_request,
+        )
+        .map_err(RouterError::InvalidArgument)?;
+
+    let reservation = store.reserve_mutation_id_for_client_key(
+        caller,
+        graph_id,
+        &client_key,
+        public_fingerprint.to_vec(),
+    )?;
+    if !reservation.routing_owner {
+        let record = store
+            .router_mutation_record(caller, graph_id, &client_key)
+            .ok_or_else(|| {
+                RouterError::Internal("ordered mutation reservation disappeared".into())
+            })?;
+        if !matches!(
+            record.payload(),
+            RouterMutationPayloadV1::OrderedEdgeBatch(_)
+                | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
+        ) {
+            return Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation kind".into(),
+            ));
+        }
+        return Ok(crate::types::MutationStatus::from_record(&record));
+    }
+
+    let mutation_id = reservation.mutation_id;
+    let target = RouterOrderedEdgeBatchTargetV1 {
+        graph_request_fingerprint,
+        request: match graph_request {
+            gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequest::V1(request) => request,
+        },
+        progress: OrderedEdgeBatchTargetProgressV1::CanonicalPending,
+        projection_watermark: None,
+    };
+    if let Err(error) = store.transition_to_ordered_edge_batch(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        public_fingerprint,
+        public_item_count,
+        resolved_labels,
+        resolved_properties,
+        target,
+    ) {
+        store.abandon_router_mutation_routing_reservation(caller, graph_id, &client_key)?;
+        return Err(error);
+    }
+
+    let graph_request = match store
+        .router_mutation_record(caller, graph_id, &client_key)
+        .and_then(|record| match record.payload() {
+            RouterMutationPayloadV1::OrderedEdgeBatch(replay) => {
+                Some(replay.target.request.clone())
+            }
+            _ => None,
+        }) {
+        Some(request) => gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphRequest::V1(request),
+        None => {
+            return Err(RouterError::Internal(
+                "ordered Graph request missing after durable transition".into(),
+            ));
+        }
+    };
+    let graph_result = execute_ordered_edge_batch_on_graph(
+        target_shard.graph_canister,
+        gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgs::V1(
+            gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgsV1 {
+                mutation_id,
+                graph_request_fingerprint,
+                request: graph_request.clone(),
+            },
+        ),
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    let receipt = match graph_result {
+        gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchResult::V1(
+            gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchResultV1::Completed(receipt),
+        ) => receipt,
+        _ => {
+            return Err(RouterError::InvalidArgument(
+                "ordered Graph admission did not return a canonical receipt".into(),
+            ));
+        }
+    };
+    store.record_ordered_edge_batch_canonical_committed(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+        receipt.clone(),
+    )?;
+    store.record_ordered_edge_batch_projection_pending(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+    )?;
+    advance_label_stats_projection_through(
+        &store,
+        graph_id,
+        target_shard.graph_canister,
+        target_shard_id,
+        receipt.emitted_delta_last_seq,
+    )
+    .await?;
+    store.record_ordered_edge_batch_projection_advanced(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+        gleaph_graph_kernel::plan_exec::MutationTokenShard {
+            shard_id: target_shard_id,
+            label_stats_seq: receipt.emitted_delta_last_seq,
+        },
+    )?;
+    store.record_ordered_edge_batch_retirement_pending(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+    )?;
+    let ack = retire_ordered_mutation_on_graph(
+        target_shard.graph_canister,
+        gleaph_graph_kernel::plan_exec::OrderedMutationRetirementArgs::V1(
+            gleaph_graph_kernel::plan_exec::OrderedMutationRetirementArgsV1 {
+                mutation_id,
+                graph_request_fingerprint,
+            },
+        ),
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    let gleaph_graph_kernel::plan_exec::OrderedMutationRetirementAck::V1(ack) = ack;
+    if ack.mutation_id != mutation_id
+        || ack.graph_request_fingerprint != graph_request_fingerprint
+        || ack.receipt != receipt
+    {
+        return Err(RouterError::InvalidArgument(
+            "ordered retirement acknowledgement does not match receipt".into(),
+        ));
+    }
+    store.record_ordered_edge_batch_retired(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+        ack.receipt,
+    )?;
+    let record = store
+        .router_mutation_record(caller, graph_id, &client_key)
+        .ok_or_else(|| RouterError::Internal("ordered mutation record disappeared".into()))?;
+    Ok(crate::types::MutationStatus::from_record(&record))
 }
 
 pub(crate) async fn gql_execute_idempotent_with_batch(
@@ -5379,7 +5619,8 @@ async fn recover_ordered_edge_batch_record(
             graph_request_fingerprint: fingerprint,
         }),
     )
-    .await?;
+    .await
+    .map_err(RouterError::Internal)?;
     let gleaph_graph_kernel::plan_exec::OrderedMutationRetirementAck::V1(ack) = ack;
     if ack.mutation_id != mutation_id
         || ack.graph_request_fingerprint != fingerprint

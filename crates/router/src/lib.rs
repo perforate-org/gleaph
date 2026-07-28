@@ -498,6 +498,14 @@ fn mutation_status(
     canister::mutation_status(logical_graph_name, client_mutation_key)
 }
 
+/// ADR 0049: execute one order-preserving public edge batch.
+#[update]
+async fn execute_ordered_edge_batch(
+    request: types::OrderedEdgeBatchPublicRequest,
+) -> Result<types::MutationStatus, RouterError> {
+    canister::execute_ordered_edge_batch(request).await
+}
+
 /// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga referencing an
 /// already-committed `mutation_id`, then arm the recovery timer. Lets the E2E suite drive the
 /// autonomous recovery driver from `ProjectionPending` to `Completed` without a client retry.
