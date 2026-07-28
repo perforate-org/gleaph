@@ -19,6 +19,7 @@ use crate::{
     VertexId,
     labeled::{
         bucket_label_key::BucketDirectedness,
+        bucket_label_key::BucketLabelKey,
         record::{
             LabelBucket, LabeledVertex, MAX_VERTEX_LABEL_BUCKET_SLACK, MAX_VERTEX_LABEL_BUCKETS,
         },
@@ -806,6 +807,41 @@ impl<M: Memory> LabelBucketStore<M> {
             .checked_add(inserted_index)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         Ok((out_slot, true))
+    }
+
+    /// Removes one label bucket and rewrites its owning vertex segment.
+    ///
+    /// This is used by a failed batch reservation to undo a bucket descriptor
+    /// that was created only for that reservation. The physical descriptor span
+    /// is retained as reusable slack; edge rows and bucket contents are untouched.
+    pub(crate) fn remove_label_bucket<V>(
+        &self,
+        vertices: &V,
+        vid: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<bool, LaraOperationError>
+    where
+        V: VertexAccess<LabeledVertex>,
+    {
+        let mut rows = self.collect_segment_bucket_rows(vertices, vid)?;
+        let mut removed = false;
+        for (v_ord, _, buckets, _) in &mut rows {
+            if *v_ord != u32::from(vid) {
+                continue;
+            }
+            if let Some(index) = buckets
+                .iter()
+                .position(|bucket| bucket.bucket_label_key() == label_id)
+            {
+                buckets.remove(index);
+                removed = true;
+            }
+            break;
+        }
+        if removed {
+            self.rewrite_segment_bucket_rows(vertices, rows)?;
+        }
+        Ok(removed)
     }
 
     /// Computes the segment-bucket rewrite for promoting a bypass-mode vertex

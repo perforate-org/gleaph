@@ -548,6 +548,8 @@ where
     graph_marker: usize,
     edge_capacity_before: u64,
     inline_property_bytes_tail_before: u64,
+    /// Named bucket descriptors created during reservation preparation.
+    new_buckets: Vec<(VertexId, BucketLabelKey)>,
     /// Cumulative in-place leaf expansions reserved for this batch; consumed on
     /// rollback to restore the free-span store shape.
     leaf_expansions: std::collections::BTreeMap<u32, LeafExpansionState>,
@@ -850,19 +852,46 @@ where
     pub(crate) fn prepare_batch_buckets(
         &self,
         plan: &OneOrientationBatchPlan<E>,
-    ) -> Result<(), OneOrientationBatchError>
+    ) -> Result<Vec<(VertexId, BucketLabelKey)>, OneOrientationBatchError>
     where
         E: CsrEdgeTombstone,
     {
-        for run in &plan.runs {
-            self.ensure_label_bucket_inline_property_byte_width(
-                run.owner_vertex_id,
-                run.label_id,
-                run.inline_property_width,
-            )
-            .map_err(OneOrientationBatchError::from)?;
+        let mut new_buckets = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let result = (|| {
+            for run in &plan.runs {
+                if seen.insert((run.owner_vertex_id, run.label_id)) {
+                    let vertex = self.vertices.get(run.owner_vertex_id);
+                    if matches!(
+                        self.find_bucket(run.owner_vertex_id, &vertex, run.label_id)
+                            .map_err(OneOrientationBatchError::from)?,
+                        BucketSearch::Missing { .. }
+                    ) {
+                        new_buckets.push((run.owner_vertex_id, run.label_id));
+                    }
+                }
+                self.ensure_label_bucket_inline_property_byte_width(
+                    run.owner_vertex_id,
+                    run.label_id,
+                    run.inline_property_width,
+                )
+                .map_err(OneOrientationBatchError::from)?;
+            }
+            Ok::<(), OneOrientationBatchError>(())
+        })();
+        if let Err(error) = result {
+            self.rollback_prepared_buckets(&new_buckets);
+            return Err(error);
         }
-        Ok(())
+        Ok(new_buckets)
+    }
+
+    fn rollback_prepared_buckets(&self, new_buckets: &[(VertexId, BucketLabelKey)]) {
+        for &(owner, label) in new_buckets.iter().rev() {
+            self.buckets
+                .remove_label_bucket(&self.vertices, owner, label)
+                .expect("batch reservation must remove its prepared bucket");
+        }
     }
 
     /// Validate a one-orientation batch plan and reserve the required capacity.
@@ -873,8 +902,10 @@ where
     /// capacity and inline property bytes occupied tail to their pre-reserve values.  InlinePropertyBytes
     /// bytes that were already appended are retired to the inline property free-list
     /// as reusable slack; the underlying stable-memory pages are not shrunk.
-    /// Canonical adjacency and bucket metadata are never modified.  On success
-    /// it returns an opaque [`BatchReservation`] token; the valid operations on
+    /// Canonical adjacency and edge rows are never modified. New named bucket
+    /// descriptors are structurally prepared and owned by the returned
+    /// reservation token. On success it returns an opaque [`BatchReservation`]
+    /// token; the valid operations on
     /// that token are [`BatchReservation::commit`] and
     /// [`BatchReservation::rollback`].
     pub(crate) fn reserve_one_orientation_batch(
@@ -886,8 +917,24 @@ where
     {
         // Phase 1: validate plan invariants without touching canonical state.
         Self::validate_plan_invariants(plan)?;
-        self.prepare_batch_buckets(plan)?;
+        let new_buckets = self.prepare_batch_buckets(plan)?;
+        match self.reserve_one_orientation_batch_prepared(plan, new_buckets.clone()) {
+            Ok(reservation) => Ok(reservation),
+            Err(error) => {
+                self.rollback_prepared_buckets(&new_buckets);
+                Err(error)
+            }
+        }
+    }
 
+    fn reserve_one_orientation_batch_prepared(
+        &self,
+        plan: &OneOrientationBatchPlan<E>,
+        new_buckets: Vec<(VertexId, BucketLabelKey)>,
+    ) -> Result<BatchReservation<E>, OneOrientationBatchError>
+    where
+        E: CsrEdgeTombstone,
+    {
         // Phase 2: mutation-free preflight of every run.
         // Overflow-log runs share per-leaf segment capacity.  We maintain virtual
         // cursors so that multiple runs targeting the same leaf reserve disjoint
@@ -1441,6 +1488,7 @@ where
             graph_marker: self.instance_marker(),
             edge_capacity_before,
             inline_property_bytes_tail_before,
+            new_buckets,
             leaf_expansions: leaf_expansion_cursors,
             leaf_relocations,
         })
@@ -3182,9 +3230,9 @@ where
     /// and inline property bytes occupied tail to the values captured before
     /// `reserve_one_orientation_batch` mutated them.  Any inline_property_bytes bytes that
     /// were already appended are retired to the inline property free-list as reusable
-    /// slack; the underlying stable-memory pages are not shrunk.  Canonical
-    /// adjacency and bucket metadata are untouched.  Because the token is
-    /// consumed, a reservation cannot be rolled back twice.
+    /// slack; the underlying stable-memory pages are not shrunk. Edge rows and
+    /// prepared bucket descriptors are restored. Because the token is consumed,
+    /// a reservation cannot be rolled back twice.
     pub(crate) fn rollback<M: Memory>(self, graph: &LabeledLaraGraph<E, M>) {
         assert_eq!(
             self.graph_marker,
@@ -3194,6 +3242,7 @@ where
         graph.rollback_leaf_expansions(&self.leaf_expansions);
         graph.rollback_edge_capacity(self.edge_capacity_before);
         graph.rollback_inline_property_bytes_tail(self.inline_property_bytes_tail_before);
+        graph.rollback_prepared_buckets(&self.new_buckets);
     }
 }
 
@@ -3590,6 +3639,16 @@ mod tests {
             .reserve_one_orientation_batch(&plan)
             .expect("new bucket reservation");
         reservation.rollback(&graph);
+        assert!(matches!(
+            graph
+                .find_bucket(
+                    VertexId::from(0),
+                    &graph.vertices.get(VertexId::from(0)),
+                    BucketLabelKey::directed_from_index(1),
+                )
+                .expect("bucket lookup"),
+            BucketSearch::Missing { .. }
+        ));
     }
 
     #[test]
