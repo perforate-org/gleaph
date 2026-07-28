@@ -1120,6 +1120,122 @@ mod tests {
     }
 
     #[test]
+    fn batch_parallel_edges_preserve_ordinals_and_sidecars() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4013);
+        let property_id = PropertyId::from_raw(101);
+        let vertices = make_vertices(&store, 2);
+        let source = vertices[0];
+        let target = vertices[1];
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+
+        let mut first = input(source, target, Some(label), true, vec![]);
+        first.initial_edge_properties = vec![(property_id, Value::Int64(911))];
+        let mut second = input(source, target, Some(label), true, vec![]);
+        second.initial_edge_properties = vec![(property_id, Value::Int64(912))];
+        let edges = vec![first.clone(), second.clone()];
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges)
+            .expect("parallel batch edges");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        assert_eq!(locations.len(), 2);
+
+        let first_occurrence = locations[0].canonical_occurrence(&first);
+        let second_occurrence = locations[1].canonical_occurrence(&second);
+        let first_counterpart = store
+            .counterpart_edge_occurrence(first_occurrence)
+            .expect("first counterpart");
+        let second_counterpart = store
+            .counterpart_edge_occurrence(second_occurrence)
+            .expect("second counterpart");
+        assert_ne!(
+            first_counterpart.slot_index, second_counterpart.slot_index,
+            "same-batch parallel edges must retain distinct pair ranks"
+        );
+
+        for (occurrence, expected) in [
+            (first_occurrence, Value::Int64(911)),
+            (second_occurrence, Value::Int64(912)),
+        ] {
+            let handle = EdgeHandle::at_slot(
+                occurrence.owner_vertex_id,
+                occurrence.label_id,
+                occurrence.slot_index,
+            );
+            assert_eq!(
+                store.edge_property_at_canonical_handle(handle, property_id),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn batch_parallel_undirected_edges_preserve_ordinals_and_sidecars() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4014);
+        let property_id = PropertyId::from_raw(102);
+        let vertices = make_vertices(&store, 2);
+        let low = vertices[0];
+        let high = vertices[1];
+        store.prepare_clean_slab_undir_buckets(low, high, label, 0);
+
+        let mut first = input(low, high, Some(label), false, vec![]);
+        first.initial_edge_properties = vec![(property_id, Value::Int64(913))];
+        let mut second = input(high, low, Some(label), false, vec![]);
+        second.initial_edge_properties = vec![(property_id, Value::Int64(914))];
+        let edges = vec![first.clone(), second.clone()];
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges)
+            .expect("parallel undirected batch edges");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        assert_eq!(locations.len(), 2);
+
+        let first_occurrence = locations[0].canonical_occurrence(&first);
+        let second_occurrence = locations[1].canonical_occurrence(&second);
+        let first_counterpart = store
+            .counterpart_edge_occurrence(first_occurrence)
+            .expect("first counterpart");
+        let second_counterpart = store
+            .counterpart_edge_occurrence(second_occurrence)
+            .expect("second counterpart");
+        assert_eq!(first_occurrence.owner_vertex_id, high);
+        assert_eq!(second_occurrence.owner_vertex_id, high);
+        assert_eq!(first_counterpart.owner_vertex_id, low);
+        assert_eq!(second_counterpart.owner_vertex_id, low);
+        assert_ne!(
+            first_counterpart.slot_index, second_counterpart.slot_index,
+            "same-batch undirected parallel edges must retain distinct pair ranks"
+        );
+
+        for (occurrence, expected) in [
+            (first_occurrence, Value::Int64(913)),
+            (second_occurrence, Value::Int64(914)),
+        ] {
+            let handle = EdgeHandle::at_slot(
+                occurrence.owner_vertex_id,
+                occurrence.label_id,
+                occurrence.slot_index,
+            );
+            assert_eq!(
+                store.edge_property_at_canonical_handle(handle, property_id),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
     fn batch_parallel_undirected_edge_uses_owner_alias_pair_rank() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(4008);

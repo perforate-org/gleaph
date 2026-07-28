@@ -702,7 +702,7 @@ geometry. The first public version has this admission matrix:
 | a new named labeled bucket                                                       | whole-request ordered scalar fallback                                                               |
 | default/unlabeled bypass or labeled promotion from default storage               | whole-request ordered scalar fallback                                                               |
 | any other scalar-supported but optimized-unsupported geometry                    | whole-request ordered scalar fallback                                                               |
-| duplicate/parallel logical targets before section 9's activation gate            | pre-write rejection                                                                                 |
+| parallel logical targets with proven pair-rank and sidecar coverage             | optimized when every projected bucket is supported; replay/reservation gates still apply           |
 | any initial property governed by a global unique or constrained-property rule    | whole-public-request pre-dispatch rejection in v1                                                   |
 | one logical edge whose endpoints resolve to different Graph shards               | whole-public-request pre-dispatch rejection in v1                                                   |
 | otherwise shard-local edges resolving to more than one Graph shard               | whole-public-request pre-dispatch rejection in v1                                                   |
@@ -743,10 +743,12 @@ The final contract permits multiple new logical edges with the same endpoint
 pair when the Graph data model permits parallel edges. Their logical ordinals,
 inline properties, properties, and exact returned locations distinguish them.
 
-The current ADR 0045 planner rejects duplicate logical targets. ADR 0049 does
-not remove that fail-closed behavior until paired location handling, property
-association, idempotent replay, and ADR 0048 pair-rank tests cover parallel
-inserts end to end.
+The Graph planner now admits parallel logical targets as distinct ordered
+items. Same-batch directed and undirected parallel inputs preserve their
+logical ordinals and may carry distinct or identical inline properties. The
+Graph facade also co-writes per-item initial sidecars and resolves each
+counterpart by live pair rank. Durable replay and stable-memory reservation
+remain separate activation gates.
 
 Existing edge/vertex updates are absent from the v1 operation set. A future
 operation that permits conflicting updates must define deterministic sequential
@@ -1517,7 +1519,7 @@ not rewritten as though unfinished unordered product behavior shipped.
    inline-property log folds independently while the leaf relocates once.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
-10. **Partially implemented (2026-07-28 11:09:14 UTC +0000):** the Graph facade now accepts
+10. **Partially implemented (2026-07-28 11:13:16 UTC +0000):** the Graph facade now accepts
     request-local initial sidecar values, validates ids/values/duplicate ids
     before reservation, derives one canonical `CanonicalEdgeOccurrence` from
     the joined captured location for directed, undirected, and self-loop
@@ -1545,6 +1547,9 @@ not rewritten as though unfinished unordered product behavior shipped.
     An overflow-log batch append with an initial sidecar also verifies that
     the captured bucket logical slot, rather than the raw log location, owns
     the canonical sidecar.
+    Parallel logical targets are now admitted by the planner and covered by
+    same-batch directed and undirected ordinal/pair-rank tests, including
+    distinct per-item sidecar values.
     The post-commit sidecar path traps on a violated preflight invariant rather
     than returning a recoverable error. The explicit stable-memory reservation
     remains blocked by the current `EdgePropertyStore` boundary: its

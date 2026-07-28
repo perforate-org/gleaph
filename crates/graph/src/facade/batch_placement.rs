@@ -19,7 +19,6 @@ use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara
 use super::{GraphStore, GraphStoreError, stable::GRAPH};
 use crate::edge_inline_property_schema::lookup_edge_inline_property_profile;
 use crate::edge_inline_property_schema::resolved_edge_label_with;
-use rapidhash::{HashMapExt, RapidHashMap};
 
 /// One logical edge supplied for optimized batch planning.
 ///
@@ -94,10 +93,6 @@ pub enum BatchPlacementError {
         expected: usize,
         actual: usize,
     },
-    /// Duplicate logical edge target in the same batch.
-    DuplicateEdgeTarget,
-    /// The same logical edge target was supplied with conflicting inline property bytes.
-    ConflictingDuplicateEdgeTarget,
     /// A logical ordinal overflowed the bounded chunk capacity.
     OrdinalOverflow,
     /// A capacity projection sum overflowed.
@@ -156,13 +151,6 @@ impl std::fmt::Display for BatchPlacementError {
                 write!(
                     f,
                     "inline property byte width mismatch for label {label:?}: expected {expected}, actual {actual}"
-                )
-            }
-            Self::DuplicateEdgeTarget => write!(f, "duplicate edge target in batch"),
-            Self::ConflictingDuplicateEdgeTarget => {
-                write!(
-                    f,
-                    "duplicate edge target with conflicting inline property bytes in batch"
                 )
             }
             Self::OrdinalOverflow => write!(f, "batch logical ordinal overflow"),
@@ -474,57 +462,6 @@ impl BatchPlacementSummary {
     }
 }
 
-/// Internal duplicate-detection key for a logical edge target.
-///
-/// ADR 0045 rejects duplicate mutations targeting the same logical edge in one
-/// batch, regardless of inline property bytes. Directed edges are keyed by
-/// (source, target, label). Undirected edges are keyed by canonical endpoint pair
-/// (higher id first) and label, so `(a,b)` and `(b,a)` collide.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct EdgeTargetKey {
-    endpoint_a: VertexId,
-    endpoint_b: VertexId,
-    catalog_label: Option<EdgeLabelId>,
-    directed: bool,
-}
-
-impl BatchEdgeInput {
-    /// Duplicate-detection key for the logical edge target.
-    ///
-    /// Payload is intentionally **not** part of the key: the same logical target
-    /// with different inline property bytes is a conflicting duplicate and is rejected
-    /// separately via [`BatchPlacementError::ConflictingDuplicateEdgeTarget`].
-    fn target_key(&self) -> EdgeTargetKey {
-        if self.directed {
-            EdgeTargetKey {
-                endpoint_a: self.source_vertex_id,
-                endpoint_b: self.target_vertex_id,
-                catalog_label: self.catalog_label,
-                directed: true,
-            }
-        } else {
-            // Canonicalize undirected endpoints so (a,b) and (b,a) collide.
-            let a = canonical_undirected_owner(self.source_vertex_id, self.target_vertex_id);
-            let b = if a == self.source_vertex_id {
-                self.target_vertex_id
-            } else {
-                self.source_vertex_id
-            };
-            EdgeTargetKey {
-                endpoint_a: a,
-                endpoint_b: b,
-                catalog_label: self.catalog_label,
-                directed: false,
-            }
-        }
-    }
-
-    /// Returns `true` if two inputs share the same logical edge target.
-    fn same_logical_target(&self, other: &BatchEdgeInput) -> bool {
-        self.target_key() == other.target_key()
-    }
-}
-
 impl GraphStore {
     pub(crate) fn validate_batch_initial_edge_properties(
         edges: &[BatchEdgeInput],
@@ -566,7 +503,7 @@ impl GraphStore {
 
     /// Read-only planning entry point for an optimized edge batch.
     ///
-    /// Validates vertices, label widths, and duplicate targets; expands each
+    /// Validates vertices and label widths; expands each
     /// logical edge into physical intents; groups by LARA ownership; and reads
     /// existing bucket occupancy to produce a projected-capacity summary. No
     /// canonical state is written.
@@ -590,21 +527,11 @@ impl GraphStore {
             return Err(BatchPlacementError::BatchTooLarge);
         }
 
-        let mut first_index: RapidHashMap<EdgeTargetKey, usize> =
-            RapidHashMap::with_capacity(edges.len());
         let mut intents = Vec::with_capacity(edges.len().checked_mul(2).unwrap_or(edges.len()));
 
         for (ordinal, input) in edges.iter().enumerate() {
             let ordinal =
                 u32::try_from(ordinal).map_err(|_| BatchPlacementError::OrdinalOverflow)?;
-            let key = input.target_key();
-            if let Some(&first_idx) = first_index.get(&key) {
-                if edges[first_idx].inline_property_bytes != input.inline_property_bytes {
-                    return Err(BatchPlacementError::ConflictingDuplicateEdgeTarget);
-                }
-                return Err(BatchPlacementError::DuplicateEdgeTarget);
-            }
-            first_index.insert(key, ordinal as usize);
             expand_logical_edge_to_intents(self, input, ordinal, &mut intents)?;
         }
 
@@ -1027,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_logical_edge_target_is_rejected() {
+    fn parallel_logical_edge_target_is_admitted() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let label = edge_label_id_for_name("BatchDuplicate");
@@ -1035,14 +962,14 @@ mod tests {
             input(v[0], v[1], Some(label), true, vec![]),
             input(v[0], v[1], Some(label), true, vec![]),
         ];
-        let err = store
+        let summary = store
             .plan_batch_edge_insertion(&edges)
-            .expect_err("duplicate");
-        assert!(matches!(err, BatchPlacementError::DuplicateEdgeTarget));
+            .expect("parallel plan");
+        assert_eq!(summary.logical_edge_count, 2);
     }
 
     #[test]
-    fn undirected_edge_endpoints_are_canonicalized_for_duplicate_detection() {
+    fn undirected_parallel_edge_endpoints_are_admitted_in_input_order() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let label = edge_label_id_for_name("BatchUndirectedCanonical");
@@ -1050,14 +977,14 @@ mod tests {
             input(v[0], v[1], Some(label), false, vec![]),
             input(v[1], v[0], Some(label), false, vec![]),
         ];
-        let err = store
+        let summary = store
             .plan_batch_edge_insertion(&edges)
-            .expect_err("duplicate");
-        assert!(matches!(err, BatchPlacementError::DuplicateEdgeTarget));
+            .expect("parallel plan");
+        assert_eq!(summary.logical_edge_count, 2);
     }
 
     #[test]
-    fn conflicting_inline_property_for_same_target_is_rejected() {
+    fn parallel_edges_may_have_distinct_inline_properties() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let label = edge_label_id_for_name("BatchConflictPayload");
@@ -1072,17 +999,14 @@ mod tests {
             input(v[0], v[1], Some(label), true, vec![1, 0]),
             input(v[0], v[1], Some(label), true, vec![2, 0]),
         ];
-        let err = store
+        let summary = store
             .plan_batch_edge_insertion(&edges)
-            .expect_err("conflict");
-        assert!(matches!(
-            err,
-            BatchPlacementError::ConflictingDuplicateEdgeTarget
-        ));
+            .expect("parallel plan");
+        assert_eq!(summary.logical_edge_count, 2);
     }
 
     #[test]
-    fn identical_inline_property_for_same_target_is_still_duplicate() {
+    fn parallel_edges_may_have_identical_inline_properties() {
         let store = fresh_store();
         let v = make_vertices(&store, 2);
         let label = edge_label_id_for_name("BatchIdenticalPayload");
@@ -1097,10 +1021,10 @@ mod tests {
             input(v[0], v[1], Some(label), true, vec![1, 0]),
             input(v[0], v[1], Some(label), true, vec![1, 0]),
         ];
-        let err = store
+        let summary = store
             .plan_batch_edge_insertion(&edges)
-            .expect_err("duplicate");
-        assert!(matches!(err, BatchPlacementError::DuplicateEdgeTarget));
+            .expect("parallel plan");
+        assert_eq!(summary.logical_edge_count, 2);
     }
 
     #[test]
