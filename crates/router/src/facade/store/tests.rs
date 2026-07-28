@@ -2027,8 +2027,8 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         RouterOrderedEdgeBatchTargetV1,
     };
     use gleaph_graph_kernel::plan_exec::{
-        OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1,
-        ordered_edge_batch_graph_request_fingerprint,
+        GraphOrderedEdgeBatchReceiptV1, OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest,
+        OrderedEdgeBatchGraphRequestV1, ordered_edge_batch_graph_request_fingerprint,
     };
 
     let store = RouterStore::new();
@@ -2103,6 +2103,41 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
             if matches!(replay.target.progress, OrderedEdgeBatchTargetProgressV1::CanonicalPending)
     ));
     assert_eq!(record.as_v1().routing_lease_ns, None);
+
+    let receipt = GraphOrderedEdgeBatchReceiptV1 {
+        logical_edge_count: 1,
+        emitted_delta_first_seq: None,
+        emitted_delta_last_seq: None,
+        hot_forward_vertices: Vec::new(),
+    };
+    store
+        .record_ordered_edge_batch_canonical_committed(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+            receipt.clone(),
+        )
+        .expect("canonical completion");
+    store
+        .record_ordered_edge_batch_canonical_committed(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+            receipt,
+        )
+        .expect("idempotent canonical completion");
+    let record = store
+        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .expect("completed ordered record");
+    assert!(matches!(
+        record.payload(),
+        RouterMutationPayloadV1::OrderedEdgeBatch(replay)
+            if matches!(replay.target.progress, OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(_))
+    ));
 }
 
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only

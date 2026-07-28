@@ -683,6 +683,68 @@ impl RouterStore {
         })
     }
 
+    /// Persist the Graph-owned canonical receipt for an ordered edge batch.
+    ///
+    /// The transition is idempotent for the exact same receipt and rejects every other progress
+    /// state, so a lost Router callback cannot overwrite a later projection or retirement state.
+    pub fn record_ordered_edge_batch_canonical_committed(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+        receipt: gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchReceiptV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        receipt
+            .validate()
+            .map_err(|error| RouterError::InvalidArgument(error.into()))?;
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered canonical completion".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered canonical completion requires an OrderedEdgeBatch payload".into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered canonical completion".into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedEdgeBatchTargetProgressV1::CanonicalPending => {
+                    replay.target.progress =
+                        OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt);
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(existing)
+                    if existing == &receipt =>
+                {
+                    Ok(())
+                }
+                _ => Err(RouterError::Conflict(
+                    "ordered canonical completion conflicts with persisted progress".into(),
+                )),
+            }
+        })
+    }
+
     /// Atomically transition a pristine scalar reservation to a durable typed seed bulk payload.
     ///
     /// Accepts only a record that:
