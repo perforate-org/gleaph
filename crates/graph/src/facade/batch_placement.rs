@@ -8,7 +8,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use gleaph_graph_kernel::entry::EdgeLabelId;
+use gleaph_gql::{Value, ValueBinaryError};
+use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, VertexId,
     labeled::{LabelBucketPlacementInfo, LabeledOrientation, LeafBucketPlacementStats},
@@ -23,9 +24,9 @@ use rapidhash::{HashMapExt, RapidHashMap};
 ///
 /// The planner expands this into one or two physical intents owned by LARA.
 /// Forward/reverse halves and undirected canonical/alias halves are derived, not
-/// supplied. Edge properties (other than the fixed-width inline property bytes) are out
-/// of scope for this slice and fail closed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// supplied. Initial sidecar properties are keyed by `PropertyId`; their order
+/// is not semantic and duplicate ids are rejected before the batch write.
+#[derive(Clone, Debug, PartialEq)]
 pub struct BatchEdgeInput {
     /// Source endpoint. For undirected edges this is endpoint A.
     pub source_vertex_id: VertexId,
@@ -37,6 +38,8 @@ pub struct BatchEdgeInput {
     pub directed: bool,
     /// Fixed-width inline property bytes bytes. Must match the label profile width.
     pub inline_property_bytes: Vec<u8>,
+    /// Initial non-inline edge properties owned by the canonical forward row.
+    pub initial_edge_properties: Vec<(PropertyId, Value)>,
 }
 
 /// Role of one physical half-edge intent within a logical edge.
@@ -120,6 +123,18 @@ pub enum BatchPlacementError {
     /// the planner requires a separate read-only occupancy accessor. Plan 0121
     /// rejects the path rather than silently under-count existing occupancy.
     DefaultLabelUnsupported,
+    /// An initial sidecar property id is reserved and cannot be persisted.
+    InvalidInitialPropertyId(PropertyId),
+    /// An initial sidecar property value cannot be persisted.
+    InvalidInitialPropertyValue {
+        property_id: PropertyId,
+        error: ValueBinaryError,
+    },
+    /// An item contains the same initial sidecar property id more than once.
+    DuplicateInitialPropertyId {
+        logical_ordinal: u32,
+        property_id: PropertyId,
+    },
 }
 
 impl std::fmt::Display for BatchPlacementError {
@@ -155,6 +170,22 @@ impl std::fmt::Display for BatchPlacementError {
                     "default/unlabeled edges are not supported by batch placement"
                 )
             }
+            Self::InvalidInitialPropertyId(id) => {
+                write!(f, "initial property id {} is reserved", id.raw())
+            }
+            Self::InvalidInitialPropertyValue { property_id, error } => write!(
+                f,
+                "initial property {} has an invalid value: {error}",
+                property_id.raw()
+            ),
+            Self::DuplicateInitialPropertyId {
+                logical_ordinal,
+                property_id,
+            } => write!(
+                f,
+                "logical ordinal {logical_ordinal} repeats initial property id {}",
+                property_id.raw()
+            ),
             Self::PayloadWidthMixed => {
                 write!(f, "inline property byte widths are mixed within one leaf")
             }
@@ -481,6 +512,33 @@ impl BatchEdgeInput {
 }
 
 impl GraphStore {
+    pub(crate) fn validate_batch_initial_edge_properties(
+        edges: &[BatchEdgeInput],
+    ) -> Result<(), BatchPlacementError> {
+        for (logical_ordinal, edge) in edges.iter().enumerate() {
+            let logical_ordinal =
+                u32::try_from(logical_ordinal).map_err(|_| BatchPlacementError::OrdinalOverflow)?;
+            let mut property_ids = BTreeSet::new();
+            for (property_id, value) in &edge.initial_edge_properties {
+                if !property_ids.insert(*property_id) {
+                    return Err(BatchPlacementError::DuplicateInitialPropertyId {
+                        logical_ordinal,
+                        property_id: *property_id,
+                    });
+                }
+                crate::property::ensure_property_id(*property_id)
+                    .map_err(|_| BatchPlacementError::InvalidInitialPropertyId(*property_id))?;
+                crate::property::ensure_persistable(value).map_err(|error| {
+                    BatchPlacementError::InvalidInitialPropertyValue {
+                        property_id: *property_id,
+                        error,
+                    }
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     /// Read-only planning entry point for an optimized edge batch.
     ///
     /// Validates vertices, label widths, and duplicate targets; expands each
@@ -863,6 +921,7 @@ mod tests {
             catalog_label: label,
             directed,
             inline_property_bytes: bytes,
+            initial_edge_properties: Vec::new(),
         }
     }
 

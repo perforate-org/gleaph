@@ -64,6 +64,20 @@ impl GraphStore {
         value: Value,
     ) -> Result<Option<Value>, super::error::GraphStoreError> {
         let handle = self.canonical_edge_handle_from_occurrence(occurrence)?;
+        self.commit_edge_property_write_at_canonical(handle, property_id, value)
+    }
+
+    /// Write a property when the caller already owns an exact canonical sidecar handle.
+    ///
+    /// Batch insertion uses this after LARA has returned the captured location. The
+    /// batch preflight has already validated every id and value, so this path does
+    /// not perform a counterpart scan or introduce another fallible lookup.
+    pub(crate) fn commit_edge_property_write_at_canonical(
+        &self,
+        handle: super::handle::EdgeHandle,
+        property_id: PropertyId,
+        value: Value,
+    ) -> Result<Option<Value>, super::error::GraphStoreError> {
         let prev = EDGE_PROPERTIES.with_borrow(|properties| {
             properties.get(
                 handle.owner_vertex_id,

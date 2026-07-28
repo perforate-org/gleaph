@@ -18,6 +18,7 @@ use ic_stable_lara::labeled::batch_write::{
 use ic_stable_lara::{CsrEdge, labeled::CanonicalEdgeOccurrence, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
 
+use super::EdgeHandle;
 use super::GraphStore;
 use super::batch_placement::{
     BatchEdgeInput, BatchEdgeIntent, BatchEdgeIntentRole, BatchPlacementError, BatchPlacementKey,
@@ -217,11 +218,48 @@ impl GraphStore {
         self.try_insert_batch_edges_clean_slab_with_mode(edges, BatchLocationMode::Capture)
     }
 
+    /// Insert a clean-slab batch and commit its initial canonical sidecars.
+    ///
+    /// Location capture is mandatory for this path. Property validation happens
+    /// before reservation, and sidecars are addressed directly by the captured
+    /// canonical owner/label/logical-slot tuple after LARA commit.
+    pub(crate) fn try_insert_batch_edges_clean_slab_with_initial_properties(
+        &self,
+        edges: &[super::batch_placement::BatchEdgeInput],
+    ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
+        let result =
+            self.try_insert_batch_edges_clean_slab_with_mode(edges, BatchLocationMode::Capture)?;
+        if let BatchEdgeInsertResult::Committed {
+            locations: Some(locations),
+            ..
+        } = &result
+        {
+            for (input, location) in edges.iter().zip(locations) {
+                let occurrence = location.canonical_occurrence(input);
+                let handle = EdgeHandle::at_slot(
+                    occurrence.owner_vertex_id,
+                    occurrence.label_id,
+                    occurrence.slot_index,
+                );
+                for (property_id, value) in &input.initial_edge_properties {
+                    self.commit_edge_property_write_at_canonical(
+                        handle,
+                        *property_id,
+                        value.clone(),
+                    )
+                    .expect("validated batch sidecar must be writable");
+                }
+            }
+        }
+        Ok(result)
+    }
+
     fn try_insert_batch_edges_clean_slab_with_mode(
         &self,
         edges: &[super::batch_placement::BatchEdgeInput],
         location_mode: BatchLocationMode,
     ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
+        Self::validate_batch_initial_edge_properties(edges)?;
         if edges.is_empty() {
             return Ok(BatchEdgeInsertResult::Unsupported {
                 reason: "empty batch is not admitted to the clean-slab path".into(),
@@ -741,7 +779,8 @@ mod tests {
     use super::super::store::helpers::{edge_storage_label, lara_label};
     use super::*;
     use crate::test_labels::install_test_edge_inline_property_profile;
-    use gleaph_graph_kernel::entry::EdgeLabelId;
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
     use ic_stable_lara::VertexId;
     use ic_stable_lara::labeled::batch_write::{
         OneOrientationBatchLocation, OneOrientationPhysicalLocation,
@@ -772,6 +811,7 @@ mod tests {
             catalog_label: label,
             directed,
             inline_property_bytes: bytes,
+            initial_edge_properties: Vec::new(),
         }
     }
 
@@ -842,6 +882,68 @@ mod tests {
                 label_id: lara_label(edge_storage_label(Some(label), true)),
                 slot_index: 17.into(),
             }
+        );
+    }
+
+    #[test]
+    fn initial_sidecar_is_written_at_captured_canonical_slot() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4002);
+        let property_id = PropertyId::from_raw(77);
+        let vertices = make_vertices(&store, 2);
+        store.prepare_clean_slab_dir_buckets(vertices[0], vertices[1], label, 0);
+        let mut edge = input(vertices[0], vertices[1], Some(label), true, vec![]);
+        edge.initial_edge_properties = vec![(property_id, Value::Int64(42))];
+
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge.clone()])
+            .expect("batch sidecar write");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        let occurrence = locations[0].canonical_occurrence(&edge);
+        let handle = EdgeHandle::at_slot(
+            occurrence.owner_vertex_id,
+            occurrence.label_id,
+            occurrence.slot_index,
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(handle, property_id),
+            Some(Value::Int64(42))
+        );
+    }
+
+    #[test]
+    fn duplicate_initial_sidecar_is_rejected_before_batch_write() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4003);
+        let vertices = make_vertices(&store, 2);
+        store.prepare_clean_slab_dir_buckets(vertices[0], vertices[1], label, 0);
+        let mut edge = input(vertices[0], vertices[1], Some(label), true, vec![]);
+        edge.initial_edge_properties = vec![
+            (PropertyId::from_raw(77), Value::Int64(1)),
+            (PropertyId::from_raw(77), Value::Int64(2)),
+        ];
+
+        let error = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge])
+            .expect_err("reserved/duplicate sidecar must fail closed");
+        assert!(matches!(
+            error,
+            BatchPlacementError::DuplicateInitialPropertyId { .. }
+        ));
+        assert_eq!(
+            count_labeled_dir_edges(
+                &store,
+                vertices[0],
+                storage_label_for(Some(label), true),
+                true
+            ),
+            0
         );
     }
 

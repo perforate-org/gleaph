@@ -73,6 +73,7 @@ fn build_directed_input(
                 catalog_label: Some(label),
                 directed: true,
                 inline_property_bytes: value.clone(),
+                initial_edge_properties: Vec::new(),
             }
         })
         .collect()
@@ -107,6 +108,7 @@ fn build_undirected_input(
                 catalog_label: Some(label),
                 directed: false,
                 inline_property_bytes: value.clone(),
+                initial_edge_properties: Vec::new(),
             }
         })
         .collect()
@@ -131,6 +133,7 @@ fn build_self_loop_input(
             catalog_label: Some(label),
             directed: false,
             inline_property_bytes: value.clone(),
+            initial_edge_properties: Vec::new(),
         })
         .collect()
 }
@@ -155,6 +158,7 @@ fn build_fan_out_input(
             catalog_label: Some(label),
             directed: true,
             inline_property_bytes: value.clone(),
+            initial_edge_properties: Vec::new(),
         })
         .collect()
 }
@@ -270,6 +274,7 @@ fn setup_128_directed_edges(width: u16) -> (GraphStore, EdgeLabelId, Vec<BatchEd
             catalog_label: Some(label),
             directed: true,
             inline_property_bytes: inline_property_bytes.clone(),
+            initial_edge_properties: Vec::new(),
         })
         .collect();
     (store, label, input)
