@@ -13,6 +13,7 @@ use ic_stable_lara::labeled::batch_write::BatchReservation;
 use ic_stable_lara::labeled::batch_write::{
     BatchLocationMode, BidirectionalBatchPlan, OneOrientationBatchEdge, OneOrientationBatchPlan,
     OneOrientationBatchResult, OneOrientationBucketRun, OneOrientationPhysicalLocation,
+    UndirectedBatchPair,
 };
 use ic_stable_lara::{CsrEdge, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
@@ -223,6 +224,9 @@ impl GraphStore {
 
         let intents = self.expand_batch_edge_intents(edges)?;
         let requests = self.build_one_orientation_batch_plans(&intents, encode_intent_edge)?;
+        let undirected_pairs = (!directed && !undirected_self_loop)
+            .then(|| build_undirected_batch_pairs(&intents))
+            .transpose()?;
 
         // Reserve every orientation first. If any orientation is unsupported, roll
         // back every previously successful reservation before returning unsupported.
@@ -248,6 +252,7 @@ impl GraphStore {
             {
                 BidirectionalBatchPlan::Undirected {
                     plan: merge_one_orientation_batch_plans(&first.plan, &second.plan),
+                    pairs: undirected_pairs.expect("non-self undirected pairs are built above"),
                 }
             }
             _ => {
@@ -534,6 +539,56 @@ fn merge_one_orientation_batch_plans<E: CsrEdge>(
     OneOrientationBatchPlan {
         runs: runs_from_map(runs),
     }
+}
+
+fn build_undirected_batch_pairs(
+    intents: &[BatchEdgeIntent],
+) -> Result<Vec<UndirectedBatchPair>, BatchPlacementError> {
+    let mut by_ordinal: RapidHashMap<u32, Vec<&BatchEdgeIntent>> = RapidHashMap::default();
+    for intent in intents {
+        by_ordinal
+            .entry(intent.logical_ordinal)
+            .or_default()
+            .push(intent);
+    }
+    let mut pairs = Vec::with_capacity(by_ordinal.len());
+    for (logical_ordinal, projections) in by_ordinal {
+        if projections.len() != 2 {
+            return Err(BatchPlacementError::PhysicalProjectionCountMismatch {
+                logical_ordinal,
+                expected: 2,
+                actual: projections.len(),
+            });
+        }
+        let lower_owner_vertex_id = projections
+            .iter()
+            .map(|intent| intent.owner_vertex_id)
+            .min()
+            .expect("two projections are non-empty");
+        let higher_owner_vertex_id = projections
+            .iter()
+            .map(|intent| intent.owner_vertex_id)
+            .max()
+            .expect("two projections are non-empty");
+        let first = projections[0];
+        if projections.iter().any(|intent| {
+            intent.storage_label != first.storage_label
+                || intent.inline_property_width != first.inline_property_width
+        }) {
+            return Err(BatchPlacementError::PhysicalProjectionMetadataMismatch {
+                logical_ordinal,
+            });
+        }
+        pairs.push(UndirectedBatchPair {
+            logical_ordinal,
+            lower_owner_vertex_id,
+            higher_owner_vertex_id,
+            label_id: first.storage_label,
+            inline_property_width: first.inline_property_width,
+        });
+    }
+    pairs.sort_by_key(|pair| pair.logical_ordinal);
+    Ok(pairs)
 }
 
 #[cfg(test)]

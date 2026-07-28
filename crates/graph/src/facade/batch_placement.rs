@@ -106,6 +106,14 @@ pub enum BatchPlacementError {
     PlacementReadFailed(String),
     /// A leaf contains inline property bytes with incompatible widths.
     PayloadWidthMixed,
+    /// A logical undirected item did not produce exactly two projections.
+    PhysicalProjectionCountMismatch {
+        logical_ordinal: u32,
+        expected: usize,
+        actual: usize,
+    },
+    /// Physical projections for one logical item disagree on shared metadata.
+    PhysicalProjectionMetadataMismatch { logical_ordinal: u32 },
     /// Default/unlabeled edges are not supported by the read-only batch planner.
     ///
     /// The default-label bypass path has its own stable layout; supporting it in
@@ -150,6 +158,18 @@ impl std::fmt::Display for BatchPlacementError {
             Self::PayloadWidthMixed => {
                 write!(f, "inline property byte widths are mixed within one leaf")
             }
+            Self::PhysicalProjectionCountMismatch {
+                logical_ordinal,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "physical projection count mismatch at ordinal {logical_ordinal}: expected {expected}, actual {actual}"
+            ),
+            Self::PhysicalProjectionMetadataMismatch { logical_ordinal } => write!(
+                f,
+                "physical projection metadata mismatch at ordinal {logical_ordinal}"
+            ),
             Self::ProjectedCapacityOverflow => write!(f, "projected capacity overflow"),
             Self::ProjectedCountOverflow => write!(f, "projected count overflow"),
         }
