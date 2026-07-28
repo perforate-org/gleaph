@@ -38,10 +38,10 @@
 //!   projected geometry. Fixed-width inline property bytes spans are folded and extended
 //!   together with the edge slab when the existing span is reusable or grows at
 //!   the occupied tail;
-//! - one edge-only relocation to a brand-new physical block per affected leaf,
-//!   followed by slab append. Inline-property-bearing relocation, new-bucket
-//!   creation, default/unlabeled promotion, and maintenance compaction remain
-//!   unsupported and fall back to the scalar path.
+//! - one relocation to a brand-new physical block per affected leaf, followed by
+//!   slab append. Inline property bytes spans are copied when relocation needs a
+//!   replacement non-tail span. New-bucket creation, default/unlabeled promotion,
+//!   and maintenance compaction remain unsupported and fall back to the scalar path.
 
 use crate::{
     VertexId,
@@ -741,6 +741,18 @@ enum RunDestination {
         leaf: u32,
         /// Target leaf length used by the relocation plan.
         new_leaf_len: u64,
+        /// Edge-slab slots that already exist in the bucket (including any folded log).
+        existing_bucket_slots: u32,
+        /// Edge overflow-log entries folded into the relocated slab.
+        edge_log_len: u32,
+        /// Inline property bytes slab slots already resident before the batch.
+        existing_inline_property_bytes_slots: u32,
+        /// Inline property bytes overflow-log entries folded into the relocated slab.
+        inline_property_bytes_log_len: u32,
+        /// Byte offset for the relocated inline property bytes span, if present.
+        inline_property_bytes_offset: Option<u64>,
+        /// Number of inline property bytes reserved for the pending batch edges.
+        inline_property_bytes_byte_count: u64,
     },
 }
 
@@ -753,6 +765,12 @@ enum InlinePropertyBytesAllocationKind {
     New { byte_len: u64 },
     /// Existing span at the occupied tail; grow in place by the given byte length.
     GrowInPlace {
+        offset: u64,
+        had_bytes: u64,
+        new_bytes: u64,
+    },
+    /// Copy an existing non-tail span into a newly appended span at reserve time.
+    Reallocated {
         offset: u64,
         had_bytes: u64,
         new_bytes: u64,
@@ -921,13 +939,6 @@ where
                 }
             }
             if !grown {
-                let has_inline_property_bytes = preflight.iter().any(|p| {
-                    let p_leaf = Self::leaf_index_for_vid(p.owner_vertex_id, header.segment_size);
-                    p_leaf == *leaf && p.inline_property_width > 0
-                });
-                if has_inline_property_bytes {
-                    return Err(OneOrientationBatchError::LogCapacityExceeded);
-                }
                 let target = self
                     .plan_labeled_leaf_relocation(VertexId::from(start_vid))
                     .map_err(OneOrientationBatchError::from)?;
@@ -991,9 +1002,27 @@ where
             let Some(target) = leaf_relocations.get(&leaf) else {
                 continue;
             };
+            let RunDestination::ExpandedSlab {
+                existing_bucket_slots,
+                edge_log_len,
+                existing_inline_property_bytes_slots,
+                inline_property_bytes_log_len,
+                inline_property_bytes_offset,
+                inline_property_bytes_byte_count,
+                ..
+            } = preflight_run.destination
+            else {
+                unreachable!("relocation conversion requires expanded-slab preflight");
+            };
             preflight_run.destination = RunDestination::RelocatedSlab {
                 leaf,
                 new_leaf_len: target.new_len,
+                existing_bucket_slots,
+                edge_log_len,
+                existing_inline_property_bytes_slots,
+                inline_property_bytes_log_len,
+                inline_property_bytes_offset,
+                inline_property_bytes_byte_count,
             };
         }
 
@@ -1074,6 +1103,55 @@ where
                                 allocated_inline_property_bytes_offsets
                                     .push(Some((offset, new_bytes)));
                             }
+                            InlinePropertyBytesAllocationKind::Reallocated {
+                                offset,
+                                had_bytes,
+                                new_bytes,
+                            } => {
+                                let actual_offset =
+                                    self.values.append_byte_span(new_bytes).map_err(|e| {
+                                        Self::rollback_leaf_expansions(
+                                            self,
+                                            &leaf_expansion_cursors,
+                                        );
+                                        self.rollback_inline_property_bytes_tail(
+                                            inline_property_bytes_tail_before,
+                                        );
+                                        self.rollback_edge_capacity(edge_capacity_before);
+                                        storage_resize_error(e)
+                                    })?;
+                                let mut existing =
+                                    vec![
+                                        0u8;
+                                        usize::try_from(had_bytes).map_err(|_| {
+                                            Self::rollback_leaf_expansions(
+                                                self,
+                                                &leaf_expansion_cursors,
+                                            );
+                                            self.rollback_inline_property_bytes_tail(
+                                                inline_property_bytes_tail_before,
+                                            );
+                                            self.rollback_edge_capacity(edge_capacity_before);
+                                            OneOrientationBatchError::SlabCapacityExceeded
+                                        })?
+                                    ];
+                                self.values.read_bytes(offset, &mut existing);
+                                self.values
+                                    .write_bytes(actual_offset, &existing)
+                                    .map_err(|e| {
+                                        Self::rollback_leaf_expansions(
+                                            self,
+                                            &leaf_expansion_cursors,
+                                        );
+                                        self.rollback_inline_property_bytes_tail(
+                                            inline_property_bytes_tail_before,
+                                        );
+                                        self.rollback_edge_capacity(edge_capacity_before);
+                                        storage_resize_error(e)
+                                    })?;
+                                allocated_inline_property_bytes_offsets
+                                    .push(Some((actual_offset, new_bytes)));
+                            }
                         }
                     } else {
                         allocated_inline_property_bytes_offsets.push(None);
@@ -1084,7 +1162,7 @@ where
                     // are written directly into the inline property bytes overflow log at commit time.
                     allocated_inline_property_bytes_offsets.push(None);
                 }
-                RunDestination::ExpandedSlab { .. } => {
+                RunDestination::ExpandedSlab { .. } | RunDestination::RelocatedSlab { .. } => {
                     // Expanded-slab runs allocate any required inline property bytes slab bytes at
                     // reserve time, just like clean-slab runs, so rollback can retire
                     // the span if the batch aborts.
@@ -1142,17 +1220,59 @@ where
                                 allocated_inline_property_bytes_offsets
                                     .push(Some((offset, new_bytes - had_bytes)));
                             }
+                            InlinePropertyBytesAllocationKind::Reallocated {
+                                offset,
+                                had_bytes,
+                                new_bytes,
+                            } => {
+                                let actual_offset =
+                                    self.values.append_byte_span(new_bytes).map_err(|e| {
+                                        Self::rollback_leaf_expansions(
+                                            self,
+                                            &leaf_expansion_cursors,
+                                        );
+                                        self.rollback_inline_property_bytes_tail(
+                                            inline_property_bytes_tail_before,
+                                        );
+                                        self.rollback_edge_capacity(edge_capacity_before);
+                                        storage_resize_error(e)
+                                    })?;
+                                let mut existing =
+                                    vec![
+                                        0u8;
+                                        usize::try_from(had_bytes).map_err(|_| {
+                                            Self::rollback_leaf_expansions(
+                                                self,
+                                                &leaf_expansion_cursors,
+                                            );
+                                            self.rollback_inline_property_bytes_tail(
+                                                inline_property_bytes_tail_before,
+                                            );
+                                            self.rollback_edge_capacity(edge_capacity_before);
+                                            OneOrientationBatchError::SlabCapacityExceeded
+                                        })?
+                                    ];
+                                self.values.read_bytes(offset, &mut existing);
+                                self.values
+                                    .write_bytes(actual_offset, &existing)
+                                    .map_err(|e| {
+                                        Self::rollback_leaf_expansions(
+                                            self,
+                                            &leaf_expansion_cursors,
+                                        );
+                                        self.rollback_inline_property_bytes_tail(
+                                            inline_property_bytes_tail_before,
+                                        );
+                                        self.rollback_edge_capacity(edge_capacity_before);
+                                        storage_resize_error(e)
+                                    })?;
+                                allocated_inline_property_bytes_offsets
+                                    .push(Some((actual_offset, new_bytes - had_bytes)));
+                            }
                         }
                     } else {
                         allocated_inline_property_bytes_offsets.push(None);
                     }
-                }
-                RunDestination::RelocatedSlab { .. } => {
-                    debug_assert!(
-                        p.inline_property_bytes_allocation.is_none(),
-                        "edge-only relocated run must not allocate inline property bytes"
-                    );
-                    allocated_inline_property_bytes_offsets.push(None);
                 }
             }
         }
@@ -1236,12 +1356,38 @@ where
                     RunDestination::RelocatedSlab {
                         leaf,
                         new_leaf_len,
+                        existing_bucket_slots,
+                        edge_log_len,
+                        existing_inline_property_bytes_slots,
+                        inline_property_bytes_log_len,
+                        inline_property_bytes_offset: _,
+                        inline_property_bytes_byte_count,
                     } => {
-                        assert!(
-                            allocated.is_none(),
-                            "edge-only relocated run must not have an inline property allocation"
-                        );
-                        RunDestination::RelocatedSlab { leaf, new_leaf_len }
+                        let inline_property_bytes_offset = if p.inline_property_width > 0 {
+                            Some(
+                                allocated
+                                    .expect(
+                                        "inline-property-bearing relocated run must have an allocated offset",
+                                    )
+                                    .0,
+                            )
+                        } else {
+                            debug_assert!(
+                                allocated.is_none(),
+                                "edge-only relocated run must have no inline property bytes allocation"
+                            );
+                            None
+                        };
+                        RunDestination::RelocatedSlab {
+                            leaf,
+                            new_leaf_len,
+                            existing_bucket_slots,
+                            edge_log_len,
+                            existing_inline_property_bytes_slots,
+                            inline_property_bytes_log_len,
+                            inline_property_bytes_offset,
+                            inline_property_bytes_byte_count,
+                        }
                     }
                 };
                 BatchReservationRun {
@@ -1516,10 +1662,12 @@ where
                         new_bytes: total_inline_property_bytes,
                     });
             } else {
-                return Err(OneOrientationBatchError::UnsupportedGeometry(
-                    "inline property bytes span is not at occupied tail and cannot grow in place"
-                        .into(),
-                ));
+                inline_property_bytes_allocation =
+                    Some(InlinePropertyBytesAllocationKind::Reallocated {
+                        offset,
+                        had_bytes,
+                        new_bytes: total_inline_property_bytes,
+                    });
             }
             assert_eq!(
                 total_inline_property_bytes,
@@ -1645,7 +1793,7 @@ where
     /// Preflight an existing-bucket run that does not fit the clean slab window
     /// or the per-leaf overflow log by expanding the pinned PMA leaf block in
     /// place. Fixed-width inline property bytes spans are projected with the edge/log fold;
-    /// non-tail growth and relocation remain fail-closed.
+    /// a non-tail span is copied to a replacement span when the leaf relocates.
     fn preflight_expanded_run(
         &self,
         run: &OneOrientationBucketRun<E>,
@@ -2007,15 +2155,18 @@ where
                         .and_then(|x| x.checked_add(res.edge_slot_count))
                         .expect("reserve guaranteed expanded stored_slots overflow safety");
                 }
-                RunDestination::RelocatedSlab { .. } => {
-                    assert_eq!(
-                        res.inline_property_width, 0,
-                        "edge-only relocation is the only admitted batch relocation"
-                    );
+                RunDestination::RelocatedSlab { edge_log_len, .. } => {
                     let _updated_stored_slots = bucket
                         .stored_slots
-                        .checked_add(res.edge_slot_count)
+                        .checked_add(*edge_log_len)
+                        .and_then(|x| x.checked_add(res.edge_slot_count))
                         .expect("reserve guaranteed relocated stored_slots overflow safety");
+                    if res.inline_property_width > 0 {
+                        let _updated_inline_property_bytes_slots = bucket
+                            .inline_property_bytes_slab_slots()
+                            .checked_add(res.edge_slot_count)
+                            .expect("reserve guaranteed relocated inline property bytes slot overflow safety");
+                    }
                 }
             }
         }
@@ -2264,15 +2415,40 @@ where
                         .checked_add(inline_property_bytes_written)
                         .expect("reserve guaranteed expanded inline property bytes slot count");
                 }
-                RunDestination::RelocatedSlab { .. } => {
-                    let (edge_written, run_locations) =
-                        Self::commit_relocated_slab_run::<M>(graph, run, res, location_mode);
+                RunDestination::RelocatedSlab {
+                    leaf,
+                    new_leaf_len,
+                    existing_bucket_slots,
+                    edge_log_len,
+                    existing_inline_property_bytes_slots,
+                    inline_property_bytes_log_len,
+                    inline_property_bytes_offset,
+                    inline_property_bytes_byte_count,
+                } => {
+                    let (edge_written, inline_property_bytes_written, run_locations) =
+                        Self::commit_relocated_slab_run::<M>(
+                            graph,
+                            run,
+                            res,
+                            *leaf,
+                            *new_leaf_len,
+                            *existing_bucket_slots,
+                            *edge_log_len,
+                            *existing_inline_property_bytes_slots,
+                            *inline_property_bytes_log_len,
+                            *inline_property_bytes_offset,
+                            *inline_property_bytes_byte_count,
+                            location_mode,
+                        );
                     if let Some(locations) = locations.as_mut() {
                         locations.extend(run_locations);
                     }
                     edge_slots_written = edge_slots_written
                         .checked_add(edge_written)
                         .expect("reserve guaranteed relocated edge slot count");
+                    inline_property_bytes_slots_written = inline_property_bytes_slots_written
+                        .checked_add(inline_property_bytes_written)
+                        .expect("reserve guaranteed relocated inline property bytes slot count");
                 }
             }
         }
@@ -2439,12 +2615,16 @@ where
         graph: &LabeledLaraGraph<E, M>,
         run: &OneOrientationBucketRun<E>,
         res: &BatchReservationRun,
+        _leaf: u32,
+        _new_leaf_len: u64,
+        existing_bucket_slots: u32,
+        edge_log_len: u32,
+        existing_inline_property_bytes_slots: u32,
+        inline_property_bytes_log_len: u32,
+        inline_property_bytes_offset: Option<u64>,
+        inline_property_bytes_byte_count: u64,
         location_mode: BatchLocationMode,
-    ) -> (u64, Vec<OneOrientationBatchLocation>) {
-        assert_eq!(
-            res.inline_property_width, 0,
-            "relocated batch runs must be edge-only"
-        );
+    ) -> (u64, u64, Vec<OneOrientationBatchLocation>) {
         let owner = res.bucket_fingerprint.owner_vertex_id;
         let vertex = graph.vertices.get(owner);
         let (bucket_slot, bucket) = match graph
@@ -2458,9 +2638,20 @@ where
             bucket.overflow_log_head() < 0,
             "relocation must fold the existing edge overflow log before append"
         );
-        let pending_start =
-            checked_add_slot_index(bucket.edge_start(), u64::from(bucket.stored_slots))
-                .expect("reserve guaranteed relocated pending start");
+        assert_eq!(
+            bucket.stored_slots,
+            existing_bucket_slots
+                .checked_add(edge_log_len)
+                .expect("reserve guaranteed relocated resident slots"),
+            "relocation must fold the planned edge log before append"
+        );
+        let pending_start = checked_add_slot_index(
+            bucket.edge_start(),
+            u64::from(existing_bucket_slots)
+                .checked_add(u64::from(edge_log_len))
+                .expect("reserve guaranteed relocated pending start"),
+        )
+        .expect("reserve guaranteed relocated pending start");
         let mut edge_bytes = Vec::with_capacity(run.edges.len() * E::BYTES);
         for edge in &run.edges {
             let mut buf = vec![0u8; E::BYTES];
@@ -2472,6 +2663,18 @@ where
             .write_slots_contiguous(pending_start, &edge_bytes)
             .expect("reserve guaranteed relocated slab capacity");
 
+        let inline_property_width = u64::from(res.inline_property_width);
+        let pending_inline_property_bytes_start = inline_property_bytes_offset.map(|offset| {
+            offset
+                .checked_add(
+                    u64::from(existing_inline_property_bytes_slots)
+                        .checked_add(u64::from(inline_property_bytes_log_len))
+                        .expect("reserve guaranteed relocated inline property slot offset")
+                        .checked_mul(inline_property_width)
+                        .expect("reserve guaranteed relocated inline property byte offset"),
+                )
+                .expect("reserve guaranteed relocated inline property byte offset")
+        });
         let locations = if location_mode.captures() {
             run.edges
                 .iter()
@@ -2483,14 +2686,24 @@ where
                         edge_slot: pending_start
                             .checked_add(offset as u64)
                             .expect("reserve guaranteed relocated edge location"),
-                        inline_property_bytes_offset: None,
+                        inline_property_bytes_offset: pending_inline_property_bytes_start.map(
+                            |start| {
+                                start
+                                    .checked_add(
+                                        (offset as u64).checked_mul(inline_property_width).expect(
+                                            "reserve guaranteed relocated inline property location",
+                                        ),
+                                    )
+                                    .expect("reserve guaranteed relocated inline property location")
+                            },
+                        ),
                     },
                 })
                 .collect()
         } else {
             Vec::new()
         };
-        let updated_bucket = bucket
+        let mut updated_bucket = bucket
             .with_stored_slots(
                 bucket
                     .stored_slots
@@ -2503,11 +2716,108 @@ where
                     .checked_add(res.edge_slot_count)
                     .expect("reserve guaranteed relocated degree"),
             );
+        let mut inline_property_bytes_slots_written = 0;
+        if res.inline_property_width > 0 {
+            let new_offset = inline_property_bytes_offset
+                .expect("reserve guaranteed relocated inline property bytes offset");
+            let width = u64::from(res.inline_property_width);
+            if inline_property_bytes_log_len > 0 {
+                let leaf = graph.inline_property_bytes_log_leaf(owner);
+                let chain = graph.values.inline_property_bytes_log_chain_asc_indices(
+                    leaf,
+                    bucket.inline_property_bytes_log_head(),
+                );
+                for (offset, log_idx) in chain.into_iter().enumerate() {
+                    let mut bytes = vec![0u8; usize::from(res.inline_property_width)];
+                    graph
+                        .values
+                        .read_inline_property_bytes_log_entry(
+                            leaf,
+                            log_idx,
+                            res.inline_property_width,
+                            &mut bytes,
+                        )
+                        .expect("reserve guaranteed relocated inline property log readability");
+                    let out_offset = new_offset
+                        .checked_add(
+                            u64::from(existing_inline_property_bytes_slots)
+                                .checked_add(offset as u64)
+                                .expect("reserve guaranteed relocated inline property slot")
+                                .checked_mul(width)
+                                .expect("reserve guaranteed relocated inline property offset"),
+                        )
+                        .expect("reserve guaranteed relocated inline property offset");
+                    graph
+                        .values
+                        .write_bytes(out_offset, &bytes)
+                        .expect("reserve guaranteed relocated inline property capacity");
+                }
+            }
+            let pending_bytes = run
+                .edges
+                .iter()
+                .flat_map(|edge| edge.edge.edge_inline_property_bytes().iter().copied())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                pending_bytes.len() as u64,
+                inline_property_bytes_byte_count,
+                "reserve relocated inline property byte count must match input"
+            );
+            graph
+                .values
+                .write_bytes(
+                    pending_inline_property_bytes_start
+                        .expect("reserve guaranteed relocated pending inline property offset"),
+                    &pending_bytes,
+                )
+                .expect("reserve guaranteed relocated pending inline property capacity");
+            let total_slots = u64::from(existing_inline_property_bytes_slots)
+                .checked_add(u64::from(inline_property_bytes_log_len))
+                .and_then(|slots| slots.checked_add(u64::from(res.edge_slot_count)))
+                .expect("reserve guaranteed relocated inline property slot count");
+            let old_bytes = u64::from(existing_inline_property_bytes_slots)
+                .checked_mul(width)
+                .expect("reserve guaranteed relocated old inline property bytes");
+            if existing_inline_property_bytes_slots > 0
+                && new_offset != bucket.inline_property_bytes_offset()
+            {
+                graph
+                    .values
+                    .retire_byte_span(bucket.inline_property_bytes_offset(), old_bytes)
+                    .expect("reserve guaranteed relocated old inline property retirement");
+            }
+            updated_bucket = updated_bucket
+                .with_inline_property_bytes_offset(new_offset)
+                .with_inline_property_bytes_slab_slots(
+                    u32::try_from(total_slots)
+                        .expect("reserve guaranteed relocated inline property slots fit"),
+                )
+                .with_inline_property_bytes_log_head(-1);
+            let vertex = graph.vertices.get(owner);
+            let total_bytes = total_slots
+                .checked_mul(width)
+                .expect("reserve guaranteed relocated inline property byte count");
+            let new_alloc = vertex
+                .inline_property_bytes_allocated_bytes()
+                .checked_add(total_bytes.saturating_sub(old_bytes))
+                .expect("reserve guaranteed relocated vertex inline property accounting");
+            graph.vertices.set(
+                owner,
+                &vertex.with_inline_property_bytes_allocated_bytes(new_alloc),
+            );
+            inline_property_bytes_slots_written = u64::from(inline_property_bytes_log_len)
+                .checked_add(u64::from(res.edge_slot_count))
+                .expect("reserve guaranteed relocated inline property slots written");
+        }
         graph
             .buckets
             .write_label_bucket_slot(bucket_slot, updated_bucket)
             .expect("reserve guaranteed relocated bucket write");
-        (u64::from(res.edge_slot_count), locations)
+        (
+            u64::from(res.edge_slot_count),
+            inline_property_bytes_slots_written,
+            locations,
+        )
     }
 
     /// Commit one expanded-slab run.
@@ -2942,6 +3252,7 @@ mod tests {
     };
     use crate::labeled::graph::{BucketSearch, OutEdgeOrder};
     use crate::labeled::record::LabeledVertex;
+    use crate::traits::CsrEdge;
 
     use super::{
         BidirectionalBatchPlan, OneOrientationBatchEdge, OneOrientationBatchError,
@@ -3758,7 +4069,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_property_non_tail_relocation_remains_fail_closed() {
+    fn inline_property_non_tail_relocation_preserves_values() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         for _ in 0..34 {
             graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -3770,13 +4081,6 @@ mod tests {
             .unwrap();
         graph
             .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), pin_label, 0)
-            .unwrap();
-        graph
-            .insert_edge(
-                VertexId::from(0),
-                label,
-                InlinePropertyTestEdge::with_i32(1, 10),
-            )
             .unwrap();
         graph
             .insert_edge(
@@ -3831,16 +4135,29 @@ mod tests {
             BucketSearch::Found { slot, bucket } => (slot, bucket),
             _ => panic!("inline-property bucket must exist"),
         };
+        let edge_log_head = (edge_log_capacity - 1) as i32;
+        let edge_log_len = graph.edges().overflow_log_chain_len(leaf, edge_log_head);
+        let inline_property_bytes_log_head = (inline_property_bytes_log_capacity - 1) as i32;
+        let inline_property_bytes_log_len = graph
+            .values
+            .inline_property_bytes_log_chain_asc_indices(leaf, inline_property_bytes_log_head)
+            .len() as u8;
+        let initial_stored_slots = bucket.stored_slots;
+        let initial_inline_property_bytes_slots = bucket.inline_property_bytes_slab_slots();
         graph
             .buckets()
             .write_label_bucket_slot(
                 slot,
                 bucket
-                    .with_overflow_log_head((edge_log_capacity - 1) as i32)
-                    .with_degree_field((edge_log_capacity + 1) as u32)
+                    .with_overflow_log_head(edge_log_head)
+                    .with_degree_field(
+                        initial_stored_slots
+                            .checked_add(edge_log_len)
+                            .expect("test edge degree fits"),
+                    )
                     .try_with_inline_property_bytes_log(
-                        (inline_property_bytes_log_capacity - 1) as i32,
-                        inline_property_bytes_log_capacity as u8,
+                        inline_property_bytes_log_head,
+                        inline_property_bytes_log_len,
                     )
                     .unwrap(),
             )
@@ -3860,19 +4177,59 @@ mod tests {
                 }],
             }],
         };
-        let before_vertex = graph.vertices.get(VertexId::from(0));
-        let before_capacity = graph.edges().header().elem_capacity;
         let before_inline_property_bytes_tail = graph.values.header().slab_occupied_tail;
-        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("inline-property non-tail relocation must reserve");
+        let result = reservation.commit::<crate::VectorMemory>(&graph);
+        assert!(result.inline_property_bytes_slots_written > 0);
         assert!(
-            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
-            "inline-property non-tail relocation must remain fail-closed, got {err}"
+            graph.values.header().slab_occupied_tail > before_inline_property_bytes_tail,
+            "relocation must append the replacement inline property bytes span"
         );
-        assert_eq!(graph.vertices.get(VertexId::from(0)), before_vertex);
-        assert_eq!(graph.edges().header().elem_capacity, before_capacity);
+
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let bucket = match graph
+            .find_bucket(VertexId::from(0), &vertex, label)
+            .unwrap()
+        {
+            BucketSearch::Found { bucket, .. } => bucket,
+            _ => panic!("inline-property bucket must remain present"),
+        };
+        let expected_slots = initial_stored_slots
+            .checked_add(edge_log_len)
+            .and_then(|slots| slots.checked_add(1))
+            .expect("test relocated edge slots fit");
+        assert_eq!(bucket.degree, expected_slots);
+        assert_eq!(bucket.stored_slots, expected_slots);
+        assert!(bucket.overflow_log_head() < 0);
+
+        let edges = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        let pending = edges
+            .iter()
+            .find(|edge| edge.target == 3000)
+            .expect("relocated batch edge must remain visible");
+        let pending_ordinal = edges
+            .iter()
+            .position(|edge| edge.target == 3000)
+            .expect("pending ordinal");
+        let direct_pending = graph
+            .read_bucket_inline_property_bytes_for_slot(
+                VertexId::from(0),
+                &bucket,
+                pending_ordinal as u32,
+                None,
+            )
+            .unwrap();
         assert_eq!(
-            graph.values.header().slab_occupied_tail,
-            before_inline_property_bytes_tail
+            direct_pending,
+            3000i32.to_le_bytes(),
+            "pending ordinal {pending_ordinal}, initial edge slots {initial_stored_slots}, initial inline slots {initial_inline_property_bytes_slots}, stored {}, inline slots {}, inline log len {}",
+            bucket.stored_slots,
+            bucket.inline_property_bytes_slab_slots(),
+            bucket.inline_property_bytes_log_len()
         );
+        assert_eq!(pending.edge_inline_property_bytes(), 3000i32.to_le_bytes());
+        assert_eq!(edges.len(), expected_slots as usize + 1);
     }
 }

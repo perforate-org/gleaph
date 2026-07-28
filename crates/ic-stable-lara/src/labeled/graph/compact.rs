@@ -1427,7 +1427,19 @@ where
                         // copying through the reusable encode buffer.
                         #[cfg(all(feature = "canbench", target_family = "wasm"))]
                         let _scope = bench_scope("labeled_vertex_write_edge_run");
-                        self.edges.write_slots_contiguous(row_start, raw)?;
+                        if leaf_relocate_commit {
+                            for (slot_index, bytes) in raw.chunks_exact(E::BYTES).enumerate() {
+                                let edge = E::read_from(bytes).with_slot_index(
+                                    u32::try_from(slot_index)
+                                        .map_err(|_| LaraOperationError::RowDegreeOverflow)?,
+                                );
+                                let out_slot = checked_add_slot_index(row_start, slot_index as u64)
+                                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                                self.edges.write_slot(out_slot, edge)?;
+                            }
+                        } else {
+                            self.edges.write_slots_contiguous(row_start, raw)?;
+                        }
                     } else if let Some(edges) = edges {
                         #[cfg(all(feature = "canbench", target_family = "wasm"))]
                         let _scope = bench_scope("labeled_vertex_encode_edge_run");

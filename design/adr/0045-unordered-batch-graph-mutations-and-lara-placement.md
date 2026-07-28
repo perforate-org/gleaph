@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 07:46:51 UTC +0000
+Anchor timestamp: 2026-07-28 08:34:44 UTC +0000
 
 Planned successor: [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md)
 will, after ADR 0048 completion, retain this ADR's physical placement,
@@ -154,7 +154,7 @@ try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   degree, and leaves stored_slots and vertex slab span unchanged. Cross-
   orientation reserve-all-then-commit and rollback remain unchanged. Scalar
   fallback remains for new buckets, default/unlabeled promotion,
-  inline-property-bearing relocation, tombstone reuse, and other unsupported
+  new-bucket creation, tombstone reuse, and other unsupported
   geometry. Focused unit tests cover successful edge/inline property bytes log
   append, log capacity exhaustion, multi-run and multi-orientation rollback,
   read-back order, and unchanged canonical/allocator state after rejection.
@@ -164,12 +164,14 @@ try_insert_batch_edges_clean_slab` builds one-orientation plans from the
   edge/inline property bytes logs and writes aligned slab values, and rollback restores the
   inline property bytes tail/free-list and edge allocator state. Payload read-back and full
   canbench coverage are included; malformed edge/inline property bytes log lengths reject
-  before allocation. New bucket creation, inline-property-bearing non-tail
-  relocation, and full public wire integration remain planned for later slices.
+  before allocation. New bucket creation and full public wire integration remain
+  planned for later slices.
 - The storage owner exposes a mutation-free relocation target planner shared by
-  scalar relocation and batch admission. Edge-only batch relocation consumes
-  that target once per leaf during commit; inline-property-bearing relocation
-  remains fail-closed.
+  scalar relocation and batch admission. Batch relocation consumes that target
+  once per leaf during commit. When a relocated bucket has a non-tail inline
+  property bytes span, reserve copies it to the new occupied tail and commit
+  folds edge/inline-property logs before publishing the replacement offset and
+  retiring the old span.
 - ADR 0048's persistent mate index is still planned. Plan 0129 implements only
   the internal returned-slot boundary: LARA owns exact physical locations and
   GraphStore joins them by ordinal without a post-insert adjacency scan. Plan
