@@ -18,6 +18,7 @@ use ic_stable_lara::{
 use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara_label};
 use super::{GraphStore, GraphStoreError, stable::GRAPH};
 use crate::edge_inline_property_schema::lookup_edge_inline_property_profile;
+use crate::edge_inline_property_schema::resolved_edge_label_with;
 use rapidhash::{HashMapExt, RapidHashMap};
 
 /// One logical edge supplied for optimized batch planning.
@@ -135,6 +136,11 @@ pub enum BatchPlacementError {
         logical_ordinal: u32,
         property_id: PropertyId,
     },
+    /// An initial sidecar property duplicates the label's inline property.
+    InitialPropertyConflictsWithInline {
+        logical_ordinal: u32,
+        property_id: PropertyId,
+    },
 }
 
 impl std::fmt::Display for BatchPlacementError {
@@ -184,6 +190,14 @@ impl std::fmt::Display for BatchPlacementError {
             } => write!(
                 f,
                 "logical ordinal {logical_ordinal} repeats initial property id {}",
+                property_id.raw()
+            ),
+            Self::InitialPropertyConflictsWithInline {
+                logical_ordinal,
+                property_id,
+            } => write!(
+                f,
+                "logical ordinal {logical_ordinal} repeats inline property id {}",
                 property_id.raw()
             ),
             Self::PayloadWidthMixed => {
@@ -534,6 +548,17 @@ impl GraphStore {
                         error,
                     }
                 })?;
+                if edge
+                    .catalog_label
+                    .and_then(|label| resolved_edge_label_with(None, label))
+                    .and_then(|label| label.inline_property_id())
+                    == Some(*property_id)
+                {
+                    return Err(BatchPlacementError::InitialPropertyConflictsWithInline {
+                        logical_ordinal,
+                        property_id: *property_id,
+                    });
+                }
             }
         }
         Ok(())

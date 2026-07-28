@@ -778,7 +778,9 @@ mod tests {
     use super::super::batch_placement::BatchEdgeInput;
     use super::super::store::helpers::{edge_storage_label, lara_label};
     use super::*;
-    use crate::test_labels::install_test_edge_inline_property_profile;
+    use crate::test_labels::{
+        install_test_edge_inline_property, install_test_edge_inline_property_profile,
+    };
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
     use ic_stable_lara::VertexId;
@@ -935,6 +937,42 @@ mod tests {
         assert!(matches!(
             error,
             BatchPlacementError::DuplicateInitialPropertyId { .. }
+        ));
+        assert_eq!(
+            count_labeled_dir_edges(
+                &store,
+                vertices[0],
+                storage_label_for(Some(label), true),
+                true
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn inline_property_cannot_be_repeated_as_initial_sidecar() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4004);
+        let inline_property_id = PropertyId::from_raw(78);
+        install_test_edge_inline_property(label, inline_property_id);
+        install_width(label, 4);
+        let vertices = make_vertices(&store, 2);
+        store.prepare_clean_slab_dir_buckets(vertices[0], vertices[1], label, 4);
+        let mut edge = input(
+            vertices[0],
+            vertices[1],
+            Some(label),
+            true,
+            vec![1, 2, 3, 4],
+        );
+        edge.initial_edge_properties = vec![(inline_property_id, Value::Int64(1))];
+
+        let error = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge])
+            .expect_err("inline property must not also be stored as a sidecar");
+        assert!(matches!(
+            error,
+            BatchPlacementError::InitialPropertyConflictsWithInline { .. }
         ));
         assert_eq!(
             count_labeled_dir_edges(

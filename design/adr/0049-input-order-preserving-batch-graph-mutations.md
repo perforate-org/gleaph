@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 10:19:58 UTC +0000
+Anchor timestamp: 2026-07-28 10:22:53 UTC +0000
 
 ## Context
 
@@ -1522,10 +1522,11 @@ not rewritten as though unfinished unordered product behavior shipped.
     before reservation, derives one canonical `CanonicalEdgeOccurrence` from
     the joined captured location for directed, undirected, and self-loop
     shapes, and writes the canonical sidecar plus its derived property event
-    after LARA commit. Inline-property/schema conflict rejection, explicit
-    sidecar reservation, durable net-event co-write, and parallel inserts
-    remain planned; the post-commit sidecar path traps on a violated
-    preflight invariant rather than returning a recoverable error.
+    after LARA commit. Inline-property/schema conflict rejection is now
+    included in the preflight; explicit sidecar reservation, durable net-event
+    co-write, and parallel inserts remain planned. The post-commit sidecar path
+    traps on a violated preflight invariant rather than returning a recoverable
+    error.
 11. Replace Router V1 request identity/payload in place; implement exhaustive
     ordered routing/envelope/target progress, resolved-table authority transfer,
     bounded typed retry diagnostics and terminal failures, a bounded record in
