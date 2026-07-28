@@ -75,6 +75,14 @@ async fn execute_plan_update(
     canister::handlers::execute_plan_update(args).await
 }
 
+/// Router → graph: journal-first ordered edge batch execution (ADR 0049).
+#[update(guard = "guard_router_canister")]
+fn execute_ordered_edge_batch(
+    args: gleaph_graph_kernel::plan_exec::OrderedEdgeBatchGraphArgs,
+) -> Result<gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchResult, String> {
+    canister::handlers::execute_ordered_edge_batch(args)
+}
+
 #[update(guard = "guard_router_canister")]
 async fn execute_plan_update_batch(
     args: gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs,

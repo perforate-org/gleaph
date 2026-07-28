@@ -26,9 +26,10 @@ use gleaph_gql_planner::PhysicalPlan;
 
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
-    ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode, MutationId,
-    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, ResolvedSearchWire,
-    SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
+    ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode, GraphMutationRequestIdentityV1,
+    GraphOrderedEdgeBatchResult, MutationId, OrderedEdgeBatchGraphArgs,
+    OrderedEdgeBatchGraphRequest, OrderedMutationRetirementAck, OrderedMutationRetirementArgs,
+    ResolvedSearchWire, SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
 };
 
 use super::types::GraphInitArgs;
@@ -263,6 +264,41 @@ pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanRes
         .0;
     ensure_execute_plan_result_payload(&result, "execute_plan_update")?;
     Ok(result)
+}
+
+/// Router → graph: journal-first ordered edge batch execution boundary (ADR 0049).
+///
+/// The replay branch is live. A journal miss remains deliberately fail-closed until the ordered
+/// planner/write path is connected; it must not fall through to an unordered plan executor.
+pub fn execute_ordered_edge_batch(
+    args: OrderedEdgeBatchGraphArgs,
+) -> Result<GraphOrderedEdgeBatchResult, String> {
+    args.recompute_and_validate_fingerprint()?;
+    let OrderedEdgeBatchGraphArgs::V1(args) = &args;
+    args.request
+        .validate()
+        .map_err(|error| format!("ordered Graph request validation: {error}"))?;
+    let OrderedEdgeBatchGraphRequest::V1(request) = &args.request;
+    #[cfg(target_family = "wasm")]
+    if request.target_graph_canister != ic_cdk::api::id() {
+        return Err("ordered Graph request target canister does not match receiver".into());
+    }
+
+    let logical_item_count = u32::try_from(request.items.len())
+        .map_err(|_| "ordered Graph request item count exceeds u32".to_string())?;
+    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: args.graph_request_fingerprint,
+        logical_item_count,
+    };
+    let store = GraphStore::new();
+    if let Some(result) = store
+        .ordered_edge_batch_replay_result(args.mutation_id, &identity)
+        .map_err(str::to_string)?
+    {
+        return Ok(result);
+    }
+    Err("ordered Graph fresh execution is not implemented yet".into())
 }
 
 pub async fn execute_plan_update_batch(
@@ -2106,12 +2142,17 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
     use gleaph_gql_planner::wire::encode_block_plans;
-    use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId, VertexLabelId};
+    use gleaph_graph_kernel::entry::{
+        EdgeInlinePropertyProfile, EdgeLabelId, GraphId, VertexLabelId,
+    };
     use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ElementIdEncodingKey, ShardId};
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
-        ExecutePlanTypedOp, ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
+        ExecutePlanTypedOp, OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1,
+        OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1,
+        ResolvedEdgeLabel, ResolvedLabelTable, ResolvedPropertyTable, ResolvedVertexLabel,
         SeedBindingEntry, SeedBindingsWire, SeedRowWire, SeedVertexBinding,
+        ordered_edge_batch_graph_request_fingerprint,
     };
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
@@ -2565,6 +2606,68 @@ mod tests {
             caps.typed_seed_batch,
             gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
         );
+    }
+
+    #[test]
+    fn ordered_handler_replays_journal_and_rejects_fingerprint_mismatch() {
+        let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(71),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![OrderedEdgeBatchGraphItemV1 {
+                source_local_vertex_id: 3,
+                target_local_vertex_id: 9,
+                directed: true,
+                catalog_edge_label_id: None,
+                inline_property_bytes: Vec::new(),
+                resolved_initial_edge_properties: Vec::new(),
+            }],
+        });
+        let fingerprint =
+            ordered_edge_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
+            mutation_id: 71_001,
+            graph_request_fingerprint: fingerprint,
+            request: request.clone(),
+        });
+        let fresh_error =
+            execute_ordered_edge_batch(args.clone()).expect_err("fresh path is deferred");
+        assert!(fresh_error.contains("fresh execution is not implemented"));
+
+        GraphStore::new().commit_record_completed_ordered_edge_batch_journal_at(
+            0,
+            71_001,
+            gleaph_graph_kernel::plan_exec::GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                canonical_encoding_version: 1,
+                graph_request_fingerprint: fingerprint,
+                logical_item_count: 1,
+            },
+            1,
+            None,
+            None,
+            vec![],
+        );
+        let replay = execute_ordered_edge_batch(args).expect("journal replay");
+        assert!(matches!(
+            replay,
+            gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchResult::V1(
+                gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchResultV1::Completed(_)
+            )
+        ));
+
+        let mut conflicting = request;
+        let OrderedEdgeBatchGraphRequest::V1(ref mut request) = conflicting;
+        request.items[0].target_local_vertex_id = 10;
+        let conflicting_args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
+            mutation_id: 71_001,
+            graph_request_fingerprint: fingerprint,
+            request: conflicting,
+        });
+        let mismatch = execute_ordered_edge_batch(conflicting_args)
+            .expect_err("fingerprint mismatch must fail before journal lookup");
+        assert!(mismatch.contains("fingerprint mismatch"));
     }
 }
 

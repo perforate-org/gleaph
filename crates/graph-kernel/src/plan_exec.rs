@@ -211,6 +211,31 @@ pub struct OrderedEdgeBatchGraphRequestV1 {
 pub const MAX_ORDERED_EDGE_BATCH_ITEMS: usize = 1_024;
 pub const MAX_ORDERED_EDGE_PROPERTIES_PER_ITEM: usize = 256;
 
+/// Immutable Graph execution envelope. The transmitted fingerprint is integrity metadata; the
+/// Graph recomputes it from `request` before journal lookup.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum OrderedEdgeBatchGraphArgs {
+    V1(OrderedEdgeBatchGraphArgsV1),
+}
+
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedEdgeBatchGraphArgsV1 {
+    pub mutation_id: MutationId,
+    pub graph_request_fingerprint: [u8; 32],
+    pub request: OrderedEdgeBatchGraphRequest,
+}
+
+impl OrderedEdgeBatchGraphArgs {
+    pub fn recompute_and_validate_fingerprint(&self) -> Result<[u8; 32], String> {
+        let OrderedEdgeBatchGraphArgs::V1(args) = self;
+        let fingerprint = ordered_edge_batch_graph_request_fingerprint(&args.request)?;
+        if fingerprint != args.graph_request_fingerprint {
+            return Err("ordered Graph request fingerprint mismatch".into());
+        }
+        Ok(fingerprint)
+    }
+}
+
 impl OrderedEdgeBatchGraphRequest {
     pub fn validate(&self) -> Result<(), String> {
         let OrderedEdgeBatchGraphRequest::V1(request) = self;
