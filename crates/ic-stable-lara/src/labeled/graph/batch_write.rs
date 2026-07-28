@@ -3756,4 +3756,123 @@ mod tests {
                 .collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn inline_property_non_tail_relocation_remains_fail_closed() {
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        for _ in 0..34 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        let label = BucketLabelKey::from_raw(2);
+        let pin_label = BucketLabelKey::from_raw(3);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
+            .unwrap();
+        graph
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), pin_label, 0)
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                InlinePropertyTestEdge::with_i32(1, 10),
+            )
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                pin_label,
+                InlinePropertyTestEdge::with_bytes(2, &[]),
+            )
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(32),
+                pin_label,
+                InlinePropertyTestEdge::with_bytes(33, &[]),
+            )
+            .unwrap();
+
+        let header = graph.edges().header();
+        let leaf =
+            LabeledLaraGraph::<InlinePropertyTestEdge, crate::VectorMemory>::leaf_index_for_vid(
+                VertexId::from(0),
+                header.segment_size,
+            );
+        let edge_log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+        let inline_property_bytes_log_capacity =
+            graph.values.read_inline_property_bytes_log_state(leaf).1 as usize;
+        assert_eq!(edge_log_capacity, inline_property_bytes_log_capacity);
+        let edge_entries = (0..edge_log_capacity)
+            .map(|i| {
+                (
+                    if i == 0 { -1 } else { (i - 1) as i32 },
+                    InlinePropertyTestEdge::with_i32(100 + i as u32, 1000 + i as i32),
+                )
+            })
+            .collect::<Vec<_>>();
+        graph
+            .edges()
+            .write_overflow_log_entries(leaf, 0, &edge_entries)
+            .unwrap();
+        let inline_property_bytes = (0..inline_property_bytes_log_capacity)
+            .flat_map(|i| (2000 + i as i32).to_le_bytes())
+            .collect::<Vec<_>>();
+        graph
+            .values
+            .write_inline_property_bytes_log_entries(leaf, 0, -1, 4, &inline_property_bytes)
+            .unwrap();
+
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let (slot, bucket) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label)
+            .unwrap()
+        {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("inline-property bucket must exist"),
+        };
+        graph
+            .buckets()
+            .write_label_bucket_slot(
+                slot,
+                bucket
+                    .with_overflow_log_head((edge_log_capacity - 1) as i32)
+                    .with_degree_field((edge_log_capacity + 1) as u32)
+                    .try_with_inline_property_bytes_log(
+                        (inline_property_bytes_log_capacity - 1) as i32,
+                        inline_property_bytes_log_capacity as u8,
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 4,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(3000),
+                    label_id: label,
+                    edge: InlinePropertyTestEdge::with_i32(3000, 3000),
+                }],
+            }],
+        };
+        let before_vertex = graph.vertices.get(VertexId::from(0));
+        let before_capacity = graph.edges().header().elem_capacity;
+        let before_inline_property_bytes_tail = graph.values.header().slab_occupied_tail;
+        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
+        assert!(
+            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
+            "inline-property non-tail relocation must remain fail-closed, got {err}"
+        );
+        assert_eq!(graph.vertices.get(VertexId::from(0)), before_vertex);
+        assert_eq!(graph.edges().header().elem_capacity, before_capacity);
+        assert_eq!(
+            graph.values.header().slab_occupied_tail,
+            before_inline_property_bytes_tail
+        );
+    }
 }

@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 07:57:06 UTC +0000
+Anchor timestamp: 2026-07-28 08:01:13 UTC +0000
 
 ## Context
 
@@ -1502,7 +1502,8 @@ not rewritten as though unfinished unordered product behavior shipped.
    per leaf during batch commit using the storage-owned mutation-free target
    planner; same-leaf multi-bucket coverage checks both folded sequences
    independently. Inline-property-bearing relocation remains fail-closed
-   without mutating canonical state and remains planned.
+   without mutating canonical state; its capacity and inline-property tail
+   rejection is covered explicitly and the capability remains planned.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
 10. Integrate mandatory internal location capture, canonical sidecar writes, and
