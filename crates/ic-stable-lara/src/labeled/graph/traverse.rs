@@ -2213,26 +2213,27 @@ where
         let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
         let mut collected_slot_indices = Vec::new();
         let mut collected_values = Vec::new();
-        let result = self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
-            if collected_slot_indices.len() == batch_edges {
-                if let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
-                    label_id: label,
-                    byte_width: bucket.inline_property_byte_width(),
-                    order,
-                    slot_indices: &collected_slot_indices,
-                    values: &collected_values,
-                    dense: false,
-                }) {
-                    return ControlFlow::Break(value);
+        let result =
+            self.visit_edges_with_inline_property_ref(owner, label, order, |slot, item| {
+                if collected_slot_indices.len() == batch_edges {
+                    if let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
+                        label_id: label,
+                        byte_width: bucket.inline_property_byte_width(),
+                        order,
+                        slot_indices: &collected_slot_indices,
+                        values: &collected_values,
+                        dense: false,
+                    }) {
+                        return ControlFlow::Break(value);
+                    }
+                    scratch.clear();
+                    collected_slot_indices.clear();
+                    collected_values.clear();
                 }
-                scratch.clear();
-                collected_slot_indices.clear();
-                collected_values.clear();
-            }
-            collected_slot_indices.push(slot.raw());
-            collected_values.extend_from_slice(item.inline_property.bytes());
-            ControlFlow::Continue(())
-        })?;
+                collected_slot_indices.push(slot.raw());
+                collected_values.extend_from_slice(item.inline_property.bytes());
+                ControlFlow::Continue(())
+            })?;
         if let ControlFlow::Break(value) = result {
             return Ok(ControlFlow::Break(value));
         }
@@ -2798,26 +2799,27 @@ where
         };
         let width = usize::from(bucket.inline_property_byte_width());
         let batch_edges = (EDGE_INLINE_PROPERTY_BATCH_TARGET_BYTES / width.max(1)).max(1);
-        let result = self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
-            if scratch.slot_indices.len() == batch_edges {
-                if let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
-                    label_id: label,
-                    byte_width: bucket.inline_property_byte_width(),
-                    order,
-                    slot_indices: &scratch.slot_indices,
-                    values: &scratch.values,
-                    dense: false,
-                }) {
-                    return ControlFlow::Break(value);
+        let result =
+            self.visit_edges_with_inline_property_ref(owner, label, order, |slot, item| {
+                if scratch.slot_indices.len() == batch_edges {
+                    if let ControlFlow::Break(value) = visit(LabeledInlinePropertyValueBatch {
+                        label_id: label,
+                        byte_width: bucket.inline_property_byte_width(),
+                        order,
+                        slot_indices: &scratch.slot_indices,
+                        values: &scratch.values,
+                        dense: false,
+                    }) {
+                        return ControlFlow::Break(value);
+                    }
+                    scratch.clear();
                 }
-                scratch.clear();
-            }
-            scratch.slot_indices.push(slot.raw());
-            scratch
-                .values
-                .extend_from_slice(item.inline_property.bytes());
-            ControlFlow::Continue(())
-        })?;
+                scratch.slot_indices.push(slot.raw());
+                scratch
+                    .values
+                    .extend_from_slice(item.inline_property.bytes());
+                ControlFlow::Continue(())
+            })?;
         if let ControlFlow::Break(value) = result {
             return Ok(ControlFlow::Break(value));
         }
