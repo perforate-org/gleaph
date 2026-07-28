@@ -912,7 +912,7 @@ where
             self.values.read_bytes(old_offset, &mut old_buf);
             let new_offset = self
                 .values
-                .append_byte_span(needed_bytes)
+                .allocate_byte_span(needed_bytes)
                 .map_err(LabeledOperationError::from)?;
             self.values
                 .write_bytes(new_offset, &old_buf)

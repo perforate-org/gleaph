@@ -907,6 +907,21 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         self.append_byte_span(len)
     }
 
+    /// Returns the best-fit retired byte span without removing it.
+    pub(crate) fn peek_free_byte_span(&self, len: u64) -> Option<FreeSpan> {
+        self.free_spans.peek_best_fit(len)
+    }
+
+    /// Restores a byte-span prefix previously removed by [`Self::allocate_byte_span`].
+    pub(crate) fn restore_allocated_byte_span(&self, span: FreeSpan) -> Result<(), GrowFailed> {
+        self.free_spans
+            .restore_allocated_prefix(span)
+            .map_err(|_| GrowFailed {
+                current_size: self.byte_capacity(),
+                delta: 0,
+            })
+    }
+
     /// Takes an inline property bytes free-span prefix at an exact byte offset.
     pub(crate) fn allocate_byte_span_at(&self, offset: u64, len: u64) -> Result<bool, GrowFailed> {
         if len == 0 {

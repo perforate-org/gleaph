@@ -53,6 +53,7 @@ use ic_stable_structures::Memory;
 use super::compact::LabeledLeafRelocationTarget;
 use super::error::LabeledOperationError;
 use super::{BucketSearch, LabeledLaraGraph};
+use crate::lara::edge::free_span::FreeSpan;
 
 /// One physical half-edge inside a one-orientation batch plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -556,6 +557,9 @@ where
     /// Leaf relocation targets admitted for this reservation. Each leaf is
     /// consumed once during commit before any pending row is written.
     leaf_relocations: std::collections::BTreeMap<u32, LabeledLeafRelocationTarget>,
+    /// Inline-property free-span prefixes consumed while reserving replacement spans.
+    /// Restored if the reservation is rolled back before commit.
+    inline_property_bytes_free_spans: Vec<FreeSpan>,
 }
 
 impl<E> BatchReservation<E>
@@ -1140,6 +1144,7 @@ where
         let inline_property_bytes_tail_before = self.values.header().slab_occupied_tail;
         let mut allocated_inline_property_bytes_offsets: Vec<Option<(u64, u64)>> =
             Vec::with_capacity(preflight.len());
+        let mut allocated_inline_property_bytes_free_spans = Vec::new();
         for p in &preflight {
             match p.destination {
                 RunDestination::Slab { .. } => {
@@ -1149,18 +1154,27 @@ where
                                 allocated_inline_property_bytes_offsets.push(Some((offset, 0)));
                             }
                             InlinePropertyBytesAllocationKind::New { byte_len } => {
+                                let free_span = self.values.peek_free_byte_span(byte_len);
                                 let actual_offset =
-                                    self.values.append_byte_span(byte_len).map_err(|e| {
+                                    self.values.allocate_byte_span(byte_len).map_err(|e| {
                                         Self::rollback_leaf_expansions(
                                             self,
                                             &leaf_expansion_cursors,
                                         );
                                         self.rollback_inline_property_bytes_tail(
                                             inline_property_bytes_tail_before,
+                                            &allocated_inline_property_bytes_free_spans,
                                         );
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
                                     })?;
+                                if let Some(span) = free_span {
+                                    assert_eq!(actual_offset, span.start_slot);
+                                    allocated_inline_property_bytes_free_spans.push(FreeSpan {
+                                        start_slot: actual_offset,
+                                        len: byte_len,
+                                    });
+                                }
                                 allocated_inline_property_bytes_offsets
                                     .push(Some((actual_offset, byte_len)));
                             }
@@ -1179,6 +1193,7 @@ where
                                         );
                                         self.rollback_inline_property_bytes_tail(
                                             inline_property_bytes_tail_before,
+                                            &allocated_inline_property_bytes_free_spans,
                                         );
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
@@ -1187,6 +1202,7 @@ where
                                     Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
                                     self.rollback_inline_property_bytes_tail(
                                         inline_property_bytes_tail_before,
+                                        &allocated_inline_property_bytes_free_spans,
                                     );
                                     self.rollback_edge_capacity(edge_capacity_before);
                                     return Err(
@@ -1201,18 +1217,30 @@ where
                                 had_bytes,
                                 new_bytes,
                             } => {
+                                let free_span = self.values.peek_free_byte_span(new_bytes);
                                 let actual_offset =
-                                    self.values.append_byte_span(new_bytes).map_err(|e| {
+                                    self.values.allocate_byte_span(new_bytes).map_err(|e| {
                                         Self::rollback_leaf_expansions(
                                             self,
                                             &leaf_expansion_cursors,
                                         );
                                         self.rollback_inline_property_bytes_tail(
                                             inline_property_bytes_tail_before,
+                                            &allocated_inline_property_bytes_free_spans,
                                         );
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
                                     })?;
+                                if let Some(span) = free_span {
+                                    assert_eq!(
+                                        actual_offset, span.start_slot,
+                                        "inline property free-span allocation must use the peeked best-fit span"
+                                    );
+                                    allocated_inline_property_bytes_free_spans.push(FreeSpan {
+                                        start_slot: actual_offset,
+                                        len: new_bytes,
+                                    });
+                                }
                                 let mut existing =
                                     vec![
                                         0u8;
@@ -1223,6 +1251,7 @@ where
                                             );
                                             self.rollback_inline_property_bytes_tail(
                                                 inline_property_bytes_tail_before,
+                                                &allocated_inline_property_bytes_free_spans,
                                             );
                                             self.rollback_edge_capacity(edge_capacity_before);
                                             OneOrientationBatchError::SlabCapacityExceeded
@@ -1238,6 +1267,7 @@ where
                                         );
                                         self.rollback_inline_property_bytes_tail(
                                             inline_property_bytes_tail_before,
+                                            &allocated_inline_property_bytes_free_spans,
                                         );
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
@@ -1265,18 +1295,27 @@ where
                                 allocated_inline_property_bytes_offsets.push(Some((offset, 0)));
                             }
                             InlinePropertyBytesAllocationKind::New { byte_len } => {
+                                let free_span = self.values.peek_free_byte_span(byte_len);
                                 let actual_offset =
-                                    self.values.append_byte_span(byte_len).map_err(|e| {
+                                    self.values.allocate_byte_span(byte_len).map_err(|e| {
                                         Self::rollback_leaf_expansions(
                                             self,
                                             &leaf_expansion_cursors,
                                         );
                                         self.rollback_inline_property_bytes_tail(
                                             inline_property_bytes_tail_before,
+                                            &allocated_inline_property_bytes_free_spans,
                                         );
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
                                     })?;
+                                if let Some(span) = free_span {
+                                    assert_eq!(actual_offset, span.start_slot);
+                                    allocated_inline_property_bytes_free_spans.push(FreeSpan {
+                                        start_slot: actual_offset,
+                                        len: byte_len,
+                                    });
+                                }
                                 allocated_inline_property_bytes_offsets
                                     .push(Some((actual_offset, byte_len)));
                             }
@@ -1295,6 +1334,7 @@ where
                                         );
                                         self.rollback_inline_property_bytes_tail(
                                             inline_property_bytes_tail_before,
+                                            &allocated_inline_property_bytes_free_spans,
                                         );
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
@@ -1303,6 +1343,7 @@ where
                                     Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
                                     self.rollback_inline_property_bytes_tail(
                                         inline_property_bytes_tail_before,
+                                        &allocated_inline_property_bytes_free_spans,
                                     );
                                     self.rollback_edge_capacity(edge_capacity_before);
                                     return Err(
@@ -1317,18 +1358,30 @@ where
                                 had_bytes,
                                 new_bytes,
                             } => {
+                                let free_span = self.values.peek_free_byte_span(new_bytes);
                                 let actual_offset =
-                                    self.values.append_byte_span(new_bytes).map_err(|e| {
+                                    self.values.allocate_byte_span(new_bytes).map_err(|e| {
                                         Self::rollback_leaf_expansions(
                                             self,
                                             &leaf_expansion_cursors,
                                         );
                                         self.rollback_inline_property_bytes_tail(
                                             inline_property_bytes_tail_before,
+                                            &allocated_inline_property_bytes_free_spans,
                                         );
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
                                     })?;
+                                if let Some(span) = free_span {
+                                    assert_eq!(
+                                        actual_offset, span.start_slot,
+                                        "inline property free-span allocation must use the peeked best-fit span"
+                                    );
+                                    allocated_inline_property_bytes_free_spans.push(FreeSpan {
+                                        start_slot: actual_offset,
+                                        len: new_bytes,
+                                    });
+                                }
                                 let mut existing =
                                     vec![
                                         0u8;
@@ -1339,6 +1392,7 @@ where
                                             );
                                             self.rollback_inline_property_bytes_tail(
                                                 inline_property_bytes_tail_before,
+                                                &allocated_inline_property_bytes_free_spans,
                                             );
                                             self.rollback_edge_capacity(edge_capacity_before);
                                             OneOrientationBatchError::SlabCapacityExceeded
@@ -1354,6 +1408,7 @@ where
                                         );
                                         self.rollback_inline_property_bytes_tail(
                                             inline_property_bytes_tail_before,
+                                            &allocated_inline_property_bytes_free_spans,
                                         );
                                         self.rollback_edge_capacity(edge_capacity_before);
                                         storage_resize_error(e)
@@ -1506,6 +1561,7 @@ where
             new_buckets,
             leaf_expansions: leaf_expansion_cursors,
             leaf_relocations,
+            inline_property_bytes_free_spans: allocated_inline_property_bytes_free_spans,
         })
     }
 
@@ -1536,22 +1592,27 @@ where
         Ok(())
     }
 
-    /// Roll back inline property bytes tail growth performed during a partially-failed reserve.
+    /// Roll back inline property bytes allocation performed during a partially-failed reserve.
     ///
-    /// All inline property bytes allocations in this batch append at the occupied tail, so the
-    /// new bytes are exactly `[original_tail, current_tail)`.  We retire that
-    /// range to the free list and restore the header, turning the unused bytes
-    /// into reusable slack.  Existing inline property bytes spans are untouched.  The
-    /// underlying stable-memory pages are not shrunk.  If retiring the tail
-    /// span fails, we panic: the allocator would be left in an inconsistent
-    /// state and continuing is unsafe.
-    fn rollback_inline_property_bytes_tail(&self, original_tail: u64) {
+    /// Tail allocations are retired as one range, while free-span prefixes consumed by
+    /// replacement allocations are restored individually. Existing inline property bytes
+    /// spans are untouched. The underlying stable-memory pages are not shrunk.
+    fn rollback_inline_property_bytes_tail(
+        &self,
+        original_tail: u64,
+        allocated_free_spans: &[FreeSpan],
+    ) {
         let current_tail = self.values.header().slab_occupied_tail;
         if current_tail > original_tail {
             self.values
                 .retire_byte_span(original_tail, current_tail - original_tail)
                 .expect("reserve rollback must restore inline property free-list consistency");
             self.values.reset_slab_occupied_tail(original_tail);
+        }
+        for span in allocated_free_spans.iter().rev() {
+            self.values
+                .restore_allocated_byte_span(*span)
+                .expect("reserve rollback must restore inline property free-span consistency");
         }
     }
 
@@ -3249,7 +3310,10 @@ where
         );
         graph.rollback_leaf_expansions(&self.leaf_expansions);
         graph.rollback_edge_capacity(self.edge_capacity_before);
-        graph.rollback_inline_property_bytes_tail(self.inline_property_bytes_tail_before);
+        graph.rollback_inline_property_bytes_tail(
+            self.inline_property_bytes_tail_before,
+            &self.inline_property_bytes_free_spans,
+        );
         graph.rollback_prepared_buckets(&self.new_buckets);
     }
 }
@@ -4283,7 +4347,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_property_non_tail_relocation_preserves_values() {
+    fn inline_property_non_tail_relocation_reuses_free_span() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         for _ in 0..34 {
             graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -4391,15 +4455,40 @@ mod tests {
                 }],
             }],
         };
+        let reusable_offset = graph.values.append_byte_span(4096).unwrap();
+        graph
+            .values
+            .retire_byte_span(reusable_offset, 4096)
+            .unwrap();
+        let replacement_byte_len = u64::from(
+            initial_inline_property_bytes_slots
+                .checked_add(edge_log_len)
+                .and_then(|slots| slots.checked_add(1))
+                .expect("test inline property replacement slots fit"),
+        ) * 4;
+        assert_eq!(
+            graph
+                .values
+                .peek_free_byte_span(replacement_byte_len)
+                .map(|span| span.start_slot),
+            Some(reusable_offset)
+        );
         let before_inline_property_bytes_tail = graph.values.header().slab_occupied_tail;
         let reservation = graph
             .reserve_one_orientation_batch(&plan)
             .expect("inline-property non-tail relocation must reserve");
+        assert_eq!(
+            graph.values.header().slab_occupied_tail,
+            before_inline_property_bytes_tail,
+            "batch reservation should consume the inline property bytes free span, not the tail"
+        );
         let result = reservation.commit::<crate::VectorMemory>(&graph);
         assert!(result.inline_property_bytes_slots_written > 0);
-        assert!(
-            graph.values.header().slab_occupied_tail > before_inline_property_bytes_tail,
-            "relocation must append the replacement inline property bytes span"
+        assert_eq!(
+            graph.values.header().slab_occupied_tail,
+            before_inline_property_bytes_tail,
+            "relocation should reuse the sufficient inline property bytes free span (before={before_inline_property_bytes_tail}, after={})",
+            graph.values.header().slab_occupied_tail
         );
 
         let vertex = graph.vertices.get(VertexId::from(0));
@@ -4410,6 +4499,7 @@ mod tests {
             BucketSearch::Found { bucket, .. } => bucket,
             _ => panic!("inline-property bucket must remain present"),
         };
+        assert_eq!(bucket.inline_property_bytes_offset(), reusable_offset);
         let expected_slots = initial_stored_slots
             .checked_add(edge_log_len)
             .and_then(|slots| slots.checked_add(1))

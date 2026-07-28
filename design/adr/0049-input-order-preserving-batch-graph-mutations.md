@@ -1846,6 +1846,14 @@ not rewritten as though unfinished unordered product behavior shipped.
     stable-memory growth was 64 pages in both paths. This is a property-bearing
     scalar microbenchmark, separate from the singleton batch/scalar placement
     gate.
+    **Implemented (2026-07-28 23:37:26 UTC +0000):** batch reservation now
+    allocates inline property bytes through the free-span-first allocator for
+    both existing-span replacement and first slab allocation during
+    overflow-log folding. Consumed free-span prefixes are recorded in the
+    reservation and restored on rollback. The relocation regression test
+    verifies that a sufficient free span is reused, the occupied tail does not
+    grow, and the final bucket points at the reused offset; scalar span growth
+    uses the same free-span-first owner API.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh
