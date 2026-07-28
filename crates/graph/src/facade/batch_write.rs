@@ -1323,6 +1323,76 @@ mod tests {
     }
 
     #[test]
+    fn batch_sidecar_survives_reverse_compaction_after_delete() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4011);
+        let property_id = PropertyId::from_raw(97);
+        let vertices = make_vertices(&store, 3);
+        let first_source = vertices[0];
+        let second_source = vertices[1];
+        let target = vertices[2];
+        let first = store
+            .insert_directed_edge(first_source, target, Some(label))
+            .expect("first edge");
+        store.prepare_clean_slab_dir_buckets(second_source, target, label, 0);
+
+        let mut second = input(second_source, target, Some(label), true, vec![]);
+        second.initial_edge_properties = vec![(property_id, Value::Int64(907))];
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()])
+            .expect("batch edge");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        let captured = locations[0].canonical_occurrence(&second);
+        let captured_handle = EdgeHandle::at_slot(
+            captured.owner_vertex_id,
+            captured.label_id,
+            captured.slot_index,
+        );
+        store
+            .delete_edge_by_handle(first)
+            .expect("delete first edge");
+        store.with_graph_mut(|graph| {
+            graph
+                .mark_compact_dense_labeled_vertex_maintenance(LabeledOrientation::Reverse, target)
+                .expect("mark reverse compaction");
+        });
+        store
+            .run_maintenance_best_effort(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("run compaction");
+
+        assert_eq!(
+            store.edge_property_at_canonical_handle(captured_handle, property_id),
+            Some(Value::Int64(907))
+        );
+        let reverse = store
+            .find_first_reverse_handle_descending(
+                target,
+                lara_label(label.pack(EdgeDirectedness::Directed)),
+                |edge| edge.neighbor_vid() == second_source,
+            )
+            .expect("reverse lookup after compaction")
+            .expect("surviving reverse edge");
+        assert_eq!(
+            store.canonical_reverse_in_edge_handle(reverse),
+            captured_handle,
+            "reverse compaction must keep the batch canonical owner"
+        );
+    }
+
+    #[test]
     fn duplicate_initial_sidecar_is_rejected_before_batch_write() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(4003);
