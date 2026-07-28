@@ -1677,6 +1677,16 @@ not rewritten as though unfinished unordered product behavior shipped.
     placement now admits unlabeled edges through the default directed/undirected
     storage buckets with zero-width inline payloads. Planner and PocketIC tests
     cover unlabeled planning, completed public admission, and exact-key replay.
+    **Partially implemented (2026-07-28 14:54:23 UTC +0000):** the ordered
+    Graph handler now binds Router-resolved inline schemas for planner and write
+    admission. PocketIC covers a named `UINT16 INLINE` property together with a
+    canonical `Int64` edge property value; the value is read back through the
+    property sidecar and the inline value is verified by its typed predicate.
+    A test-only application failure after durable canonical receipt recording
+    leaves the ordered record at `CanonicalCommitted`; clearing the fault and
+    ticking recovery converges projection, retirement, and `Completed`. The
+    ordered lifecycle projection now reports these progress states instead of
+    misclassifying the single-target record as `Failed`.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.

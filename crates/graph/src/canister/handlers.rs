@@ -325,16 +325,33 @@ pub fn execute_ordered_edge_batch(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    store
+    crate::edge_inline_property_schema::set_execution_resolved_labels(Some(
+        request.resolved_labels.clone(),
+    ));
+    let result = store
         .plan_batch_edge_insertion(&edges)
-        .map_err(|error| format!("ordered Graph planner admission failed: {error}"))?;
-    match store.execute_ordered_edge_batch_clean_slab(args.mutation_id, identity.clone(), &edges) {
-        Ok(result) => Ok(result),
-        Err(error) if error.starts_with("ordered Graph clean-slab geometry is unsupported:") => Ok(
-            store.execute_ordered_edge_batch_scalar_fallback(args.mutation_id, identity, &edges),
-        ),
-        Err(error) => Err(error),
-    }
+        .map_err(|error| format!("ordered Graph planner admission failed: {error}"))
+        .and_then(|_| {
+            match store.execute_ordered_edge_batch_clean_slab(
+                args.mutation_id,
+                identity.clone(),
+                &edges,
+            ) {
+                Ok(result) => Ok(result),
+                Err(error)
+                    if error.starts_with("ordered Graph clean-slab geometry is unsupported:") =>
+                {
+                    Ok(store.execute_ordered_edge_batch_scalar_fallback(
+                        args.mutation_id,
+                        identity,
+                        &edges,
+                    ))
+                }
+                Err(error) => Err(error),
+            }
+        });
+    crate::edge_inline_property_schema::clear_execution_resolved_labels();
+    result
 }
 
 pub async fn execute_plan_update_batch(

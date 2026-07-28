@@ -1,10 +1,10 @@
 //! Test-only (`pocket-ic-e2e`) fault injection for Router write-path durable boundaries.
 //!
 //! The armed fault is a committed heap flag, set by its own `test_arm_fault` ingress and read by the
-//! gql write path. On the IC a trap rolls back only the trapping message's state, so a flag set in a
-//! *prior, committed* message survives the trap; the test then clears it with a separate
-//! `test_arm_fault(0)` ingress before driving recovery. This lets a single injected trap reproduce a
-//! real partial-failure boundary without leaving the canister wedged in a trap loop.
+//! gql write path. Trap faults roll back only the trapping message's state, while the ordered
+//! canonical-receipt fault returns an application error after the durable receipt transition. The
+//! test clears the flag with a separate `test_arm_fault(0)` ingress before driving recovery. This
+//! reproduces a partial-failure boundary without leaving the canister wedged in a fault loop.
 //!
 //! Compiled only under `pocket-ic-e2e`; the call sites in `gql.rs` are `#[cfg]`-gated, so production
 //! builds contain none of this.
@@ -24,6 +24,9 @@ pub(crate) enum InjectedFault {
     /// Trap after the typed Graph batch has committed but before Router target/projection
     /// convergence. The durable typed replay record must recover this ambiguous boundary.
     TrapAfterTypedGraphCommit,
+    /// Return an application error after an ordered Graph receipt is durably recorded but before
+    /// Router projection/retirement convergence. The ordered recovery driver must finish it.
+    FailAfterOrderedCanonicalCommit,
 }
 
 thread_local! {
@@ -59,6 +62,7 @@ pub(crate) fn fault_from_code(code: u8) -> Option<InjectedFault> {
         1 => Some(InjectedFault::TrapAfterTry),
         2 => Some(InjectedFault::TrapBeforeConfirm),
         3 => Some(InjectedFault::TrapAfterTypedGraphCommit),
+        4 => Some(InjectedFault::FailAfterOrderedCanonicalCommit),
         _ => None,
     }
 }
@@ -88,4 +92,8 @@ pub(crate) fn maybe_trap_after_typed_graph_commit() {
             "pocket-ic-e2e injected fault: trap after typed Graph commit before Router convergence",
         );
     }
+}
+
+pub(crate) fn fail_after_ordered_canonical_commit() -> bool {
+    armed() == InjectedFault::FailAfterOrderedCanonicalCommit
 }

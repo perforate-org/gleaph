@@ -1412,6 +1412,12 @@ pub(crate) async fn execute_ordered_edge_batch_public(
         graph_request_fingerprint,
         receipt.clone(),
     )?;
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::fail_after_ordered_canonical_commit() {
+        return Err(RouterError::Internal(
+            "pocket-ic-e2e ordered canonical commit fault".into(),
+        ));
+    }
     store.record_ordered_edge_batch_projection_pending(
         caller,
         graph_id,

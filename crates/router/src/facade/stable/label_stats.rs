@@ -735,6 +735,21 @@ impl RouterMutationRecord {
         if self.as_v1().routing_in_progress {
             return MutationLifecyclePhase::Routing;
         }
+        if let RouterMutationPayloadV1::OrderedEdgeBatch(replay) = self.payload() {
+            return match replay.target.progress {
+                OrderedEdgeBatchTargetProgressV1::CanonicalPending => {
+                    MutationLifecyclePhase::CanonicalPending
+                }
+                OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(_) => {
+                    MutationLifecyclePhase::CanonicalCommitted
+                }
+                OrderedEdgeBatchTargetProgressV1::ProjectionPending(_)
+                | OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_)
+                | OrderedEdgeBatchTargetProgressV1::RetirementPending(_) => {
+                    MutationLifecyclePhase::ProjectionPending
+                }
+            };
+        }
         // Scalar/legacy payload: derive from the shard envelope.
         let shards = self.shards();
         if !shards.is_empty() {
