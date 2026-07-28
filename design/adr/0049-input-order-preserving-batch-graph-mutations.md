@@ -1723,9 +1723,14 @@ not rewritten as though unfinished unordered product behavior shipped.
     20:44:49 UTC +0000):** the Graph ordered handler now uses the ordered
     scalar fallback when every affected physical run is singleton, while any
     request containing a multi-intent run remains on the batch writer.
-    Per-run scalarization in a mixed request requires reserve-all/commit support
-    for those scalar runs and is not yet implemented. Compare an unordered
-    candidate separately only if a real reordering optimization exists.
+    **Implemented (2026-07-28 20:54:09 UTC +0000):** a mixed request now
+    partitions logical items by whether any of their physical runs has multiple
+    pending rows. Multi-run items reserve and commit through the batch writer;
+    singleton items use the scalar owner boundary; one aggregate receipt,
+    label delta, and journal commit is produced after both portions complete.
+    If the batch portion is unsupported, the whole request falls back before
+    any canonical write. Compare an unordered candidate separately only if a
+    real reordering optimization exists.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

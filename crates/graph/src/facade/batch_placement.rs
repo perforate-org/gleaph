@@ -394,6 +394,8 @@ pub struct BatchPlacementSummary {
     pub groups: BTreeMap<BatchPlacementKey, BatchPlacementGroup>,
     /// Leaf-level projected capacity by orientation and leaf segment.
     pub leaf_summaries: BTreeMap<OrientationLeafKey, BatchPlacementLeafSummary>,
+    /// Logical ordinals that have at least one physical bucket run with multiple pending rows.
+    pub logical_ordinals_with_multi_runs: BTreeSet<u32>,
 }
 
 /// Key for leaf-level summaries.
@@ -460,6 +462,12 @@ impl BatchPlacementSummary {
                 .groups
                 .values()
                 .all(|group| group.pending_edge_intents == 1)
+    }
+
+    /// Logical edges outside this set have singleton forward/reverse projections and may use
+    /// the scalar owner boundary when a request also contains batch-eligible edges.
+    pub fn logical_ordinals_requiring_batch(&self) -> &BTreeSet<u32> {
+        &self.logical_ordinals_with_multi_runs
     }
 }
 
@@ -545,6 +553,15 @@ impl GraphStore {
     ) -> Result<BatchPlacementSummary, BatchPlacementError> {
         let intents = self.expand_batch_edge_intents(edges)?;
         let (groups, leaf_summaries) = group_intents_for_placement(&intents)?;
+        let logical_ordinals_with_multi_runs = intents
+            .iter()
+            .filter_map(|intent| {
+                groups
+                    .get(&batch_placement_key(intent))
+                    .filter(|group| group.pending_edge_intents > 1)
+                    .map(|_| intent.logical_ordinal)
+            })
+            .collect();
         let physical_intent_count = u64::try_from(intents.len())
             .map_err(|_| BatchPlacementError::ProjectedCountOverflow)?;
         let logical_edge_count =
@@ -555,6 +572,7 @@ impl GraphStore {
             physical_intent_count,
             groups,
             leaf_summaries,
+            logical_ordinals_with_multi_runs,
         })
     }
 }
@@ -665,20 +683,12 @@ fn group_intents_for_placement(
     ),
     BatchPlacementError,
 > {
-    let segment_size = segment_size();
     let mut groups: BTreeMap<BatchPlacementKey, BatchPlacementGroup> = BTreeMap::new();
     let mut leaf_summaries: BTreeMap<OrientationLeafKey, BatchPlacementLeafSummary> =
         BTreeMap::new();
 
     for intent in intents {
-        let leaf_segment = leaf_index_for_vertex(intent.owner_vertex_id, segment_size);
-        let key = BatchPlacementKey {
-            orientation: intent.orientation,
-            leaf_segment,
-            owner_vertex_id: intent.owner_vertex_id,
-            storage_label: intent.storage_label,
-            inline_property_width: intent.inline_property_width,
-        };
+        let key = batch_placement_key(intent);
         use std::collections::btree_map::Entry;
         if let Entry::Vacant(slot) = groups.entry(key) {
             let existing = read_existing_bucket_placement(key)?;
@@ -703,6 +713,7 @@ fn group_intents_for_placement(
 
         // Aggregate pending counts into leaf summary. Resident counts are added once per
         // bucket group below, after all intents have been counted.
+        let leaf_segment = leaf_index_for_vertex(intent.owner_vertex_id, segment_size());
         let leaf_key = OrientationLeafKey {
             orientation: intent.orientation,
             leaf_segment,
@@ -785,6 +796,16 @@ fn group_intents_for_placement(
     }
 
     Ok((groups, leaf_summaries))
+}
+
+fn batch_placement_key(intent: &BatchEdgeIntent) -> BatchPlacementKey {
+    BatchPlacementKey {
+        orientation: intent.orientation,
+        leaf_segment: leaf_index_for_vertex(intent.owner_vertex_id, segment_size()),
+        owner_vertex_id: intent.owner_vertex_id,
+        storage_label: intent.storage_label,
+        inline_property_width: intent.inline_property_width,
+    }
 }
 
 fn read_leaf_placement_stats(

@@ -332,12 +332,22 @@ pub fn execute_ordered_edge_batch(
         .plan_batch_edge_insertion(&edges)
         .map_err(|error| format!("ordered Graph planner admission failed: {error}"))
         .and_then(|summary| {
-            if summary.all_physical_runs_singleton() {
+            let batch_ordinals = summary.logical_ordinals_requiring_batch();
+            if batch_ordinals.is_empty() {
                 return Ok(store.execute_ordered_edge_batch_scalar_fallback(
                     args.mutation_id,
                     identity,
                     &edges,
                 ));
+            }
+
+            if batch_ordinals.len() < edges.len() {
+                return store.execute_ordered_edge_batch_partitioned(
+                    args.mutation_id,
+                    identity,
+                    &edges,
+                    batch_ordinals,
+                );
             }
 
             match store.execute_ordered_edge_batch_clean_slab(

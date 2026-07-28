@@ -22,7 +22,7 @@ use ic_stable_lara::labeled::batch_write::{
 };
 use ic_stable_lara::{CsrEdge, labeled::CanonicalEdgeOccurrence, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::EdgeHandle;
 use super::GraphStore;
@@ -191,6 +191,15 @@ impl GraphStore {
         request_identity: GraphMutationRequestIdentityV1,
         edges: &[BatchEdgeInput],
     ) -> GraphOrderedEdgeBatchResult {
+        self.execute_ordered_scalar_edges(edges);
+        self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges)
+    }
+
+    /// Apply the scalar owner boundary for a subset of a mixed ordered request.
+    ///
+    /// The caller must have completed whole-request planning before invoking this helper. Any
+    /// unexpected write error traps so a prior batch commit in the same Graph message rolls back.
+    pub(crate) fn execute_ordered_scalar_edges(&self, edges: &[BatchEdgeInput]) {
         for edge in edges {
             let properties = edge.initial_edge_properties.iter().cloned();
             if edge.directed {
@@ -219,10 +228,46 @@ impl GraphStore {
                 });
             }
         }
-        self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges)
     }
 
-    fn commit_ordered_edge_batch_receipt(
+    /// Execute a mixed ordered request whose multi-intent logical items can use the batch writer
+    /// and whose singleton logical items can use the scalar owner boundary. The batch attempt is
+    /// made before scalar writes; an unsupported batch reservation therefore falls back to the
+    /// complete request without any canonical write having occurred.
+    pub(crate) fn execute_ordered_edge_batch_partitioned(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        edges: &[BatchEdgeInput],
+        batch_ordinals: &BTreeSet<u32>,
+    ) -> Result<GraphOrderedEdgeBatchResult, String> {
+        let (batch_edges, scalar_edges): (Vec<_>, Vec<_>) = edges
+            .iter()
+            .enumerate()
+            .partition(|(ordinal, _)| batch_ordinals.contains(&(*ordinal as u32)));
+        let batch_edges: Vec<_> = batch_edges
+            .into_iter()
+            .map(|(_, edge)| edge.clone())
+            .collect();
+        let scalar_edges: Vec<_> = scalar_edges
+            .into_iter()
+            .map(|(_, edge)| edge.clone())
+            .collect();
+
+        match self.try_insert_batch_edges_clean_slab_with_initial_properties(&batch_edges) {
+            Ok(BatchEdgeInsertResult::Committed { .. }) => {
+                self.execute_ordered_scalar_edges(&scalar_edges);
+                Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
+            }
+            Ok(BatchEdgeInsertResult::Unsupported { .. }) => Ok(self
+                .execute_ordered_edge_batch_scalar_fallback(mutation_id, request_identity, edges)),
+            Err(error) => Err(format!(
+                "ordered Graph mixed batch validation failed: {error}"
+            )),
+        }
+    }
+
+    pub(crate) fn commit_ordered_edge_batch_receipt(
         &self,
         mutation_id: MutationId,
         request_identity: GraphMutationRequestIdentityV1,
@@ -1061,6 +1106,64 @@ mod tests {
         assert_eq!(
             store.edge_property_at_canonical_handle(handle, PropertyId::from_raw(79)),
             Some(Value::Text("batch".into()))
+        );
+    }
+
+    #[test]
+    fn mixed_ordered_write_batches_multi_runs_and_scalars_singletons_once() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4011);
+        let vertices = make_vertices(&store, 6);
+        for (source, target) in [(vertices[0], vertices[1]), (vertices[2], vertices[3])] {
+            store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+            store.prepare_clean_slab_dir_buckets(target, source, label, 0);
+        }
+        let edges = vec![
+            input(vertices[0], vertices[1], Some(label), true, vec![]),
+            input(vertices[0], vertices[1], Some(label), true, vec![]),
+            input(vertices[2], vertices[3], Some(label), true, vec![]),
+        ];
+        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
+        assert_eq!(
+            summary
+                .logical_ordinals_requiring_batch()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [0x42; 32],
+            logical_item_count: 3,
+        };
+        let result = store
+            .execute_ordered_edge_batch_partitioned(
+                4_011_001,
+                identity,
+                &edges,
+                summary.logical_ordinals_requiring_batch(),
+            )
+            .expect("mixed ordered write");
+        let receipt = match result {
+            GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) => {
+                receipt
+            }
+            other => panic!("expected completed receipt, got {other:?}"),
+        };
+        assert_eq!(receipt.logical_edge_count, 3);
+        let delta_seq = receipt
+            .emitted_delta_first_seq
+            .expect("mixed labeled edge emits a delta");
+        assert_eq!(
+            store
+                .pending_label_stats_deltas(delta_seq, 1)
+                .into_iter()
+                .next()
+                .expect("mixed label delta")
+                .label_stats_delta
+                .edge,
+            vec![(label, 3)]
         );
     }
 
