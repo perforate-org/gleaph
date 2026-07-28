@@ -1517,7 +1517,7 @@ not rewritten as though unfinished unordered product behavior shipped.
    inline-property log folds independently while the leaf relocates once.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
-10. **Partially implemented (2026-07-28):** the Graph facade now accepts
+10. **Partially implemented (2026-07-28 10:37:53 UTC +0000):** the Graph facade now accepts
     request-local initial sidecar values, validates ids/values/duplicate ids
     before reservation, derives one canonical `CanonicalEdgeOccurrence` from
     the joined captured location for directed, undirected, and self-loop
@@ -1531,7 +1531,8 @@ not rewritten as though unfinished unordered product behavior shipped.
     a mixed multi-item batch whose properties remain joined by logical ordinal.
     A property-bearing batch following an existing equal-neighbor edge also
     verifies that CounterpartScan resolves the new reverse row by pair rank,
-    not by matching the forward slot.
+    not by matching the forward slot; the same coverage now exists for an
+    undirected higher-owner/lower-owner pair.
     The post-commit sidecar path traps on a violated preflight invariant rather
     than returning a recoverable error.
 11. Replace Router V1 request identity/payload in place; implement exhaustive
