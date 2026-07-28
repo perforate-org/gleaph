@@ -1618,7 +1618,12 @@ not rewritten as though unfinished unordered product behavior shipped.
     `ProjectionPending` → `ProjectionAdvanced` transitions with a durable
     projection watermark. Public ordered admission, retry diagnostics and
     terminal failures, Graph retirement, compaction, and background recovery
-    remain planned.
+    remain planned. **Partially implemented (2026-07-28 13:43:51 UTC +0000):**
+    the Router record now persists `RetirementPending` and accepts an exact
+    Graph retirement receipt to reach `CompletedOrderedEdgeBatch`, retaining
+    the projection watermark and aggregate row count while dropping resolved
+    tables. The public retirement driver, background recovery, and final
+    compaction policy remain planned.
     Replace Router V1 request identity/payload in place; implement exhaustive
     ordered routing/envelope/target progress, resolved-table authority transfer,
     bounded typed retry diagnostics and terminal failures, a bounded record in

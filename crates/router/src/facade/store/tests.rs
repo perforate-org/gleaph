@@ -2128,7 +2128,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
             client_key,
             1,
             graph_fingerprint,
-            receipt,
+            receipt.clone(),
         )
         .expect("idempotent canonical completion");
     store
@@ -2164,15 +2164,46 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
             watermark,
         )
         .expect("idempotent projection advancement");
+    store
+        .record_ordered_edge_batch_retirement_pending(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+        )
+        .expect("retirement pending");
+    store
+        .record_ordered_edge_batch_retired(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+            receipt.clone(),
+        )
+        .expect("retirement completion");
+    store
+        .record_ordered_edge_batch_retired(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+            receipt,
+        )
+        .expect("idempotent retirement completion");
     let record = store
         .router_mutation_record(caller, tenant_main_graph_id(), client_key)
         .expect("completed ordered record");
     assert!(matches!(
         record.payload(),
-        RouterMutationPayloadV1::OrderedEdgeBatch(replay)
-            if matches!(replay.target.progress, OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_))
-                && replay.target.projection_watermark.is_some()
+        RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+            receipt,
+            projection_watermark,
+        } if receipt.logical_edge_count == 1 && projection_watermark.shard_id == ShardId::new(0)
     ));
+    assert_eq!(record.as_v1().completed_row_count, Some(1));
 }
 
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only

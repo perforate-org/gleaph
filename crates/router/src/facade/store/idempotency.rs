@@ -859,6 +859,141 @@ impl RouterStore {
         })
     }
 
+    /// Persist that Router has begun the fingerprint-bound Graph retirement call.
+    pub fn record_ordered_edge_batch_retirement_pending(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered retirement pending".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedEdgeBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered retirement pending requires an OrderedEdgeBatch payload".into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered retirement pending".into(),
+                ));
+            }
+            if replay.target.projection_watermark.is_none() {
+                return Err(RouterError::Conflict(
+                    "ordered retirement requires a persisted projection watermark".into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt) => {
+                    replay.target.progress =
+                        OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt.clone());
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedEdgeBatchTargetProgressV1::RetirementPending(_) => Ok(()),
+                _ => Err(RouterError::Conflict(
+                    "ordered retirement pending conflicts with persisted progress".into(),
+                )),
+            }
+        })
+    }
+
+    /// Finalize an ordered mutation after the Graph retirement acknowledgement is durable.
+    pub fn record_ordered_edge_batch_retired(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+        receipt: gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchReceiptV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
+        receipt
+            .validate()
+            .map_err(|error| RouterError::InvalidArgument(error.into()))?;
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered retirement completion".into(),
+                ));
+            }
+            let watermark = match &v1.payload {
+                RouterMutationPayloadV1::OrderedEdgeBatch(replay) => {
+                    if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                        return Err(RouterError::Conflict(
+                            "Graph request fingerprint mismatch at ordered retirement completion"
+                                .into(),
+                        ));
+                    }
+                    if !matches!(
+                        &replay.target.progress,
+                        crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::RetirementPending(
+                            existing_receipt,
+                        ) if existing_receipt == &receipt
+                    ) {
+                        return Err(RouterError::Conflict(
+                            "ordered retirement completion requires RetirementPending progress"
+                                .into(),
+                        ));
+                    }
+                    replay.target.projection_watermark.clone().ok_or_else(|| {
+                        RouterError::Conflict(
+                            "ordered retirement completion requires a projection watermark"
+                                .into(),
+                        )
+                    })?
+                }
+                RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+                    receipt: existing_receipt,
+                    projection_watermark: _,
+                } if existing_receipt == &receipt =>
+                {
+                    return Ok(());
+                }
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered retirement completion requires an ordered replay payload".into(),
+                    ));
+                }
+            };
+            let row_count = receipt.logical_edge_count;
+            v1.payload = RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+                receipt,
+                projection_watermark: watermark,
+            };
+            v1.completed_row_count = Some(row_count);
+            v1.resolved_labels = None;
+            v1.resolved_properties = None;
+            v1.routing_in_progress = false;
+            v1.routing_lease_ns = None;
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
     /// Atomically transition a pristine scalar reservation to a durable typed seed bulk payload.
     ///
     /// Accepts only a record that:
