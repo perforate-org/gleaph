@@ -6,12 +6,12 @@
 //! initialized in [`super::stable`].
 //!
 //! Storage domains (Phase 2 module map):
-//! - **adjacency** — `adjacency` (edge insert/delete commit), `edge_insert`, `edge_scan`, `edge_alias`, `edge_logical`, `delete`
+//! - **adjacency** — `adjacency` (edge insert/delete commit), `edge_insert`, `edge_scan`, `edge_counterpart`, `edge_logical`, `delete`
 //! - **properties** — `properties` (write commit), `vertex_properties`, `edge_properties`, `catalogs`
 //! - **labels** — `labels` (write commit), `vertex_labels`
 //! - **vertex delete** — `vertex_delete` (sidecar clear and detach delete commit)
 //! - **edge profiles** — `edge_profiles` (profile install/update commits), `edge_inline_property` (public update API)
-//! - **local indexes** — `local_indexes` (alias and equality posting commits), `edge_alias` (lookup)
+//! - **local indexes** — `local_indexes` (equality posting commits), `edge_counterpart` (lookup)
 //! - **label stats projection** — `label_stats_delta`
 //! - **sidecars** — `sidecar` (coordinates property and local-index derived state)
 //! - **maintenance** — `maintenance`

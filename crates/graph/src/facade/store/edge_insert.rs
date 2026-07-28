@@ -101,19 +101,14 @@ impl GraphStore {
                 slot_index: u32::MAX,
             })?
         };
-        self.commit_directed_edge_insert(
-            EdgeInsertSpec {
-                source_vertex_id,
-                target_vertex_id,
-                catalog_label,
-                undirected: false,
-                inline_property_bytes,
-                canonical,
-            },
-            locations.reverse.map(|location| {
-                EdgeHandle::at_slot(target_vertex_id, label, location.logical_slot)
-            }),
-        )?;
+        self.commit_directed_edge_insert(EdgeInsertSpec {
+            source_vertex_id,
+            target_vertex_id,
+            catalog_label,
+            undirected: false,
+            inline_property_bytes,
+            canonical,
+        })?;
         Ok(canonical)
     }
 
@@ -185,53 +180,14 @@ impl GraphStore {
                 slot_index: u32::MAX,
             })?
         };
-        let alias_vertex_id = if owner_vertex_id == endpoint_a {
-            endpoint_b
-        } else {
-            endpoint_a
-        };
-        let alias_location = if alias_vertex_id == endpoint_a {
-            locations.forward
-        } else {
-            locations.reverse
-        };
-        let alias = if let Some(location) = alias_location {
-            Some(EdgeInsertSpec {
-                source_vertex_id: alias_vertex_id,
-                target_vertex_id: owner_vertex_id,
-                catalog_label,
-                undirected: true,
-                inline_property_bytes,
-                canonical: EdgeHandle::at_slot(alias_vertex_id, label, location.logical_slot),
-            })
-        } else {
-            self.find_first_forward_handle_descending(alias_vertex_id, label, |edge| {
-                if inline_property_bytes.is_empty() {
-                    edge.neighbor_vid() == owner_vertex_id
-                } else {
-                    edge_matches_local_neighbor(edge, owner_vertex_id, inline_property_bytes)
-                }
-            })?
-            .map(|alias_handle| EdgeInsertSpec {
-                source_vertex_id: alias_vertex_id,
-                target_vertex_id: owner_vertex_id,
-                catalog_label,
-                undirected: true,
-                inline_property_bytes,
-                canonical: alias_handle,
-            })
-        };
-        self.commit_undirected_edge_insert(
-            EdgeInsertSpec {
-                source_vertex_id: owner_vertex_id,
-                target_vertex_id: target,
-                catalog_label,
-                undirected: true,
-                inline_property_bytes,
-                canonical,
-            },
-            alias,
-        )?;
+        self.commit_undirected_edge_insert(EdgeInsertSpec {
+            source_vertex_id: owner_vertex_id,
+            target_vertex_id: target,
+            catalog_label,
+            undirected: true,
+            inline_property_bytes,
+            canonical,
+        })?;
         Ok(canonical)
     }
 

@@ -435,8 +435,8 @@ where
     /// Resolves a mate through a Published Sampled/Packed blob when possible. The blob is only an
     /// accelerator: every candidate is checked against the live counterpart row and relation
     /// counts, while malformed, stale, or non-applicable data falls back to canonical rank/select
-    /// exactly once. This remains an internal dormant bridge; ordinary callers still use
-    /// EDGE_ALIASES.
+    /// exactly once. This remains an internal dormant bridge; ordinary callers use the
+    /// CounterpartScan path.
     #[doc(hidden)]
     pub fn published_mate_of(
         &self,

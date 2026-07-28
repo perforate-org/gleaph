@@ -1,4 +1,4 @@
-use super::helpers::{edge_alias_slot_key, edge_storage_label, lara_label};
+use super::helpers::{edge_storage_label, lara_label};
 use super::*;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, VertexRef};
@@ -603,7 +603,7 @@ fn undirected_canonical_owner_carries_inline_property_bytes() {
         .expect("alias view")
         .into_iter()
         .find(|edge| edge.neighbor_vid() == high)
-        .expect("alias half");
+        .expect("counterpart half");
     assert_eq!(alias.edge_inline_property_bytes(), &[7, 0]);
 }
 
@@ -738,7 +738,7 @@ fn directed_out_edges_visit_attaches_inline_propertys() {
 }
 
 #[test]
-fn delete_valued_directed_edge_by_handle_removes_reverse_alias_slot() {
+fn delete_valued_directed_edge_by_handle_removes_reverse_counterpart() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
@@ -775,12 +775,12 @@ fn delete_valued_directed_edge_by_handle_removes_reverse_alias_slot() {
 }
 
 #[test]
-fn directed_reverse_alias_does_not_require_matching_slot_index() {
+fn directed_reverse_counterpart_does_not_require_matching_slot_index() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
     let other_source = store.insert_vertex().expect("other source");
-    let label_id = crate::test_labels::edge_label_id_for_name("DirectedAliasSlotSkew");
+    let label_id = crate::test_labels::edge_label_id_for_name("DirectedCounterpartSlotSkew");
     install_w2_inline_property_profile(&store, label_id);
 
     store
@@ -817,7 +817,7 @@ fn directed_reverse_alias_does_not_require_matching_slot_index() {
 }
 
 #[test]
-fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
+fn delete_valued_undirected_edge_by_handle_removes_counterpart_slot() {
     let store = GraphStore::new();
     let low = store.insert_vertex().expect("low");
     let high = store.insert_vertex().expect("high");
@@ -847,11 +847,11 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
     assert_eq!(weights_from(high), vec![2]);
 
     let wire_label = lara_label(label_id.pack(EdgeDirectedness::Undirected));
-    let alias = store
+    let counterpart = store
         .find_first_forward_handle_descending(low, wire_label, |edge| edge.neighbor_vid() == high)
-        .expect("alias lookup")
-        .expect("remaining alias half");
-    let canonical = store.canonical_edge_handle(alias);
+        .expect("counterpart lookup")
+        .expect("remaining counterpart half");
+    let canonical = store.canonical_edge_handle(counterpart);
     let remaining = store
         .find_outgoing_edge_record(canonical)
         .expect("remaining canonical lookup")
@@ -860,7 +860,7 @@ fn delete_valued_undirected_edge_by_handle_removes_alias_slot() {
 }
 
 #[test]
-fn unvalued_parallel_directed_inserts_align_reverse_alias_slot() {
+fn unvalued_parallel_directed_inserts_align_reverse_counterpart_slot() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
@@ -946,16 +946,10 @@ fn lookup_edge_record_at_handle_includes_stored_inline_property_bytes() {
     assert_eq!(edge.edge_inline_property_bytes(), &[4, 0]);
 }
 
-#[test]
-#[should_panic(expected = "logical edge slot exceeds the alias codec range")]
-fn alias_codec_rejects_reserved_high_bit_slot() {
-    let _ = edge_alias_slot_key(EdgeSlotIndex::from_raw(1 << 31), false);
-}
-
 /// Regression: vertex `a` is target of `s->a` (reverse-IN alias) and source of `a->mid`
 /// (forward-OUT). Shared slot index `0` in both CSR stores must not alias across stores.
 #[test]
-fn forward_out_lookup_ignores_reverse_in_alias_when_slots_collide() {
+fn forward_out_lookup_ignores_reverse_in_counterpart_when_slots_collide() {
     let store = GraphStore::new();
     let s = store.insert_vertex().expect("s");
     let a = store.insert_vertex().expect("a");
@@ -1126,7 +1120,7 @@ fn inserts_vertices_and_edges_through_facade() {
 }
 
 #[test]
-fn scan_only_canonical_lookup_uses_lara_without_changing_aliases() {
+fn scan_only_canonical_lookup_uses_lara_counterpart_resolution() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
     let target = store.insert_vertex().expect("target");
@@ -1141,88 +1135,6 @@ fn scan_only_canonical_lookup_uses_lara_without_changing_aliases() {
         })
         .expect("reverse scan")
         .expect("reverse half");
-    let reverse_alias_slot = edge_alias_slot_key(reverse.slot_index, true);
-    let forward_alias_slot = edge_alias_slot_key(handle.slot_index, false);
-    let original_alias = super::super::stable::EDGE_ALIASES.with_borrow(|aliases| {
-        aliases
-            .get(
-                reverse.owner_vertex_id,
-                reverse.label_id.raw(),
-                reverse_alias_slot,
-            )
-            .expect("reverse alias")
-    });
-    let original_forward_alias = super::super::stable::EDGE_ALIASES.with_borrow(|aliases| {
-        aliases.get(
-            handle.owner_vertex_id,
-            handle.label_id.raw(),
-            forward_alias_slot,
-        )
-    });
-    let snapshot_aliases = || {
-        super::super::stable::EDGE_ALIASES.with_borrow(|aliases| {
-            let mut rows = Vec::new();
-            aliases.for_each(|key, value| {
-                rows.push((
-                    u32::from(key.alias_vertex_id()),
-                    key.label_id(),
-                    key.alias_slot_key(),
-                    u32::from(value.canonical_vertex_id()),
-                    value.canonical_slot_index(),
-                ));
-            });
-            rows.sort_unstable();
-            rows
-        })
-    };
-    let original_snapshot = snapshot_aliases();
-
-    // Deliberately poison both compatibility mappings. A ScanOnly implementation that reads
-    // EDGE_ALIASES would return this impossible target instead of the LARA-derived handle.
-    super::super::stable::EDGE_ALIASES.with_borrow_mut(|aliases| {
-        aliases.insert(
-            handle.owner_vertex_id,
-            handle.label_id.raw(),
-            forward_alias_slot,
-            target,
-            u32::MAX,
-        );
-        aliases.insert(
-            reverse.owner_vertex_id,
-            reverse.label_id.raw(),
-            reverse_alias_slot,
-            target,
-            u32::MAX,
-        );
-    });
-    let mut poisoned_snapshot = original_snapshot.clone();
-    for row in &mut poisoned_snapshot {
-        if row.0 == u32::from(handle.owner_vertex_id)
-            && row.1 == handle.label_id.raw()
-            && row.2 == forward_alias_slot
-        {
-            row.3 = u32::from(target);
-            row.4 = u32::MAX;
-        }
-        if row.0 == u32::from(reverse.owner_vertex_id)
-            && row.1 == reverse.label_id.raw()
-            && row.2 == reverse_alias_slot
-        {
-            row.3 = u32::from(target);
-            row.4 = u32::MAX;
-        }
-    }
-    if original_forward_alias.is_none() {
-        poisoned_snapshot.push((
-            u32::from(handle.owner_vertex_id),
-            handle.label_id.raw(),
-            forward_alias_slot,
-            u32::from(target),
-            u32::MAX,
-        ));
-    }
-    poisoned_snapshot.sort_unstable();
-    assert_ne!(poisoned_snapshot, original_snapshot);
     let scan_from_forward =
         store.scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward);
     let scan_from_reverse =
@@ -1233,32 +1145,6 @@ fn scan_only_canonical_lookup_uses_lara_without_changing_aliases() {
         store.published_mate_canonical_edge_handle(handle, LabeledOrientation::Forward);
     let dormant_bridge_from_reverse =
         store.published_mate_canonical_edge_handle(reverse, LabeledOrientation::Reverse);
-    assert_eq!(snapshot_aliases(), poisoned_snapshot);
-    super::super::stable::EDGE_ALIASES.with_borrow_mut(|aliases| {
-        if let Some(original) = original_forward_alias {
-            aliases.insert(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                forward_alias_slot,
-                original.canonical_vertex_id(),
-                original.canonical_slot_index(),
-            );
-        } else {
-            aliases.remove(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                forward_alias_slot,
-            );
-        }
-        aliases.insert(
-            reverse.owner_vertex_id,
-            reverse.label_id.raw(),
-            reverse_alias_slot,
-            original_alias.canonical_vertex_id(),
-            original_alias.canonical_slot_index(),
-        );
-    });
-
     assert_eq!(scan_from_forward.expect("forward ScanOnly lookup"), handle);
     assert_eq!(scan_from_reverse.expect("reverse ScanOnly lookup"), handle);
     assert_eq!(
@@ -1269,7 +1155,6 @@ fn scan_only_canonical_lookup_uses_lara_without_changing_aliases() {
         dormant_bridge_from_reverse.expect("reverse dormant bridge"),
         handle
     );
-    assert_eq!(snapshot_aliases(), original_snapshot);
 }
 
 #[test]
@@ -1369,15 +1254,15 @@ fn forward_edge_compaction_moves_property_sidecars() {
 }
 
 #[test]
-fn reverse_edge_compaction_moves_alias_keys() {
+fn reverse_edge_compaction_preserves_canonical_sidecars() {
     let store = GraphStore::new();
     let first = store.insert_vertex().expect("first");
     let second = store.insert_vertex().expect("second");
     let third = store.insert_vertex().expect("third");
     let target = store.insert_vertex().expect("target");
-    let label = crate::test_labels::edge_label_id_for_name("CompactionMovesReverseAlias");
+    let label = crate::test_labels::edge_label_id_for_name("CompactionMovesReverseCounterpart");
     let other_label =
-        crate::test_labels::edge_label_id_for_name("CompactionMovesReverseAliasOther");
+        crate::test_labels::edge_label_id_for_name("CompactionMovesReverseCounterpartOther");
     let property = store
         .get_or_insert_property_id("reverse_move_marker")
         .expect("property");
@@ -1439,7 +1324,7 @@ fn reverse_edge_compaction_moves_alias_keys() {
     assert_eq!(
         store.canonical_reverse_in_edge_handle(reverse_third),
         third_edge,
-        "reverse CSR slot should still alias the canonical forward handle"
+        "reverse CSR slot should still resolve to the canonical forward handle"
     );
     assert_eq!(
         store

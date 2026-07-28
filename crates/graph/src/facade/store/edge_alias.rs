@@ -1,18 +1,16 @@
-//! GraphStore `edge_alias` implementation.
+//! GraphStore counterpart-resolution implementation.
 
-use super::super::stable::{EDGE_ALIASES, GRAPH};
+use super::super::stable::GRAPH;
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
     bidirectional::counterpart::{self, CounterpartLookupError},
     labeled::{CanonicalEdgeOccurrence, LabeledOrientation, MateLookupError},
-    traits::CsrEdge,
 };
 
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-use super::helpers::{edge_alias_slot_key, edge_alias_slot_key_parts};
 
 impl GraphStore {
     pub(crate) fn find_forward_edge_bucket_label(
@@ -75,64 +73,13 @@ impl GraphStore {
             .map(|()| found)
     }
 
-    pub(crate) fn find_reverse_alias_for_canonical(
-        &self,
-        canonical: EdgeHandle,
-        target_vertex_id: VertexId,
-        source_vertex_id: VertexId,
-    ) -> Result<Option<EdgeHandle>, GraphStoreError> {
-        let mut found = None;
-        GRAPH
-            .with_borrow(|graph| {
-                graph.for_each_in_edges_for_label(target_vertex_id, canonical.label_id, |edge| {
-                    if found.is_none() && edge.neighbor_vid() == source_vertex_id {
-                        found = Some(EdgeHandle::at_slot(
-                            target_vertex_id,
-                            canonical.label_id,
-                            edge.edge_slot_index.raw(),
-                        ));
-                    }
-                })
-            })
-            .map_err(GraphStoreError::from)
-            .map(|()| found)
-    }
-
     pub(crate) fn canonical_edge_handle(&self, handle: EdgeHandle) -> EdgeHandle {
-        EDGE_ALIASES
-            .with_borrow(|aliases| {
-                aliases.get(
-                    handle.owner_vertex_id,
-                    handle.label_id.raw(),
-                    handle.slot_index.raw(),
-                )
-            })
-            .map(|canonical| {
-                EdgeHandle::at_slot(
-                    canonical.canonical_vertex_id(),
-                    handle.label_id,
-                    canonical.canonical_slot_index(),
-                )
-            })
+        self.scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward)
             .unwrap_or(handle)
     }
 
     pub(crate) fn canonical_reverse_in_edge_handle(&self, handle: EdgeHandle) -> EdgeHandle {
-        EDGE_ALIASES
-            .with_borrow(|aliases| {
-                aliases.get(
-                    handle.owner_vertex_id,
-                    handle.label_id.raw(),
-                    edge_alias_slot_key(handle.slot_index, true),
-                )
-            })
-            .map(|canonical| {
-                EdgeHandle::at_slot(
-                    canonical.canonical_vertex_id(),
-                    handle.label_id,
-                    canonical.canonical_slot_index(),
-                )
-            })
+        self.scan_only_canonical_edge_handle(handle, LabeledOrientation::Reverse)
             .unwrap_or(handle)
     }
 
@@ -145,10 +92,7 @@ impl GraphStore {
     }
 
     /// Resolves a canonical handle through ADR 0048 CounterpartScan on the
-    /// ADR 0050 `traverse_next` logical-slot surface.  The alias map remains the
-    /// authoritative compatibility path for existing callers; this helper is the
-    /// first bounded ordinary-caller group migrated onto the persistence-free
-    /// rank/select path.
+    /// ADR 0050 `traverse_next` logical-slot surface.
     pub(crate) fn scan_only_canonical_edge_handle(
         &self,
         handle: EdgeHandle,
@@ -184,8 +128,7 @@ impl GraphStore {
     /// Resolves the canonical sidecar handle for a [`CanonicalEdgeOccurrence`] and maps
     /// [`CounterpartLookupError`] into the owning [`GraphStoreError`].
     ///
-    /// This is the ADR 0048 CounterpartScan boundary used by the edge-property sidecar group;
-    /// it does not fall back to `EDGE_ALIASES`.
+    /// This is the ADR 0048 CounterpartScan boundary used by the edge-property sidecar group.
     pub(crate) fn canonical_edge_handle_from_occurrence(
         &self,
         occurrence: CanonicalEdgeOccurrence,
@@ -194,8 +137,7 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
     }
 
-    /// Internal comparison bridge for the dormant ADR 0048 Published mate primitive.  Existing
-    /// callers intentionally remain on `EDGE_ALIASES` until the separate adoption gate.
+    /// Internal comparison bridge for the dormant ADR 0048 Published mate primitive.
     pub(crate) fn published_mate_canonical_edge_handle(
         &self,
         handle: EdgeHandle,
@@ -215,71 +157,7 @@ impl GraphStore {
             })
     }
 
-    pub(super) fn remove_reverse_edge_for_canonical_directed(
-        &self,
-        row_vertex_id: VertexId,
-        owner_vertex_id: VertexId,
-        label_id: LaraLabelId,
-        forward_slot_index: u32,
-    ) -> Result<(), GraphStoreError> {
-        let removed = self.with_graph_mut(|graph| {
-            graph.remove_reverse_edge_at_slot_with_move(row_vertex_id, label_id, forward_slot_index)
-        })?;
-        if let Some(removed) = removed {
-            Self::apply_edge_slot_moves(
-                ic_stable_lara::labeled::LabeledOrientation::Reverse,
-                row_vertex_id,
-                removed.moves,
-            );
-            return Ok(());
-        }
-        let mut sole_slot = None;
-        let mut count = 0u32;
-        self.with_graph_mut(|graph| {
-            graph.for_each_in_edges_for_label(row_vertex_id, label_id, |edge| {
-                if edge.neighbor_vid() == owner_vertex_id {
-                    count = count.saturating_add(1);
-                    sole_slot = Some(edge.edge_slot_index.raw());
-                }
-            })
-        })?;
-        if count == 1 {
-            let removal = self.with_graph_mut(|graph| {
-                graph.remove_reverse_edge_at_slot_with_move(
-                    row_vertex_id,
-                    label_id,
-                    sole_slot.expect("count == 1"),
-                )
-            })?;
-            Self::apply_edge_slot_moves(
-                ic_stable_lara::labeled::LabeledOrientation::Reverse,
-                row_vertex_id,
-                removal.into_iter().flat_map(|removal| removal.moves),
-            );
-        }
-        Ok(())
-    }
-
-    pub(crate) fn alias_for_canonical_edge(
-        &self,
-        canonical: EdgeHandle,
-    ) -> Option<(VertexId, u32, bool)> {
-        EDGE_ALIASES.with_borrow(|aliases| {
-            aliases
-                .find_alias_for_canonical(
-                    canonical.owner_vertex_id,
-                    canonical.label_id.raw(),
-                    canonical.slot_index.raw(),
-                )
-                .map(|(vertex_id, slot_key)| {
-                    let (slot_index, reverse_in) = edge_alias_slot_key_parts(slot_key);
-                    (vertex_id, slot_index, reverse_in)
-                })
-        })
-    }
-
-    /// Resolves the physical counterpart for a live occurrence without consulting
-    /// `EDGE_ALIASES`. The caller supplies the orientation because a logical slot
+    /// Resolves the physical counterpart for a live occurrence. The caller supplies the orientation because a logical slot
     /// alone cannot distinguish the forward and reverse stores.
     pub(crate) fn counterpart_edge_occurrence(
         &self,

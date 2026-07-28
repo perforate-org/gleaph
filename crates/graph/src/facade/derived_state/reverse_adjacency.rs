@@ -14,23 +14,16 @@
 //!
 //! [`rebuild_reverse_adjacency`] reconciles **only the diverged keys** reported by
 //! [`check_reverse_adjacency`] against the forward source of truth, instead of clearing and
-//! rebuilding the whole reverse orientation. A full rebuild would reassign every reverse slot
-//! index, which cascade-invalidates `EDGE_ALIASES` keys (derived from reverse slots) and the
-//! reverse inline property bytes slab wholesale (the reason a naive rebuild was rejected; see ADR 0026). The
-//! differential repair removes each diverged key's reverse in-edge halves and their alias rows,
-//! then re-inserts one reverse half per forward out-edge — copying the forward inline property bytes and
-//! recreating the directed reverse-IN alias exactly as the live insert path does in
-//! `commit_directed_edge_insert`. Non-diverged keys keep their slots and aliases; edge properties
-//! (keyed by canonical forward identity) are untouched.
+//! rebuilding the whole reverse orientation. The differential repair preserves matching reverse
+//! rows, removes only surplus rows, inserts only missing rows, and aligns reverse inline property
+//! bytes by equal-neighbor ordinal. Non-diverged keys and canonical forward properties remain
+//! untouched.
 //!
 //! The repair is `pub(crate)` defense-in-depth with no canister endpoint: divergence is
 //! near-unreachable because IC co-updates trap-and-roll-back atomically, so the repair set is
-//! normally empty. For parallel directed edges sharing one `(src, tgt, label)` key, alias
-//! precision matches the live insert path's existing first-match behavior; the membership
-//! invariant checked here is always restored.
+//! normally empty. Parallel directed edges are aligned by their equal-neighbor ordinal.
 
-use super::super::stable::EDGE_ALIASES;
-use crate::facade::store::helpers::{catalog_edge_label_from_wire, edge_alias_slot_key};
+use crate::facade::store::helpers::catalog_edge_label_from_wire;
 use crate::facade::{GraphStore, GraphStoreError};
 use gleaph_graph_kernel::entry::{
     Edge, EdgeInlinePropertyBytes, EdgeSlotIndex, EdgeTarget, VertexRef,
@@ -292,38 +285,18 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
     let reverse =
         collect_reverse_edges_for_key(store, target, source, wire, inline_property_width)?;
 
-    // Drop aliases for this key before any reverse slot can move. Recreate them from the final
-    // ordinal-aligned rows below; this also removes stale aliases for orphan reverse rows.
-    EDGE_ALIASES.with_borrow_mut(|aliases| {
-        for (forward_slot, _) in &forward {
-            aliases.remove_all_for_canonical(source, wire.raw(), *forward_slot);
-        }
-        for (reverse_slot, _) in &reverse {
-            aliases.remove(
-                target,
-                wire.raw(),
-                edge_alias_slot_key((*reverse_slot).into(), true),
-            );
-        }
-    });
-
     // Remove only surplus reverse rows, in descending slot order so earlier slots remain valid.
     for (reverse_slot, _) in reverse.iter().skip(forward.len()).rev() {
-        let removal = store.with_graph_mut(|graph| {
-            graph.remove_reverse_edge_at_slot_with_move(target, wire, *reverse_slot)
+        let removed = store.with_graph_mut(|graph| {
+            graph.remove_reverse_edge_at_slot(target, wire, *reverse_slot)
         })?;
-        let Some(removal) = removal else {
+        let Some(_removed) = removed else {
             return Err(GraphStoreError::EdgeNotFound {
                 owner_vertex_id: target,
                 label_id: wire,
                 slot_index: *reverse_slot,
             });
         };
-        GraphStore::apply_edge_slot_moves(
-            ic_stable_lara::labeled::LabeledOrientation::Reverse,
-            target,
-            removal.moves,
-        );
     }
 
     // Insert only missing reverse rows. Existing rows remain in their current logical order.
@@ -356,7 +329,7 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
         });
     }
 
-    // Align bytes and recreate aliases by ordinal, avoiding first-match scans for parallel edges.
+    // Align bytes by ordinal, avoiding first-match scans for parallel edges.
     for ((forward_slot, inline_property_bytes), (reverse_slot, _)) in
         forward.iter().zip(final_reverse.iter())
     {
@@ -366,15 +339,7 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
                 graph.update_reverse_edge_inline_property_at_slot(target, wire, *reverse_slot, edge)
             })?;
         }
-        EDGE_ALIASES.with_borrow_mut(|aliases| {
-            aliases.insert(
-                target,
-                wire.raw(),
-                edge_alias_slot_key((*reverse_slot).into(), true),
-                source,
-                *forward_slot,
-            );
-        });
+        let _ = forward_slot;
     }
     Ok(())
 }
@@ -706,7 +671,7 @@ mod tests {
         let label_id = crate::test_labels::edge_label_id_for_name("RevRepairUnrelated");
         let label = lara_label(edge_storage_label(Some(label_id), false));
 
-        // A healthy directed edge whose reverse half/alias must survive the repair untouched.
+        // A healthy directed edge whose reverse half must survive the repair untouched.
         store
             .insert_directed_edge(keep_source, target, Some(label_id))
             .expect("kept edge");
@@ -716,7 +681,7 @@ mod tests {
             })
             .expect("lookup")
             .expect("kept reverse half");
-        let kept_alias_before = store.canonical_reverse_in_edge_handle(kept_before);
+        let kept_canonical_before = store.canonical_reverse_in_edge_handle(kept_before);
 
         // A separate diverged key (forward-only) sharing the target's reverse bucket.
         GRAPH.with_borrow(|graph| {
@@ -745,9 +710,9 @@ mod tests {
             "unrelated key's reverse slot must be preserved"
         );
         assert_eq!(
-            kept_alias_before,
+            kept_canonical_before,
             store.canonical_reverse_in_edge_handle(kept_after),
-            "unrelated key's alias must be preserved"
+            "unrelated key's canonical resolution must be preserved"
         );
     }
 }

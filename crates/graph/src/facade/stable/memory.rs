@@ -1,7 +1,6 @@
 //! Graph canister stable-memory layout — see `design/storage/stable-memory-inventory.md`
 //! and `facade/stable/layout.rs` (ADR 0007 registry).
 
-use super::edge_alias::EdgeAliasIndex;
 use super::edge_properties::EdgePropertyStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
 use super::vertex_embeddings::VertexEmbeddingStore;
@@ -68,7 +67,7 @@ const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(31);
 const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(32);
 const VERTEX_PROPERTIES: MemoryId = MemoryId::new(33);
 const EDGE_PROPERTIES: MemoryId = MemoryId::new(34);
-const EDGE_ALIASES: MemoryId = MemoryId::new(35);
+// MemoryId 35 was formerly EDGE_ALIASES. It remains reserved and is not allocated.
 const GRAPH_METADATA: MemoryId = MemoryId::new(36);
 const LABEL_STATS_DELTA_SEQ: MemoryId = MemoryId::new(37);
 const LABEL_STATS_DELTA_LOG: MemoryId = MemoryId::new(38);
@@ -167,8 +166,7 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (VERTEX_LABEL_SETS, 8),
     (VERTEX_PROPERTIES, 64),
     (EDGE_PROPERTIES, 64),
-    // Adjacency-derived and bounded append/repair domains.
-    (EDGE_ALIASES, 16),
+    // Bounded append/repair domains.
     (LABEL_STATS_DELTA_LOG, 8),
     (GRAPH_MUTATION_JOURNAL, 8),
     (INDEX_REPAIR_JOURNAL, 16),
@@ -197,7 +195,6 @@ pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(crate) type StableVertexEmbeddingStore = VertexEmbeddingStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
-pub(crate) type StableEdgeAliasIndex = EdgeAliasIndex<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableLabelStatsDeltaSeq = StableCell<u64, Memory>;
 pub(crate) type StableLabelStatsDeltaLog = super::label_stats_delta::LabelStatsDeltaLog<Memory>;
@@ -405,7 +402,7 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         ("vertex_label_sets", 32, VERTEX_LABEL_SETS),
         ("vertex_properties", 33, VERTEX_PROPERTIES),
         ("edge_properties", 34, EDGE_PROPERTIES),
-        ("edge_aliases", 35, EDGE_ALIASES),
+        // MemoryId 35 is reserved after EDGE_ALIASES removal.
         ("graph_metadata", 36, GRAPH_METADATA),
         ("label_stats_delta_seq", 37, LABEL_STATS_DELTA_SEQ),
         ("label_stats_delta_log", 38, LABEL_STATS_DELTA_LOG),
@@ -482,10 +479,6 @@ pub(crate) fn init_vertex_embedding_store() -> StableVertexEmbeddingStore {
 
 pub(crate) fn init_edge_property_store() -> StableEdgePropertyStore {
     EdgePropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_PROPERTIES)))
-}
-
-pub(crate) fn init_edge_alias_index() -> StableEdgeAliasIndex {
-    EdgeAliasIndex::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_ALIASES)))
 }
 
 pub(crate) fn init_metadata() -> StableMetadata {

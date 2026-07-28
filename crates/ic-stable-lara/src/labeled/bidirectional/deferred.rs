@@ -3052,35 +3052,6 @@ where
         Ok(removed)
     }
 
-    /// Removes one matching reverse edge and reports the bounded slot shifts from overflow unlink.
-    pub fn remove_reverse_edge_matching_with_move<F>(
-        &self,
-        dst: VertexId,
-        label_id: BucketLabelKey,
-        mut matches: F,
-    ) -> Result<Option<EdgeRemoval<E>>, DeferredBidirectionalLabeledError>
-    where
-        E: CsrEdgeTombstone,
-        F: FnMut(&E) -> bool,
-    {
-        let slot = self
-            .reverse
-            .iter_edges_with_inline_property_for_label_next(dst, label_id, OutEdgeOrder::Descending)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)?
-            .iter()
-            .find(|candidate| matches(candidate))
-            .map(|candidate| candidate.edge_slot_index_raw());
-        let Some(slot) = slot else {
-            return Ok(None);
-        };
-        self.invalidate_mate_leaf_for_vertex(Orientation::Reverse, dst)?;
-        let removal = self
-            .reverse
-            .remove_edge_at_slot_with_move(dst, label_id, slot)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
-        Ok(removal)
-    }
-
     /// Removes one matching forward edge and reports the bounded slot shifts from overflow unlink.
     pub fn remove_forward_edge_matching_with_move<F>(
         &self,

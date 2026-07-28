@@ -2,8 +2,8 @@
 
 Date: 2026-07-23  
 Status: accepted  
-Implementation status: CounterpartScan production reads migrated to the ADR 0050 `traverse_next` logical-slot surface; first bounded Graph scan-only canonicalization caller group migrated; **Plan 0186 (2026-07-27 UTC) migrated the edge-property sidecar read/write group** (`edge_property`, `edge_properties`, `edge_property_gql_record`, `commit_edge_property_write`, `commit_edge_property_remove`, and `commit_remove_all_edge_properties`) to CounterpartScan-based canonicalization, and fixed undirected expand binding canonicalization to anchor scanned occurrences on the probe bucket before resolving the canonical handle. **Plan 0188 (2026-07-28 UTC) migrated live inline-edge-property mirroring** to explicit orientation-aware CounterpartScan, including directed/undirected self-loops and parallel-edge rank selection. **Plan 0189 (2026-07-28 UTC) migrated vertex-deletion observer cleanup** to an exact pre-slot-move LARA deletion-location callback, so that path now clears canonical sidecars without post-removal alias lookup. **Plan 0190 (2026-07-28 UTC) migrated ordinary scalar edge deletion canonicalization** to CounterpartScan before physical removal; transitional alias rows remain for counterpart removal and slot movement. **Plan 0191 (2026-07-28 UTC) migrated reverse repair from full key-wide delete/reinsert to differential repair:** matching reverse rows are retained, only surplus rows are removed, only missing rows are inserted, and inline bytes are aligned by ordinal. Transitional alias-row maintenance remains. Remaining alias-dependent callers: reverse-repair alias maintenance, ordinary alias-row counterpart removal, and other out-of-scope paths.
-Adoption status: partially activated (scan-only Graph canonicalization + edge-property sidecar group + live inline-edge-property mutation + vertex-deletion observer cleanup + ordinary scalar edge deletion canonicalization)
+Implementation status: CounterpartScan production reads and mutation callers are migrated to the ADR 0050 `traverse_next` logical-slot surface. **Plan 0192 (2026-07-28 UTC) removed the Graph `EDGE_ALIASES` region, alias mutation/rebuild code, alias-specific tests and benchmarks, and reverse Graph sidecar move notifications.** Differential reverse repair now retains matching rows, removes only surplus rows, inserts only missing rows, and aligns inline bytes by ordinal. MemoryId 35 remains reserved and is not reused.
+Adoption status: fully activated for the former Graph alias callers; dormant Published mate fixtures remain measurement-only.
 
 Traversal dependency: ordinary-caller adoption may begin after ADR 0050 Phases 1–2 have produced
 the tested and benchmarked `traverse_next` read surface. This is a one-way hand-off: ADR 0048 uses
@@ -32,7 +32,7 @@ A canonical adjacency occurrence is represented at the LARA boundary as follows:
 | undirected `u -- v`, `u != v` | one forward entry at each endpoint    | entry owned by `max(u, v)` |
 | undirected self-loop `u -- u` | one forward entry                     | that entry                 |
 
-Graph currently stores an `EDGE_ALIASES` stable B-tree row for each non-self logical edge.
+Historically, Graph stored an `EDGE_ALIASES` stable B-tree row for each non-self logical edge. Plan 0192 removed that region; MemoryId 35 is reserved for layout compatibility and is not allocated.
 
 The alias index is structurally misplaced:
 
@@ -50,7 +50,7 @@ Counterpart resolution belongs to the bidirectional Labeled LARA boundary, which
 
 ### 1. LARA owns counterpart resolution
 
-Graph removes `EDGE_ALIASES` after all callers use LARA counterpart APIs.
+Graph has removed `EDGE_ALIASES`; all former callers use LARA counterpart APIs.
 
 The bidirectional Labeled LARA owner exposes these final internal types:
 
@@ -86,9 +86,8 @@ GraphStore retains canonical edge properties and derived-index events. It does n
 `CanonicalEdgeOccurrence`. Graph-kernel's `EdgeSlotIndex` is an alias for this same row-local
 logical position, not an alternate slot domain. Raw slab offsets and overflow-log entry encodings are
 storage-internal values and are never accepted by counterpart APIs. Raw `u32` values appear only at
-explicit wire/stable-key codec boundaries. The Graph alias codec rejects logical slots with bit 31
-set before adding its transitional reverse-in marker. This ADR has no compatibility alias for the
-previous raw-slot shape.
+explicit wire/stable-key codec boundaries. This ADR has no compatibility alias for the previous
+raw-slot shape.
 
 ### 2. Canonical ownership is derived by edge semantics
 
@@ -498,7 +497,7 @@ Implementation proceeds as a destructive replacement, not a compatibility migrat
 - route GraphStore and repair through bidirectional owner methods;
 - enforce pair-order preservation on every mutation path.
 
-### Phase 5: alias removal
+### Phase 5: alias removal — implemented by Plan 0192
 
 - migrate canonicalization, update, and deletion callers;
 - remove `EDGE_ALIASES`;
@@ -614,11 +613,11 @@ and exact logical-edge preservation across insertion, deletion, compaction, and 
 Canbench compares:
 
 ```text
-current EDGE_ALIASES
-CounterpartScan
+ historical Graph alias index
+ CounterpartScan
 ```
 
-during implementation, then removes the alias baseline after migration is complete.
+during implementation; the historical alias baseline is no longer a runtime path.
 
 Workloads include:
 

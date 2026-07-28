@@ -51,7 +51,7 @@ pub enum StableMemoryClass {
     ///   `ROUTER_MUTATION_BY_CLIENT_KEY`)
     /// - Graph-index authorization and shard-owner maps
     ///
-    /// **Not canonical:** reverse adjacency, postings, aliases, telemetry counts, free-span pools.
+    /// **Not canonical:** reverse adjacency, postings, telemetry counts, free-span pools.
     ///
     /// **Query rule:** Canonical state wins when derived state disagrees
     /// ([derived-state-query-semantics.md](design/index/derived-state-query-semantics.md)).
@@ -61,13 +61,12 @@ pub enum StableMemoryClass {
     /// rebuild, backfill, or (for LARA reverse) a full-graph replay.
     ///
     /// **Meaning:** The region may lag canonical state (async flush/backfill) or be kept in sync
-    /// on every mutation (edge aliases, edge equality postings). Either way, it is not the
+    /// on every mutation (edge equality postings). Either way, it is not the
     /// authority for “does this vertex/edge/property exist?”
     ///
     /// **Gleaph examples:**
     /// - LARA reverse orientation (`REV_*` adjacency and payloads) — co-updated on DML, plus a
     ///   differential `rebuild_reverse_adjacency` repair API
-    /// - `EDGE_ALIASES` — sync rebuild API on graph shard
     /// - `INDEX_VERTEX_POSTINGS`, `INDEX_VERTEX_LABEL_POSTINGS` — graph-index projections; backfill from graph
     ///
     /// **Merge policy (ADR 0007):** Do not merge with canonical neighbor regions without benchmark
@@ -150,7 +149,7 @@ impl StableMemoryClass {
 ///
 /// Replaces an earlier `Option<&'static str>`. There, `None` was overloaded between "this region
 /// has no rebuild concept" and "derived, but kept consistent inline with no rebuild API", and the
-/// class invariants could only catch the difference for `INDEX_*` / `EDGE_ALIASES`. Making the
+/// class invariants could only catch the difference for `INDEX_*`. Making the
 /// sync-co-update case explicit lets [`validate_class_invariants`] forbid an unspecified `None` on
 /// any `Derived` region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -533,12 +532,12 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             RebuildPath::None,
         ),
         region(
-            "EDGE_ALIASES",
+            "RESERVED_35",
             35,
-            StableMemoryClass::Derived,
-            "adjacency",
-            "Undirected/reverse expand alias index",
-            RebuildPath::Named("rebuild_edge_aliases"),
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former Graph edge-alias region; intentionally unallocated",
+            RebuildPath::None,
         ),
         region(
             "GRAPH_METADATA",
@@ -1605,7 +1604,7 @@ mod tests {
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[47].symbol, "MATE_LEAF_LOCATORS");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,
-            StableMemoryClass::Derived
+            StableMemoryClass::Maintenance
         );
     }
 
@@ -1683,7 +1682,7 @@ mod tests {
                 }
             }
         }
-        // LARA reverse adjacency and edge aliases name a rebuild; index postings name a backfill.
+        // LARA reverse adjacency names a rebuild; index postings name a backfill.
         let graph = |symbol: &str| {
             GRAPH_STABLE_LAYOUT
                 .regions
@@ -1695,10 +1694,6 @@ mod tests {
         assert_eq!(
             graph("REV_VERTICES"),
             RebuildPath::Named("rebuild_reverse_adjacency")
-        );
-        assert_eq!(
-            graph("EDGE_ALIASES"),
-            RebuildPath::Named("rebuild_edge_aliases")
         );
         assert_eq!(
             INDEX_STABLE_LAYOUT.regions[4].rebuild,

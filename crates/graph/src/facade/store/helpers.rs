@@ -1,4 +1,4 @@
-//! Graph store helpers and edge-alias key encoding.
+//! Graph store helpers.
 
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeInlinePropertyProfile, EdgeLabelId,
@@ -12,38 +12,11 @@ use ic_stable_lara::{
         EdgeSlotMoveObserver, LabeledOrientation,
     },
     traits::CsrEdge,
-    traverse::BucketEntryPosition,
 };
 
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-
-/// Tag bit for reverse-IN alias keys so they do not collide with forward-OUT slot indices
-/// on the same vertex (both CSR stores use independent slot counters).
-const EDGE_ALIAS_REVERSE_IN_TAG: u32 = 1 << 31;
-
-#[inline]
-pub(crate) fn edge_alias_slot_key(slot_index: BucketEntryPosition, reverse_in: bool) -> u32 {
-    let slot_index = slot_index.raw();
-    assert_eq!(
-        slot_index & EDGE_ALIAS_REVERSE_IN_TAG,
-        0,
-        "logical edge slot exceeds the alias codec range"
-    );
-    if reverse_in {
-        slot_index | EDGE_ALIAS_REVERSE_IN_TAG
-    } else {
-        slot_index
-    }
-}
-
-#[inline]
-pub(super) fn edge_alias_slot_key_parts(slot_key: u32) -> (u32, bool) {
-    let reverse_in = slot_key & EDGE_ALIAS_REVERSE_IN_TAG != 0;
-
-    (slot_key & !EDGE_ALIAS_REVERSE_IN_TAG, reverse_in)
-}
 
 pub(super) struct GraphSidecarMoveObserver;
 
@@ -64,8 +37,8 @@ impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
 /// Observes incremental incident-edge removal during a resumable
 /// [`MaintenanceWorkItem::DeleteVertex`] purge (ADR 0021 Stage 2).
 ///
-/// Clears each removed edge's derived sidecars (edge properties, local indexes,
-/// aliases) as the purge drains them, then drops the vertex from the pending-purge
+/// Clears each removed edge's derived sidecars (edge properties and local indexes)
+/// as the purge drains them, then drops the vertex from the pending-purge
 /// set when its purge completes. Runs inside the `GRAPH` borrow held by
 /// `maintenance_with_observers`, so it only touches the edge-sidecar and
 /// pending-purge thread-locals — never `GRAPH` itself. Sidecar owner and

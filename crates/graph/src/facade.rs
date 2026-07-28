@@ -84,7 +84,6 @@ pub fn bench_stable_reopen_touch() {
     std::hint::black_box(memory::init_vertex_label_store());
     std::hint::black_box(memory::init_vertex_property_store());
     std::hint::black_box(memory::init_edge_property_store());
-    std::hint::black_box(memory::init_edge_alias_index());
     std::hint::black_box(memory::init_metadata());
     std::hint::black_box(memory::init_label_stats_delta_seq());
     std::hint::black_box(memory::init_label_stats_delta_log());

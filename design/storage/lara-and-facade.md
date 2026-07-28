@@ -36,11 +36,11 @@ flowchart TB
 - PMA segment density, weighted rebalance, segment relocation (DGAP-aligned core)
 - `FreeSpanStore` for retired segment physical blocks (core LARA — see [lara.md](./lara.md))
 - Labeled graphs, bidirectional deferred views
-- **Partially implemented (ADR 0048):** `CounterpartScan` is now live on the ADR 0050 logical-slot
+- **Implemented (ADR 0048):** `CounterpartScan` is live on the ADR 0050 logical-slot
   surface (`read_edge_state`, `visit_edges`, typed `BucketEntryPosition`) for edge-property
-  sidecars, live inline-edge-property mutation, and vertex-deletion observer cleanup. The latter
-  receives exact removed locations before LARA emits slot-move notifications; returned insert
-  locations and the remaining mutation/alias-removal work are still pending
+  sidecars, live inline-edge-property mutation, vertex-deletion observer cleanup, ordinary edge
+  deletion, and reverse-adjacency differential repair. Exact LARA locations and physical pair
+  ownership are now the source of truth; reverse slot movement does not update Graph sidecars
 - **Partially implemented (ADR 0050):** canonical logical-slot traversal (`visit_edges`) and
   selected-slot reads are active and used by CounterpartScan; the broader forward/reverse facade
   migration and legacy removal remain pending
@@ -57,7 +57,7 @@ LARA does not know `GlobalVertexId` or GQL.
 | Store                      | Role                                                        |
 | -------------------------- | ----------------------------------------------------------- |
 | Vertex/edge properties     | Property values by `PropertyId` (names on router)           |
-| `EDGE_ALIASES`             | Current derived implementation; planned removal by ADR 0048 |
+| MemoryId 35                | Reserved hole; former `EDGE_ALIASES`, never allocated or reused |
 | Label catalogs             | Vertex/edge labels by id                                    |
 | `metadata`                 | `FederationRouting`, graph name                             |
 | `edge_pending` (ephemeral) | Federated edge property index ops → graph-index             |
@@ -78,16 +78,12 @@ Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR
 
 ## Edge identity and counterpart ownership
 
-**Current transitional implementation:** Graph-side `EdgeHandle` and related wire/index records
-carry an owner, label, and logical `BucketEntryPosition` slot. `EDGE_ALIASES` and the existing
-`mate`-named paths remain active for local-index movement, reverse-repair alias maintenance,
-ordinary alias-row counterpart removal, and other pending callers. Reverse repair now performs
-differential row reconciliation and applies exact reverse slot moves; alias-row ownership
-migration is still pending. The scan-only canonical-edge-handle helper, edge-property
-sidecar group, live inline-edge-property mutation, and vertex-deletion observer cleanup use LARA
-CounterpartScan or exact deletion locations on the ADR 0050 read surface. Reverse-store
-inline-property callers use explicit orientation because a logical slot alone cannot identify the
-physical store.
+**Current implementation:** Graph-side `EdgeHandle` and related wire/index records carry an owner,
+label, and logical `BucketEntryPosition` slot. Canonicalization, counterpart removal, sidecar
+cleanup, and reverse-adjacency repair use LARA CounterpartScan or exact deletion locations. The
+reverse orientation is owned by LARA; reverse slot movement does not move canonical Graph
+properties or equality postings. Reverse-store inline-property callers use explicit orientation
+because a logical slot alone cannot identify the physical store.
 
 **Target contract:** ADR 0048 makes `BucketEntryPosition` the only slot accepted by LARA
 `EdgeHandle`/`CanonicalEdgeOccurrence`; raw slab/log locations remain inside LARA. Counterpart resolution is
@@ -96,8 +92,7 @@ owned by bidirectional LARA through `counterpart_of` and `canonical_handle`, usi
 the `visit_edges`/selected-slot APIs. Graph, Router, and graph-index encode logical slots into
 existing wire `u32` fields only at explicit adapters.
 
-GraphStore continues to own canonical sidecars during the replacement. `EDGE_ALIASES` is removed
-only after all callers adopt ADR 0048. The target architecture has no packed derived mate index;
+GraphStore continues to own canonical sidecars. The target architecture has no packed derived mate index;
 exact rank/select scanning remains the source of truth.
 
 ## Indexes (local vs global)

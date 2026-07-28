@@ -366,10 +366,10 @@ fn setup_mate_lookup_fixture() -> (GraphStore, crate::facade::EdgeHandle, Vertex
 }
 
 #[bench(raw)]
-fn bench_edge_mate_alias_lookup() -> canbench_rs::BenchResult {
+fn bench_edge_mate_counterpart_lookup() -> canbench_rs::BenchResult {
     let (store, handle, _source, _target) = setup_mate_lookup_fixture();
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("edge_mate_alias_lookup");
+        let _scope = canbench_rs::bench_scope("edge_mate_counterpart_lookup");
         black_box(store.canonical_edge_handle(handle));
     })
 }
@@ -388,14 +388,14 @@ fn bench_edge_mate_scan_only_rank_lookup() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
-fn bench_edge_mate_post_insert_rediscovery() -> canbench_rs::BenchResult {
-    let (store, handle, source, target) = setup_mate_lookup_fixture();
+fn bench_edge_mate_counterpart_scan() -> canbench_rs::BenchResult {
+    let (store, handle, _source, _target) = setup_mate_lookup_fixture();
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("edge_mate_post_insert_rediscovery");
+        let _scope = canbench_rs::bench_scope("edge_mate_counterpart_scan");
         black_box(
             store
-                .find_reverse_alias_for_canonical(handle, target, source)
-                .expect("reverse rediscovery"),
+                .counterpart_edge_occurrence(handle.occurrence(LabeledOrientation::Forward))
+                .expect("counterpart scan"),
         );
     })
 }

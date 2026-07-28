@@ -10,7 +10,6 @@ pub(crate) mod layout;
 pub(crate) mod memory;
 
 pub(crate) mod derived_index_outbox;
-pub(crate) mod edge_alias;
 pub(crate) mod edge_properties;
 pub(crate) mod label_stats_delta;
 pub(crate) mod local_unique;
@@ -43,10 +42,6 @@ thread_local! {
 
     pub(crate) static EDGE_PROPERTIES: RefCell<memory::StableEdgePropertyStore> = RefCell::new(
         memory::init_edge_property_store()
-    );
-
-    pub(crate) static EDGE_ALIASES: RefCell<memory::StableEdgeAliasIndex> = RefCell::new(
-        memory::init_edge_alias_index()
     );
 
     pub(crate) static METADATA: RefCell<memory::StableMetadata> = RefCell::new(

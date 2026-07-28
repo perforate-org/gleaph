@@ -812,8 +812,8 @@ pub(crate) fn leaf_index_for_vertex(vid: VertexId, segment_size: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::super::stable::{
-        DERIVED_INDEX_OUTBOX, EDGE_ALIASES, GRAPH_MUTATION_JOURNAL, LABEL_STATS_DELTA_LOG,
-        PENDING_VERTEX_PURGES, UNIQUE_EFFECT_OUTBOX, memory::stable_memory_stats,
+        DERIVED_INDEX_OUTBOX, GRAPH_MUTATION_JOURNAL, LABEL_STATS_DELTA_LOG, PENDING_VERTEX_PURGES,
+        UNIQUE_EFFECT_OUTBOX, memory::stable_memory_stats,
     };
     use super::*;
     use crate::test_labels::{edge_label_id_for_name, install_test_edge_inline_property_profile};
@@ -1109,7 +1109,6 @@ mod tests {
         repair_journal_len: u64,
         derived_index_outbox_len: u64,
         label_stats_delta_log_len: u64,
-        edge_alias_index_len: u64,
         has_pending_vertex_purges: bool,
     }
 
@@ -1122,7 +1121,6 @@ mod tests {
         let repair_journal_len = store.repair_journal_len();
         let derived_index_outbox_len = DERIVED_INDEX_OUTBOX.with_borrow(|o| o.len());
         let label_stats_delta_log_len = LABEL_STATS_DELTA_LOG.with_borrow(|l| l.len());
-        let edge_alias_index_len = EDGE_ALIASES.with_borrow(|a| a.len());
         let has_pending_vertex_purges = PENDING_VERTEX_PURGES.with_borrow(|s| !s.is_empty());
         GraphStateSnapshot {
             vertex_count: u64::from(u32::from(store.vertex_count())),
@@ -1141,7 +1139,6 @@ mod tests {
             repair_journal_len,
             derived_index_outbox_len,
             label_stats_delta_log_len,
-            edge_alias_index_len,
             has_pending_vertex_purges,
         }
     }
