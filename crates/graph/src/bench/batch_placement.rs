@@ -689,6 +689,50 @@ fn bench_ordered_all_batch_mixed_256_width_0() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
+fn bench_ordered_all_batch_mixed_256_width_0_with_planner() -> canbench_rs::BenchResult {
+    let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
+    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: [0x57; 32],
+        logical_item_count: input.len() as u32,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("ordered_all_batch_mixed_256_w0_with_planner");
+        store
+            .plan_batch_edge_insertion(&input)
+            .expect("ordered plan");
+        black_box(
+            store
+                .execute_ordered_edge_batch_clean_slab(5_300_005, identity.clone(), &input)
+                .expect("planned all-batch ordered batch"),
+        );
+    })
+}
+
+#[bench(raw)]
+fn bench_ordered_all_batch_mixed_256_width_0_with_classifier() -> canbench_rs::BenchResult {
+    let (store, mixed_input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
+    let input = mixed_input[..128].to_vec();
+    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: [0x58; 32],
+        logical_item_count: input.len() as u32,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("ordered_all_batch_mixed_256_w0_with_classifier");
+        let batch_ordinals = store
+            .classify_batch_edge_insertion(&input)
+            .expect("ordered classification");
+        assert_eq!(batch_ordinals.len(), input.len());
+        black_box(
+            store
+                .execute_ordered_edge_batch_clean_slab(5_300_006, identity.clone(), &input)
+                .expect("classified all-batch ordered batch"),
+        );
+    })
+}
+
+#[bench(raw)]
 fn bench_ordered_all_scalar_mixed_256_width_0() -> canbench_rs::BenchResult {
     let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
     let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {

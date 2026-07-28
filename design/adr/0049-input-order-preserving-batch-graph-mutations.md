@@ -1753,6 +1753,17 @@ not rewritten as though unfinished unordered product behavior shipped.
     next optimization target is therefore reusing a prepared planner result
     or replacing full occupancy planning with a cheaper admission classifier;
     LARA reservation/commit is not the dominant cost in this fixture.
+    **Implemented and measured (2026-07-28 21:29:41 UTC +0000):** requests
+    whose every logical item has a multi-intent physical run now use a cheap
+    intent-only classifier and enter the batch writer without the full
+    occupancy planner. The writer still performs complete geometry reservation
+    before canonical writes and falls back to the whole-request scalar path on
+    unsupported geometry. Mixed and all-singleton requests retain the full
+    planner so scalar portions keep their existing preflight boundary. A
+    128-item all-batch fixture measured 4.78M instructions through the
+    classifier plus writer; the comparable planner-inclusive path was 17.23M
+    only when measured with the larger 256-item fixture, so this is a directional
+    result rather than a same-size ratio.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

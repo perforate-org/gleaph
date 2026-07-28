@@ -328,46 +328,70 @@ pub fn execute_ordered_edge_batch(
     crate::edge_inline_property_schema::set_execution_resolved_labels(Some(
         request.resolved_labels.clone(),
     ));
-    let result = store
-        .plan_batch_edge_insertion(&edges)
-        .map_err(|error| format!("ordered Graph planner admission failed: {error}"))
-        .and_then(|summary| {
-            let batch_ordinals = summary.logical_ordinals_requiring_batch();
-            if batch_ordinals.is_empty() {
-                return Ok(store.execute_ordered_edge_batch_scalar_fallback(
+    let cheap_batch_ordinals = store
+        .classify_batch_edge_insertion(&edges)
+        .map_err(|error| format!("ordered Graph batch classification failed: {error}"))?;
+    let result = if !edges.is_empty() && cheap_batch_ordinals.len() == edges.len() {
+        match store.execute_ordered_edge_batch_clean_slab(
+            args.mutation_id,
+            identity.clone(),
+            &edges,
+        ) {
+            Ok(result) => Ok(result),
+            Err(error)
+                if error.starts_with("ordered Graph clean-slab geometry is unsupported:") =>
+            {
+                Ok(store.execute_ordered_edge_batch_scalar_fallback(
                     args.mutation_id,
                     identity,
                     &edges,
-                ));
+                ))
             }
-
-            if batch_ordinals.len() < edges.len() {
-                return store.execute_ordered_edge_batch_partitioned(
-                    args.mutation_id,
-                    identity,
-                    &edges,
-                    batch_ordinals,
-                );
-            }
-
-            match store.execute_ordered_edge_batch_clean_slab(
-                args.mutation_id,
-                identity.clone(),
-                &edges,
-            ) {
-                Ok(result) => Ok(result),
-                Err(error)
-                    if error.starts_with("ordered Graph clean-slab geometry is unsupported:") =>
-                {
-                    Ok(store.execute_ordered_edge_batch_scalar_fallback(
+            Err(error) => Err(error),
+        }
+    } else {
+        store
+            .plan_batch_edge_insertion(&edges)
+            .map_err(|error| format!("ordered Graph planner admission failed: {error}"))
+            .and_then(|summary| {
+                let batch_ordinals = summary.logical_ordinals_requiring_batch();
+                if batch_ordinals.is_empty() {
+                    return Ok(store.execute_ordered_edge_batch_scalar_fallback(
                         args.mutation_id,
                         identity,
                         &edges,
-                    ))
+                    ));
                 }
-                Err(error) => Err(error),
-            }
-        });
+
+                if batch_ordinals.len() < edges.len() {
+                    return store.execute_ordered_edge_batch_partitioned(
+                        args.mutation_id,
+                        identity,
+                        &edges,
+                        batch_ordinals,
+                    );
+                }
+
+                match store.execute_ordered_edge_batch_clean_slab(
+                    args.mutation_id,
+                    identity.clone(),
+                    &edges,
+                ) {
+                    Ok(result) => Ok(result),
+                    Err(error)
+                        if error
+                            .starts_with("ordered Graph clean-slab geometry is unsupported:") =>
+                    {
+                        Ok(store.execute_ordered_edge_batch_scalar_fallback(
+                            args.mutation_id,
+                            identity,
+                            &edges,
+                        ))
+                    }
+                    Err(error) => Err(error),
+                }
+            })
+    };
     crate::edge_inline_property_schema::clear_execution_resolved_labels();
     result
 }

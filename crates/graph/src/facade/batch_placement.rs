@@ -549,6 +549,39 @@ impl GraphStore {
         Ok(intents)
     }
 
+    /// Classify logical items using only physical-run multiplicity.
+    ///
+    /// This is the cheap admission check for the all-batch ordered path. It validates and
+    /// expands the request, but deliberately does not read leaf or bucket occupancy. The batch
+    /// writer remains responsible for the complete geometry reservation and for falling back
+    /// before any canonical write when that reservation is unsupported.
+    pub(crate) fn classify_batch_edge_insertion(
+        &self,
+        edges: &[BatchEdgeInput],
+    ) -> Result<BTreeSet<u32>, BatchPlacementError> {
+        let intents = self.expand_batch_edge_intents(edges)?;
+        let mut pending_by_run = BTreeMap::<BatchPlacementKey, u32>::new();
+        for intent in &intents {
+            let entry = pending_by_run
+                .entry(batch_placement_key(intent))
+                .or_default();
+            *entry = entry
+                .checked_add(1)
+                .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
+        }
+        Ok(intents
+            .iter()
+            .filter_map(|intent| {
+                (pending_by_run
+                    .get(&batch_placement_key(intent))
+                    .copied()
+                    .unwrap_or_default()
+                    > 1)
+                .then_some(intent.logical_ordinal)
+            })
+            .collect())
+    }
+
     pub fn plan_batch_edge_insertion(
         &self,
         edges: &[BatchEdgeInput],
@@ -985,6 +1018,12 @@ mod tests {
             input(v[0], v[1], Some(label), true, vec![]),
             input(v[2], v[3], Some(label), true, vec![]),
         ];
+        assert!(
+            store
+                .classify_batch_edge_insertion(&edges)
+                .expect("classify")
+                .is_empty()
+        );
         let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
         assert!(summary.all_physical_runs_singleton());
     }
@@ -998,6 +1037,14 @@ mod tests {
             input(v[0], v[1], Some(label), true, vec![]),
             input(v[0], v[1], Some(label), true, vec![]),
         ];
+        assert_eq!(
+            store
+                .classify_batch_edge_insertion(&edges)
+                .expect("classify")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
         let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
         assert!(!summary.all_physical_runs_singleton());
     }
