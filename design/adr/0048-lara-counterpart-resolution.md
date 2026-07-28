@@ -535,6 +535,51 @@ Combining ownership transfer, pair-order correctness, compression experiments, s
 
 Adaptive acceleration requires separate evidence and a separate ADR.
 
+### Future research: target-aware counterpart acceleration
+
+The block directory proposed for tombstone-aware `visit_edges_window` offset selection in ADR
+0050 is reusable as an auxiliary layout primitive, but it is not by itself a counterpart index.
+Its live-count prefix sums can map a physical live-row ordinal to a candidate block; they cannot
+map `(target, PairOrdinal)` to an exact occurrence when equal-target entries are interleaved with
+other targets. The counterpart fast path therefore needs target-aware metadata or a target-specific
+ordinal structure in addition to the shared live-count directory.
+
+The following candidates are reserved for a later, independently reviewed ADR:
+
+1. **Target-aware block summaries.** Per-block target ranges or compact membership summaries could
+   skip blocks that cannot contain the requested target. Zone-map and block-max research supports
+   this kind of pruning, but it is effective only when the block ordering makes the summary
+   selective; a min/max range over insertion-ordered mixed targets is often too broad, and a
+   membership filter still requires an exact scan of candidate blocks. See [MTO's per-block
+   metadata and zone-map layout](https://www.microsoft.com/en-us/research/publication/instance-optimized-data-layouts-for-cloud-analytics-workloads/)
+   and [BlockMax WAND block skipping](https://ir.webis.de/anthology/2017.sigirconf_conference-2017.65/).
+
+2. **Target-specific occurrence directory.** A sidecar mapping each target to its live occurrence
+   sequence could answer rank/select for the pair ordinal directly. Dynamic integer-set research
+   shows that rank, select, and predecessor can be supported in dynamic sets, but those bounds do
+   not establish that the structure is suitable for LARA's stable-memory updates, compaction,
+   repair, and no-await mutation boundary. See [Dynamic Integer Sets with Optimal Rank, Select,
+   and Predecessor Search](https://arxiv.org/abs/1408.3045).
+
+3. **Hybrid hot-relation acceleration.** Keep CounterpartScan as the exact fallback and build
+   target-specific metadata only for relations whose measured lookup cost justifies its update and
+   storage cost. Promotion, invalidation, compaction, recovery, and stable-memory accounting must
+   be designed as one derived-state contract; this is not permission to restore the removed MATE
+   substrate.
+
+The later ADR should compare these candidates against CounterpartScan using at least:
+
+- lookup latency for unique, parallel, and heavily interleaved relations;
+- update cost and write amplification on both physical projections;
+- tombstone and compaction behavior;
+- repair and crash/rollback semantics;
+- stable-memory bytes and allocation fragmentation; and
+- whether pair-order and canonical ownership remain derived solely from LARA.
+
+Until that evidence exists, `CounterpartScan` remains the canonical algorithm. ADR 0050's shared
+block directory may be implemented for window offsets, but counterpart acceleration must not infer
+exact pair ordinals from live-count metadata alone.
+
 ### Allow reordered projections with permutation metadata
 
 Rejected because it creates a second pairing authority. Both projections must preserve one logical relation order.
