@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 06:44:41 UTC +0000
+Anchor timestamp: 2026-07-28 06:55:00 UTC +0000
 
 ## Context
 
@@ -98,11 +98,13 @@ The current ADR 0045 implementation already produces intents in input ordinal
 order, requires strictly increasing ordinals inside each bucket run, and joins
 returned locations by ordinal. These are the correct seams to strengthen.
 The first ADR 0049 implementation slice now merges undirected owner/alias
-projections by physical bucket before reservation and makes LARA validate the
-merged plan as exact reversed pairs grouped by logical ordinal. Thus the
-same-bucket case cannot be represented as two independent reservations. The
-public ordered API, logical pair-table wire, and the remaining replay/write
-contract are still planned; this internal slice does not activate ADR 0049.
+projections by physical bucket before reservation and passes a Graph-created
+request-local pair table to LARA. LARA validates the merged plan as exact
+reversed pairs covered by that table, so the same-bucket case cannot be
+represented as two independent reservations. This is implemented only for the
+current homogeneous non-self undirected internal path. Mixed-shape planning,
+the public ordered API, and the remaining replay/write contract are still
+planned; this internal slice does not activate ADR 0049.
 
 The current fields of `GraphMutationJournalEntryV1` and
 `GraphMutationJournalEntryWireV1` contain no ordered request fingerprint; they
@@ -1477,9 +1479,10 @@ not rewritten as though unfinished unordered product behavior shipped.
    journal and wire version envelopes and encode their request identity
    directly as nested V1 schema.
 5. **Partially implemented (2026-07-28):** replace role-split bidirectional
-   plans with a merged physical run once per orientation/bucket and add the
-   same-bucket endpoint-side counterexample test. The complete logical pair
-   table and public ordered contract remain planned.
+   plans with a merged physical run once per orientation/bucket, pass a
+   Graph-created logical pair table, and add same-bucket/pair-table rejection
+   tests for the homogeneous non-self undirected internal path. Mixed-shape
+   planning and the public ordered contract remain planned.
 6. Add bucket-local order and pair-ordinal adversarial tests to the existing
    ADR 0045 planner/write fixtures without changing the public wire.
 7. Reclassify and rename internal unordered terminology where it denotes a

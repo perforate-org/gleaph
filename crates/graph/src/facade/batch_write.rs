@@ -833,6 +833,14 @@ mod tests {
                 .count(),
             2
         );
+        let neighbors = store
+            .undirected_edges(two)
+            .expect("undirected")
+            .into_iter()
+            .filter(|edge| edge.label_id == storage_label)
+            .map(|edge| edge.neighbor_vid())
+            .collect::<Vec<_>>();
+        assert_eq!(neighbors, vec![three, one]);
     }
 
     #[test]
