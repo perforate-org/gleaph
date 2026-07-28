@@ -4,6 +4,7 @@ use gleaph_graph_kernel::entry::{EdgeLabelId, VertexLabelId};
 use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
     GraphBulkMutationProgress, GraphBulkMutationProgressV1, GraphMutationJournalEntryWire,
+    GraphMutationRequestIdentityV1, GraphMutationRetirementV1, GraphMutationRetirementWireV1,
     LabelStatsDeltaEventWire, MutationId, MutationJournalState, ShardEventSeq,
 };
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
@@ -41,6 +42,8 @@ pub struct GraphMutationJournalEntryV1 {
     /// Bulk-specific progress metadata; present only when `next_index` is used.
     #[serde(default)]
     pub bulk_progress: Option<GraphBulkMutationProgress>,
+    pub request_identity: GraphMutationRequestIdentityV1,
+    pub retirement: GraphMutationRetirementV1,
 }
 
 impl GraphMutationJournalEntry {
@@ -60,6 +63,8 @@ impl GraphMutationJournalEntry {
             recorded_at_ns: Some(recorded_at_ns),
             next_index: None,
             bulk_progress: None,
+            request_identity: GraphMutationRequestIdentityV1::PlanExecution,
+            retirement: GraphMutationRetirementV1::NotApplicable,
         })
     }
 
@@ -81,6 +86,8 @@ impl GraphMutationJournalEntry {
             recorded_at_ns: Some(recorded_at_ns),
             next_index: None,
             bulk_progress: None,
+            request_identity: GraphMutationRequestIdentityV1::PlanExecution,
+            retirement: GraphMutationRetirementV1::NotApplicable,
         })
     }
 
@@ -123,6 +130,12 @@ impl GraphMutationJournalEntry {
     pub fn bulk_progress(&self) -> &Option<GraphBulkMutationProgress> {
         &self.as_v1().bulk_progress
     }
+    pub fn request_identity(&self) -> &GraphMutationRequestIdentityV1 {
+        &self.as_v1().request_identity
+    }
+    pub fn retirement(&self) -> &GraphMutationRetirementV1 {
+        &self.as_v1().retirement
+    }
 
     pub fn set_state(&mut self, state: MutationJournalState) {
         self.as_v1_mut().state = state;
@@ -160,6 +173,14 @@ impl GraphMutationJournalEntry {
         );
         wire.set_next_index(self.as_v1().next_index);
         wire.set_bulk_progress(self.as_v1().bulk_progress.clone());
+        wire.set_request_identity(self.as_v1().request_identity.clone());
+        wire.set_retirement(match &self.as_v1().retirement {
+            GraphMutationRetirementV1::NotApplicable => {
+                GraphMutationRetirementWireV1::NotApplicable
+            }
+            GraphMutationRetirementV1::Active => GraphMutationRetirementWireV1::Active,
+            GraphMutationRetirementV1::Retired { .. } => GraphMutationRetirementWireV1::Retired,
+        });
         wire
     }
 
@@ -196,6 +217,8 @@ const VALID_NEXT_INDEX: u8 = 0x08;
 // Appendix flags for journal entries.
 const APPENDIX_HOT_FORWARD: u8 = 0x01;
 const APPENDIX_BULK_PROGRESS: u8 = 0x02;
+const APPENDIX_REQUEST_IDENTITY: u8 = 0x04;
+const APPENDIX_RETIREMENT: u8 = 0x08;
 
 fn encode_u8(buf: &mut Vec<u8>, val: u8) {
     buf.push(val);
@@ -275,6 +298,63 @@ fn decode_mutation_journal_state(bytes: &[u8], offset: &mut usize) -> MutationJo
     }
 }
 
+fn encode_request_identity(buf: &mut Vec<u8>, identity: &GraphMutationRequestIdentityV1) {
+    match identity {
+        GraphMutationRequestIdentityV1::PlanExecution => encode_u8(buf, 0),
+        GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version,
+            graph_request_fingerprint,
+            logical_item_count,
+        } => {
+            encode_u8(buf, 1);
+            encode_u16_le(buf, *canonical_encoding_version);
+            buf.extend_from_slice(graph_request_fingerprint);
+            encode_u32_le(buf, *logical_item_count);
+        }
+    }
+}
+
+fn decode_request_identity(bytes: &[u8], offset: &mut usize) -> GraphMutationRequestIdentityV1 {
+    match decode_u8(bytes, offset) {
+        0 => GraphMutationRequestIdentityV1::PlanExecution,
+        1 => {
+            let canonical_encoding_version = decode_u16_le(bytes, offset);
+            let mut graph_request_fingerprint = [0u8; 32];
+            graph_request_fingerprint.copy_from_slice(&bytes[*offset..*offset + 32]);
+            *offset += 32;
+            let logical_item_count = decode_u32_le(bytes, offset);
+            GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                canonical_encoding_version,
+                graph_request_fingerprint,
+                logical_item_count,
+            }
+        }
+        tag => panic!("unknown graph request identity tag {}", tag),
+    }
+}
+
+fn encode_retirement(buf: &mut Vec<u8>, retirement: &GraphMutationRetirementV1) {
+    match retirement {
+        GraphMutationRetirementV1::NotApplicable => encode_u8(buf, 0),
+        GraphMutationRetirementV1::Active => encode_u8(buf, 1),
+        GraphMutationRetirementV1::Retired { at_ns } => {
+            encode_u8(buf, 2);
+            encode_u64_le(buf, *at_ns);
+        }
+    }
+}
+
+fn decode_retirement(bytes: &[u8], offset: &mut usize) -> GraphMutationRetirementV1 {
+    match decode_u8(bytes, offset) {
+        0 => GraphMutationRetirementV1::NotApplicable,
+        1 => GraphMutationRetirementV1::Active,
+        2 => GraphMutationRetirementV1::Retired {
+            at_ns: decode_u64_le(bytes, offset),
+        },
+        tag => panic!("unknown graph mutation retirement tag {}", tag),
+    }
+}
+
 fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
     let mut buf = Vec::with_capacity(JOURNAL_PRIMARY_SIZE);
 
@@ -309,6 +389,15 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
     }
     if v1.bulk_progress.is_some() {
         flags |= APPENDIX_BULK_PROGRESS;
+    }
+    if !matches!(
+        &v1.request_identity,
+        GraphMutationRequestIdentityV1::PlanExecution
+    ) {
+        flags |= APPENDIX_REQUEST_IDENTITY;
+    }
+    if !matches!(&v1.retirement, GraphMutationRetirementV1::NotApplicable) {
+        flags |= APPENDIX_RETIREMENT;
     }
     encode_u8(&mut buf, flags);
 
@@ -351,6 +440,13 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
         for &rc in &progress.operation_row_counts {
             encode_u64_le(&mut buf, rc);
         }
+    }
+
+    if flags & APPENDIX_REQUEST_IDENTITY != 0 {
+        encode_request_identity(&mut buf, &v1.request_identity);
+    }
+    if flags & APPENDIX_RETIREMENT != 0 {
+        encode_retirement(&mut buf, &v1.retirement);
     }
 
     let appendix_len = (buf.len() - appendix_start) as u32;
@@ -422,6 +518,8 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
     );
     let mut hot_forward_vertices = Vec::new();
     let mut bulk_progress = None;
+    let mut request_identity = GraphMutationRequestIdentityV1::PlanExecution;
+    let mut retirement = GraphMutationRetirementV1::NotApplicable;
 
     let mut appendix_offset = JOURNAL_PRIMARY_SIZE;
     if flags & APPENDIX_HOT_FORWARD != 0 {
@@ -471,6 +569,13 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         }));
     }
 
+    if flags & APPENDIX_REQUEST_IDENTITY != 0 {
+        request_identity = decode_request_identity(bytes, &mut appendix_offset);
+    }
+    if flags & APPENDIX_RETIREMENT != 0 {
+        retirement = decode_retirement(bytes, &mut appendix_offset);
+    }
+
     assert_eq!(
         appendix_offset, appendix_end,
         "journal appendix did not consume exactly {} bytes",
@@ -487,13 +592,17 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         recorded_at_ns,
         next_index,
         bulk_progress,
+        request_identity,
+        retirement,
     }
 }
 
 const JOURNAL_MAX_APPENDIX: u32 = {
     let hot_forward = 4 + MAX_HOT_FORWARD_VERTICES * 4;
     let bulk = 4 + 4 + 4 + MAX_BULK_ROW_COUNTS * 8;
-    hot_forward + bulk
+    let request_identity = 1 + 2 + 32 + 4;
+    let retirement = 1 + 8;
+    hot_forward + bulk + request_identity + retirement
 };
 
 impl Storable for GraphMutationJournalEntry {
@@ -883,6 +992,8 @@ mod tests {
             recorded_at_ns: None,
             next_index: None,
             bulk_progress: None,
+            request_identity: GraphMutationRequestIdentityV1::PlanExecution,
+            retirement: GraphMutationRetirementV1::NotApplicable,
         }));
         let upgrade_ns = 1_000 * DAY_NS;
         // First visit lazy-stamps to "now" instead of evicting, even though "now" is huge.
@@ -965,6 +1076,34 @@ mod tests {
         let bytes = original.clone().into_bytes();
         let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn roundtrip_journal_ordered_identity_and_retirement() {
+        let original = GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
+            mutation_id: 123,
+            state: MutationJournalState::Completed,
+            row_count: 2,
+            emitted_delta_first_seq: Some(10),
+            emitted_delta_last_seq: Some(11),
+            hot_forward_vertices: vec![3, 9],
+            recorded_at_ns: Some(77),
+            next_index: None,
+            bulk_progress: None,
+            request_identity: GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                canonical_encoding_version: 1,
+                graph_request_fingerprint: [5; 32],
+                logical_item_count: 2,
+            },
+            retirement: GraphMutationRetirementV1::Retired { at_ns: 88 },
+        });
+        let bytes = original.clone().into_bytes();
+        let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded, original);
+
+        let wire = decoded.wire();
+        assert_eq!(wire.request_identity(), original.request_identity());
+        assert_eq!(wire.retirement(), GraphMutationRetirementWireV1::Retired);
     }
 
     #[test]

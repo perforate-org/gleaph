@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 10:34:58 UTC +0000
+Anchor timestamp: 2026-07-28 11:27:47 UTC +0000
 
 ## Context
 
@@ -107,14 +107,18 @@ owner reservation. Unsupported bucket geometry, the public ordered API, and
 the remaining replay/write contract are still planned; this internal slice
 does not activate ADR 0049.
 
-The current fields of `GraphMutationJournalEntryV1` and
-`GraphMutationJournalEntryWireV1` contain no ordered request fingerprint; they
-also have no chunk identity. Router's `bulk_group_fingerprint` is
-order-sensitive, but Router state cannot substitute for Graph's direct replay
-authority. Section 10 deliberately removes internal multi-chunk execution from
-v1, so no chunk identity is needed. Because this surface is not active and no
-stable data must be preserved, ADR 0049 replaces both V1 structures and their
-V1 codec layout directly instead of introducing another compatibility variant.
+The Graph journal now carries the ordered-batch request identity and stable
+retirement state in `GraphMutationJournalEntryV1`; its wire projection carries
+the identity and the projected retirement enum in
+`GraphMutationJournalEntryWireV1`. The fixed V1 stable codec appends these
+optional sections under the existing appendix flags, with the old default
+(`PlanExecution` plus `NotApplicable`) decoding when the sections are absent.
+Router's `bulk_group_fingerprint` remains order-sensitive, but Router state
+cannot substitute for Graph's direct replay authority. Section 10 deliberately
+removes internal multi-chunk execution from v1, so no chunk identity is needed.
+The journal-first endpoint, identity comparison, receipt commit, and replay
+algorithm remain planned; this slice only establishes their durable record
+boundary and round-trip coverage.
 
 ## Prerequisite: complete ADR 0048
 
@@ -1555,8 +1559,10 @@ not rewritten as though unfinished unordered product behavior shipped.
     payload durably.
     Graph-kernel replay contract types now define the ordered-batch request
     identity, stable/wire retirement state, bounded aggregate receipt, and
-    canonical hot-vertex validation. Existing stable journal integration and
-    journal-first replay remain planned.
+    canonical hot-vertex validation. The stable and wire journal records now
+    carry those identity/retirement fields with round-trip coverage. The
+    journal-first endpoint, identity comparison, receipt commit, and replay
+    algorithm remain planned.
     The post-commit sidecar path traps on a violated preflight invariant rather
     than returning a recoverable error. The explicit stable-memory reservation
     remains blocked by the current `EdgePropertyStore` boundary: its

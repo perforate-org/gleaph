@@ -499,6 +499,18 @@ pub struct GraphMutationJournalEntryWireV1 {
     /// Bulk-specific progress metadata; present only when `next_index` is used.
     #[serde(default)]
     pub bulk_progress: Option<GraphBulkMutationProgress>,
+    #[serde(default = "default_graph_mutation_request_identity")]
+    pub request_identity: GraphMutationRequestIdentityV1,
+    #[serde(default = "default_graph_mutation_retirement_wire")]
+    pub retirement: GraphMutationRetirementWireV1,
+}
+
+fn default_graph_mutation_request_identity() -> GraphMutationRequestIdentityV1 {
+    GraphMutationRequestIdentityV1::PlanExecution
+}
+
+fn default_graph_mutation_retirement_wire() -> GraphMutationRetirementWireV1 {
+    GraphMutationRetirementWireV1::NotApplicable
 }
 
 /// Versioned bulk mutation progress metadata stored in a Graph journal entry (ADR 0044).
@@ -535,6 +547,8 @@ impl GraphMutationJournalEntryWire {
             hot_forward_vertices,
             next_index: None,
             bulk_progress: None,
+            request_identity: GraphMutationRequestIdentityV1::PlanExecution,
+            retirement: GraphMutationRetirementWireV1::NotApplicable,
         })
     }
 
@@ -574,6 +588,12 @@ impl GraphMutationJournalEntryWire {
     pub fn bulk_progress(&self) -> &Option<GraphBulkMutationProgress> {
         &self.as_v1().bulk_progress
     }
+    pub fn request_identity(&self) -> &GraphMutationRequestIdentityV1 {
+        &self.as_v1().request_identity
+    }
+    pub fn retirement(&self) -> GraphMutationRetirementWireV1 {
+        self.as_v1().retirement
+    }
 
     pub fn set_state(&mut self, state: MutationJournalState) {
         self.as_v1_mut().state = state;
@@ -595,6 +615,12 @@ impl GraphMutationJournalEntryWire {
     }
     pub fn set_bulk_progress(&mut self, bulk_progress: Option<GraphBulkMutationProgress>) {
         self.as_v1_mut().bulk_progress = bulk_progress;
+    }
+    pub fn set_request_identity(&mut self, identity: GraphMutationRequestIdentityV1) {
+        self.as_v1_mut().request_identity = identity;
+    }
+    pub fn set_retirement(&mut self, retirement: GraphMutationRetirementWireV1) {
+        self.as_v1_mut().retirement = retirement;
     }
 }
 
@@ -939,6 +965,31 @@ mod tests {
             hot_forward_vertices: vec![9, 3],
         };
         assert!(receipt.validate().is_err());
+    }
+
+    #[test]
+    fn mutation_journal_wire_roundtrip_preserves_replay_contract() {
+        let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [4; 32],
+            logical_item_count: 3,
+        };
+        let mut entry = GraphMutationJournalEntryWire::new(
+            7,
+            MutationJournalState::Completed,
+            3,
+            None,
+            None,
+            vec![],
+        );
+        entry.set_request_identity(identity.clone());
+        entry.set_retirement(GraphMutationRetirementWireV1::Retired);
+
+        let bytes = Encode!(&entry).expect("encode journal wire");
+        let decoded: GraphMutationJournalEntryWire =
+            Decode!(&bytes, GraphMutationJournalEntryWire).expect("decode journal wire");
+        assert_eq!(decoded.request_identity(), &identity);
+        assert_eq!(decoded.retirement(), GraphMutationRetirementWireV1::Retired);
     }
 
     #[test]
