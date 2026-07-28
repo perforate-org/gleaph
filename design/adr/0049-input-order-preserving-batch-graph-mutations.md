@@ -1729,8 +1729,12 @@ not rewritten as though unfinished unordered product behavior shipped.
     singleton items use the scalar owner boundary; one aggregate receipt,
     label delta, and journal commit is produced after both portions complete.
     If the batch portion is unsupported, the whole request falls back before
-    any canonical write. Compare an unordered candidate separately only if a
-    real reordering optimization exists.
+    any canonical write. **Measured (2026-07-28 20:59:14 UTC +0000):** a
+    256-item mixed fixture containing 128 multi-run items and 128 singleton
+    items completed in 7.48M instructions through the partitioned path,
+    versus 12.03M for all-batch and 11.51M for all-scalar execution, with
+    receipt, label delta, and journal work included. Compare an unordered
+    candidate separately only if a real reordering optimization exists.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

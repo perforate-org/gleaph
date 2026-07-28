@@ -1,16 +1,17 @@
-//! Read-only batch placement planning probes for ADR 0045.
+//! Batch placement and ordered mutation benchmarks for ADR 0049.
 //!
-//! These benchmarks measure only intent expansion and placement-summary
-//! construction. No canonical write occurs, so `stable_memory_increase` should
-//! remain zero. Setup (vertex creation, edge seeding, and input vector
-//! construction) is outside the measured closure.
+//! Planning benches keep setup and canonical writes outside their measured closure. Mutation
+//! benches include the corresponding canonical adjacency, label-delta, and journal work so the
+//! ordered partition comparison is not a setup-only proxy.
 
 use crate::facade::{BatchEdgeInput, GraphStore};
 use canbench_rs::bench;
 use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
 };
+use gleaph_graph_kernel::plan_exec::GraphMutationRequestIdentityV1;
 use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
+use std::collections::BTreeSet;
 use std::hint::black_box;
 
 const LABEL_NAMES: [&str; 4] = [
@@ -362,6 +363,55 @@ fn setup_two_parallel_directed_edges_per_bucket(
     (store, label, input)
 }
 
+fn setup_mixed_ordered_partition_fixture() -> (GraphStore, Vec<BatchEdgeInput>, BTreeSet<u32>) {
+    let store = GraphStore::new();
+    let label = label_id("BenchMixedOrderedPartitionW0");
+    install_width_profile(label, 0);
+    let multi_bucket_count = 64usize;
+    let singleton_count = 128usize;
+    let vertices = make_vertices(
+        &store,
+        ((multi_bucket_count + singleton_count) * 2)
+            .try_into()
+            .expect("mixed benchmark vertex count fits u32"),
+    );
+    let mut input = Vec::with_capacity(multi_bucket_count * 2 + singleton_count);
+    let mut batch_ordinals = BTreeSet::new();
+    for pair in 0..multi_bucket_count {
+        let source = vertices[pair * 2];
+        let target = vertices[pair * 2 + 1];
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+        store.prepare_clean_slab_dir_buckets(target, source, label, 0);
+        for _ in 0..2 {
+            batch_ordinals.insert(input.len() as u32);
+            input.push(BatchEdgeInput {
+                source_vertex_id: source,
+                target_vertex_id: target,
+                catalog_label: Some(label),
+                directed: true,
+                inline_property_bytes: Vec::new(),
+                initial_edge_properties: Vec::new(),
+            });
+        }
+    }
+    let singleton_start = multi_bucket_count;
+    for index in 0..singleton_count {
+        let source = vertices[(singleton_start + index) * 2];
+        let target = vertices[(singleton_start + index) * 2 + 1];
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+        store.prepare_clean_slab_dir_buckets(target, source, label, 0);
+        input.push(BatchEdgeInput {
+            source_vertex_id: source,
+            target_vertex_id: target,
+            catalog_label: Some(label),
+            directed: true,
+            inline_property_bytes: Vec::new(),
+            initial_edge_properties: Vec::new(),
+        });
+    }
+    (store, input, batch_ordinals)
+}
+
 #[bench(raw)]
 fn bench_clean_slab_directed_128_width_0() -> canbench_rs::BenchResult {
     let (store, _label, input) = setup_128_directed_edges(0);
@@ -568,6 +618,65 @@ fn bench_scalar_two_parallel_per_bucket_128_width_0() -> canbench_rs::BenchResul
                 .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
                 .expect("scalar insert");
         }
+    })
+}
+
+#[bench(raw)]
+fn bench_ordered_partitioned_mixed_256_width_0() -> canbench_rs::BenchResult {
+    let (store, input, batch_ordinals) = setup_mixed_ordered_partition_fixture();
+    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: [0x53; 32],
+        logical_item_count: input.len() as u32,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("ordered_partitioned_mixed_256_w0");
+        black_box(
+            store
+                .execute_ordered_edge_batch_partitioned(
+                    5_300_001,
+                    identity.clone(),
+                    &input,
+                    &batch_ordinals,
+                )
+                .expect("partitioned ordered batch"),
+        );
+    })
+}
+
+#[bench(raw)]
+fn bench_ordered_all_batch_mixed_256_width_0() -> canbench_rs::BenchResult {
+    let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
+    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: [0x54; 32],
+        logical_item_count: input.len() as u32,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("ordered_all_batch_mixed_256_w0");
+        black_box(
+            store
+                .execute_ordered_edge_batch_clean_slab(5_300_002, identity.clone(), &input)
+                .expect("all-batch ordered batch"),
+        );
+    })
+}
+
+#[bench(raw)]
+fn bench_ordered_all_scalar_mixed_256_width_0() -> canbench_rs::BenchResult {
+    let (store, input, _batch_ordinals) = setup_mixed_ordered_partition_fixture();
+    let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: [0x55; 32],
+        logical_item_count: input.len() as u32,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("ordered_all_scalar_mixed_256_w0");
+        black_box(store.execute_ordered_edge_batch_scalar_fallback(
+            5_300_003,
+            identity.clone(),
+            &input,
+        ));
     })
 }
 
