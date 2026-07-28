@@ -653,8 +653,18 @@ impl BucketFingerprint {
 /// Error returned when a one-orientation batch write cannot complete.
 #[derive(Debug)]
 pub enum OneOrientationBatchError {
-    /// The requested geometry is not yet supported by this slice.
-    UnsupportedGeometry(String),
+    /// The batch plan has no runs.
+    EmptyPlan,
+    /// A bucket run has no edges.
+    EmptyRun,
+    /// A bucket run is not strictly ordered by logical ordinal.
+    NonIncreasingLogicalOrdinals,
+    /// The same bucket appears in more than one run.
+    DuplicateBucketRun,
+    /// An expanded-slab path requires a pinned PMA leaf block.
+    MissingPinnedLeafForExpansion,
+    /// An inline property bytes span can only be moved with leaf relocation.
+    InlinePropertyBytesSpanRequiresRelocation,
     /// A referenced vertex does not exist or is not live.
     VertexNotLive(VertexId),
     /// A referenced bucket was not found and could not be created.
@@ -983,9 +993,7 @@ where
                 Some(range) => range,
                 None => {
                     Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
-                    return Err(OneOrientationBatchError::UnsupportedGeometry(
-                        "expanded-slab batch requires a pinned PMA leaf block".into(),
-                    ));
+                    return Err(OneOrientationBatchError::MissingPinnedLeafForExpansion);
                 }
             };
             let mut grown = match self.try_expand_labeled_leaf_in_place(
@@ -1077,6 +1085,15 @@ where
                 continue;
             };
             let Some(target) = leaf_relocations.get(&leaf) else {
+                if matches!(
+                    preflight_run.inline_property_bytes_allocation,
+                    Some(InlinePropertyBytesAllocationKind::Reallocated { .. })
+                ) {
+                    Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
+                    return Err(
+                        OneOrientationBatchError::InlinePropertyBytesSpanRequiresRelocation,
+                    );
+                }
                 continue;
             };
             let RunDestination::ExpandedSlab {
@@ -1172,10 +1189,9 @@ where
                                         inline_property_bytes_tail_before,
                                     );
                                     self.rollback_edge_capacity(edge_capacity_before);
-                                    return Err(OneOrientationBatchError::UnsupportedGeometry(
-                                        "inline property bytes span is not at occupied tail and cannot grow in place"
-                                            .into(),
-                                    ));
+                                    return Err(
+                                        OneOrientationBatchError::InlinePropertyBytesSpanRequiresRelocation,
+                                    );
                                 }
                                 allocated_inline_property_bytes_offsets
                                     .push(Some((offset, new_bytes)));
@@ -1289,10 +1305,9 @@ where
                                         inline_property_bytes_tail_before,
                                     );
                                     self.rollback_edge_capacity(edge_capacity_before);
-                                    return Err(OneOrientationBatchError::UnsupportedGeometry(
-                                        "inline property bytes span is not at occupied tail and cannot grow in place"
-                                            .into(),
-                                    ));
+                                    return Err(
+                                        OneOrientationBatchError::InlinePropertyBytesSpanRequiresRelocation,
+                                    );
                                 }
                                 allocated_inline_property_bytes_offsets
                                     .push(Some((offset, new_bytes - had_bytes)));
@@ -1498,32 +1513,24 @@ where
         plan: &OneOrientationBatchPlan<E>,
     ) -> Result<(), OneOrientationBatchError> {
         if plan.runs.is_empty() {
-            return Err(OneOrientationBatchError::UnsupportedGeometry(
-                "empty batch plan has no defined no-op semantics".into(),
-            ));
+            return Err(OneOrientationBatchError::EmptyPlan);
         }
         let mut seen_buckets = std::collections::BTreeSet::<(VertexId, BucketLabelKey)>::new();
         for run in &plan.runs {
             if run.edges.is_empty() {
-                return Err(OneOrientationBatchError::UnsupportedGeometry(
-                    "empty bucket run in batch plan".into(),
-                ));
+                return Err(OneOrientationBatchError::EmptyRun);
             }
             let mut prev_ordinal: Option<u32> = None;
             for e in &run.edges {
                 if let Some(p) = prev_ordinal
                     && e.logical_ordinal <= p
                 {
-                    return Err(OneOrientationBatchError::UnsupportedGeometry(
-                        "bucket run edges are not in strictly increasing ordinal order".into(),
-                    ));
+                    return Err(OneOrientationBatchError::NonIncreasingLogicalOrdinals);
                 }
                 prev_ordinal = Some(e.logical_ordinal);
             }
             if !seen_buckets.insert((run.owner_vertex_id, run.label_id)) {
-                return Err(OneOrientationBatchError::UnsupportedGeometry(
-                    "duplicate bucket runs in batch plan".into(),
-                ));
+                return Err(OneOrientationBatchError::DuplicateBucketRun);
             }
         }
         Ok(())
@@ -1635,9 +1642,10 @@ where
             match self.find_bucket(run.owner_vertex_id, &vertex, run.label_id)? {
                 BucketSearch::Found { slot, bucket } => (slot, bucket),
                 BucketSearch::Missing { .. } => {
-                    return Err(OneOrientationBatchError::UnsupportedGeometry(
-                        "new bucket creation is not supported in this slice".into(),
-                    ));
+                    return Err(OneOrientationBatchError::BucketNotFound {
+                        owner_vertex_id: run.owner_vertex_id,
+                        label_id: run.label_id,
+                    });
                 }
             };
         if run.inline_property_width != bucket.inline_property_byte_width() {
@@ -1885,9 +1893,7 @@ where
             match self.labeled_leaf_physical_range(run.owner_vertex_id) {
                 Some(range) => range,
                 None => {
-                    return Err(OneOrientationBatchError::UnsupportedGeometry(
-                        "expanded-slab batch requires a pinned PMA leaf block".into(),
-                    ));
+                    return Err(OneOrientationBatchError::MissingPinnedLeafForExpansion);
                 }
             };
         let edge_slot_count = u32::try_from(run.edges.len())
@@ -1979,10 +1985,12 @@ where
                         new_bytes: total_inline_property_bytes,
                     });
             } else {
-                return Err(OneOrientationBatchError::UnsupportedGeometry(
-                    "inline property bytes span is not at occupied tail and cannot grow in place"
-                        .into(),
-                ));
+                inline_property_bytes_allocation =
+                    Some(InlinePropertyBytesAllocationKind::Reallocated {
+                        offset,
+                        had_bytes,
+                        new_bytes: total_inline_property_bytes,
+                    });
             }
             log_len
         } else {
@@ -3309,7 +3317,22 @@ where
 impl std::fmt::Display for OneOrientationBatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnsupportedGeometry(detail) => write!(f, "unsupported batch geometry: {detail}"),
+            Self::EmptyPlan => write!(f, "empty batch plan has no defined no-op semantics"),
+            Self::EmptyRun => write!(f, "empty bucket run in batch plan"),
+            Self::NonIncreasingLogicalOrdinals => {
+                write!(
+                    f,
+                    "bucket run edges are not in strictly increasing ordinal order"
+                )
+            }
+            Self::DuplicateBucketRun => write!(f, "duplicate bucket runs in batch plan"),
+            Self::MissingPinnedLeafForExpansion => {
+                write!(f, "expanded-slab batch requires a pinned PMA leaf block")
+            }
+            Self::InlinePropertyBytesSpanRequiresRelocation => write!(
+                f,
+                "inline property bytes span is not at occupied tail and requires leaf relocation"
+            ),
             Self::VertexNotLive(vid) => write!(f, "vertex {vid:?} is not live"),
             Self::BucketNotFound {
                 owner_vertex_id,
@@ -3695,8 +3718,8 @@ mod tests {
 
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
-            matches!(err, OneOrientationBatchError::UnsupportedGeometry(_)),
-            "expected UnsupportedGeometry for duplicate runs, got {err}"
+            matches!(err, OneOrientationBatchError::DuplicateBucketRun),
+            "expected DuplicateBucketRun for duplicate runs, got {err}"
         );
     }
 
@@ -3739,8 +3762,8 @@ mod tests {
 
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
-            matches!(err, OneOrientationBatchError::UnsupportedGeometry(_)),
-            "expected UnsupportedGeometry for out-of-order ordinals, got {err}"
+            matches!(err, OneOrientationBatchError::NonIncreasingLogicalOrdinals),
+            "expected NonIncreasingLogicalOrdinals for out-of-order ordinals, got {err}"
         );
     }
 

@@ -17,8 +17,9 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::batch_write::BatchReservation;
 use ic_stable_lara::labeled::batch_write::{
     BatchLocationMode, BatchLogicalPair, BatchLogicalPairKind, BidirectionalBatchPlan,
-    OneOrientationBatchEdge, OneOrientationBatchLocation, OneOrientationBatchPlan,
-    OneOrientationBatchResult, OneOrientationBucketRun, UndirectedBatchPair,
+    OneOrientationBatchEdge, OneOrientationBatchError, OneOrientationBatchLocation,
+    OneOrientationBatchPlan, OneOrientationBatchResult, OneOrientationBucketRun,
+    UndirectedBatchPair,
 };
 use ic_stable_lara::{CsrEdge, labeled::CanonicalEdgeOccurrence, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
@@ -39,7 +40,7 @@ use super::store::helpers::{build_edge_to, edge_storage_label, lara_label};
 /// - `Unsupported`: at least one orientation could not be reserved on the clean-
 ///   slab path. No canonical write was published by this attempt; the caller
 ///   may fall back to the existing scalar insertion path.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum BatchEdgeInsertResult {
     Committed {
         /// Aggregate edge slab slots written across all orientations.
@@ -52,8 +53,8 @@ pub(crate) enum BatchEdgeInsertResult {
         used_expansion: bool,
     },
     Unsupported {
-        /// Human-readable reason the clean-slab path could not be used.
-        reason: String,
+        /// Typed reason the clean-slab path could not be used.
+        error: OneOrientationBatchError,
     },
 }
 
@@ -171,9 +172,9 @@ impl GraphStore {
         let result = self
             .try_insert_ordered_edge_batch_clean_slab(edges)
             .map_err(|error| format!("ordered Graph batch validation failed: {error}"))?;
-        if let BatchEdgeInsertResult::Unsupported { reason } = result {
+        if let BatchEdgeInsertResult::Unsupported { error } = result {
             return Err(format!(
-                "ordered Graph clean-slab geometry is unsupported: {reason}"
+                "ordered Graph clean-slab geometry is unsupported: {error}"
             ));
         }
 
@@ -190,9 +191,9 @@ impl GraphStore {
         let result = self
             .try_insert_ordered_edge_batch_clean_slab_with_intents(edges, intents)
             .map_err(|error| format!("ordered Graph batch validation failed: {error}"))?;
-        if let BatchEdgeInsertResult::Unsupported { reason } = result {
+        if let BatchEdgeInsertResult::Unsupported { error } = result {
             return Err(format!(
-                "ordered Graph clean-slab geometry is unsupported: {reason}"
+                "ordered Graph clean-slab geometry is unsupported: {error}"
             ));
         }
 
@@ -522,7 +523,7 @@ impl GraphStore {
         Self::validate_batch_initial_edge_properties(edges)?;
         if edges.is_empty() {
             return Ok(BatchEdgeInsertResult::Unsupported {
-                reason: "empty batch is not admitted to the clean-slab path".into(),
+                error: OneOrientationBatchError::EmptyPlan,
             });
         }
 
@@ -571,7 +572,9 @@ impl GraphStore {
                 }
                 _ => {
                     return Ok(BatchEdgeInsertResult::Unsupported {
-                        reason: "physical intent roles do not form one logical batch shape".into(),
+                        error: OneOrientationBatchError::InvalidOrientationPair(
+                            "physical intent roles do not form one logical batch shape".into(),
+                        ),
                     });
                 }
             }
@@ -597,9 +600,7 @@ impl GraphStore {
         let reservations = match reservation_result {
             Ok(reservations) => reservations,
             Err(err) => {
-                return Ok(BatchEdgeInsertResult::Unsupported {
-                    reason: format!("{err}"),
-                });
+                return Ok(BatchEdgeInsertResult::Unsupported { error: err });
             }
         };
 

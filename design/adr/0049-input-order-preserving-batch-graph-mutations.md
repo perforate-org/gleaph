@@ -1785,7 +1785,18 @@ not rewritten as though unfinished unordered product behavior shipped.
     increase at two pages and stable-memory increase at 20 pages unchanged.
     The planner still reads full-leaf occupancy and remains the next larger
     optimization boundary; scalar writes have not been moved past their
-    existing preflight contract.
+    existing preflight contract. **Implemented (2026-07-28 22:10:32 UTC
+    +0000):** existing inline property bytes spans that are not at the
+    occupied tail are now allocated as a typed `Reallocated` reservation and
+    copied to the appended span when the affected leaf is relocated. If the
+    leaf remains in place, the reservation rolls back and reports the typed
+    `InlinePropertyBytesSpanRequiresRelocation` condition, preserving scalar
+    fallback safety. The former stringly `UnsupportedGeometry` and Graph
+    `reason: String` surfaces are now enum-based error variants, separating
+    empty/malformed plans, missing pinned leaves, property-span relocation
+    requirements, capacity/log failures, and storage errors. Existing
+    overflow-log full cases now test successful expansion/rollback rather than
+    the obsolete unconditional `LogCapacityExceeded` expectation.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

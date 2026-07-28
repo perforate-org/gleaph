@@ -164,11 +164,10 @@ mod tests {
             }],
         };
 
-        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
-        assert!(
-            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
-            "expected LogCapacityExceeded, got {err}"
-        );
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("full overflow log should expand through the batch path");
+        reservation.rollback::<crate::VectorMemory>(&graph);
 
         let after = graph.out_edges(VertexId::from(0)).unwrap();
         assert_eq!(before, after);
@@ -262,11 +261,10 @@ mod tests {
             ],
         };
 
-        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
-        assert!(
-            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
-            "expected LogCapacityExceeded, got {err}"
-        );
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("full overflow log should expand through the batch path");
+        reservation.rollback::<crate::VectorMemory>(&graph);
 
         let edge_capacity_after = graph.edges.header().elem_capacity;
         let inline_property_bytes_tail_after = graph.values.header().slab_occupied_tail;
@@ -351,8 +349,8 @@ mod tests {
 
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
-            matches!(err, OneOrientationBatchError::UnsupportedGeometry(_)),
-            "expected UnsupportedGeometry for duplicate runs, got {err}"
+            matches!(err, OneOrientationBatchError::DuplicateBucketRun),
+            "expected DuplicateBucketRun for duplicate runs, got {err}"
         );
     }
 
@@ -395,8 +393,8 @@ mod tests {
 
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
-            matches!(err, OneOrientationBatchError::UnsupportedGeometry(_)),
-            "expected UnsupportedGeometry for out-of-order ordinals, got {err}"
+            matches!(err, OneOrientationBatchError::NonIncreasingLogicalOrdinals),
+            "expected NonIncreasingLogicalOrdinals for out-of-order ordinals, got {err}"
         );
     }
 
@@ -912,8 +910,8 @@ mod tests {
 
         let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
         assert!(
-            matches!(err, OneOrientationBatchError::UnsupportedGeometry(_)),
-            "expected UnsupportedGeometry for empty plan, got {err}"
+            matches!(err, OneOrientationBatchError::EmptyPlan),
+            "expected EmptyPlan for empty plan, got {err}"
         );
     }
 
@@ -1265,11 +1263,10 @@ mod tests {
             ],
         };
 
-        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
-        assert!(
-            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
-            "expected LogCapacityExceeded, got {err}"
-        );
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("same-leaf overflow runs should share expanded capacity");
+        reservation.rollback::<crate::VectorMemory>(&graph);
 
         let edge_capacity_after = graph.edges.header().elem_capacity;
         let inline_property_bytes_tail_after = graph.values.header().slab_occupied_tail;
@@ -1878,11 +1875,10 @@ mod tests {
             }],
         };
 
-        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
-        assert!(
-            matches!(err, OneOrientationBatchError::LogCapacityExceeded),
-            "expected LogCapacityExceeded when expansion cannot help, got {err}"
-        );
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("leaf relocation should make the full overflow log writable");
+        reservation.rollback::<crate::VectorMemory>(&graph);
 
         let edge_capacity_after = graph.edges.header().elem_capacity;
         let inline_property_bytes_tail_after = graph.values.header().slab_occupied_tail;
