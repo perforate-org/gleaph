@@ -20,6 +20,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceStepResult, VectorMetric, VectorPartitionPageHealth, VectorRebuildStatus,
 };
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
+use sha2::{Digest, Sha256};
 
 pub use crate::facade::stable::label_stats::{ClientMutationKey, RouterMutationRecord};
 use crate::facade::stable::vector_maintenance_policy::VectorMaintenancePolicyRecord;
@@ -51,6 +52,8 @@ pub enum OrderedEdgeBatchPublicRequest {
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct OrderedEdgeBatchPublicRequestV1 {
+    /// Stable idempotency key supplied by the caller; retries must reuse it with identical data.
+    pub client_mutation_key: String,
     pub logical_graph_name: String,
     pub items: Vec<OrderedEdgeInsertPublicItemV1>,
 }
@@ -76,6 +79,12 @@ pub struct OrderedEdgePropertyPublicV1 {
 impl OrderedEdgeBatchPublicRequest {
     pub fn validate(&self) -> Result<(), String> {
         let OrderedEdgeBatchPublicRequest::V1(request) = self;
+        if request.client_mutation_key.is_empty() {
+            return Err("ordered edge batch client mutation key must not be empty".into());
+        }
+        if request.client_mutation_key.len() > 256 {
+            return Err("ordered edge batch client mutation key exceeds 256 bytes".into());
+        }
         if request.logical_graph_name.is_empty() {
             return Err("ordered edge batch logical graph name must not be empty".into());
         }
@@ -119,6 +128,21 @@ impl OrderedEdgeBatchPublicRequest {
             return Err("ordered edge batch exceeds the safe payload bound".into());
         }
         Ok(())
+    }
+
+    /// Compute the Router-owned idempotency fingerprint without including the client key.
+    pub fn public_fingerprint(&self) -> Result<[u8; 32], String> {
+        self.validate()?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"gleaph:ordered-edge-public:v1\0");
+        let encoded = match self {
+            Self::V1(request) => {
+                Encode!(&(request.logical_graph_name.clone(), request.items.clone()))
+                    .map_err(|error| format!("ordered public request encode: {error}"))?
+            }
+        };
+        hasher.update(encoded);
+        Ok(hasher.finalize().into())
     }
 }
 
@@ -928,6 +952,7 @@ mod tests {
     #[test]
     fn ordered_public_request_round_trips_and_validates() {
         let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+            client_mutation_key: "ordered-1".into(),
             logical_graph_name: "tenant.main".into(),
             items: vec![OrderedEdgeInsertPublicItemV1 {
                 source: vec![1; 8],
@@ -942,15 +967,23 @@ mod tests {
             }],
         });
         request.validate().expect("valid ordered public request");
+        let fingerprint = request
+            .public_fingerprint()
+            .expect("fingerprint ordered public request");
         let bytes = Encode!(&request).expect("encode ordered public request");
         let decoded: OrderedEdgeBatchPublicRequest =
             Decode!(&bytes, OrderedEdgeBatchPublicRequest).expect("decode ordered public request");
         assert_eq!(decoded, request);
+        let mut retry = request.clone();
+        let OrderedEdgeBatchPublicRequest::V1(ref mut retry_request) = retry;
+        retry_request.client_mutation_key = "different-retry-key".into();
+        assert_eq!(retry.public_fingerprint().unwrap(), fingerprint);
     }
 
     #[test]
     fn ordered_public_request_rejects_empty_property_name() {
         let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+            client_mutation_key: "ordered-2".into(),
             logical_graph_name: "tenant.main".into(),
             items: vec![OrderedEdgeInsertPublicItemV1 {
                 source: vec![1; 8],

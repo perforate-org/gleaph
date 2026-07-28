@@ -1649,6 +1649,10 @@ not rewritten as though unfinished unordered product behavior shipped.
     and retirement acknowledgement envelopes, aggregate receipt, SDK packing,
     and PocketIC coverage remain planned. Do not expose non-edge or unordered
     specialized batch operations.
+    **Partially implemented (2026-07-28 14:00:07 UTC +0000):** the public V1
+    wire now carries a bounded client mutation key and exposes a Router-owned,
+    order-sensitive public fingerprint that excludes that key. Admission,
+    resolution, and Graph dispatch remain planned.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.
