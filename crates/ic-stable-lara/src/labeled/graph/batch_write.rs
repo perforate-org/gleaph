@@ -2760,7 +2760,10 @@ mod tests {
     use crate::LabeledLaraGraph;
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
-    use crate::labeled::graph::test_support::{TestEdge as GraphTestEdge, test_graph_with_default};
+    use crate::labeled::graph::test_support::{
+        InlinePropertyTestEdge, TestEdge as GraphTestEdge,
+        inline_property_test_graph_with_capacity, test_graph_with_default,
+    };
     use crate::labeled::record::LabeledVertex;
 
     use super::{
@@ -3137,6 +3140,81 @@ mod tests {
             out.iter().map(|edge| edge.target).collect::<Vec<_>>(),
             vec![1, 2, 3, 10],
             "overflow-log append must preserve ascending live order"
+        );
+    }
+
+    #[test]
+    fn overflow_log_tombstone_append_preserves_live_order_and_inline_bytes() {
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 2u16)
+            .unwrap();
+        for target in 1..=35u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(
+                graph
+                    .find_bucket_slot(&graph.vertices.get(VertexId::from(0)), label)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        let slab_prefix = graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket);
+        let removed = graph
+            .remove_edge_at_slot(VertexId::from(0), label, slab_prefix)
+            .unwrap()
+            .expect("first overflow-log edge must be tombstoned");
+        assert_eq!(removed.target, slab_prefix + 1);
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 2,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(100),
+                    label_id: label,
+                    edge: InlinePropertyTestEdge::with_bytes(100, &100u16.to_le_bytes()),
+                }],
+            }],
+        };
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("append after overflow-log tombstone");
+
+        let expected_targets = (1..=35u32)
+            .filter(|target| *target != slab_prefix + 1)
+            .chain([100])
+            .collect::<Vec<_>>();
+        let edges = graph.asc_out_edges(VertexId::from(0)).unwrap();
+        assert_eq!(
+            edges.iter().map(|edge| edge.target).collect::<Vec<_>>(),
+            expected_targets,
+            "overflow-log tombstone must remain invisible and batch append must stay at the live tail"
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| edge.value[..usize::from(edge.inline_property_len)].to_vec())
+                .collect::<Vec<_>>(),
+            expected_targets
+                .iter()
+                .map(|target| (*target as u16).to_le_bytes().to_vec())
+                .collect::<Vec<_>>(),
+            "edge and inline property bytes order must remain aligned"
         );
     }
 
