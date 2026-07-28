@@ -538,7 +538,7 @@ compact requested range, it uses the canonical bulk-friendly visitor and stops a
 range; sparse or tail selections use direct slot reads to avoid unrelated logical slots. Property
 bytes remain borrowed only for the callback, and user `ControlFlow::Break` values are preserved.
 
-### 7a. Future research: block-aware selected traversal
+### 7a. Future research: block-aware selected and window traversal
 
 **Planned; not implemented and not part of the current persistence format.**
 
@@ -547,6 +547,36 @@ future research slice may partition the logical bucket extent into fixed-size bl
 16 or 32 slots), group selected slots into block runs, and choose canonical scanning or direct
 reads per run. A block directory could skip empty or irrelevant blocks while preserving the
 existing logical-slot and tombstone contracts.
+
+The same block partition is also a candidate acceleration structure for `visit_edges_window`.
+Selected-slot traversal can use block membership to avoid unrelated ranges; window traversal can
+use a per-block live-row count, or a cumulative live-count directory, to skip whole blocks while
+consuming `TraversalWindow.offset` across tombstones. The implementation should evaluate one
+derived block directory for both access patterns rather than introducing separate selected-slot
+and window indexes. Fixed block boundaries alone are insufficient for tombstone-aware offset
+skipping: the directory needs live counts or equivalent rank information, and updates, compaction,
+and rebuild must keep those counts consistent.
+
+This reuse applies to the physical live-row offset contract. A window whose offset is a
+predicate-dependent matching ordinal still has to evaluate that predicate at the row-execution
+boundary; generic target or inline-property predicates cannot be skipped using live-row counts
+alone. The block design must preserve this distinction and must not silently reinterpret
+`TraversalWindow.offset` or the matching-ordinal contract.
+
+This makes physical live-row offset selection a prefix-sum/select problem over block counts. A
+hierarchical directory can reduce the number of blocks inspected for large offsets, while a
+rank/select representation of the live-bit vector is another candidate when the tombstone map is
+large enough to justify its metadata. Succinct indexable dictionaries demonstrate the relevant
+rank/select and prefix-sum primitives, but their static-space guarantees do not establish that a
+dynamic stable-memory representation is appropriate here
+([Raman, Raman, and Satti](https://arxiv.org/abs/0705.0552)). The research must therefore measure
+update, compaction, rebuild, and stable-memory costs rather than import the asymptotic result as a
+design requirement.
+
+Block-skipping and adaptive set-intersection research supports skipping known-irrelevant ranges,
+but does not change the matching-ordinal semantics
+([Ding and König](https://www.microsoft.com/en-us/research/publication/fast-set-intersection-in-memory/),
+[Barbay, López-Ortiz, and Lu](https://users.dcc.uchile.cl/~jbarbay/Publications/2006-WEA-FasterAdaptiveSetIntersectionsForTextSearching-BarbayLopezOrtizLu.pdf)).
 
 This candidate is inspired by partitioned posting-list and adaptive set-intersection techniques,
 including [Fast Set Intersection in Memory](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/vldb11intersection.pdf),
