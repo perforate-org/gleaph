@@ -204,7 +204,7 @@ impl RouterStore {
                     "client_mutation_key expired; use a new key for a new mutation".into(),
                 ));
             }
-            if record.as_v1().request_fingerprint != request_fingerprint {
+            if record.as_v1().request_identity.request_fingerprint() != request_fingerprint {
                 return Err(RouterError::Conflict(
                     "client_mutation_key was already used for a different request".into(),
                 ));
@@ -631,7 +631,7 @@ impl RouterStore {
                     "mutation_id mismatch at typed bulk transition".into(),
                 ));
             }
-            if v1.request_fingerprint != request_fingerprint {
+            if v1.request_identity.request_fingerprint() != request_fingerprint {
                 return Err(RouterError::Conflict(
                     "request fingerprint mismatch at typed bulk transition".into(),
                 ));

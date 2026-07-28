@@ -214,11 +214,32 @@ pub enum RouterMutationRecord {
     V1(RouterMutationRecordV1),
 }
 
+/// Request identity owned by the Router mutation record.
+///
+/// The existing scalar, legacy-bulk, and typed-seed paths use `PlanExecution`.
+/// Ordered-edge identity will be added as a sibling variant when its public
+/// replay envelope is installed; keeping the identity here prevents a future
+/// ordered payload from reusing the untyped fingerprint field.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum RouterMutationRequestIdentityV1 {
+    PlanExecution { request_fingerprint: Vec<u8> },
+}
+
+impl RouterMutationRequestIdentityV1 {
+    pub fn request_fingerprint(&self) -> &[u8] {
+        match self {
+            Self::PlanExecution {
+                request_fingerprint,
+            } => request_fingerprint,
+        }
+    }
+}
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RouterMutationRecordV1 {
     pub mutation_id: MutationId,
     pub created_at_ns: u64,
-    pub request_fingerprint: Vec<u8>,
+    pub request_identity: RouterMutationRequestIdentityV1,
     pub resolved_labels: Option<ResolvedLabelTable>,
     pub resolved_properties: Option<ResolvedPropertyTable>,
     pub completed_row_count: Option<u64>,
@@ -399,7 +420,9 @@ impl RouterMutationRecord {
         Self::V1(RouterMutationRecordV1 {
             mutation_id,
             created_at_ns,
-            request_fingerprint,
+            request_identity: RouterMutationRequestIdentityV1::PlanExecution {
+                request_fingerprint,
+            },
             resolved_labels: None,
             resolved_properties: None,
             completed_row_count: None,

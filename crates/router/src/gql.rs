@@ -6281,7 +6281,7 @@ mod tests {
             .expect("mutation record");
         assert_eq!(record.as_v1().mutation_id, 1);
         assert_eq!(
-            record.as_v1().request_fingerprint,
+            record.as_v1().request_identity.request_fingerprint(),
             request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update)
         );
         assert!(!record.as_v1().routing_in_progress);

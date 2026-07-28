@@ -2618,7 +2618,7 @@ fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
         .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
         .expect("record");
     assert_eq!(record.as_v1().mutation_id, first.mutation_id);
-    assert_eq!(record.as_v1().request_fingerprint, b"a".to_vec());
+    assert_eq!(record.as_v1().request_identity.request_fingerprint(), b"a");
     assert!(!record.as_v1().routing_in_progress);
 
     let retry = store
