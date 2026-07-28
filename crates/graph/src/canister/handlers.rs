@@ -328,7 +328,13 @@ pub fn execute_ordered_edge_batch(
     store
         .plan_batch_edge_insertion(&edges)
         .map_err(|error| format!("ordered Graph planner admission failed: {error}"))?;
-    store.execute_ordered_edge_batch_clean_slab(args.mutation_id, identity, &edges)
+    match store.execute_ordered_edge_batch_clean_slab(args.mutation_id, identity.clone(), &edges) {
+        Ok(result) => Ok(result),
+        Err(error) if error.starts_with("ordered Graph clean-slab geometry is unsupported:") => Ok(
+            store.execute_ordered_edge_batch_scalar_fallback(args.mutation_id, identity, &edges),
+        ),
+        Err(error) => Err(error),
+    }
 }
 
 pub async fn execute_plan_update_batch(
@@ -2184,6 +2190,7 @@ mod tests {
         ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry, SeedBindingsWire,
         SeedRowWire, SeedVertexBinding, ordered_edge_batch_graph_request_fingerprint,
     };
+    use ic_stable_lara::CsrEdge;
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
     const TEST_ELEMENT_ID_ENCODING_KEY: [u8; 16] = ElementIdEncodingKey::host_test_fixture().0;
@@ -2742,6 +2749,64 @@ mod tests {
             store.mutation_journal_entry(mutation_id).is_some(),
             "fresh ordered execution must persist its journal"
         );
+    }
+
+    #[test]
+    fn ordered_handler_uses_scalar_fallback_for_unprepared_geometry() {
+        let store = GraphStore::new();
+        let source = store.insert_vertex().expect("source vertex");
+        let first_target = store.insert_vertex().expect("first target vertex");
+        let second_target = store.insert_vertex().expect("second target vertex");
+        let label = EdgeLabelId::from_raw(7_105);
+        let mutation_id = 71_005_001;
+        let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(71),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![
+                OrderedEdgeBatchGraphItemV1 {
+                    source_local_vertex_id: source.into(),
+                    target_local_vertex_id: first_target.into(),
+                    directed: true,
+                    catalog_edge_label_id: Some(label),
+                    inline_property_bytes: Vec::new(),
+                    resolved_initial_edge_properties: Vec::new(),
+                },
+                OrderedEdgeBatchGraphItemV1 {
+                    source_local_vertex_id: source.into(),
+                    target_local_vertex_id: second_target.into(),
+                    directed: true,
+                    catalog_edge_label_id: Some(label),
+                    inline_property_bytes: Vec::new(),
+                    resolved_initial_edge_properties: Vec::new(),
+                },
+            ],
+        });
+        let fingerprint =
+            ordered_edge_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
+            mutation_id,
+            graph_request_fingerprint: fingerprint,
+            request,
+        });
+
+        let result = execute_ordered_edge_batch(args).expect("ordered scalar fallback");
+        let receipt = match result {
+            GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) => {
+                receipt
+            }
+            _ => panic!("expected completed receipt"),
+        };
+        assert_eq!(receipt.logical_edge_count, 2);
+        assert!(
+            store.mutation_journal_entry(mutation_id).is_some(),
+            "scalar fallback must persist the ordered journal"
+        );
+        let outgoing = store.directed_out_edges(source).expect("outgoing edges");
+        assert_eq!(outgoing[0].neighbor_vid(), first_target);
+        assert_eq!(outgoing[1].neighbor_vid(), second_target);
     }
 }
 

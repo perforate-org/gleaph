@@ -725,8 +725,9 @@ returning its first error is not a valid fallback.
 
 The current `DefaultLabelUnsupported` and unsupported-geometry classifications
 remain truthful implementation limitations. Mixed shape is no longer rejected
-by the internal clean-slab path; unsupported bucket geometry still returns
-before canonical write. These are not the target public contract. Fallback is a correctness and incremental-delivery
+by the internal clean-slab path; supported scalar-only geometry now uses the
+whole-request ordered scalar fallback, while geometry outside both proven paths
+still returns before canonical write. These are not the target public contract. Fallback is a correctness and incremental-delivery
 mechanism, not the final performance design, and may not weaken ordering,
 atomicity, pair rank, counterpart invalidation, sidecar, or derived-event behavior.
 
@@ -1523,8 +1524,12 @@ not rewritten as though unfinished unordered product behavior shipped.
    replacement-offset and pending-value read-back after commit. A dedicated
    same-leaf multi-bucket fixture also verifies that each bucket's edge and
    inline-property log folds independently while the leaf relocates once.
-9. Implement and prove the whole-request scalar fallback for new buckets,
-   default/unlabeled promotion, and other scalar-supported geometries.
+9. **Partially implemented (2026-07-28 12:36:36 UTC +0000):** the Graph ordered
+   handler now uses the whole-request scalar fallback for planner-admitted
+   clean-slab-unsupported geometry, preserving input order and publishing the
+   same label delta, hot-forward receipt, and ordered journal contract. New
+   buckets and other scalar-supported cases still need dedicated coverage;
+   geometry outside both proven paths remains pre-write rejected.
 10. **Partially implemented (2026-07-28 11:20:24 UTC +0000):** the Graph facade now accepts
     request-local initial sidecar values, validates ids/values/duplicate ids
     before reservation, derives one canonical `CanonicalEdgeOccurrence` from
@@ -1582,8 +1587,11 @@ not rewritten as though unfinished unordered product behavior shipped.
     admission. Supported clean-slab geometry now proceeds through the Graph-owned
     batch writer, appends the label-stats delta, computes the bounded hot-forward
     receipt fields, and commits the ordered journal in the same no-`await` update
-    section. Unsupported geometry still fails closed before canonical write rather
-    than entering an unordered executor. The Graph-kernel
+    section. Planner-admitted clean-slab-unsupported geometry now proceeds through
+    the existing scalar owner boundary in input order and publishes the same
+    receipt/delta/journal contract; geometry outside the two proven paths still
+    fails closed before canonical write rather than entering an unordered executor.
+    The Graph-kernel
     now owns the manual V1 Graph request encoder,
     the `gleaph:ordered-edge-graph:v1` SHA-256 domain separator, and the
     order-sensitive fingerprint helper; reorder and payload-change tests

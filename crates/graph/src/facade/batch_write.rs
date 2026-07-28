@@ -29,6 +29,7 @@ use super::GraphStore;
 use super::batch_placement::{
     BatchEdgeInput, BatchEdgeIntent, BatchEdgeIntentRole, BatchPlacementError, BatchPlacementKey,
 };
+use super::mutation_executor::GraphMutationExecutor;
 use super::store::helpers::{build_edge_to, edge_storage_label, lara_label};
 
 /// Result of attempting a clean-slab batch edge insert through GraphStore.
@@ -176,6 +177,57 @@ impl GraphStore {
             ));
         }
 
+        Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
+    }
+
+    /// Execute an unsupported optimized geometry through the existing scalar owner boundary.
+    ///
+    /// The ordered planner has already validated the complete request. Scalar writes therefore
+    /// run in input order, while an unexpected post-write error traps so the canister message
+    /// rolls back rather than exposing a partially committed ordered batch.
+    pub(crate) fn execute_ordered_edge_batch_scalar_fallback(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        edges: &[BatchEdgeInput],
+    ) -> GraphOrderedEdgeBatchResult {
+        for edge in edges {
+            let properties = edge.initial_edge_properties.iter().cloned();
+            if edge.directed {
+                GraphMutationExecutor::insert_directed_edge_with_inline_property_bytes(
+                    self,
+                    edge.source_vertex_id,
+                    edge.target_vertex_id,
+                    edge.catalog_label,
+                    &edge.inline_property_bytes,
+                    properties,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("ordered Graph scalar fallback failed after preflight: {error}")
+                });
+            } else {
+                GraphMutationExecutor::insert_undirected_edge_with_inline_property_bytes(
+                    self,
+                    edge.source_vertex_id,
+                    edge.target_vertex_id,
+                    edge.catalog_label,
+                    &edge.inline_property_bytes,
+                    properties,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("ordered Graph scalar fallback failed after preflight: {error}")
+                });
+            }
+        }
+        self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges)
+    }
+
+    fn commit_ordered_edge_batch_receipt(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        edges: &[BatchEdgeInput],
+    ) -> GraphOrderedEdgeBatchResult {
         let label_stats_delta = ordered_edge_label_stats_delta(edges);
         let delta_event = (!label_stats_delta.edge.is_empty()).then(|| {
             self.commit_append_label_stats_delta(mutation_id, label_stats_delta)
@@ -207,9 +259,7 @@ impl GraphStore {
             emitted_delta_last_seq,
             hot_forward_vertices,
         );
-        Ok(GraphOrderedEdgeBatchResult::V1(
-            GraphOrderedEdgeBatchResultV1::Completed(receipt),
-        ))
+        GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt))
     }
 
     /// Pre-create empty directed buckets for `src -> dst` with the given inline
