@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 10:25:52 UTC +0000
+Anchor timestamp: 2026-07-28 10:28:59 UTC +0000
 
 ## Context
 
@@ -1526,8 +1526,10 @@ not rewritten as though unfinished unordered product behavior shipped.
     included in the preflight, and the Graph facade co-writes the complete
     preflighted sidecar set before dispatching its derived events. Explicit
     stable-memory sidecar reservation, durable net-event co-write, and parallel
-    inserts remain planned. The post-commit sidecar path traps on a violated
-    preflight invariant rather than returning a recoverable error.
+    inserts remain planned. Directed, undirected owner/alias, and self-loop
+    canonical-owner tests now cover the location/property boundary. The
+    post-commit sidecar path traps on a violated preflight invariant rather than
+    returning a recoverable error.
 11. Replace Router V1 request identity/payload in place; implement exhaustive
     ordered routing/envelope/target progress, resolved-table authority transfer,
     bounded typed retry diagnostics and terminal failures, a bounded record in

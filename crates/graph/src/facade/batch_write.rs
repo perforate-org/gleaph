@@ -923,6 +923,79 @@ mod tests {
     }
 
     #[test]
+    fn initial_sidecar_stays_on_undirected_owner_and_self_loop_owner() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4005);
+        let owner_property_id = PropertyId::from_raw(80);
+        let loop_property_id = PropertyId::from_raw(81);
+        let vertices = make_vertices(&store, 3);
+        let low = vertices[0];
+        let high = vertices[1];
+        let loop_vertex = vertices[2];
+        store.prepare_clean_slab_undir_buckets(low, high, label, 0);
+        store.prepare_clean_slab_undir_buckets(loop_vertex, loop_vertex, label, 0);
+
+        let mut undirected = input(low, high, Some(label), false, vec![]);
+        undirected.initial_edge_properties = vec![(owner_property_id, Value::Int64(80))];
+        let mut self_loop = input(loop_vertex, loop_vertex, Some(label), false, vec![]);
+        self_loop.initial_edge_properties = vec![(loop_property_id, Value::Int64(81))];
+        let edges = vec![undirected.clone(), self_loop.clone()];
+
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges)
+            .expect("undirected sidecar batch");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+
+        let owner_occurrence = locations[0].canonical_occurrence(&undirected);
+        let owner_handle = EdgeHandle::at_slot(
+            owner_occurrence.owner_vertex_id,
+            owner_occurrence.label_id,
+            owner_occurrence.slot_index,
+        );
+        assert_eq!(
+            owner_occurrence.owner_vertex_id, high,
+            "undirected sidecars belong to the canonical higher owner"
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(owner_handle, owner_property_id),
+            Some(Value::Int64(80))
+        );
+
+        let alias_location = match &locations[0] {
+            BatchEdgePhysicalLocation::Undirected { alias, .. } => alias,
+            other => panic!("expected undirected location, got {other:?}"),
+        };
+        let alias_handle = EdgeHandle::at_slot(
+            alias_location.owner_vertex_id,
+            owner_occurrence.label_id,
+            alias_location.logical_slot,
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(alias_handle, owner_property_id),
+            None,
+            "alias row must not receive the canonical sidecar"
+        );
+
+        let loop_occurrence = locations[1].canonical_occurrence(&self_loop);
+        let loop_handle = EdgeHandle::at_slot(
+            loop_occurrence.owner_vertex_id,
+            loop_occurrence.label_id,
+            loop_occurrence.slot_index,
+        );
+        assert_eq!(loop_occurrence.owner_vertex_id, loop_vertex);
+        assert_eq!(
+            store.edge_property_at_canonical_handle(loop_handle, loop_property_id),
+            Some(Value::Int64(81))
+        );
+    }
+
+    #[test]
     fn duplicate_initial_sidecar_is_rejected_before_batch_write() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(4003);
