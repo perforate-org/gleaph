@@ -108,6 +108,44 @@ impl GraphStore {
         Ok(old)
     }
 
+    /// Write scalar-insert sidecars under one stable-map borrow while retaining
+    /// the existing fallible error boundary. The caller owns an exact canonical
+    /// handle returned by the edge insert, so no counterpart scan is needed.
+    pub(crate) fn commit_edge_property_writes_at_canonical_fallible(
+        &self,
+        handle: super::handle::EdgeHandle,
+        properties: impl IntoIterator<Item = (PropertyId, Value)>,
+    ) -> Result<(), super::error::GraphStoreError> {
+        let written = EDGE_PROPERTIES.with_borrow_mut(|store| {
+            properties
+                .into_iter()
+                .map(|(property_id, value)| {
+                    store
+                        .set(
+                            handle.owner_vertex_id,
+                            handle.label_id.raw(),
+                            handle.slot_index.raw(),
+                            property_id,
+                            value.clone(),
+                        )
+                        .map(|previous| (property_id, value, previous))
+                        .map_err(super::error::GraphStoreError::from)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        for (property_id, value, previous) in written {
+            dispatch_property_index_ops(PropertyValueChange::edge(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index.raw(),
+                property_id,
+                previous.as_ref(),
+                Some(&value),
+            ));
+        }
+        Ok(())
+    }
+
     /// Co-write a preflighted set of initial properties at one canonical edge.
     ///
     /// The caller validates the complete set before LARA commit. This method keeps

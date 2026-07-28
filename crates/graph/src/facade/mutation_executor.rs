@@ -91,9 +91,7 @@ impl GraphMutationExecutor for GraphStore {
         let handle = self.insert_directed_edge(source_vertex_id, target_vertex_id, label)?;
         // The insert path already returns the exact canonical handle; reusing it
         // avoids a redundant CounterpartScan for every scalar sidecar property.
-        for (property_id, value) in properties {
-            self.commit_edge_property_write_at_canonical(handle, property_id, value)?;
-        }
+        self.commit_edge_property_writes_at_canonical_fallible(handle, properties)?;
         Ok(handle)
     }
 
@@ -114,9 +112,7 @@ impl GraphMutationExecutor for GraphStore {
             label,
             inline_property_bytes,
         )?;
-        for (property_id, value) in properties {
-            self.commit_edge_property_write_at_canonical(handle, property_id, value)?;
-        }
+        self.commit_edge_property_writes_at_canonical_fallible(handle, properties)?;
         Ok(handle)
     }
 
@@ -130,9 +126,7 @@ impl GraphMutationExecutor for GraphStore {
         self.assert_local_vertex_writable(endpoint_a)?;
         self.assert_local_vertex_writable(endpoint_b)?;
         let handle = self.insert_undirected_edge(endpoint_a, endpoint_b, label)?;
-        for (property_id, value) in properties {
-            self.commit_edge_property_write_at_canonical(handle, property_id, value)?;
-        }
+        self.commit_edge_property_writes_at_canonical_fallible(handle, properties)?;
         Ok(handle)
     }
 
@@ -153,9 +147,7 @@ impl GraphMutationExecutor for GraphStore {
             label,
             inline_property_bytes,
         )?;
-        for (property_id, value) in properties {
-            self.commit_edge_property_write_at_canonical(handle, property_id, value)?;
-        }
+        self.commit_edge_property_writes_at_canonical_fallible(handle, properties)?;
         Ok(handle)
     }
 }
@@ -174,13 +166,17 @@ mod tests {
         let directed_label = EdgeLabelId::from_raw(123);
         let undirected_label = EdgeLabelId::from_raw(124);
         let property = PropertyId::from_raw(234);
+        let second_property = PropertyId::from_raw(235);
 
         let directed = store
             .insert_directed_edge_with(
                 source,
                 target,
                 Some(directed_label),
-                [(property, Value::Text("knows".into()))],
+                [
+                    (property, Value::Text("knows".into())),
+                    (second_property, Value::Int64(1)),
+                ],
             )
             .expect("insert directed edge");
 
@@ -190,6 +186,15 @@ mod tests {
                 .edge_property(directed.occurrence(LabeledOrientation::Forward), property)
                 .unwrap(),
             Some(Value::Text("knows".into()))
+        );
+        assert_eq!(
+            store
+                .edge_property(
+                    directed.occurrence(LabeledOrientation::Forward),
+                    second_property
+                )
+                .unwrap(),
+            Some(Value::Int64(1))
         );
         assert!(
             store
@@ -211,11 +216,23 @@ mod tests {
                 target,
                 source,
                 Some(undirected_label),
-                [(property, Value::Text("related".into()))],
+                [
+                    (property, Value::Text("related".into())),
+                    (second_property, Value::Int64(2)),
+                ],
             )
             .expect("insert undirected edge");
 
         assert_eq!(undirected.owner_vertex_id, target);
+        assert_eq!(
+            store
+                .edge_property(
+                    undirected.occurrence(LabeledOrientation::Forward),
+                    second_property
+                )
+                .unwrap(),
+            Some(Value::Int64(2))
+        );
         assert!(store.undirected_edges(target).unwrap().iter().any(|edge| {
             edge.neighbor_vid() == source
                 && edge.edge_slot_index.raw() == undirected.slot_index.raw()

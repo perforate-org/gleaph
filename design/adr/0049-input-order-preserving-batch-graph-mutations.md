@@ -1833,6 +1833,12 @@ not rewritten as though unfinished unordered product behavior shipped.
     boundary while carrying the batch path's exact-location ownership into the
     scalar path. Existing scalar directed/undirected property tests and the
     128-item scalar baselines remain unchanged within benchmark noise.
+    **Implemented (2026-07-28 23:21:45 UTC +0000):** scalar initial-property
+    writes now use a fallible bulk canonical-sidecar API that holds the stable
+    property map once for the complete property list, then dispatches derived
+    index events after the primary writes. This preserves scalar error
+    propagation while removing per-property borrow/setup overhead; directed and
+    undirected multi-property tests cover the path.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh
