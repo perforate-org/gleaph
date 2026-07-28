@@ -6,13 +6,15 @@
 //! - **Update** programs use update on the router and `execute_*_update` on graph (DML and
 //!   posting maintenance). A composite query must not invoke an update method.
 
-use candid::{CandidType, Encode};
+use candid::{CandidType, Encode, Principal};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use crate::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 
 use crate::entry::{
-    ConstraintNameId, EdgeInlinePropertyProfile, EdgeLabelId, PropertyId, VertexLabelId,
+    ConstraintNameId, EdgeInlinePropertyProfile, EdgeLabelId, GraphId,
+    MAX_EDGE_INLINE_PROPERTY_BYTES, PropertyId, VertexLabelId,
 };
 use crate::federation::{LocalVertexId, ShardId};
 
@@ -166,6 +168,84 @@ pub struct ExecutePlanTypedOp {
     pub params_blob: Vec<u8>,
     /// Required complete-row seed relation. Zero matches use an empty `rows` vector.
     pub seed: SeedBindingsWire,
+}
+
+/// Canonical compact GQL value bytes carried across an independently encoded boundary.
+pub type CanonicalGqlValueBytesV1 = Vec<u8>;
+
+/// Router-resolved initial property assignment for one logical ordered edge.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ResolvedOrderedEdgePropertyV1 {
+    pub property_id: PropertyId,
+    pub value: CanonicalGqlValueBytesV1,
+}
+
+/// One logical edge in the immutable Router → Graph ordered request.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedEdgeBatchGraphItemV1 {
+    pub source_local_vertex_id: LocalVertexId,
+    pub target_local_vertex_id: LocalVertexId,
+    pub directed: bool,
+    pub catalog_edge_label_id: Option<EdgeLabelId>,
+    pub inline_property_bytes: Vec<u8>,
+    pub resolved_initial_edge_properties: Vec<ResolvedOrderedEdgePropertyV1>,
+}
+
+/// Versioned immutable Router → Graph canonical request for ADR 0049.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum OrderedEdgeBatchGraphRequest {
+    V1(OrderedEdgeBatchGraphRequestV1),
+}
+
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedEdgeBatchGraphRequestV1 {
+    pub graph_id: GraphId,
+    pub target_shard_id: ShardId,
+    pub target_graph_canister: Principal,
+    pub resolved_labels: ResolvedLabelTable,
+    pub resolved_properties: ResolvedPropertyTable,
+    pub items: Vec<OrderedEdgeBatchGraphItemV1>,
+}
+
+pub const MAX_ORDERED_EDGE_BATCH_ITEMS: usize = 1_024;
+pub const MAX_ORDERED_EDGE_PROPERTIES_PER_ITEM: usize = 256;
+
+impl OrderedEdgeBatchGraphRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        let OrderedEdgeBatchGraphRequest::V1(request) = self;
+        if request.items.is_empty() || request.items.len() > MAX_ORDERED_EDGE_BATCH_ITEMS {
+            return Err(format!(
+                "ordered edge batch requires 1..={} items, got {}",
+                MAX_ORDERED_EDGE_BATCH_ITEMS,
+                request.items.len()
+            ));
+        }
+        if request.target_graph_canister == Principal::anonymous() {
+            return Err("ordered edge batch target graph canister must not be anonymous".into());
+        }
+        for (ordinal, item) in request.items.iter().enumerate() {
+            if item.inline_property_bytes.len() > MAX_EDGE_INLINE_PROPERTY_BYTES {
+                return Err(format!(
+                    "ordered edge item {ordinal} inline property bytes exceed bound"
+                ));
+            }
+            if item.resolved_initial_edge_properties.len() > MAX_ORDERED_EDGE_PROPERTIES_PER_ITEM {
+                return Err(format!(
+                    "ordered edge item {ordinal} has too many initial properties"
+                ));
+            }
+            let mut property_ids = BTreeSet::new();
+            for property in &item.resolved_initial_edge_properties {
+                if !property_ids.insert(property.property_id) {
+                    return Err(format!(
+                        "ordered edge item {ordinal} repeats property id {}",
+                        property.property_id.raw()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ExecutePlanBatchTypedArgs {
@@ -1108,6 +1188,47 @@ mod tests {
         .expect("decode ordered response envelopes");
         assert_eq!(result, decoded_result);
         assert_eq!(ack, decoded_ack);
+    }
+
+    #[test]
+    fn ordered_graph_request_roundtrip_and_shape_validation() {
+        let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(7),
+            target_shard_id: ShardId::new(2),
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![OrderedEdgeBatchGraphItemV1 {
+                source_local_vertex_id: 3,
+                target_local_vertex_id: 9,
+                directed: true,
+                catalog_edge_label_id: None,
+                inline_property_bytes: Vec::new(),
+                resolved_initial_edge_properties: vec![ResolvedOrderedEdgePropertyV1 {
+                    property_id: PropertyId::from_raw(4),
+                    value: vec![1, 2],
+                }],
+            }],
+        });
+        request.validate().expect("valid ordered graph request");
+        let bytes = Encode!(&request).expect("encode ordered graph request");
+        let decoded: OrderedEdgeBatchGraphRequest =
+            Decode!(&bytes, OrderedEdgeBatchGraphRequest).expect("decode ordered graph request");
+        assert_eq!(request, decoded);
+
+        let OrderedEdgeBatchGraphRequest::V1(mut invalid) = request;
+        invalid.items[0]
+            .resolved_initial_edge_properties
+            .push(ResolvedOrderedEdgePropertyV1 {
+                property_id: PropertyId::from_raw(4),
+                value: vec![3],
+            });
+        assert!(
+            OrderedEdgeBatchGraphRequest::V1(invalid)
+                .validate()
+                .unwrap_err()
+                .contains("repeats property id")
+        );
     }
 
     #[test]
