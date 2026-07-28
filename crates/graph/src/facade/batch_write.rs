@@ -996,6 +996,72 @@ mod tests {
     }
 
     #[test]
+    fn initial_sidecars_follow_logical_ordinals_in_mixed_batch() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4006);
+        let vertices = make_vertices(&store, 6);
+        let directed_source = vertices[0];
+        let directed_target = vertices[1];
+        let undirected_low = vertices[2];
+        let undirected_high = vertices[3];
+        let loop_vertex = vertices[4];
+        store.prepare_clean_slab_dir_buckets(directed_source, directed_target, label, 0);
+        store.prepare_clean_slab_undir_buckets(undirected_low, undirected_high, label, 0);
+        store.prepare_clean_slab_undir_buckets(loop_vertex, loop_vertex, label, 0);
+
+        let mut directed = input(directed_source, directed_target, Some(label), true, vec![]);
+        directed.initial_edge_properties = vec![(PropertyId::from_raw(90), Value::Int64(900))];
+        let mut undirected = input(undirected_low, undirected_high, Some(label), false, vec![]);
+        undirected.initial_edge_properties = vec![(PropertyId::from_raw(91), Value::Int64(901))];
+        let mut self_loop = input(loop_vertex, loop_vertex, Some(label), false, vec![]);
+        self_loop.initial_edge_properties = vec![(PropertyId::from_raw(92), Value::Int64(902))];
+        let edges = vec![directed, undirected, self_loop];
+
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&edges)
+            .expect("mixed property batch");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        assert_eq!(locations.len(), edges.len());
+
+        for (expected_ordinal, edge, location, property_id, expected) in [
+            (0, &edges[0], &locations[0], PropertyId::from_raw(90), 900),
+            (1, &edges[1], &locations[1], PropertyId::from_raw(91), 901),
+            (2, &edges[2], &locations[2], PropertyId::from_raw(92), 902),
+        ] {
+            assert_eq!(
+                match location {
+                    BatchEdgePhysicalLocation::Directed {
+                        logical_ordinal, ..
+                    }
+                    | BatchEdgePhysicalLocation::Undirected {
+                        logical_ordinal, ..
+                    }
+                    | BatchEdgePhysicalLocation::UndirectedSelfLoop {
+                        logical_ordinal, ..
+                    } => *logical_ordinal,
+                },
+                expected_ordinal
+            );
+            let occurrence = location.canonical_occurrence(edge);
+            let handle = EdgeHandle::at_slot(
+                occurrence.owner_vertex_id,
+                occurrence.label_id,
+                occurrence.slot_index,
+            );
+            assert_eq!(
+                store.edge_property_at_canonical_handle(handle, property_id),
+                Some(Value::Int64(expected))
+            );
+        }
+    }
+
+    #[test]
     fn duplicate_initial_sidecar_is_rejected_before_batch_write() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(4003);
