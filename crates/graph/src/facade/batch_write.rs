@@ -11,9 +11,9 @@ use ic_stable_lara::VertexId;
 #[cfg(test)]
 use ic_stable_lara::labeled::batch_write::BatchReservation;
 use ic_stable_lara::labeled::batch_write::{
-    BatchLocationMode, BidirectionalBatchPlan, OneOrientationBatchEdge, OneOrientationBatchPlan,
-    OneOrientationBatchResult, OneOrientationBucketRun, OneOrientationPhysicalLocation,
-    UndirectedBatchPair,
+    BatchLocationMode, BatchLogicalPair, BatchLogicalPairKind, BidirectionalBatchPlan,
+    OneOrientationBatchEdge, OneOrientationBatchPlan, OneOrientationBatchResult,
+    OneOrientationBucketRun, OneOrientationPhysicalLocation, UndirectedBatchPair,
 };
 use ic_stable_lara::{CsrEdge, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
@@ -205,62 +205,63 @@ impl GraphStore {
             });
         }
 
-        // The owner API accepts one logical shape at a time.  Reject mixed
-        // directedness/self-loop batches before any placement or allocator
-        // work so they can safely fall back to the scalar path.
         let directed = edges[0].directed;
         let undirected_self_loop =
             !directed && edges[0].source_vertex_id == edges[0].target_vertex_id;
-        if edges.iter().any(|edge| edge.directed != directed)
-            || (!directed
-                && edges.iter().any(|edge| {
-                    (edge.source_vertex_id == edge.target_vertex_id) != undirected_self_loop
-                }))
-        {
-            return Ok(BatchEdgeInsertResult::Unsupported {
-                reason: "mixed logical edge shapes are not admitted to the clean-slab path".into(),
-            });
-        }
+        let homogeneous = edges.iter().all(|edge| {
+            edge.directed == directed
+                && (directed
+                    || (edge.source_vertex_id == edge.target_vertex_id) == undirected_self_loop)
+        });
 
         let intents = self.expand_batch_edge_intents(edges)?;
-        let requests = self.build_one_orientation_batch_plans(&intents, encode_intent_edge)?;
-        let undirected_pairs = (!directed && !undirected_self_loop)
-            .then(|| build_undirected_batch_pairs(&intents))
-            .transpose()?;
+        let owner_plan = if homogeneous {
+            let requests = self.build_one_orientation_batch_plans(&intents, encode_intent_edge)?;
+            let undirected_pairs = (!directed && !undirected_self_loop)
+                .then(|| build_undirected_batch_pairs(&intents))
+                .transpose()?;
+
+            match requests.as_slice() {
+                [request] if request.role == BatchEdgeIntentRole::UndirectedOwnerForward => {
+                    BidirectionalBatchPlan::SelfLoop {
+                        forward: request.plan.clone(),
+                    }
+                }
+                [first, second]
+                    if first.role == BatchEdgeIntentRole::CanonicalForward
+                        && second.role == BatchEdgeIntentRole::DerivedReverse =>
+                {
+                    BidirectionalBatchPlan::Directed {
+                        forward: first.plan.clone(),
+                        reverse: second.plan.clone(),
+                    }
+                }
+                [first, second]
+                    if first.role == BatchEdgeIntentRole::UndirectedOwnerForward
+                        && second.role == BatchEdgeIntentRole::UndirectedAliasForward =>
+                {
+                    BidirectionalBatchPlan::Undirected {
+                        plan: merge_one_orientation_batch_plans(&first.plan, &second.plan),
+                        pairs: undirected_pairs.expect("non-self undirected pairs are built above"),
+                    }
+                }
+                _ => {
+                    return Ok(BatchEdgeInsertResult::Unsupported {
+                        reason: "physical intent roles do not form one logical batch shape".into(),
+                    });
+                }
+            }
+        } else {
+            BidirectionalBatchPlan::Mixed {
+                physical: self
+                    .build_merged_orientation_batch_plans(&intents, encode_intent_edge)?,
+                pairs: build_mixed_batch_pairs(edges, &intents)?,
+            }
+        };
 
         // Reserve every orientation first. If any orientation is unsupported, roll
         // back every previously successful reservation before returning unsupported.
         // No canonical write occurs on this path.
-        let owner_plan = match requests.as_slice() {
-            [request] if request.role == BatchEdgeIntentRole::UndirectedOwnerForward => {
-                BidirectionalBatchPlan::SelfLoop {
-                    forward: request.plan.clone(),
-                }
-            }
-            [first, second]
-                if first.role == BatchEdgeIntentRole::CanonicalForward
-                    && second.role == BatchEdgeIntentRole::DerivedReverse =>
-            {
-                BidirectionalBatchPlan::Directed {
-                    forward: first.plan.clone(),
-                    reverse: second.plan.clone(),
-                }
-            }
-            [first, second]
-                if first.role == BatchEdgeIntentRole::UndirectedOwnerForward
-                    && second.role == BatchEdgeIntentRole::UndirectedAliasForward =>
-            {
-                BidirectionalBatchPlan::Undirected {
-                    plan: merge_one_orientation_batch_plans(&first.plan, &second.plan),
-                    pairs: undirected_pairs.expect("non-self undirected pairs are built above"),
-                }
-            }
-            _ => {
-                return Ok(BatchEdgeInsertResult::Unsupported {
-                    reason: "physical intent roles do not form one logical batch shape".into(),
-                });
-            }
-        };
         let reservations =
             match self.with_graph_mut(|graph| graph.reserve_batch_orientations(owner_plan)) {
                 Ok(reservations) => reservations,
@@ -370,6 +371,70 @@ impl GraphStore {
         });
 
         Ok(requests)
+    }
+
+    fn build_merged_orientation_batch_plans<E: CsrEdge>(
+        &self,
+        intents: &[BatchEdgeIntent],
+        encode_edge: impl Fn(&BatchEdgeIntent) -> Result<E, BatchPlacementError>,
+    ) -> Result<Vec<(LabeledOrientation, OneOrientationBatchPlan<E>)>, BatchPlacementError> {
+        let mut runs: RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>> =
+            RapidHashMap::default();
+        for intent in intents {
+            let key = BatchPlacementKey {
+                orientation: intent.orientation,
+                leaf_segment: super::batch_placement::leaf_index_for_vertex(
+                    intent.owner_vertex_id,
+                    super::batch_placement::segment_size(),
+                ),
+                owner_vertex_id: intent.owner_vertex_id,
+                storage_label: intent.storage_label,
+                inline_property_width: intent.inline_property_width,
+            };
+            runs.entry(key).or_default().push(OneOrientationBatchEdge {
+                logical_ordinal: intent.logical_ordinal,
+                owner_vertex_id: intent.owner_vertex_id,
+                neighbor_vertex_id: intent.neighbor_vertex_id,
+                label_id: intent.storage_label,
+                edge: encode_edge(intent)?,
+            });
+        }
+        for edges in runs.values_mut() {
+            edges.sort_by_key(|edge| edge.logical_ordinal);
+        }
+        let mut by_orientation: RapidHashMap<
+            u8,
+            RapidHashMap<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>>,
+        > = RapidHashMap::default();
+        for (key, edges) in runs {
+            by_orientation
+                .entry(match key.orientation {
+                    LabeledOrientation::Forward => 0,
+                    LabeledOrientation::Reverse => 1,
+                })
+                .or_default()
+                .insert(key, edges);
+        }
+        let mut plans = by_orientation
+            .into_iter()
+            .map(|(orientation, runs)| {
+                (
+                    if orientation == 0 {
+                        LabeledOrientation::Forward
+                    } else {
+                        LabeledOrientation::Reverse
+                    },
+                    OneOrientationBatchPlan {
+                        runs: runs_from_map(runs),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        plans.sort_by_key(|(orientation, _)| match orientation {
+            LabeledOrientation::Forward => 0,
+            LabeledOrientation::Reverse => 1,
+        });
+        Ok(plans)
     }
 
     #[cfg(test)]
@@ -588,6 +653,62 @@ fn build_undirected_batch_pairs(
         });
     }
     pairs.sort_by_key(|pair| pair.logical_ordinal);
+    Ok(pairs)
+}
+
+fn build_mixed_batch_pairs(
+    inputs: &[BatchEdgeInput],
+    intents: &[BatchEdgeIntent],
+) -> Result<Vec<BatchLogicalPair>, BatchPlacementError> {
+    let mut intents_by_ordinal: RapidHashMap<u32, Vec<&BatchEdgeIntent>> = RapidHashMap::default();
+    for intent in intents {
+        intents_by_ordinal
+            .entry(intent.logical_ordinal)
+            .or_default()
+            .push(intent);
+    }
+    let mut pairs = Vec::with_capacity(inputs.len());
+    for (ordinal, input) in inputs.iter().enumerate() {
+        let logical_ordinal =
+            u32::try_from(ordinal).map_err(|_| BatchPlacementError::OrdinalOverflow)?;
+        let projections = intents_by_ordinal.get(&logical_ordinal).ok_or_else(|| {
+            BatchPlacementError::PlacementReadFailed(format!(
+                "missing physical projections for logical ordinal {logical_ordinal}"
+            ))
+        })?;
+        let undirected = !input.directed;
+        let self_loop = input.source_vertex_id == input.target_vertex_id;
+        let expected = if undirected && self_loop { 1 } else { 2 };
+        if projections.len() != expected {
+            return Err(BatchPlacementError::PlacementReadFailed(format!(
+                "logical ordinal {logical_ordinal} produced {} projections, expected {expected}",
+                projections.len()
+            )));
+        }
+        let first = projections[0];
+        let (endpoint_a, endpoint_b) = if undirected {
+            (
+                input.source_vertex_id.min(input.target_vertex_id),
+                input.source_vertex_id.max(input.target_vertex_id),
+            )
+        } else {
+            (input.source_vertex_id, input.target_vertex_id)
+        };
+        let kind = match (input.directed, self_loop) {
+            (true, false) => BatchLogicalPairKind::Directed,
+            (true, true) => BatchLogicalPairKind::DirectedSelfLoop,
+            (false, false) => BatchLogicalPairKind::Undirected,
+            (false, true) => BatchLogicalPairKind::UndirectedSelfLoop,
+        };
+        pairs.push(BatchLogicalPair {
+            logical_ordinal,
+            kind,
+            endpoint_a,
+            endpoint_b,
+            label_id: first.storage_label,
+            inline_property_width: first.inline_property_width,
+        });
+    }
     Ok(pairs)
 }
 
@@ -841,6 +962,83 @@ mod tests {
             .map(|edge| edge.neighbor_vid())
             .collect::<Vec<_>>();
         assert_eq!(neighbors, vec![three, one]);
+    }
+
+    #[test]
+    fn clean_slab_mixed_logical_shapes_use_one_owner_batch() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(2601);
+        install_width(label, 0);
+        let vertices = make_vertices(&store, 8);
+        let directed_source = vertices[0];
+        let directed_target = vertices[1];
+        let undirected_low = vertices[2];
+        let undirected_high = vertices[3];
+        let directed_loop = vertices[4];
+        let undirected_loop = vertices[5];
+
+        store.prepare_clean_slab_dir_buckets(directed_source, directed_target, label, 0);
+        store.prepare_clean_slab_undir_buckets(undirected_low, undirected_high, label, 0);
+        store.prepare_clean_slab_dir_buckets(directed_loop, directed_loop, label, 0);
+        store.prepare_clean_slab_undir_buckets(undirected_loop, undirected_loop, label, 0);
+
+        let edges = vec![
+            input(directed_source, directed_target, Some(label), true, vec![]),
+            input(undirected_low, undirected_high, Some(label), false, vec![]),
+            input(directed_loop, directed_loop, Some(label), true, vec![]),
+            input(undirected_loop, undirected_loop, Some(label), false, vec![]),
+        ];
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_locations(&edges)
+            .expect("mixed plan/encode ok");
+        assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
+        assert_eq!(result.total_edge_slots(), Some(7));
+
+        let directed_label = storage_label_for(Some(label), true);
+        let undirected_label = storage_label_for(Some(label), false);
+        assert_eq!(
+            count_labeled_dir_edges(&store, directed_source, directed_label, true),
+            1
+        );
+        assert_eq!(
+            count_labeled_dir_edges(&store, directed_target, directed_label, false),
+            1
+        );
+        assert_eq!(
+            count_labeled_dir_edges(&store, directed_loop, directed_label, true),
+            1
+        );
+        assert_eq!(
+            count_labeled_dir_edges(&store, directed_loop, directed_label, false),
+            1
+        );
+        assert_eq!(
+            store
+                .undirected_edges(undirected_low)
+                .expect("undirected low")
+                .into_iter()
+                .filter(|edge| edge.label_id == undirected_label)
+                .count(),
+            1
+        );
+        assert_eq!(
+            store
+                .undirected_edges(undirected_high)
+                .expect("undirected high")
+                .into_iter()
+                .filter(|edge| edge.label_id == undirected_label)
+                .count(),
+            1
+        );
+        assert_eq!(
+            store
+                .undirected_edges(undirected_loop)
+                .expect("undirected loop")
+                .into_iter()
+                .filter(|edge| edge.label_id == undirected_label)
+                .count(),
+            1
+        );
     }
 
     #[test]

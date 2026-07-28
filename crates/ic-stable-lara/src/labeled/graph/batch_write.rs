@@ -121,6 +121,36 @@ pub struct UndirectedBatchPair {
     pub inline_property_width: u16,
 }
 
+/// Logical shape represented by one request-local pair-table row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchLogicalPairKind {
+    /// Directed edge with distinct forward and reverse physical rows.
+    Directed,
+    /// Non-self undirected edge with two forward physical rows.
+    Undirected,
+    /// Directed self-loop with distinct forward and reverse physical rows.
+    DirectedSelfLoop,
+    /// Undirected self-loop with one forward physical row.
+    UndirectedSelfLoop,
+}
+
+/// Request-local logical pair metadata for a mixed batch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchLogicalPair {
+    /// Stable logical input ordinal.
+    pub logical_ordinal: u32,
+    /// Logical edge shape.
+    pub kind: BatchLogicalPairKind,
+    /// First logical endpoint; source for directed rows and lower endpoint for undirected rows.
+    pub endpoint_a: VertexId,
+    /// Second logical endpoint; target for directed rows and higher endpoint for undirected rows.
+    pub endpoint_b: VertexId,
+    /// Storage label shared by all physical projections.
+    pub label_id: BucketLabelKey,
+    /// Inline property byte width shared by all physical projections.
+    pub inline_property_width: u16,
+}
+
 /// Logical orientation shape for an owner-coordinated batch.
 ///
 /// A caller cannot accidentally submit an unpaired one-sided directed batch: the only
@@ -153,6 +183,16 @@ where
     SelfLoop {
         /// Self-loop forward plan.
         forward: OneOrientationBatchPlan<E>,
+    },
+    /// Mixed-shape batch with merged physical plans and one pair-table row per logical item.
+    Mixed {
+        /// One merged physical plan per orientation.
+        physical: Vec<(
+            crate::labeled::LabeledOrientation,
+            OneOrientationBatchPlan<E>,
+        )>,
+        /// Graph-owned request-local logical pair table.
+        pairs: Vec<BatchLogicalPair>,
     },
 }
 
@@ -275,6 +315,139 @@ where
             Ok(())
         }
 
+        fn validate_mixed<E: CsrEdge>(
+            physical: &[(
+                crate::labeled::LabeledOrientation,
+                OneOrientationBatchPlan<E>,
+            )],
+            pairs: &[BatchLogicalPair],
+        ) -> Result<(), OneOrientationBatchError> {
+            if physical.is_empty() || pairs.is_empty() {
+                return Err(OneOrientationBatchError::InvalidOrientationPair(
+                    "mixed batch has no physical plans or logical pairs".into(),
+                ));
+            }
+            let mut rows_by_ordinal = std::collections::BTreeMap::<
+                u32,
+                Vec<(
+                    crate::labeled::LabeledOrientation,
+                    (u32, VertexId, VertexId, BucketLabelKey, u16),
+                )>,
+            >::new();
+            for (orientation, plan) in physical {
+                for row in entries(plan) {
+                    rows_by_ordinal
+                        .entry(row.0)
+                        .or_default()
+                        .push((*orientation, row));
+                }
+            }
+            let mut ordinals = std::collections::BTreeSet::new();
+            for pair in pairs {
+                if !ordinals.insert(pair.logical_ordinal) {
+                    return Err(OneOrientationBatchError::InvalidOrientationPair(
+                        "mixed batch pair table contains duplicate ordinals".into(),
+                    ));
+                }
+                let Some(rows) = rows_by_ordinal.get(&pair.logical_ordinal) else {
+                    return Err(OneOrientationBatchError::InvalidOrientationPair(
+                        "mixed batch pair table is missing physical rows".into(),
+                    ));
+                };
+                let expected = match pair.kind {
+                    BatchLogicalPairKind::UndirectedSelfLoop => 1,
+                    _ => 2,
+                };
+                if rows.len() != expected {
+                    return Err(OneOrientationBatchError::InvalidOrientationPair(
+                        "mixed batch physical projection count does not match pair kind".into(),
+                    ));
+                }
+                let label_is_directed = pair.label_id.is_directed();
+                let expects_directed = matches!(
+                    pair.kind,
+                    BatchLogicalPairKind::Directed | BatchLogicalPairKind::DirectedSelfLoop
+                );
+                if label_is_directed != expects_directed {
+                    return Err(OneOrientationBatchError::InvalidOrientationPair(
+                        "mixed batch pair kind disagrees with storage label".into(),
+                    ));
+                }
+                for (_, row) in rows {
+                    if row.3 != pair.label_id || row.4 != pair.inline_property_width {
+                        return Err(OneOrientationBatchError::InvalidOrientationPair(
+                            "mixed batch physical metadata disagrees with pair table".into(),
+                        ));
+                    }
+                }
+                match pair.kind {
+                    BatchLogicalPairKind::Directed => {
+                        if !rows.iter().any(|(o, r)| {
+                            *o == crate::labeled::LabeledOrientation::Forward
+                                && r.1 == pair.endpoint_a
+                                && r.2 == pair.endpoint_b
+                        }) || !rows.iter().any(|(o, r)| {
+                            *o == crate::labeled::LabeledOrientation::Reverse
+                                && r.1 == pair.endpoint_b
+                                && r.2 == pair.endpoint_a
+                        }) {
+                            return Err(OneOrientationBatchError::InvalidOrientationPair(
+                                "mixed directed pair has incorrect forward/reverse rows".into(),
+                            ));
+                        }
+                    }
+                    BatchLogicalPairKind::DirectedSelfLoop => {
+                        if !rows.iter().any(|(o, r)| {
+                            *o == crate::labeled::LabeledOrientation::Forward
+                                && r.1 == pair.endpoint_a
+                                && r.2 == pair.endpoint_a
+                        }) || !rows.iter().any(|(o, r)| {
+                            *o == crate::labeled::LabeledOrientation::Reverse
+                                && r.1 == pair.endpoint_a
+                                && r.2 == pair.endpoint_a
+                        }) {
+                            return Err(OneOrientationBatchError::InvalidOrientationPair(
+                                "mixed directed self-loop has incorrect orientation rows".into(),
+                            ));
+                        }
+                    }
+                    BatchLogicalPairKind::Undirected => {
+                        if !rows
+                            .iter()
+                            .all(|(o, _)| *o == crate::labeled::LabeledOrientation::Forward)
+                            || !rows
+                                .iter()
+                                .any(|(_, r)| r.1 == pair.endpoint_a && r.2 == pair.endpoint_b)
+                            || !rows
+                                .iter()
+                                .any(|(_, r)| r.1 == pair.endpoint_b && r.2 == pair.endpoint_a)
+                        {
+                            return Err(OneOrientationBatchError::InvalidOrientationPair(
+                                "mixed undirected pair has incorrect endpoint rows".into(),
+                            ));
+                        }
+                    }
+                    BatchLogicalPairKind::UndirectedSelfLoop => {
+                        let (orientation, row) = rows[0];
+                        if orientation != crate::labeled::LabeledOrientation::Forward
+                            || row.1 != pair.endpoint_a
+                            || row.2 != pair.endpoint_a
+                        {
+                            return Err(OneOrientationBatchError::InvalidOrientationPair(
+                                "mixed undirected self-loop has incorrect row".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            if ordinals.len() != rows_by_ordinal.len() {
+                return Err(OneOrientationBatchError::InvalidOrientationPair(
+                    "mixed batch pair table does not cover every physical ordinal".into(),
+                ));
+            }
+            Ok(())
+        }
+
         match self {
             Self::Directed { forward, reverse } => validate_pair(forward, reverse, true),
             Self::Undirected { plan, pairs } => validate_merged_undirected(plan, pairs),
@@ -292,6 +465,7 @@ where
                     ))
                 }
             }
+            Self::Mixed { physical, pairs } => validate_mixed(physical, pairs),
         }
     }
 
@@ -312,6 +486,7 @@ where
             Self::SelfLoop { forward } => {
                 vec![(crate::labeled::LabeledOrientation::Forward, forward)]
             }
+            Self::Mixed { physical, .. } => physical,
         }
     }
 }
