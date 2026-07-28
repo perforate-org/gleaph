@@ -778,7 +778,7 @@ mod tests {
         install_test_edge_inline_property, install_test_edge_inline_property_profile,
     };
     use gleaph_gql::Value;
-    use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
+    use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, PropertyId};
     use ic_stable_lara::VertexId;
     use ic_stable_lara::labeled::batch_write::{
         OneOrientationBatchLocation, OneOrientationPhysicalLocation,
@@ -1175,6 +1175,78 @@ mod tests {
         assert_eq!(
             store.edge_property_at_canonical_handle(second_handle, property_id),
             Some(Value::Int64(904))
+        );
+    }
+
+    #[test]
+    fn batch_parallel_edge_after_delete_uses_live_pair_rank() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4009);
+        let property_id = PropertyId::from_raw(95);
+        let vertices = make_vertices(&store, 2);
+        let source = vertices[0];
+        let target = vertices[1];
+        let first = store
+            .insert_directed_edge(source, target, Some(label))
+            .expect("first edge");
+        store
+            .insert_directed_edge(source, target, Some(label))
+            .expect("second edge");
+        store
+            .delete_edge_by_handle(first)
+            .expect("delete first edge");
+
+        let surviving = store
+            .directed_out_edges(source)
+            .expect("surviving outgoing edge")
+            .into_iter()
+            .find(|edge| {
+                edge.neighbor_vid() == target
+                    && edge.label_id == lara_label(label.pack(EdgeDirectedness::Directed)).raw()
+            })
+            .map(|edge| {
+                EdgeHandle::at_slot(
+                    source,
+                    lara_label(label.pack(EdgeDirectedness::Directed)),
+                    edge.edge_slot_index.raw(),
+                )
+            })
+            .expect("live edge after tombstone");
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+
+        let mut next = input(source, target, Some(label), true, vec![]);
+        next.initial_edge_properties = vec![(property_id, Value::Int64(905))];
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[next.clone()])
+            .expect("batch edge after delete");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        let next_occurrence = locations[0].canonical_occurrence(&next);
+        let next_counterpart = store
+            .counterpart_edge_occurrence(next_occurrence)
+            .expect("next counterpart");
+        let surviving_counterpart = store
+            .counterpart_edge_occurrence(surviving.occurrence(LabeledOrientation::Forward))
+            .expect("surviving counterpart");
+
+        assert_eq!(next_counterpart.owner_vertex_id, target);
+        assert_ne!(
+            next_counterpart.slot_index, surviving_counterpart.slot_index,
+            "deleted rows must not consume a live parallel pair rank"
+        );
+        let next_handle = EdgeHandle::at_slot(
+            next_occurrence.owner_vertex_id,
+            next_occurrence.label_id,
+            next_occurrence.slot_index,
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(next_handle, property_id),
+            Some(Value::Int64(905))
         );
     }
 
