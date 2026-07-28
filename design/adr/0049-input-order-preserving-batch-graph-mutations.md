@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 11:37:52 UTC +0000
+Anchor timestamp: 2026-07-28 11:48:36 UTC +0000
 
 ## Context
 
@@ -1567,8 +1567,12 @@ not rewritten as though unfinished unordered product behavior shipped.
     ordered completed-entry commit boundary and a journal-first lookup that
     returns `Absent` only when no entry exists, accepts only an exact identity,
     and preserves the existing entry on conflicts. The public endpoint,
-    current-caller authorization, receipt response envelope, retirement call,
-    and full replay algorithm remain planned.
+    current-caller authorization and public endpoint wiring remain planned.
+    Graph-owned `GraphOrderedEdgeBatchResult::V1` and
+    `OrderedMutationRetirementAck::V1` envelopes now project active/retired
+    entries; exact retirement is idempotent and fingerprint-conflict-safe.
+    Ordered active entries are retained regardless of age, while retired
+    entries use checked `at_ns + retention` eligibility for GC.
     The post-commit sidecar path traps on a violated preflight invariant rather
     than returning a recoverable error. The explicit stable-memory reservation
     remains blocked by the current `EdgePropertyStore` boundary: its

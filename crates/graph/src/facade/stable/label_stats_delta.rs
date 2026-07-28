@@ -933,14 +933,25 @@ impl<M: Memory> GraphMutationJournal<M> {
             let value = entry.value();
             scanned += 1;
             last_key = Some(id);
-            match value.recorded_at_ns() {
-                None => {
-                    let mut stamped = value;
-                    stamped.set_recorded_at_ns(Some(now));
-                    to_stamp.push(stamped);
+            match value.retirement() {
+                GraphMutationRetirementV1::Active => {}
+                GraphMutationRetirementV1::Retired { at_ns } => {
+                    if at_ns
+                        .checked_add(retention_ns)
+                        .is_some_and(|expires_at| now > expires_at)
+                    {
+                        to_remove.push(id);
+                    }
                 }
-                Some(ts) if now.saturating_sub(ts) > retention_ns => to_remove.push(id),
-                Some(_) => {}
+                GraphMutationRetirementV1::NotApplicable => match value.recorded_at_ns() {
+                    None => {
+                        let mut stamped = value;
+                        stamped.set_recorded_at_ns(Some(now));
+                        to_stamp.push(stamped);
+                    }
+                    Some(ts) if now.saturating_sub(ts) > retention_ns => to_remove.push(id),
+                    Some(_) => {}
+                },
             }
         }
         let removed = to_remove.len() as u32;
@@ -1165,6 +1176,31 @@ mod tests {
             retirement: GraphMutationRetirementV1::Active,
         });
         let _ = entry.into_bytes();
+    }
+
+    #[test]
+    fn ordered_retention_requires_retirement_and_uses_retirement_timestamp() {
+        let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [12; 32],
+            logical_item_count: 1,
+        };
+        let mut active = GraphMutationJournalEntry::completed(125, 1, None, None, vec![3], 0);
+        active.set_request_identity(identity.clone());
+        active.set_retirement(GraphMutationRetirementV1::Active);
+        let mut j = journal();
+        j.insert(active);
+        let (_, removed_active, _) = j.evict_expired(None, 8, RETENTION_NS + 1, RETENTION_NS);
+        assert_eq!(removed_active, 0);
+
+        let mut retired = GraphMutationJournalEntry::completed(126, 1, None, None, vec![3], 0);
+        retired.set_request_identity(identity);
+        retired.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 0 });
+        j.insert(retired);
+        let (_, removed_retired, _) = j.evict_expired(Some(125), 8, RETENTION_NS + 1, RETENTION_NS);
+        assert_eq!(removed_retired, 1);
+        assert!(j.get(125).is_some());
+        assert!(j.get(126).is_none());
     }
 
     #[test]

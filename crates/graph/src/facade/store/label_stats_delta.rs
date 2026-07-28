@@ -6,8 +6,10 @@ use crate::facade::stable::{GRAPH_MUTATION_JOURNAL, LABEL_STATS_DELTA_LOG, LABEL
 use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
     GraphBulkMutationProgress, GraphMutationJournalEntryWire, GraphMutationRequestIdentityV1,
-    GraphMutationRetirementV1, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
-    MutationJournalState, ShardEventSeq,
+    GraphMutationRetirementV1, GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult,
+    GraphOrderedEdgeBatchResultV1, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
+    MutationJournalState, OrderedMutationRetirementAck, OrderedMutationRetirementAckV1,
+    ShardEventSeq,
 };
 use std::cell::RefCell;
 
@@ -87,6 +89,54 @@ impl GraphStore {
         // caller. This also rejects an ordered entry that was somehow persisted incompletely.
         entry.wire().validate()?;
         Ok(Some(entry))
+    }
+
+    fn ordered_receipt(
+        entry: &GraphMutationJournalEntry,
+    ) -> Result<GraphOrderedEdgeBatchReceiptV1, &'static str> {
+        let receipt = GraphOrderedEdgeBatchReceiptV1 {
+            logical_edge_count: entry.row_count(),
+            emitted_delta_first_seq: entry.emitted_delta_first_seq(),
+            emitted_delta_last_seq: entry.emitted_delta_last_seq(),
+            hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub(crate) fn ordered_edge_batch_replay_result(
+        &self,
+        mutation_id: MutationId,
+        expected_identity: &GraphMutationRequestIdentityV1,
+    ) -> Result<Option<GraphOrderedEdgeBatchResult>, &'static str> {
+        let Some(entry) = self.mutation_journal_entry_for_replay(mutation_id, expected_identity)?
+        else {
+            return Ok(None);
+        };
+        let GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            graph_request_fingerprint,
+            ..
+        } = expected_identity
+        else {
+            return Err("ordered replay requires OrderedEdgeBatch identity");
+        };
+        let result = match entry.retirement() {
+            GraphMutationRetirementV1::Active => {
+                GraphOrderedEdgeBatchResultV1::Completed(Self::ordered_receipt(&entry)?)
+            }
+            GraphMutationRetirementV1::Retired { .. } => {
+                GraphOrderedEdgeBatchResultV1::MutationRetired {
+                    mutation_id,
+                    graph_request_fingerprint: *graph_request_fingerprint,
+                }
+            }
+            GraphMutationRetirementV1::NotApplicable => {
+                return Err("ordered replay entry has no retirement state");
+            }
+        };
+        let result = GraphOrderedEdgeBatchResult::V1(result);
+        result.validate()?;
+        Ok(Some(result))
     }
 
     pub fn get_mutation_journal_entry(
@@ -202,6 +252,13 @@ impl GraphStore {
         emitted_delta_last_seq: Option<ShardEventSeq>,
         hot_forward_vertices: Vec<LocalVertexId>,
     ) {
+        let receipt = GraphOrderedEdgeBatchReceiptV1 {
+            logical_edge_count: row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices: hot_forward_vertices.clone(),
+        };
+        receipt.validate().expect("invalid ordered journal receipt");
         let mut entry = GraphMutationJournalEntry::completed(
             mutation_id,
             row_count,
@@ -219,6 +276,47 @@ impl GraphStore {
         GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| {
             m.insert(entry);
         });
+    }
+
+    pub(crate) fn retire_ordered_mutation_at(
+        &self,
+        now_ns: u64,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<Option<OrderedMutationRetirementAck>, &'static str> {
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+            let Some(mut entry) = journal.get(mutation_id) else {
+                return Ok(None);
+            };
+            let GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                graph_request_fingerprint: stored_fingerprint,
+                ..
+            } = entry.request_identity()
+            else {
+                return Err("retirement requires an ordered journal entry");
+            };
+            if *stored_fingerprint != graph_request_fingerprint {
+                return Err("retirement fingerprint conflicts with journal identity");
+            }
+            let receipt = Self::ordered_receipt(&entry)?;
+            match entry.retirement() {
+                GraphMutationRetirementV1::Active => {
+                    entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: now_ns });
+                    journal.insert(entry);
+                }
+                GraphMutationRetirementV1::Retired { .. } => {}
+                GraphMutationRetirementV1::NotApplicable => {
+                    return Err("ordered journal entry has no retirement state");
+                }
+            }
+            let ack = OrderedMutationRetirementAck::V1(OrderedMutationRetirementAckV1 {
+                mutation_id,
+                graph_request_fingerprint,
+                receipt,
+            });
+            ack.validate()?;
+            Ok(Some(ack))
+        })
     }
 
     /// Record a bulk mutation journal entry with an operation cursor and progress metadata
@@ -544,5 +642,63 @@ mod tests {
             store.mutation_journal_entry_for_replay(12_001, &identity),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn ordered_replay_projects_receipt_and_retirement_is_idempotent() {
+        let store = GraphStore::new();
+        let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [11; 32],
+            logical_item_count: 2,
+        };
+        store.commit_record_completed_ordered_edge_batch_journal_at(
+            12,
+            12_002,
+            identity.clone(),
+            2,
+            Some(6),
+            Some(7),
+            vec![4, 8],
+        );
+
+        let active = store
+            .ordered_edge_batch_replay_result(12_002, &identity)
+            .expect("active replay lookup")
+            .expect("active journal entry");
+        assert!(matches!(
+            active,
+            GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(_))
+        ));
+
+        let ack = store
+            .retire_ordered_mutation_at(20, 12_002, [11; 32])
+            .expect("retire ordered mutation")
+            .expect("retirement ack");
+        let repeated = store
+            .retire_ordered_mutation_at(21, 12_002, [11; 32])
+            .expect("repeat retirement")
+            .expect("repeat ack");
+        assert_eq!(ack, repeated);
+
+        let retired = store
+            .ordered_edge_batch_replay_result(12_002, &identity)
+            .expect("retired replay lookup")
+            .expect("retired journal entry");
+        match retired {
+            GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::MutationRetired {
+                mutation_id,
+                graph_request_fingerprint,
+            }) => {
+                assert_eq!(mutation_id, 12_002);
+                assert_eq!(graph_request_fingerprint, [11; 32]);
+            }
+            other => panic!("unexpected retired replay result: {other:?}"),
+        }
+        assert_eq!(
+            store.retire_ordered_mutation_at(22, 12_002, [12; 32]),
+            Err("retirement fingerprint conflicts with journal identity")
+        );
+        assert!(store.mutation_journal_entry(12_002).is_some());
     }
 }

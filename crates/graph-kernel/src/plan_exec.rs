@@ -518,6 +518,51 @@ impl GraphOrderedEdgeBatchReceiptV1 {
     }
 }
 
+/// Graph-owned canonical response for the ordered edge-batch endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphOrderedEdgeBatchResult {
+    V1(GraphOrderedEdgeBatchResultV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphOrderedEdgeBatchResultV1 {
+    Completed(GraphOrderedEdgeBatchReceiptV1),
+    MutationRetired {
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    },
+}
+
+impl GraphOrderedEdgeBatchResult {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) => receipt.validate(),
+            Self::V1(GraphOrderedEdgeBatchResultV1::MutationRetired { .. }) => Ok(()),
+        }
+    }
+}
+
+/// Graph-owned acknowledgement for the internal Router-to-Graph retirement call.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum OrderedMutationRetirementAck {
+    V1(OrderedMutationRetirementAckV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct OrderedMutationRetirementAckV1 {
+    pub mutation_id: MutationId,
+    pub graph_request_fingerprint: [u8; 32],
+    pub receipt: GraphOrderedEdgeBatchReceiptV1,
+}
+
+impl OrderedMutationRetirementAck {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::V1(ack) => ack.receipt.validate(),
+        }
+    }
+}
+
 /// Versioned graph shard mutation idempotency journal entry (ADR 0015, ADR 0044).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum GraphMutationJournalEntryWire {
@@ -1022,6 +1067,35 @@ mod tests {
             hot_forward_vertices: vec![9, 3],
         };
         assert!(receipt.validate().is_err());
+    }
+
+    #[test]
+    fn ordered_result_and_retirement_ack_roundtrip() {
+        let receipt = GraphOrderedEdgeBatchReceiptV1 {
+            logical_edge_count: 2,
+            emitted_delta_first_seq: Some(4),
+            emitted_delta_last_seq: Some(5),
+            hot_forward_vertices: vec![3, 9],
+        };
+        let result = GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(
+            receipt.clone(),
+        ));
+        let ack = OrderedMutationRetirementAck::V1(OrderedMutationRetirementAckV1 {
+            mutation_id: 7,
+            graph_request_fingerprint: [6; 32],
+            receipt,
+        });
+        result.validate().expect("valid ordered result");
+        ack.validate().expect("valid retirement ack");
+        let bytes = Encode!(&result, &ack).expect("encode ordered response envelopes");
+        let (decoded_result, decoded_ack) = Decode!(
+            &bytes,
+            GraphOrderedEdgeBatchResult,
+            OrderedMutationRetirementAck
+        )
+        .expect("decode ordered response envelopes");
+        assert_eq!(result, decoded_result);
+        assert_eq!(ack, decoded_ack);
     }
 
     #[test]
