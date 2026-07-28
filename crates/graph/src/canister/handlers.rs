@@ -367,11 +367,12 @@ pub fn execute_ordered_edge_batch(
                 }
 
                 if batch_ordinals.len() < edges.len() {
-                    return store.execute_ordered_edge_batch_partitioned(
+                    return store.execute_ordered_edge_batch_partitioned_with_intents(
                         args.mutation_id,
                         identity,
                         &edges,
                         batch_ordinals,
+                        Some(&classification.intents),
                     );
                 }
 

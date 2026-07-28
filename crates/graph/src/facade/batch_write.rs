@@ -260,6 +260,23 @@ impl GraphStore {
         edges: &[BatchEdgeInput],
         batch_ordinals: &BTreeSet<u32>,
     ) -> Result<GraphOrderedEdgeBatchResult, String> {
+        self.execute_ordered_edge_batch_partitioned_with_intents(
+            mutation_id,
+            request_identity,
+            edges,
+            batch_ordinals,
+            None,
+        )
+    }
+
+    pub(crate) fn execute_ordered_edge_batch_partitioned_with_intents(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        edges: &[BatchEdgeInput],
+        batch_ordinals: &BTreeSet<u32>,
+        prepared_intents: Option<&[BatchEdgeIntent]>,
+    ) -> Result<GraphOrderedEdgeBatchResult, String> {
         let (batch_edges, scalar_edges): (Vec<_>, Vec<_>) = edges
             .iter()
             .enumerate()
@@ -273,7 +290,31 @@ impl GraphStore {
             .map(|(_, edge)| edge.clone())
             .collect();
 
-        match self.try_insert_ordered_edge_batch_clean_slab(&batch_edges) {
+        let local_batch_intents = prepared_intents.map(|intents| {
+            let local_ordinals = batch_ordinals
+                .iter()
+                .enumerate()
+                .map(|(local, original)| (*original, local as u32))
+                .collect::<BTreeMap<_, _>>();
+            intents
+                .iter()
+                .filter_map(|intent| {
+                    local_ordinals.get(&intent.logical_ordinal).map(|ordinal| {
+                        let mut intent = intent.clone();
+                        intent.logical_ordinal = *ordinal;
+                        intent
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let batch_result = match local_batch_intents.as_deref() {
+            Some(intents) => {
+                self.try_insert_ordered_edge_batch_clean_slab_with_intents(&batch_edges, intents)
+            }
+            None => self.try_insert_ordered_edge_batch_clean_slab(&batch_edges),
+        };
+        match batch_result {
             Ok(BatchEdgeInsertResult::Committed { .. }) => {
                 self.execute_ordered_scalar_edges(&scalar_edges);
                 Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
@@ -1198,10 +1239,12 @@ mod tests {
             input(vertices[0], vertices[1], Some(label), true, vec![]),
             input(vertices[2], vertices[3], Some(label), true, vec![]),
         ];
-        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
+        let classification = store
+            .classify_batch_edge_insertion(&edges)
+            .expect("classify");
         assert_eq!(
-            summary
-                .logical_ordinals_requiring_batch()
+            classification
+                .logical_ordinals_with_multi_runs
                 .iter()
                 .copied()
                 .collect::<Vec<_>>(),
@@ -1213,11 +1256,12 @@ mod tests {
             logical_item_count: 3,
         };
         let result = store
-            .execute_ordered_edge_batch_partitioned(
+            .execute_ordered_edge_batch_partitioned_with_intents(
                 4_011_001,
                 identity,
                 &edges,
-                summary.logical_ordinals_requiring_batch(),
+                &classification.logical_ordinals_with_multi_runs,
+                Some(&classification.intents),
             )
             .expect("mixed ordered write");
         let receipt = match result {

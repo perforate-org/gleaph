@@ -654,16 +654,20 @@ fn bench_ordered_partitioned_mixed_256_width_0_with_planner() -> canbench_rs::Be
     };
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("ordered_partitioned_mixed_256_w0_with_planner");
+        let classification = store
+            .classify_batch_edge_insertion(&input)
+            .expect("ordered classification");
         let summary = store
-            .plan_batch_edge_insertion(&input)
+            .plan_batch_edge_insertion_with_intents(&input, &classification.intents)
             .expect("ordered plan");
         black_box(
             store
-                .execute_ordered_edge_batch_partitioned(
+                .execute_ordered_edge_batch_partitioned_with_intents(
                     5_300_004,
                     identity.clone(),
                     &input,
                     summary.logical_ordinals_requiring_batch(),
+                    Some(&classification.intents),
                 )
                 .expect("planned partitioned ordered batch"),
         );

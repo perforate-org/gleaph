@@ -19,6 +19,7 @@ use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara
 use super::{GraphStore, GraphStoreError, stable::GRAPH};
 use crate::edge_inline_property_schema::lookup_edge_inline_property_profile;
 use crate::edge_inline_property_schema::resolved_edge_label_with;
+use rapidhash::RapidHashMap;
 
 /// One logical edge supplied for optimized batch planning.
 ///
@@ -566,26 +567,20 @@ impl GraphStore {
         &self,
         edges: &[BatchEdgeInput],
     ) -> Result<BatchEdgeClassification, BatchPlacementError> {
+        #[cfg(feature = "canbench")]
+        let _scope = canbench_rs::bench_scope("ordered_batch_classify_runs");
         let intents = self.expand_batch_edge_intents(edges)?;
-        let mut pending_by_run = BTreeMap::<BatchPlacementKey, u32>::new();
+        let mut ordinals_by_run = RapidHashMap::<BatchPlacementKey, Vec<u32>>::default();
         for intent in &intents {
-            let entry = pending_by_run
+            ordinals_by_run
                 .entry(batch_placement_key(intent))
-                .or_default();
-            *entry = entry
-                .checked_add(1)
-                .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
+                .or_default()
+                .push(intent.logical_ordinal);
         }
-        let logical_ordinals_with_multi_runs = intents
-            .iter()
-            .filter_map(|intent| {
-                (pending_by_run
-                    .get(&batch_placement_key(intent))
-                    .copied()
-                    .unwrap_or_default()
-                    > 1)
-                .then_some(intent.logical_ordinal)
-            })
+        let logical_ordinals_with_multi_runs = ordinals_by_run
+            .into_values()
+            .filter(|ordinals| ordinals.len() > 1)
+            .flatten()
             .collect();
         Ok(BatchEdgeClassification {
             intents,

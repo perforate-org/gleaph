@@ -1770,6 +1770,13 @@ not rewritten as though unfinished unordered product behavior shipped.
     expansion was reduced from two calls to one. Mixed requests still rebuild
     the batch subset because their original logical ordinals must be preserved;
     prepared physical-plan reuse remains the next optimization slice.
+    **Measured (2026-07-28 21:42:33 UTC +0000):** the full 256-item mixed
+    path, including the classifier, planner, partition, and receipt work,
+    measured 14.15M instructions; classifier grouping alone was 1.32M. The
+    prepared-intent rebase removed the second intent expansion, but does not
+    yet remove the batch-subset plan construction. This confirms that the next
+    large mixed-request optimization must reduce planner admission work rather
+    than only reuse input vectors.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh
