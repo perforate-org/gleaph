@@ -14,7 +14,7 @@ use crate::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use crate::entry::{
     ConstraintNameId, EdgeInlinePropertyProfile, EdgeLabelId, PropertyId, VertexLabelId,
 };
-use crate::federation::ShardId;
+use crate::federation::{LocalVertexId, ShardId};
 
 /// Router-issued mutation id. `0` is reserved; ids are never reused.
 pub type MutationId = u64;
@@ -417,6 +417,64 @@ pub struct LabelStatsDelta {
 pub enum MutationJournalState {
     Incomplete,
     Completed,
+}
+
+/// Graph-owned request identity for journal-first replay.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphMutationRequestIdentityV1 {
+    /// Existing scalar and legacy/bulk plan execution identity.
+    PlanExecution,
+    /// Order-sensitive identity for the ADR 0049 edge batch envelope.
+    OrderedEdgeBatch {
+        canonical_encoding_version: u16,
+        graph_request_fingerprint: [u8; 32],
+        logical_item_count: u32,
+    },
+}
+
+/// Stable Graph-owned retirement state for an ordered batch journal entry.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphMutationRetirementV1 {
+    NotApplicable,
+    Active,
+    Retired { at_ns: u64 },
+}
+
+/// Wire projection of [`GraphMutationRetirementV1`] without the stable timestamp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphMutationRetirementWireV1 {
+    NotApplicable,
+    Active,
+    Retired,
+}
+
+/// Maximum canonical forward vertices retained in an ordered batch receipt.
+pub const MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES: usize = 2_048;
+
+/// Durable aggregate receipt returned by a completed ordered Graph edge batch.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GraphOrderedEdgeBatchReceiptV1 {
+    pub logical_edge_count: u64,
+    pub emitted_delta_first_seq: Option<ShardEventSeq>,
+    pub emitted_delta_last_seq: Option<ShardEventSeq>,
+    pub hot_forward_vertices: Vec<LocalVertexId>,
+}
+
+impl GraphOrderedEdgeBatchReceiptV1 {
+    /// Validate the bounded canonical hot-vertex projection retained by the receipt.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.hot_forward_vertices.len() > MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES {
+            return Err("ordered receipt hot-forward vertex bound exceeded");
+        }
+        if self
+            .hot_forward_vertices
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err("ordered receipt hot-forward vertices must be sorted and unique");
+        }
+        Ok(())
+    }
 }
 
 /// Versioned graph shard mutation idempotency journal entry (ADR 0015, ADR 0044).
@@ -844,6 +902,43 @@ mod tests {
         let bytes = Encode!(&result).expect("encode");
         let decoded: ExecutePlanResult = Decode!(&bytes, ExecutePlanResult).expect("decode");
         assert_eq!(result, decoded);
+    }
+
+    #[test]
+    fn ordered_batch_identity_and_receipt_roundtrip() {
+        let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: [7u8; 32],
+            logical_item_count: 2,
+        };
+        let receipt = GraphOrderedEdgeBatchReceiptV1 {
+            logical_edge_count: 2,
+            emitted_delta_first_seq: Some(11),
+            emitted_delta_last_seq: Some(12),
+            hot_forward_vertices: vec![3, 9],
+        };
+        receipt.validate().expect("canonical receipt");
+
+        let bytes = Encode!(&identity, &receipt).expect("encode ordered batch contract");
+        let (decoded_identity, decoded_receipt) = Decode!(
+            &bytes,
+            GraphMutationRequestIdentityV1,
+            GraphOrderedEdgeBatchReceiptV1
+        )
+        .expect("decode ordered batch contract");
+        assert_eq!(identity, decoded_identity);
+        assert_eq!(receipt, decoded_receipt);
+    }
+
+    #[test]
+    fn ordered_batch_receipt_rejects_noncanonical_hot_vertices() {
+        let receipt = GraphOrderedEdgeBatchReceiptV1 {
+            logical_edge_count: 1,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: vec![9, 3],
+        };
+        assert!(receipt.validate().is_err());
     }
 
     #[test]

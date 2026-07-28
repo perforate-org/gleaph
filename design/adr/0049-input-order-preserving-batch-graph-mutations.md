@@ -1520,7 +1520,7 @@ not rewritten as though unfinished unordered product behavior shipped.
    inline-property log folds independently while the leaf relocates once.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
-10. **Partially implemented (2026-07-28 11:16:55 UTC +0000):** the Graph facade now accepts
+10. **Partially implemented (2026-07-28 11:20:24 UTC +0000):** the Graph facade now accepts
     request-local initial sidecar values, validates ids/values/duplicate ids
     before reservation, derives one canonical `CanonicalEdgeOccurrence` from
     the joined captured location for directed, undirected, and self-loop
@@ -1553,6 +1553,10 @@ not rewritten as though unfinished unordered product behavior shipped.
     including distinct per-item sidecar values. Public exact replay remains
     planned because the current journal cannot identify or return this batch
     payload durably.
+    Graph-kernel replay contract types now define the ordered-batch request
+    identity, stable/wire retirement state, bounded aggregate receipt, and
+    canonical hot-vertex validation. Existing stable journal integration and
+    journal-first replay remain planned.
     The post-commit sidecar path traps on a violated preflight invariant rather
     than returning a recoverable error. The explicit stable-memory reservation
     remains blocked by the current `EdgePropertyStore` boundary: its
