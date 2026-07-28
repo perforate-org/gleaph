@@ -1154,9 +1154,10 @@ where
                                 allocated_inline_property_bytes_offsets.push(Some((offset, 0)));
                             }
                             InlinePropertyBytesAllocationKind::New { byte_len } => {
-                                let free_span = self.values.peek_free_byte_span(byte_len);
-                                let actual_offset =
-                                    self.values.allocate_byte_span(byte_len).map_err(|e| {
+                                let (actual_offset, free_span) = self
+                                    .values
+                                    .allocate_byte_span_with_origin(byte_len)
+                                    .map_err(|e| {
                                         Self::rollback_leaf_expansions(
                                             self,
                                             &leaf_expansion_cursors,
@@ -1170,10 +1171,7 @@ where
                                     })?;
                                 if let Some(span) = free_span {
                                     assert_eq!(actual_offset, span.start_slot);
-                                    allocated_inline_property_bytes_free_spans.push(FreeSpan {
-                                        start_slot: actual_offset,
-                                        len: byte_len,
-                                    });
+                                    allocated_inline_property_bytes_free_spans.push(span);
                                 }
                                 allocated_inline_property_bytes_offsets
                                     .push(Some((actual_offset, byte_len)));
@@ -1217,9 +1215,10 @@ where
                                 had_bytes,
                                 new_bytes,
                             } => {
-                                let free_span = self.values.peek_free_byte_span(new_bytes);
-                                let actual_offset =
-                                    self.values.allocate_byte_span(new_bytes).map_err(|e| {
+                                let (actual_offset, free_span) = self
+                                    .values
+                                    .allocate_byte_span_with_origin(new_bytes)
+                                    .map_err(|e| {
                                         Self::rollback_leaf_expansions(
                                             self,
                                             &leaf_expansion_cursors,
@@ -1236,10 +1235,7 @@ where
                                         actual_offset, span.start_slot,
                                         "inline property free-span allocation must use the peeked best-fit span"
                                     );
-                                    allocated_inline_property_bytes_free_spans.push(FreeSpan {
-                                        start_slot: actual_offset,
-                                        len: new_bytes,
-                                    });
+                                    allocated_inline_property_bytes_free_spans.push(span);
                                 }
                                 let mut existing =
                                     vec![
@@ -1295,9 +1291,10 @@ where
                                 allocated_inline_property_bytes_offsets.push(Some((offset, 0)));
                             }
                             InlinePropertyBytesAllocationKind::New { byte_len } => {
-                                let free_span = self.values.peek_free_byte_span(byte_len);
-                                let actual_offset =
-                                    self.values.allocate_byte_span(byte_len).map_err(|e| {
+                                let (actual_offset, free_span) = self
+                                    .values
+                                    .allocate_byte_span_with_origin(byte_len)
+                                    .map_err(|e| {
                                         Self::rollback_leaf_expansions(
                                             self,
                                             &leaf_expansion_cursors,
@@ -1311,10 +1308,7 @@ where
                                     })?;
                                 if let Some(span) = free_span {
                                     assert_eq!(actual_offset, span.start_slot);
-                                    allocated_inline_property_bytes_free_spans.push(FreeSpan {
-                                        start_slot: actual_offset,
-                                        len: byte_len,
-                                    });
+                                    allocated_inline_property_bytes_free_spans.push(span);
                                 }
                                 allocated_inline_property_bytes_offsets
                                     .push(Some((actual_offset, byte_len)));
@@ -1358,9 +1352,10 @@ where
                                 had_bytes,
                                 new_bytes,
                             } => {
-                                let free_span = self.values.peek_free_byte_span(new_bytes);
-                                let actual_offset =
-                                    self.values.allocate_byte_span(new_bytes).map_err(|e| {
+                                let (actual_offset, free_span) = self
+                                    .values
+                                    .allocate_byte_span_with_origin(new_bytes)
+                                    .map_err(|e| {
                                         Self::rollback_leaf_expansions(
                                             self,
                                             &leaf_expansion_cursors,
@@ -1377,10 +1372,7 @@ where
                                         actual_offset, span.start_slot,
                                         "inline property free-span allocation must use the peeked best-fit span"
                                     );
-                                    allocated_inline_property_bytes_free_spans.push(FreeSpan {
-                                        start_slot: actual_offset,
-                                        len: new_bytes,
-                                    });
+                                    allocated_inline_property_bytes_free_spans.push(span);
                                 }
                                 let mut existing =
                                     vec![

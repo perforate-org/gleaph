@@ -879,15 +879,10 @@ where
             {
                 let _ = self.compact_inline_property_bytes_slab()?;
             }
-            let offset = if tail == 0 {
-                self.values
-                    .allocate_byte_span(needed_bytes)
-                    .map_err(LabeledOperationError::from)?
-            } else {
-                self.values
-                    .append_byte_span(needed_bytes)
-                    .map_err(LabeledOperationError::from)?
-            };
+            let offset = self
+                .values
+                .append_byte_span(needed_bytes)
+                .map_err(LabeledOperationError::from)?;
             bucket = bucket
                 .with_inline_property_bytes_offset(offset)
                 .with_inline_property_bytes_slab_slots(needed_slots)

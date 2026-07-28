@@ -895,16 +895,32 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
 
     /// Allocates a byte span, preferring the free list then bumping the occupied tail.
     pub(crate) fn allocate_byte_span(&self, len: u64) -> Result<u64, GrowFailed> {
+        Ok(self.allocate_byte_span_with_origin(len)?.0)
+    }
+
+    /// Allocates a byte span and reports the free-list prefix when one was consumed.
+    ///
+    /// Keeping selection and removal in one operation avoids a second best-fit scan on
+    /// reservation paths that need to retain enough information for rollback.
+    pub(crate) fn allocate_byte_span_with_origin(
+        &self,
+        len: u64,
+    ) -> Result<(u64, Option<FreeSpan>), GrowFailed> {
         if len == 0 {
-            return Ok(0);
+            return Ok((0, None));
+        }
+        // The normal append path has an empty free-list. Avoid scanning every size
+        // class when there is no reusable span to consider.
+        if self.free_spans.is_empty() {
+            return Ok((self.append_byte_span(len)?, None));
         }
         if let Some(span) = self.free_spans.take_best_fit(len).map_err(|_| GrowFailed {
             current_size: self.byte_capacity(),
             delta: 0,
         })? {
-            return Ok(span.start_slot);
+            return Ok((span.start_slot, Some(span)));
         }
-        self.append_byte_span(len)
+        Ok((self.append_byte_span(len)?, None))
     }
 
     /// Returns the best-fit retired byte span without removing it.
