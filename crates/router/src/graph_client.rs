@@ -363,8 +363,12 @@ pub async fn purge_local_unique_constraint(
 mod tests {
     use super::*;
 
-    use gleaph_graph_kernel::federation::ElementIdEncodingKey;
-    use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
+    use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_graph_kernel::federation::{ElementIdEncodingKey, ShardId};
+    use gleaph_graph_kernel::plan_exec::{
+        GqlExecutionMode, OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphRequest,
+        OrderedEdgeBatchGraphRequestV1, OrderedMutationRetirementArgsV1,
+    };
 
     #[test]
     fn native_build_graph_client_returns_unavailable() {
@@ -397,6 +401,42 @@ mod tests {
     fn graph_instr_log_proxy_native_unavailable() {
         let fut = admin_take_batch_instr_log(Principal::anonymous(), 0, 100);
         let err = futures::executor::block_on(fut).expect_err("native unavailable");
+        assert!(err.contains("unavailable"));
+    }
+
+    #[test]
+    fn ordered_graph_client_rejects_empty_batch_before_call() {
+        let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
+            mutation_id: 1,
+            graph_request_fingerprint: [0; 32],
+            request: OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
+                graph_id: GraphId::from_raw(0),
+                target_shard_id: ShardId::new(0),
+                target_graph_canister: Principal::anonymous(),
+                resolved_labels: Default::default(),
+                resolved_properties: Default::default(),
+                items: Vec::new(),
+            }),
+        });
+        let err = futures::executor::block_on(execute_ordered_edge_batch_on_graph(
+            Principal::anonymous(),
+            args,
+        ))
+        .expect_err("empty ordered batch must be rejected");
+        assert!(err.contains("requires 1..="));
+    }
+
+    #[test]
+    fn ordered_retirement_client_reports_native_call_boundary() {
+        let args = OrderedMutationRetirementArgs::V1(OrderedMutationRetirementArgsV1 {
+            mutation_id: 1,
+            graph_request_fingerprint: [0; 32],
+        });
+        let err = futures::executor::block_on(retire_ordered_mutation_on_graph(
+            Principal::anonymous(),
+            args,
+        ))
+        .expect_err("native graph call must be unavailable");
         assert!(err.contains("unavailable"));
     }
 }
