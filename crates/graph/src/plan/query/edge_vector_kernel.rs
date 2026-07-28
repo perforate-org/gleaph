@@ -57,12 +57,30 @@ impl PreparedEdgeVectorKernel {
         if width == 0 || query.len() != self.dims || !payload_bytes.len().is_multiple_of(width) {
             return;
         }
-        for (idx, bytes) in payload_bytes.chunks_exact(width).enumerate() {
-            let Some(score) = self.score(bytes, query, metric) else {
-                continue;
-            };
-            if accepts(score, threshold) {
-                out.push(idx);
+        match metric {
+            EdgeVectorMetric::Dot => {
+                for (idx, bytes) in payload_bytes.chunks_exact(width).enumerate() {
+                    if accepts(dot_f32_bytes(bytes, query), threshold) {
+                        out.push(idx);
+                    }
+                }
+            }
+            EdgeVectorMetric::L2Squared => {
+                for (idx, bytes) in payload_bytes.chunks_exact(width).enumerate() {
+                    if accepts(l2_squared_f32_bytes(bytes, query), threshold) {
+                        out.push(idx);
+                    }
+                }
+            }
+            EdgeVectorMetric::CosineDistance => {
+                for (idx, bytes) in payload_bytes.chunks_exact(width).enumerate() {
+                    let Some(score) = cosine_distance_f32_bytes(bytes, query) else {
+                        continue;
+                    };
+                    if accepts(score, threshold) {
+                        out.push(idx);
+                    }
+                }
             }
         }
     }
