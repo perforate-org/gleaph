@@ -328,14 +328,17 @@ pub fn execute_ordered_edge_batch(
     crate::edge_inline_property_schema::set_execution_resolved_labels(Some(
         request.resolved_labels.clone(),
     ));
-    let cheap_batch_ordinals = store
+    let classification = store
         .classify_batch_edge_insertion(&edges)
         .map_err(|error| format!("ordered Graph batch classification failed: {error}"))?;
-    let result = if !edges.is_empty() && cheap_batch_ordinals.len() == edges.len() {
-        match store.execute_ordered_edge_batch_clean_slab(
+    let result = if !edges.is_empty()
+        && classification.logical_ordinals_with_multi_runs.len() == edges.len()
+    {
+        match store.execute_ordered_edge_batch_clean_slab_with_intents(
             args.mutation_id,
             identity.clone(),
             &edges,
+            &classification.intents,
         ) {
             Ok(result) => Ok(result),
             Err(error)
@@ -351,7 +354,7 @@ pub fn execute_ordered_edge_batch(
         }
     } else {
         store
-            .plan_batch_edge_insertion(&edges)
+            .plan_batch_edge_insertion_with_intents(&edges, &classification.intents)
             .map_err(|error| format!("ordered Graph planner admission failed: {error}"))
             .and_then(|summary| {
                 let batch_ordinals = summary.logical_ordinals_requiring_batch();

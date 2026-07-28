@@ -398,6 +398,13 @@ pub struct BatchPlacementSummary {
     pub logical_ordinals_with_multi_runs: BTreeSet<u32>,
 }
 
+/// Cheap, mutation-free classification result shared with the ordered writer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BatchEdgeClassification {
+    pub(crate) intents: Vec<BatchEdgeIntent>,
+    pub(crate) logical_ordinals_with_multi_runs: BTreeSet<u32>,
+}
+
 /// Key for leaf-level summaries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OrientationLeafKey {
@@ -558,7 +565,7 @@ impl GraphStore {
     pub(crate) fn classify_batch_edge_insertion(
         &self,
         edges: &[BatchEdgeInput],
-    ) -> Result<BTreeSet<u32>, BatchPlacementError> {
+    ) -> Result<BatchEdgeClassification, BatchPlacementError> {
         let intents = self.expand_batch_edge_intents(edges)?;
         let mut pending_by_run = BTreeMap::<BatchPlacementKey, u32>::new();
         for intent in &intents {
@@ -569,7 +576,7 @@ impl GraphStore {
                 .checked_add(1)
                 .ok_or(BatchPlacementError::ProjectedCountOverflow)?;
         }
-        Ok(intents
+        let logical_ordinals_with_multi_runs = intents
             .iter()
             .filter_map(|intent| {
                 (pending_by_run
@@ -579,7 +586,11 @@ impl GraphStore {
                     > 1)
                 .then_some(intent.logical_ordinal)
             })
-            .collect())
+            .collect();
+        Ok(BatchEdgeClassification {
+            intents,
+            logical_ordinals_with_multi_runs,
+        })
     }
 
     pub fn plan_batch_edge_insertion(
@@ -589,7 +600,15 @@ impl GraphStore {
         #[cfg(feature = "canbench")]
         let _scope = canbench_rs::bench_scope("ordered_batch_plan_placement");
         let intents = self.expand_batch_edge_intents(edges)?;
-        let (groups, leaf_summaries) = group_intents_for_placement(&intents)?;
+        self.plan_batch_edge_insertion_with_intents(edges, &intents)
+    }
+
+    pub(crate) fn plan_batch_edge_insertion_with_intents(
+        &self,
+        edges: &[BatchEdgeInput],
+        intents: &[BatchEdgeIntent],
+    ) -> Result<BatchPlacementSummary, BatchPlacementError> {
+        let (groups, leaf_summaries) = group_intents_for_placement(intents)?;
         let logical_ordinals_with_multi_runs = intents
             .iter()
             .filter_map(|intent| {
@@ -1022,6 +1041,7 @@ mod tests {
             store
                 .classify_batch_edge_insertion(&edges)
                 .expect("classify")
+                .logical_ordinals_with_multi_runs
                 .is_empty()
         );
         let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
@@ -1041,6 +1061,7 @@ mod tests {
             store
                 .classify_batch_edge_insertion(&edges)
                 .expect("classify")
+                .logical_ordinals_with_multi_runs
                 .into_iter()
                 .collect::<Vec<_>>(),
             vec![0, 1]

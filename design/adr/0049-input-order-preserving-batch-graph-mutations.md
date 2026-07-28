@@ -1763,7 +1763,13 @@ not rewritten as though unfinished unordered product behavior shipped.
     128-item all-batch fixture measured 4.78M instructions through the
     classifier plus writer; the comparable planner-inclusive path was 17.23M
     only when measured with the larger 256-item fixture, so this is a directional
-    result rather than a same-size ratio.
+    result rather than a same-size ratio. **Implemented and measured (2026-07-28
+    21:36:15 UTC +0000):** the classifier now carries its prepared intents into
+    both the all-batch writer and the mixed full planner. The 128-item
+    classifier-plus-writer fixture decreased to 4.55M instructions, and intent
+    expansion was reduced from two calls to one. Mixed requests still rebuild
+    the batch subset because their original logical ordinals must be preserved;
+    prepared physical-plan reuse remains the next optimization slice.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

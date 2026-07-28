@@ -180,6 +180,25 @@ impl GraphStore {
         Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
     }
 
+    pub(crate) fn execute_ordered_edge_batch_clean_slab_with_intents(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        edges: &[BatchEdgeInput],
+        intents: &[BatchEdgeIntent],
+    ) -> Result<GraphOrderedEdgeBatchResult, String> {
+        let result = self
+            .try_insert_ordered_edge_batch_clean_slab_with_intents(edges, intents)
+            .map_err(|error| format!("ordered Graph batch validation failed: {error}"))?;
+        if let BatchEdgeInsertResult::Unsupported { reason } = result {
+            return Err(format!(
+                "ordered Graph clean-slab geometry is unsupported: {reason}"
+            ));
+        }
+
+        Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
+    }
+
     /// Execute an unsupported optimized geometry through the existing scalar owner boundary.
     ///
     /// The ordered planner has already validated the complete request. Scalar writes therefore
@@ -316,13 +335,30 @@ impl GraphStore {
         &self,
         edges: &[BatchEdgeInput],
     ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
+        let intents = self.expand_batch_edge_intents(edges)?;
+        self.try_insert_ordered_edge_batch_clean_slab_with_intents(edges, &intents)
+    }
+
+    fn try_insert_ordered_edge_batch_clean_slab_with_intents(
+        &self,
+        edges: &[BatchEdgeInput],
+        intents: &[BatchEdgeIntent],
+    ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
         if edges
             .iter()
             .any(|edge| !edge.initial_edge_properties.is_empty())
         {
-            self.try_insert_batch_edges_clean_slab_with_initial_properties(edges)
+            self.try_insert_batch_edges_clean_slab_with_mode_and_intents(
+                edges,
+                intents,
+                BatchLocationMode::Capture,
+            )
         } else {
-            self.try_insert_batch_edges_clean_slab(edges)
+            self.try_insert_batch_edges_clean_slab_with_mode_and_intents(
+                edges,
+                intents,
+                BatchLocationMode::AggregateOnly,
+            )
         }
     }
 
@@ -432,6 +468,16 @@ impl GraphStore {
         edges: &[super::batch_placement::BatchEdgeInput],
         location_mode: BatchLocationMode,
     ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
+        let intents = self.expand_batch_edge_intents(edges)?;
+        self.try_insert_batch_edges_clean_slab_with_mode_and_intents(edges, &intents, location_mode)
+    }
+
+    fn try_insert_batch_edges_clean_slab_with_mode_and_intents(
+        &self,
+        edges: &[super::batch_placement::BatchEdgeInput],
+        intents: &[BatchEdgeIntent],
+        location_mode: BatchLocationMode,
+    ) -> Result<BatchEdgeInsertResult, BatchPlacementError> {
         Self::validate_batch_initial_edge_properties(edges)?;
         if edges.is_empty() {
             return Ok(BatchEdgeInsertResult::Unsupported {
@@ -448,15 +494,14 @@ impl GraphStore {
                     || (edge.source_vertex_id == edge.target_vertex_id) == undirected_self_loop)
         });
 
-        let intents = self.expand_batch_edge_intents(edges)?;
         let owner_plan = if homogeneous {
             let requests = {
                 #[cfg(feature = "canbench")]
                 let _scope = canbench_rs::bench_scope("ordered_batch_build_orientation_plans");
-                self.build_one_orientation_batch_plans(&intents, encode_intent_edge)?
+                self.build_one_orientation_batch_plans(intents, encode_intent_edge)?
             };
             let undirected_pairs = (!directed && !undirected_self_loop)
-                .then(|| build_undirected_batch_pairs(&intents))
+                .then(|| build_undirected_batch_pairs(intents))
                 .transpose()?;
 
             match requests.as_slice() {
@@ -494,9 +539,9 @@ impl GraphStore {
                 physical: {
                     #[cfg(feature = "canbench")]
                     let _scope = canbench_rs::bench_scope("ordered_batch_build_merged_plans");
-                    self.build_merged_orientation_batch_plans(&intents, encode_intent_edge)?
+                    self.build_merged_orientation_batch_plans(intents, encode_intent_edge)?
                 },
-                pairs: build_mixed_batch_pairs(edges, &intents)?,
+                pairs: build_mixed_batch_pairs(edges, intents)?,
             }
         };
 
@@ -538,7 +583,7 @@ impl GraphStore {
             .map(|(_, result)| u64::from(result.inline_property_bytes_slots_written))
             .sum();
         let locations = location_mode.captures().then(|| {
-            join_physical_locations(edges, &intents, &results)
+            join_physical_locations(edges, intents, &results)
                 .expect("committed batch must publish one complete location per intent")
         });
 

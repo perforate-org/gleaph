@@ -720,13 +720,21 @@ fn bench_ordered_all_batch_mixed_256_width_0_with_classifier() -> canbench_rs::B
     };
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("ordered_all_batch_mixed_256_w0_with_classifier");
-        let batch_ordinals = store
+        let classification = store
             .classify_batch_edge_insertion(&input)
             .expect("ordered classification");
-        assert_eq!(batch_ordinals.len(), input.len());
+        assert_eq!(
+            classification.logical_ordinals_with_multi_runs.len(),
+            input.len()
+        );
         black_box(
             store
-                .execute_ordered_edge_batch_clean_slab(5_300_006, identity.clone(), &input)
+                .execute_ordered_edge_batch_clean_slab_with_intents(
+                    5_300_006,
+                    identity.clone(),
+                    &input,
+                    &classification.intents,
+                )
                 .expect("classified all-batch ordered batch"),
         );
     })
