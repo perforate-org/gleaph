@@ -31,7 +31,7 @@
 
 use super::super::stable::EDGE_ALIASES;
 use crate::facade::store::helpers::{catalog_edge_label_from_wire, edge_alias_slot_key};
-use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
+use crate::facade::{GraphStore, GraphStoreError};
 use gleaph_graph_kernel::entry::{
     Edge, EdgeInlinePropertyBytes, EdgeSlotIndex, EdgeTarget, VertexRef,
 };
@@ -237,8 +237,46 @@ fn collect_forward_edges_for_key(
     Ok(forward)
 }
 
-/// Makes `reverse[key] == forward[key]` for one diverged directed key by removing all of its reverse
-/// in-edge halves (and alias rows) and re-inserting one reverse half per forward out-edge.
+/// Captures reverse in-edges for one directed key together with their logical slots and inline
+/// property bytes.
+fn collect_reverse_edges_for_key(
+    store: &GraphStore,
+    target: VertexId,
+    source: VertexId,
+    wire: LaraLabelId,
+    inline_property_width: u16,
+) -> Result<Vec<(u32, Vec<u8>)>, GraphStoreError> {
+    let mut reverse = Vec::new();
+    if inline_property_width > 0 {
+        let catalog = catalog_edge_label_from_wire(wire)
+            .expect("non-zero inline property byte width implies a catalog edge label");
+        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        store.for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing(
+            target,
+            catalog,
+            OutEdgeOrder::Ascending,
+            &mut scratch,
+            |edge, inline_property_bytes| {
+                if matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == source)
+                {
+                    reverse.push((edge.edge_slot_index.raw(), inline_property_bytes.to_vec()));
+                }
+            },
+        )?;
+    } else {
+        store.for_each_directed_in_edges(target, OutEdgeOrder::Ascending, |edge| {
+            if edge.label_id == wire.raw()
+                && matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == source)
+            {
+                reverse.push((edge.edge_slot_index.raw(), Vec::new()));
+            }
+        })?;
+    }
+    Ok(reverse)
+}
+
+/// Makes `reverse[key] == forward[key]` for one diverged directed key by preserving matching
+/// reverse rows, removing only extras, and inserting only missing rows.
 fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<(), GraphStoreError> {
     let source = VertexId::from(key.source_vertex_id);
     let target = VertexId::from(key.target_vertex_id);
@@ -251,20 +289,36 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
     let forward =
         collect_forward_edges_for_key(store, source, target, wire, inline_property_width)?;
 
-    // Drop the key's directed reverse-IN alias rows (keyed by reverse slot, valued by the forward
-    // canonical slot) before the reverse slots they reference are reassigned below.
+    let reverse =
+        collect_reverse_edges_for_key(store, target, source, wire, inline_property_width)?;
+
+    // Drop aliases for this key before any reverse slot can move. Recreate them from the final
+    // ordinal-aligned rows below; this also removes stale aliases for orphan reverse rows.
     EDGE_ALIASES.with_borrow_mut(|aliases| {
         for (forward_slot, _) in &forward {
             aliases.remove_all_for_canonical(source, wire.raw(), *forward_slot);
         }
+        for (reverse_slot, _) in &reverse {
+            aliases.remove(
+                target,
+                wire.raw(),
+                edge_alias_slot_key((*reverse_slot).into(), true),
+            );
+        }
     });
 
-    // Remove every existing reverse in-edge half for this key.
-    while let Some(removal) = store.with_graph_mut(|graph| {
-        graph.remove_reverse_edge_matching_with_move(target, wire, |edge| {
-            matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == source)
-        })
-    })? {
+    // Remove only surplus reverse rows, in descending slot order so earlier slots remain valid.
+    for (reverse_slot, _) in reverse.iter().skip(forward.len()).rev() {
+        let removal = store.with_graph_mut(|graph| {
+            graph.remove_reverse_edge_at_slot_with_move(target, wire, *reverse_slot)
+        })?;
+        let Some(removal) = removal else {
+            return Err(GraphStoreError::EdgeNotFound {
+                owner_vertex_id: target,
+                label_id: wire,
+                slot_index: *reverse_slot,
+            });
+        };
         GraphStore::apply_edge_slot_moves(
             ic_stable_lara::labeled::LabeledOrientation::Reverse,
             target,
@@ -272,9 +326,8 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
         );
     }
 
-    // Re-insert one reverse half per forward out-edge and recreate its directed alias, matching the
-    // live `commit_directed_edge_insert` sequence.
-    for (forward_slot, inline_property_bytes) in &forward {
+    // Insert only missing reverse rows. Existing rows remain in their current logical order.
+    for (_, inline_property_bytes) in forward.iter().skip(reverse.len()) {
         store.with_graph_mut(|graph| {
             if inline_property_width > 0 {
                 graph.repair_ensure_orientation_inline_property_width(
@@ -291,18 +344,37 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
                 reverse_edge_to(source, inline_property_bytes),
             )
         })?;
-        let canonical = EdgeHandle::at_slot(source, wire, *forward_slot);
-        if let Some(alias) = store.find_reverse_alias_for_canonical(canonical, target, source)? {
-            EDGE_ALIASES.with_borrow_mut(|aliases| {
-                aliases.insert(
-                    alias.owner_vertex_id,
-                    wire.raw(),
-                    edge_alias_slot_key(alias.slot_index, true),
-                    source,
-                    *forward_slot,
-                );
-            });
+    }
+
+    let final_reverse =
+        collect_reverse_edges_for_key(store, target, source, wire, inline_property_width)?;
+    if final_reverse.len() != forward.len() {
+        return Err(GraphStoreError::EdgeNotFound {
+            owner_vertex_id: target,
+            label_id: wire,
+            slot_index: 0,
+        });
+    }
+
+    // Align bytes and recreate aliases by ordinal, avoiding first-match scans for parallel edges.
+    for ((forward_slot, inline_property_bytes), (reverse_slot, _)) in
+        forward.iter().zip(final_reverse.iter())
+    {
+        if inline_property_width > 0 {
+            let edge = reverse_edge_to(source, inline_property_bytes);
+            store.with_graph_mut(|graph| {
+                graph.update_reverse_edge_inline_property_at_slot(target, wire, *reverse_slot, edge)
+            })?;
         }
+        EDGE_ALIASES.with_borrow_mut(|aliases| {
+            aliases.insert(
+                target,
+                wire.raw(),
+                edge_alias_slot_key((*reverse_slot).into(), true),
+                source,
+                *forward_slot,
+            );
+        });
     }
     Ok(())
 }
@@ -521,6 +593,75 @@ mod tests {
             )
             .expect("read reverse inline property bytes");
         assert_eq!(restored.as_deref(), Some(&inline_property_bytes[..]));
+    }
+
+    #[test]
+    fn rebuild_repairs_parallel_missing_reverse_without_rebuilding_survivor() {
+        use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
+
+        let store = GraphStore::new();
+        let source = store.insert_vertex().expect("source");
+        let target = store.insert_vertex().expect("target");
+        let label_id = crate::test_labels::edge_label_id_for_name("RevRepairParallel");
+        crate::test_labels::install_test_edge_inline_property_profile(
+            label_id,
+            EdgeInlinePropertyProfile {
+                byte_width: 2,
+                encoding: EdgeInlinePropertyEncoding::RawU16,
+            },
+        );
+        let label = lara_label(edge_storage_label(Some(label_id), false));
+        let first_bytes = 0x1111u16.to_le_bytes();
+        let second_bytes = 0x2222u16.to_le_bytes();
+
+        store
+            .insert_directed_edge_with_inline_property_bytes(
+                source,
+                target,
+                Some(label_id),
+                &first_bytes,
+            )
+            .expect("first edge");
+        store
+            .insert_directed_edge_with_inline_property_bytes(
+                source,
+                target,
+                Some(label_id),
+                &second_bytes,
+            )
+            .expect("second edge");
+
+        GRAPH.with_borrow(|graph| {
+            graph
+                .remove_reverse_edge_matching(
+                    target,
+                    label,
+                    |edge| matches!(edge.edge_target(), Some(EdgeTarget::Local(n)) if n == source),
+                )
+                .expect("remove one reverse half");
+        });
+        assert!(check_reverse_adjacency(&store).is_err());
+
+        rebuild_reverse_adjacency(&store).expect("repair");
+
+        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        let mut rows = Vec::new();
+        store
+            .for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing(
+                target,
+                label_id,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |edge, bytes| {
+                    if edge.neighbor_vid() == source {
+                        rows.push((edge.edge_slot_index, bytes.to_vec()));
+                    }
+                },
+            )
+            .expect("read repaired rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, first_bytes);
+        assert_eq!(rows[1].1, second_bytes);
     }
 
     #[test]

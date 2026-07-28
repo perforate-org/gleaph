@@ -81,8 +81,9 @@ Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR
 **Current transitional implementation:** Graph-side `EdgeHandle` and related wire/index records
 carry an owner, label, and logical `BucketEntryPosition` slot. `EDGE_ALIASES` and the existing
 `mate`-named paths remain active for local-index movement, reverse-repair alias maintenance,
-ordinary alias-row counterpart removal, and other pending callers. Reverse repair now receives
-and applies exact reverse slot moves; the alias-row ownership migration is still pending. The scan-only canonical-edge-handle helper, edge-property
+ordinary alias-row counterpart removal, and other pending callers. Reverse repair now performs
+differential row reconciliation and applies exact reverse slot moves; alias-row ownership
+migration is still pending. The scan-only canonical-edge-handle helper, edge-property
 sidecar group, live inline-edge-property mutation, and vertex-deletion observer cleanup use LARA
 CounterpartScan or exact deletion locations on the ADR 0050 read surface. Reverse-store
 inline-property callers use explicit orientation because a logical slot alone cannot identify the
