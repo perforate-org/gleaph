@@ -2727,31 +2727,38 @@ where
                     leaf,
                     bucket.inline_property_bytes_log_head(),
                 );
+                let width_bytes = usize::from(res.inline_property_width);
+                let mut folded = vec![
+                    0u8;
+                    chain.len().checked_mul(width_bytes).expect(
+                        "reserve guaranteed relocated inline property fold size"
+                    )
+                ];
                 for (offset, log_idx) in chain.into_iter().enumerate() {
-                    let mut bytes = vec![0u8; usize::from(res.inline_property_width)];
+                    let start = offset
+                        .checked_mul(width_bytes)
+                        .expect("reserve guaranteed relocated inline property fold offset");
                     graph
                         .values
                         .read_inline_property_bytes_log_entry(
                             leaf,
                             log_idx,
                             res.inline_property_width,
-                            &mut bytes,
+                            &mut folded[start..start + width_bytes],
                         )
                         .expect("reserve guaranteed relocated inline property log readability");
-                    let out_offset = new_offset
-                        .checked_add(
-                            u64::from(existing_inline_property_bytes_slots)
-                                .checked_add(offset as u64)
-                                .expect("reserve guaranteed relocated inline property slot")
-                                .checked_mul(width)
-                                .expect("reserve guaranteed relocated inline property offset"),
-                        )
-                        .expect("reserve guaranteed relocated inline property offset");
-                    graph
-                        .values
-                        .write_bytes(out_offset, &bytes)
-                        .expect("reserve guaranteed relocated inline property capacity");
                 }
+                let folded_offset = new_offset
+                    .checked_add(
+                        u64::from(existing_inline_property_bytes_slots)
+                            .checked_mul(width)
+                            .expect("reserve guaranteed relocated inline property fold offset"),
+                    )
+                    .expect("reserve guaranteed relocated inline property fold offset");
+                graph
+                    .values
+                    .write_bytes(folded_offset, &folded)
+                    .expect("reserve guaranteed relocated inline property capacity");
             }
             let pending_bytes = run
                 .edges
@@ -2974,31 +2981,39 @@ where
                     inline_property_bytes_log_leaf,
                     new_bucket.inline_property_bytes_log_head(),
                 );
+                let width_bytes = usize::from(res.inline_property_width);
+                let mut folded = vec![
+                    0u8;
+                    chain
+                        .len()
+                        .checked_mul(width_bytes)
+                        .expect("reserve guaranteed inline property fold size")
+                ];
                 for (offset, log_idx) in chain.into_iter().enumerate() {
-                    let mut buf = vec![0u8; usize::from(res.inline_property_width)];
+                    let start = offset
+                        .checked_mul(width_bytes)
+                        .expect("reserve guaranteed inline property fold offset");
                     graph
                         .values
                         .read_inline_property_bytes_log_entry(
                             inline_property_bytes_log_leaf,
                             log_idx,
                             res.inline_property_width,
-                            &mut buf,
+                            &mut folded[start..start + width_bytes],
                         )
                         .expect("reserve guaranteed inline property bytes log readability");
-                    let out_offset = new_inline_property_bytes_offset
-                        .checked_add(
-                            u64::from(existing_inline_property_bytes_slots)
-                                .checked_add(offset as u64)
-                                .expect("reserve guaranteed folded inline property slot offset")
-                                .checked_mul(width)
-                                .expect("reserve guaranteed folded inline property byte offset"),
-                        )
-                        .expect("reserve guaranteed folded inline_property_bytes offset");
-                    graph
-                        .values
-                        .write_bytes(out_offset, &buf)
-                        .expect("reserve guaranteed inline property bytes slab capacity");
                 }
+                let folded_offset = new_inline_property_bytes_offset
+                    .checked_add(
+                        u64::from(existing_inline_property_bytes_slots)
+                            .checked_mul(width)
+                            .expect("reserve guaranteed folded inline property offset"),
+                    )
+                    .expect("reserve guaranteed folded inline property offset");
+                graph
+                    .values
+                    .write_bytes(folded_offset, &folded)
+                    .expect("reserve guaranteed inline property bytes slab capacity");
             }
 
             // Write pending batch inline property values after the folded log.
