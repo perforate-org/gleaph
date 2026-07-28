@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 12:21:23 UTC +0000
+Anchor timestamp: 2026-07-28 12:28:46 UTC +0000
 
 ## Context
 
@@ -117,8 +117,9 @@ Router's `bulk_group_fingerprint` remains order-sensitive, but Router state
 cannot substitute for Graph's direct replay authority. Section 10 deliberately
 removes internal multi-chunk execution from v1, so no chunk identity is needed.
 The journal-first endpoint, identity comparison, receipt commit, and replay
-algorithm remain planned; this slice only establishes their durable record
-boundary and round-trip coverage.
+algorithm are now implemented for the Graph boundary. The remaining fresh
+mutation work is the supported-geometry expansion beyond clean-slab placement
+and the Router-side lifecycle integration.
 
 ## Prerequisite: complete ADR 0048
 
@@ -1572,13 +1573,17 @@ not rewritten as though unfinished unordered product behavior shipped.
     `OrderedEdgeBatchGraphRequest::V1` envelope now carries the resolved
     Graph-owned item sequence, target identity, inline bytes, and initial
     sidecars with structural validation and Candid round-trip coverage. The
-    full fresh ordered mutation commit path and Router caller integration
-    remain planned. The Graph canister now exposes a guarded journal-first
+    full fresh ordered mutation commit path for unsupported geometry and Router
+    caller integration remain planned. The Graph canister now exposes a guarded
+    journal-first
     ordered execution handler: it verifies the target envelope fingerprint,
     returns an exact durable replay, and on a journal miss decodes immutable
     items into the existing `BatchEdgeInput` form for read-only planner
-    admission. It then fails closed before canonical write rather than entering
-    an unordered executor. The Graph-kernel
+    admission. Supported clean-slab geometry now proceeds through the Graph-owned
+    batch writer, appends the label-stats delta, computes the bounded hot-forward
+    receipt fields, and commits the ordered journal in the same no-`await` update
+    section. Unsupported geometry still fails closed before canonical write rather
+    than entering an unordered executor. The Graph-kernel
     now owns the manual V1 Graph request encoder,
     the `gleaph:ordered-edge-graph:v1` SHA-256 domain separator, and the
     order-sensitive fingerprint helper; reorder and payload-change tests

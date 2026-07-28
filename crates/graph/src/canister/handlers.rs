@@ -328,10 +328,7 @@ pub fn execute_ordered_edge_batch(
     store
         .plan_batch_edge_insertion(&edges)
         .map_err(|error| format!("ordered Graph planner admission failed: {error}"))?;
-    Err(
-        "ordered Graph planner admitted the request; canonical write path is not implemented yet"
-            .into(),
-    )
+    store.execute_ordered_edge_batch_clean_slab(args.mutation_id, identity, &edges)
 }
 
 pub async fn execute_plan_update_batch(
@@ -2181,11 +2178,11 @@ mod tests {
     use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ElementIdEncodingKey, ShardId};
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
-        ExecutePlanTypedOp, OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1,
-        OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1,
-        ResolvedEdgeLabel, ResolvedLabelTable, ResolvedPropertyTable, ResolvedVertexLabel,
-        SeedBindingEntry, SeedBindingsWire, SeedRowWire, SeedVertexBinding,
-        ordered_edge_batch_graph_request_fingerprint,
+        ExecutePlanTypedOp, GraphOrderedEdgeBatchResultV1, OrderedEdgeBatchGraphArgs,
+        OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest,
+        OrderedEdgeBatchGraphRequestV1, ResolvedEdgeLabel, ResolvedLabelTable,
+        ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry, SeedBindingsWire,
+        SeedRowWire, SeedVertexBinding, ordered_edge_batch_graph_request_fingerprint,
     };
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
@@ -2701,6 +2698,50 @@ mod tests {
         let mismatch = execute_ordered_edge_batch(conflicting_args)
             .expect_err("fingerprint mismatch must fail before journal lookup");
         assert!(mismatch.contains("fingerprint mismatch"));
+    }
+
+    #[test]
+    fn ordered_handler_commits_supported_clean_slab_request() {
+        let store = GraphStore::new();
+        let source = store.insert_vertex().expect("source vertex");
+        let target = store.insert_vertex().expect("target vertex");
+        let label = EdgeLabelId::from_raw(7_104);
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+        let mutation_id = 71_004_001;
+        let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(71),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![OrderedEdgeBatchGraphItemV1 {
+                source_local_vertex_id: source.into(),
+                target_local_vertex_id: target.into(),
+                directed: true,
+                catalog_edge_label_id: Some(label),
+                inline_property_bytes: Vec::new(),
+                resolved_initial_edge_properties: Vec::new(),
+            }],
+        });
+        let fingerprint =
+            ordered_edge_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
+            mutation_id,
+            graph_request_fingerprint: fingerprint,
+            request,
+        });
+
+        let result = execute_ordered_edge_batch(args).expect("ordered clean-slab execution");
+        let GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) =
+            result
+        else {
+            panic!("expected completed ordered receipt");
+        };
+        assert_eq!(receipt.logical_edge_count, 1);
+        assert!(
+            store.mutation_journal_entry(mutation_id).is_some(),
+            "fresh ordered execution must persist its journal"
+        );
     }
 }
 

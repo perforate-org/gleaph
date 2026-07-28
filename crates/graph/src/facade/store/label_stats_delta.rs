@@ -278,6 +278,26 @@ impl GraphStore {
         });
     }
 
+    pub(crate) fn commit_record_completed_ordered_edge_batch_journal(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<LocalVertexId>,
+    ) {
+        self.commit_record_completed_ordered_edge_batch_journal_at(
+            ic_time_ns(),
+            mutation_id,
+            request_identity,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+        );
+    }
+
     pub(crate) fn retire_ordered_mutation_at(
         &self,
         now_ns: u64,

@@ -7,6 +7,11 @@
 //! No LARA placement policy leaks outside this module.
 
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
+use gleaph_graph_kernel::federation::{HOT_FORWARD_EDGE_INSERT_THRESHOLD, LocalVertexId};
+use gleaph_graph_kernel::plan_exec::{
+    GraphMutationRequestIdentityV1, GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult,
+    GraphOrderedEdgeBatchResultV1, LabelStatsDelta, MutationId,
+};
 use ic_stable_lara::VertexId;
 #[cfg(test)]
 use ic_stable_lara::labeled::batch_write::BatchReservation;
@@ -17,6 +22,7 @@ use ic_stable_lara::labeled::batch_write::{
 };
 use ic_stable_lara::{CsrEdge, labeled::CanonicalEdgeOccurrence, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
+use std::collections::BTreeMap;
 
 use super::EdgeHandle;
 use super::GraphStore;
@@ -149,6 +155,63 @@ pub(crate) struct OneOrientationBatchWriteRequest<E: CsrEdge> {
 }
 
 impl GraphStore {
+    /// Execute the supported ordered clean-slab path and publish its Graph-owned receipt.
+    ///
+    /// All fallible placement and sidecar validation occurs in the batch writer before the
+    /// first LARA commit. Once that commit succeeds, delta/journal persistence is part of the
+    /// same no-`await` Graph update section; an invariant failure traps rather than returning a
+    /// recoverable error after canonical state has changed.
+    pub(crate) fn execute_ordered_edge_batch_clean_slab(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        edges: &[BatchEdgeInput],
+    ) -> Result<GraphOrderedEdgeBatchResult, String> {
+        let result = self
+            .try_insert_batch_edges_clean_slab_with_initial_properties(edges)
+            .map_err(|error| format!("ordered Graph batch validation failed: {error}"))?;
+        if let BatchEdgeInsertResult::Unsupported { reason } = result {
+            return Err(format!(
+                "ordered Graph clean-slab geometry is unsupported: {reason}"
+            ));
+        }
+
+        let label_stats_delta = ordered_edge_label_stats_delta(edges);
+        let delta_event = (!label_stats_delta.edge.is_empty()).then(|| {
+            self.commit_append_label_stats_delta(mutation_id, label_stats_delta)
+                .unwrap_or_else(|error| {
+                    panic!("ordered Graph label delta append after canonical write: {error}")
+                })
+        });
+        let hot_forward_vertices = ordered_hot_forward_vertices(edges);
+        let row_count = u64::try_from(edges.len())
+            .expect("ordered Graph item count was validated before batch execution");
+        let (emitted_delta_first_seq, emitted_delta_last_seq) = delta_event
+            .as_ref()
+            .map(|event| (Some(event.shard_event_seq), Some(event.shard_event_seq)))
+            .unwrap_or((None, None));
+        let receipt = GraphOrderedEdgeBatchReceiptV1 {
+            logical_edge_count: row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices: hot_forward_vertices.clone(),
+        };
+        receipt
+            .validate()
+            .expect("ordered Graph receipt must satisfy its bounded contract");
+        self.commit_record_completed_ordered_edge_batch_journal(
+            mutation_id,
+            request_identity,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+        );
+        Ok(GraphOrderedEdgeBatchResult::V1(
+            GraphOrderedEdgeBatchResultV1::Completed(receipt),
+        ))
+    }
+
     /// Pre-create empty directed buckets for `src -> dst` with the given inline
     /// value width so a later clean-slab batch can consume the per-bucket initial
     /// quota. This is a test/bench helper and is not part of the public API.
@@ -503,6 +566,35 @@ impl GraphStore {
             self.with_graph_mut(|graph| graph.rollback_batch_reservation(orientation, reservation));
         }
     }
+}
+
+fn ordered_edge_label_stats_delta(edges: &[BatchEdgeInput]) -> LabelStatsDelta {
+    let mut edge = Vec::new();
+    for label in edges.iter().filter_map(|edge| edge.catalog_label) {
+        if let Some((_, count)) = edge.iter_mut().find(|(existing, _)| *existing == label) {
+            *count += 1;
+        } else {
+            edge.push((label, 1));
+        }
+    }
+    LabelStatsDelta {
+        vertex: Vec::new(),
+        edge,
+    }
+}
+
+fn ordered_hot_forward_vertices(edges: &[BatchEdgeInput]) -> Vec<LocalVertexId> {
+    let mut counts = BTreeMap::<LocalVertexId, u32>::new();
+    for edge in edges {
+        let source = edge.source_vertex_id.into();
+        *counts.entry(source).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter_map(|(vertex, count)| {
+            (count >= HOT_FORWARD_EDGE_INSERT_THRESHOLD).then_some(vertex)
+        })
+        .collect()
 }
 
 fn encode_intent_edge(intent: &BatchEdgeIntent) -> Result<Edge, BatchPlacementError> {
@@ -919,6 +1011,59 @@ mod tests {
         assert_eq!(
             store.edge_property_at_canonical_handle(handle, PropertyId::from_raw(79)),
             Some(Value::Text("batch".into()))
+        );
+    }
+
+    #[test]
+    fn ordered_clean_slab_write_publishes_delta_receipt_and_journal() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4010);
+        let vertices = make_vertices(&store, 2);
+        store.prepare_clean_slab_dir_buckets(vertices[0], vertices[1], label, 0);
+        let mutation_id = 4_010_001;
+        let fingerprint = [0x41; 32];
+        let identity = GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+            canonical_encoding_version: 1,
+            graph_request_fingerprint: fingerprint,
+            logical_item_count: 1,
+        };
+
+        let result = store
+            .execute_ordered_edge_batch_clean_slab(
+                mutation_id,
+                identity.clone(),
+                &[input(vertices[0], vertices[1], Some(label), true, vec![])],
+            )
+            .expect("ordered clean-slab write");
+        let receipt = match result {
+            GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) => {
+                receipt
+            }
+            other => panic!("expected completed receipt, got {other:?}"),
+        };
+        assert_eq!(receipt.logical_edge_count, 1);
+        let delta_seq = receipt
+            .emitted_delta_first_seq
+            .expect("labeled edge emits a delta");
+        assert_eq!(receipt.emitted_delta_last_seq, Some(delta_seq));
+        assert_eq!(
+            store
+                .pending_label_stats_deltas(delta_seq, 1)
+                .into_iter()
+                .next()
+                .expect("label delta")
+                .label_stats_delta
+                .edge,
+            vec![(label, 1)]
+        );
+
+        let replay = store
+            .ordered_edge_batch_replay_result(mutation_id, &identity)
+            .expect("journal lookup")
+            .expect("completed journal");
+        assert_eq!(
+            replay,
+            GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt))
         );
     }
 
