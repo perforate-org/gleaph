@@ -549,12 +549,10 @@ fn bench_traverse_next_visit_edges_at_with_replay() -> canbench_rs::BenchResult 
     })
 }
 
-/// Selected-slot inline-property read on a hybrid bucket.
-///
-/// The selected slots are a small prefix of a larger bucket so this measures the direct
-/// slot-read path rather than a full canonical traversal followed by filtering.
-#[bench(raw)]
-fn bench_traverse_next_visit_edges_at_with_inline_property() -> canbench_rs::BenchResult {
+fn bench_selected_inline_property_case(
+    selected: Vec<BucketEntryPosition>,
+    order: OutEdgeOrder,
+) -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
@@ -570,9 +568,6 @@ fn bench_traverse_next_visit_edges_at_with_inline_property() -> canbench_rs::Ben
             )
             .unwrap();
     }
-    let selected: Vec<BucketEntryPosition> = (0..DIRECT_SELECTED_SLOT_COUNT as u32)
-        .map(BucketEntryPosition::new)
-        .collect();
     bench_fn(|| {
         let mut count = 0u32;
         let _ = graph
@@ -580,7 +575,7 @@ fn bench_traverse_next_visit_edges_at_with_inline_property() -> canbench_rs::Ben
                 src,
                 label,
                 &selected,
-                OutEdgeOrder::Ascending,
+                order,
                 |_slot, item| {
                     count += u32::from(item.inline_property.width == INLINE_VALUE_WIDTH);
                     black_box(item.inline_property.bytes());
@@ -590,6 +585,64 @@ fn bench_traverse_next_visit_edges_at_with_inline_property() -> canbench_rs::Ben
             .unwrap();
         black_box(count);
     })
+}
+
+/// Selected prefix: canonical scan should stop immediately after the requested range.
+#[bench(raw)]
+fn bench_traverse_next_visit_edges_at_with_inline_property() -> canbench_rs::BenchResult {
+    bench_selected_inline_property_case(
+        (0..DIRECT_SELECTED_SLOT_COUNT as u32)
+            .map(BucketEntryPosition::new)
+            .collect(),
+        OutEdgeOrder::Ascending,
+    )
+}
+
+/// Selected suffix: direct reads should avoid scanning the prefix of the bucket.
+#[bench(raw)]
+fn bench_traverse_next_visit_edges_at_with_inline_property_tail() -> canbench_rs::BenchResult {
+    bench_selected_inline_property_case(
+        ((HYBRID_DEGREE - DIRECT_SELECTED_SLOT_COUNT as u32)..HYBRID_DEGREE)
+            .map(BucketEntryPosition::new)
+            .collect(),
+        OutEdgeOrder::Ascending,
+    )
+}
+
+/// Sparse selection: direct reads should avoid scanning the gaps between requested slots.
+#[bench(raw)]
+fn bench_traverse_next_visit_edges_at_with_inline_property_sparse() -> canbench_rs::BenchResult {
+    bench_selected_inline_property_case(
+        [0, HYBRID_DEGREE / 2, HYBRID_DEGREE - 1]
+            .into_iter()
+            .map(BucketEntryPosition::new)
+            .collect(),
+        OutEdgeOrder::Ascending,
+    )
+}
+
+/// Descending selected suffix: canonical scan should stop after the requested range.
+#[bench(raw)]
+fn bench_traverse_next_visit_edges_at_with_inline_property_descending() -> canbench_rs::BenchResult
+{
+    bench_selected_inline_property_case(
+        ((HYBRID_DEGREE - DIRECT_SELECTED_SLOT_COUNT as u32)..HYBRID_DEGREE)
+            .map(BucketEntryPosition::new)
+            .collect(),
+        OutEdgeOrder::Descending,
+    )
+}
+
+/// Descending selected prefix: direct reads should avoid scanning the remaining bucket.
+#[bench(raw)]
+fn bench_traverse_next_visit_edges_at_with_inline_property_descending_tail()
+-> canbench_rs::BenchResult {
+    bench_selected_inline_property_case(
+        (0..DIRECT_SELECTED_SLOT_COUNT as u32)
+            .map(BucketEntryPosition::new)
+            .collect(),
+        OutEdgeOrder::Descending,
+    )
 }
 
 /// Reference cost of filtering the full inline-property visitor for the same selected prefix.

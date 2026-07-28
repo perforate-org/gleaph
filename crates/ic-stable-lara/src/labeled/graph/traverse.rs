@@ -3059,10 +3059,18 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        // Each overflow-log property ordinal is a separate stable-memory read. For a larger
-        // selection, the canonical visitor's bulk-friendly path is cheaper; retain direct slot
-        // reads for small selections where avoiding the full bucket scan wins.
-        if bucket.inline_property_bytes_log_head() >= 0 && selected.len() > 4 {
+        // Overflow-log reads are cheaper through the canonical visitor when the requested range
+        // is compact. Sparse or tail selections stay on the direct slot-read path, which avoids
+        // scanning unrelated logical slots.
+        let canonical_scan_len = match order {
+            OutEdgeOrder::Ascending => selected[selected.len() - 1].saturating_add(1),
+            OutEdgeOrder::Descending => {
+                bucket.degree().saturating_sub(selected[selected.len() - 1])
+            }
+        };
+        let canonical_candidate =
+            bucket.overflow_log_head() >= 0 || bucket.inline_property_bytes_log_head() >= 0;
+        if canonical_candidate && canonical_scan_len <= (selected.len() as u32).saturating_mul(2) {
             enum SelectedVisitOutcome<B> {
                 User(B),
                 Exhausted,
