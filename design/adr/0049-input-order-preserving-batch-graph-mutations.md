@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 12:50:39 UTC +0000
+Anchor timestamp: 2026-07-28 12:58:54 UTC +0000
 
 ## Context
 
@@ -1524,13 +1524,13 @@ not rewritten as though unfinished unordered product behavior shipped.
    replacement-offset and pending-value read-back after commit. A dedicated
    same-leaf multi-bucket fixture also verifies that each bucket's edge and
    inline-property log folds independently while the leaf relocates once.
-9. **Partially implemented (2026-07-28 12:50:39 UTC +0000):** the Graph ordered
-   handler now prepares all required forward/reverse named buckets before the
-   clean-slab reservation, so planner-admitted new named buckets can use the
-   ordered batch writer while preserving the same label delta, hot-forward
-   receipt, and ordered journal contract. Planner-admitted reservation failures
-   still use the whole-request scalar fallback; geometry outside both proven
-   paths remains pre-write rejected.
+9. **Partially implemented (2026-07-28 12:58:54 UTC +0000):** LARA's
+   one-orientation reservation now prepares all required forward/reverse named
+   buckets before clean-slab preflight, so planner-admitted new named buckets
+   can use the ordered batch writer while preserving the same label delta,
+   hot-forward receipt, and ordered journal contract. Planner-admitted
+   reservation failures still use the whole-request scalar fallback; geometry
+   outside both proven paths remains pre-write rejected.
 10. **Partially implemented (2026-07-28 11:20:24 UTC +0000):** the Graph facade now accepts
     request-local initial sidecar values, validates ids/values/duplicate ids
     before reservation, derives one canonical `CanonicalEdgeOccurrence` from
@@ -1585,9 +1585,8 @@ not rewritten as though unfinished unordered product behavior shipped.
     ordered execution handler: it verifies the target envelope fingerprint,
     returns an exact durable replay, and on a journal miss decodes immutable
     items into the existing `BatchEdgeInput` form for read-only planner
-    admission. The Graph owner prepares all required named forward/reverse buckets
-    before clean-slab reservation, so new named buckets can proceed through the
-    Graph-owned
+    admission. LARA prepares all required named forward/reverse buckets before
+    clean-slab reservation, so new named buckets can proceed through the Graph-owned
     batch writer, appends the label-stats delta, computes the bounded hot-forward
     receipt fields, and commits the ordered journal in the same no-`await` update
     section. Planner-admitted clean-slab reservation failures still proceed through

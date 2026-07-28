@@ -841,6 +841,30 @@ where
     E: CsrEdge,
     M: Memory,
 {
+    /// Prepare every named bucket referenced by a batch plan before reservation.
+    ///
+    /// Bucket creation is owned by LARA because descriptor placement and its
+    /// inline-property schema are storage invariants. The operation is
+    /// idempotent for an existing bucket and leaves the batch reservation as
+    /// the sole owner of edge capacity publication.
+    pub(crate) fn prepare_batch_buckets(
+        &self,
+        plan: &OneOrientationBatchPlan<E>,
+    ) -> Result<(), OneOrientationBatchError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        for run in &plan.runs {
+            self.ensure_label_bucket_inline_property_byte_width(
+                run.owner_vertex_id,
+                run.label_id,
+                run.inline_property_width,
+            )
+            .map_err(OneOrientationBatchError::from)?;
+        }
+        Ok(())
+    }
+
     /// Validate a one-orientation batch plan and reserve the required capacity.
     ///
     /// This is the `reserve` step of the ADR 0045 boundary.  It performs all
@@ -856,9 +880,13 @@ where
     pub(crate) fn reserve_one_orientation_batch(
         &self,
         plan: &OneOrientationBatchPlan<E>,
-    ) -> Result<BatchReservation<E>, OneOrientationBatchError> {
+    ) -> Result<BatchReservation<E>, OneOrientationBatchError>
+    where
+        E: CsrEdgeTombstone,
+    {
         // Phase 1: validate plan invariants without touching canonical state.
         Self::validate_plan_invariants(plan)?;
+        self.prepare_batch_buckets(plan)?;
 
         // Phase 2: mutation-free preflight of every run.
         // Overflow-log runs share per-leaf segment capacity.  We maintain virtual
@@ -3538,7 +3566,7 @@ mod tests {
         );
     }
     #[test]
-    fn reserve_rejects_new_bucket_in_initial_slice() {
+    fn reserve_prepares_new_bucket_in_initial_slice() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -3558,11 +3586,10 @@ mod tests {
             }],
         };
 
-        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
-        assert!(
-            matches!(err, OneOrientationBatchError::UnsupportedGeometry(_)),
-            "expected UnsupportedGeometry for new bucket, got {err}"
-        );
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("new bucket reservation");
+        reservation.rollback(&graph);
     }
 
     #[test]

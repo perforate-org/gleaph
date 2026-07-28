@@ -168,8 +168,6 @@ impl GraphStore {
         request_identity: GraphMutationRequestIdentityV1,
         edges: &[BatchEdgeInput],
     ) -> Result<GraphOrderedEdgeBatchResult, String> {
-        self.ensure_ordered_batch_buckets(edges)
-            .map_err(|error| format!("ordered Graph bucket preparation failed: {error}"))?;
         let result = self
             .try_insert_batch_edges_clean_slab_with_initial_properties(edges)
             .map_err(|error| format!("ordered Graph batch validation failed: {error}"))?;
@@ -180,53 +178,6 @@ impl GraphStore {
         }
 
         Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
-    }
-
-    fn ensure_ordered_batch_buckets(
-        &self,
-        edges: &[BatchEdgeInput],
-    ) -> Result<(), BatchPlacementError> {
-        let intents = self.expand_batch_edge_intents(edges)?;
-        let mut prepared = std::collections::BTreeSet::new();
-        self.with_graph_mut(|graph| {
-            for intent in intents {
-                let key = (
-                    intent.owner_vertex_id,
-                    intent.storage_label,
-                    intent.inline_property_width,
-                );
-                if !prepared.insert(key) {
-                    continue;
-                }
-                let input = edges
-                    .get(intent.logical_ordinal as usize)
-                    .expect("intent ordinal must address its input");
-                if input.directed {
-                    graph
-                        .ensure_directed_edge_inline_property_width(
-                            input.source_vertex_id,
-                            input.target_vertex_id,
-                            intent.storage_label,
-                            intent.inline_property_width,
-                        )
-                        .map_err(|error| {
-                            BatchPlacementError::PlacementReadFailed(format!("{error}"))
-                        })?;
-                } else {
-                    graph
-                        .ensure_undirected_edge_inline_property_width(
-                            input.source_vertex_id,
-                            input.target_vertex_id,
-                            intent.storage_label,
-                            intent.inline_property_width,
-                        )
-                        .map_err(|error| {
-                            BatchPlacementError::PlacementReadFailed(format!("{error}"))
-                        })?;
-                }
-            }
-            Ok::<(), BatchPlacementError>(())
-        })
     }
 
     /// Execute an unsupported optimized geometry through the existing scalar owner boundary.
@@ -2366,7 +2317,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_new_bucket_falls_back_to_scalar() {
+    fn new_bucket_uses_lara_batch_reservation() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(4001);
         install_width(label, 0);
@@ -2379,13 +2330,9 @@ mod tests {
             .try_insert_batch_edges_clean_slab(&edges)
             .expect("plan/encode ok");
         assert!(
-            matches!(result, BatchEdgeInsertResult::Unsupported { .. }),
-            "expected unsupported for new bucket, got {result:?}"
+            matches!(result, BatchEdgeInsertResult::Committed { .. }),
+            "expected committed new-bucket batch, got {result:?}"
         );
-
-        store
-            .insert_directed_edge(source, target, Some(label))
-            .expect("scalar fallback");
         let label_raw = storage_label_for(Some(label), true);
         assert_eq!(count_labeled_dir_edges(&store, source, label_raw, true), 1);
         assert_eq!(count_labeled_dir_edges(&store, target, label_raw, false), 1);

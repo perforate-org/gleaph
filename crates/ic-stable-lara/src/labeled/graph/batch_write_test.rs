@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn reserve_rejects_new_bucket_in_initial_slice() {
+    fn reserve_prepares_new_bucket_in_initial_slice() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -301,11 +301,10 @@ mod tests {
             }],
         };
 
-        let err = graph.reserve_one_orientation_batch(&plan).unwrap_err();
-        assert!(
-            matches!(err, OneOrientationBatchError::UnsupportedGeometry(_)),
-            "expected UnsupportedGeometry for new bucket, got {err}"
-        );
+        let reservation = graph
+            .reserve_one_orientation_batch(&plan)
+            .expect("new bucket reservation");
+        reservation.rollback(&graph);
     }
 
     #[test]
