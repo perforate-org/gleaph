@@ -1685,14 +1685,27 @@ where
         owner: VertexId,
         label: BucketLabelKey,
         order: OutEdgeOrder,
-        visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
+        mut visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
-        self.ensure_vertex(owner)?;
-        let vertex = self.vertices.get(owner);
-        self.visit_edges_with_inline_property_impl(owner, &vertex, label, order, visit)
+        self.visit_edges_with_inline_property_ref(owner, label, order, |slot, item| {
+            let edge = item.edge.with_stored_inline_property_bytes(
+                item.inline_property.width(),
+                item.inline_property.bytes(),
+            );
+            visit(
+                slot,
+                EdgeWithInlineProperty {
+                    edge,
+                    inline_property: InlinePropertyBytes::from_bytes(
+                        item.inline_property.width(),
+                        item.inline_property.bytes(),
+                    ),
+                },
+            )
+        })
     }
 
     /// Visits every live edge with inline-property bytes borrowed for the callback.
@@ -1705,7 +1718,7 @@ where
         owner: VertexId,
         label: BucketLabelKey,
         order: OutEdgeOrder,
-        mut visit: impl for<'a> FnMut(
+        visit: impl for<'a> FnMut(
             BucketEntryPosition,
             EdgeWithInlinePropertyRef<'a, E>,
         ) -> ControlFlow<B>,
@@ -1715,8 +1728,25 @@ where
     {
         self.ensure_vertex(owner)?;
         let vertex = self.vertices.get(owner);
+        self.visit_edges_with_inline_property_ref_impl(owner, &vertex, label, order, visit)
+    }
+
+    fn visit_edges_with_inline_property_ref_impl<B>(
+        &self,
+        owner: VertexId,
+        vertex: &LabeledVertex,
+        label: BucketLabelKey,
+        order: OutEdgeOrder,
+        mut visit: impl for<'a> FnMut(
+            BucketEntryPosition,
+            EdgeWithInlinePropertyRef<'a, E>,
+        ) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         if vertex.is_default_edge_labeled() {
-            if label != self.bypass_storage_label_for(&vertex) {
+            if label != self.bypass_storage_label_for(vertex) {
                 return Ok(ControlFlow::Continue(()));
             }
             let empty = InlinePropertyBytesRef::from_parts(0, &[]);
@@ -1757,7 +1787,7 @@ where
         let BucketSearch::Found {
             slot: bucket_slot,
             bucket,
-        } = self.find_bucket(owner, &vertex, label)?
+        } = self.find_bucket(owner, vertex, label)?
         else {
             return Ok(ControlFlow::Continue(()));
         };
@@ -1800,7 +1830,7 @@ where
 
         let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
         let mut iter =
-            self.single_bucket_span_iter(owner, &vertex, bucket_slot, &bucket, order, false)?;
+            self.single_bucket_span_iter(owner, vertex, bucket_slot, &bucket, order, false)?;
         let mut inline_property_bytes = Vec::new();
         let mut ordinal = match order {
             OutEdgeOrder::Ascending => 0,
@@ -1990,145 +2020,35 @@ where
         owner: VertexId,
         label: BucketLabelKey,
         order: OutEdgeOrder,
-        visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
+        mut visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
         debug_assert!(u32::from(owner) < self.vertices.len());
         let vertex = self.vertices.get(owner);
-        self.visit_edges_with_inline_property_impl(owner, &vertex, label, order, visit)
-    }
-
-    fn visit_edges_with_inline_property_impl<B>(
-        &self,
-        owner: VertexId,
-        vertex: &LabeledVertex,
-        label: BucketLabelKey,
-        order: OutEdgeOrder,
-        mut visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        if vertex.is_default_edge_labeled() {
-            if label != self.bypass_storage_label_for(vertex) {
-                return Ok(ControlFlow::Continue(()));
-            }
-            return match order {
-                OutEdgeOrder::Ascending => {
-                    let mut edges = self.edges.asc_out_edges_iter(&self.vertices, owner)?;
-                    let indexed = std::iter::from_fn(move || {
-                        edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
-                    });
-                    try_visit_indexed(indexed, |slot, edge| {
-                        visit(
-                            BucketEntryPosition::new(slot),
-                            EdgeWithInlineProperty {
-                                edge,
-                                inline_property: InlinePropertyBytes::empty(),
-                            },
-                        )
-                    })
-                }
-                OutEdgeOrder::Descending => {
-                    let mut edges = self.edges.out_edges_iter(&self.vertices, owner)?;
-                    let indexed = std::iter::from_fn(move || {
-                        edges.next_with_slot().map(|(slot, edge)| Ok((slot, edge)))
-                    });
-                    try_visit_indexed(indexed, |slot, edge| {
-                        visit(
-                            BucketEntryPosition::new(slot),
-                            EdgeWithInlineProperty {
-                                edge,
-                                inline_property: InlinePropertyBytes::empty(),
-                            },
-                        )
-                    })
-                }
-            };
-        }
-        let BucketSearch::Found {
-            slot: _bucket_slot,
-            bucket,
-        } = self.find_bucket(owner, vertex, label)?
-        else {
-            return Ok(ControlFlow::Continue(()));
-        };
-        let width = bucket.inline_property_byte_width();
-        if bucket.degree() == 0 {
-            return Ok(ControlFlow::Continue(()));
-        }
-
-        // Fast path for dense, tombstone-free buckets: bulk-read the topology slab in one
-        // call, and bulk-read the inline property bytes span when the bucket carries inline property bytes. This
-        // avoids per-slot `read_slot` round-trips and preserves the performance contract of
-        // `visit_edges_with_inline_property` for hot dense scans.
-        if bucket.inline_property_bytes_log_head() < 0
-            && bucket.overflow_log_head() < 0
-            && self.bucket_reserved_edge_slots(owner, &bucket) == bucket.degree()
-        {
-            let inline_property_bytes = if width > 0 {
-                self.read_bucket_inline_property_bytes_span(owner, &bucket, 0, bucket.degree())?
-            } else {
-                Vec::new()
-            };
-            return self.visit_dense_label_bucket_edges_with_inline_property(
-                owner,
-                label,
-                &bucket,
-                order,
-                &inline_property_bytes,
-                width,
-                visit,
-            );
-        }
-
-        // Fast path for slab-only buckets with tombstones: bulk-read edge slab and
-        // inline-property bytes, then skip deleted/tombstoned slots locally.  This avoids
-        // per-slot Vec<u8> allocations and redundant copies into the edge value.
-        if bucket.overflow_log_head() < 0 && bucket.inline_property_bytes_log_head() < 0 {
-            let reserved = self.bucket_reserved_edge_slots(owner, &bucket);
-            let inline_property_bytes = if width > 0 {
-                self.read_bucket_inline_property_bytes_span(owner, &bucket, 0, reserved)?
-            } else {
-                Vec::new()
-            };
-            return self.visit_slab_only_label_bucket_edges_with_inline_property(
-                owner,
-                label,
-                &bucket,
-                order,
-                reserved,
-                &inline_property_bytes,
-                width,
-                visit,
-            );
-        }
-
-        // Hybrid and other sparse buckets stream through the single-bucket span iterator
-        // with inline-property bytes attached, then wrap each edge in the typed property view.
-        let width = bucket.inline_property_byte_width();
-        let mut iter =
-            self.single_bucket_span_iter(owner, vertex, _bucket_slot, &bucket, order, true)?;
-        while let Some(result) = iter.next_with_slot() {
-            let (slot, edge) = result?;
-            let inline_property = if width == 0 {
-                InlinePropertyBytes::empty()
-            } else {
-                InlinePropertyBytes::from_bytes(width, edge.edge_inline_property_bytes())
-            };
-            if let ControlFlow::Break(value) = visit(
-                BucketEntryPosition::new(slot),
-                EdgeWithInlineProperty {
-                    edge,
-                    inline_property,
-                },
-            ) {
-                return Ok(ControlFlow::Break(value));
-            }
-        }
-        Ok(ControlFlow::Continue(()))
+        self.visit_edges_with_inline_property_ref_impl(
+            owner,
+            &vertex,
+            label,
+            order,
+            |slot, item| {
+                let edge = item.edge.with_stored_inline_property_bytes(
+                    item.inline_property.width(),
+                    item.inline_property.bytes(),
+                );
+                visit(
+                    slot,
+                    EdgeWithInlineProperty {
+                        edge,
+                        inline_property: InlinePropertyBytes::from_bytes(
+                            item.inline_property.width(),
+                            item.inline_property.bytes(),
+                        ),
+                    },
+                )
+            },
+        )
     }
 
     /// Visits every live edge together with its inline-property bytes in a slab-only
