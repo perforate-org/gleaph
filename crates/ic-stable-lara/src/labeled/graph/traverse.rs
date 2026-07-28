@@ -3063,21 +3063,49 @@ where
         // selection, the canonical visitor's bulk-friendly path is cheaper; retain direct slot
         // reads for small selections where avoiding the full bucket scan wins.
         if bucket.inline_property_bytes_log_head() >= 0 && selected.len() > 4 {
+            enum SelectedVisitOutcome<B> {
+                User(B),
+                Exhausted,
+            }
+
             let mut selected_index = 0usize;
-            return self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
-                while selected_index < selected.len()
-                    && match order {
-                        OutEdgeOrder::Ascending => selected[selected_index] < slot.raw(),
-                        OutEdgeOrder::Descending => selected[selected_index] > slot.raw(),
+            let flow = self.visit_edges_with_inline_property::<SelectedVisitOutcome<B>>(
+                owner,
+                label,
+                order,
+                |slot, item| {
+                    while selected_index < selected.len()
+                        && match order {
+                            OutEdgeOrder::Ascending => selected[selected_index] < slot.raw(),
+                            OutEdgeOrder::Descending => selected[selected_index] > slot.raw(),
+                        }
+                    {
+                        selected_index += 1;
                     }
-                {
+                    if selected_index == selected.len() {
+                        return ControlFlow::Break(SelectedVisitOutcome::Exhausted);
+                    }
+                    if selected[selected_index] != slot.raw() {
+                        return ControlFlow::Continue(());
+                    }
+
                     selected_index += 1;
+                    match visit(slot, item) {
+                        ControlFlow::Break(value) => {
+                            ControlFlow::Break(SelectedVisitOutcome::User(value))
+                        }
+                        ControlFlow::Continue(()) if selected_index == selected.len() => {
+                            ControlFlow::Break(SelectedVisitOutcome::Exhausted)
+                        }
+                        ControlFlow::Continue(()) => ControlFlow::Continue(()),
+                    }
+                },
+            )?;
+            return Ok(match flow {
+                ControlFlow::Continue(()) | ControlFlow::Break(SelectedVisitOutcome::Exhausted) => {
+                    ControlFlow::Continue(())
                 }
-                if selected_index < selected.len() && selected[selected_index] == slot.raw() {
-                    selected_index += 1;
-                    return visit(slot, item);
-                }
-                ControlFlow::Continue(())
+                ControlFlow::Break(SelectedVisitOutcome::User(value)) => ControlFlow::Break(value),
             });
         }
 

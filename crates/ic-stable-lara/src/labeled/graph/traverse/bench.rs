@@ -24,7 +24,6 @@ use std::hint::black_box;
 const DENSE_DEGREE: u32 = 256;
 const HYBRID_DEGREE: u32 = 256;
 const BYPASS_DEGREE: u32 = 64;
-const SELECTED_SLOT_COUNT: usize = 32;
 const DIRECT_SELECTED_SLOT_COUNT: usize = 2;
 const INLINE_VALUE_WIDTH: u16 = 8;
 
@@ -612,7 +611,7 @@ fn bench_traverse_next_visit_edges_at_with_inline_property_filtered_reference()
             )
             .unwrap();
     }
-    let selected: Vec<BucketEntryPosition> = (0..SELECTED_SLOT_COUNT as u32)
+    let selected: Vec<BucketEntryPosition> = (0..DIRECT_SELECTED_SLOT_COUNT as u32)
         .map(BucketEntryPosition::new)
         .collect();
     bench_fn(|| {
