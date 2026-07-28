@@ -2752,7 +2752,7 @@ mod tests {
     }
 
     #[test]
-    fn ordered_handler_uses_scalar_fallback_for_unprepared_geometry() {
+    fn ordered_handler_uses_batch_path_for_unprepared_geometry() {
         let store = GraphStore::new();
         let source = store.insert_vertex().expect("source vertex");
         let first_target = store.insert_vertex().expect("first target vertex");
@@ -2792,7 +2792,7 @@ mod tests {
             request,
         });
 
-        let result = execute_ordered_edge_batch(args).expect("ordered scalar fallback");
+        let result = execute_ordered_edge_batch(args).expect("ordered batch execution");
         let receipt = match result {
             GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) => {
                 receipt

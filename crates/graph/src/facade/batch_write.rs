@@ -168,6 +168,8 @@ impl GraphStore {
         request_identity: GraphMutationRequestIdentityV1,
         edges: &[BatchEdgeInput],
     ) -> Result<GraphOrderedEdgeBatchResult, String> {
+        self.ensure_ordered_batch_buckets(edges)
+            .map_err(|error| format!("ordered Graph bucket preparation failed: {error}"))?;
         let result = self
             .try_insert_batch_edges_clean_slab_with_initial_properties(edges)
             .map_err(|error| format!("ordered Graph batch validation failed: {error}"))?;
@@ -178,6 +180,53 @@ impl GraphStore {
         }
 
         Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
+    }
+
+    fn ensure_ordered_batch_buckets(
+        &self,
+        edges: &[BatchEdgeInput],
+    ) -> Result<(), BatchPlacementError> {
+        let intents = self.expand_batch_edge_intents(edges)?;
+        let mut prepared = std::collections::BTreeSet::new();
+        self.with_graph_mut(|graph| {
+            for intent in intents {
+                let key = (
+                    intent.owner_vertex_id,
+                    intent.storage_label,
+                    intent.inline_property_width,
+                );
+                if !prepared.insert(key) {
+                    continue;
+                }
+                let input = edges
+                    .get(intent.logical_ordinal as usize)
+                    .expect("intent ordinal must address its input");
+                if input.directed {
+                    graph
+                        .ensure_directed_edge_inline_property_width(
+                            input.source_vertex_id,
+                            input.target_vertex_id,
+                            intent.storage_label,
+                            intent.inline_property_width,
+                        )
+                        .map_err(|error| {
+                            BatchPlacementError::PlacementReadFailed(format!("{error}"))
+                        })?;
+                } else {
+                    graph
+                        .ensure_undirected_edge_inline_property_width(
+                            input.source_vertex_id,
+                            input.target_vertex_id,
+                            intent.storage_label,
+                            intent.inline_property_width,
+                        )
+                        .map_err(|error| {
+                            BatchPlacementError::PlacementReadFailed(format!("{error}"))
+                        })?;
+                }
+            }
+            Ok::<(), BatchPlacementError>(())
+        })
     }
 
     /// Execute an unsupported optimized geometry through the existing scalar owner boundary.
