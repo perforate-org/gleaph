@@ -644,37 +644,38 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Durable FIFO of derived property, label, and vector-index operations awaiting delivery",
             RebuildPath::None,
         ),
-        // ADR 0048 Plan 0139 shared bidirectional mate storage.
+        // Reserved holes retained after removal of the pre-deployment adaptive counterpart
+        // substrate. These IDs must not be reused silently.
         region(
-            "MATE_LEAF_LOCATORS",
+            "RESERVED_47",
             47,
-            StableMemoryClass::Derived,
-            "lara/mate",
-            "Five-byte locator rows keyed by (orientation, leaf)",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former adaptive counterpart locator region; not allocated",
             RebuildPath::None,
         ),
         region(
-            "MATE_BLOBS",
+            "RESERVED_48",
             48,
-            StableMemoryClass::Derived,
-            "lara/mate",
-            "Versioned sampled or packed mate blobs",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former adaptive counterpart blob region; not allocated",
             RebuildPath::None,
         ),
         region(
-            "MATE_FREE_SPANS",
+            "RESERVED_49",
             49,
             StableMemoryClass::Maintenance,
-            "lara/mate",
-            "Retired mate blob free spans",
+            "reserved",
+            "Former adaptive counterpart free-span region; not allocated",
             RebuildPath::None,
         ),
         region(
-            "MATE_FREE_SPAN_BY_START",
+            "RESERVED_50",
             50,
             StableMemoryClass::Maintenance,
-            "lara/mate",
-            "Mate blob free-span coalescing index",
+            "reserved",
+            "Former adaptive counterpart free-span index; not allocated",
             RebuildPath::None,
         ),
     ],
@@ -1515,11 +1516,8 @@ pub fn validate_class_invariants(layout: &StableCanisterLayout) -> Result<(), Cl
             }
             StableMemoryClass::Derived => {
                 // Every derived region must declare how it stays consistent: a named rebuild /
-                // backfill, or explicit sync co-update. Dormant ADR 0048 mate regions are the
-                // deliberate exception until their runtime rebuild path is implemented.
-                let dormant_mate_region = layout.canister == "graph"
-                    && matches!(region.symbol, "MATE_LEAF_LOCATORS" | "MATE_BLOBS");
-                if matches!(region.rebuild, RebuildPath::None) && !dormant_mate_region {
+                // backfill, or explicit sync co-update.
+                if matches!(region.rebuild, RebuildPath::None) {
                     return Err(ClassInvariantError::DerivedWithoutRebuild {
                         canister: layout.canister,
                         symbol: region.symbol,
@@ -1601,7 +1599,7 @@ mod tests {
             GRAPH_STABLE_LAYOUT.regions[46].symbol,
             "DERIVED_INDEX_OUTBOX"
         );
-        assert_eq!(GRAPH_STABLE_LAYOUT.regions[47].symbol, "MATE_LEAF_LOCATORS");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[47].symbol, "RESERVED_47");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,
             StableMemoryClass::Maintenance
@@ -1671,10 +1669,8 @@ mod tests {
         ] {
             for region in layout.regions {
                 if region.class == StableMemoryClass::Derived {
-                    let dormant_mate_region = layout.canister == "graph"
-                        && matches!(region.symbol, "MATE_LEAF_LOCATORS" | "MATE_BLOBS");
                     assert!(
-                        region.rebuild != RebuildPath::None || dormant_mate_region,
+                        region.rebuild != RebuildPath::None,
                         "{}::{} is Derived but declares no rebuild path",
                         layout.canister,
                         region.symbol

@@ -2,8 +2,8 @@
 
 Date: 2026-07-23  
 Status: accepted  
-Implementation status: CounterpartScan production reads and mutation callers are migrated to the ADR 0050 `traverse_next` logical-slot surface. **Plan 0192 (2026-07-28 UTC) removed the Graph `EDGE_ALIASES` region, alias mutation/rebuild code, alias-specific tests and benchmarks, and reverse Graph sidecar move notifications.** Differential reverse repair now retains matching rows, removes only surplus rows, inserts only missing rows, and aligns inline bytes by ordinal. MemoryId 35 remains reserved and is not reused.
-Adoption status: fully activated for the former Graph alias callers; dormant Published mate fixtures remain measurement-only.
+Implementation status: CounterpartScan production reads and mutation callers are migrated to the ADR 0050 `traverse_next` logical-slot surface. **Plan 0192 (2026-07-28 UTC) removed the Graph `EDGE_ALIASES` region, alias mutation/rebuild code, alias-specific tests and benchmarks, and reverse Graph sidecar move notifications.** The subsequent MATE-removal slice removed the pre-deployment adaptive locator/blob/free-span substrate, its fixtures, and its benchmarks. MemoryIds 35 and 47–50 remain reserved and are not reused.
+Adoption status: fully activated for the former Graph alias callers; CounterpartScan is the only production counterpart algorithm. Any adaptive accelerator remains a future ADR and research task.
 
 Traversal dependency: ordinary-caller adoption may begin after ADR 0050 Phases 1–2 have produced
 the tested and benchmarked `traverse_next` read surface. This is a one-way hand-off: ADR 0048 uses
@@ -461,7 +461,7 @@ It removes `EDGE_ALIASES` once all callers have migrated.
 
 No stable-layout compatibility is required because the feature is not deployed. Existing development data may be recreated.
 
-Any dormant `MATE_*`, `COUNTERPART_*`, sampled, packed, locator, blob, free-span, or measurement-only stable regions that exist solely for the superseded adaptive-index design are removed unless independently required by another accepted design.
+Any dormant `MATE_*`, sampled, packed, locator, blob, free-span, or measurement-only stable regions that existed solely for the superseded adaptive-index design are removed. Former development IDs 47–50 remain reserved registry holes and are not allocated or reused by this ADR.
 
 Production stable-memory evolution remains governed by ADR 0039.
 

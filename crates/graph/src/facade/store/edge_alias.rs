@@ -5,7 +5,7 @@ use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
     bidirectional::counterpart::{self, CounterpartLookupError},
-    labeled::{CanonicalEdgeOccurrence, LabeledOrientation, MateLookupError},
+    labeled::{CanonicalEdgeOccurrence, LabeledOrientation},
 };
 
 use super::GraphStore;
@@ -135,26 +135,6 @@ impl GraphStore {
     ) -> Result<EdgeHandle, GraphStoreError> {
         self.scan_only_canonical_edge_handle_from_occurrence(occurrence)
             .map_err(GraphStoreError::from)
-    }
-
-    /// Internal comparison bridge for the dormant ADR 0048 Published mate primitive.
-    pub(crate) fn published_mate_canonical_edge_handle(
-        &self,
-        handle: EdgeHandle,
-        orientation: LabeledOrientation,
-    ) -> Result<EdgeHandle, MateLookupError> {
-        GRAPH
-            .with_borrow(|graph| {
-                graph.published_canonical_handle(CanonicalEdgeOccurrence {
-                    orientation,
-                    owner_vertex_id: handle.owner_vertex_id,
-                    label_id: handle.label_id,
-                    slot_index: handle.slot_index.raw().into(),
-                })
-            })
-            .map(|mate| {
-                EdgeHandle::at_slot(mate.owner_vertex_id, mate.label_id, mate.slot_index.raw())
-            })
     }
 
     /// Resolves the physical counterpart for a live occurrence. The caller supplies the orientation because a logical slot

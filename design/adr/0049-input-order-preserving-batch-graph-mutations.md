@@ -25,16 +25,15 @@ preorders a feed, event stream, dependency list, or other adjacency sequence
 must be able to use the batch path without losing that order.
 
 ADR 0048 makes canonical adjacency order and equal-neighbor pair rank the source
-of truth for physical mate resolution. It is still being implemented. ScanOnly,
-shared mate-region ownership, publication, canonical enumeration, mutation
-invalidation, rebuild scheduling, and a dormant Published Sampled/Packed lookup
-primitive exist, while ordinary-caller activation, adoption measurement, and
-`EDGE_ALIASES` removal remain deferred.
+of truth for physical counterpart resolution. Its Graph caller migration and
+`EDGE_ALIASES` removal are complete. CounterpartScan is the only production
+algorithm; no persistent counterpart substrate is owned by this batch-mutation
+design. Any future adaptive algorithm requires a separate ADR and measured
+adoption decision.
 
-This ADR is therefore planned ahead of its implementation. ADR 0048 completion
-is an explicit prerequisite. ADR 0049 implementation does not begin by
-introducing another mate compatibility path while ADR 0048's owner boundary is
-still moving.
+This ADR remains planned ahead of its batch implementation. ADR 0048's owner
+boundary and alias removal are prerequisites; this ADR does not introduce
+another counterpart compatibility path.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
 Graph does not interpret an application timestamp, target id, ranking value, or
@@ -44,14 +43,14 @@ it at the adjacency boundary that owns scan order.
 ## Problem
 
 Provide one standard high-throughput batch edge-insertion API that preserves
-caller input order while retaining the material benefits of ADR 0045:
+caller input order while retaining the counterpartrial benefits of ADR 0045:
 
 1. one read-only projection over the complete bounded pending set;
 2. capacity planning by orientation, PMA leaf, vertex, and label bucket;
 3. contiguous edge and inline property bytes writes;
 4. pending-aware overflow-log, expansion, fold, and relocation decisions;
 5. shard-local failure atomicity and idempotent retry;
-6. exact forward/reverse or undirected mate association, including parallel
+6. exact forward/reverse or undirected counterpart association, including parallel
    edges; and
 7. no persistent per-edge sequence field or second source of adjacency truth.
 
@@ -66,13 +65,13 @@ The design must also account for the repository's transitional state:
 
 - ADR 0045 is partially implemented and has not introduced its planned public
   unordered wire API.
-- ADR 0048 is not yet complete and `EDGE_ALIASES` remains a compatibility
-  surface.
+- ADR 0048's production counterpart boundary is complete; former adaptive
+  counterpart storage is removed and its development MemoryIds remain reserved.
 - Existing optimized batch geometry is deliberately narrower than scalar
   insertion.
 
 The replacement must reuse completed work without describing planned behavior
-as implemented or making ADR 0049 depend on a dormant mate accelerator.
+as implemented or making ADR 0049 depend on an unaccepted adaptive accelerator.
 
 ## Existing architecture assessment
 
@@ -85,15 +84,14 @@ The existing owners can absorb the new contract without a new subsystem:
   expansion, the independent Graph-side ordered request fingerprint and durable
   receipt, canonical sidecars, label deltas, and durable derived-index events.
 - Bidirectional LARA owns physical pair ordering, paired-orientation
-  validation, exact returned locations, mate resolution, and mate-accelerator
-  invalidation/rebuild.
+  validation, exact returned locations, and CounterpartScan resolution.
 - One-orientation LARA owns bucket scan order, edge/inline-property-bytes slab and log
   placement, PMA density, expansion, relocation, compaction, and stable
   allocation.
 
 Canonical adjacency order remains the single source of truth. A logical ordinal
 is bounded request-local planning metadata, not a new stable edge identity.
-Sampled/Packed mate blobs remain derived acceleration. Edge properties remain
+Sampled/Packed counterpart blobs remain derived acceleration. Edge properties remain
 GraphStore sidecars and property-index postings remain asynchronously derived.
 
 The current ADR 0045 implementation already produces intents in input ordinal
@@ -119,18 +117,18 @@ V1 codec layout directly instead of introducing another compatibility variant.
 ADR 0049 implementation starts only after ADR 0048 satisfies its completion
 contract, including:
 
-1. ordinary Graph callers use the LARA-owned mate/canonicalization boundary;
+1. ordinary Graph callers use the LARA-owned counterpart/canonicalization boundary;
 2. `EDGE_ALIASES` and its repair paths are removed;
 3. scalar insert, batch insert, update, delete, compaction, and reverse repair
    enforce exact pair rank;
 4. ScanOnly remains a correct fallback for absent, rebuilding, malformed, or
-   stale mate acceleration;
+   stale counterpart acceleration;
 5. mutation invalidation and maintenance rebuild scheduling cover all owning
    write paths; and
 6. adoption benchmarks and stable-memory accounting justify the selected
    ScanOnly/Sampled/Packed policy.
 
-ADR 0049 must not reactivate alias ownership or add an intermediate mate index
+ADR 0049 must not reactivate alias ownership or add an intermediate counterpart index
 to work around an unfinished ADR 0048.
 
 ## Decision
@@ -142,7 +140,7 @@ The standard public edge-insertion batch API preserves input order. There is no 
 default.
 
 Clients submit each logical edge once in the intended order. They do not submit
-forward/reverse rows, undirected mate records, LARA bucket keys, physical
+forward/reverse rows, undirected counterpart records, LARA bucket keys, physical
 locations, or placement instructions.
 
 The v1 operation set is deliberately exhaustive and narrow. The public item is
@@ -477,7 +475,7 @@ undirected: (kind, label, min(endpoint), max(endpoint))
 ```
 
 the two projections carry the same ordinal subsequence. The `k`th live forward
-entry therefore remains paired with the `k`th live reverse or undirected mate
+entry therefore remains paired with the `k`th live reverse or undirected counterpart
 entry. Sorting a forward projection and reverse projection independently is an
 invariant violation even if each result is locally deterministic.
 
@@ -520,7 +518,7 @@ these from the side name. Directed edges, including directed self-loops, have
 two distinct projection ids. A non-self undirected edge has two distinct
 lower-owner/higher-owner ids, and an undirected self-loop has one.
 
-Logical owner/canonical/mate role is metadata on a projection; it is not part of
+Logical owner/canonical/counterpart role is metadata on a projection; it is not part of
 the physical reservation key. All roles targeting the same physical bucket are
 merged into one stable ordinal-ordered run before reservation. There is at most
 one reservation snapshot for an orientation/bucket pair.
@@ -558,7 +556,7 @@ runs. The planner may continue to:
 - combine multiple bucket projections into one leaf expansion or relocation;
 - select slab, overflow log, expanded slab, or relocated slab destinations;
 - write edge and inline property bytes spans contiguously; and
-- aggregate metadata, mate invalidation, sidecar, and derived-event updates.
+- aggregate metadata, counterpart invalidation, sidecar, and derived-event updates.
 
 Only the live row sequence within each bucket is constrained. This distinction
 retains the principal batch efficiencies of ADR 0045.
@@ -577,7 +575,7 @@ Graph's logical plan owns:
 
 - input ordinals and the Graph request fingerprint;
 - logical-to-physical projection;
-- the `LogicalBatchPairTable` and canonical/mate roles;
+- the `LogicalBatchPairTable` and canonical/counterpart roles;
 - property and derived-event association; and
 - the complete expected ordinal set for each logical shape.
 
@@ -618,7 +616,7 @@ The following are valid when their preconditions are proved:
 An old tombstone hole that precedes a surviving live row is not an ordered
 insertion destination. It may be reclaimed by maintenance only if compaction
 preserves the relative live order and repairs every affected physical handle,
-inline property bytes ordinal, mate accelerator, and canonical sidecar through their owning
+inline property bytes ordinal, counterpart accelerator, and canonical sidecar through their owning
 boundaries.
 
 The planner must validate logical order, not infer it solely from numeric slab
@@ -632,9 +630,9 @@ batch path returns a compact receipt. Exact location capture remains an explicit
 internal mode for consumers that require physical handles during the same
 commit.
 
-Mate lookup derives from canonical pair rank and the completed ADR 0048
+Counterpart lookup derives from canonical pair rank and the completed ADR 0048
 boundary. It does not require Graph to persist the request ordinal or force
-location materialization for every ordinary batch.
+location counterpartrialization for every ordinary batch.
 
 Initial edge properties are such an internal consumer. If any item carries a
 non-empty `resolved_initial_edge_properties`, Graph selects location-capture
@@ -676,7 +674,7 @@ an invariant trap, so the canister message rolls back LARA rows, sidecars, and
 events together.
 
 When every item is property-free and no other internal consumer requests
-handles, aggregate mode may omit location materialization. In either mode the
+handles, aggregate mode may omit location counterpartrialization. In either mode the
 public receipt remains aggregate-only; captured locations are discarded only
 after all sidecars and derived events have been committed.
 
@@ -713,7 +711,7 @@ The current `DefaultLabelUnsupported` and mixed-shape rejection remain truthful
 implementation limitations until this matrix is implemented. They are not the
 target public contract. Fallback is a correctness and incremental-delivery
 mechanism, not the final performance design, and may not weaken ordering,
-atomicity, pair rank, mate invalidation, sidecar, or derived-event behavior.
+atomicity, pair rank, counterpart invalidation, sidecar, or derived-event behavior.
 
 ADR 0030 coordination is not silently bypassed. Before persisting an
 `OrderedEdgeBatch` payload or dispatching the Graph request, Router resolves every
@@ -780,14 +778,14 @@ canonical write. Supporting multiple Graph chunks under one public batch would
 require a separate durable sequencer/high-water-mark protocol and a new ADR
 revision.
 
-### 11. Remove the unordered API unless benchmarks prove a material need
+### 11. Remove the unordered API unless benchmarks prove a counterpartrial need
 
 ADR 0049 activation supersedes ADR 0045's planned unordered public endpoint.
 No compatibility requirement exists because that wire API has not shipped.
 
 Do not implement or retain a dead unordered path solely to benchmark it. The
 current ADR 0045 implementation already writes bucket runs in logical ordinal
-order and is not evidence of a materially faster unordered alternative.
+order and is not evidence of a counterpartrially faster unordered alternative.
 
 If implementation work discovers a concrete reordering optimization that
 cannot be expressed by bucket processing order alone, add controlled canbench
@@ -802,7 +800,7 @@ comparisons for:
 - representative batch sizes including 128 and 1,024 logical edges where
   instruction limits permit.
 
-Measure setup, planning, canonical commit, mate invalidation/rebuild,
+Measure setup, planning, canonical commit, counterpart invalidation/rebuild,
 sidecar/derived-event creation, and required maintenance separately, plus the
 maintenance-inclusive end-to-end total. Primary metrics are instructions per
 logical edge, stable reads/writes, stable bytes or pages where meaningful,
@@ -812,7 +810,7 @@ An unordered public API may be reconsidered only if an actual implementation
 candidate exists and, after removing avoidable ordered-path overhead, persisted
 results show at least a 20% end-to-end instruction or maintenance-inclusive
 stable-write advantage on at least two
-representative workload shapes and two batch sizes, or an equivalently material
+representative workload shapes and two batch sizes, or an equivalently counterpartrial
 admission-rate loss. A setup-only, location-capture-only, deferred-maintenance,
 or single pathological-case difference is insufficient.
 
@@ -841,7 +839,7 @@ four-byte edge row:
 - retries extend the existing Graph journal ownership from ADRs 0015, 0044, and
   0047 with an order-sensitive Graph-side identity.
 
-No new stable per-edge sequence table, row field, or mate identity is introduced.
+No new stable per-edge sequence table, row field, or counterpart identity is introduced.
 If implementation proves that an existing physical transformation cannot
 preserve live order without such a field, that geometry remains unsupported
 until a separate stable-layout decision is accepted.
@@ -1491,7 +1489,7 @@ not rewritten as though unfinished unordered product behavior shipped.
    default/unlabeled promotion, and other scalar-supported geometries.
 10. Integrate mandatory internal location capture, canonical sidecar writes, and
     durable derived-property events for property-bearing items; then enable
-    parallel inserts after exact ordinal/location/property/mate coverage.
+    parallel inserts after exact ordinal/location/property/counterpart coverage.
 11. Replace Router V1 request identity/payload in place; implement exhaustive
     ordered routing/envelope/target progress, resolved-table authority transfer,
     bounded typed retry diagnostics and terminal failures, a bounded record in
@@ -1534,13 +1532,13 @@ At minimum, implementation must cover:
   projections from different logical edges, including `[3 -- 2, 2 -- 1]`, with
   one reservation and scan order `[0, 1]`;
 - mixed directed, undirected, and self-loop items in one public batch;
-- parallel edges with distinct inline properties/properties and exact mate rank;
+- parallel edges with distinct inline properties/properties and exact counterpart rank;
 - pre-existing live edges followed by pending edges;
 - slab, overflow-log, expanded-slab, folded-log, and relocated destinations;
 - edge/inline-property-bytes sequences stored in different physical domains;
 - interior tombstones, tail slack, deletion, compaction, and reopen;
-- mate ScanOnly and Published/fallback behavior after invalidation/rebuild;
-- property-free aggregate mode without location materialization;
+- counterpart ScanOnly and Published/fallback behavior after invalidation/rebuild;
+- property-free aggregate mode without location counterpartrialization;
 - a property-bearing batch forcing whole-batch internal location capture,
   an exact `0..logical_item_count` canonical-handle key set including items
   without properties, canonical-owner sidecar writes, durable net derived
@@ -1741,7 +1739,7 @@ Adversarial tests must reject:
 
 ## Benchmark contract
 
-Benchmark the actual invariant-preserving paths. Do not disable mate
+Benchmark the actual invariant-preserving paths. Do not disable counterpart
 invalidation, payload alignment, sidecars, journals, or required maintenance to
 make ordered insertion appear cheaper.
 
@@ -1756,7 +1754,7 @@ Router ordered replay-record insert/replace:
 ```
 
 The current ADR 0045 physical batch substrate is a mandatory baseline row,
-using identical geometry, payload, sidecar, journal, mate, and maintenance
+using identical geometry, payload, sidecar, journal, counterpart, and maintenance
 work. This measures the cost of enforcing the new order contract even when the
 physical writer is otherwise shared. An unordered row is added separately only
 when there is a concrete, correctness-complete candidate whose physical
@@ -1770,7 +1768,7 @@ logical encoded-size guard. Any future proposal to replace it with a large
 variable-size `Bounded` maximum must first compare fresh-key insert and
 same-key replacement instructions and stable-memory growth at small and
 maximum-admitted record sizes. A physical-bound change is rejected when it
-materially regresses either workload without a compensating safety property
+counterpartrially regresses either workload without a compensating safety property
 that the existing owner-side encoded-size checks cannot provide.
 
 Graph journal benchmarks include active-to-retired same-key replacement and
@@ -1794,7 +1792,7 @@ Positive:
 - One standard edge-insertion batch API has deterministic, useful semantics.
 - Callers can precompute application order without paying scalar mutation cost.
 - ADR 0045's placement and atomicity work is reused rather than duplicated.
-- ADR 0048 pair rank and mate ownership become the direct basis of batch
+- ADR 0048 pair rank and counterpart ownership become the direct basis of batch
   correctness.
 - Bucket processing and stable-memory locality remain optimizable independently
   of bucket-local row order.
@@ -1811,7 +1809,7 @@ Costs and trade-offs:
   debt until order-preserving compaction.
 - Planning/reservation must prove final live order as well as capacity.
 - Optimized coverage remains incremental while ADR 0045 geometry is incomplete.
-- Parallel inserts require stronger ordinal, sidecar, retry, and mate tests
+- Parallel inserts require stronger ordinal, sidecar, retry, and counterpart tests
   before the current duplicate rejection can be removed.
 - Globally unique/constrained initial properties and non-edge batch operations
   remain outside the v1 public surface.
@@ -1863,7 +1861,7 @@ internal primitives without creating a public unordered surface.
 
 This is the minimum implementation change, but it creates two semantic surfaces,
 duplicate caller choices, and a long-term test matrix before evidence shows a
-material performance need. Rejected by default; it may be reconsidered only
+counterpartrial performance need. Rejected by default; it may be reconsidered only
 through the benchmark gate.
 
 ### Preserve order by scalar insertion
@@ -1875,7 +1873,7 @@ and bounded maintenance debt. Retained only as a proven transitional fallback.
 ### Sort forward and reverse projections independently
 
 This may improve physical locality but breaks equal-neighbor pair rank for
-parallel edges and makes mate resolution depend on extra metadata. Rejected.
+parallel edges and makes counterpart resolution depend on extra metadata. Rejected.
 Bucket processing may be reordered; bucket-local pending rows may not.
 
 ### Store a monotonic sequence id in every edge row
@@ -1902,7 +1900,7 @@ and split invariant ownership. Rejected.
 - ADR 0045 remains Partially Implemented and records the retained physical batch
   substrate. It links this planned successor without claiming that the
   unordered public API shipped.
-- ADR 0048 remains the prerequisite owner of pair rank, mate resolution,
+- ADR 0048 remains the prerequisite owner of pair rank, counterpart resolution,
   invalidation, rebuild, and alias removal.
 - ADR 0025 retains non-terminal ordered retirement states regardless of age;
   Router compaction remains the only transition to terminal TTL eligibility.
@@ -1939,6 +1937,6 @@ and split invariant ownership. Rejected.
 - [ADR 0044](0044-router-bulk-mutation-key.md): durable bulk identity.
 - [ADR 0045](0045-unordered-batch-graph-mutations-and-lara-placement.md): retained physical batch substrate and superseded future unordered contract.
 - [ADR 0047](0047-shared-typed-graph-bulk-envelope.md): shared typed Graph bulk envelope.
-- [ADR 0048](0048-lara-counterpart-resolution.md): prerequisite physical pair rank and adaptive mate ownership.
+- [ADR 0048](0048-lara-counterpart-resolution.md): prerequisite physical pair rank and adaptive counterpart ownership.
 - [LARA storage contract](../storage/lara.md).
 - [Bulk ingest finalize](../storage/bulk-ingest-finalize.md).

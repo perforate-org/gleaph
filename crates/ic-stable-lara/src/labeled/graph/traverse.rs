@@ -239,31 +239,6 @@ pub struct EdgeWithInlinePropertyRef<'a, E> {
     pub inline_property: InlinePropertyBytesRef<'a>,
 }
 
-/// Raw storage location of a live edge row, contextualized by its owning bucket.
-///
-/// This is a measurement/maintenance primitive, not a query-time edge identity.
-/// The high-bit encoding used internally for overflow-log entries is decoded at
-/// this boundary; callers see an explicit [`StorageEdgeLocation`] variant.
-#[cfg(feature = "adoption-fixtures")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StorageEdgeRef {
-    /// Vertex that owns the bucket containing the row.
-    pub owner: VertexId,
-    /// Label of the bucket containing the row.
-    pub label: BucketLabelKey,
-    /// Physical storage location within the bucket.
-    pub location: StorageEdgeLocation,
-}
-
-#[cfg(feature = "adoption-fixtures")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StorageEdgeLocation {
-    /// Local slot inside the edge slab.
-    SlabSlot(u32),
-    /// Entry index inside the bucket's overflow-log chain.
-    OverflowLogEntry(u32),
-}
-
 /// Result of reading a logical edge slot while preserving tombstone visibility.
 pub use crate::traverse::EdgeSlotState;
 
@@ -3276,85 +3251,6 @@ where
         Ok(visit_indexed(selected, |slot, edge| {
             visit(BucketEntryPosition::new(slot), edge)
         }))
-    }
-
-    /// Measurement-only storage-location visitor.
-    ///
-    /// Iterates live rows in slab local-slot ascending order, then the bucket's
-    /// overflow-log chain in ascending chain order. Tombstoned and deleted rows are
-    /// skipped. The callback receives a fully contextual [`StorageEdgeRef`] whose
-    /// owner and label match the selected bucket.
-    ///
-    /// This is the only raw-location reader intended for LARA maintenance and
-    /// in-crate adoption/contract tests; Graph/Router/graph-index callers must use
-    /// the logical `visit_edges` family instead.
-    #[cfg(feature = "adoption-fixtures")]
-    pub(crate) fn visit_storage_edge_locations<B>(
-        &self,
-        owner: VertexId,
-        label: BucketLabelKey,
-        mut visit: impl FnMut(StorageEdgeRef, E) -> ControlFlow<B>,
-    ) -> Result<ControlFlow<B>, LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-    {
-        self.ensure_vertex(owner)?;
-        let vertex = self.vertices.get(owner);
-        if vertex.is_default_edge_labeled() {
-            return Ok(ControlFlow::Continue(()));
-        }
-        let BucketSearch::Found { bucket, .. } = self.find_bucket(owner, &vertex, label)? else {
-            return Ok(ControlFlow::Continue(()));
-        };
-
-        for slot in 0..bucket.stored_slots {
-            let edge_slot = crate::labeled::slot_index::checked_add_slot_index(
-                bucket.edge_start(),
-                u64::from(slot),
-            )
-            .ok_or(LabeledOperationError::from(
-                LaraOperationError::CollectAllocationOverflow,
-            ))?;
-            let edge = self.edges.read_slot(edge_slot);
-            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                continue;
-            }
-            if let ControlFlow::Break(value) = visit(
-                StorageEdgeRef {
-                    owner,
-                    label,
-                    location: StorageEdgeLocation::SlabSlot(slot),
-                },
-                edge.with_label_id(label.raw()),
-            ) {
-                return Ok(ControlFlow::Break(value));
-            }
-        }
-
-        if bucket.overflow_log_head() >= 0 {
-            let leaf = self.inline_property_bytes_log_leaf(owner);
-            for entry_idx in self
-                .edges
-                .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head())
-            {
-                let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
-                    continue;
-                }
-                if let ControlFlow::Break(value) = visit(
-                    StorageEdgeRef {
-                        owner,
-                        label,
-                        location: StorageEdgeLocation::OverflowLogEntry(entry_idx),
-                    },
-                    edge.with_label_id(label.raw()),
-                ) {
-                    return Ok(ControlFlow::Break(value));
-                }
-            }
-        }
-
-        Ok(ControlFlow::Continue(()))
     }
 
     // ------------------------------------------------------------------

@@ -2,18 +2,10 @@
 
 pub mod counterpart;
 pub(crate) mod deferred;
-mod mate;
-pub(crate) mod mate_blob_prototype;
-pub(crate) mod mate_enumeration;
-pub(crate) mod mate_envelope;
-pub(crate) mod mate_promotion;
-pub(crate) mod mate_ranked_prototype;
-pub(crate) mod mate_storage;
 
+pub use counterpart::CanonicalEdgeOccurrence;
 pub use deferred::{
     BidirectionalMaintenanceReport as LabeledBidirectionalMaintenanceReport,
     DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver,
-    DeletedEdge, EdgeSlotMoveObserver, MateStorageInitError, MateStorageMemories, Orientation,
-    ScalarInsertPair,
+    DeletedEdge, EdgeSlotMoveObserver, Orientation, ScalarInsertPair,
 };
-pub use mate::{CanonicalEdgeOccurrence, MateLookupError};

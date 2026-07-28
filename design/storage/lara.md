@@ -138,9 +138,9 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 
 **Backing-memory-size guard at reopen:** after the magic/version/stride checks pass, the segmented overflow logs (`LogStore`, `InlinePropertyBytesLogStore`) and `FreeSpanStore` additionally verify that the backing memory is at least as large as the layout the header declares (`memory.size() * WASM_PAGE_SIZE >= required_bytes(header)`), returning a typed `InitError` (`OutOfMemory` / `InvalidLayout`) when it is not. These stores address per-segment slots at computed offsets (`HEADER_SIZE + leaf * segment_block_size + ...`); a truncated backing region or a corrupt `segment_count` would otherwise pass the header checks and only fail later as an opaque out-of-bounds trap on the first segment read. The guard turns that into an actionable reopen error.
 
-**`value_blobs` asymmetry:** the inline property bytes blob map is excluded from the required-region set because a populated inline property bytes store with no wide-inline-property-bytes blobs legitimately leaves it empty. `EdgeInlinePropertyBytesStore::init` still enforces the asymmetric rule: when the required regions are **Fresh**, `value_blobs` must also be empty (a surviving blob region alongside empty required regions is partial loss); when they are **Reopen**, `value_blobs` may be empty or populated.
+**`value_blobs` asymmetry:** the inline property bytes blob map is excluded from the required-region set because a populated inline property bytes store with no wide-inline-property-bytes blobs legiticounterpartly leaves it empty. `EdgeInlinePropertyBytesStore::init` still enforces the asymmetric rule: when the required regions are **Fresh**, `value_blobs` must also be empty (a surviving blob region alongside empty required regions is partial loss); when they are **Reopen**, `value_blobs` may be empty or populated.
 
-**Best-fit completeness:** `take_best_fit` / `take_best_fit_whole` / `peek_best_fit` use a bounded per-bin scan to approximate best-fit cheaply, but must never report "no fit" while a fitting span exists in the start size-class bin. When the bounded scan finds nothing, the search continues over the remaining bin entries for the first fit, so allocation never forces an unnecessary slab/`elem_capacity` growth.
+**Best-fit completeness:** `take_best_fit` / `take_best_fit_whole` / `peek_best_fit` use a bounded per-bin scan to approxicounterpart best-fit cheaply, but must never report "no fit" while a fitting span exists in the start size-class bin. When the bounded scan finds nothing, the search continues over the remaining bin entries for the first fit, so allocation never forces an unnecessary slab/`elem_capacity` growth.
 
 ---
 
@@ -156,190 +156,22 @@ After the first commit write, no recoverable `Memory::grow` or allocation error 
 
 ---
 
-## Bidirectional mate contract (current transitional implementation; not the target contract)
+## Bidirectional counterpart contract (current implementation)
 
-The details in this section describe the currently wired, dormant maintenance substrate only.
-They are retained for upgrade/rollback and implementation-gap accounting; they are not an
-authoritative query or counterpart API. ADR 0048's metadata-free `CounterpartScan` and ADR 0050's
-logical-slot read surface are the target contracts for new work.
+Bidirectional LARA stores only the forward and reverse canonical adjacency projections. It does
+not allocate a counterpart index, locator, blob, free-span store, or adaptive publication state.
+`CounterpartScan` derives the equal-neighbor `PairOrdinal` from live logical bucket order and
+selects the corresponding occurrence in the other projection. `canonical_handle` validates the
+returned owner, label, orientation, target, and live relation before exposing it to Graph.
 
-The bidirectional owner rejects forward/reverse PMA segment-size or segment-count mismatches
-before opening the shared `(orientation, leaf)` locator namespace. Mate initialization errors
-remain typed through `MateStorageInitError`; callers therefore distinguish geometry, partial-layout,
-row-count, and stable-memory failures without parsing display strings. The two mate data regions
-Plan 0141 adds bounded, read-only promotion admission and pure Sampled/Packed leaf-blob construction.
-The two mate data regions remain derived; the owner-facing failure-atomic publication boundary and
-mutation invalidation/rebuild scheduling are implemented. The existing durable maintenance queue
-deduplicates `(orientation, leaf)` rebuild work, and compaction work hides an affected row before
-processing it and requeues failed work. The older Published Sampled/Packed runtime lookup
-primitive is implemented but dormant; it is historical evidence for the adoption decision, not
-an activation dependency. Ordinary canonical adjacency and `EDGE_ALIASES` callers remain
-unchanged until the ADR 0048/0050 adoption gate.
-Owner construction preflights the four-region composite and compares its fresh/reopen state with
-the LARA sentinel regions before opening either orientation, so mixed fresh/reopen or partial mate
-state cannot leave a newly opened canonical adjacency owner behind. This check runs only during
-owner construction; normal edge mutation and query paths do not rescan the composite.
+The paired owner coordinates canonical writes and deferred PMA maintenance. Reverse slot movement
+is internal to LARA; Graph sidecars are updated from exact logical locations and never from a
+persistent counterpart mapping. COUNTERPART-named storage, promotion, invalidation, rebuild, publication,
+and measurement fixtures were removed because no adaptive algorithm has been accepted by ADR 0048.
 
-The public `forward()` and `reverse()` accessors remain read-capable for adjacency, placement, and
-allocator diagnostics, but do not expose canonical mutation primitives. Single-orientation writes
-and batch reserve/commit operations are crate-private on `LabeledLaraGraph`; the bidirectional owner
-provides the owner-facing wrappers used by GraphStore and repair code. This keeps read traversal
-direct while making it impossible for a caller to mutate one orientation without going through the
-owner boundary that coordinates mate invalidation. Batch commit hides every affected owner leaf
-before the first canonical byte write; reverse-repair wrappers likewise invalidate before changing
-one orientation and are not general-purpose paired-write APIs. Paired scalar writes treat reverse
-half failures and post-write maintenance-admission failures as invariant violations and trap rather
-than returning a recoverable error after the first canonical half is written.
-
-[ADR 0048](../adr/0048-lara-counterpart-resolution.md) places physical entry-to-entry pairing in
-bidirectional LARA rather than a Graph facade B-tree. The target contract uses live `PairOrdinal`
-and metadata-free `CounterpartScan`; it does not introduce locator rows, packed mate blobs, or a
-derived counterpart index. `CanonicalEdgeOccurrence` and `EdgeHandle` carry `BucketEntryPosition`; raw slab/log
-locations remain private to LARA.
-
-ADR 0050 defines the target labeled read surface around `BucketEntryPosition`, `visit_edges`,
-`visit_edges_at`, and borrowed `EdgeWithInlinePropertyRef<'a, E>` callback results. Forward/outgoing
-and reverse/incoming bidirectional wrappers delegate to the same orientation-local primitives;
-callers explicitly materialize owned property values only when retention is required, and no owned
-inline-property traversal result is part of the LARA surface.
-
-The implementation is now partially at that target. `CounterpartScan` in
-`ic-stable-lara/src/labeled/bidirectional/counterpart.rs` has been migrated onto the ADR 0050
-`traverse_next` logical-slot surface (`read_edge_state`, `visit_edges`, typed `BucketEntryPosition`,
-and `ControlFlow` early termination). The first bounded Graph ordinary-caller group — the
-scan-only canonical-edge-handle helper in `crates/graph/src/facade/store/edge_alias.rs` — consumes
-`counterpart::canonical_handle` and no longer calls the legacy labeled traversal methods. All
-remaining Graph sidecar lookup paths, `EDGE_ALIASES`, `mate`-named paths, raw `u32` slot fields,
-and legacy physical-location readers remain active transitional state until the later Plan 0183
-mutation, Plan 0184 caller-migration, and alias-removal slices land. Historical Plans 0136–0180
-describe superseded adaptive or measurement experiments; they are evidence only and are not
-activation dependencies for ADR 0048 or ADR 0050.
-
-Plan 0133 establishes the logical byte accounting used before any persistent replacement:
-the alias baseline is 18 raw key/value bytes per non-self logical edge, while a two-half
-Sampled bucket contributes `16 * ceil(n / K) + 10` bytes before blob headers, directories,
-free-span/rebuild reserve, and stable-structure overhead. Packed contributes `2 * width * n + 10`
-for slot width `width`. These shared and allocator terms are intentionally unknown until an
-isolated storage prototype; MemoryManager page deltas are not per-edge measurements. Promotion
-and alias removal therefore remain planned and storage-gated.
-
-Plan 0134 adds a pure accounting prototype at
-`crates/graph/src/bench/mate_footprint.rs`. It reports locator, header, indexed-bucket directory,
-mapping, free-span, and rebuild-reserve bytes separately. Shared terms are explicit model inputs;
-StableBTreeMap nodes, allocator slack, and MemoryManager extent rounding remain unknown substrate
-overhead and are not divided by edge count. A candidate must retain positive headroom against the
-18-byte alias raw payload after all measured shared terms before a persistent-layout prototype is
-justified. No runtime promotion, blob store, or alias replacement is implemented by this slice.
-
-Plan 0135 validates an isolated, test-only serialized layout at the bidirectional LARA boundary:
-the isolated envelope fixture uses its own versioned header and directory entry
-(including the canonical owner vertex and `BucketLabelKey` identity), and the existing
-Sampled/Packed mapping formulas. Mode and width are per-bucket so a leaf may mix modes. It performs
-checked offset/length validation and
-round-trip/corruption tests for all planned modes, but does not allocate stable memory or publish a
-locator. Locator rows, free-span/rebuild reserve, node overhead, and MemoryManager extent rounding
-remain outside the serialized blob and outside any per-edge claim. The historical Published
-runtime fixture is implemented but dormant; it is evidence for a separate adoption decision, not
-an active runtime contract or ADR 0048/0050 dependency. Ordinary-caller activation and alias
-replacement remain disabled.
-
-Plan 0145 adds the owning-layer, side-effect-free policy/accounting harness used by the adoption
-gate. It freezes adaptive mode precedence, charges dense locator rows (including ScanOnly rows),
-keeps logical and physical denominators explicit (including self-loop geometry), and enforces
-mode-specific fallback expectations. Unknown overheads are fail-closed unless a finite bound is
-proven, and per-edge values use conservative ceiling division.
-It does not measure or activate ordinary callers; the persistent-byte gate and alias decision remain
-deferred until isolated lifecycle fixtures produce the machine-readable evidence artifact.
-
-Plan 0146 adds only the first fixture/evidence boundary: deterministic shape descriptors,
-canonical identity digests, fixed-seed request identities, and fail-closed deferred/measured
-evidence serialization in the Graph bench layer. It does not yet provide independent stable-memory
-ownership or lifecycle measurement, and it does not activate or replace the alias path.
-
-Measurement fixtures reserve usable `MemoryId`s from `254` downward (`255` is reserved by
-`MemoryManager`) so they cannot overlap the production Graph low-ID layout as that layout grows.
-
-Plan 0147 now provides the bench-only `MeasurementMemoryBundle` ownership boundary and an
-AliasOnly bidirectional-LARA fixture with physical identity extraction. The fixture API is enabled
-only for measurement builds; Published evidence integration is limited to promotion-eligible
-directed-high, parallel, and undirected-high rows. Graph's bench adapter consumes AliasOnly canonical edge occurrences for directed, parallel, undirected,
-and undirected-self-loop fixtures only; the measurement owner also constructs an independent
-ScanOnly canonical-adjacency fixture and emits separate deferred rows for representable ScanOnly
-shapes. Evidence records logical identity bytes separately from stable-memory page deltas;
-unsupported shapes remain deferred without synthetic identity claims.
-Construction-only canbench probes keep these quantities separate from runtime measurements; they
-are not production layout or adoption results. Plan 0149 adds fixture-only runtime lookup probes
-for directed-high, parallel, and undirected-high shapes. The probes compare canonical ScanOnly
-rank/select with the dormant Published validator, require exact result parity, and keep malformed
-or stale fallback behavior separate from the instruction totals. Published is not presumed faster:
-the current validator costs more than ScanOnly on these bounded probes, especially for parallel
-rows. No ordinary caller activation or alias decision follows from these measurements.
-Plan 0150's attempted source-slot binary-search shortcut was rejected: it was instruction-neutral
-in the runtime probe and would have weakened malformed-blob ordering validation. The old
-source/mate Published path is retained only as historical measurement evidence; the next runtime
-candidate is rank-indexed Packed with canonical validation.
-Plan 0151's logical-byte gate reports Alias raw payloads of 2,304 bytes for the 128-edge directed
-and undirected-high fixtures and 576 bytes for the 32-edge parallel fixture. Exact Published blob
-payloads are 3,776, 1,888, and 104 bytes respectively, before locator and allocator overhead.
-Published therefore loses on directed-high but wins on undirected-high and parallel in this
-fixture-only accounting; this does not activate any production caller.
-The size-series follow-up (Plan 0152) shows the same topology dependence at 32/64/128/256 edges:
-directed Published is 944/1,888/3,776/7,552 bytes versus 576/1,152/2,304/4,608 alias bytes;
-undirected is 472/944/1,888/3,776; parallel is 104/120/152/216. No unsupported low-degree or
-self-loop point is extrapolated, and no ordinary caller is activated from this curve alone.
-
-Plan 0154 freezes rank-indexed Packed as the only derived candidate. On identical canonical rows,
-the 128-entry one-byte codec probe measured 27.25K encode instructions and 1,998
-decode/validate/lookup instructions for rank-indexed, versus 49.49K and 2,588 for the retired
-source/mate Packed prototype, with zero heap/stable-page growth. Its one-bucket payload is
-`44 + entries * width` bytes (76/172/556 for 32/128/256 entries at widths 1/1/2), excluding
-external locator and allocator overhead. This is not an alias-vs-rank end-to-end adoption
-decision: alias remains the active baseline, the old Published path is measurement-only, and
-ordinary-caller activation waits for a same-fixture runtime and physical-allocation gate.
-Plan 0157's initial alias-hit runtime probes use the real measurement `EdgeAliasIndex` and the
-same physical identities: directed-high is 16.36M versus 1.56M instructions for alias versus
-decoded-once rank lookup over 1,024 requests, and 32-edge parallel is 11.51M versus 323.90K.
-These are hit-only measurements; reverse lookup and alias-miss canonical fallback remain required
-before activation.
-The follow-up directed-high probes measure canonical-to-alias reverse lookup at 148.39M
-instructions and direct canonical fallback at 13.47M per 1,024 requests, versus 1.56M for rank
-lookup. Reverse lookup is currently a full alias-map scan; malformed/stale parity and physical
-allocation accounting remain open.
-The rank fixture now verifies exact counterpart parity and fail-closed truncated/out-of-range
-lookup behavior, while the alias-miss probe exercises canonical `mate_of` fallback. A combined
-adoption decision still requires presenting these strata with byte/page accounting together.
-Plan 0157 defers ordinary-caller activation after the integrated gate: rank-indexed is materially
-cheaper in the measured runtime strata, but its logical payload is larger than alias for
-directed-high (2,840 versus 2,304 bytes) and smaller for undirected-high (1,560 versus 2,304) and
-parallel-32 (128 versus 576). Fresh measurement memory reports zero page growth and is not
-production allocator evidence. Alias remains the active baseline; rank-indexed requires a later
-topology-aware policy and production-layout accounting.
-Plan 0157 adds a measurement-only rank encoder over the existing AliasOnly identity rows. Matching
-logical payloads are 2,840 versus 2,304 raw alias bytes for directed-high, 1,560 versus 2,304 for
-undirected-high, and 128 versus 576 for 32-edge parallel. These values exclude allocator/page
-effects; runtime parity, malformed/stale fallback, and ordinary-caller activation remain deferred.
-Plan 0154 also measures ScanOnly canonical rank/select independently from both alias and the
-retired Published blob path. Directed 32/128/256 probes intentionally keep local degree at two
-(about 18.07M instructions per 1,024-request run), while same-bucket parallel probes expose the
-degree-sensitive baseline (696.30M at 32, 10.14B at 128, and 7.75B at 256 in the 2026-07-24
-focused run). The parallel series is non-monotonic and remains diagnostic evidence only until repeated;
-it is not a production adoption or activation decision.
-The focused scope probe also removes the temporary row-vector pass from canonical `select_rank`;
-the measured total remains effectively unchanged, so this is recorded as a safe cleanup, not as a
-material optimization. The measurement-only `canbench-scopes` feature keeps source/counterpart
-scope instrumentation separate from the crate's full benchmark export module. Plan 0155 replaces
-the remaining per-lookup logical-slot vector materialization with a direct canonical range walk.
-Plan 0156 then reuses the existing descending iterator/chunk-prefetch path through an explicit
-`(logical_slot, edge)` adapter. The 32/128/256 parallel-mid probes move to 46.90M / 138.68M /
-213.78M instructions with zero stable-memory growth. This improves ScanOnly traversal without
-altering the separate alias-versus-rank-indexed adoption decision.
-
-The ordinary descending hub scan remains on the original iterator fast path and measures 15.27M
-instructions with zero heap/stable-memory growth (2.70% below its committed baseline). The mate
-improvement is therefore isolated to the explicit-slot adapter and does not add tuple overhead to
-ordinary scan callers.
-
----
+A future ADR may investigate an adaptive accelerator only after measuring byte footprint, lookup
+runtime, rebuild cost, and failure-atomicity against this exact scan. Such work is not part of the
+current LARA contract and must not add a second source of edge identity.
 
 ## What is IC-specific (substrate only)
 
@@ -390,7 +222,7 @@ parallel-32, with zero heap/stable-memory growth, versus decoded rank lookup at 
 bytes are smaller.
 The shared-orientation lookup model measured 672.22K instructions for directed-high and 175.43K
 for parallel-32, with zero heap/stable-memory growth. It is below decoded rank lookup (1.56M and
-323.90K) and its logical estimate is smaller (1,800 versus 2,840 bytes; 84 versus 128 bytes), so
+323.90K) and its logical esticounterpart is smaller (1,800 versus 2,840 bytes; 84 versus 128 bytes), so
 it is the only remaining compressed candidate passing the current measurement gates. It remains
 measurement-only pending serialized locator, stale/malformed fallback, and production-layout
 accounting.
@@ -400,8 +232,8 @@ The decoded model matches canonical occurrence-rank counterparts for every ident
 directed-high and parallel-32 fixtures and rejects out-of-range ranks.
 
 Plan 0159 adds a measurement-only sampled paired-residual model. It stores block-local signed
-`reverse_slot - forward_slot` values in 8/16-bit modes and falls back to raw mate slots. The
-current logical estimates are 2,696 bytes (21.06 B/edge) for directed-high and 60 bytes
+`reverse_slot - forward_slot` values in 8/16-bit modes and falls back to raw counterpart slots. The
+current logical esticounterparts are 2,696 bytes (21.06 B/edge) for directed-high and 60 bytes
 (1.88 B/edge) for parallel-32 at block sizes 32/64. Higher-degree parallel fixtures show
 checkpoint amortization (parallel-128: 276 -> 164 bytes; parallel-256: 532 -> 308 bytes for
 B=8 -> 64), while directed-high is flat because its endpoint pairs are mostly single-rank groups.
@@ -409,7 +241,7 @@ Focused direct-offset lookup probes are 772.60K and 212.29K instructions respect
 heap/stable-memory growth. A bounded local-scan probe on parallel-32 measures 579.40K instructions
 at B=8 and 1.26M at B=32/64, exposing the space/runtime trade-off. The temporary residual codec is
 strict for residual and raw-fallback blocks; raw fallback carries an explicit reverse stream because
-absolute mate slots cannot be derived by negating a residual. The model remains a candidate and is
+absolute counterpart slots cannot be derived by negating a residual. The model remains a candidate and is
 not a production format.
 
 Plan 0160 adds a measurement-only `SharedOrientation` policy candidate behind byte and runtime
@@ -421,7 +253,7 @@ Plan 0160's initial common-fixture comparison reports shared-orientation at 1,80
 instructions for directed-high and 84 bytes / 175.43K for parallel-32. Rank-indexed reports
 2,840 / 1.56M and 128 / 323.90K; sampled residual reaches 60 bytes on parallel-32 but its
 bounded local scan is 1.26M instructions. These are benchmark-only inputs to the threshold gate,
-not production storage estimates.
+not production storage esticounterparts.
 
 The undirected-high fixture reports 1,560 bytes for rank-indexed and treats shared-orientation as
 unsupported because that model requires directed counterpart groups. Undirected adoption remains a
@@ -443,7 +275,7 @@ remains a benchmark-only candidate and is not a stable LARA layout.
 The topology synthesis is now explicit: low-degree/cold buckets, whether directed or undirected,
 remain `ScanOnly`; dense directed buckets prefer the measured `SharedOrientation` candidate when its exact/fail-closed gates pass;
 aligned undirected non-self buckets prefer pair-rank; reordered undirected pairs may use a bounded
-block permutation exception; undirected self-loops require no mate metadata; and sparse-slot or
+block permutation exception; undirected self-loops require no counterpart metadata; and sparse-slot or
 mixed-label buckets are evaluated independently. These are candidate precedences only. Shared,
 pair-rank, and block-permutation formats still require mutation maintenance, stale/rebuild
 handling, and stable-layout accounting before ordinary callers can activate them.
@@ -452,16 +284,16 @@ Plan 0181 adds an owner-facing physical-slot reader for slab and overflow-log lo
 Published bridge uses it only for singleton counterpart buckets; mixed-neighbor validation keeps a
 full scan because exact equal-neighbor count and rank cannot be derived from bucket degree alone.
 This is a transitional, crate-private implementation path, not the target query contract of ADR
-0048/0050. The bridge remains until `mate.rs` migrates singleton validation to the logical read
+0048/0050. The bridge remains until `counterpart.rs` migrates singleton validation to the logical read
 surface; it must not become a Graph, Router, or graph-index identity API.
 
 Plan 0163 confirms the self-loop shape boundary with isolated fixtures: directed self-loops have
-two orientation rows, whereas undirected self-loops have one row and zero mate metadata. Plan
+two orientation rows, whereas undirected self-loops have one row and zero counterpart metadata. Plan
 0164 adds a real isolated two-label fixture and a feature-gated physical slab/log location reader;
 overflow-log indices are high-bit encoded only in measurement identities.
 
 The measurement gate can encode directed self-loops through the directed rank adapter and confirms
-that undirected self-loops carry no per-edge mate payload. The mixed-label fixture keeps both label
+that undirected self-loops carry no per-edge counterpart payload. The mixed-label fixture keeps both label
 buckets independent, and sparse-slot uses real deletion-churn overflow-log locations rather than
 logical live ordinals.
 
@@ -505,7 +337,7 @@ Plan 0167 charges the real canonical mutation boundary as well: sparse insert/de
 measure 72.74K / 162.18K / 126.71K / 144.90K instructions, while the mixed-label trace measures
 60.96K / 35.70K / 26.19K / 18.25K. The 4,171 stable pages reported by these fixture runs are
 setup allocation for measurement memory, not logical candidate size or production allocator
-evidence. No mate metadata is published by this probe.
+evidence. No counterpart metadata is published by this probe.
 
 Plan 0168 applies the amortization gate: the sparse integrated cost is 506.53K instructions versus
 45.59M for ScanOnly, and mixed-label is 141.10K versus 15.94M. Both SharedOrientation candidates
@@ -513,19 +345,19 @@ break even at one read per canonical update, subject to byte, exactness, stale, 
 This remains measurement-only; no candidate is persisted or activated for ordinary callers.
 
 Plan 0170 implements the first persistence slice as an isolated envelope codec and fixture-backed
-stable map only; it does not allocate production mate regions or connect callers. The production
+stable map only; it does not allocate production counterpart regions or connect callers. The production
 design keeps magic/version once in the region header, while locator metadata owns lifecycle,
 candidate, epoch, identity, cardinality, offset, and total length; per-entry magic/version framing
 is intentionally omitted.
 The isolated fixture uses a fixed 32-byte region header matching existing LARA byte-store headers,
 a 22-byte fixed locator value, and a separate raw payload region; it is not a production layout.
 This bucket-locator/raw-payload split is not the selected production layout and does not allocate or
-register production `MemoryId`s. Plan 0171 confirms the existing `MateStorage` owner as the
+register production `MemoryId`s. Plan 0171 confirms the existing `CounterpartStorage` owner as the
 production baseline: one five-byte locator row addresses one orientation/leaf and its blob
 directory contains all indexed buckets for that leaf. Reopen and publication use the existing
 four-region composite boundary. Plan 0175 now uses the compact blob
 format at that owner: the 5-byte leaf locator remains unchanged, and the blob
-header (`bucket_count` and `total_length`) and targets approximately 15-byte directory entries
+header (`bucket_count` and `total_length`) and targets approxicounterpartly 15-byte directory entries
 (owner 4, label 2, packed flags 1, cardinality 4, mapping offset 4), deriving mapping length from
 the next offset/blob end. Its logical overhead target is `13 + 15B` bytes per leaf versus the
 current `29 + 20B`, a saving of `16 + 5B` bytes before allocator and MemoryManager overhead.
@@ -534,7 +366,7 @@ compact fixture measured 701 bytes for three indexed buckets versus 732 bytes fo
 baseline, and 6,847 versus 7,571 instructions for encode/decode. The full crate canbench
 sweep could not persist because the unrelated deferred undirected insert benchmark traps with
 `CollectAllocationOverflow`; the focused compact/baseline probes passed.
-Plan 0169 consolidates the persistence design: canonical LARA owns truth, while derived mate state
+Plan 0169 consolidates the persistence design: canonical LARA owns truth, while derived counterpart state
 is one versioned record per orientation/leaf/owner/label bucket. Region metadata carries candidate
 kind, lifecycle, topology identity, canonical epoch, cardinality, blob offset, and total length.
 Proposed bounds are 65,535 entries and 2 MiB payload per bucket; overflow or malformed
@@ -566,7 +398,7 @@ Use this when reviewing LARA PRs:
 
 - [lara-dgap-contract.md](./lara-dgap-contract.md) — DGAP mapping and labeled gap detail
 - [adr/0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — labeled physical migration
-- [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented**; one-orientation batch commit implemented (`plan/reserve/commit/rollback` boundary, opaque graph-bound reservation token consumed on rollback, inline property bytes allocation with tail rollback and free-list slack, pre-write fingerprint/geometry validation, success and adversarial tests including allocator free-list shape); **GraphStore clean-slab orchestration implemented** (`try_insert_batch_edges_clean_slab` reserve-all-then-commit with explicit `Unsupported` fallback to the scalar path, cross-orientation reservation rollback on partial failure, directed/reverse/undirected/self-loop tests, scalar-vs-batch canbench); **per-leaf overflow-log batch append implemented** (`reserve_one_orientation_batch` admits existing-bucket runs to the shared per-leaf edge/inline-property-bytes overflow logs, reserve checks log and inline property bytes log capacity before any canonical write, commit appends entries in logical ordinal order and updates bucket heads/degree without changing stored_slots or vertex slab span, scalar fallback preserved for unsupported geometry); **Plans 0125/0128 pending-aware one-shot expansion implemented for existing-bucket runs** (one expansion per PMA leaf, adjacent free-span/tail growth, segment-count publication and rollback, preserved edge/inline-property-bytes-log fold, fixed-width inline property bytes span reuse or occupied-tail growth, edge and inline property bytes read-back/rollback coverage); **Plan 0129 internal physical-location results implemented** (LARA returns exact slab/overflow-log edge and inline property bytes locations keyed by ordinal and owner, GraphStore joins directed/reverse, undirected pair, and self-loop results without adjacency rediscovery); relocation, new buckets, persistent mate index, and public wire integration remain planned
+- [adr/0045-unordered-batch-graph-mutations-and-lara-placement.md](../adr/0045-unordered-batch-graph-mutations-and-lara-placement.md) — **read-only planning implemented**; one-orientation batch commit implemented (`plan/reserve/commit/rollback` boundary, opaque graph-bound reservation token consumed on rollback, inline property bytes allocation with tail rollback and free-list slack, pre-write fingerprint/geometry validation, success and adversarial tests including allocator free-list shape); **GraphStore clean-slab orchestration implemented** (`try_insert_batch_edges_clean_slab` reserve-all-then-commit with explicit `Unsupported` fallback to the scalar path, cross-orientation reservation rollback on partial failure, directed/reverse/undirected/self-loop tests, scalar-vs-batch canbench); **per-leaf overflow-log batch append implemented** (`reserve_one_orientation_batch` admits existing-bucket runs to the shared per-leaf edge/inline-property-bytes overflow logs, reserve checks log and inline property bytes log capacity before any canonical write, commit appends entries in logical ordinal order and updates bucket heads/degree without changing stored_slots or vertex slab span, scalar fallback preserved for unsupported geometry); **Plans 0125/0128 pending-aware one-shot expansion implemented for existing-bucket runs** (one expansion per PMA leaf, adjacent free-span/tail growth, segment-count publication and rollback, preserved edge/inline-property-bytes-log fold, fixed-width inline property bytes span reuse or occupied-tail growth, edge and inline property bytes read-back/rollback coverage); **Plan 0129 internal physical-location results implemented** (LARA returns exact slab/overflow-log edge and inline property bytes locations keyed by ordinal and owner, GraphStore joins directed/reverse, undirected pair, and self-loop results without adjacency rediscovery); relocation, new buckets, persistent counterpart index, and public wire integration remain planned
 - [adr/0048-lara-counterpart-resolution.md](../adr/0048-lara-counterpart-resolution.md) — accepted physical-pairing design; Plans 0132, 0142, and 0143 add one-pass live-slot traversal, exact scalar location consumption, canonical read-only leaf enumeration, and mutation invalidation/rebuild scheduling for supported named buckets. The Published Sampled/Packed lookup work described by the older plans is historical benchmark evidence only: it is superseded by ADR 0048's metadata-free `CounterpartScan` and is not an activation dependency or authoritative runtime contract. Alias removal is primarily a persistent-bytes optimization: the raw alias payload is 18 bytes per entry (excluding B-tree/allocator overhead), while MemoryManager page deltas are not per-edge measurements and ScanOnly instruction cost is only a guardrail. Plans 0147–0177 provide isolated AliasOnly/ScanOnly/rank-indexed fixtures, topology-specific selector logic, compact-only storage, and aggregate adoption status; these remain historical evidence and do not authorize ordinary-caller activation or alias removal
 - [adr/0050-lara-traverse-read-api.md](../adr/0050-lara-traverse-read-api.md) — planned canonical logical-slot traversal and explicit inline-property read contract; activation is gated on the ADR 0048 counterpart replacement and full forward/reverse caller migration
 - Plan 0180 reduces integrated Published request cost by reusing decoded blobs, validating packed ordering once, binary-searching packed mappings, and avoiding per-request bucket mapping clones. The full persisted sweep still measures the candidate slower than canonical scan for directed-high, parallel, and undirected-high, with zero heap/stable-memory deltas; all topologies remain Hold/ScanOnly and this is not an activation decision.

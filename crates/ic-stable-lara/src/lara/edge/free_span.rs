@@ -375,12 +375,12 @@ impl<M: Memory> FreeSpanStore<M> {
             .collect()
     }
 
-    #[cfg(any(test, feature = "adoption-fixtures"))]
+    #[cfg(test)]
     pub(crate) fn test_memory_size(&self) -> u64 {
         self.store.size()
     }
 
-    #[cfg(any(test, feature = "adoption-fixtures"))]
+    #[cfg(test)]
     pub(crate) fn test_by_start_memory_size(&self) -> u64 {
         self.by_start.borrow().memory_size()
     }

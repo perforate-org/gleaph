@@ -132,11 +132,11 @@ pub mod record;
 pub mod slot_index;
 pub(crate) mod traits;
 
+pub use bidirectional::counterpart::CounterpartLookupError;
 pub use bidirectional::{
     CanonicalEdgeOccurrence, DeferredBidirectionalLabeledError,
     DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver, DeletedEdge, EdgeSlotMoveObserver,
-    LabeledBidirectionalMaintenanceReport, MateLookupError, MateStorageInitError,
-    MateStorageMemories, Orientation as LabeledOrientation, ScalarInsertPair,
+    LabeledBidirectionalMaintenanceReport, Orientation as LabeledOrientation, ScalarInsertPair,
 };
 pub use bucket_label_key::{
     BUCKET_LABEL_DIRECTED_BIT, BUCKET_LABEL_INDEX_MASK, BucketDirectedness, BucketLabelKey,

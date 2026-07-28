@@ -8,7 +8,7 @@
 
 use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, LabeledInlinePropertyValueBatchScratch,
-    LabeledVertex, MateStorageMemories, OutEdgeOrder,
+    LabeledVertex, OutEdgeOrder,
     graph::LabeledLaraGraph,
     graph::traverse::{BucketEntryPosition, LabeledTraversalRequest},
 };
@@ -217,12 +217,6 @@ where
         labeled_lara_memories();
     let (rv, rb, rbf, rbfs, rec, re, rel, rsm, refs, refbs, rvs, rpfs, rpfbs, rpl, rpb) =
         labeled_lara_memories();
-    let memories = MateStorageMemories::new(
-        crate::VectorMemory::default(),
-        crate::VectorMemory::default(),
-        crate::VectorMemory::default(),
-        crate::VectorMemory::default(),
-    );
     DeferredBidirectionalLabeledLaraGraph::new(
         fv,
         fb,

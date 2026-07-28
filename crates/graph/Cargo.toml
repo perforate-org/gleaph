@@ -21,7 +21,6 @@ canbench = [
     "dep:canbench-rs",
     "dep:serde_json",
     "dep:sha2",
-    "ic-stable-lara/adoption-fixtures",
 ]
 canbench_uniform_4 = ["canbench"]
 canbench_uniform_8 = ["canbench"]

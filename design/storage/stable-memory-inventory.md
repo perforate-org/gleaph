@@ -1,7 +1,7 @@
 # Stable-memory inventory
 
 Last updated: 2026-07-27
-Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46 = 47 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations + Plan 0088 durable derived-index outbox storage; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 Slice 1 provisioning-request catalog + Slice 5 Router outbound accept_envelope send (ROUTER_PROVISION_CONFIG durable binding) + Slice 6 owner-identity-bound intent lock release on Completed and four-branch invocation-owned rollback on send failure (only if current operation inserted the record and it is still AwaitingAck) (no new regions) (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 49 regions, 0–48; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 12 regions, 0–11)
+Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46, with reserved holes 35 and 47–50 = 51 registry regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations + Plan 0088 durable derived-index outbox storage; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 Slice 1 provisioning-request catalog + Slice 5 Router outbound accept_envelope send (ROUTER_PROVISION_CONFIG durable binding) + Slice 6 owner-identity-bound intent lock release on Completed and four-branch invocation-owned rollback on send failure (only if current operation inserted the record and it is still AwaitingAck) (no new regions) (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 49 regions, 0–48; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) = 12 regions, 0–11)
 Anchor timestamp: 2026-07-27 14:55:50 UTC +0000
 
 Plan 0171 update (2026-07-24 23:03:51 UTC +0000): the implemented mate owner is explicitly
@@ -193,31 +193,22 @@ existing stable memory.
 | 30       | `MAINTENANCE_QUEUE` | Deferred PMA work queue | maintenance | Internal LARA drain |
 | 31       | `DIRTY_WORK_ITEMS`  | Dirty work tracking     | maintenance | Internal LARA drain |
 
-### LARA-owned counterpart tables (ADR 0048 / Plans 0139/0142; ownership and canonical enumeration wired, runtime dormant)
+### Former adaptive counterpart regions (removed)
 
-ADR 0048 accepts four bidirectional-LARA-owned logical regions and removal of
-facade `EDGE_ALIASES`. Plan 0136 implements the storage boundary and Plan 0139 wires it into the
-Graph-owned bidirectional LARA at Graph `MemoryId`s 47–50. The dormant mate regions remain
-allocated for their separate evidence substrate; runtime counterpart resolution uses CounterpartScan.
+ADR 0048 now has one production counterpart algorithm: metadata-free `CounterpartScan` over
+canonical live adjacency. The pre-deployment MATE locator/blob/free-span substrate, its feature-
+gated fixtures, and its adoption/compression benchmarks were removed. MemoryIds 47–50 remain
+reserved registry holes and are not allocated or silently reused.
 
-| MemoryId | Symbol                    | Role                                                                              | Class       | Rebuild                                                                                                                                                |
-| -------- | ------------------------- | --------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 47       | `MATE_LEAF_LOCATORS`      | Dense five-byte `(orientation, leaf)` locator rows                                | derived     | Plan 0141 admission/build, Plan 0142 canonical enumeration, and Plan 0143 mutation invalidation + queued rebuild; runtime consumption remains deferred |
-| 48       | `MATE_BLOBS`              | Versioned sampled-checkpoint or packed counterpart-slot arrays for indexed leaves | derived     | Plan 0141 publication, Plan 0142 canonical revalidation, and Plan 0143 failure-safe maintenance rebuild; runtime consumption remains deferred          |
-| 49       | `MATE_FREE_SPANS`         | Retired mate-blob byte ranges                                                     | maintenance | Allocator validation                                                                                                                                   |
-| 50       | `MATE_FREE_SPAN_BY_START` | Coalescing index for mate-blob free ranges                                        | maintenance | Paired `FreeSpanStore` validation                                                                                                                      |
+| MemoryId | Symbol       | Role                              | Class       | Rebuild |
+| -------- | ------------ | --------------------------------- | ----------- | ------- |
+| 47       | `RESERVED_47` | Former counterpart locator region | maintenance | — |
+| 48       | `RESERVED_48` | Former counterpart blob region    | maintenance | — |
+| 49       | `RESERVED_49` | Former counterpart free spans     | maintenance | — |
+| 50       | `RESERVED_50` | Former counterpart span index     | maintenance | — |
 
-This is a net increase of three regions after the former `EDGE_ALIASES` region is removed. The
-locator uses a dedicated fixed-row store modeled on LARA vertex/count/span
-columns, not `StableVec`, and does not enlarge existing vertex, bucket, count,
-or span rows. The mate `FreeSpanStore` reuses the existing implementation and
-algorithm in a separate address space; it never shares edge or inline property bytes spans.
-
-Owner: `ic-stable-lara` / graph `GRAPH` thread-local when promoted. The dormant foundation itself
-accepts four distinct memories and is not wired to `GRAPH`; scan paths must not consult PMA
-maintenance stores ([lara.md](./lara.md)).
-
----
+Historical Plans 0139–0175 and their benchmark numbers remain in the repository as historical
+evidence, but they no longer describe active storage or implementation requirements.
 
 ## Graph canister — facade regions
 

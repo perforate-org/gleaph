@@ -92,7 +92,7 @@ owned by bidirectional LARA through `counterpart_of` and `canonical_handle`, usi
 the `visit_edges`/selected-slot APIs. Graph, Router, and graph-index encode logical slots into
 existing wire `u32` fields only at explicit adapters.
 
-GraphStore continues to own canonical sidecars. The target architecture has no packed derived mate index;
+GraphStore continues to own canonical sidecars. The target architecture has no packed derived counterpart index;
 exact rank/select scanning remains the source of truth.
 
 ## Indexes (local vs global)

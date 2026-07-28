@@ -4,7 +4,7 @@
 //! selecting the same live equal-neighbor occurrence rank in the counterpart bucket; it does
 //! not allocate or persist an index.
 
-use super::{Orientation, mate::CanonicalEdgeOccurrence};
+use super::Orientation;
 use crate::{
     VertexId,
     labeled::{
@@ -28,6 +28,19 @@ pub(crate) fn reset_canonical_counterpart_lookup_count() {
 
 pub(crate) fn canonical_counterpart_lookup_count() -> u32 {
     CANONICAL_COUNTERPART_LOOKUPS.with(Cell::get)
+}
+
+/// A canonical edge occurrence together with the orientation that owns its bucket row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalEdgeOccurrence {
+    /// Forward outgoing or reverse incoming orientation.
+    pub orientation: Orientation,
+    /// Vertex owning the label bucket row.
+    pub owner_vertex_id: VertexId,
+    /// Storage label of the bucket containing the row.
+    pub label_id: BucketLabelKey,
+    /// Bucket entry position, including tombstone positions, inside the label row.
+    pub slot_index: BucketEntryPosition,
 }
 
 /// Canonical edge handle without orientation.

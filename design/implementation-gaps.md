@@ -15,7 +15,7 @@ or ADR remains authoritative and this ledger points to it.
 
 ## Disposition rule
 
-Every material gap discovered during implementation, review, validation, or demo integration must
+Every counterpartrial gap discovered during implementation, review, validation, or demo integration must
 receive one disposition before the current work is committed:
 
 1. **Fix now** when it is a correctness or security defect, blocks the current contract, has a clear
@@ -23,7 +23,7 @@ receive one disposition before the current work is committed:
 2. **Prerequisite slice** when it blocks the current work but needs independent implementation,
    review, validation, or commit history.
 3. **Record here** when it is real but non-blocking, its design is unresolved, or fixing it would
-   expand the current slice materially.
+   expand the current slice counterpartrially.
 4. **Reject as not a gap** only with evidence that the observed behavior matches an existing active
    contract.
 
@@ -91,7 +91,7 @@ defect from being rediscovered without its prior reasoning.
   forward-only and reverse-only states, proving that the state is observable when the paired
   boundary is bypassed.
 - **Impact:** A lower-level caller or a handler that returns an ordinary error could leave forward
-  and reverse canonical adjacency out of sync, while the mate sidecar is already invalidated.
+  and reverse canonical adjacency out of sync, while the counterpart sidecar is already invalidated.
 - **Next decision:** Keep exact counterpart validation for repair and published lookup. Any future
   mutation path must preserve the same preflight-then-trap boundary; a new recoverable post-write
   error requires a separate atomicity design review.
