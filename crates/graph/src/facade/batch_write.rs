@@ -37,9 +37,8 @@ use super::store::helpers::{build_edge_to, edge_storage_label, lara_label};
 ///
 /// - `Committed`: every required one-orientation reservation succeeded and was
 ///   committed. The contained results are ordered by orientation.
-/// - `Unsupported`: at least one orientation could not be reserved on the clean-
-///   slab path. No canonical write was published by this attempt; the caller
-///   may fall back to the existing scalar insertion path.
+/// - `RecoverableGeometry`: at least one orientation could not be reserved on
+///   the clean-slab path for a geometry condition that permits scalar fallback.
 #[derive(Debug)]
 pub(crate) enum BatchEdgeInsertResult {
     Committed {
@@ -52,7 +51,7 @@ pub(crate) enum BatchEdgeInsertResult {
         /// True when at least one orientation used pending-aware leaf expansion.
         used_expansion: bool,
     },
-    Unsupported {
+    RecoverableGeometry {
         /// Typed reason the clean-slab path could not be used.
         error: OneOrientationBatchError,
     },
@@ -151,7 +150,7 @@ impl BatchEdgeInsertResult {
             Self::Committed {
                 edge_slots_written, ..
             } => Some(*edge_slots_written),
-            Self::Unsupported { .. } => None,
+            Self::RecoverableGeometry { .. } => None,
         }
     }
 
@@ -162,7 +161,7 @@ impl BatchEdgeInsertResult {
                 inline_property_bytes_slots_written,
                 ..
             } => Some(*inline_property_bytes_slots_written),
-            Self::Unsupported { .. } => None,
+            Self::RecoverableGeometry { .. } => None,
         }
     }
 
@@ -200,7 +199,7 @@ impl GraphStore {
         let result = self
             .try_insert_ordered_edge_batch_clean_slab(edges)
             .map_err(OrderedEdgeBatchExecutionError::Validation)?;
-        if let BatchEdgeInsertResult::Unsupported { error } = result {
+        if let BatchEdgeInsertResult::RecoverableGeometry { error } = result {
             return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
         }
 
@@ -217,7 +216,7 @@ impl GraphStore {
         let result = self
             .try_insert_ordered_edge_batch_clean_slab_with_intents(edges, intents)
             .map_err(OrderedEdgeBatchExecutionError::Validation)?;
-        if let BatchEdgeInsertResult::Unsupported { error } = result {
+        if let BatchEdgeInsertResult::RecoverableGeometry { error } = result {
             return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
         }
 
@@ -344,7 +343,7 @@ impl GraphStore {
                 self.execute_ordered_scalar_edges(&scalar_edges);
                 Ok(self.commit_ordered_edge_batch_receipt(mutation_id, request_identity, edges))
             }
-            Ok(BatchEdgeInsertResult::Unsupported { .. }) => Ok(self
+            Ok(BatchEdgeInsertResult::RecoverableGeometry { .. }) => Ok(self
                 .execute_ordered_edge_batch_scalar_fallback(mutation_id, request_identity, edges)),
             Err(error) => Err(OrderedEdgeBatchExecutionError::Validation(error)),
         }
@@ -469,7 +468,7 @@ impl GraphStore {
     /// 4. Commits only after all reservations succeed.
     ///
     /// If any orientation cannot be reserved on the clean-slab path, this method
-    /// returns [`BatchEdgeInsertResult::Unsupported`] without writing any canonical
+    /// returns [`BatchEdgeInsertResult::RecoverableGeometry`] without writing any canonical
     /// adjacency. Any reservation that succeeded before the failure is rolled back
     /// by consuming its token; the rollback restores logical edge capacity and
     /// the inline property bytes occupied tail, and retires any allocated inline property bytes to the
@@ -623,7 +622,7 @@ impl GraphStore {
             Ok(reservations) => reservations,
             Err(err) => {
                 if err.is_recoverable_geometry() {
-                    return Ok(BatchEdgeInsertResult::Unsupported { error: err });
+                    return Ok(BatchEdgeInsertResult::RecoverableGeometry { error: err });
                 }
                 return Err(BatchPlacementError::BatchWrite(err));
             }

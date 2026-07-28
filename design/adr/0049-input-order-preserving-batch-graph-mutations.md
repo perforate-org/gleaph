@@ -1805,6 +1805,12 @@ not rewritten as though unfinished unordered product behavior shipped.
     pairs, and stable-memory failures propagate as typed batch-write errors;
     the handler no longer recognizes fallback eligibility through a formatted
     error-string prefix.
+    **Implemented (2026-07-28 22:45:08 UTC +0000):** the internal result
+    variant is named `RecoverableGeometry` to make its fallback contract
+    explicit. A focused LARA test locks the classification matrix: only the
+    missing-pinned-leaf and property-span-relocation cases are recoverable;
+    empty plans, capacity/log exhaustion, and invalid orientation pairs remain
+    fatal typed errors.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

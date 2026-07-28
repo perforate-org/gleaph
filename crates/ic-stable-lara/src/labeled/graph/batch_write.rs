@@ -3484,6 +3484,22 @@ mod tests {
     }
 
     #[test]
+    fn recoverable_geometry_classification_excludes_fatal_errors() {
+        assert!(OneOrientationBatchError::MissingPinnedLeafForExpansion.is_recoverable_geometry());
+        assert!(
+            OneOrientationBatchError::InlinePropertyBytesSpanRequiresRelocation
+                .is_recoverable_geometry()
+        );
+        assert!(!OneOrientationBatchError::EmptyPlan.is_recoverable_geometry());
+        assert!(!OneOrientationBatchError::SlabCapacityExceeded.is_recoverable_geometry());
+        assert!(!OneOrientationBatchError::LogCapacityExceeded.is_recoverable_geometry());
+        assert!(
+            !OneOrientationBatchError::InvalidOrientationPair("broken".into())
+                .is_recoverable_geometry()
+        );
+    }
+
+    #[test]
     fn logical_batch_shape_rejects_mismatched_directed_pair() {
         let plan = BidirectionalBatchPlan::Directed {
             forward: one_edge_plan(
