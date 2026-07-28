@@ -779,12 +779,12 @@ mod tests {
     };
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, PropertyId};
-    use ic_stable_lara::VertexId;
     use ic_stable_lara::labeled::batch_write::{
         OneOrientationBatchLocation, OneOrientationPhysicalLocation,
     };
     use ic_stable_lara::lara::edge::free_span::FreeSpanAllocatorStats;
     use ic_stable_lara::lara::edge_inline_property::InlinePropertyBytesAllocatorStats;
+    use ic_stable_lara::{MaintenanceBudget, VertexId};
 
     fn fresh_store() -> GraphStore {
         GraphStore::new()
@@ -1247,6 +1247,78 @@ mod tests {
         assert_eq!(
             store.edge_property_at_canonical_handle(next_handle, property_id),
             Some(Value::Int64(905))
+        );
+    }
+
+    #[test]
+    fn batch_sidecar_survives_forward_compaction_after_delete() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4010);
+        let property_id = PropertyId::from_raw(96);
+        let vertices = make_vertices(&store, 2);
+        let source = vertices[0];
+        let target = vertices[1];
+        let first = store
+            .insert_directed_edge(source, target, Some(label))
+            .expect("first edge");
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+
+        let mut second = input(source, target, Some(label), true, vec![]);
+        second.initial_edge_properties = vec![(property_id, Value::Int64(906))];
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()])
+            .expect("batch edge");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        let captured = locations[0].canonical_occurrence(&second);
+        let captured_handle = EdgeHandle::at_slot(
+            captured.owner_vertex_id,
+            captured.label_id,
+            captured.slot_index,
+        );
+        store
+            .delete_edge_by_handle(first)
+            .expect("delete first edge");
+        store.with_graph_mut(|graph| {
+            graph
+                .mark_compact_vertex_edge_span(LabeledOrientation::Forward, source, 0)
+                .expect("mark forward compaction");
+        });
+        store
+            .run_maintenance_best_effort(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("run compaction");
+
+        let moved = store
+            .directed_out_edges(source)
+            .expect("outgoing edges after compaction")
+            .into_iter()
+            .find(|edge| edge.neighbor_vid() == target)
+            .expect("surviving batch edge");
+        let moved_handle = EdgeHandle::at_slot(
+            source,
+            lara_label(label.pack(EdgeDirectedness::Directed)),
+            moved.edge_slot_index.raw(),
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(moved_handle, property_id),
+            Some(Value::Int64(906))
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(captured_handle, property_id),
+            None,
+            "the pre-compaction physical handle must not remain authoritative"
         );
     }
 
