@@ -1369,6 +1369,107 @@ mod tests {
         assert!(targets.contains(&200), "expanded edge 200 must be visible");
         assert!(targets.contains(&201), "expanded edge 201 must be visible");
     }
+
+    #[test]
+    fn expanded_slab_preserves_live_order_after_tombstone() {
+        let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+
+        let label = BucketLabelKey::directed_from_index(1);
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                crate::labeled::graph::test_support::TestEdge { target: 1 },
+            )
+            .unwrap();
+        graph
+            .remove_edge_at_slot(VertexId::from(0), label, 0)
+            .unwrap()
+            .expect("initial edge must become a slab tombstone");
+
+        let header = graph.edges().header();
+        let leaf = crate::LabeledLaraGraph::<
+            crate::labeled::graph::test_support::TestEdge,
+            crate::VectorMemory,
+        >::leaf_index_for_vid(VertexId::from(0), header.segment_size);
+        let log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
+        let entries: Vec<(i32, crate::labeled::graph::test_support::TestEdge)> = (0..log_capacity)
+            .map(|i| {
+                (
+                    if i == 0 { -1 } else { (i - 1) as i32 },
+                    crate::labeled::graph::test_support::TestEdge {
+                        target: 100 + i as u32,
+                    },
+                )
+            })
+            .collect();
+        graph
+            .edges()
+            .write_overflow_log_entries(leaf, 0, &entries)
+            .expect("fill log");
+
+        let vertex = graph.vertices.get(VertexId::from(0));
+        let (slot, bucket) = match graph
+            .find_bucket(VertexId::from(0), &vertex, label)
+            .expect("find bucket")
+        {
+            crate::labeled::graph::BucketSearch::Found { slot, bucket } => (slot, bucket),
+            _ => panic!("bucket must exist"),
+        };
+        graph
+            .buckets()
+            .write_label_bucket_slot(
+                slot,
+                bucket
+                    .with_overflow_log_head((log_capacity - 1) as i32)
+                    .with_degree_field(log_capacity as u32),
+            )
+            .expect("set folded-log metadata");
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                edges: vec![
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(1),
+                        label_id: label,
+                        edge: crate::labeled::graph::test_support::TestEdge { target: 200 },
+                    },
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 1,
+                        owner_vertex_id: VertexId::from(0),
+                        neighbor_vertex_id: VertexId::from(1),
+                        label_id: label,
+                        edge: crate::labeled::graph::test_support::TestEdge { target: 201 },
+                    },
+                ],
+            }],
+        };
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("expanded batch after tombstone should succeed");
+
+        let mut targets = Vec::new();
+        graph
+            .for_each_edges_for_label_ordered(
+                VertexId::from(0),
+                label,
+                OutEdgeOrder::Ascending,
+                |edge| targets.push(edge.target),
+            )
+            .unwrap();
+        let expected = (0..log_capacity)
+            .map(|i| 100 + i as u32)
+            .chain([200, 201])
+            .collect::<Vec<_>>();
+        assert_eq!(targets, expected);
+    }
     #[test]
     fn expanded_slab_same_leaf_multi_bucket_success() {
         // Two existing buckets on the same PMA leaf, both with their per-leaf
