@@ -1687,6 +1687,12 @@ not rewritten as though unfinished unordered product behavior shipped.
     ticking recovery converges projection, retirement, and `Completed`. The
     ordered lifecycle projection now reports these progress states instead of
     misclassifying the single-target record as `Failed`.
+    **Partially implemented (2026-07-28 19:45:33 UTC +0000):** PocketIC now
+    covers one public batch containing parallel directed edges, a non-self-loop
+    undirected edge, and an undirected self-loop. Distinct property values and
+    inline values remain paired with their logical items, exact replay remains
+    idempotent, and directed versus undirected GQL reads verify the expected
+    forward/reverse projection counts.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.
