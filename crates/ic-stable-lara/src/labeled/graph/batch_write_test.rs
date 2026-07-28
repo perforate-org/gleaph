@@ -1422,7 +1422,11 @@ mod tests {
             .collect();
         let b_entries: Vec<(i32, crate::labeled::graph::test_support::TestEdge)> = (0..b_count)
             .map(|i| {
-                let prev = if i == 0 { -1 } else { (i as i32) - 1 };
+                let prev = if i == 0 {
+                    -1
+                } else {
+                    (a_count as i32) + (i as i32) - 1
+                };
                 (
                     prev,
                     crate::labeled::graph::test_support::TestEdge {
@@ -1541,6 +1545,32 @@ mod tests {
             3 + log_capacity,
             "all folded and pending edges must be visible"
         );
+
+        let mut label_a_targets = Vec::new();
+        graph
+            .for_each_edges_for_label_ordered(
+                VertexId::from(0),
+                label_a,
+                OutEdgeOrder::Ascending,
+                |edge| label_a_targets.push(edge.target),
+            )
+            .unwrap();
+        assert_eq!(label_a_targets.len(), a_count + 2);
+        assert_eq!(label_a_targets.first(), Some(&1));
+        assert_eq!(label_a_targets.last(), Some(&300));
+
+        let mut label_b_targets = Vec::new();
+        graph
+            .for_each_edges_for_label_ordered(
+                VertexId::from(0),
+                label_b,
+                OutEdgeOrder::Ascending,
+                |edge| label_b_targets.push(edge.target),
+            )
+            .unwrap();
+        assert_eq!(label_b_targets.len(), b_count + 1);
+        assert_eq!(label_b_targets.first(), Some(&200));
+        assert_eq!(label_b_targets.last(), Some(&301));
     }
 
     #[test]

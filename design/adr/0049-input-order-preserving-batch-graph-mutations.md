@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 07:11:20 UTC +0000
+Anchor timestamp: 2026-07-28 07:19:21 UTC +0000
 
 ## Context
 
@@ -1490,9 +1490,11 @@ not rewritten as though unfinished unordered product behavior shipped.
    ADR 0045 planner/write fixtures without changing the public wire.
 7. Reclassify and rename internal unordered terminology where it denotes a
    semantic contract rather than reusable placement machinery.
-8. Extend placement reservations with explicit append/live-order validation for
-   clean slab, overflow log, expansion, fold, relocation, and tombstone-heavy
-   cases.
+8. **Partially implemented (2026-07-28):** extend placement reservations with
+   explicit append/live-order validation for clean slab, overflow-log append,
+   expanded-slab growth, folded logs, and tombstone-heavy cases. Same-leaf
+   multi-bucket expanded-slab coverage now checks each bucket independently;
+   relocation and the remaining tombstone-heavy cases remain planned.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
 10. Integrate mandatory internal location capture, canonical sidecar writes, and
