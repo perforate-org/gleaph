@@ -241,14 +241,10 @@ impl GraphStore {
                     occurrence.label_id,
                     occurrence.slot_index,
                 );
-                for (property_id, value) in &input.initial_edge_properties {
-                    self.commit_edge_property_write_at_canonical(
-                        handle,
-                        *property_id,
-                        value.clone(),
-                    )
-                    .expect("validated batch sidecar must be writable");
-                }
+                self.commit_edge_property_writes_at_canonical(
+                    handle,
+                    &input.initial_edge_properties,
+                );
             }
         }
         Ok(result)
@@ -895,7 +891,10 @@ mod tests {
         let vertices = make_vertices(&store, 2);
         store.prepare_clean_slab_dir_buckets(vertices[0], vertices[1], label, 0);
         let mut edge = input(vertices[0], vertices[1], Some(label), true, vec![]);
-        edge.initial_edge_properties = vec![(property_id, Value::Int64(42))];
+        edge.initial_edge_properties = vec![
+            (property_id, Value::Int64(42)),
+            (PropertyId::from_raw(79), Value::Text("batch".into())),
+        ];
 
         let result = store
             .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge.clone()])
@@ -916,6 +915,10 @@ mod tests {
         assert_eq!(
             store.edge_property_at_canonical_handle(handle, property_id),
             Some(Value::Int64(42))
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(handle, PropertyId::from_raw(79)),
+            Some(Value::Text("batch".into()))
         );
     }
 

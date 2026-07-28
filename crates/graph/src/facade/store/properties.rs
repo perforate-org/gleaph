@@ -108,6 +108,45 @@ impl GraphStore {
         Ok(old)
     }
 
+    /// Co-write a preflighted set of initial properties at one canonical edge.
+    ///
+    /// The caller validates the complete set before LARA commit. This method keeps
+    /// the primary sidecar writes and their derived-event dispatch under one Graph
+    /// boundary; a post-preflight storage failure is an invariant violation.
+    pub(crate) fn commit_edge_property_writes_at_canonical(
+        &self,
+        handle: super::handle::EdgeHandle,
+        properties: &[(PropertyId, Value)],
+    ) {
+        let previous = EDGE_PROPERTIES.with_borrow_mut(|store| {
+            properties
+                .iter()
+                .map(|(property_id, value)| {
+                    let previous = store
+                        .set(
+                            handle.owner_vertex_id,
+                            handle.label_id.raw(),
+                            handle.slot_index.raw(),
+                            *property_id,
+                            value.clone(),
+                        )
+                        .expect("validated batch sidecar must be writable");
+                    (*property_id, previous)
+                })
+                .collect::<Vec<_>>()
+        });
+        for ((property_id, value), (_, previous)) in properties.iter().zip(previous) {
+            dispatch_property_index_ops(PropertyValueChange::edge(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index.raw(),
+                *property_id,
+                previous.as_ref(),
+                Some(value),
+            ));
+        }
+    }
+
     /// Remove an edge property on a canonical handle and update local equality postings.
     pub(super) fn commit_edge_property_remove(
         &self,
