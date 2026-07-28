@@ -1393,6 +1393,75 @@ mod tests {
     }
 
     #[test]
+    fn batch_sidecar_survives_undirected_alias_compaction_after_delete() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(4012);
+        let property_id = PropertyId::from_raw(98);
+        let vertices = make_vertices(&store, 2);
+        let low = vertices[0];
+        let high = vertices[1];
+        let first = store
+            .insert_undirected_edge(low, high, Some(label))
+            .expect("first edge");
+        store.prepare_clean_slab_undir_buckets(low, high, label, 0);
+
+        let mut second = input(low, high, Some(label), false, vec![]);
+        second.initial_edge_properties = vec![(property_id, Value::Int64(908))];
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[second.clone()])
+            .expect("batch edge");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        let captured = locations[0].canonical_occurrence(&second);
+        let captured_handle = EdgeHandle::at_slot(
+            captured.owner_vertex_id,
+            captured.label_id,
+            captured.slot_index,
+        );
+        store
+            .delete_edge_by_handle(first)
+            .expect("delete first edge");
+        store.with_graph_mut(|graph| {
+            graph
+                .mark_compact_vertex_edge_span(LabeledOrientation::Forward, low, 0)
+                .expect("mark alias compaction");
+        });
+        store
+            .run_maintenance_best_effort(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("run compaction");
+
+        assert_eq!(
+            store.edge_property_at_canonical_handle(captured_handle, property_id),
+            Some(Value::Int64(908))
+        );
+        let alias = store
+            .find_first_forward_handle_descending(
+                low,
+                lara_label(label.pack(EdgeDirectedness::Undirected)),
+                |edge| edge.neighbor_vid() == high,
+            )
+            .expect("alias lookup after compaction")
+            .expect("surviving alias edge");
+        assert_eq!(
+            store.canonical_edge_handle(alias),
+            captured_handle,
+            "alias compaction must keep the batch canonical owner"
+        );
+    }
+
+    #[test]
     fn duplicate_initial_sidecar_is_rejected_before_batch_write() {
         let store = fresh_store();
         let label = EdgeLabelId::from_raw(4003);

@@ -474,15 +474,16 @@ where
         let Some(info) = self.read_label_bucket_placement_info(owner, label)? else {
             return Ok(None);
         };
-        // Fast path: a singleton relation's only live edge must be the requested one.
-        if info.degree == 1 && ordinal == 0 {
-            if let EdgeSlotState::Live(edge) =
+        // Fast path: a singleton relation may still have a leading tombstone, so only
+        // return early when slot zero is the live requested edge; otherwise scan the
+        // logical bucket below.
+        if info.degree == 1
+            && ordinal == 0
+            && let EdgeSlotState::Live(edge) =
                 self.read_edge_state(owner, label, BucketEntryPosition::new(0))?
-                && edge.neighbor_vid() == neighbor
-            {
-                return Ok(Some(BucketEntryPosition::new(0)));
-            }
-            return Ok(None);
+            && edge.neighbor_vid() == neighbor
+        {
+            return Ok(Some(BucketEntryPosition::new(0)));
         }
         let logical_slots = info
             .stored_edge_slots
