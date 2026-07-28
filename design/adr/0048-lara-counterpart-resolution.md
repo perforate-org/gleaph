@@ -2,14 +2,13 @@
 
 Date: 2026-07-23  
 Status: accepted  
-Implementation status: CounterpartScan production reads and mutation callers are migrated to the ADR 0050 `traverse_next` logical-slot surface. **Plan 0192 (2026-07-28 UTC) removed the Graph `EDGE_ALIASES` region, alias mutation/rebuild code, alias-specific tests and benchmarks, and reverse Graph sidecar move notifications.** The subsequent MATE-removal slice removed the pre-deployment adaptive locator/blob/free-span substrate, its fixtures, and its benchmarks. MemoryIds 35 and 47–50 remain reserved and are not reused.
-Adoption status: fully activated for the former Graph alias callers; CounterpartScan is the only production counterpart algorithm. Any adaptive accelerator remains a future ADR and research task.
+Implementation status: Implemented. CounterpartScan production reads and mutation callers are migrated to the ADR 0050 logical-slot surface. **Plan 0192 (2026-07-28 UTC) removed the Graph `EDGE_ALIASES` region, alias mutation/rebuild code, alias-specific tests and benchmarks, and reverse Graph sidecar move notifications.** The subsequent MATE-removal slice removed the pre-deployment adaptive locator/blob/free-span substrate, its fixtures, and its benchmarks. MemoryIds 35 and 47–50 remain reserved and are not reused.
+Adoption status: Complete. Former Graph alias callers use LARA-owned counterpart resolution, and CounterpartScan is the only production counterpart algorithm. Any adaptive accelerator remains a future ADR and research task.
 
-Traversal dependency: ordinary-caller adoption may begin after ADR 0050 Phases 1–2 have produced
-the tested and benchmarked `traverse_next` read surface. This is a one-way hand-off: ADR 0048 uses
-that surface for migrated callers while the legacy `traverse` module remains available. ADR 0048
-does not wait for the final ADR 0050 module rename, and it must not introduce a second traversal
-primitive.
+Traversal dependency: ordinary-caller adoption was completed on the tested and benchmarked ADR 0050
+logical-slot read surface. This was a one-way hand-off: ADR 0048 uses that surface for migrated
+callers and does not introduce a second traversal primitive. The final ADR 0050 module rename is
+independent of the counterpart-resolution decision.
 
 ## Context
 
@@ -563,12 +562,11 @@ Costs:
 - reverse repair must become pair-exact;
 - performance acceleration is deferred to a separate decision.
 
-## Planned validation contract
+## Completed validation contract
 
-The following checks are required before implementation status can change from `planned
-replacement` or adoption can change from `not activated`. They describe the target contract only;
-none of these bullets asserts that the current repository already provides the counterpart API,
-batch-location return values, alias removal, or the associated tests.
+The following checks defined the replacement contract. They are satisfied by the implemented
+CounterpartScan, mutation, repair, alias-removal, and terminology-cleanup paths and their tests;
+the list is retained as completion evidence rather than as remaining work.
 
 - directed fan-out and fan-in;
 - directed self-loops with separate orientations;
@@ -610,14 +608,15 @@ and exact logical-edge preservation across insertion, deletion, compaction, and 
 
 ## Benchmark contract
 
-Canbench compares:
+Canbench was used to compare:
 
 ```text
  historical Graph alias index
  CounterpartScan
 ```
 
-during implementation; the historical alias baseline is no longer a runtime path.
+The comparison was part of implementation validation; the historical alias baseline is no longer
+a runtime path.
 
 Workloads include:
 
