@@ -331,7 +331,15 @@ pub fn execute_ordered_edge_batch(
     let result = store
         .plan_batch_edge_insertion(&edges)
         .map_err(|error| format!("ordered Graph planner admission failed: {error}"))
-        .and_then(|_| {
+        .and_then(|summary| {
+            if summary.all_physical_runs_singleton() {
+                return Ok(store.execute_ordered_edge_batch_scalar_fallback(
+                    args.mutation_id,
+                    identity,
+                    &edges,
+                ));
+            }
+
             match store.execute_ordered_edge_batch_clean_slab(
                 args.mutation_id,
                 identity.clone(),

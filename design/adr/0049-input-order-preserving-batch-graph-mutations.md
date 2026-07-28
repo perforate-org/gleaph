@@ -1715,8 +1715,17 @@ not rewritten as though unfinished unordered product behavior shipped.
     the completed ADR 0049 activation gate: Router replay-record
     insert/replace, projection/retirement, overflow/expansion/relocation,
     tombstone-heavy, and property-bearing end-to-end comparisons remain
-    planned. Compare an unordered candidate separately only if a real
-    reordering optimization exists.
+    planned. **Partially implemented (2026-07-28 20:42:31 UTC +0000):** a
+    128-item fixture with exactly two parallel items per physical bucket is
+    batch-favorable (3.81M versus scalar 30.82M instructions). This confirms
+    that the singleton-bucket overhead, rather than the merged bucket writer,
+    is the immediate optimization target. **Implemented (2026-07-28
+    20:44:49 UTC +0000):** the Graph ordered handler now uses the ordered
+    scalar fallback when every affected physical run is singleton, while any
+    request containing a multi-intent run remains on the batch writer.
+    Per-run scalarization in a mixed request requires reserve-all/commit support
+    for those scalar runs and is not yet implemented. Compare an unordered
+    candidate separately only if a real reordering optimization exists.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

@@ -448,6 +448,19 @@ impl BatchPlacementSummary {
             .map(|l| l.pending_edge_intents)
             .sum()
     }
+
+    /// Whether every affected physical bucket receives exactly one pending intent.
+    ///
+    /// The batch writer's fixed planning/reservation cost is not amortized for this
+    /// geometry. Ordered callers may use the scalar owner boundary for this case;
+    /// requests containing any multi-intent bucket remain eligible for batch writing.
+    pub fn all_physical_runs_singleton(&self) -> bool {
+        !self.groups.is_empty()
+            && self
+                .groups
+                .values()
+                .all(|group| group.pending_edge_intents == 1)
+    }
 }
 
 impl GraphStore {
@@ -936,6 +949,32 @@ mod tests {
             .collect();
         assert_eq!(forward_groups.len(), 1);
         assert_eq!(forward_groups[0].pending_edge_intents, 2);
+    }
+
+    #[test]
+    fn singleton_physical_runs_are_classified_for_scalar_fallback() {
+        let store = fresh_store();
+        let v = make_vertices(&store, 4);
+        let label = edge_label_id_for_name("BatchSingletonClassification");
+        let edges = vec![
+            input(v[0], v[1], Some(label), true, vec![]),
+            input(v[2], v[3], Some(label), true, vec![]),
+        ];
+        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
+        assert!(summary.all_physical_runs_singleton());
+    }
+
+    #[test]
+    fn multi_item_physical_run_remains_batch_eligible() {
+        let store = fresh_store();
+        let v = make_vertices(&store, 2);
+        let label = edge_label_id_for_name("BatchMultiRunClassification");
+        let edges = vec![
+            input(v[0], v[1], Some(label), true, vec![]),
+            input(v[0], v[1], Some(label), true, vec![]),
+        ];
+        let summary = store.plan_batch_edge_insertion(&edges).expect("plan");
+        assert!(!summary.all_physical_runs_singleton());
     }
 
     #[test]

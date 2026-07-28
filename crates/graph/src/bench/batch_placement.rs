@@ -326,6 +326,42 @@ fn setup_fan_out_directed_edges(
     (store, label, input)
 }
 
+fn setup_two_parallel_directed_edges_per_bucket(
+    bucket_count: usize,
+) -> (GraphStore, EdgeLabelId, Vec<BatchEdgeInput>) {
+    let store = GraphStore::new();
+    let label = label_id("BenchParallelDirectedW0");
+    install_width_profile(label, 0);
+    let sources = make_vertices(
+        &store,
+        bucket_count
+            .try_into()
+            .expect("parallel benchmark bucket count fits u32"),
+    );
+    let targets = make_vertices(
+        &store,
+        bucket_count
+            .try_into()
+            .expect("parallel benchmark bucket count fits u32"),
+    );
+    let mut input = Vec::with_capacity(bucket_count * 2);
+    for (&source, &target) in sources.iter().zip(&targets) {
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+        store.prepare_clean_slab_dir_buckets(target, source, label, 0);
+        for _ in 0..2 {
+            input.push(BatchEdgeInput {
+                source_vertex_id: source,
+                target_vertex_id: target,
+                catalog_label: Some(label),
+                directed: true,
+                inline_property_bytes: Vec::new(),
+                initial_edge_properties: Vec::new(),
+            });
+        }
+    }
+    (store, label, input)
+}
+
 #[bench(raw)]
 fn bench_clean_slab_directed_128_width_0() -> canbench_rs::BenchResult {
     let (store, _label, input) = setup_128_directed_edges(0);
@@ -502,6 +538,31 @@ fn bench_scalar_fan_out_1024_width_0() -> canbench_rs::BenchResult {
     let (store, label, input) = setup_fan_out_directed_edges(1024, 0);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("scalar_fan_out_1024_w0");
+        for edge in &input {
+            store
+                .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
+                .expect("scalar insert");
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_clean_slab_two_parallel_per_bucket_128_width_0() -> canbench_rs::BenchResult {
+    let (store, _label, input) = setup_two_parallel_directed_edges_per_bucket(64);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("clean_slab_two_parallel_per_bucket_128_w0");
+        let result = store
+            .try_insert_batch_edges_clean_slab(&input)
+            .expect("batch");
+        assert!(result.total_edge_slots().is_some());
+    })
+}
+
+#[bench(raw)]
+fn bench_scalar_two_parallel_per_bucket_128_width_0() -> canbench_rs::BenchResult {
+    let (store, label, input) = setup_two_parallel_directed_edges_per_bucket(64);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("scalar_two_parallel_per_bucket_128_w0");
         for edge in &input {
             store
                 .insert_directed_edge(edge.source_vertex_id, edge.target_vertex_id, Some(label))
