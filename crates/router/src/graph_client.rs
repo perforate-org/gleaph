@@ -7,7 +7,8 @@ use gleaph_graph_kernel::federation::{
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchResult, ExecutePlanResult,
     GetMutationJournalEntriesArgs, GetMutationJournalEntriesResult, GraphMutationJournalEntryWire,
-    LabelStatsDeltaEventWire, MutationId, ShardEventSeq,
+    GraphOrderedEdgeBatchResult, LabelStatsDeltaEventWire, MutationId, OrderedEdgeBatchGraphArgs,
+    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, ShardEventSeq,
 };
 
 #[cfg(target_family = "wasm")]
@@ -130,6 +131,37 @@ pub async fn execute_plan_batch_typed_v1_on_graph(
     args.validate()
         .map_err(|e| format!("typed batch V1 validation: {e}"))?;
     call_graph_result(graph, "execute_plan_update_batch_typed_v1", args).await
+}
+
+/// Router → Graph: journal-first ordered edge batch execution (ADR 0049).
+// The public ingress/lifecycle caller is the next Router slice; keep this
+// boundary available while that caller is still fail-closed.
+#[allow(dead_code)]
+pub async fn execute_ordered_edge_batch_on_graph(
+    graph: Principal,
+    args: OrderedEdgeBatchGraphArgs,
+) -> Result<GraphOrderedEdgeBatchResult, String> {
+    args.recompute_and_validate_fingerprint()
+        .map_err(|e| format!("ordered edge batch validation: {e}"))?;
+    let result: GraphOrderedEdgeBatchResult =
+        call_graph_result(graph, "execute_ordered_edge_batch", args).await?;
+    result
+        .validate()
+        .map_err(|e| format!("ordered edge batch result validation: {e}"))?;
+    Ok(result)
+}
+
+/// Router → Graph: fingerprint-bound ordered mutation retirement (ADR 0049).
+#[allow(dead_code)]
+pub async fn retire_ordered_mutation_on_graph(
+    graph: Principal,
+    args: OrderedMutationRetirementArgs,
+) -> Result<OrderedMutationRetirementAck, String> {
+    let ack: OrderedMutationRetirementAck =
+        call_graph_result(graph, "retire_ordered_mutation", args).await?;
+    ack.validate()
+        .map_err(|e| format!("ordered mutation retirement acknowledgement validation: {e}"))?;
+    Ok(ack)
 }
 
 pub async fn ack_label_stats_deltas_through(
