@@ -135,6 +135,35 @@ fn edge_direction_formatting_preserves_direction_semantics() {
     }
 }
 
+#[test]
+fn simplified_edge_direction_formatting_preserves_direction_semantics() {
+    let cases = [
+        ("-/ROAD/->", "-/ROAD/->"),
+        ("<-/ROAD/-", "<-/ROAD/-"),
+        ("~/ROAD/~", "~/ROAD/~"),
+        ("<~/ROAD/~", "<~/ROAD/~"),
+        ("~/ROAD/~>", "~/ROAD/~>"),
+        ("<-/ROAD/->", "<-/ROAD/->"),
+        ("-/ROAD/-", "-/ROAD/-"),
+        ("<~/ROAD/~>", "-/ROAD/-"),
+    ];
+    for (input, expected_pattern) in cases {
+        let formatted = format_query(
+            &format!("MATCH (a){input}(b) RETURN a"),
+            &FormatOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            formatted,
+            format!("MATCH (a){expected_pattern}(b)\nRETURN\n  a")
+        );
+        assert_eq!(
+            format_query(&formatted, &FormatOptions::default()).unwrap(),
+            formatted
+        );
+    }
+}
+
 #[cfg(feature = "gleaph")]
 #[test]
 fn formats_social_demo_queries_and_preserves_nested_search_limit() {

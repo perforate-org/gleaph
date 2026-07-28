@@ -572,6 +572,7 @@ impl<'a> Formatter<'a> {
         let mut s = match &f.primary {
             PathPrimary::Node(n) => self.node(n),
             PathPrimary::Edge(e) => self.edge(e),
+            PathPrimary::Simplified(p) => self.simplified_path(p),
             _ => self.unsupported("path primary"),
         }?;
         if let Some(q) = &f.quantifier {
@@ -591,6 +592,94 @@ impl<'a> Formatter<'a> {
             });
         }
         Ok(s)
+    }
+    fn simplified_path(&mut self, p: &SimplifiedPathPattern) -> Result<String, FormatError> {
+        p.elements
+            .iter()
+            .map(|element| {
+                let (opening, closing) = match element.direction {
+                    EdgeDirection::PointingRight => ("-/", "/->"),
+                    EdgeDirection::PointingLeft => ("<-/", "/-"),
+                    EdgeDirection::LeftOrRight => ("<-/", "/->"),
+                    EdgeDirection::Undirected => ("~/", "/~"),
+                    EdgeDirection::LeftOrUndirected => ("<~/", "/~"),
+                    EdgeDirection::UndirectedOrRight => ("~/", "/~>"),
+                    EdgeDirection::AnyDirection => ("-/", "/-"),
+                };
+                Ok(format!(
+                    "{}{}{}",
+                    opening,
+                    self.simplified_contents(&element.contents)?,
+                    closing
+                ))
+            })
+            .collect::<Result<Vec<_>, FormatError>>()
+            .map(|elements| elements.join(""))
+    }
+    fn simplified_contents(
+        &mut self,
+        contents: &SimplifiedContents,
+    ) -> Result<String, FormatError> {
+        match contents {
+            SimplifiedContents::Label(label) => Ok(self.label(label)),
+            SimplifiedContents::Negation(inner) => {
+                Ok(format!("!{}", self.simplified_contents(inner)?))
+            }
+            SimplifiedContents::Conjunction(left, right) => Ok(format!(
+                "({}&{})",
+                self.simplified_contents(left)?,
+                self.simplified_contents(right)?
+            )),
+            SimplifiedContents::Union(left, right) => Ok(format!(
+                "({}|{})",
+                self.simplified_contents(left)?,
+                self.simplified_contents(right)?
+            )),
+            SimplifiedContents::MultisetAlternation(left, right) => Ok(format!(
+                "({}|+|{})",
+                self.simplified_contents(left)?,
+                self.simplified_contents(right)?
+            )),
+            SimplifiedContents::Concatenation(left, right) => Ok(format!(
+                "({} {})",
+                self.simplified_contents(left)?,
+                self.simplified_contents(right)?
+            )),
+            SimplifiedContents::Quantified(inner, quantifier) => Ok(format!(
+                "{}{}",
+                self.simplified_contents(inner)?,
+                self.path_quantifier(quantifier)?
+            )),
+            SimplifiedContents::DirectionOverride(direction, inner) => {
+                let value = self.simplified_contents(inner)?;
+                Ok(match direction {
+                    EdgeDirection::PointingRight => format!("{}>", value),
+                    EdgeDirection::PointingLeft => format!("<{}", value),
+                    EdgeDirection::LeftOrRight => format!("<{}>", value),
+                    EdgeDirection::Undirected => format!("~{}", value),
+                    EdgeDirection::LeftOrUndirected => format!("<~{}", value),
+                    EdgeDirection::UndirectedOrRight => format!("~{}>", value),
+                    EdgeDirection::AnyDirection => format!("-{}", value),
+                })
+            }
+            SimplifiedContents::Group(inner) => {
+                Ok(format!("({})", self.simplified_contents(inner)?))
+            }
+        }
+    }
+    fn path_quantifier(&self, quantifier: &PathQuantifier) -> Result<String, FormatError> {
+        Ok(match quantifier {
+            PathQuantifier::Star => "*".into(),
+            PathQuantifier::Plus => "+".into(),
+            PathQuantifier::Optional => "?".into(),
+            PathQuantifier::Fixed(n) => format!("{{{n}}}"),
+            PathQuantifier::Range { lower, upper } => {
+                format!(
+                    "{{{lower},{}}}",
+                    upper.map_or(String::new(), |n| n.to_string())
+                )
+            }
+        })
     }
     fn node(&mut self, n: &NodePattern) -> Result<String, FormatError> {
         let mut s = "(".to_string();

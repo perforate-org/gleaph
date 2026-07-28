@@ -1077,6 +1077,7 @@ impl Parser<'_> {
             (Token::TildeSlash, Token::SlashTilde) => EdgeDirection::Undirected,
             (Token::TildeSlash, Token::SlashTildeRight) => EdgeDirection::UndirectedOrRight,
             (Token::LeftTildeSlash, Token::SlashTilde) => EdgeDirection::LeftOrUndirected,
+            (Token::LeftTildeSlash, Token::SlashTildeRight) => EdgeDirection::AnyDirection,
             _ => {
                 return Err(GqlError::Parse(format!(
                     "invalid simplified path direction: {:?} … {:?}",
