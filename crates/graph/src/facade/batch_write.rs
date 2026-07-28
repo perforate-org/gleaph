@@ -247,8 +247,7 @@ impl GraphStore {
                     && second.role == BatchEdgeIntentRole::UndirectedAliasForward =>
             {
                 BidirectionalBatchPlan::Undirected {
-                    first: first.plan.clone(),
-                    second: second.plan.clone(),
+                    plan: merge_one_orientation_batch_plans(&first.plan, &second.plan),
                 }
             }
             _ => {
@@ -509,6 +508,34 @@ fn runs_from_map<E: CsrEdge>(
         .collect()
 }
 
+fn merge_one_orientation_batch_plans<E: CsrEdge>(
+    first: &OneOrientationBatchPlan<E>,
+    second: &OneOrientationBatchPlan<E>,
+) -> OneOrientationBatchPlan<E> {
+    let mut runs = RapidHashMap::<BatchPlacementKey, Vec<OneOrientationBatchEdge<E>>>::default();
+    for run in first.runs.iter().chain(second.runs.iter()) {
+        let key = BatchPlacementKey {
+            orientation: LabeledOrientation::Forward,
+            leaf_segment: super::batch_placement::leaf_index_for_vertex(
+                run.owner_vertex_id,
+                super::batch_placement::segment_size(),
+            ),
+            owner_vertex_id: run.owner_vertex_id,
+            storage_label: run.label_id,
+            inline_property_width: run.inline_property_width,
+        };
+        runs.entry(key)
+            .or_default()
+            .extend(run.edges.iter().cloned());
+    }
+    for edges in runs.values_mut() {
+        edges.sort_by_key(|edge| edge.logical_ordinal);
+    }
+    OneOrientationBatchPlan {
+        runs: runs_from_map(runs),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::batch_placement::BatchEdgeInput;
@@ -715,6 +742,41 @@ mod tests {
                 .filter(|e| e.label_id == label_raw)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn clean_slab_undirected_same_bucket_uses_one_merged_run() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(2501);
+        install_width(label, 0);
+        let vertices = make_vertices(&store, 4);
+        let one = vertices[1];
+        let two = vertices[2];
+        let three = vertices[3];
+
+        // The projections for [3 -- 2, 2 -- 1] both land in vertex 2's
+        // undirected bucket. They must be reserved and committed as one run.
+        store.prepare_clean_slab_undir_buckets(three, two, label, 0);
+        store.prepare_clean_slab_undir_buckets(two, one, label, 0);
+        let edges = vec![
+            input(three, two, Some(label), false, vec![]),
+            input(two, one, Some(label), false, vec![]),
+        ];
+
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_locations(&edges)
+            .expect("plan/encode ok");
+        assert!(matches!(result, BatchEdgeInsertResult::Committed { .. }));
+        let storage_label = storage_label_for(Some(label), false);
+        assert_eq!(
+            store
+                .undirected_edges(two)
+                .expect("undirected")
+                .into_iter()
+                .filter(|edge| edge.label_id == storage_label)
+                .count(),
+            2
         );
     }
 

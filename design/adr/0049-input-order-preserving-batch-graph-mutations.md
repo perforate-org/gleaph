@@ -2,8 +2,8 @@
 
 Date: 2026-07-23
 Status: Planned
-Last revised: 2026-07-24
-Anchor timestamp: 2026-07-24 00:28:53 UTC +0000
+Last revised: 2026-07-28
+Anchor timestamp: 2026-07-28 06:44:41 UTC +0000
 
 ## Context
 
@@ -97,11 +97,12 @@ GraphStore sidecars and property-index postings remain asynchronously derived.
 The current ADR 0045 implementation already produces intents in input ordinal
 order, requires strictly increasing ordinals inside each bucket run, and joins
 returned locations by ordinal. These are the correct seams to strengthen.
-However, it currently groups undirected runs by logical owner/alias role as
-well as physical ownership. Two role plans can therefore target the same
-forward bucket and cannot safely be reserved as independent snapshots. ADR 0049
-must replace that plan representation; merely renaming the existing
-`BidirectionalBatchPlan::Undirected { first, second }` is incorrect.
+The first ADR 0049 implementation slice now merges undirected owner/alias
+projections by physical bucket before reservation and makes LARA validate the
+merged plan as exact reversed pairs grouped by logical ordinal. Thus the
+same-bucket case cannot be represented as two independent reservations. The
+public ordered API, logical pair-table wire, and the remaining replay/write
+contract are still planned; this internal slice does not activate ADR 0049.
 
 The current fields of `GraphMutationJournalEntryV1` and
 `GraphMutationJournalEntryWireV1` contain no ordered request fingerprint; they
@@ -1475,9 +1476,10 @@ not rewritten as though unfinished unordered product behavior shipped.
    same-id/different-request-kind/order rejection. Keep the existing outer
    journal and wire version envelopes and encode their request identity
    directly as nested V1 schema.
-5. Replace role-split bidirectional plans with a logical pair table and physical
-   runs merged once per orientation/bucket; add the same-bucket endpoint-side
-   counterexample test.
+5. **Partially implemented (2026-07-28):** replace role-split bidirectional
+   plans with a merged physical run once per orientation/bucket and add the
+   same-bucket endpoint-side counterexample test. The complete logical pair
+   table and public ordered contract remain planned.
 6. Add bucket-local order and pair-ordinal adversarial tests to the existing
    ADR 0045 planner/write fixtures without changing the public wire.
 7. Reclassify and rename internal unordered terminology where it denotes a

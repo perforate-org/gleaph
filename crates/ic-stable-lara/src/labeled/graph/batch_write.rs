@@ -118,12 +118,15 @@ where
         /// Reverse in-adjacency plan.
         reverse: OneOrientationBatchPlan<E>,
     },
-    /// Undirected non-self batch with two forward plans.
+    /// Undirected non-self batch with one merged forward plan.
+    ///
+    /// Both endpoint projections for one logical ordinal live in the same
+    /// orientation plan. This is important when two logical edges project
+    /// into the same physical bucket: the bucket must be reserved once and
+    /// its final run must be validated as one ordered sequence.
     Undirected {
-        /// First endpoint's forward plan.
-        first: OneOrientationBatchPlan<E>,
-        /// Second endpoint's forward plan.
-        second: OneOrientationBatchPlan<E>,
+        /// Merged forward plan containing both endpoint projections.
+        plan: OneOrientationBatchPlan<E>,
     },
     /// Undirected self-loop batch with one forward plan.
     SelfLoop {
@@ -187,9 +190,48 @@ where
             Ok(())
         }
 
+        fn validate_merged_undirected<E: CsrEdge>(
+            plan: &OneOrientationBatchPlan<E>,
+        ) -> Result<(), OneOrientationBatchError> {
+            let rows = entries(plan);
+            if rows.is_empty() || !rows.len().is_multiple_of(2) {
+                return Err(OneOrientationBatchError::InvalidOrientationPair(
+                    "merged undirected plan has incomplete logical pairs".into(),
+                ));
+            }
+            let mut by_ordinal = std::collections::BTreeMap::<
+                u32,
+                Vec<(u32, VertexId, VertexId, BucketLabelKey, u16)>,
+            >::new();
+            for row in rows {
+                by_ordinal.entry(row.0).or_default().push(row);
+            }
+            for pair in by_ordinal.values() {
+                if pair.len() != 2 {
+                    return Err(OneOrientationBatchError::InvalidOrientationPair(
+                        "merged undirected plan does not contain exactly two projections".into(),
+                    ));
+                }
+                let [left, right] = pair.as_slice() else {
+                    unreachable!("pair length checked above")
+                };
+                if left.1 != right.2
+                    || left.2 != right.1
+                    || left.3 != right.3
+                    || left.4 != right.4
+                    || left.3.is_directed()
+                {
+                    return Err(OneOrientationBatchError::InvalidOrientationPair(
+                        "merged undirected rows are not exact reversed pairs".into(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+
         match self {
             Self::Directed { forward, reverse } => validate_pair(forward, reverse, true),
-            Self::Undirected { first, second } => validate_pair(first, second, false),
+            Self::Undirected { plan } => validate_merged_undirected(plan),
             Self::SelfLoop { forward } => {
                 let rows = entries(forward);
                 if !rows.is_empty()
@@ -218,10 +260,9 @@ where
                 (crate::labeled::LabeledOrientation::Forward, forward),
                 (crate::labeled::LabeledOrientation::Reverse, reverse),
             ],
-            Self::Undirected { first, second } => vec![
-                (crate::labeled::LabeledOrientation::Forward, first),
-                (crate::labeled::LabeledOrientation::Forward, second),
-            ],
+            Self::Undirected { plan } => {
+                vec![(crate::labeled::LabeledOrientation::Forward, plan)]
+            }
             Self::SelfLoop { forward } => {
                 vec![(crate::labeled::LabeledOrientation::Forward, forward)]
             }
@@ -2561,6 +2602,55 @@ mod tests {
         assert!(matches!(
             plan.validate(),
             Err(OneOrientationBatchError::InvalidOrientationPair(_))
+        ));
+    }
+
+    #[test]
+    fn merged_undirected_plan_validates_same_bucket_projections_once() {
+        let label = BucketLabelKey::undirected_from_index(3);
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(2),
+                label_id: label,
+                inline_property_width: 0,
+                edges: vec![
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(3),
+                        neighbor_vertex_id: VertexId::from(2),
+                        label_id: label,
+                        edge: GraphTestEdge { target: 2 },
+                    },
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 0,
+                        owner_vertex_id: VertexId::from(2),
+                        neighbor_vertex_id: VertexId::from(3),
+                        label_id: label,
+                        edge: GraphTestEdge { target: 3 },
+                    },
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 1,
+                        owner_vertex_id: VertexId::from(2),
+                        neighbor_vertex_id: VertexId::from(1),
+                        label_id: label,
+                        edge: GraphTestEdge { target: 1 },
+                    },
+                    OneOrientationBatchEdge {
+                        logical_ordinal: 1,
+                        owner_vertex_id: VertexId::from(1),
+                        neighbor_vertex_id: VertexId::from(2),
+                        label_id: label,
+                        edge: GraphTestEdge { target: 2 },
+                    },
+                ],
+            }],
+        };
+        let plan = BidirectionalBatchPlan::Undirected { plan };
+        assert!(plan.validate().is_ok());
+        assert_eq!(plan.clone().into_orientations().len(), 1);
+        assert!(matches!(
+            plan,
+            BidirectionalBatchPlan::Undirected { plan } if plan.runs[0].edges.len() == 4
         ));
     }
 
