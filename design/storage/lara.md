@@ -198,8 +198,10 @@ derived counterpart index. `CanonicalEdgeOccurrence` and `EdgeHandle` carry `Buc
 locations remain private to LARA.
 
 ADR 0050 defines the target labeled read surface around `BucketEntryPosition`, `visit_edges`,
-`visit_edges_at`, and explicit `EdgeWithInlineProperty<E>` results. Forward/outgoing and
-reverse/incoming bidirectional wrappers delegate to the same orientation-local primitives.
+`visit_edges_at`, and borrowed `EdgeWithInlinePropertyRef<'a, E>` callback results. Forward/outgoing
+and reverse/incoming bidirectional wrappers delegate to the same orientation-local primitives;
+callers explicitly materialize owned property values only when retention is required, and no owned
+inline-property traversal result is part of the LARA surface.
 
 The implementation is now partially at that target. `CounterpartScan` in
 `ic-stable-lara/src/labeled/bidirectional/counterpart.rs` has been migrated onto the ADR 0050

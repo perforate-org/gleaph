@@ -190,8 +190,12 @@ pub trait Traversal {
     type Edge: CsrEdge;
     /// Backend-specific state preserving missing, tombstone, and live outcomes.
     type EdgeState;
-    /// Backend-specific wrapper containing an edge and its exact inline-property bytes.
-    type EdgeWithInlineProperty;
+    /// Borrowed edge/property view delivered during an inline-property traversal callback.
+    ///
+    /// The view is valid only for the callback invocation. Implementations may reuse the
+    /// underlying property buffer for the next row, so callers that retain the value must
+    /// explicitly materialize the property bytes.
+    type EdgeWithInlinePropertyRef<'a>;
     /// Replay or scratch context accepted by selected-slot traversal.
     type Replay;
     /// Error returned when logical storage validation or decoding fails.
@@ -210,13 +214,6 @@ pub trait Traversal {
         request: &Self::Request,
         slot: Self::Slot,
     ) -> Result<Self::EdgeState, Self::Error>;
-
-    /// Reads a live edge and attaches the exact inline-property bytes for that logical row.
-    fn read_edge_with_inline_property(
-        &self,
-        request: &Self::Request,
-        slot: Self::Slot,
-    ) -> Result<Option<Self::EdgeWithInlineProperty>, Self::Error>;
 
     /// Visits every matching live edge in the request order.
     ///
@@ -246,16 +243,16 @@ pub trait Traversal {
         finish_window(self.visit_edges(request, &mut visitor))
     }
 
-    /// Visits every matching live edge with its exact inline-property bytes.
+    /// Visits every matching live edge with a borrowed view of its exact inline-property bytes.
     ///
     /// The visitor receives the same logical slots and ordering as [`Self::visit_edges`].
     fn visit_edges_with_inline_property<B>(
         &self,
         request: &Self::Request,
-        visit: impl FnMut(Self::Slot, Self::EdgeWithInlineProperty) -> ControlFlow<B>,
+        visit: impl for<'a> FnMut(Self::Slot, Self::EdgeWithInlinePropertyRef<'a>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, Self::Error>;
 
-    /// Visits a bounded window of matching live edges with exact inline-property bytes.
+    /// Visits a bounded window of matching live edges with borrowed inline-property bytes.
     ///
     /// The window counts live edges in the same order as
     /// [`Self::visit_edges_with_inline_property`].
@@ -263,13 +260,34 @@ pub trait Traversal {
         &self,
         request: &Self::Request,
         window: TraversalWindow,
-        visit: impl FnMut(Self::Slot, Self::EdgeWithInlineProperty) -> ControlFlow<B>,
+        mut visit: impl for<'a> FnMut(Self::Slot, Self::EdgeWithInlinePropertyRef<'a>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, Self::Error> {
         if window.is_empty() {
             return Ok(ControlFlow::Continue(()));
         }
-        let mut visitor = window_visitor(window, visit);
-        finish_window(self.visit_edges_with_inline_property(request, &mut visitor))
+        let mut offset = window.offset;
+        let mut remaining = window.limit;
+        let result = self.visit_edges_with_inline_property(request, |slot, item| {
+            if offset != 0 {
+                offset -= 1;
+                return ControlFlow::Continue(());
+            }
+            match visit(slot, item) {
+                ControlFlow::Break(value) => ControlFlow::Break(WindowBreak::Visitor(value)),
+                ControlFlow::Continue(()) => match remaining.as_mut() {
+                    Some(remaining) => {
+                        *remaining -= 1;
+                        if *remaining == 0 {
+                            ControlFlow::Break(WindowBreak::LimitReached)
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    }
+                    None => ControlFlow::Continue(()),
+                },
+            }
+        });
+        finish_window(result)
     }
 
     /// Visits only the requested logical slots, normalized according to the request order.
@@ -280,6 +298,17 @@ pub trait Traversal {
         request: &Self::Request,
         slots: &[Self::Slot],
         visit: impl FnMut(Self::Slot, Self::Edge) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, Self::Error>;
+
+    /// Visits only the requested logical slots with borrowed inline-property bytes.
+    ///
+    /// The selected slots are deduplicated and delivered in the request order. Property bytes
+    /// are valid only for the callback invocation.
+    fn visit_edges_at_with_inline_property<B>(
+        &self,
+        request: &Self::Request,
+        slots: &[Self::Slot],
+        visit: impl for<'a> FnMut(Self::Slot, Self::EdgeWithInlinePropertyRef<'a>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, Self::Error>;
 
     /// Visits selected logical slots while optionally reusing the backend replay/scratch context.

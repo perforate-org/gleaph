@@ -2060,7 +2060,7 @@ where
             for<'a> FnMut(BucketEntryPosition, EdgeWithInlinePropertyRef<'a, E>) -> ControlFlow<B>,
     {
         self.forward
-            .visit_edges_with_inline_property_ref(src, label_id, order, visit)
+            .visit_edges_with_inline_property(src, label_id, order, visit)
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
@@ -2683,7 +2683,7 @@ where
             for<'a> FnMut(BucketEntryPosition, EdgeWithInlinePropertyRef<'a, E>) -> ControlFlow<B>,
     {
         self.reverse
-            .visit_edges_with_inline_property_ref(dst, label_id, order, visit)
+            .visit_edges_with_inline_property(dst, label_id, order, visit)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 

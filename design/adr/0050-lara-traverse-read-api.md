@@ -200,22 +200,9 @@ scan is later justified, it must yield an explicit state type rather than a tomb
 
 ### 3. Separate inline-property attachment in method names
 
-Attaching inline property bytes changes the effective `E` value and performs additional storage
-reads. The canonical API therefore uses separate methods and a return type that makes the bytes
-observable without relying on an optional `CsrEdge` hook:
-
-```rust
-pub struct InlinePropertyBytes {
-    pub width: u16,
-    pub bytes: Vec<u8>,
-}
-
-pub struct EdgeWithInlineProperty<E> {
-    pub edge: E,
-    pub inline_property: InlinePropertyBytes,
-}
-
-For callback-only consumers, the traversal surface also exposes a borrowed view:
+Attaching inline property bytes performs additional storage reads. The canonical API therefore
+uses separate methods and a return type that makes the bytes observable without relying on an
+optional `CsrEdge` hook. For callback-only consumers, the traversal surface exposes a borrowed view:
 
 ```rust
 pub struct InlinePropertyBytesRef<'a> {
@@ -233,28 +220,32 @@ The borrowed view is valid only during the callback. Dense buckets borrow direct
 bulk-read property span, while sparse and hybrid paths borrow from one reusable property read
 buffer per callback. None of these paths constructs an owned inline-property value for the
 borrowed API. Callers that retain an edge result (for example an execution binding) must
-explicitly materialize owned bytes.
-```
+explicitly materialize owned bytes inside the callback, only when retention is required.
 
-LARA constructs `InlinePropertyBytes` and enforces `bytes.len() == width`. Width zero is a valid
-value and is represented by an empty byte vector. `CsrEdge::with_stored_inline_property_bytes` may be
-used as an internal optimization, but it is not the contract and its default no-op implementation
-must never be able to hide a missing property read.
+LARA constructs and validates the borrowed view, enforcing `bytes.len() == width`. Width zero is a
+valid value and is represented by an empty slice. `CsrEdge::with_stored_inline_property_bytes` may
+be used by a consumer as an explicit materialization helper, but it is not the contract and its
+default no-op implementation must never be able to hide a missing property read.
 
 For a non-zero width, the bytes must be read from the exact inline-property ordinal belonging to
 the live row identified by the requested logical slot. This identity check applies independently
 to slab and overflow-log storage and to forward and reverse buckets. A missing row, short or
 overlong inline property bytes, malformed inline property bytes, width mismatch, or bytes belonging to another ordinal is a
 `LabeledOperationError`; implementations must not zero-fill, borrow an adjacent row, or downgrade
-the condition to `Missing`. Width zero performs no property read and returns an empty byte vector.
+the condition to `Missing`. Width zero performs no property read and returns an empty slice.
 
 - names without a suffix return live topology only; and
-- names ending in `_with_inline_property` return `EdgeWithInlineProperty<E>` for each live row.
+- the canonical `Traversal::visit_edges_with_inline_property` callback receives the borrowed
+  `EdgeWithInlinePropertyRef<'a, E>` view for each live row.
+
+There is no owned inline-property traversal result in the LARA surface. A callback consumer must
+not pay for a property copy unless it explicitly clones the borrowed bytes or materializes them
+into its own edge value.
 
 Boolean `attach_inline_property_bytes` flags are private implementation details and are
 not exposed in the consolidated surface.
 
-### 3a. Concrete edge value split and compatibility policy
+### 3a. Concrete edge value split
 
 The Graph Kernel concrete edge value follows the same boundary without a compatibility shape:
 
@@ -265,28 +256,18 @@ pub struct Edge {
     pub label_id: u16,
 }
 
-pub struct EdgeWithInlineProperty<E> {
-    pub edge: E,
-    pub inline_property: InlinePropertyBytes,
-}
 ```
 
 `Edge` is topology-only. It must not contain an optional, empty, or compatibility inline-property
-field. `EdgeWithInlineProperty<E>` is the only value shape that exposes an attached inline
-property. For the Graph Kernel adapter, `E` is the topology-only `Edge`.
+field. `EdgeWithInlinePropertyRef<'a, E>` is the only traversal value shape that exposes attached
+inline property bytes. For the Graph Kernel adapter, `E` is the topology-only `Edge`.
 
-`InlinePropertyBytes` owns the invariant `bytes.len() == width`. Its fields are private and its
-constructors reject a width mismatch. Width zero is valid and is represented by an empty byte
-vector. The property-read owner, LARA, constructs this validated value after reading the exact
-ordinal for the live logical slot.
-
-This is an intentional breaking refactor. The topology-only identity of `Edge` (equality, hash,
-and `CsrEdge` liveness) is enforced; `InlinePropertyBytes` construction validates the exact
-width. The public `inline_property` field on `Edge` is retained as a transitional compatibility
-field while caller paths migrate to the explicit `EdgeWithInlineProperty` shape; it will be
-removed once the migration is complete (Plan 0187). Until then, existing callers are not given a
-new compatibility field or dual-shape API, and the `CsrEdge::with_stored_inline_property_bytes`
-hook remains only as an internal transition mechanism, not as the public read contract.
+The borrowed view owns no storage and is valid only for the callback invocation. The property-read
+owner, LARA, validates the exact width and ordinal before invoking the callback. This is an
+intentional breaking refactor: consumers that need to retain the bytes explicitly clone them or
+materialize them into a separately owned application value. The
+`CsrEdge::with_stored_inline_property_bytes` hook remains only as an internal materialization
+helper, not as the public read contract.
 
 The target term `inline_property` is used consistently. `payload` is not used in new API names
 because it is broader and can be confused with other edge inline property bytes or property-store
@@ -319,7 +300,15 @@ value to carry it without merging storage and caller error types.
 
 ### 6. Canonical general-purpose read surface
 
-The crate-level `Traversal` trait is the shared contract for every LARA implementation. Its associated `Request`, `Slot`, `EdgeState`, `EdgeWithInlineProperty`, `Replay`, and `Error` types allow normal, labeled, bidirectional, and deferred backends to expose the same logical operations. `Edge` is bounded by the existing `CsrEdge` trait; storage codec and inline property bytes behavior therefore remain single-sourced. The trait includes point reads, state reads, inline-property reads, full visits, selected-slot visits, and replay-aware selected-slot visits. The isolated labeled implementation is the first adapter; other backends are added against this contract.
+The crate-level `Traversal` trait is the shared contract for every LARA implementation. Its associated
+`Request`, `Slot`, `EdgeState`, `EdgeWithInlinePropertyRef<'a>`, `Replay`, and `Error` types allow
+normal, labeled, bidirectional, and deferred backends to expose the same logical operations. `Edge`
+is bounded by the existing `CsrEdge` trait; storage codec and inline property bytes behavior
+therefore remain single-sourced. The trait includes topology point reads, state reads, borrowed
+inline-property visits, full visits, selected-slot visits, and replay-aware selected-slot visits.
+Owned property materialization is a concrete/facade concern rather than part of this core trait.
+The isolated labeled implementation is the first adapter; other backends are added against this
+contract.
 
 The smallest general-purpose surface is:
 
@@ -330,13 +319,6 @@ pub(crate) fn read_edge(
     label: BucketLabelKey,
     slot: BucketEntryPosition,
 ) -> Result<Option<E>, LabeledOperationError>;
-
-pub(crate) fn read_edge_with_inline_property(
-    &self,
-    owner: VertexId,
-    label: BucketLabelKey,
-    slot: BucketEntryPosition,
-) -> Result<Option<EdgeWithInlineProperty<E>>, LabeledOperationError>;
 
 pub(crate) fn read_edge_state(
     &self,
@@ -358,7 +340,22 @@ pub(crate) fn visit_edges_with_inline_property<B>(
     owner: VertexId,
     label: BucketLabelKey,
     order: OutEdgeOrder,
-    visit: impl FnMut(BucketEntryPosition, EdgeWithInlineProperty<E>) -> ControlFlow<B>,
+    visit: impl for<'a> FnMut(
+        BucketEntryPosition,
+        EdgeWithInlinePropertyRef<'a, E>,
+    ) -> ControlFlow<B>,
+) -> Result<ControlFlow<B>, LabeledOperationError>;
+
+pub(crate) fn visit_edges_at_with_inline_property<B>(
+    &self,
+    owner: VertexId,
+    label: BucketLabelKey,
+    order: OutEdgeOrder,
+    slots: &[BucketEntryPosition],
+    visit: impl for<'a> FnMut(
+        BucketEntryPosition,
+        EdgeWithInlinePropertyRef<'a, E>,
+    ) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>, LabeledOperationError>;
 ```
 
@@ -382,7 +379,10 @@ fn visit_edges_with_inline_property_window<B>(
     &self,
     request: &Self::Request,
     window: TraversalWindow,
-    visit: impl FnMut(Self::Slot, Self::EdgeWithInlineProperty) -> ControlFlow<B>,
+    visit: impl for<'a> FnMut(
+        Self::Slot,
+        Self::EdgeWithInlinePropertyRef<'a>,
+    ) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>, Self::Error>;
 ```
 
@@ -421,14 +421,14 @@ All logical readers share the same corruption boundary. A missing label, an out-
 slot, or a tombstone is a normal absence/state result according to the method contract. In
 contrast, a malformed overflow chain, bucket-owner or label mismatch, an impossible
 logical-slot-to-physical mapping, or an inline-property ordinal mismatch is
-`LabeledOperationError` for `read_edge`, `read_edge_with_inline_property`, `read_edge_state`,
-`visit_edges`, and `visit_edges_with_inline_property`. These conditions must never be represented
+`LabeledOperationError` for `read_edge`, `read_edge_state`, `visit_edges`,
+`visit_edges_at_with_inline_property`, and `visit_edges_with_inline_property`. These conditions must never be represented
 as `None`, `Missing`, an empty visit, or fabricated property bytes.
 
-There is no `read_edge_state_with_inline_property`: inline property bytes exist only for a live
-row, so callers first inspect `read_edge_state` and call `read_edge_with_inline_property` only when
-needed. A measured point-read caller may justify a fused operation later. The returned wrapper,
-not `E`, is the proof that the inline-property read occurred.
+There is no point-read inline-property API: inline property bytes exist only for a live row, and
+the borrowed selected-slot visitor is the zero-copy operation for callers that need both the edge
+and its property. A caller that needs ownership clones within the callback. A measured point-read
+caller may build that operation on top of `visit_edges_at_with_inline_property` later.
 
 The bidirectional wrapper does not define a second read primitive. Its forward/outgoing methods
 delegate to the forward LARA graph, and its reverse/incoming methods delegate to the reverse LARA
@@ -703,11 +703,10 @@ Adoption is phased. The temporary module, its tests, and its benchmark module ar
 new work during migration; the legacy `traverse` module remains authoritative only for callers not
 yet migrated. The final rename happens only after all callers and validation gates pass.
 
-The concrete `Edge` value split is not a compatibility migration. Once implemented, topology-only
-callers use `Edge`, property-aware callers use `EdgeWithInlineProperty<Edge>`, and old callers that
-depend on inline-property fields on `Edge` are updated in the same change. No deprecated alias,
-dual-shape wrapper, or long-lived adapter is retained after the refactor. The migration is complete
-only when the old field and its property-bearing `Edge` constructors are removed from the tree.
+The concrete `Edge` value split is not a compatibility migration. Topology-only callers use `Edge`,
+while property-aware callers use `EdgeWithInlinePropertyRef<'a, Edge>` in the callback and explicitly
+clone/materialize only when they need to retain the property. No deprecated owned traversal wrapper,
+dual-shape wrapper, or compatibility adapter is retained after the refactor.
 
 ADR 0048 remains the owner of `CanonicalEdgeOccurrence`, `EdgeHandle`, `PairOrdinal`, and counterpart
 resolution. ADR 0023 remains the owner of sidecar/index re-key after `EdgeSlotMove`. This ADR only
@@ -883,9 +882,9 @@ The test matrix covers:
 - third live parallel edge selection, proving matching ordinal is distinct from logical slot;
 - selected slots that are unordered, duplicated, missing, or tombstoned;
 - inline-property width zero and non-zero;
-- `EdgeWithInlineProperty<E>` always exposes the exact byte width and bytes, including a zero-width
-  empty value; an `E` implementation with the default no-op attachment hook cannot satisfy this
-  contract by returning topology only;
+- `EdgeWithInlinePropertyRef<'a, E>` always exposes the exact byte width and bytes, including a
+  zero-width empty slice; an `E` implementation with the default no-op attachment hook cannot
+  satisfy this contract by returning topology only;
 - non-zero inline-property exact-byte reads from slab and overflow-log rows in both forward and
   reverse buckets, with missing, short, overlong, malformed, width-mismatched, and wrong-ordinal
   payloads failing closed as `LabeledOperationError`; zero-width rows prove that no property read
