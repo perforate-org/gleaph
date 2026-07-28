@@ -1517,7 +1517,7 @@ not rewritten as though unfinished unordered product behavior shipped.
    inline-property log folds independently while the leaf relocates once.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
-10. **Partially implemented (2026-07-28 10:57:45 UTC +0000):** the Graph facade now accepts
+10. **Partially implemented (2026-07-28 11:01:53 UTC +0000):** the Graph facade now accepts
     request-local initial sidecar values, validates ids/values/duplicate ids
     before reservation, derives one canonical `CanonicalEdgeOccurrence` from
     the joined captured location for directed, undirected, and self-loop
@@ -1542,6 +1542,9 @@ not rewritten as though unfinished unordered product behavior shipped.
     Undirected lower-owner alias compaction is also covered. Its underlying
     singleton selector now falls through when slot zero is a tombstone, so a
     live row at a later logical slot remains pair-rank addressable.
+    An overflow-log batch append with an initial sidecar also verifies that
+    the captured bucket logical slot, rather than the raw log location, owns
+    the canonical sidecar.
     The post-commit sidecar path traps on a violated preflight invariant rather
     than returning a recoverable error.
 11. Replace Router V1 request identity/payload in place; implement exhaustive

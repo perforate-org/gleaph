@@ -2460,6 +2460,63 @@ mod tests {
     }
 
     #[test]
+    fn overflow_log_batch_sidecar_uses_captured_logical_slot() {
+        let store = fresh_store();
+        let label = EdgeLabelId::from_raw(6002);
+        let property_id = PropertyId::from_raw(99);
+        install_width(label, 0);
+        let vertices = make_vertices(&store, 2);
+        let source = vertices[0];
+        let target = vertices[1];
+
+        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
+        let quota =
+            store.with_graph_mut(|g| g.forward().edges().header().initial_vertex_edge_slots);
+        for _ in 0..quota {
+            store
+                .insert_directed_edge(source, target, Some(label))
+                .expect("scalar fill");
+        }
+
+        let mut edge = input(source, target, Some(label), true, vec![]);
+        edge.initial_edge_properties = vec![(property_id, Value::Int64(909))];
+        let result = store
+            .try_insert_batch_edges_clean_slab_with_initial_properties(&[edge.clone()])
+            .expect("overflow-log sidecar batch");
+        let locations = match result {
+            BatchEdgeInsertResult::Committed {
+                locations: Some(locations),
+                ..
+            } => locations,
+            other => panic!("expected captured commit, got {other:?}"),
+        };
+        let location = &locations[0];
+        let forward_location = match location {
+            BatchEdgePhysicalLocation::Directed { forward, .. } => forward,
+            other => panic!("expected directed location, got {other:?}"),
+        };
+        assert!(matches!(
+            forward_location.location,
+            OneOrientationPhysicalLocation::OverflowLog { .. }
+        ));
+        let occurrence = location.canonical_occurrence(&edge);
+        let handle = EdgeHandle::at_slot(
+            occurrence.owner_vertex_id,
+            occurrence.label_id,
+            occurrence.slot_index,
+        );
+        assert_eq!(
+            store.edge_property_at_canonical_handle(handle, property_id),
+            Some(Value::Int64(909))
+        );
+        assert_eq!(
+            occurrence.slot_index.raw(),
+            forward_location.logical_slot,
+            "overflow-log sidecar must use the captured bucket logical slot"
+        );
+    }
+
+    #[test]
     fn empty_batch_is_unsupported() {
         let store = fresh_store();
         let result = store.try_insert_batch_edges_clean_slab(&[]).expect("ok");
