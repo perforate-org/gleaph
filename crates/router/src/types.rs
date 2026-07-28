@@ -144,6 +144,52 @@ impl OrderedEdgeBatchPublicRequest {
         hasher.update(encoded);
         Ok(hasher.finalize().into())
     }
+
+    /// Decode every public endpoint and prove that the complete batch belongs to one shard.
+    ///
+    /// This is deliberately a read-only wire-boundary operation. Catalog resolution and the
+    /// mutation reservation happen only after this proof succeeds.
+    pub fn decode_same_shard_endpoints(
+        &self,
+        key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+    ) -> Result<Vec<(GlobalVertexId, GlobalVertexId)>, String> {
+        self.validate()?;
+        let Self::V1(request) = self;
+        let mut decoded = Vec::with_capacity(request.items.len());
+        let mut target_shard = None;
+        for (ordinal, item) in request.items.iter().enumerate() {
+            let source_bytes: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
+                item.source.as_slice().try_into().map_err(|_| {
+                    format!("ordered edge item {ordinal} source endpoint has invalid width")
+                })?;
+            let target_bytes: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
+                item.target.as_slice().try_into().map_err(|_| {
+                    format!("ordered edge item {ordinal} target endpoint has invalid width")
+                })?;
+            let source = gleaph_graph_kernel::federation::decode_global_vertex_id(
+                key,
+                gleaph_graph_kernel::federation::EncodedVertexId(source_bytes),
+            );
+            let target = gleaph_graph_kernel::federation::decode_global_vertex_id(
+                key,
+                gleaph_graph_kernel::federation::EncodedVertexId(target_bytes),
+            );
+            if source.shard_id != target.shard_id {
+                return Err(format!(
+                    "ordered edge item {ordinal} endpoints resolve to different shards"
+                ));
+            }
+            if let Some(expected) = target_shard {
+                if expected != source.shard_id {
+                    return Err("ordered edge batch resolves to multiple shards".into());
+                }
+            } else {
+                target_shard = Some(source.shard_id);
+            }
+            decoded.push((source, target));
+        }
+        Ok(decoded)
+    }
 }
 
 impl MutationStatus {
@@ -998,6 +1044,36 @@ mod tests {
             }],
         });
         assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn ordered_public_request_decodes_and_requires_one_shard() {
+        use gleaph_graph_kernel::federation::{
+            ElementIdEncodingKey, GlobalVertexId, encode_global_vertex_id,
+        };
+
+        let key = ElementIdEncodingKey::host_test_fixture();
+        let source = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 11));
+        let target = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 12));
+        let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+            client_mutation_key: "ordered-3".into(),
+            logical_graph_name: "tenant.main".into(),
+            items: vec![OrderedEdgeInsertPublicItemV1 {
+                source: source.0.to_vec(),
+                target: target.0.to_vec(),
+                directed: false,
+                edge_label_name: None,
+                inline_property: None,
+                initial_edge_properties: Vec::new(),
+            }],
+        });
+        assert_eq!(
+            request.decode_same_shard_endpoints(&key).unwrap(),
+            vec![(
+                GlobalVertexId::new(ShardId::new(3), 11),
+                GlobalVertexId::new(ShardId::new(3), 12),
+            )]
+        );
     }
 }
 

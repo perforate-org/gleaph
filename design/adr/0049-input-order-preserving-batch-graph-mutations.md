@@ -1653,6 +1653,10 @@ not rewritten as though unfinished unordered product behavior shipped.
     wire now carries a bounded client mutation key and exposes a Router-owned,
     order-sensitive public fingerprint that excludes that key. Admission,
     resolution, and Graph dispatch remain planned.
+    **Partially implemented (2026-07-28 14:03:18 UTC +0000):** Router's
+    read-only wire admission helper now decodes endpoint bytes with the
+    graph-specific encoding key and rejects both cross-endpoint-shard and
+    cross-batch-shard geometry before catalog resolution or reservation.
 13. Run ordered-versus-scalar canbench gates and Router replay-record
     insert/replace benchmarks at small and maximum reachable shapes, including
     the current ADR 0045 physical batch substrate as the replacement baseline.
