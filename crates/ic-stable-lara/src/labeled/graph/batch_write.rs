@@ -3219,6 +3219,62 @@ mod tests {
     }
 
     #[test]
+    fn batch_append_preserves_order_after_scalar_leaf_relocation() {
+        let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
+        for _ in 0..34 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        let label = BucketLabelKey::directed_from_index(2);
+        graph
+            .insert_edge(VertexId::from(0), label, GraphTestEdge { target: 1 })
+            .unwrap();
+        graph
+            .insert_edge(VertexId::from(32), label, GraphTestEdge { target: 33 })
+            .unwrap();
+
+        let (old_start, old_len) = graph
+            .labeled_leaf_physical_range(VertexId::from(0))
+            .expect("source leaf must be pinned before relocation");
+        graph
+            .relocate_labeled_leaf_physical_block(VertexId::from(0))
+            .expect("scalar relocation must succeed");
+        let (new_start, new_len) = graph
+            .labeled_leaf_physical_range(VertexId::from(0))
+            .expect("relocated leaf must remain pinned");
+        assert_ne!(new_start, old_start);
+        assert!(new_len >= old_len);
+
+        let plan = OneOrientationBatchPlan {
+            runs: vec![OneOrientationBucketRun {
+                owner_vertex_id: VertexId::from(0),
+                label_id: label,
+                inline_property_width: 0,
+                edges: vec![OneOrientationBatchEdge {
+                    logical_ordinal: 0,
+                    owner_vertex_id: VertexId::from(0),
+                    neighbor_vertex_id: VertexId::from(2),
+                    label_id: label,
+                    edge: GraphTestEdge { target: 2 },
+                }],
+            }],
+        };
+        graph
+            .insert_one_orientation_batch(&plan)
+            .expect("batch append after relocation");
+
+        assert_eq!(
+            graph
+                .asc_out_edges(VertexId::from(0))
+                .unwrap()
+                .into_iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "batch append must remain at the live tail after relocation"
+        );
+    }
+
+    #[test]
     fn slab_batch_appends_after_interior_tombstone_without_reordering_live_edges() {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         for _ in 0..5 {
