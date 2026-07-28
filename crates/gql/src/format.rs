@@ -648,8 +648,10 @@ impl<'a> Formatter<'a> {
             EdgeDirection::PointingRight => format!("-[{}]->", body),
             EdgeDirection::PointingLeft => format!("<-[{}]-", body),
             EdgeDirection::LeftOrRight => format!("<-[{}]->", body),
-            EdgeDirection::Undirected | EdgeDirection::AnyDirection => format!("-[{}]-", body),
-            _ => return self.unsupported("edge direction"),
+            EdgeDirection::Undirected => format!("~[{}]~", body),
+            EdgeDirection::LeftOrUndirected => format!("<~[{}]~", body),
+            EdgeDirection::UndirectedOrRight => format!("~[{}]~>", body),
+            EdgeDirection::AnyDirection => format!("-[{}]-", body),
         })
     }
     fn label(&self, l: &LabelExpr) -> String {

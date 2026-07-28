@@ -106,6 +106,35 @@ fn arithmetic_precedence_is_not_over_parenthesized() {
     assert!(formatted.contains("1 + 2 * 3"));
 }
 
+#[test]
+fn edge_direction_formatting_preserves_direction_semantics() {
+    let cases = [
+        ("<-[e:ROAD]-(b)", "<-[e:ROAD]-(b)"),
+        ("~[e:ROAD]~(b)", "~[e:ROAD]~(b)"),
+        ("-[e:ROAD]->(b)", "-[e:ROAD]->(b)"),
+        ("<~[e:ROAD]~(b)", "<~[e:ROAD]~(b)"),
+        ("~[e:ROAD]~>(b)", "~[e:ROAD]~>(b)"),
+        ("<-[e:ROAD]->(b)", "<-[e:ROAD]->(b)"),
+        ("-[e:ROAD]-(b)", "-[e:ROAD]-(b)"),
+        ("<~[e:ROAD]~>(b)", "-[e:ROAD]-(b)"),
+    ];
+    for (input, expected_pattern) in cases {
+        let formatted = format_query(
+            &format!("MATCH (a){input} RETURN a"),
+            &FormatOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            formatted,
+            format!("MATCH (a){expected_pattern}\nRETURN\n  a")
+        );
+        assert_eq!(
+            format_query(&formatted, &FormatOptions::default()).unwrap(),
+            formatted
+        );
+    }
+}
+
 #[cfg(feature = "gleaph")]
 #[test]
 fn formats_social_demo_queries_and_preserves_nested_search_limit() {
