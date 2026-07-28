@@ -531,6 +531,12 @@ Replay/scratch reuse remains an optimized LARA capability. The replay object is 
 `(owner, label, bucket fingerprint)` before use, and falls back to canonical reads on mismatch. It
 must not become a second source of truth.
 
+The borrowed `visit_edges_at_with_inline_property` capability resolves small selected logical
+slot sets directly instead of filtering a full-bucket visitor. It reuses one property buffer for
+overflow-log rows and bulk-reads the selected slab ordinal span when possible. For larger
+overflow-log selections it retains the canonical bulk-friendly visitor, avoiding a per-slot stable
+memory read storm; property bytes remain borrowed only for the callback.
+
 ### 8. Batched inline-property reads remain specialized
 
 The following two execution capabilities remain distinct because they return borrowed batches and

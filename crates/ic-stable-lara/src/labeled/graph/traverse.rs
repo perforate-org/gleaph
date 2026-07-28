@@ -3028,8 +3028,8 @@ where
 
     /// Visits selected logical slots with borrowed inline-property bytes.
     ///
-    /// This first implementation filters the canonical ordered visitor. The callback contract
-    /// is independent of that implementation detail and can later use a replay-aware fast path.
+    /// Reads only the requested logical slots. Edge storage and inline-property storage are
+    /// resolved independently, while the property read buffer is reused between callbacks.
     pub(crate) fn visit_edges_at_with_inline_property<B>(
         &self,
         owner: VertexId,
@@ -3044,24 +3044,190 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        let selected = order_slots(slots, order);
-        if selected.is_empty() {
+        if slots.is_empty() {
             return Ok(ControlFlow::Continue(()));
         }
-        let mut selected_index = 0usize;
-        self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
-            while selected_index < selected.len() && selected[selected_index] < slot.raw() {
-                selected_index += 1;
+
+        let selected = order_slots(slots, order);
+        self.ensure_vertex(owner)?;
+        let vertex = self.vertices.get(owner);
+        if vertex.is_default_edge_labeled() {
+            if label != self.bypass_storage_label_for(&vertex) {
+                return Ok(ControlFlow::Continue(()));
             }
-            if selected_index == selected.len() {
-                return ControlFlow::Continue(());
+            for slot_index in selected {
+                if let EdgeSlotState::Live(edge) = self.read_edge_state_internal(
+                    owner,
+                    label,
+                    BucketEntryPosition::new(slot_index),
+                )? && let ControlFlow::Break(value) = visit(
+                    BucketEntryPosition::new(slot_index),
+                    EdgeWithInlinePropertyRef {
+                        edge,
+                        inline_property: InlinePropertyBytesRef::from_parts(0, &[]),
+                    },
+                ) {
+                    return Ok(ControlFlow::Break(value));
+                }
             }
-            if selected[selected_index] == slot.raw() {
-                selected_index += 1;
-                return visit(slot, item);
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        let BucketSearch::Found {
+            slot: bucket_slot,
+            bucket,
+        } = self.find_bucket(owner, &vertex, label)?
+        else {
+            return Ok(ControlFlow::Continue(()));
+        };
+        if bucket.degree() == 0 {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        // Each overflow-log property ordinal is a separate stable-memory read. For a larger
+        // selection, the canonical visitor's bulk-friendly path is cheaper; retain direct slot
+        // reads for small selections where avoiding the full bucket scan wins.
+        if bucket.inline_property_bytes_log_head() >= 0 && selected.len() > 4 {
+            let mut selected_index = 0usize;
+            return self.visit_edges_with_inline_property(owner, label, order, |slot, item| {
+                while selected_index < selected.len()
+                    && match order {
+                        OutEdgeOrder::Ascending => selected[selected_index] < slot.raw(),
+                        OutEdgeOrder::Descending => selected[selected_index] > slot.raw(),
+                    }
+                {
+                    selected_index += 1;
+                }
+                if selected_index < selected.len() && selected[selected_index] == slot.raw() {
+                    selected_index += 1;
+                    return visit(slot, item);
+                }
+                ControlFlow::Continue(())
+            });
+        }
+
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
+        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
+        let mut selected_edges = Vec::with_capacity(selected.len());
+        for slot_index in selected {
+            let Some(edge) = (match self.read_edge_state_at_slot(
+                owner,
+                &vertex,
+                bucket_index,
+                &bucket,
+                slot_index,
+                label,
+                log_chains.as_deref(),
+            )? {
+                EdgeSlotState::Live(edge) => Some(edge),
+                EdgeSlotState::Missing | EdgeSlotState::Tombstone => None,
+            }) else {
+                continue;
+            };
+            let Some(ordinal) = self.bucket_live_ordinal_at_edge_slot(
+                owner,
+                &vertex,
+                bucket_index,
+                bucket_slot,
+                &bucket,
+                slot_index,
+            )?
+            else {
+                continue;
+            };
+            selected_edges.push((slot_index, edge, ordinal));
+        }
+        if selected_edges.is_empty() {
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        let width = bucket.inline_property_byte_width();
+        if width == 0 {
+            for (slot_index, edge, _) in selected_edges {
+                if let ControlFlow::Break(value) = visit(
+                    BucketEntryPosition::new(slot_index),
+                    EdgeWithInlinePropertyRef {
+                        edge,
+                        inline_property: InlinePropertyBytesRef::from_parts(0, &[]),
+                    },
+                ) {
+                    return Ok(ControlFlow::Break(value));
+                }
             }
-            ControlFlow::Continue(())
-        })
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        let property_slab_slots = bucket.inline_property_bytes_slab_slots();
+        if selected_edges
+            .iter()
+            .all(|(_, _, ordinal)| *ordinal < property_slab_slots)
+        {
+            let first_ordinal = selected_edges
+                .iter()
+                .map(|(_, _, ordinal)| *ordinal)
+                .min()
+                .expect("selected_edges is non-empty");
+            let last_ordinal = selected_edges
+                .iter()
+                .map(|(_, _, ordinal)| *ordinal)
+                .max()
+                .expect("selected_edges is non-empty");
+            let property_span = self.read_bucket_inline_property_bytes_span(
+                owner,
+                &bucket,
+                first_ordinal,
+                last_ordinal - first_ordinal + 1,
+            )?;
+            let width_usize = usize::from(width);
+            for (slot_index, edge, ordinal) in selected_edges {
+                let start = usize::try_from(ordinal - first_ordinal)
+                    .map_err(|_| {
+                        LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+                    })?
+                    .checked_mul(width_usize)
+                    .ok_or(LabeledOperationError::from(
+                        LaraOperationError::CollectAllocationOverflow,
+                    ))?;
+                let end = start + width_usize;
+                if let ControlFlow::Break(value) = visit(
+                    BucketEntryPosition::new(slot_index),
+                    EdgeWithInlinePropertyRef {
+                        edge,
+                        inline_property: InlinePropertyBytesRef::from_parts(
+                            width,
+                            &property_span[start..end],
+                        ),
+                    },
+                ) {
+                    return Ok(ControlFlow::Break(value));
+                }
+            }
+            return Ok(ControlFlow::Continue(()));
+        }
+
+        let mut inline_property_bytes = Vec::new();
+        for (slot_index, edge, ordinal) in selected_edges {
+            self.read_bucket_inline_property_bytes_for_slot_into(
+                owner,
+                &bucket,
+                ordinal,
+                log_chains.as_ref(),
+                &mut inline_property_bytes,
+            )?;
+            if let ControlFlow::Break(value) = visit(
+                BucketEntryPosition::new(slot_index),
+                EdgeWithInlinePropertyRef {
+                    edge,
+                    inline_property: InlinePropertyBytesRef::from_parts(
+                        width,
+                        &inline_property_bytes,
+                    ),
+                },
+            ) {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Like [`Self::visit_edges_at`], but may reuse a hybrid overflow replay.

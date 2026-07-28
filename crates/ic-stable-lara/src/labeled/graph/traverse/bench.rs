@@ -25,6 +25,7 @@ const DENSE_DEGREE: u32 = 256;
 const HYBRID_DEGREE: u32 = 256;
 const BYPASS_DEGREE: u32 = 64;
 const SELECTED_SLOT_COUNT: usize = 32;
+const DIRECT_SELECTED_SLOT_COUNT: usize = 2;
 const INLINE_VALUE_WIDTH: u16 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -534,7 +535,7 @@ fn bench_traverse_next_visit_edges_at_with_replay() -> canbench_rs::BenchResult 
             |_batch| {},
         )
         .unwrap();
-    let selected: Vec<BucketEntryPosition> = (0..SELECTED_SLOT_COUNT as u32)
+    let selected: Vec<BucketEntryPosition> = (0..DIRECT_SELECTED_SLOT_COUNT as u32)
         .map(BucketEntryPosition::new)
         .collect();
     bench_fn(|| {
@@ -553,6 +554,95 @@ fn bench_traverse_next_visit_edges_at_with_replay() -> canbench_rs::BenchResult 
             )
             .unwrap();
         black_box(count);
+    })
+}
+
+/// Selected-slot inline-property read on a hybrid bucket.
+///
+/// The selected slots are a small prefix of a larger bucket so this measures the direct
+/// slot-read path rather than a full canonical traversal followed by filtering.
+#[bench(raw)]
+fn bench_traverse_next_visit_edges_at_with_inline_property() -> canbench_rs::BenchResult {
+    let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
+    let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let label = BucketLabelKey::from_raw(2);
+    graph
+        .ensure_label_bucket_inline_property_byte_width(src, label, INLINE_VALUE_WIDTH)
+        .unwrap();
+    for i in 0..HYBRID_DEGREE {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+            )
+            .unwrap();
+    }
+    let selected: Vec<BucketEntryPosition> = (0..DIRECT_SELECTED_SLOT_COUNT as u32)
+        .map(BucketEntryPosition::new)
+        .collect();
+    bench_fn(|| {
+        let mut count = 0u32;
+        let _ = graph
+            .visit_edges_at_with_inline_property::<()>(
+                src,
+                label,
+                &selected,
+                OutEdgeOrder::Ascending,
+                |_slot, item| {
+                    count += u32::from(item.inline_property.width == INLINE_VALUE_WIDTH);
+                    black_box(item.inline_property.bytes());
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .unwrap();
+        black_box(count);
+    })
+}
+
+/// Reference cost of filtering the full inline-property visitor for the same selected prefix.
+#[bench(raw)]
+fn bench_traverse_next_visit_edges_at_with_inline_property_filtered_reference()
+-> canbench_rs::BenchResult {
+    let graph = inline_property_bench_graph(1 << 16, BucketLabelKey::from_raw(1));
+    let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let label = BucketLabelKey::from_raw(2);
+    graph
+        .ensure_label_bucket_inline_property_byte_width(src, label, INLINE_VALUE_WIDTH)
+        .unwrap();
+    for i in 0..HYBRID_DEGREE {
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+            )
+            .unwrap();
+    }
+    let selected: Vec<BucketEntryPosition> = (0..SELECTED_SLOT_COUNT as u32)
+        .map(BucketEntryPosition::new)
+        .collect();
+    bench_fn(|| {
+        let mut selected_index = 0usize;
+        let mut count = 0u32;
+        let _ = graph
+            .visit_edges_with_inline_property::<()>(
+                src,
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, item| {
+                    if selected_index < selected.len()
+                        && selected[selected_index].raw() == slot.raw()
+                    {
+                        selected_index += 1;
+                        count += u32::from(item.inline_property.width == INLINE_VALUE_WIDTH);
+                        black_box(item.inline_property.bytes());
+                    }
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .unwrap();
+        black_box((selected_index, count));
     })
 }
 
