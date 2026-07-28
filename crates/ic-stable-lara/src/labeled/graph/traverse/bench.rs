@@ -248,7 +248,6 @@ where
         rpfbs,
         rpl,
         rpb,
-        memories,
         crate::VectorMemory::default(),
         crate::VectorMemory::default(),
         crate::labeled::InitialCapacities::uniform(1 << 16),

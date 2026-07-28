@@ -3082,7 +3082,14 @@ where
         }
 
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, bucket_slot)?;
-        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
+        let edge_overflow_log_chains = (bucket.overflow_log_head() >= 0).then(|| {
+            self.edges.overflow_log_chain_asc_indices(
+                self.inline_property_bytes_log_leaf(owner),
+                bucket.overflow_log_head(),
+            )
+        });
+        let inline_property_bytes_log_chains =
+            self.bucket_inline_property_bytes_log_chain_opt(owner, &bucket);
         let mut selected_edges = Vec::with_capacity(selected.len());
         for slot_index in selected {
             let Some(edge) = (match self.read_edge_state_at_slot(
@@ -3092,7 +3099,7 @@ where
                 &bucket,
                 slot_index,
                 label,
-                log_chains.as_deref(),
+                edge_overflow_log_chains.as_deref(),
             )? {
                 EdgeSlotState::Live(edge) => Some(edge),
                 EdgeSlotState::Missing | EdgeSlotState::Tombstone => None,
@@ -3186,7 +3193,7 @@ where
                 owner,
                 &bucket,
                 ordinal,
-                log_chains.as_ref(),
+                inline_property_bytes_log_chains.as_ref(),
                 &mut inline_property_bytes,
             )?;
             if let ControlFlow::Break(value) = visit(
