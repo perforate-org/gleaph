@@ -503,6 +503,8 @@ where
 pub enum OneOrientationPhysicalLocation {
     /// Edge slab slot and optional inline property bytes byte offset.
     Slab {
+        /// Logical slot within the owning bucket row.
+        logical_slot: u32,
         /// Edge slab slot.
         edge_slot: u64,
         /// Inline property bytes byte offset, when the edge carries inline property bytes.
@@ -510,6 +512,8 @@ pub enum OneOrientationPhysicalLocation {
     },
     /// Edge overflow-log entry and optional inline-property-bytes-log entry.
     OverflowLog {
+        /// Logical slot within the owning bucket row.
+        logical_slot: u32,
         /// PMA leaf containing the log entry.
         leaf: u32,
         /// Edge overflow-log entry index.
@@ -2204,6 +2208,16 @@ where
                     inline_property_bytes_offset,
                     inline_property_bytes_byte_count,
                 } => {
+                    let bucket = graph
+                        .buckets
+                        .read_label_bucket_slot(res.bucket_slot)
+                        .expect("reserve found this slab bucket");
+                    let logical_slot_base = u32::try_from(
+                        edge_start_slot
+                            .checked_sub(bucket.edge_start())
+                            .expect("reserve guaranteed slab slot is within bucket"),
+                    )
+                    .expect("reserve guaranteed logical slot fits");
                     let mut edge_bytes = Vec::with_capacity(run.edges.len() * E::BYTES);
                     for e in &run.edges {
                         let mut buf = vec![0u8; E::BYTES];
@@ -2222,6 +2236,9 @@ where
                                 logical_ordinal: edge.logical_ordinal,
                                 owner_vertex_id: edge.owner_vertex_id,
                                 location: OneOrientationPhysicalLocation::Slab {
+                                    logical_slot: logical_slot_base
+                                        .checked_add(offset as u32)
+                                        .expect("reserve guaranteed logical slot"),
                                     edge_slot: edge_start_slot
                                         .checked_add(offset as u64)
                                         .expect("reserve guaranteed edge location"),
@@ -2294,6 +2311,15 @@ where
                     let _ = bucket_slot;
 
                     let prev_head = bucket.overflow_log_head();
+                    let existing_edge_log_len = if prev_head >= 0 {
+                        graph.edges.overflow_log_chain_len(leaf, prev_head)
+                    } else {
+                        0
+                    };
+                    let logical_slot_base = bucket
+                        .stored_slots
+                        .checked_add(existing_edge_log_len)
+                        .expect("reserve guaranteed logical slot");
                     let entries: Vec<(i32, E)> = run
                         .edges
                         .iter()
@@ -2324,6 +2350,9 @@ where
                                 logical_ordinal: edge.logical_ordinal,
                                 owner_vertex_id: edge.owner_vertex_id,
                                 location: OneOrientationPhysicalLocation::OverflowLog {
+                                    logical_slot: logical_slot_base
+                                        .checked_add(offset as u32)
+                                        .expect("reserve guaranteed logical slot"),
                                     leaf,
                                     edge_entry_idx: edge_log_start_idx
                                         .checked_add(offset as u32)
@@ -2683,6 +2712,10 @@ where
                     logical_ordinal: edge.logical_ordinal,
                     owner_vertex_id: edge.owner_vertex_id,
                     location: OneOrientationPhysicalLocation::Slab {
+                        logical_slot: existing_bucket_slots
+                            .checked_add(edge_log_len)
+                            .and_then(|slot| slot.checked_add(offset as u32))
+                            .expect("reserve guaranteed relocated logical slot"),
                         edge_slot: pending_start
                             .checked_add(offset as u64)
                             .expect("reserve guaranteed relocated edge location"),
@@ -2932,6 +2965,10 @@ where
                     logical_ordinal: edge.logical_ordinal,
                     owner_vertex_id: edge.owner_vertex_id,
                     location: OneOrientationPhysicalLocation::Slab {
+                        logical_slot: existing_bucket_slots
+                            .checked_add(edge_log_len)
+                            .and_then(|slot| slot.checked_add(offset as u32))
+                            .expect("reserve guaranteed expanded logical slot"),
                         edge_slot: pending_start
                             .checked_add(offset as u64)
                             .expect("reserve guaranteed edge location"),
@@ -3271,7 +3308,8 @@ mod tests {
 
     use super::{
         BidirectionalBatchPlan, OneOrientationBatchEdge, OneOrientationBatchError,
-        OneOrientationBatchPlan, OneOrientationBucketRun, PreflightRun,
+        OneOrientationBatchLocation, OneOrientationBatchPlan, OneOrientationBucketRun,
+        OneOrientationPhysicalLocation, PreflightRun,
     };
 
     fn segment16_graph() -> LabeledLaraGraph<GraphTestEdge, crate::VectorMemory> {
@@ -3704,6 +3742,26 @@ mod tests {
             .unwrap()
             .expect("first overflow-log edge must be tombstoned");
         assert_eq!(removed.target, slab_prefix + 1);
+        let bucket_after_remove = graph
+            .buckets()
+            .read_label_bucket_slot(
+                graph
+                    .find_bucket_slot(&graph.vertices.get(VertexId::from(0)), label)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        let existing_log_len = graph.edges().overflow_log_chain_len(
+            LabeledLaraGraph::<InlinePropertyTestEdge, crate::VectorMemory>::leaf_index_for_vid(
+                VertexId::from(0),
+                graph.edges().header().segment_size,
+            ),
+            bucket_after_remove.overflow_log_head(),
+        );
+        let expected_logical_slot = bucket_after_remove
+            .stored_slots
+            .checked_add(existing_log_len)
+            .expect("test logical slot fits");
 
         let plan = OneOrientationBatchPlan {
             runs: vec![OneOrientationBucketRun {
@@ -3719,9 +3777,19 @@ mod tests {
                 }],
             }],
         };
-        graph
-            .insert_one_orientation_batch(&plan)
+        let result = graph
+            .insert_one_orientation_batch_with_locations(&plan)
             .expect("append after overflow-log tombstone");
+        assert!(matches!(
+            result.locations.as_deref(),
+            Some([OneOrientationBatchLocation {
+                location: OneOrientationPhysicalLocation::OverflowLog {
+                    logical_slot,
+                    ..
+                },
+                ..
+            }]) if *logical_slot == expected_logical_slot
+        ));
 
         let expected_targets = (1..=35u32)
             .filter(|target| *target != slab_prefix + 1)

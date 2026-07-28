@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 09:02:35 UTC +0000
+Anchor timestamp: 2026-07-28 09:12:16 UTC +0000
 
 ## Context
 
@@ -681,6 +681,13 @@ When every item is property-free and no other internal consumer requests
 handles, aggregate mode may omit location counterpartrialization. In either mode the
 public receipt remains aggregate-only; captured locations are discarded only
 after all sidecars and derived events have been committed.
+
+An internal captured location also carries the bucket-local `logical_slot` used
+by canonical sidecars. This is the physical row position within the bucket,
+including slab tombstone positions and preceding overflow-log rows; it is not a
+live-edge ordinal, input ordinal, or serialized field in the edge row. Compaction
+and relocation may move this slot and must use the existing sidecar move
+boundary.
 
 ### 8. Define the v1 geometry contract explicitly
 

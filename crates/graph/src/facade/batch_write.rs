@@ -1696,6 +1696,7 @@ mod tests {
             logical_ordinal: forward.logical_ordinal,
             owner_vertex_id: forward.owner_vertex_id,
             location: OneOrientationPhysicalLocation::Slab {
+                logical_slot: 0,
                 edge_slot: 10,
                 inline_property_bytes_offset: None,
             },
