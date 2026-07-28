@@ -594,6 +594,95 @@ impl RouterStore {
         (recoverable, last_key, scanned)
     }
 
+    /// Atomically transition a pristine scalar reservation to an ordered Graph replay payload.
+    ///
+    /// The public fingerprint and item count remain Router-owned identity; the target validates
+    /// the independently encoded Graph request fingerprint before the routing lease is released.
+    pub fn transition_to_ordered_edge_batch(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        public_fingerprint: [u8; 32],
+        public_item_count: u32,
+        resolved_labels: ResolvedLabelTable,
+        resolved_properties: ResolvedPropertyTable,
+        target: crate::facade::stable::label_stats::RouterOrderedEdgeBatchTargetV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1,
+            RouterMutationRequestIdentityV1, RouterOrderedEdgeBatchReplayV1,
+        };
+        target.validate()?;
+        if target.request.items.len() != public_item_count as usize {
+            return Err(RouterError::InvalidArgument(
+                "ordered public item count does not match Graph request".into(),
+            ));
+        }
+        if !matches!(
+            target.progress,
+            OrderedEdgeBatchTargetProgressV1::CanonicalPending
+        ) {
+            return Err(RouterError::InvalidArgument(
+                "ordered Graph target must be pristine at admission".into(),
+            ));
+        }
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered batch transition".into(),
+                ));
+            }
+            if v1.request_identity.request_fingerprint() != public_fingerprint {
+                return Err(RouterError::Conflict(
+                    "public request fingerprint mismatch at ordered batch transition".into(),
+                ));
+            }
+            if !v1.routing_in_progress {
+                return Err(RouterError::Conflict(
+                    "ordered batch transition requires an active routing reservation".into(),
+                ));
+            }
+            if v1.completed_row_count.is_some() {
+                return Err(RouterError::Conflict(
+                    "ordered batch transition refused: record already completed".into(),
+                ));
+            }
+            if !matches!(
+                v1.payload,
+                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty()
+            ) {
+                return Err(RouterError::Conflict(
+                    "ordered batch transition requires a pristine scalar reservation".into(),
+                ));
+            }
+            v1.request_identity = RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+                public_fingerprint,
+                public_item_count,
+            };
+            v1.resolved_labels = Some(resolved_labels);
+            v1.resolved_properties = Some(resolved_properties);
+            v1.payload = RouterMutationPayloadV1::OrderedEdgeBatch(Box::new(
+                RouterOrderedEdgeBatchReplayV1 { target },
+            ));
+            v1.routing_in_progress = false;
+            v1.routing_lease_ns = None;
+            if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+                return Err(RouterError::InvalidArgument(
+                    "ordered edge batch record exceeds safe inter-canister payload bound".into(),
+                ));
+            }
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
     /// Atomically transition a pristine scalar reservation to a durable typed seed bulk payload.
     ///
     /// Accepts only a record that:

@@ -2020,6 +2020,91 @@ fn typed_recovery_lifecycle_and_scan() {
     );
 }
 
+#[test]
+fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
+    use crate::facade::stable::label_stats::{
+        OrderedEdgeBatchTargetProgressV1, RouterMutationPayloadV1, RouterMutationRequestIdentityV1,
+        RouterOrderedEdgeBatchTargetV1,
+    };
+    use gleaph_graph_kernel::plan_exec::{
+        OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1,
+        ordered_edge_batch_graph_request_fingerprint,
+    };
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let caller = graph_principal(1);
+    let client_key = "ordered-transition";
+    let public_fingerprint = [7; 32];
+    store
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            public_fingerprint.to_vec(),
+        )
+        .expect("ordered reservation");
+
+    let request = OrderedEdgeBatchGraphRequestV1 {
+        graph_id: tenant_main_graph_id(),
+        target_shard_id: ShardId::new(0),
+        target_graph_canister: graph_principal(9),
+        resolved_labels: Default::default(),
+        resolved_properties: Default::default(),
+        items: vec![OrderedEdgeBatchGraphItemV1 {
+            source_local_vertex_id: 10,
+            target_local_vertex_id: 11,
+            directed: true,
+            catalog_edge_label_id: None,
+            inline_property_bytes: Vec::new(),
+            resolved_initial_edge_properties: Vec::new(),
+        }],
+    };
+    let graph_request = OrderedEdgeBatchGraphRequest::V1(request.clone());
+    let graph_fingerprint = ordered_edge_batch_graph_request_fingerprint(&graph_request)
+        .expect("Graph request fingerprint");
+    let target = RouterOrderedEdgeBatchTargetV1 {
+        graph_request_fingerprint: graph_fingerprint,
+        request,
+        progress: OrderedEdgeBatchTargetProgressV1::CanonicalPending,
+    };
+    store
+        .transition_to_ordered_edge_batch(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            public_fingerprint,
+            1,
+            Default::default(),
+            Default::default(),
+            target,
+        )
+        .expect("ordered transition");
+
+    let record = store
+        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .expect("ordered record");
+    assert!(!record.as_v1().routing_in_progress);
+    assert!(matches!(
+        record.as_v1().request_identity,
+        RouterMutationRequestIdentityV1::OrderedEdgeBatch {
+            public_item_count: 1,
+            ..
+        }
+    ));
+    assert!(matches!(
+        record.payload(),
+        RouterMutationPayloadV1::OrderedEdgeBatch(replay)
+            if matches!(replay.target.progress, OrderedEdgeBatchTargetProgressV1::CanonicalPending)
+    ));
+    assert_eq!(record.as_v1().routing_lease_ns, None);
+}
+
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only
 // reclaim terminal ones; the old "not routing" rule wrongly stranded committed-but-unprojected
