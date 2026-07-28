@@ -13,10 +13,9 @@ use ic_stable_lara::labeled::batch_write::BatchReservation;
 use ic_stable_lara::labeled::batch_write::{
     BatchLocationMode, BatchLogicalPair, BatchLogicalPairKind, BidirectionalBatchPlan,
     OneOrientationBatchEdge, OneOrientationBatchLocation, OneOrientationBatchPlan,
-    OneOrientationBatchResult, OneOrientationBucketRun, OneOrientationPhysicalLocation,
-    UndirectedBatchPair,
+    OneOrientationBatchResult, OneOrientationBucketRun, UndirectedBatchPair,
 };
-use ic_stable_lara::{CsrEdge, labeled::LabeledOrientation};
+use ic_stable_lara::{CsrEdge, labeled::CanonicalEdgeOccurrence, labeled::LabeledOrientation};
 use rapidhash::{HashMapExt, RapidHashMap};
 
 use super::GraphStore;
@@ -67,6 +66,29 @@ pub(crate) enum BatchEdgePhysicalLocation {
         logical_ordinal: u32,
         location: OneOrientationBatchLocation,
     },
+}
+
+impl BatchEdgePhysicalLocation {
+    /// Resolve the canonical Graph sidecar occurrence from a captured batch location.
+    ///
+    /// LARA may return both orientations for a logical edge, but Graph sidecars are
+    /// owned only by the canonical forward row: directed edges use the source row,
+    /// undirected edges use the higher-owner row, and self-loops have one owner row.
+    /// The captured `logical_slot` is the bucket-local slot contract and is valid
+    /// independently of the raw slab or overflow-log location.
+    pub(crate) fn canonical_occurrence(&self, input: &BatchEdgeInput) -> CanonicalEdgeOccurrence {
+        let location = match self {
+            Self::Directed { forward, .. } => forward,
+            Self::Undirected { owner, .. } => owner,
+            Self::UndirectedSelfLoop { location, .. } => location,
+        };
+        CanonicalEdgeOccurrence {
+            orientation: LabeledOrientation::Forward,
+            owner_vertex_id: location.owner_vertex_id,
+            label_id: lara_label(edge_storage_label(input.catalog_label, !input.directed)),
+            slot_index: location.logical_slot.into(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -721,7 +743,9 @@ mod tests {
     use crate::test_labels::install_test_edge_inline_property_profile;
     use gleaph_graph_kernel::entry::EdgeLabelId;
     use ic_stable_lara::VertexId;
-    use ic_stable_lara::labeled::batch_write::OneOrientationBatchLocation;
+    use ic_stable_lara::labeled::batch_write::{
+        OneOrientationBatchLocation, OneOrientationPhysicalLocation,
+    };
     use ic_stable_lara::lara::edge::free_span::FreeSpanAllocatorStats;
     use ic_stable_lara::lara::edge_inline_property::InlinePropertyBytesAllocatorStats;
 
@@ -749,6 +773,76 @@ mod tests {
             directed,
             inline_property_bytes: bytes,
         }
+    }
+
+    fn captured_location(
+        owner_vertex_id: VertexId,
+        logical_slot: u32,
+    ) -> OneOrientationBatchLocation {
+        OneOrientationBatchLocation {
+            logical_ordinal: 0,
+            owner_vertex_id,
+            logical_slot,
+            location: OneOrientationPhysicalLocation::OverflowLog {
+                leaf: 0,
+                edge_entry_idx: logical_slot,
+                inline_property_bytes_entry_idx: None,
+            },
+        }
+    }
+
+    #[test]
+    fn canonical_sidecar_occurrence_uses_owner_and_logical_slot() {
+        let label = EdgeLabelId::from_raw(4001);
+        let source = VertexId::from(10);
+        let target = VertexId::from(20);
+
+        let directed_input = input(source, target, Some(label), true, vec![]);
+        let directed = BatchEdgePhysicalLocation::Directed {
+            logical_ordinal: 0,
+            forward: captured_location(source, 7),
+            reverse: captured_location(target, 11),
+        };
+        assert_eq!(
+            directed.canonical_occurrence(&directed_input),
+            CanonicalEdgeOccurrence {
+                orientation: LabeledOrientation::Forward,
+                owner_vertex_id: source,
+                label_id: lara_label(edge_storage_label(Some(label), false)),
+                slot_index: 7.into(),
+            }
+        );
+
+        let undirected_input = input(source, target, Some(label), false, vec![]);
+        let undirected = BatchEdgePhysicalLocation::Undirected {
+            logical_ordinal: 0,
+            owner: captured_location(target, 13),
+            alias: captured_location(source, 5),
+        };
+        assert_eq!(
+            undirected.canonical_occurrence(&undirected_input),
+            CanonicalEdgeOccurrence {
+                orientation: LabeledOrientation::Forward,
+                owner_vertex_id: target,
+                label_id: lara_label(edge_storage_label(Some(label), true)),
+                slot_index: 13.into(),
+            }
+        );
+
+        let self_loop_input = input(source, source, Some(label), false, vec![]);
+        let self_loop = BatchEdgePhysicalLocation::UndirectedSelfLoop {
+            logical_ordinal: 0,
+            location: captured_location(source, 17),
+        };
+        assert_eq!(
+            self_loop.canonical_occurrence(&self_loop_input),
+            CanonicalEdgeOccurrence {
+                orientation: LabeledOrientation::Forward,
+                owner_vertex_id: source,
+                label_id: lara_label(edge_storage_label(Some(label), true)),
+                slot_index: 17.into(),
+            }
+        );
     }
 
     fn storage_label_for(catalog_label: Option<EdgeLabelId>, directed: bool) -> u16 {

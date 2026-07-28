@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Planned
 Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 09:12:16 UTC +0000
+Anchor timestamp: 2026-07-28 10:15:02 UTC +0000
 
 ## Context
 
@@ -1517,9 +1517,13 @@ not rewritten as though unfinished unordered product behavior shipped.
    inline-property log folds independently while the leaf relocates once.
 9. Implement and prove the whole-request scalar fallback for new buckets,
    default/unlabeled promotion, and other scalar-supported geometries.
-10. Integrate mandatory internal location capture, canonical sidecar writes, and
-    durable derived-property events for property-bearing items; then enable
-    parallel inserts after exact ordinal/location/property/counterpart coverage.
+10. **Partially implemented (2026-07-28):** the Graph facade now derives one
+    canonical `CanonicalEdgeOccurrence` from the joined captured location for
+    directed, undirected, and self-loop shapes. The occurrence uses the
+    bucket-local `logical_slot` and canonical owner only; sidecar value input,
+    preflight/reservation, writes, and durable derived-property events remain
+    planned. Then enable parallel inserts after exact
+    ordinal/location/property/counterpart coverage.
 11. Replace Router V1 request identity/payload in place; implement exhaustive
     ordered routing/envelope/target progress, resolved-table authority transfer,
     bounded typed retry diagnostics and terminal failures, a bounded record in
