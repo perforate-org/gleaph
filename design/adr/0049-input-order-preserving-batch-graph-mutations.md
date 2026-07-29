@@ -1854,6 +1854,17 @@ not rewritten as though unfinished unordered product behavior shipped.
     verifies that a sufficient free span is reused, the occupied tail does not
     grow, and the final bucket points at the reused offset; scalar span growth
     uses the same free-span-first owner API.
+    **Measured and optimized (2026-07-29 00:06:23 UTC +0000):** ADR 0049's
+    new-bucket preparation is now lazy: existing-bucket batches use the original
+    single preflight lookup, while only a `BucketNotFound` result activates
+    preparation and retry. The hot resident-bucket projection during leaf
+    rewrite also uses a capacity-reserved loop instead of an iterator/closure
+    chain. Representative LARA benches moved from +21.9% to +1.97% for the
+    existing-bucket edge-only expansion path, from +3.69% to +0.35% for the
+    inline-property expansion path, and removed the approximately 14% scalar
+    resident-bucket projection regression. These are measured implementation
+    optimizations; persisted canbench artifacts remain unchanged until the
+    complete affected suite is intentionally refreshed.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

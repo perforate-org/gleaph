@@ -866,30 +866,42 @@ where
     pub(crate) fn prepare_batch_buckets(
         &self,
         plan: &OneOrientationBatchPlan<E>,
-    ) -> Result<Vec<(VertexId, BucketLabelKey)>, OneOrientationBatchError>
+    ) -> Result<
+        (
+            Vec<(VertexId, BucketLabelKey)>,
+            std::collections::BTreeMap<(VertexId, BucketLabelKey), (u64, super::LabelBucket)>,
+        ),
+        OneOrientationBatchError,
+    >
     where
         E: CsrEdgeTombstone,
     {
         let mut new_buckets = Vec::new();
+        let mut existing_buckets = std::collections::BTreeMap::new();
         let mut seen = std::collections::BTreeSet::new();
         let result = (|| {
             for run in &plan.runs {
                 if seen.insert((run.owner_vertex_id, run.label_id)) {
                     let vertex = self.vertices.get(run.owner_vertex_id);
-                    if matches!(
-                        self.find_bucket(run.owner_vertex_id, &vertex, run.label_id)
-                            .map_err(OneOrientationBatchError::from)?,
-                        BucketSearch::Missing { .. }
-                    ) {
-                        new_buckets.push((run.owner_vertex_id, run.label_id));
+                    match self
+                        .find_bucket(run.owner_vertex_id, &vertex, run.label_id)
+                        .map_err(OneOrientationBatchError::from)?
+                    {
+                        BucketSearch::Found { slot, bucket } => {
+                            existing_buckets
+                                .insert((run.owner_vertex_id, run.label_id), (slot, bucket));
+                        }
+                        BucketSearch::Missing { .. } => {
+                            new_buckets.push((run.owner_vertex_id, run.label_id));
+                            self.ensure_label_bucket_inline_property_byte_width(
+                                run.owner_vertex_id,
+                                run.label_id,
+                                run.inline_property_width,
+                            )
+                            .map_err(OneOrientationBatchError::from)?;
+                        }
                     }
                 }
-                self.ensure_label_bucket_inline_property_byte_width(
-                    run.owner_vertex_id,
-                    run.label_id,
-                    run.inline_property_width,
-                )
-                .map_err(OneOrientationBatchError::from)?;
             }
             Ok::<(), OneOrientationBatchError>(())
         })();
@@ -897,7 +909,7 @@ where
             self.rollback_prepared_buckets(&new_buckets);
             return Err(error);
         }
-        Ok(new_buckets)
+        Ok((new_buckets, existing_buckets))
     }
 
     fn rollback_prepared_buckets(&self, new_buckets: &[(VertexId, BucketLabelKey)]) {
@@ -931,13 +943,25 @@ where
     {
         // Phase 1: validate plan invariants without touching canonical state.
         Self::validate_plan_invariants(plan)?;
-        let new_buckets = self.prepare_batch_buckets(plan)?;
-        match self.reserve_one_orientation_batch_prepared(plan, new_buckets.clone()) {
+        let empty_existing_buckets = std::collections::BTreeMap::new();
+        match self.reserve_one_orientation_batch_prepared(plan, Vec::new(), empty_existing_buckets)
+        {
             Ok(reservation) => Ok(reservation),
-            Err(error) => {
-                self.rollback_prepared_buckets(&new_buckets);
-                Err(error)
+            Err(OneOrientationBatchError::BucketNotFound { .. }) => {
+                let (new_buckets, existing_buckets) = self.prepare_batch_buckets(plan)?;
+                match self.reserve_one_orientation_batch_prepared(
+                    plan,
+                    new_buckets.clone(),
+                    existing_buckets,
+                ) {
+                    Ok(reservation) => Ok(reservation),
+                    Err(error) => {
+                        self.rollback_prepared_buckets(&new_buckets);
+                        Err(error)
+                    }
+                }
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -945,6 +969,10 @@ where
         &self,
         plan: &OneOrientationBatchPlan<E>,
         new_buckets: Vec<(VertexId, BucketLabelKey)>,
+        existing_buckets: std::collections::BTreeMap<
+            (VertexId, BucketLabelKey),
+            (u64, super::LabelBucket),
+        >,
     ) -> Result<BatchReservation<E>, OneOrientationBatchError>
     where
         E: CsrEdgeTombstone,
@@ -970,6 +998,7 @@ where
                 &mut edge_log_leaf_cursors,
                 &mut inline_property_bytes_log_leaf_cursors,
                 &mut leaf_expansion_cursors,
+                &existing_buckets,
             )?;
             if let RunDestination::Slab {
                 edge_start_slot, ..
@@ -1687,12 +1716,20 @@ where
         edge_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
         inline_property_bytes_log_leaf_cursors: &mut std::collections::BTreeMap<u32, u32>,
         leaf_expansion_cursors: &mut std::collections::BTreeMap<u32, LeafExpansionState>,
+        existing_buckets: &std::collections::BTreeMap<
+            (VertexId, BucketLabelKey),
+            (u64, super::LabelBucket),
+        >,
     ) -> Result<PreflightRun, OneOrientationBatchError> {
         self.ensure_vertex(run.owner_vertex_id)
             .map_err(OneOrientationBatchError::from)?;
         let vertex = self.vertices.get(run.owner_vertex_id);
-        let (bucket_slot, bucket) =
-            match self.find_bucket(run.owner_vertex_id, &vertex, run.label_id)? {
+        let (bucket_slot, bucket) = match existing_buckets
+            .get(&(run.owner_vertex_id, run.label_id))
+            .copied()
+        {
+            Some(found) => found,
+            None => match self.find_bucket(run.owner_vertex_id, &vertex, run.label_id)? {
                 BucketSearch::Found { slot, bucket } => (slot, bucket),
                 BucketSearch::Missing { .. } => {
                     return Err(OneOrientationBatchError::BucketNotFound {
@@ -1700,7 +1737,8 @@ where
                         label_id: run.label_id,
                     });
                 }
-            };
+            },
+        };
         if run.inline_property_width != bucket.inline_property_byte_width() {
             return Err(OneOrientationBatchError::InlinePropertyBytesWidthMismatch {
                 bucket_width: bucket.inline_property_byte_width(),

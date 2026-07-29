@@ -1355,24 +1355,23 @@ where
         let resident_buckets = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _scope = bench_scope("labeled_vertex_build_resident_buckets");
-            buckets
-                .iter()
-                .zip(per_bucket_edges.iter().zip(per_bucket_raw.iter()))
-                .map(|(bucket, (edges, raw))| {
-                    let resident_slots = raw
-                        .as_ref()
-                        .map(|raw| raw.len() / E::BYTES)
-                        .or_else(|| edges.as_ref().map(Vec::len))
-                        .unwrap_or(0);
-                    let resident_slots = u32::try_from(resident_slots)
-                        .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
-                    Ok::<LabelBucket, LabeledOperationError>(
-                        bucket
-                            .with_stored_slots(resident_slots)
-                            .with_overflow_log_head(-1),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?
+            let mut resident_buckets = Vec::with_capacity(buckets.len());
+            for index in 0..buckets.len() {
+                let bucket = &buckets[index];
+                let resident_slots = per_bucket_raw[index]
+                    .as_ref()
+                    .map(|raw| raw.len() / E::BYTES)
+                    .or_else(|| per_bucket_edges[index].as_ref().map(Vec::len))
+                    .unwrap_or(0);
+                let resident_slots = u32::try_from(resident_slots)
+                    .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
+                resident_buckets.push(
+                    bucket
+                        .with_stored_slots(resident_slots)
+                        .with_overflow_log_head(-1),
+                );
+            }
+            resident_buckets
         };
         let positions = {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
