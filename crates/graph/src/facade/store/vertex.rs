@@ -41,13 +41,9 @@ impl GraphStore {
     ) -> Result<Vec<VertexId>, GraphStoreError> {
         let rows: Vec<_> = rows.into_iter().collect();
         self.with_graph_mut(|graph| {
-            rows.into_iter()
-                .map(|row| {
-                    graph
-                        .push_vertex_row(row.into())
-                        .map_err(GraphStoreError::from)
-                })
-                .collect()
+            graph
+                .push_vertices(rows.into_iter().map(Into::into))
+                .map_err(GraphStoreError::from)
         })
     }
 

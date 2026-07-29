@@ -512,6 +512,35 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         Ok(())
     }
 
+    /// Append several fixed-width rows with one contiguous stable-memory write and one length
+    /// header update. The caller remains responsible for any paired orientation bookkeeping.
+    pub(crate) fn push_many(&self, items: impl IntoIterator<Item = V>) -> Result<u32, GrowFailed> {
+        let items: Vec<V> = items.into_iter().collect();
+        let old_len = self.len();
+        let added = u32::try_from(items.len()).expect("vertex batch length exceeds u32::MAX");
+        let new_len = old_len
+            .checked_add(added)
+            .expect("vertex store length exceeds u32::MAX");
+        if added == 0 {
+            return Ok(old_len);
+        }
+
+        let byte_len = items
+            .len()
+            .checked_mul(V::BYTES)
+            .expect("vertex batch byte length overflow");
+        let mut bytes = Vec::with_capacity(byte_len);
+        for item in items {
+            bytes.extend_from_slice(&item.to_bytes_checked());
+        }
+        safe_write(&self.memory, self.entry_offset(u64::from(old_len)), &bytes)?;
+        write_u32(&self.memory, Address::from(LEN_OFFSET), new_len);
+        let mut hdr = self.header_mirror.get();
+        hdr.len = new_len;
+        self.header_mirror.set(hdr);
+        Ok(old_len)
+    }
+
     fn entry_offset(&self, index: u64) -> u64 {
         DATA_OFFSET + V::BYTES as u64 * index
     }

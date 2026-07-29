@@ -1209,6 +1209,38 @@ where
         ))
     }
 
+    /// Append several request-ordered normal vertex rows to both orientations.
+    pub fn push_vertices(
+        &self,
+        vertices: impl IntoIterator<Item = crate::labeled::record::LabeledVertex>,
+    ) -> Result<Vec<VertexId>, DeferredBidirectionalLabeledError> {
+        let vertices: Vec<_> = vertices.into_iter().collect();
+        let forward_count = self.forward.vertex_count();
+        let reverse_count = self.reverse.vertex_count();
+        if forward_count != reverse_count {
+            return Err(DeferredBidirectionalLabeledError::VertexCountMismatch {
+                forward: forward_count,
+                reverse: reverse_count,
+            });
+        }
+        let ids = self
+            .forward
+            .push_vertices(vertices.clone())
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        self.reverse
+            .push_vertices(vertices)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        let forward_count = self.forward.vertex_count();
+        let reverse_count = self.reverse.vertex_count();
+        if forward_count != reverse_count {
+            return Err(DeferredBidirectionalLabeledError::VertexCountMismatch {
+                forward: forward_count,
+                reverse: reverse_count,
+            });
+        }
+        Ok(ids)
+    }
+
     /// Inserts one outgoing edge on the forward store only (remote / external targets).
     pub fn insert_forward_out_edge(
         &self,

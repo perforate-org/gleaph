@@ -87,6 +87,57 @@ where
         Ok(VertexId::from(id))
     }
 
+    /// Append several vertex rows while growing edge/value segment metadata once for the final
+    /// vertex count. Row order and the existing monotonic bucket-base correction are preserved.
+    pub(crate) fn push_vertices(
+        &self,
+        vertices: impl IntoIterator<Item = LabeledVertex>,
+    ) -> Result<Vec<VertexId>, LabeledOperationError> {
+        let mut vertices: Vec<_> = vertices.into_iter().collect();
+        if vertices.is_empty() {
+            return Ok(Vec::new());
+        }
+        let start = self.vertices.len();
+        let mut previous_end = if start == 0 {
+            None
+        } else {
+            Some(self.vertex_bucket_descriptor_row_end(VertexId::from(start - 1))?)
+        };
+        for vertex in &mut vertices {
+            vertex.ensure_valid_normal_row()?;
+            if let Some(previous_end) = previous_end
+                && vertex.base_slot_start() < previous_end
+            {
+                *vertex = vertex.with_base_slot_start(previous_end);
+            }
+            previous_end = Some(if vertex.degree() == 0 {
+                vertex.base_slot_start()
+            } else if vertex.is_default_edge_labeled() {
+                crate::labeled::slot_index::checked_add_slot_index(
+                    vertex.base_slot_start(),
+                    u64::from(vertex.stored_degree()),
+                )
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
+            } else {
+                return Err(LaraOperationError::CollectAllocationOverflow.into());
+            });
+        }
+        self.vertices
+            .push_many(vertices)
+            .map_err(LabeledOperationError::from)?;
+        let header = self.edges.header();
+        let target = segment_tree_leaf_count(self.vertices.len().into(), header.segment_size);
+        if target > header.segment_count {
+            self.edges
+                .grow_segment_tree_to(target)
+                .map_err(LabeledOperationError::from)?;
+            self.values
+                .grow_segment_count_to(target)
+                .map_err(LabeledOperationError::from)?;
+        }
+        Ok((start..self.vertices.len()).map(VertexId::from).collect())
+    }
+
     /// Compacts the label-bucket descriptor segment containing `vid`.
     pub(crate) fn compact_label_bucket_vertex_segment(
         &self,

@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 02:20:40 UTC +0000
+Anchor timestamp: 2026-07-29 02:28:57 UTC +0000
 
 ## Context
 
@@ -2001,7 +2001,9 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     exposes an internal allocation-only bulk row primitive that returns local
     `VertexId`s in request order. Focused unit coverage proves empty-input
     no-op behavior, ordered ids, and readable rows; scalar-vs-bulk canbench
-    probes are added. Labels, properties, complete-set preflight, and the
+    probes are added. The LARA vertex column now supports contiguous fixed-width
+    row writes, while forward/reverse wrappers grow segment metadata once for
+    the final count. Labels, properties, complete-set preflight, and the
     public vertex contract remain planned. The completed placement must still
     project and validate the complete vertex set before canonical writes, group
     compatible allocations without exposing physical locations, preserve
