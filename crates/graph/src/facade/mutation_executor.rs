@@ -78,17 +78,31 @@ pub fn insert_vertices_with(
     vertices: Vec<(Vec<VertexLabelId>, Vec<(PropertyId, Value)>)>,
 ) -> Result<Vec<VertexId>, GraphStoreError> {
     let ids = store.insert_vertex_rows_bulk((0..vertices.len()).map(|_| Vertex::default()))?;
-    for (vertex_id, (labels, properties)) in ids.iter().copied().zip(vertices) {
-        let vertex = store
-            .vertex(vertex_id)
-            .expect("newly inserted bulk vertex must be readable");
-        let vertex = store.set_vertex_labels(vertex_id, vertex, labels)?;
+    let label_assignments: Vec<_> = ids
+        .iter()
+        .copied()
+        .zip(vertices.iter())
+        .map(|(vertex_id, (labels, _))| {
+            let vertex = store
+                .vertex(vertex_id)
+                .expect("newly inserted bulk vertex must be readable");
+            (vertex_id, vertex, labels.clone())
+        })
+        .collect();
+    for (vertex_id, vertex) in store.commit_set_vertex_labels_bulk(&label_assignments)? {
         store.set_vertex(vertex_id, vertex)?;
-        for (property_id, value) in properties {
-            store.assert_local_vertex_writable(vertex_id)?;
-            store.set_vertex_property(vertex_id, property_id, value)?;
-        }
     }
+    let properties: Vec<_> = ids
+        .iter()
+        .copied()
+        .zip(vertices)
+        .flat_map(|(vertex_id, (_, properties))| {
+            properties
+                .into_iter()
+                .map(move |(property_id, value)| (vertex_id, property_id, value))
+        })
+        .collect();
+    store.commit_vertex_property_writes_bulk(&properties)?;
     Ok(ids)
 }
 

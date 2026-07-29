@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 02:28:57 UTC +0000
+Anchor timestamp: 2026-07-29 02:33:47 UTC +0000
 
 ## Context
 
@@ -2003,7 +2003,9 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     no-op behavior, ordered ids, and readable rows; scalar-vs-bulk canbench
     probes are added. The LARA vertex column now supports contiguous fixed-width
     row writes, while forward/reverse wrappers grow segment metadata once for
-    the final count. Labels, properties, complete-set preflight, and the
+    the final count. The Graph bulk mutation substrate now co-writes vertex
+    label sidecars and property values through the existing canonical stores,
+    retaining label-pending and property-index dispatch. Complete-set preflight and the
     public vertex contract remain planned. The completed placement must still
     project and validate the complete vertex set before canonical writes, group
     compatible allocations without exposing physical locations, preserve

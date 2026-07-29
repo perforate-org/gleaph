@@ -94,6 +94,31 @@ fn bulk_vertex_insert_applies_request_order_without_exposing_allocation_layout()
 }
 
 #[test]
+fn bulk_vertex_insert_co_writes_labels_and_properties_through_canonical_stores() {
+    let store = GraphStore::new();
+    let label = crate::test_labels::vertex_label_id_for_name("BulkVertex");
+    let property = crate::test_labels::property_id_for_name("name");
+
+    let ids = crate::facade::mutation_executor::insert_vertices_with(
+        &store,
+        vec![
+            (vec![label], vec![(property, Value::Text("a".into()))]),
+            (vec![label], vec![(property, Value::Text("b".into()))]),
+        ],
+    )
+    .expect("bulk vertex labels and properties");
+
+    for (id, expected) in ids.into_iter().zip(["a", "b"]) {
+        let vertex = store.vertex(id).expect("bulk vertex row");
+        assert!(store.vertex_has_label(id, vertex, label));
+        assert_eq!(
+            store.vertex_property(id, property),
+            Some(Value::Text(expected.into()))
+        );
+    }
+}
+
+#[test]
 fn social_style_leaf_sharing_keeps_alices_third_post_writable() {
     let store = GraphStore::new();
     let initial: Vec<_> = (0..15)

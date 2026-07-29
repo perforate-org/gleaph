@@ -10,6 +10,44 @@ use ic_stable_lara::{VertexId, labeled::CanonicalEdgeOccurrence};
 use super::GraphStore;
 
 impl GraphStore {
+    pub(crate) fn commit_vertex_property_writes_bulk(
+        &self,
+        assignments: &[(VertexId, PropertyId, Value)],
+    ) -> Result<(), VertexPropertyStoreError> {
+        let previous = VERTEX_PROPERTIES.with_borrow(|store| {
+            assignments
+                .iter()
+                .map(|(vertex_id, property_id, _)| {
+                    (
+                        *vertex_id,
+                        *property_id,
+                        store.get(*vertex_id, *property_id),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        VERTEX_PROPERTIES.with_borrow_mut(|store| {
+            assignments
+                .iter()
+                .map(|(vertex_id, property_id, value)| {
+                    store
+                        .set(*vertex_id, *property_id, value.clone())
+                        .map(|_| ())
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        for ((vertex_id, property_id, value), (_, _, previous)) in assignments.iter().zip(previous)
+        {
+            dispatch_property_index_ops(PropertyValueChange::vertex(
+                *vertex_id,
+                *property_id,
+                previous.as_ref(),
+                Some(value),
+            ));
+        }
+        Ok(())
+    }
+
     /// Write a vertex property and enqueue federated index maintenance when enabled.
     pub(super) fn commit_vertex_property_write(
         &self,

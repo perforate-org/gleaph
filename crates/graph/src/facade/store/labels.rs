@@ -9,6 +9,36 @@ use ic_stable_lara::VertexId;
 use super::GraphStore;
 
 impl GraphStore {
+    pub(crate) fn commit_set_vertex_labels_bulk(
+        &self,
+        assignments: &[(VertexId, Vertex, Vec<VertexLabelId>)],
+    ) -> Result<Vec<(VertexId, Vertex)>, VertexLabelStoreError> {
+        let prepared: Vec<_> = assignments
+            .iter()
+            .map(|(vertex_id, vertex, labels)| {
+                (
+                    *vertex_id,
+                    *vertex,
+                    self.vertex_labels(*vertex_id, *vertex),
+                    labels.clone(),
+                )
+            })
+            .collect();
+        for (vertex_id, _, previous, next) in &prepared {
+            label_pending::record_vertex_label_set(*vertex_id, previous, next);
+        }
+        VERTEX_LABELS.with_borrow_mut(|store| {
+            prepared
+                .iter()
+                .map(|(vertex_id, vertex, _, labels)| {
+                    store
+                        .set_labels(*vertex_id, *vertex, labels.iter().copied())
+                        .map(|updated| (*vertex_id, updated))
+                })
+                .collect()
+        })
+    }
+
     pub(super) fn commit_set_vertex_labels(
         &self,
         vertex_id: VertexId,
