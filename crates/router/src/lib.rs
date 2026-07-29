@@ -502,7 +502,7 @@ fn mutation_status(
 #[update]
 async fn execute_ordered_edge_batch(
     request: types::OrderedEdgeBatchPublicRequest,
-) -> Result<types::MutationStatus, RouterError> {
+) -> Result<types::OrderedEdgeBatchResponse, RouterError> {
     canister::execute_ordered_edge_batch(request).await
 }
 

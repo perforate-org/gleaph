@@ -60,13 +60,16 @@ fn ordered_public_edge_batch_commits_and_replays_exactly() {
 
     let first = execute_ordered_edge_batch_as_admin(&env, request.clone())
         .expect("ordered public batch must commit");
-    assert_eq!(first.phase, MutationLifecyclePhase::Completed);
-    let mutation_id = first.mutation_id;
+    assert_eq!(first.status.phase, MutationLifecyclePhase::Completed);
+    let mutation_id = first.status.mutation_id;
+    let receipt = first.receipt.clone().expect("completed batch receipt");
+    assert_eq!(receipt.logical_edge_count, 1);
 
     let replay = execute_ordered_edge_batch_as_admin(&env, request)
         .expect("exact ordered public retry must be idempotent");
-    assert_eq!(replay.phase, MutationLifecyclePhase::Completed);
-    assert_eq!(replay.mutation_id, mutation_id);
+    assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(replay.status.mutation_id, mutation_id);
+    assert_eq!(replay.receipt, Some(receipt));
 }
 
 #[test]
@@ -122,7 +125,7 @@ fn ordered_public_edge_batch_persists_property_and_inline_values() {
 
     let status = execute_ordered_edge_batch_as_admin(&env, request)
         .expect("property and inline ordered batch must commit");
-    assert_eq!(status.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(status.status.phase, MutationLifecyclePhase::Completed);
     assert!(edge_label.raw() > 0);
     assert!(score.raw() > 0);
 
@@ -208,11 +211,11 @@ fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
 
     let status = execute_ordered_edge_batch_as_admin(&env, request.clone())
         .expect("mixed ordered batch must commit");
-    assert_eq!(status.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(status.status.phase, MutationLifecyclePhase::Completed);
     let replay = execute_ordered_edge_batch_as_admin(&env, request)
         .expect("mixed ordered batch replay must be idempotent");
-    assert_eq!(replay.phase, MutationLifecyclePhase::Completed);
-    assert_eq!(replay.mutation_id, status.mutation_id);
+    assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(replay.status.mutation_id, status.status.mutation_id);
     assert_eq!(
         e2e_reverse_resolved_edge_property(
             &env,
@@ -290,7 +293,7 @@ fn ordered_public_edge_batch_recovers_after_canonical_receipt_failure() {
     )
     .expect("canonical receipt status");
     assert_eq!(
-        before_recovery.phase,
+        before_recovery.status.phase,
         MutationLifecyclePhase::CanonicalCommitted
     );
     run_router_recovery_timer(&env);
@@ -300,7 +303,7 @@ fn ordered_public_edge_batch_recovers_after_canonical_receipt_failure() {
         "adr0049-public-replay",
     )
     .expect("recovered ordered mutation status");
-    assert_eq!(status.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(status.status.phase, MutationLifecyclePhase::Completed);
 }
 
 #[test]
@@ -327,7 +330,10 @@ fn ordered_public_edge_batch_recovers_after_retirement_acknowledgement_loss() {
     .expect("retirement-pending ordered mutation status");
     // Router intentionally projects the internal RetirementPending state as the public
     // ProjectionPending phase; the retirement sub-state is durable but not a client enum variant.
-    assert_eq!(pending.phase, MutationLifecyclePhase::ProjectionPending);
+    assert_eq!(
+        pending.status.phase,
+        MutationLifecyclePhase::ProjectionPending
+    );
 
     run_router_recovery_timer(&env);
     let completed = mutation_status_as_admin(
@@ -336,13 +342,13 @@ fn ordered_public_edge_batch_recovers_after_retirement_acknowledgement_loss() {
         "adr0049-public-replay",
     )
     .expect("recovered ordered mutation status");
-    assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(completed.status.phase, MutationLifecyclePhase::Completed);
 
     // An exact retry after recovery returns the same mutation rather than adding another edge.
     let replay = execute_ordered_edge_batch_as_admin(&env, request)
         .expect("completed ordered retry must replay");
-    assert_eq!(replay.phase, MutationLifecyclePhase::Completed);
-    assert_eq!(replay.mutation_id, completed.mutation_id);
+    assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(replay.status.mutation_id, completed.status.mutation_id);
 }
 
 #[test]
@@ -369,7 +375,10 @@ fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
         "adr0049-public-replay",
     )
     .expect("retirement-pending ordered mutation status");
-    assert_eq!(pending.phase, MutationLifecyclePhase::ProjectionPending);
+    assert_eq!(
+        pending.status.phase,
+        MutationLifecyclePhase::ProjectionPending
+    );
 
     // After the real 9-day retention window, the retired Graph journal is absent. Router must
     // stay fail-closed instead of inferring completion or redispatching the canonical mutation.
@@ -385,14 +394,17 @@ fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
     )
     .expect("ordered mutation must remain retained for repair");
     assert_eq!(
-        after_absent.phase,
+        after_absent.status.phase,
         MutationLifecyclePhase::ProjectionPending
     );
-    assert_eq!(after_absent.mutation_id, pending.mutation_id);
+    assert_eq!(after_absent.status.mutation_id, pending.status.mutation_id);
 
     // The exact retry observes the same durable Router record; it does not create another edge.
     let retry = execute_ordered_edge_batch_as_admin(&env, request)
         .expect("exact retry must remain a repairable pending mutation");
-    assert_eq!(retry.phase, MutationLifecyclePhase::ProjectionPending);
-    assert_eq!(retry.mutation_id, pending.mutation_id);
+    assert_eq!(
+        retry.status.phase,
+        MutationLifecyclePhase::ProjectionPending
+    );
+    assert_eq!(retry.status.mutation_id, pending.status.mutation_id);
 }

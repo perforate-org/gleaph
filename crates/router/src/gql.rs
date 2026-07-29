@@ -1248,7 +1248,7 @@ pub async fn gql_execute_idempotent(
 /// is advanced through projection and fingerprint-bound retirement.
 pub(crate) async fn execute_ordered_edge_batch_public(
     request: crate::types::OrderedEdgeBatchPublicRequest,
-) -> Result<crate::types::MutationStatus, RouterError> {
+) -> Result<crate::types::OrderedEdgeBatchResponse, RouterError> {
     let caller = msg_caller();
     let public_fingerprint = request
         .public_fingerprint()
@@ -1340,7 +1340,7 @@ pub(crate) async fn execute_ordered_edge_batch_public(
                 "client_mutation_key belongs to a different mutation kind".into(),
             ));
         }
-        return Ok(crate::types::MutationStatus::from_record(&record));
+        return Ok(crate::types::OrderedEdgeBatchResponse::from_record(&record));
     }
 
     let mutation_id = reservation.mutation_id;
@@ -1488,7 +1488,7 @@ pub(crate) async fn execute_ordered_edge_batch_public(
     let record = store
         .router_mutation_record(caller, graph_id, &client_key)
         .ok_or_else(|| RouterError::Internal("ordered mutation record disappeared".into()))?;
-    Ok(crate::types::MutationStatus::from_record(&record))
+    Ok(crate::types::OrderedEdgeBatchResponse::from_record(&record))
 }
 
 pub(crate) async fn gql_execute_idempotent_with_batch(

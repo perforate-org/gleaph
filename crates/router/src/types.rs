@@ -45,6 +45,39 @@ pub struct MutationStatus {
     pub next_action: String,
 }
 
+/// Public result for one ordered edge batch. `status` describes lifecycle convergence;
+/// `receipt` is present once Graph has committed the canonical batch result.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OrderedEdgeBatchResponse {
+    pub status: MutationStatus,
+    pub receipt: Option<gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchReceiptV1>,
+}
+
+impl OrderedEdgeBatchResponse {
+    pub fn from_record(record: &RouterMutationRecord) -> Self {
+        let receipt = match record.payload() {
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(replay) => {
+                match &replay.target.progress {
+                    crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt)
+                    | crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt)
+                    | crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt)
+                    | crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt) => Some(receipt.clone()),
+                    crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::CanonicalPending => None,
+                }
+            }
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+                receipt,
+                ..
+            } => Some(receipt.clone()),
+            _ => None,
+        };
+        Self {
+            status: MutationStatus::from_record(record),
+            receipt,
+        }
+    }
+}
+
 /// Versioned public request for the order-preserving edge-insert API (ADR 0049).
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum OrderedEdgeBatchPublicRequest {

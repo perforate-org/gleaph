@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 01:58:25 UTC +0000
+Anchor timestamp: 2026-07-29 02:06:06 UTC +0000
 
 ## Context
 
@@ -1698,8 +1698,10 @@ not rewritten as though unfinished unordered product behavior shipped.
     endpoint, inline-property, property-value, and encoded-request validation,
     plus Candid round-trip and invalid-property tests. Single-request admission,
     logical-graph/shard/catalog resolution, independently versioned Graph result
-    and retirement acknowledgement envelopes, aggregate receipt, SDK packing,
-    and PocketIC coverage remain planned. Do not expose non-edge or unordered
+    and retirement acknowledgement envelopes, SDK packing, and PocketIC coverage
+    remain planned. The public response now includes an optional aggregate
+    receipt once canonical Graph commit has completed; retries return the same
+    receipt. Do not expose non-edge or unordered
     specialized batch operations.
     **Partially implemented (2026-07-28 14:00:07 UTC +0000):** the public V1
     wire now carries a bounded client mutation key and exposes a Router-owned,
@@ -1990,6 +1992,11 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     canonical value codec, validates endpoint/key/item and inline bounds, emits
     Candid option arrays, preserves edge-item order, and sorts property names by
     UTF-8 bytes. It does not compute fingerprints or perform Router admission.
+    **Partially implemented (2026-07-29 02:06:06 UTC +0000):** the public
+    Router response now separates lifecycle `status` from the optional
+    `GraphOrderedEdgeBatchReceiptV1`. The receipt becomes available after
+    canonical Graph commit and is preserved through projection, retirement, and
+    exact-key replay; coverage asserts the initial and replayed receipts match.
 18. **Planned (2026-07-29):** add an explicitly versioned vertex-batch contract
     and implement Graph/LARA vertex bulk placement. The implementation must
     project and validate the complete vertex set before canonical writes, group

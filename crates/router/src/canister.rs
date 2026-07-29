@@ -164,7 +164,7 @@ pub(crate) fn mutation_status(
 
 pub(crate) async fn execute_ordered_edge_batch(
     request: crate::types::OrderedEdgeBatchPublicRequest,
-) -> Result<crate::types::MutationStatus, RouterError> {
+) -> Result<crate::types::OrderedEdgeBatchResponse, RouterError> {
     crate::gql::execute_ordered_edge_batch_public(request).await
 }
 

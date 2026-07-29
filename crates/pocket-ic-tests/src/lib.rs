@@ -1965,7 +1965,10 @@ pub fn mutation_status_as_admin(
 pub fn execute_ordered_edge_batch_as_admin(
     env: &FederationEnv,
     request: OrderedEdgeBatchPublicRequest,
-) -> Result<gleaph_router::types::MutationStatus, gleaph_graph_kernel::federation::RouterError> {
+) -> Result<
+    gleaph_router::types::OrderedEdgeBatchResponse,
+    gleaph_graph_kernel::federation::RouterError,
+> {
     let bytes = env
         .pic
         .update_call(
@@ -1975,7 +1978,7 @@ pub fn execute_ordered_edge_batch_as_admin(
             Encode!(&request).expect("encode execute_ordered_edge_batch"),
         )
         .unwrap_or_else(|e| panic!("execute_ordered_edge_batch on router: {e:?}"));
-    Decode!(&bytes, Result<gleaph_router::types::MutationStatus, gleaph_graph_kernel::federation::RouterError>)
+    Decode!(&bytes, Result<gleaph_router::types::OrderedEdgeBatchResponse, gleaph_graph_kernel::federation::RouterError>)
         .expect("decode execute_ordered_edge_batch")
 }
 
