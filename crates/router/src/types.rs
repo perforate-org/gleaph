@@ -330,6 +330,177 @@ impl OrderedEdgeBatchPublicRequest {
     }
 }
 
+/// Versioned public request for vertex-only bulk placement (ADR 0049).
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum OrderedVertexBatchPublicRequest {
+    V1(OrderedVertexBatchPublicRequestV1),
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OrderedVertexBatchPublicRequestV1 {
+    pub client_mutation_key: String,
+    pub logical_graph_name: String,
+    /// New vertices have no endpoint from which Router can infer ownership, so the target shard is
+    /// explicit and must be resolved to a registered Graph canister before dispatch.
+    pub target_shard_id: ShardId,
+    pub items: Vec<OrderedVertexInsertPublicItemV1>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OrderedVertexInsertPublicItemV1 {
+    pub vertex_labels: Vec<String>,
+    pub initial_properties: Vec<OrderedEdgePropertyPublicV1>,
+}
+
+impl OrderedVertexBatchPublicRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        let Self::V1(request) = self;
+        if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
+            return Err("ordered vertex batch client mutation key must be 1..=256 bytes".into());
+        }
+        if request.logical_graph_name.is_empty() {
+            return Err("ordered vertex batch logical graph name must not be empty".into());
+        }
+        if request.items.is_empty() || request.items.len() > 1_024 {
+            return Err("ordered vertex batch item count must be 1..=1024".into());
+        }
+        for (ordinal, item) in request.items.iter().enumerate() {
+            for label in &item.vertex_labels {
+                if label.is_empty() {
+                    return Err(format!(
+                        "ordered vertex item {ordinal} contains an empty label"
+                    ));
+                }
+            }
+            let mut property_names = BTreeSet::new();
+            for property in &item.initial_properties {
+                if property.property_name.is_empty() {
+                    return Err(format!(
+                        "ordered vertex item {ordinal} contains an empty property name"
+                    ));
+                }
+                if !property_names.insert(&property.property_name) {
+                    return Err(format!(
+                        "ordered vertex item {ordinal} repeats property name {}",
+                        property.property_name
+                    ));
+                }
+                if property.value.len()
+                    > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+                {
+                    return Err(format!(
+                        "ordered vertex item {ordinal} property value exceeds the payload bound"
+                    ));
+                }
+            }
+        }
+        let encoded =
+            Encode!(self).map_err(|error| format!("ordered vertex batch encode: {error}"))?;
+        if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("ordered vertex batch exceeds the safe payload bound".into());
+        }
+        Ok(())
+    }
+
+    pub fn public_fingerprint(&self) -> Result<[u8; 32], String> {
+        self.validate()?;
+        let Self::V1(request) = self;
+        let mut items = request.items.clone();
+        for item in &mut items {
+            item.vertex_labels
+                .sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+            item.initial_properties.sort_by(|left, right| {
+                left.property_name
+                    .as_bytes()
+                    .cmp(right.property_name.as_bytes())
+            });
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(b"gleaph:ordered-vertex-public:v1\0");
+        hasher.update(
+            Encode!(&(
+                request.logical_graph_name.clone(),
+                request.target_shard_id,
+                items
+            ))
+            .map_err(|error| format!("ordered vertex public request encode: {error}"))?,
+        );
+        Ok(hasher.finalize().into())
+    }
+
+    pub fn into_graph_request(
+        &self,
+        graph_id: GraphId,
+        target_graph_canister: Principal,
+        resolved_labels: gleaph_graph_kernel::plan_exec::ResolvedLabelTable,
+        resolved_properties: gleaph_graph_kernel::plan_exec::ResolvedPropertyTable,
+    ) -> Result<gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequest, String> {
+        self.validate()?;
+        let Self::V1(request) = self;
+        let items = request
+            .items
+            .iter()
+            .enumerate()
+            .map(|(ordinal, item)| {
+                let labels = item
+                    .vertex_labels
+                    .iter()
+                    .map(|name| {
+                        resolved_labels
+                            .vertex
+                            .iter()
+                            .find(|entry| entry.name == *name)
+                            .map(|entry| entry.id.raw())
+                            .ok_or_else(|| format!("ordered vertex label {name} was not resolved"))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let properties = item
+                    .initial_properties
+                    .iter()
+                    .map(|property| {
+                        let property_id = resolved_properties
+                            .properties
+                            .iter()
+                            .find(|entry| entry.name == property.property_name)
+                            .map(|entry| entry.id)
+                            .ok_or_else(|| {
+                                format!(
+                                    "ordered vertex property {} was not resolved",
+                                    property.property_name
+                                )
+                            })?;
+                        Ok(
+                            gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                                property_id,
+                                value: property.value.clone(),
+                            },
+                        )
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let _ = ordinal;
+                Ok(
+                    gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphItemV1 {
+                        resolved_vertex_labels: labels,
+                        resolved_initial_properties: properties,
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let request = gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequest::V1(
+            gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequestV1 {
+                graph_id,
+                target_shard_id: request.target_shard_id,
+                target_graph_canister,
+                resolved_labels,
+                resolved_properties,
+                items,
+            },
+        );
+        request.validate()?;
+        Ok(request)
+    }
+}
+
 impl MutationStatus {
     pub fn from_record(record: &RouterMutationRecord) -> Self {
         let phase = record.lifecycle_phase();

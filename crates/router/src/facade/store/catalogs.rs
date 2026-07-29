@@ -78,6 +78,42 @@ impl RouterStore {
         Ok((labels, properties))
     }
 
+    /// Resolve the names carried by the ordered public vertex wire without interning anything.
+    #[allow(
+        dead_code,
+        reason = "wired into the ordered public vertex admission endpoint in the next slice"
+    )]
+    pub(crate) fn resolve_ordered_vertex_catalogs(
+        &self,
+        graph_id: GraphId,
+        vertex_label_names: impl IntoIterator<Item = String>,
+        property_names: impl IntoIterator<Item = String>,
+    ) -> Result<(ResolvedLabelTable, ResolvedPropertyTable), RouterError> {
+        let mut labels = ResolvedLabelTable::default();
+        for name in vertex_label_names {
+            validate_metadata_name(&name)?;
+            if labels.vertex.iter().any(|entry| entry.name == name) {
+                continue;
+            }
+            labels.vertex.push(ResolvedVertexLabel {
+                id: self.lookup_vertex_label_id(graph_id, &name)?,
+                name,
+            });
+        }
+        let mut properties = ResolvedPropertyTable::default();
+        for name in property_names {
+            validate_metadata_name(&name)?;
+            if properties.properties.iter().any(|entry| entry.name == name) {
+                continue;
+            }
+            properties.properties.push(ResolvedProperty {
+                id: self.lookup_property_id(graph_id, &name)?,
+                name,
+            });
+        }
+        Ok((labels, properties))
+    }
+
     pub(crate) fn commit_intern_graph_type_vocabulary(
         graph_id: GraphId,
         def: &gleaph_gql::ast::GraphTypeDefinition,

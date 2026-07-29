@@ -2036,6 +2036,11 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     validation. Public vertex admission remains separate because new vertices need
     an explicit target-shard selection and a Router journal payload/lifecycle shape;
     no implicit first-shard fallback is introduced.
+22. **Partially implemented (2026-07-29 03:10:05 UTC +0000):** Router now defines
+    a public vertex-only request with explicit target shard, UTF-8 catalog names,
+    canonical property bytes, bounded duplicate validation, and conversion into the
+    Graph envelope. Read-only vertex-label/property catalog resolution is also present;
+    client-key reservation and saga persistence are still the next slice.
 
 ## Test contract
 
