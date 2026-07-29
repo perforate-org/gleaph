@@ -38,10 +38,11 @@ execution, scalar fallback, projection/retirement lifecycle, and basic recovery
 are active. Unsupported optimized geometry, full failure/recovery coverage, the
 full SDK conformance matrix, and fresh-release activation remain open. Core
 Rust/JS canonical-value vectors, integer/temporal boundary vectors, Principal
-extension vectors, and malformed binary rejection vectors are now active. Vertex
-bulk placement and mixed vertex/edge batches are later extensions; they are not
-implied by the current edge-only endpoint or by the existing generic plan batch
-runner.
+extension vectors, and malformed binary rejection vectors are now active. The
+Router mixed public shape and the Graph-owned immutable mixed envelope are now
+defined and validated, but mixed dispatch, the vertex allocation table, and the
+durable two-phase receipt remain planned; the existing edge/vertex endpoints and
+generic plan batch runner do not implement that protocol.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
 Graph does not interpret an application timestamp, target id, ranking value, or
@@ -2094,6 +2095,14 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     invalid sidecar/inline inputs, and has Candid roundtrip coverage. No public
     dispatch endpoint is exposed yet; the next slice must add the Graph-owned
     two-phase envelope and durable mixed receipt before admission is published.
+31. **Partially implemented (2026-07-29 03:59:20 UTC +0000):** the Graph kernel
+    now defines the immutable mixed vertex/edge envelope. It preserves the
+    public operation array order, distinguishes existing local vertices from
+    request-local new-vertex ordinals, validates both execution phases' inputs,
+    bounds the encoded request, and computes a domain-separated Graph fingerprint.
+    Candid roundtrip, order-sensitivity, and invalid ordinal tests are active.
+    Graph phase execution, allocation-table publication, durable mixed journal
+    identity, aggregate receipt, and Router dispatch remain planned.
 
 ## Test contract
 

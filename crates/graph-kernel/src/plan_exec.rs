@@ -286,6 +286,198 @@ impl OrderedVertexBatchGraphRequest {
     }
 }
 
+/// Endpoint of an edge in the request-local mixed vertex/edge operation table.
+///
+/// `NewVertexOrdinal` is an ordinal among vertex operations, not an ordinal in the
+/// mixed operation array. Graph allocates the vertex phase first and resolves this
+/// reference before admitting the edge phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum OrderedMixedGraphEndpointV1 {
+    Existing(LocalVertexId),
+    NewVertexOrdinal(u32),
+}
+
+/// One logical edge in the Graph-owned mixed request.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedMixedGraphEdgeItemV1 {
+    pub source: OrderedMixedGraphEndpointV1,
+    pub target: OrderedMixedGraphEndpointV1,
+    pub directed: bool,
+    pub catalog_edge_label_id: Option<EdgeLabelId>,
+    pub inline_property_bytes: Vec<u8>,
+    pub resolved_initial_edge_properties: Vec<ResolvedOrderedEdgePropertyV1>,
+}
+
+/// Input-order-preserving mixed operation. The array order remains the public
+/// logical order; Graph uses the variant to derive the two execution phases.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum OrderedMixedGraphOperationV1 {
+    Vertex(OrderedVertexBatchGraphItemV1),
+    Edge(OrderedMixedGraphEdgeItemV1),
+}
+
+/// Versioned Graph envelope for a mixed vertex/edge batch.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum OrderedMixedBatchGraphRequest {
+    V1(OrderedMixedBatchGraphRequestV1),
+}
+
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedMixedBatchGraphRequestV1 {
+    pub graph_id: GraphId,
+    pub target_shard_id: ShardId,
+    pub target_graph_canister: Principal,
+    pub resolved_labels: ResolvedLabelTable,
+    pub resolved_properties: ResolvedPropertyTable,
+    pub operations: Vec<OrderedMixedGraphOperationV1>,
+}
+
+pub const MAX_ORDERED_MIXED_BATCH_OPERATIONS: usize = 1_024;
+
+impl OrderedMixedBatchGraphRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        let OrderedMixedBatchGraphRequest::V1(request) = self;
+        if request.operations.is_empty()
+            || request.operations.len() > MAX_ORDERED_MIXED_BATCH_OPERATIONS
+        {
+            return Err(format!(
+                "ordered mixed batch requires 1..={} operations, got {}",
+                MAX_ORDERED_MIXED_BATCH_OPERATIONS,
+                request.operations.len()
+            ));
+        }
+        if request.target_graph_canister == Principal::anonymous() {
+            return Err("ordered mixed batch target graph canister must not be anonymous".into());
+        }
+        let vertex_count = request
+            .operations
+            .iter()
+            .filter(|operation| matches!(operation, OrderedMixedGraphOperationV1::Vertex(_)))
+            .count() as u32;
+        if vertex_count == 0 {
+            return Err("ordered mixed batch requires at least one vertex operation".into());
+        }
+        if !request
+            .operations
+            .iter()
+            .any(|operation| matches!(operation, OrderedMixedGraphOperationV1::Edge(_)))
+        {
+            return Err("ordered mixed batch requires at least one edge operation".into());
+        }
+
+        for (ordinal, operation) in request.operations.iter().enumerate() {
+            match operation {
+                OrderedMixedGraphOperationV1::Vertex(item) => {
+                    if item.resolved_vertex_labels.contains(&0) {
+                        return Err(format!(
+                            "ordered mixed vertex operation {ordinal} contains a reserved label"
+                        ));
+                    }
+                    validate_ordered_initial_properties(
+                        ordinal,
+                        &item.resolved_initial_properties,
+                        "vertex",
+                    )?;
+                }
+                OrderedMixedGraphOperationV1::Edge(item) => {
+                    validate_ordered_mixed_endpoint(ordinal, item.source, vertex_count)?;
+                    validate_ordered_mixed_endpoint(ordinal, item.target, vertex_count)?;
+                    if item.inline_property_bytes.len() > MAX_EDGE_INLINE_PROPERTY_BYTES {
+                        return Err(format!(
+                            "ordered mixed edge operation {ordinal} inline property bytes exceed bound"
+                        ));
+                    }
+                    validate_ordered_initial_properties(
+                        ordinal,
+                        &item.resolved_initial_edge_properties,
+                        "edge",
+                    )?;
+                }
+            }
+        }
+        let encoded = Encode!(self)
+            .map_err(|error| format!("ordered mixed batch request encode failed: {error}"))?;
+        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("ordered mixed batch request exceeds the safe payload limit".into());
+        }
+        Ok(())
+    }
+}
+
+fn validate_ordered_mixed_endpoint(
+    operation_ordinal: usize,
+    endpoint: OrderedMixedGraphEndpointV1,
+    vertex_count: u32,
+) -> Result<(), String> {
+    if let OrderedMixedGraphEndpointV1::NewVertexOrdinal(vertex_ordinal) = endpoint
+        && vertex_ordinal >= vertex_count
+    {
+        return Err(format!(
+            "ordered mixed edge operation {operation_ordinal} references vertex ordinal {vertex_ordinal}, but vertex count is {vertex_count}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ordered_initial_properties(
+    operation_ordinal: usize,
+    properties: &[ResolvedOrderedEdgePropertyV1],
+    operation_kind: &str,
+) -> Result<(), String> {
+    if properties.len() > MAX_ORDERED_VERTEX_PROPERTIES_PER_ITEM {
+        return Err(format!(
+            "ordered mixed {operation_kind} operation {operation_ordinal} has too many initial properties"
+        ));
+    }
+    let mut property_ids = BTreeSet::new();
+    for property in properties {
+        if property.property_id.raw() == 0 {
+            return Err(format!(
+                "ordered mixed {operation_kind} operation {operation_ordinal} contains reserved property id"
+            ));
+        }
+        if !property_ids.insert(property.property_id) {
+            return Err(format!(
+                "ordered mixed {operation_kind} operation {operation_ordinal} repeats property id {}",
+                property.property_id.raw()
+            ));
+        }
+        if property.value.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err(format!(
+                "ordered mixed {operation_kind} operation {operation_ordinal} property {} exceeds value bound",
+                property.property_id.raw()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Internal execution envelope for the mixed two-phase path. Execution is not
+/// active yet; this type exists so Router and Graph can agree on the immutable
+/// request before the durable phase/journal implementation lands.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum OrderedMixedBatchGraphArgs {
+    V1(OrderedMixedBatchGraphArgsV1),
+}
+
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedMixedBatchGraphArgsV1 {
+    pub mutation_id: MutationId,
+    pub graph_request_fingerprint: [u8; 32],
+    pub request: OrderedMixedBatchGraphRequest,
+}
+
+impl OrderedMixedBatchGraphArgs {
+    pub fn recompute_and_validate_fingerprint(&self) -> Result<[u8; 32], String> {
+        let OrderedMixedBatchGraphArgs::V1(args) = self;
+        let fingerprint = ordered_mixed_batch_graph_request_fingerprint(&args.request)?;
+        if fingerprint != args.graph_request_fingerprint {
+            return Err("ordered mixed Graph request fingerprint mismatch".into());
+        }
+        Ok(fingerprint)
+    }
+}
+
 /// Internal Graph execution envelope for the vertex-only bulk-placement slice.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub enum OrderedVertexBatchGraphArgs {
@@ -375,6 +567,7 @@ impl OrderedEdgeBatchGraphRequest {
 
 pub const ORDERED_EDGE_GRAPH_FINGERPRINT_DOMAIN: &[u8] = b"gleaph:ordered-edge-graph:v1\0";
 pub const ORDERED_VERTEX_GRAPH_FINGERPRINT_DOMAIN: &[u8] = b"gleaph:ordered-vertex-graph:v1\0";
+pub const ORDERED_MIXED_GRAPH_FINGERPRINT_DOMAIN: &[u8] = b"gleaph:ordered-mixed-graph:v1\0";
 
 fn encode_len_prefixed_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
@@ -538,6 +731,84 @@ pub fn ordered_vertex_batch_graph_request_fingerprint(
     let bytes = encode_ordered_vertex_batch_graph_request(request)?;
     let mut hasher = Sha256::new();
     hasher.update(ORDERED_VERTEX_GRAPH_FINGERPRINT_DOMAIN);
+    hasher.update(bytes);
+    Ok(hasher.finalize().into())
+}
+
+/// Encode the exact mixed Graph request without its derived fingerprint or mutation id.
+pub fn encode_ordered_mixed_batch_graph_request(
+    request: &OrderedMixedBatchGraphRequest,
+) -> Result<Vec<u8>, String> {
+    request.validate()?;
+    let OrderedMixedBatchGraphRequest::V1(request) = request;
+    let mut out = Vec::new();
+    out.push(1);
+    out.extend_from_slice(&request.graph_id.raw().to_le_bytes());
+    out.extend_from_slice(&request.target_shard_id.raw().to_le_bytes());
+    encode_len_prefixed_bytes(&mut out, request.target_graph_canister.as_slice());
+    encode_resolved_labels(&mut out, &request.resolved_labels);
+    encode_resolved_properties(&mut out, &request.resolved_properties);
+    out.extend_from_slice(&(request.operations.len() as u32).to_le_bytes());
+    for operation in &request.operations {
+        match operation {
+            OrderedMixedGraphOperationV1::Vertex(item) => {
+                out.push(0);
+                out.extend_from_slice(&(item.resolved_vertex_labels.len() as u32).to_le_bytes());
+                for label in &item.resolved_vertex_labels {
+                    out.extend_from_slice(&label.to_le_bytes());
+                }
+                encode_ordered_initial_properties(&mut out, &item.resolved_initial_properties);
+            }
+            OrderedMixedGraphOperationV1::Edge(item) => {
+                out.push(1);
+                encode_ordered_mixed_endpoint(&mut out, item.source);
+                encode_ordered_mixed_endpoint(&mut out, item.target);
+                out.push(u8::from(item.directed));
+                match item.catalog_edge_label_id {
+                    None => out.push(0),
+                    Some(label_id) => {
+                        out.push(1);
+                        out.extend_from_slice(&label_id.raw().to_le_bytes());
+                    }
+                }
+                encode_len_prefixed_bytes(&mut out, &item.inline_property_bytes);
+                encode_ordered_initial_properties(&mut out, &item.resolved_initial_edge_properties);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn encode_ordered_initial_properties(
+    out: &mut Vec<u8>,
+    properties: &[ResolvedOrderedEdgePropertyV1],
+) {
+    out.extend_from_slice(&(properties.len() as u32).to_le_bytes());
+    for property in properties {
+        out.extend_from_slice(&property.property_id.raw().to_le_bytes());
+        encode_len_prefixed_bytes(out, &property.value);
+    }
+}
+
+fn encode_ordered_mixed_endpoint(out: &mut Vec<u8>, endpoint: OrderedMixedGraphEndpointV1) {
+    match endpoint {
+        OrderedMixedGraphEndpointV1::Existing(vertex_id) => {
+            out.push(0);
+            out.extend_from_slice(&vertex_id.to_le_bytes());
+        }
+        OrderedMixedGraphEndpointV1::NewVertexOrdinal(ordinal) => {
+            out.push(1);
+            out.extend_from_slice(&ordinal.to_le_bytes());
+        }
+    }
+}
+
+pub fn ordered_mixed_batch_graph_request_fingerprint(
+    request: &OrderedMixedBatchGraphRequest,
+) -> Result<[u8; 32], String> {
+    let bytes = encode_ordered_mixed_batch_graph_request(request)?;
+    let mut hasher = Sha256::new();
+    hasher.update(ORDERED_MIXED_GRAPH_FINGERPRINT_DOMAIN);
     hasher.update(bytes);
     Ok(hasher.finalize().into())
 }
@@ -1684,6 +1955,75 @@ mod tests {
             }],
         });
         assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn ordered_mixed_graph_request_roundtrips_and_fingerprints_operation_order() {
+        let request = OrderedMixedBatchGraphRequest::V1(OrderedMixedBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(7),
+            target_shard_id: ShardId::new(2),
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            operations: vec![
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: vec![3],
+                    resolved_initial_properties: Vec::new(),
+                }),
+                OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
+                    source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(0),
+                    target: OrderedMixedGraphEndpointV1::Existing(9),
+                    directed: true,
+                    catalog_edge_label_id: None,
+                    inline_property_bytes: Vec::new(),
+                    resolved_initial_edge_properties: Vec::new(),
+                }),
+            ],
+        });
+        request.validate().expect("valid mixed Graph request");
+        let bytes = Encode!(&request).expect("encode mixed Graph request");
+        let decoded: OrderedMixedBatchGraphRequest =
+            Decode!(&bytes, OrderedMixedBatchGraphRequest).expect("decode mixed Graph request");
+        assert_eq!(request, decoded);
+
+        let fingerprint = ordered_mixed_batch_graph_request_fingerprint(&request)
+            .expect("mixed Graph request fingerprint");
+        let mut reordered = request.clone();
+        let OrderedMixedBatchGraphRequest::V1(request) = &mut reordered;
+        request.operations.swap(0, 1);
+        assert_ne!(
+            fingerprint,
+            ordered_mixed_batch_graph_request_fingerprint(&reordered)
+                .expect("reordered mixed fingerprint")
+        );
+    }
+
+    #[test]
+    fn ordered_mixed_graph_request_rejects_forward_or_out_of_range_vertex_ordinals() {
+        let edge = OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
+            source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(1),
+            target: OrderedMixedGraphEndpointV1::Existing(9),
+            directed: true,
+            catalog_edge_label_id: None,
+            inline_property_bytes: Vec::new(),
+            resolved_initial_edge_properties: Vec::new(),
+        });
+        let request = OrderedMixedBatchGraphRequest::V1(OrderedMixedBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(7),
+            target_shard_id: ShardId::new(2),
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            operations: vec![
+                edge,
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: Vec::new(),
+                    resolved_initial_properties: Vec::new(),
+                }),
+            ],
+        });
+        let error = request.validate().expect_err("forward ordinal must reject");
+        assert!(error.contains("vertex ordinal 1"));
     }
 
     #[test]
