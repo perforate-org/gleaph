@@ -247,10 +247,16 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
 `ExecutePlanArgs.label_table` carries `ResolvedEdgeLabel` entries for every edge label the plan may touch. Each entry includes:
 
 - `name`, `id` — the canonical edge label identity.
+- `ordering` — Router-derived `Unordered` or `Insertion` policy from the Graph Type edge
+  declaration. `Insertion` is required for query `ORDER BY INSERTION(e)` and selects the ordered
+  LARA insertion/batch/compaction path; `Unordered` is the default and permits tombstone reuse.
 - `inline_property_profile` — physical byte width and encoding from Router stable state.
 - `inline_schema: Option<ResolvedInlineSchema>` — Router-derived scalar-or-struct projection for this concrete edge label. `None` for `UnnamedProfile`; `Scalar { property_id }` for `InlineScalar`; `Struct { property_id, fields }` for `InlineStruct`, where each field carries its name, declaration-ordered byte offset, and exact scalar `EdgeInlinePropertyProfile`. Graph validates this projection but never persists or infers it.
 
-Graph must treat `inline_schema` as a read-only plan-scoped projection. It does not own the schema and must not infer or persist the property identity or field layout.
+Graph must treat `ordering`, `inline_schema`, and the inline profile as read-only Router-resolved
+projections. It does not own the schema and must not infer or persist the policy, property identity,
+or field layout. Mutation envelopes carry the same resolved label policy before the first canonical
+edge write.
 
 For a requested edge property:
 

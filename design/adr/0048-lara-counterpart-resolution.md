@@ -175,11 +175,17 @@ Logical deletion removes both physical halves from their live occurrence sequenc
 
 Derived or cached lookup state must be invalidated before either live sequence changes.
 
-Compaction may remove tombstones and renumber slots, but it preserves the relative order of surviving entries in every relation.
+For an `ORDER BY INSERTION` relation, compaction may remove tombstones and renumber slots while
+preserving the relative order of surviving entries. For an unordered relation, compaction may
+apply a physical permutation such as moving a later live row into an interior tombstone. The
+forward/reverse or undirected projections must apply the same logical permutation so live
+equal-target pair ordinals remain exactly aligned.
 
-### 5. Logical commit order defines pair order
+### 5. Logical commit order and pair order
 
-“Insertion order” means deterministic logical commit order, not incidental physical write order.
+For an `ORDER BY INSERTION` relation, “insertion order” means deterministic logical commit order,
+not incidental physical write order. An unordered relation still needs one current live relation
+order for pair-rank lookup, but that order may be changed by a pair-aware physical permutation.
 
 For each relation key, every mutation batch determines one logical edge order before projecting entries to its two physical sides.
 
@@ -195,11 +201,15 @@ input-order-preserving batch:
 repair:
     both sides are rebuilt from one authoritative logical order
 
-compaction:
+compaction for an Insertion relation:
     surviving entries retain their existing logical order
+
+unordered compaction:
+    one owner applies the same logical permutation to both projections
 ```
 
-Independent sorting or reordering of the two projections is forbidden.
+Independent sorting or reordering of the two projections is forbidden. Unordered physical
+reordering is valid only when it is one shared permutation owned by the bidirectional LARA boundary.
 
 A projection-order mismatch is not an accepted alternate representation. It is an invariant failure requiring repair.
 
@@ -313,7 +323,10 @@ The bidirectional wrapper is the smallest owner that sees:
 
 Canonical single-orientation mutation methods are not exposed to GraphStore as general-purpose APIs.
 
-GraphStore, batch insertion, deletion, inline-property update, compaction, and repair use owner-facing operations that preserve the pair-order invariant.
+GraphStore, batch insertion, deletion, inline-property update, compaction, and repair use
+owner-facing operations that preserve the pair-order invariant. The invariant is not identical
+physical order: `Insertion` labels preserve insertion order, while unordered labels may reorder
+both projections through one pair-aware permutation.
 
 Read-only forward and reverse accessors may remain public.
 
@@ -580,9 +593,11 @@ Until that evidence exists, `CounterpartScan` remains the canonical algorithm. A
 block directory may be implemented for window offsets, but counterpart acceleration must not infer
 exact pair ordinals from live-count metadata alone.
 
-### Allow reordered projections with permutation metadata
+### Allow independently reordered projections with permutation metadata
 
-Rejected because it creates a second pairing authority. Both projections must preserve one logical relation order.
+Rejected because it creates a second pairing authority. An unordered relation may reorder, but one
+LARA owner must apply the same logical permutation to both projections; pair rank remains derived
+from the current live relation order.
 
 ## Consequences
 

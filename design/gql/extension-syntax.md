@@ -43,7 +43,7 @@ semantics.
 | Edge inline property             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar/struct `INLINE` schema registration inside `CREATE GRAPH TYPE` edge definitions, nested read access, mutation packing, shortest-path `COST BY e.property`/`COST BY e.stats.field`, and scalar/struct-leaf inline property indexes implemented** | Router schema/catalog + Graph edge inline property execution                                        |
 | Shortest-path cost            | `COST BY e.distance`                                                      | **Implemented** for the bounded direct-property shape: one concrete edge label, one declared edge variable, and exactly `e.<inline-property>`; compound expressions and label-expression costs remain planned | Graph query planner/executor                                                                |
 | Legacy edge weight function   | `GLEAPH.WEIGHT(e)`                                                        | Removed (ADR 0051 Phase B); use ordinary `e.<inline-property>` access and `COST BY e.<inline-property>`                                                                                                                                                                                        | Graph query executor                                                                        |
-| Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
+| Edge insertion-order capability | Graph Type `ORDER BY INSERTION`; query `ORDER BY INSERTION(e)`          | Planned by ADR 0052; replaces `GLEAPH.SEQUENCE(e)`                                                                                                                                                                                                                                                   | Router schema resolution + Graph/LARA edge storage/execution                              |
 | Edge-inline-property vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge inline property executor                                                |
 | Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to eight `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), two to eight `OR`-connected same-binding same-property numeric range predicates (one one-sided range per arm, union of `lookup_range_page` streams with interval merge within the property, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property numeric range predicates (one one-sided range per arm, per-property interval merge, union of `lookup_range_page` streams across distinct property ids, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding heterogeneous equality/range predicates (each leaf independently equality or one-sided numeric range, per-property range interval merge, union of `lookup_equal_page` and `lookup_range_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, text/bytes/temporal/boolean/collection/path range predicates, mixed OR/AND remain planned, and nine-or-more disjunctive arms are rejected fail-closed | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
@@ -67,10 +67,9 @@ CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()
 ```
 
 Compatibility surfaces also include existing query-time helpers whose current semantics are
-intentionally Gleaph-specific. Some may later be replaced by more ordinary GQL syntax, but their
-current names remain part of the implemented dialect contract: `GLEAPH.SEQUENCE(e)`,
-`GLEAPH.COST`, and `GLEAPH.VECTOR.*`. The legacy `GLEAPH.WEIGHT(e)` surface has been removed
-(ADR 0051 Phase B).
+intentionally Gleaph-specific. `GLEAPH.COST` and `GLEAPH.VECTOR.*` remain compatibility surfaces;
+`GLEAPH.SEQUENCE(e)` is superseded by ADR 0052 and is not retained because backward-compatible
+parsing is not required. The legacy `GLEAPH.WEIGHT(e)` surface has been removed (ADR 0051 Phase B).
 
 ## IC extensions
 
@@ -294,23 +293,29 @@ RETURN b
 
 The previous implementation-era shape (`GLEAPH.COST BY GLEAPH.WEIGHT(e)`) is no longer accepted.
 
-## Edge insertion-order sequence
+## Edge insertion-order capability
 
-### `GLEAPH.SEQUENCE(e)`
+### Graph Type `ORDER BY INSERTION` and query `ORDER BY INSERTION(e)`
 
-**Status:** Implemented compatibility surface.
+**Status:** Planned (ADR 0052).
 
-`GLEAPH.SEQUENCE(e)` exposes Gleaph's edge insertion-order compensation for a bound edge variable.
-The ordering value is owned by Graph edge storage and execution. It is keyed by the edge identity and
-edge-label-local insertion sequence; it is not decoded from edge inline property bytes and is not a property
-store lookup.
+`ORDER BY INSERTION` in a Graph Type declares that one edge label preserves bucket-local insertion
+order. `ORDER BY INSERTION(e)` in a query requests that order for a bound edge variable. It is not
+a persisted numeric property, an inline-property lookup, or a property-store lookup.
 
 Use it when a query needs deterministic ascending or descending edge order:
 
 ```gql
+CREATE GRAPH TYPE Social {
+  DIRECTED EDGE FeedMembership
+    LABEL IN_PUBLIC_FEED
+    ORDER BY INSERTION
+    CONNECTING (User) -> (Post)
+}
+
 MATCH (a)-[e:FOLLOWS]->(b)
 RETURN b
-ORDER BY GLEAPH.SEQUENCE(e) ASC
+ORDER BY INSERTION(e) ASC
 ```
 
 Descending order is explicit:
@@ -318,17 +323,17 @@ Descending order is explicit:
 ```gql
 MATCH (a)-[e:FOLLOWS]->(b)
 RETURN b
-ORDER BY GLEAPH.SEQUENCE(e) DESC
+ORDER BY INSERTION(e) DESC
 ```
 
-An `OPTIONAL MATCH` between the binding of `e` and its `ORDER BY` is supported when that optional
-subplan does not bind `e` itself. The outer edge binding remains present on both match and miss
-rows, so Graph preserves its scan order. An optional subplan that binds `e` is a new ordering
-boundary and is not lowered as an order on the earlier edge.
+The planner requires one fixed edge label whose Graph Type policy is `ORDER BY INSERTION`.
+Unordered labels, ambiguous label expressions, and edge bindings overwritten by a subplan are
+rejected rather than silently using physical slot order. `ASC` and `DESC` select scan direction;
+the Graph Type declaration only enables the capability.
 
-This function must be classified separately from `GLEAPH.VECTOR.*` in the Rust manifest. Those
-helpers read or score fixed-width edge inline property bytes; `GLEAPH.SEQUENCE(e)` reads
-Graph-owned edge ordering metadata.
+Future property ordering remains ordinary GQL property ordering, for example
+`ORDER BY e.created_at DESC`. A future Graph Type storage capability may reserve
+`ORDER BY PROPERTY(created_at)` without changing the query form.
 
 ## Edge-inline-property vector predicates
 

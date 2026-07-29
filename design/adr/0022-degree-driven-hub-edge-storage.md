@@ -202,9 +202,9 @@ B-tree tier (high degree, Terrace-style).
 
    Recorded design constraints for the eventual B-tree tier (contingent, not yet
    implemented):
-   - **The edge order contract is CSR slot order = insertion (append) order, not
+   - **For an `ORDER BY INSERTION` edge label, the edge order contract is CSR slot order = insertion (append) order, not
      target order** (`OutEdgeOrder::Ascending` = "CSR slots low→high", the stable
-     materialization order; `insert_edge` appends). Worse, the **`slot_index` is an
+     materialization order; `insert_edge` appends). For an unordered label, [ADR 0052](0052-per-label-adjacency-order-and-tombstone-reuse.md) permits tombstone reuse and swap-compaction, so physical slot order is not a semantic insertion order. Worse, the **`slot_index` is an
      edge's stable identity**: `EdgeHandle { owner_vertex_id, label_id, slot_index }`
      keys the edge-property sidecar (`EDGE_PROPERTIES`), the undirected alias store
      (`EDGE_ALIASES`), and postings. A target-keyed map would both reorder edges
@@ -550,11 +550,11 @@ necessity and the thresholds of *each* tier (the dedicated span included).
    transition (evacuate the bucket to a span, release leaf footprint, update
    `span_meta`/segment counts and the bucket descriptor's backing state).
 4. If the B-tree tier is warranted: prototype the single shared ordered map keyed
-   by `(VertexId, BucketLabelKey, seq)` — a stable monotonic sequence id, NOT the
-   target, to preserve insertion order and the `slot_index` stable identity (see
-   recorded design constraints in the Decision). Measure scan regression vs the
-   span tiers, decide whether a `target → seq` secondary index is warranted, and
-   wire the per-vertex scan to union slab/log/span/tree buckets in label order.
+   by `(VertexId, BucketLabelKey, seq)` — a logical insertion key, NOT the target,
+   to preserve insertion order. The physical `slot_index` remains a compaction-invalidatable
+   handle; it is not made stable by this alternative (see ADR 0052). Measure scan regression
+   vs the span tiers, decide whether a `target → seq` secondary index is warranted, and wire the
+   per-vertex scan to union slab/log/span/tree buckets in label order.
 5. Capture the outcome in a separate ADR or an amendment here.
 
 ## Design Documentation Impact

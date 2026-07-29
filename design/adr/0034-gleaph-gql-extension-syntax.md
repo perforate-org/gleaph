@@ -20,7 +20,7 @@ Gleaph already has several GQL-adjacent extensions:
 - `IC.PRINCIPAL` values in `gleaph-gql-ic`.
 - `MSG_CALLER()` as an IC runtime function in graph execution.
 - Ordinary `e.<inline-property>` access and `COST BY e.<inline-property>` for edge inline properties and shortest-path costs. The legacy `GLEAPH.WEIGHT(e)` compatibility surface has been removed (ADR 0051 Phase B).
-- `GLEAPH.SEQUENCE(e)` for Graph-owned edge insertion-order compensation in `ORDER BY`.
+- Graph Type `ORDER BY INSERTION` and query `ORDER BY INSERTION(e)` for per-label edge insertion order (ADR 0052).
 - `GLEAPH.VECTOR.*` fused edge-inline-property vector predicates.
 - `CALL GLEAPH.FINALIZE_*` / `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()` for operational mutation
   procedures.
@@ -142,9 +142,9 @@ This ADR records why that contract exists and the top-level policy:
 
 - The implementation may still lower this to the existing Router/vector-canister `vector_search`
   API. That lowering is internal, not the public GQL contract.
-- `GLEAPH.SEQUENCE`, `GLEAPH.COST`, and `GLEAPH.VECTOR.*` remain valid implementation-era surfaces
-  where ordinary property access is not yet available; `GLEAPH.WEIGHT(e)` has been removed and is no
-  longer valid syntax.
+- `GLEAPH.COST` and `GLEAPH.VECTOR.*` remain valid implementation-era surfaces where ordinary
+  property access is not yet available. `ORDER BY INSERTION(e)` replaces `GLEAPH.SEQUENCE(e)`
+  under ADR 0052; `GLEAPH.WEIGHT(e)` has been removed and is no longer valid syntax.
 - Existing and planned extension names should be centralized in a pure Rust manifest before adding
   more syntax. The manifest should be dependency-light and contain descriptors/recognizers such as
   value types, runtime functions, path extensions, edge-inline-property vector predicates, search clauses,
@@ -170,7 +170,8 @@ Planned migration path:
 1. Document existing extensions and target syntax in `design/gql/extension-syntax.md` (done).
 2. Add the Rust extension manifest in `gleaph-graph-kernel::gql_dialect` without changing behavior (done):
    - represent canonical names such as `IC.PRINCIPAL`, `MSG_CALLER`, `GLEAPH.COST`,
-     `GLEAPH.SEQUENCE`, `GLEAPH.VECTOR.*`, and `GLEAPH.FINALIZE_*`;
+     `GLEAPH.VECTOR.*`, and `GLEAPH.FINALIZE_*`; register `ORDER BY INSERTION` and
+     `ORDER BY INSERTION(e)` as ADR 0052 syntax rather than a namespaced function;
    - classify planned syntax such as `SEARCH`, `INLINE`, and `CREATE VECTOR INDEX`;
    - expose exact and case-insensitive recognizers for owners that already parse extension names;
    - add tests that implemented Gleaph extension entry points are registered in the manifest.

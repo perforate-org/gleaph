@@ -25,7 +25,7 @@ This is an **interim** layout documented in `labeled.rs` and [lara-dgap-contract
 
 A reference implementation lives at `reference/DGAP/dgap/src/graph.h`. DGAP keeps slack **inside** each leaf segment's assigned `[from, to)` interval and slides data with `rebalance_weighted`; it does not peel per-vertex footprints on every growth event.
 
-Inline property bytes storage ([labeled-edge-inline-properties.md](../storage/labeled-edge-inline-properties.md)) already assumes edge compaction follows a **single logical order** across the edge slab. Divergent physical units (per-vertex span vs leaf segment) increase compaction risk and maintenance surface.
+Inline property bytes storage ([labeled-edge-inline-properties.md](../storage/labeled-edge-inline-properties.md)) associates edge and inline property bytes through a bucket-local live ordinal. For labels with the Graph Type policy `ORDER BY INSERTION`, edge compaction follows the insertion order; [ADR 0052](0052-per-label-adjacency-order-and-tombstone-reuse.md) additionally permits unordered labels to move a later live row into a tombstone hole while moving its inline property bytes by the same ordinal. Divergent physical units (per-vertex span vs leaf segment) increase compaction risk and maintenance surface.
 
 ## Decision
 
@@ -240,8 +240,11 @@ The edge store and edge inline-property store share one logical contract—bucke
 - `LabelBucket::inline_property_bytes_slab_slots` counts inline-property slab entries only. `inline_property_bytes_log_head` and `inline_property_bytes_log_len` belong only to the inline property bytes leaf log.
 - A label with `inline_property_byte_width = 0` always has zero inline-property slab slots and no inline property bytes log, regardless of its edge degree or edge physical state.
 - A inline-property-bearing label allocates its first inline property bytes span lazily at one value-width entry; subsequent inline property bytes slab growth is measured in value-width entries and is not rounded to the edge segment size or edge quota.
-- Edge rebalance, resize, and relocation preserve the current bucket-local live order but do not fold, resize, release, or relocate inline property bytes storage.
-- Payload rebalance, resize, and relocation preserve the same current live order but do not fold, resize, release, or relocate edge storage.
+- Edge rebalance, resize, and relocation preserve the current bucket-local live order for labels
+  whose Graph Type policy is `ORDER BY INSERTION`; for unordered labels, policy-specific
+  swap-compaction may reorder live rows and must report exact edge moves.
+- Inline property bytes rebalance, resize, and relocation preserve the same bucket-local live
+  ordinal association but do not fold, resize, release, or relocate edge storage.
 - Insert appends to both logical sequences only when the label has a non-zero inline-property width. Delete resolves the edge physical slot to its bucket-local live ordinal and removes the value at that ordinal. Physical maintenance can then occur in either order.
 
 This rejects physical slot equality and equal edge/inline property bytes log entry indices as an invariant. They are transient implementation coincidences and cannot represent labels with no inline property.

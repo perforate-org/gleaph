@@ -1,0 +1,317 @@
+# 0052. Per-label adjacency ordering and tombstone-reuse maintenance
+
+Date: 2026-07-29
+Status: planned
+Last revised: 2026-07-29
+Anchor timestamp: 2026-07-29 19:35:39 UTC +0000
+
+## Context
+
+Labeled LARA currently treats the live order of an edge label bucket as insertion order. A
+slab tombstone therefore remains in place until compaction can remove it without changing the
+relative order of the surviving edges. New inserts prefer append or the overflow log, and batch
+placement is constrained by the same order-preserving contract.
+
+This is useful for feeds, event streams, and other adjacency labels whose application semantics
+need insertion order. It is unnecessary for ordinary relationship labels, where preserving order
+causes tombstones to accumulate, increases overflow-log pressure, and makes batch placement less
+able to reuse existing capacity.
+
+The current GQL surface exposes this behavior through `GLEAPH.SEQUENCE(e)`. That helper mixes a
+storage capability with a query-time order request and does not provide a schema declaration that
+allows Graph to select a cheaper unordered placement and maintenance policy.
+
+This ADR is a deliberate pre-production breaking design. Existing development stable snapshots,
+old query fixtures, and old GQL syntax do not require migration or compatibility decoding.
+
+## Problem
+
+Gleaph needs all of the following without introducing a second source of edge identity or a
+per-edge insertion-sequence table:
+
+1. unordered edge labels by default;
+2. optional bucket-local insertion-order preservation for selected labels;
+3. tombstone reuse for unordered slab buckets;
+4. tombstone-first placement for unordered batch writes;
+5. compaction that can reorder unordered live rows and move tombstones to the tail;
+6. synchronized edge and inline-property storage;
+7. explicit query syntax for requesting insertion order; and
+8. a future syntax shape that can coexist with property-based edge ordering.
+
+## Existing architecture assessment
+
+The existing boundaries are sufficient:
+
+- Router `GraphCatalog` owns the logical Graph Type definition and schema binding.
+- Router resolves graph-scoped edge labels and sends resolved edge-label metadata to Graph.
+- Graph owns logical mutation order, canonical edge/property sidecars, counterpart association,
+  derived-index intents, and shard-local atomicity.
+- LARA owns labeled buckets, slab/log placement, tombstone state, physical compaction, relocation,
+  and exact physical-location results.
+- The inline-property-bytes store owns its physical bytes but associates them with the edge through
+  the bucket-local live ordinal.
+
+The change extends these owners. It does not add a storage subsystem, an edge identity table, or a
+Graph-local schema SSOT.
+
+## Decision
+
+### 1. One per-label ordering policy
+
+Each catalog edge label has one resolved policy:
+
+```rust
+pub enum EdgeOrderingPolicy {
+    Unordered,
+    Insertion,
+}
+```
+
+The default is `Unordered`. The policy is derived from the edge declaration's Graph Type option;
+it is not stored in `LabelBucket` and is not independently configurable per physical bucket.
+
+If one edge type declares several runtime labels, the declaration applies the same policy to every
+label in that declaration. Conflicting policies require separate edge declarations.
+
+### 2. Graph Type syntax
+
+The schema declaration uses the same `ORDER BY` vocabulary reserved for future storage-order
+capabilities:
+
+```gql
+CREATE GRAPH TYPE Social {
+  DIRECTED EDGE FeedMembership
+    LABEL IN_PUBLIC_FEED
+    ORDER BY INSERTION
+    CONNECTING (User) -> (Post),
+
+  DIRECTED EDGE Follows
+    LABEL FOLLOWS
+    CONNECTING (User) -> (User)
+}
+```
+
+An equivalent pattern-form edge declaration may place `ORDER BY INSERTION` inside the edge type
+definition. The parser normalizes both forms to the same AST field.
+
+`ORDER BY INSERTION` in Graph Type is a storage capability declaration. It does not select a
+physical slot order directly and does not imply that every query returns edges in that order.
+
+### 3. Query syntax
+
+`GLEAPH.SEQUENCE(e)` is removed. A query explicitly requests the capability with:
+
+```gql
+MATCH (u)-[e:IN_PUBLIC_FEED]->(p)
+RETURN p
+ORDER BY INSERTION(e) DESC
+```
+
+`INSERTION(e)` is an order-key expression, not a numeric property and not a persisted sequence
+value. `e` is required so a query with multiple edge bindings is unambiguous. `ASC` and `DESC`
+are query-time directions; Graph Type declares only the canonical insertion-order capability.
+
+The planner accepts `ORDER BY INSERTION(e)` only when the bound edge label is a single fixed label
+whose resolved policy is `Insertion`. Unordered labels, ambiguous label expressions, and queries
+whose edge binding crosses an ordering boundary fail closed.
+
+Future property ordering remains ordinary GQL:
+
+```gql
+ORDER BY e.created_at DESC
+```
+
+If a future schema-level property-order capability is needed, it may use the reserved shape
+`ORDER BY PROPERTY(created_at)` without changing the query form.
+
+### 4. Canonical ownership and resolved wire projection
+
+The Graph Type definition stored by Router `GraphCatalog` is the canonical source of the policy.
+The edge-label catalog continues to own only graph-scoped name ↔ `EdgeLabelId` identity.
+
+Router resolves the policy into every Graph-facing label table that can perform edge reads or
+writes:
+
+```rust
+pub struct ResolvedEdgeLabel {
+    pub name: String,
+    pub id: EdgeLabelId,
+    pub ordering: EdgeOrderingPolicy,
+    pub inline_schema: Option<ResolvedInlineSchema>,
+}
+```
+
+Graph validates and consumes the resolved policy at its mutation/query boundary. LARA receives a
+storage-owned policy argument; it does not parse GQL, read Router catalogs, or own a duplicate
+schema map. Standalone tests may inject a resolved policy fixture.
+
+### 5. Unordered insertion and batch placement
+
+For an `Unordered` bucket, scalar and batch insertion use this preference:
+
+1. reusable in-slab tombstone;
+2. available slab tail capacity;
+3. the bucket/leaf overflow log; and
+4. expansion or relocation when the first three cannot admit the write.
+
+The batch planner counts tombstone holes as reusable capacity before reserving tail or log space.
+It may assign pending edges to holes in any physical order. Input logical ordinals remain Graph
+request-local metadata for replay, sidecar association, directed/reverse projection, undirected
+pairing, and exact returned locations; they are not a physical ordering contract.
+
+### 6. Insertion-ordered placement
+
+For an `Insertion` bucket:
+
+- existing live rows retain their relative order;
+- interior tombstones are not reused when reuse would place a new row before a surviving row;
+- new rows are appended to the bucket-local live suffix, using slab or overflow-log placement as
+  capacity requires; and
+- batch rows are projected into each affected bucket in stable input-ordinal order.
+
+The guarantee is per orientation, owner vertex, and edge label bucket. There is no global order
+across different labels.
+
+### 7. Policy-specific compaction
+
+`Insertion` compaction preserves bucket-local live order, as in the current ordered path.
+
+`Unordered` compaction is allowed to reorder live rows. Its primary slab operation is
+swap-compaction:
+
+1. find an interior tombstone;
+2. move a later live row into that hole;
+3. move its inline property bytes with the same logical edge, updating the source and destination
+   bucket-local live ordinals together;
+4. publish exact edge/inline-property physical moves to Graph observers; and
+5. leave the source row tombstoned and trim trailing tombstones when the span can shrink.
+
+Overflow-log folding for an unordered bucket may materialize live rows in the chosen physical
+order before applying the same hole-filling operation. No insertion-order claim is made for the
+result.
+
+The policy is the single source of truth for insert, batch placement, and compaction behavior.
+Separate persisted `TombstoneReusePolicy` or `CompactionPolicy` fields are not introduced.
+
+### 8. Edge identity and compaction
+
+`GlobalEdgeId` / `EncodedEdgeId` remain query-time physical handles containing the owner and
+physical edge slot. They are already invalidatable by compaction and are not stable logical edge
+identities. This ADR therefore does not add per-slot generations or a generation sidecar.
+
+Any physical move or slot reuse may invalidate an earlier query result, path element, or
+`ELEMENT_ID` value. Graph sidecars, reverse adjacency, counterpart resolution, and derived index
+maintenance must consume exact move/removal results during the canonical mutation or maintenance
+boundary; they must not infer moves from query input order.
+
+### 9. Inline properties and canonical deletion
+
+The edge and inline-property-bytes stores remain physically independent. Their canonical
+association is the bucket-local live ordinal:
+
+```text
+(owner, label, live_ordinal) -> edge row
+(owner, label, live_ordinal) -> inline property bytes
+```
+
+An unordered insert or swap-compaction must update both domains in one Graph-owned mutation or
+maintenance operation. Edge property sidecars and property-index delete/add intents are updated
+through the existing Graph canonical and durable-outbox boundaries.
+
+An inline-property-bearing unordered reuse path must not assume that edge slab slot and inline
+property slab slot are numerically identical. It must use the existing exact ordinal/location
+join. If a proven synchronized implementation is not available, the operation is rejected or
+kept on the ordered/fallback path before canonical writes.
+
+### 10. Policy changes
+
+Changing a label from `Unordered` to `Insertion` or vice versa while it has live edges is rejected
+in the initial implementation. Existing unordered physical order cannot prove insertion order.
+A later explicit maintenance migration may rebuild the bucket under a new policy, but that is not
+part of this ADR.
+
+### 11. Cross-canister and future inter-shard consistency
+
+Graph remains the canonical owner of edge deletion and local sidecars. Property/index updates are
+derived durable intents and may converge asynchronously under ADRs 0023, 0024, and 0029.
+
+Future inter-shard edges require durable pending/ack/reconcile states for remote deletion and index
+application. A remote success followed by a failed callback is not a terminal delete failure and
+must not be retried as an unrelated fresh operation.
+
+## Alternatives considered
+
+### A. Preserve insertion order for every label
+
+Rejected. It prevents tombstone reuse and forces ordinary labels to pay for a product guarantee
+they do not need.
+
+### B. Public `ordered: bool` or separate ordered/unordered mutation endpoints
+
+Rejected. Ordering is a schema property of the label, not a caller-selected physical placement
+hint. A request flag would allow the same label to have contradictory semantics.
+
+### C. Per-edge sequence or generation table
+
+Rejected for this pre-production design. The current edge handle is intentionally physical and
+invalidatable by compaction. Adding sequence/generation state would increase stable footprint and
+create a second identity model.
+
+### D. Store the policy in every `LabelBucket`
+
+Rejected. The policy is logical Graph Type schema, while `LabelBucket` owns physical placement
+metadata. Duplicating it would require synchronization and could allow bucket/schema drift.
+
+## Consequences
+
+Positive:
+
+- ordinary labels reuse tombstones during scalar, batch, and maintenance paths;
+- feed/event labels retain the current insertion-order behavior explicitly;
+- query syntax describes the requested order directly and removes `GLEAPH.SEQUENCE`;
+- no per-edge sequence or generation storage is introduced;
+- future property-order syntax has a reserved conceptual home.
+
+Costs and risks:
+
+- Graph Type AST, Router resolved label tables, GQL parser/planner/executor, LARA placement, and
+  maintenance all gain a policy branch;
+- unordered compaction invalidates physical handles, as current compaction already does;
+- inline-property and sidecar move observers must be correct for swap-compaction;
+- ordered and unordered paths require separate adversarial tests and canbench coverage;
+- old stable snapshots and old GQL queries are intentionally unsupported.
+
+## Migration and activation
+
+No backward-compatible migration is required. Before implementation activation, reset development
+stable data and install one compatible Router, Graph, Graph Index, SDK, and query fixture release
+set. `GLEAPH.SEQUENCE` and old Graph Type order declarations are not decoded or retained.
+
+## Required validation
+
+Tests and benchmarks must cover:
+
+- default unordered label tombstone reuse;
+- insertion label tombstone non-reuse;
+- unordered batch hole-first placement;
+- unordered swap-compaction and trailing tombstone trimming;
+- ordered compaction preserving live order;
+- edge/inline-property ordinal alignment after reuse and moves;
+- sidecar, reverse, counterpart, and derived-index move/delete intents;
+- `ORDER BY INSERTION(e)` ASC/DESC success for an ordered fixed label;
+- fail-closed query planning for unordered or ambiguous labels;
+- policy change rejection with live edges; and
+- scalar versus batch versus maintenance-inclusive benchmarks for tombstone-heavy buckets.
+
+## Related documents
+
+- [ADR 0001](0001-labeled-segment-slide.md) — labeled PMA physical maintenance.
+- [ADR 0016](0016-overflow-log-tombstones-and-src-fields.md) — edge and inline-property log semantics.
+- [ADR 0020](0020-deferred-maintenance-timer-drain.md) — deferred maintenance ownership.
+- [ADR 0023](0023-federated-index-consistency-upgrade-compaction.md) — derived index convergence.
+- [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) — canonical and async boundaries.
+- [ADR 0034](0034-gleaph-gql-extension-syntax.md) — GQL extension registry and syntax contract.
+- [ADR 0045](0045-unordered-batch-graph-mutations-and-lara-placement.md) — physical batch substrate.
+- [ADR 0048](0048-lara-counterpart-resolution.md) — live pair rank and counterpart ownership.
+- [ADR 0049](0049-input-order-preserving-batch-graph-mutations.md) — ordered batch contract, retained for `Insertion` labels.
+- [ADR 0050](0050-lara-traverse-read-api.md) — logical traversal and inline-property read surface.

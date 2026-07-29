@@ -24,7 +24,8 @@ knowledge and allow the output to diverge between products.
 
 `gleaph-gql` is the portable ISO/IEC 39075 GQL parser crate. It already owns the AST
 needed for this decision, including `SearchStatement` / `VectorSearchSpec`,
-`ExprKind::ElementId`, and namespaced function calls such as `GLEAPH.SEQUENCE(e)`.
+`ExprKind::ElementId`, and namespaced function calls such as `GLEAPH.VECTOR.*`. The planned
+insertion-order syntax is the dedicated `ORDER BY INSERTION(e)` order key defined by ADR 0052.
 It currently has no AST formatter or `Display` implementation for reconstructing a
 complete GQL program. The crate's existing features are `cypher`, `sql-compat`,
 `f128`, `f256`, and `ast-rkyv-no-span`; its default features include `f128` and
@@ -92,8 +93,7 @@ ownership boundary is not sufficient.
 
 `gleaph-gql` is consumed only by crates in this repository. The `gleaph` feature is
 therefore non-default and must be selected explicitly by any crate that parses or
-formats Gleaph-specific syntax such as `SEARCH ... VECTOR INDEX ...` or
-`GLEAPH.SEQUENCE(e)`. Internal crates that currently rely on unconditionally-compiled
+formats Gleaph-specific syntax such as `SEARCH ... VECTOR INDEX ...`. Internal crates that currently rely on unconditionally-compiled
 Gleaph AST forms must be updated to select the `gleaph` feature. External consumers
 outside this repository are not affected because there are none.
 
@@ -190,7 +190,7 @@ those later uses, but deferred support must remain explicitly reported as unsupp
 Gleaph extensions are handled according to their AST representation:
 
 - Extensions represented by generic AST forms, such as namespaced function and
-  procedure calls including `GLEAPH.SEQUENCE(e)`, are formatted generically without
+  procedure calls including `GLEAPH.VECTOR.*`, are formatted generically without
   extension-specific formatter branches.
 - Extensions with dedicated AST forms, such as `SEARCH`, `DISTANCE AS`, `SCORE AS`,
   and future dedicated `INLINE` forms, are formatted structurally when `gleaph` is

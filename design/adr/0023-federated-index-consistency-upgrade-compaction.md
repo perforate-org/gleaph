@@ -2,13 +2,14 @@
 
 Date: 2026-06-20
 Status: accepted
-Last revised: 2026-07-14
+Last revised: 2026-07-29
 Anchor timestamp: 2026-07-14 02:55:40 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
+| 2026-07-29 | ADR 0052 amendment: per-label `Unordered` swap-compaction may reorder live rows and reuse tombstones; the index/property consistency contract remains unchanged because every physical edge move must emit the exact sidecar and posting re-key operations. `ORDER BY INSERTION` labels retain the ordered path. |
 | 2026-07-14 | Labeled overflow delete now uses tombstone-free direct unlink while preserving newest-to-oldest scan order. `EdgeRemoval::moves` carries the bounded newer-suffix slot shifts through the same property/alias/posting re-key path immediately. Timer overflow folds normally emit no moves and retain bounded legacy-tombstone cleanup. |
 | 2026-07-14 | Clarified the slot-identity boundary: structural edge-log fold during rebalance/resize/relocation preserves slab and log tombstone positions; deferred overflow compaction drops tombstones only from the bounded log suffix and emits the resulting `EdgeSlotMove` batch before incremental slab compaction continues. Edge maintenance does not fold the independent inline-property log. |
 | 2026-06-21 | ADR 0029 Phase 2 sync: the durable repair journal (D5, region 41) value type is now `RepairJournalEntry { mutation_id, op }` so each deferred batch is linked to its originating federated `mutation_id` (`0` = untracked). This makes graph-index posting lag observable per mutation via `index_pending_min_mutation_id` (the mutation-linked index watermark). Backward-incompatible in-place repack of region 41. |
@@ -39,6 +40,15 @@ ADR [0020](0020-deferred-maintenance-timer-drain.md) added a timer that drains
 the deferred LARA maintenance queue. That maintenance includes **compaction**,
 which renumbers edge slot indices and therefore must re-key edge property
 postings.
+
+### Scope amendment by ADR 0052
+
+This ADR's consistency rule applies to both ordering policies. For an `ORDER BY INSERTION`
+label, compaction preserves the relative order of surviving edges. For an `Unordered` label,
+compaction may fill an interior tombstone with a later live edge and move the tombstone toward
+the tail. In either case Graph must consume the exact edge move/removal result before publishing
+or repairing property and index sidecars; no observer may infer a move from insertion order or
+numeric slot arithmetic.
 
 ### Invariant under review (INV)
 

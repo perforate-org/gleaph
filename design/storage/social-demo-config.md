@@ -3,7 +3,7 @@
 Date: 2026-07-17
 Status: Implemented
 Anchor timestamp: 2026-07-17 03:17:35 UTC +0000
-Last updated: 2026-07-17 UTC
+Last updated: 2026-07-29 UTC
 
 ## Purpose
 
@@ -175,11 +175,12 @@ by hand:
   every User that follows that author. Recipient ids are de-duplicated, so a self-follow cannot
   create a duplicate home-feed edge.
 
-Both labels are materialized in deterministic author-mixed order. The seed executor inserts edges
-in manifest order, so Gleaph's labeled-edge store records insertion order. The default descending
-fixed-label scan (`OutEdgeOrder::Descending`) then returns the reverse of that sequence without an
-explicit `ORDER BY`. `ORDER BY created_at DESC` is therefore no longer required in the
-`PublicTimeline` and `AliceHomeFeed` prepared queries.
+Both labels are materialized in deterministic author-mixed order. The Social Graph Type should
+declare these labels with `ORDER BY INSERTION`; the prepared queries then request the contract
+explicitly with `ORDER BY INSERTION(e) DESC`. Physical insertion order and the default
+`OutEdgeOrder::Descending` scan are not sufficient once ordinary labels use unordered tombstone
+reuse. If the labels are not declared insertion-ordered, the prepared queries must retain an
+ordinary property sort such as `ORDER BY e.created_at DESC`.
 
 The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
 to preserve the visible read contract and fail closed if the derivation rule ever changes.

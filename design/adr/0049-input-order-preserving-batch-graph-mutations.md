@@ -11,6 +11,15 @@ below that mention explicit target-shard selection describe the superseded
 intermediate shape; the active contract follows ADR 0029's Router-owned
 latest-shard placement rule.
 
+### Scope amendment by ADR 0052
+
+This ADR's input-order-preserving placement and public batch semantics apply to edge labels whose
+Graph Type policy is `ORDER BY INSERTION`. ADR 0052 changes the default for other labels to
+`Unordered`, where tombstone-first placement, unordered batch filling, and swap-compaction are
+allowed. ADR 0049's physical reservation, location-capture, replay, and counterpart substrate is
+retained; statements below that describe one universal ordered product contract are scoped to
+`Insertion` labels or retained as decision history for the pre-0052 batch API.
+
 ## Context
 
 ADR 0045 defines a high-throughput unordered Graph mutation path that exposes a
@@ -163,11 +172,13 @@ to work around an unfinished ADR 0048.
 
 ## Decision
 
-### 1. Replace the unordered public contract with one order-preserving edge-insert contract
+### 1. Ordered batch contract for `ORDER BY INSERTION` labels
 
-The standard public edge-insertion batch API preserves input order. There is no public
-`ordered: bool`, no `BatchOrderMode`, and no reserved unordered endpoint by
-default.
+The ordered edge-insertion batch API preserves input order for labels resolved with the
+`Insertion` policy. Ordering is selected by Graph Type schema, not by a public `ordered: bool`,
+`BatchOrderMode`, or caller placement hint. The independent unordered endpoint described by the
+earlier ADR 0045 product proposal remains unshipped; ADR 0052's per-label unordered behavior is
+not a second public endpoint.
 
 Clients submit each logical edge once in the intended order. They do not submit
 forward/reverse rows, undirected counterpart records, LARA bucket keys, physical
@@ -685,9 +696,9 @@ canonical write. After that point, an invariant failure traps the canister
 message so the shard-local state rolls back atomically. Direct non-transactional
 library callers do not gain the canister message rollback guarantee.
 
-### 6. Use append semantics, not arbitrary tombstone reuse
+### 6. Use append semantics, not arbitrary tombstone reuse for `Insertion` labels
 
-An insertion destination is valid only when the resulting ascending live
+For an `Insertion` label, an insertion destination is valid only when the resulting ascending live
 sequence satisfies the bucket contract.
 
 The following are valid when their preconditions are proved:
@@ -1543,7 +1554,7 @@ When ADR 0049 is activated:
 | reserve/commit/rollback atomicity              | retain                                                                                                 |
 | exact physical-location capture                | retain as conditional internal mode; mandatory when any initial edge property is present               |
 | size-bounded Graph request and durable receipt | replace with single-request V1 admission and the replacement Graph journal V1 order-sensitive identity |
-| unordered public semantics                     | supersede                                                                                              |
+| independent unordered public endpoint semantics | supersede; per-label unordered placement is defined by ADR 0052                              |
 | independent projection reordering freedom      | supersede                                                                                              |
 | scalar-only ordered mutation assumption        | supersede                                                                                              |
 | unordered duplicate/update policy              | replace with ordered edge-insert parallel policy; non-edge public operations are absent in v1          |
@@ -2439,7 +2450,7 @@ Adversarial tests must reject:
   item from whole-batch capture;
 - a Graph request item count different from `public_item_count`, or any
   reconstruction/filtering that changes the public array order;
-- a tombstone reuse that places a new row before a surviving live row;
+- for an `Insertion` label, a tombstone reuse that places a new row before a surviving live row;
 - stale bucket geometry between reserve and commit;
 - order-insensitive request fingerprints;
 - ordered payload persistence or Graph dispatch after constrained-property

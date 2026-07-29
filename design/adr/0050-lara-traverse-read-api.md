@@ -278,8 +278,10 @@ concepts.
 Ascending and descending traversal use `OutEdgeOrder`. Direction is not encoded in method names.
 
 The order applies to `BucketEntryPosition`, including edges whose bytes currently reside in an overflow
-log. Raw physical-location enumeration has its own storage-defined order and is not covered by
-`OutEdgeOrder`.
+log. For a Graph Type `ORDER BY INSERTION` label, ascending/descending traversal is the semantic
+insertion order. For an unordered label, `OutEdgeOrder` only describes the chosen physical traversal
+direction; it must not be exposed as a query-level insertion-order guarantee. Raw physical-location
+enumeration has its own storage-defined order and is not covered by `OutEdgeOrder`.
 
 ### 5. Visitors use explicit control flow
 

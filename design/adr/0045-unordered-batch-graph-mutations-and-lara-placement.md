@@ -13,6 +13,12 @@ publish vertex insertion, existing value/property update, or combined
 vertex/edge batch operations. Until ADR 0049 is activated, this ADR remains the
 truthful partially implemented state of the physical substrate.
 
+Scope amendment by [ADR 0052](0052-per-label-adjacency-order-and-tombstone-reuse.md): this ADR's
+physical reservation and placement substrate is retained for both ordering policies, but its
+unshipped universal unordered public contract is not restored. Runtime unordered behavior is now
+selected per edge label by Graph Type policy and includes tombstone-first placement and
+policy-specific compaction.
+
 ## Context
 
 The current Router and Graph batch APIs reduce ingress and inter-canister call
@@ -658,9 +664,11 @@ inline width)`, reads existing LARA bucket/slab/overflow-log occupancy through
 7. Add synchronized LARA/GraphStore vertex batches, then optional combined
    new-vertex/new-edge chunks using projected final geometry.
    Stages 6–7 remain planned internal primitives only. They do not create an
-   unordered public endpoint; any later ordered public exposure requires an ADR
-   0049 revision with operation-specific semantics.
-8. **Superseded by ADR 0049.** Do not add this ADR's unordered public wire.
+   unordered public endpoint. The ordered public exposure is defined by ADR 0049
+   for `ORDER BY INSERTION` labels; per-label unordered placement is defined by
+   ADR 0052.
+8. **Superseded by ADR 0049 and amended by ADR 0052.** Do not add this ADR's
+   unordered public wire.
    ADR 0049 replaces it with an ordered edge-insert Router/Graph V1 wire and
    replaces the Graph journal/wire V1 structures in place, with array-position
    logical ordinals, separate public/Graph-request fingerprints, one durable

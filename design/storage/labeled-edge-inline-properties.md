@@ -26,7 +26,11 @@ The default edge label never stores payloads (`inline_property_byte_width = 0`).
                                                 → inline property bytes in EdgeInlinePropertyBytesStore (width > 0)
 ```
 
-Bucket-local live order is the association source of truth. Edge and inline property bytes physical slots are not equal and their log entries are not paired by entry index. Edge compaction preserves live order; inline property bytes deletion removes the same live ordinal.
+Bucket-local live order is the association source of truth. Edge and inline property bytes physical slots are not equal and their log entries are not paired by entry index. For an `Insertion` edge-ordering policy, edge compaction preserves live order; for an `Unordered` policy, compaction may move a later live edge into an interior tombstone and must move the corresponding inline property bytes by the same live ordinal. Inline property bytes deletion removes the same live ordinal.
+
+The ordering policy is a Graph Type schema capability resolved by Router; it is not duplicated in
+`LabelBucket`. Unordered tombstone reuse and swap-compaction must use the exact edge/inline-property
+ordinal and location results owned by LARA and consumed by Graph.
 
 Physical ownership is independent:
 
@@ -124,8 +128,10 @@ item remains queued across graph reconstruction and is consumed by the next
 maintenance step.
 
 An end-to-end deferred-wrapper test also verifies that real inline property bytes values and
-edge order survive the queued compaction, while fragmented holes become one
-reusable span; the backing tail remains intentionally unshrunk.
+the applicable edge-order contract survive the queued compaction: `ORDER BY INSERTION` buckets
+retain live order, while `Unordered` buckets may use swap-compaction as long as each edge keeps
+its corresponding inline property bytes. Fragmented holes become one reusable span; the backing
+tail remains intentionally unshrunk.
 
 The maintenance contract also requeues a inline property bytes item when compaction returns an
 error; a failure-injection test verifies that the item remains pending and is

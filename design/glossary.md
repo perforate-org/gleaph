@@ -31,6 +31,7 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md), [adr/0006-pre-fe
 | **Property id** | Router `ROUTER_PROPERTY_CATALOG` | Name ↔ `PropertyId` SSOT **per `GraphId`** (`GraphScopedNameCatalog`; [ADR 0018](adr/0018-graph-scoped-label-property-catalogs.md)). Same string in two graphs may map to different ids. Graph stores values only. |
 | **Vertex label id** | Router `ROUTER_VERTEX_LABEL_CATALOG` | Name ↔ `VertexLabelId` **per `GraphId`**. Graph stores label sets by id. |
 | **Edge label id** | Router `ROUTER_EDGE_LABEL_CATALOG` | Name ↔ `EdgeLabelId` **per `GraphId`**. |
+| **Edge ordering policy** | Router `GraphCatalog` → resolved edge-label wire | `Unordered` by default, or `Insertion` when the Graph Type edge declaration uses `ORDER BY INSERTION`; controls tombstone reuse, batch placement, compaction, and query `ORDER BY INSERTION(e)`. |
 | **Resolved property table** | Plan wire (`ResolvedPropertyTable`) | Router-supplied name→id map for the dispatch **`GraphId`**, attached to `ExecutePlanArgs` for graph DML/scan. |
 | **Graph-scoped name catalog** | `GraphScopedNameCatalog<Id>` in graph-kernel | Shared router abstraction for `(GraphId, name) ↔ id` partitions ([ADR 0018](adr/0018-graph-scoped-label-property-catalogs.md)). |
 
