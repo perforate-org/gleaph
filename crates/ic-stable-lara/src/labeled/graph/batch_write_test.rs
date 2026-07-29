@@ -14,7 +14,7 @@ mod tests {
     };
     use crate::labeled::graph::iter::LabeledEdgeInlinePropertyBatchScratch;
     use crate::labeled::graph::test_support::{InlinePropertyTestEdge, test_graph_with_default};
-    use crate::labeled::graph::{LabeledLaraGraph, OutEdgeOrder};
+    use crate::labeled::graph::{BucketSearch, LabeledLaraGraph, OutEdgeOrder};
     use crate::labeled::record::LabeledVertex;
     use crate::lara::edge_inline_property::force_inline_property_bytes_allocation_error_after;
     use std::ops::ControlFlow;
@@ -1678,11 +1678,19 @@ mod tests {
 
         let label = BucketLabelKey::directed_from_index(1);
         let other_label = BucketLabelKey::directed_from_index(2);
+        let later_inline_label = BucketLabelKey::directed_from_index(3);
         graph
             .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), label, 4)
             .unwrap();
         graph
             .ensure_label_bucket_inline_property_byte_width(VertexId::from(0), other_label, 0)
+            .unwrap();
+        graph
+            .ensure_label_bucket_inline_property_byte_width(
+                VertexId::from(0),
+                later_inline_label,
+                4,
+            )
             .unwrap();
         graph
             .insert_edge(
@@ -1696,6 +1704,13 @@ mod tests {
                 VertexId::from(0),
                 label,
                 InlinePropertyTestEdge::with_i32(1, 10),
+            )
+            .unwrap();
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                later_inline_label,
+                InlinePropertyTestEdge::with_i32(2, 20),
             )
             .unwrap();
 
@@ -1768,6 +1783,17 @@ mod tests {
         };
 
         let inline_property_bytes_tail_before = graph.values.header().slab_occupied_tail;
+        let target_inline_property_offset_before = match graph
+            .find_bucket(
+                VertexId::from(0),
+                &graph.vertices.get(VertexId::from(0)),
+                label,
+            )
+            .unwrap()
+        {
+            BucketSearch::Found { bucket, .. } => bucket.inline_property_bytes_offset(),
+            _ => panic!("target inline-property bucket must exist"),
+        };
         let reservation = graph
             .reserve_one_orientation_batch(&plan)
             .expect("inline property expanded-slab batch should reserve");
@@ -1788,6 +1814,21 @@ mod tests {
         assert_eq!(
             result.inline_property_bytes_slots_written,
             (inline_property_bytes_log_capacity + 1) as u32
+        );
+        let target_inline_property_offset_after = match graph
+            .find_bucket(
+                VertexId::from(0),
+                &graph.vertices.get(VertexId::from(0)),
+                label,
+            )
+            .unwrap()
+        {
+            BucketSearch::Found { bucket, .. } => bucket.inline_property_bytes_offset(),
+            _ => panic!("target inline-property bucket must remain present"),
+        };
+        assert_ne!(
+            target_inline_property_offset_after, target_inline_property_offset_before,
+            "batch must publish the free-span replacement inline-property offset"
         );
         assert!(matches!(
             result

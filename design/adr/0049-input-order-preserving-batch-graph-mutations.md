@@ -1,9 +1,9 @@
 # 0049. Input-order-preserving batch edge insertions
 
 Date: 2026-07-23
-Status: Planned
-Last revised: 2026-07-28
-Anchor timestamp: 2026-07-28 12:58:54 UTC +0000
+Status: Partially Implemented
+Last revised: 2026-07-29
+Anchor timestamp: 2026-07-29 01:06:23 UTC +0000
 
 ## Context
 
@@ -31,9 +31,12 @@ algorithm; no persistent counterpart substrate is owned by this batch-mutation
 design. Any future adaptive algorithm requires a separate ADR and measured
 adoption decision.
 
-This ADR remains planned ahead of its batch implementation. ADR 0048's owner
-boundary and alias removal are prerequisites; this ADR does not introduce
-another counterpart compatibility path.
+This ADR is partially implemented. ADR 0048's owner boundary and alias removal
+are complete; this ADR does not introduce another counterpart compatibility
+path. The public single-shard ordered edge-batch endpoint, Graph journal-first
+execution, scalar fallback, projection/retirement lifecycle, and basic recovery
+are active. Unsupported optimized geometry, full failure/recovery coverage,
+SDK conformance, and fresh-release activation remain open.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
 Graph does not interpret an application timestamp, target id, ranking value, or
@@ -103,9 +106,9 @@ request-local pair table to LARA. LARA validates the merged plan as exact
 reversed pairs covered by that table, so the same-bucket case cannot be
 represented as two independent reservations. The current internal clean-slab
 path now admits mixed directed, undirected, and self-loop shapes through one
-owner reservation. Unsupported bucket geometry, the public ordered API, and
-the remaining replay/write contract are still planned; this internal slice
-does not activate ADR 0049.
+owner reservation. The public ordered API and its basic replay/write lifecycle
+are active; unsupported optimized geometry and the remaining failure/recovery
+gates still use the documented fallback or remain planned.
 
 The Graph journal now carries the ordered-batch request identity and stable
 retirement state in `GraphMutationJournalEntryV1`; its wire projection carries
@@ -117,9 +120,9 @@ Router's `bulk_group_fingerprint` remains order-sensitive, but Router state
 cannot substitute for Graph's direct replay authority. Section 10 deliberately
 removes internal multi-chunk execution from v1, so no chunk identity is needed.
 The journal-first endpoint, identity comparison, receipt commit, and replay
-algorithm are now implemented for the Graph boundary. The remaining fresh
-mutation work is the supported-geometry expansion beyond clean-slab placement
-and the Router-side lifecycle integration.
+algorithm are implemented for the Graph boundary. The remaining fresh
+mutation work is supported-geometry expansion beyond the proven batch paths,
+full Router failure/recovery coverage, and release activation evidence.
 
 ## Prerequisite: complete ADR 0048
 
@@ -1880,6 +1883,33 @@ not rewritten as though unfinished unordered product behavior shipped.
     from +228.57% stable-memory growth to within noise with 28 pages, and the
     scalar fixed-edge inline update from +14.30% to 4.16M instructions
     (-46.86%). Fan-out and two-parallel scalar controls are also within noise.
+**Implemented and tested (2026-07-29 00:39:52 UTC +0000):** the PocketIC
+ordered public-batch fixture now injects a lost Router callback immediately
+after Graph retirement. The durable Router record remains in the public
+`ProjectionPending` projection of its internal `RetirementPending` state;
+background recovery repeats the fingerprint-bound idempotent retirement call,
+reaches `Completed`, and an exact retry returns the original mutation without
+adding another edge.
+
+**Implemented and tested (2026-07-29 00:51:43 UTC +0000):** the long-retention
+PocketIC case advances beyond the seven-day Router key window and nine-day
+Graph journal window, evicts the retired Graph entry, and drives recovery to an
+`Absent` retirement result. Ordered non-terminal Router records now bypass the
+ordinary client-key TTL and preserve exact retry identity; retries never enter
+the scalar pristine-reservation branch and remain `ProjectionPending` for
+operator repair instead of inferring completion or redispatching canonical
+mutation.
+
+**Implemented and tested (2026-07-29 01:06:23 UTC +0000):** expanded-slab batch
+commit now publishes replacement inline property bytes offsets even when the
+existing span is non-tail, and retires the superseded span after the replacement
+has been reserved. The same offset publication applies when an overflow-log
+fold expands a bucket's existing inline property bytes span. The focused LARA
+batch suite passes all 24 tests, including the non-tail-span case. The existing
+`gleaph-graph` missing-reverse-bucket test still reports
+`CollectAllocationOverflow` even with these LARA changes reverted, so it remains
+a pre-existing baseline failure and is not attributed to this slice.
+
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh
@@ -2020,7 +2050,9 @@ At minimum, implementation must cover:
 - new named buckets, default/unlabeled bypass or promotion, and another
   optimized-unsupported geometry through the whole-request ordered scalar
   fallback;
-- duplicate/parallel targets rejected before writes until section 9 activates;
+- parallel targets are admitted as distinct ordered items where the internal
+  pair-rank, sidecar, and replay coverage applies; unsupported shapes still
+  fall back or reject before canonical writes;
 - oversize or over-budget input requiring more than one Graph request rejected
   by Router before Graph dispatch;
 - exact preservation of public array position through the single Graph request,
@@ -2280,8 +2312,9 @@ and split invariant ownership. Rejected.
 - ADR 0029 permits bounded autonomous retirement recovery as post-canonical
   work and exact journal-only reconciliation of an ordered unknown canonical
   outcome while continuing to forbid background canonical redispatch.
-- `design/storage/lara.md` records ADR 0049 as planned after ADR 0048 and
-  distinguishes its order contract from the implemented ADR 0045 substrate.
+- `design/storage/lara.md` records ADR 0049 as partially implemented and
+  distinguishes its active order contract and scalar fallback from the
+  implemented ADR 0045 substrate.
 - `design/storage/bulk-ingest-finalize.md` distinguishes the planned
   order-preserving direct batch path from the existing maintenance/finalize
   hook.

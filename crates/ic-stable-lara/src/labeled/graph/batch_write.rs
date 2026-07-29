@@ -1118,15 +1118,10 @@ where
                 continue;
             };
             let Some(target) = leaf_relocations.get(&leaf) else {
-                if matches!(
-                    preflight_run.inline_property_bytes_allocation,
-                    Some(InlinePropertyBytesAllocationKind::Reallocated { .. })
-                ) {
-                    Self::rollback_leaf_expansions(self, &leaf_expansion_cursors);
-                    return Err(
-                        OneOrientationBatchError::InlinePropertyBytesSpanRequiresRelocation,
-                    );
-                }
+                // The leaf can expand in place while an existing inline-property span is
+                // non-tail. The reservation already copied that span into the free-span-first
+                // destination; commit will publish the replacement bucket offset and retire the
+                // old span without requiring a whole-leaf relocation.
                 continue;
             };
             let RunDestination::ExpandedSlab {
@@ -2696,19 +2691,28 @@ where
                             .expect("reserve guaranteed stored_slots overflow safety"),
                     );
                     if res.inline_property_width > 0 {
+                        let new_offset = inline_property_bytes_offset.expect(
+                            "reserve inline_property_bytes offset for inline property bytes span",
+                        );
+                        let width = u64::from(res.inline_property_width);
+                        let old_bytes = u64::from(bucket.inline_property_bytes_slab_slots())
+                            .checked_mul(width)
+                            .expect("reserve guaranteed existing inline property byte count");
+                        if bucket.inline_property_bytes_slab_slots() > 0
+                            && new_offset != bucket.inline_property_bytes_offset()
+                        {
+                            graph
+                                .values
+                                .retire_byte_span(bucket.inline_property_bytes_offset(), old_bytes)
+                                .expect("reserve guaranteed slab inline property span retirement");
+                        }
                         updated_bucket = updated_bucket.with_inline_property_bytes_slab_slots(
                             bucket
                                 .inline_property_bytes_slab_slots()
                                 .checked_add(res.edge_slot_count)
                                 .expect("reserve guaranteed inline property bytes slab slot overflow safety"),
-                        );
-                        if bucket.inline_property_bytes_slab_slots() == 0 {
-                            updated_bucket = updated_bucket.with_inline_property_bytes_offset(
-                                inline_property_bytes_offset.expect(
-                                    "reserve inline_property_bytes offset for new inline property bytes span",
-                                ),
-                            );
-                        }
+                        )
+                        .with_inline_property_bytes_offset(new_offset);
                     }
                 }
                 RunDestination::OverflowLog {
@@ -3258,13 +3262,21 @@ where
                 .checked_add(u64::from(inline_property_bytes_log_len))
                 .and_then(|s| s.checked_add(u64::from(res.edge_slot_count)))
                 .expect("reserve guaranteed inline property bytes slot count");
+            let had_bytes = u64::from(existing_inline_property_bytes_slots)
+                .checked_mul(width)
+                .expect("reserve guaranteed existing inline property byte count");
+            if existing_inline_property_bytes_slots > 0
+                && new_inline_property_bytes_offset != new_bucket.inline_property_bytes_offset()
+            {
+                graph
+                    .values
+                    .retire_byte_span(new_bucket.inline_property_bytes_offset(), had_bytes)
+                    .expect("reserve guaranteed expanded inline property span retirement");
+            }
             updated_bucket = updated_bucket
+                .with_inline_property_bytes_offset(new_inline_property_bytes_offset)
                 .with_inline_property_bytes_slab_slots(total_inline_property_bytes_slots as u32)
                 .with_inline_property_bytes_log_head(-1);
-            if existing_inline_property_bytes_slots == 0 {
-                updated_bucket = updated_bucket
-                    .with_inline_property_bytes_offset(new_inline_property_bytes_offset);
-            }
             inline_property_bytes_slots_written = u64::from(inline_property_bytes_log_len)
                 .checked_add(u64::from(res.edge_slot_count))
                 .expect("reserve guaranteed inline property bytes slot count");
@@ -3272,9 +3284,6 @@ where
             let total_inline_property_bytes = total_inline_property_bytes_slots
                 .checked_mul(width)
                 .expect("reserve guaranteed inline property byte count");
-            let had_bytes = u64::from(existing_inline_property_bytes_slots)
-                .checked_mul(width)
-                .expect("reserve guaranteed existing inline property byte count");
             let alloc_delta = total_inline_property_bytes - had_bytes;
             if alloc_delta > 0 {
                 let vertex = graph.vertices.get(owner);

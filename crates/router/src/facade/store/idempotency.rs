@@ -1,7 +1,8 @@
 //! Mutation idempotency and client mutation journal.
 
 use super::super::stable::label_stats::{
-    ClientMutationKey, MutationReservationIndexEntry, RouterMutationRecord, RouterMutationShardV1,
+    ClientMutationKey, MutationReservationIndexEntry, RouterMutationPayloadV1,
+    RouterMutationRecord, RouterMutationShardV1,
 };
 use super::super::stable::{
     ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER, ROUTER_MUTATION_RESERVATION_INDEX,
@@ -57,6 +58,16 @@ fn reservation_slot_pinned_raw(mutation_id: MutationId) -> bool {
 /// this is its only GC pin.
 fn pending_effect_pinned_raw(graph_id: GraphId, mutation_id: MutationId) -> bool {
     crate::facade::stable::unique_effect_pending::pending_effect_pinned(graph_id, mutation_id)
+}
+
+/// Ordered public batches retain their client key for as long as the durable Router replay target
+/// is non-terminal. Their Graph journal can outlive the ordinary seven-day client-key window, and
+/// an exact retry remains the only safe way to resolve a lost canonical/retirement callback.
+fn ordered_replay_target_active(record: &RouterMutationRecord) -> bool {
+    matches!(
+        record.payload(),
+        RouterMutationPayloadV1::OrderedEdgeBatch(_)
+    ) && !record.is_terminal()
 }
 
 /// Scan up to `budget` records starting strictly after `start_after`, removing those
@@ -202,7 +213,9 @@ impl RouterStore {
         validate_client_mutation_key(client_key)?;
         let key = client_mutation_key(caller, graph_id, client_key);
         if let Some(mut record) = ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key)) {
-            if now.saturating_sub(record.as_v1().created_at_ns) > CLIENT_MUTATION_KEY_TTL_NS {
+            if now.saturating_sub(record.as_v1().created_at_ns) > CLIENT_MUTATION_KEY_TTL_NS
+                && !ordered_replay_target_active(&record)
+            {
                 return Err(RouterError::InvalidArgument(
                     "client_mutation_key expired; use a new key for a new mutation".into(),
                 ));
@@ -218,6 +231,19 @@ impl RouterStore {
             // the same key must keep returning the stored terminal error (a new key starts fresh).
             if let Some(error) = &record.as_v1().terminal_failure {
                 return Err(RouterError::Conflict(error.clone()));
+            }
+            // Ordered replay payloads own their durable Graph target rather than the scalar shard
+            // list. They must never enter the pristine scalar-reservation branch below, even when
+            // the request is retried after the ordinary client-key TTL.
+            if matches!(
+                record.payload(),
+                RouterMutationPayloadV1::OrderedEdgeBatch(_)
+                    | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
+            ) {
+                return Ok(ClientMutationReservation {
+                    mutation_id: record.as_v1().mutation_id,
+                    routing_owner: false,
+                });
             }
             if record.as_v1().routing_in_progress {
                 // ADR 0029 Phase 4: honor an unexpired routing lease, but let a retry

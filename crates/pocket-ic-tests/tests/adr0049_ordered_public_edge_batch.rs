@@ -5,10 +5,10 @@ use gleaph_graph_kernel::federation::{ElementIdEncodingKey, RouterError, encode_
 use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
 use gleaph_pocket_ic_tests::{
     FederationEnv, admin_intern_edge_label, admin_intern_property, arm_router_fault,
-    e2e_insert_vertex, e2e_reverse_resolved_edge_property, execute_ordered_edge_batch_as_admin,
-    federation_graph_element_id_encoding_key_bytes, gql_execute_idempotent_as_admin,
-    gql_query_as_admin, install_single_shard_federation, mutation_status_as_admin,
-    run_router_recovery_timer,
+    e2e_insert_vertex, e2e_reverse_resolved_edge_property, evict_graph_mutation_journal,
+    execute_ordered_edge_batch_as_admin, federation_graph_element_id_encoding_key_bytes,
+    gql_execute_idempotent_as_admin, gql_query_as_admin, install_single_shard_federation,
+    mutation_status_as_admin, run_router_recovery_timer,
 };
 use gleaph_router::types::{
     OrderedEdgeBatchPublicRequest, OrderedEdgeBatchPublicRequestV1, OrderedEdgeInsertPublicItemV1,
@@ -301,4 +301,98 @@ fn ordered_public_edge_batch_recovers_after_canonical_receipt_failure() {
     )
     .expect("recovered ordered mutation status");
     assert_eq!(status.phase, MutationLifecyclePhase::Completed);
+}
+
+#[test]
+fn ordered_public_edge_batch_recovers_after_retirement_acknowledgement_loss() {
+    let env = install_single_shard_federation();
+    let request = ordered_request(&env);
+
+    // Graph has already retired the journal entry when Router loses the callback. The durable
+    // Router record must remain RetirementPending, never be treated as a fresh canonical write.
+    arm_router_fault(&env, 5);
+    let error = execute_ordered_edge_batch_as_admin(&env, request.clone()).unwrap_err();
+    assert!(matches!(
+        error,
+        RouterError::Internal(message)
+            if message.contains("retirement acknowledgement fault")
+    ));
+
+    arm_router_fault(&env, 0);
+    let pending = mutation_status_as_admin(
+        &env,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        "adr0049-public-replay",
+    )
+    .expect("retirement-pending ordered mutation status");
+    // Router intentionally projects the internal RetirementPending state as the public
+    // ProjectionPending phase; the retirement sub-state is durable but not a client enum variant.
+    assert_eq!(pending.phase, MutationLifecyclePhase::ProjectionPending);
+
+    run_router_recovery_timer(&env);
+    let completed = mutation_status_as_admin(
+        &env,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        "adr0049-public-replay",
+    )
+    .expect("recovered ordered mutation status");
+    assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
+
+    // An exact retry after recovery returns the same mutation rather than adding another edge.
+    let replay = execute_ordered_edge_batch_as_admin(&env, request)
+        .expect("completed ordered retry must replay");
+    assert_eq!(replay.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(replay.mutation_id, completed.mutation_id);
+}
+
+#[test]
+fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
+    use std::time::Duration;
+
+    let env = install_single_shard_federation();
+    let request = ordered_request(&env);
+
+    // Graph retires the mutation, but Router loses the acknowledgement before recording its
+    // terminal state.
+    arm_router_fault(&env, 5);
+    let error = execute_ordered_edge_batch_as_admin(&env, request.clone()).unwrap_err();
+    assert!(matches!(
+        error,
+        RouterError::Internal(message)
+            if message.contains("retirement acknowledgement fault")
+    ));
+    arm_router_fault(&env, 0);
+
+    let pending = mutation_status_as_admin(
+        &env,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        "adr0049-public-replay",
+    )
+    .expect("retirement-pending ordered mutation status");
+    assert_eq!(pending.phase, MutationLifecyclePhase::ProjectionPending);
+
+    // After the real 9-day retention window, the retired Graph journal is absent. Router must
+    // stay fail-closed instead of inferring completion or redispatching the canonical mutation.
+    env.pic
+        .advance_time(Duration::from_secs(9 * 24 * 60 * 60 + 60 * 60));
+    assert_eq!(evict_graph_mutation_journal(&env, env.graph_source), 0);
+    run_router_recovery_timer(&env);
+
+    let after_absent = mutation_status_as_admin(
+        &env,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        "adr0049-public-replay",
+    )
+    .expect("ordered mutation must remain retained for repair");
+    assert_eq!(
+        after_absent.phase,
+        MutationLifecyclePhase::ProjectionPending
+    );
+    assert_eq!(after_absent.mutation_id, pending.mutation_id);
+
+    // The exact retry observes the same durable Router record; it does not create another edge.
+    let retry = execute_ordered_edge_batch_as_admin(&env, request)
+        .expect("exact retry must remain a repairable pending mutation");
+    assert_eq!(retry.phase, MutationLifecyclePhase::ProjectionPending);
+    assert_eq!(retry.mutation_id, pending.mutation_id);
 }

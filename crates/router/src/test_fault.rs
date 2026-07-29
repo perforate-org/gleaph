@@ -27,6 +27,10 @@ pub(crate) enum InjectedFault {
     /// Return an application error after an ordered Graph receipt is durably recorded but before
     /// Router projection/retirement convergence. The ordered recovery driver must finish it.
     FailAfterOrderedCanonicalCommit,
+    /// Return an application error after Graph durably retires an ordered mutation but before
+    /// Router records the terminal completed state. Recovery must repeat the idempotent retirement
+    /// call and finish the Router transition.
+    FailAfterOrderedRetirementAck,
 }
 
 thread_local! {
@@ -63,6 +67,7 @@ pub(crate) fn fault_from_code(code: u8) -> Option<InjectedFault> {
         2 => Some(InjectedFault::TrapBeforeConfirm),
         3 => Some(InjectedFault::TrapAfterTypedGraphCommit),
         4 => Some(InjectedFault::FailAfterOrderedCanonicalCommit),
+        5 => Some(InjectedFault::FailAfterOrderedRetirementAck),
         _ => None,
     }
 }
@@ -96,4 +101,8 @@ pub(crate) fn maybe_trap_after_typed_graph_commit() {
 
 pub(crate) fn fail_after_ordered_canonical_commit() -> bool {
     armed() == InjectedFault::FailAfterOrderedCanonicalCommit
+}
+
+pub(crate) fn fail_after_ordered_retirement_ack() -> bool {
+    armed() == InjectedFault::FailAfterOrderedRetirementAck
 }
