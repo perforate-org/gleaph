@@ -2407,6 +2407,44 @@ fn bench_graph_vertex_row_bulk_16() -> canbench_rs::BenchResult {
     })
 }
 
+/// Full vertex mutation baseline: scalar row, label sidecar, and property writes.
+#[bench(raw)]
+fn bench_graph_vertex_insert_scalar_16() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let label = crate::test_labels::vertex_label_id_for_name("BenchVertexScalar");
+    let property = crate::test_labels::property_id_for_name("bench_vertex_value");
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("vertex_insert_scalar_16");
+        for _ in 0..16 {
+            black_box(
+                store
+                    .insert_vertex_with([label], [(property, Value::Int64(1))])
+                    .expect("scalar vertex insert"),
+            );
+        }
+    })
+}
+
+/// Full vertex mutation comparison: one row batch plus bulk label/property sidecar writes.
+#[bench(raw)]
+fn bench_graph_vertex_insert_bulk_16() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let label = crate::test_labels::vertex_label_id_for_name("BenchVertexBulk");
+    let property = crate::test_labels::property_id_for_name("bench_vertex_value");
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("vertex_insert_bulk_16");
+        let vertices = (0..16)
+            .map(|_| (vec![label], vec![(property, Value::Int64(1))]))
+            .collect();
+        black_box(
+            crate::facade::mutation_executor::insert_vertices_with(&store, vertices)
+                .expect("bulk vertex insert"),
+        );
+    })
+}
+
 // --- ADR 0030 unique-effect outbox benches (graph-shard side of the cross-shard TCC) ---
 //
 // These complement the Router-side reservation benches (`crates/router/src/bench.rs`) by measuring
