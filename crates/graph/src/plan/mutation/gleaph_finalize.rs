@@ -13,8 +13,6 @@ use gleaph_graph_kernel::gql_dialect::{
 use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 
-const MAX_FINALIZE_VERTICES: usize = 256;
-
 /// True when `ops` contains a Gleaph finalize `CALL` that must run on the mutation executor.
 pub fn plan_contains_gleaph_finalize_call(ops: &[PlanOp]) -> bool {
     ops.iter().any(
@@ -54,7 +52,6 @@ pub fn execute_call_procedure(
         }
         let forward = resolve_vertex_list_expr(&args[0], bindings)?;
         let reverse = resolve_vertex_list_expr(&args[1], bindings)?;
-        check_vertex_limit(forward.len() + reverse.len())?;
         store.finalize_bulk_ingest(&BulkIngestFinalizeSpec {
             forward_vertices: forward,
             reverse_vertices: reverse,
@@ -114,16 +111,6 @@ fn invalid_args(procedure: &'static str, expected: &'static str) -> PlanMutation
         procedure,
         expected,
     }
-}
-
-fn check_vertex_limit(count: usize) -> Result<(), PlanMutationError> {
-    if count > MAX_FINALIZE_VERTICES {
-        return Err(PlanMutationError::TooManyFinalizeVertices {
-            count,
-            max: MAX_FINALIZE_VERTICES,
-        });
-    }
-    Ok(())
 }
 
 fn resolve_vertex_list_expr(

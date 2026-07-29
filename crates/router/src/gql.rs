@@ -5514,9 +5514,8 @@ fn graph_batch_chunk_len_for_dispatches(
             gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         )));
     }
-    const ESTIMATED_INSTR_PER_GRAPH_OP: u64 = 500_000_000;
     let instr_limited = (gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS
-        / ESTIMATED_INSTR_PER_GRAPH_OP)
+        / gleaph_graph_kernel::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION)
         .try_into()
         .unwrap_or(usize::MAX)
         .max(1);

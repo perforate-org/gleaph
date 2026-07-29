@@ -180,6 +180,24 @@ fn ensure_execution_mode(
     Ok(())
 }
 
+fn ensure_ordered_batch_instruction_budget(
+    operation_count: usize,
+    entrypoint: &str,
+) -> Result<(), String> {
+    let estimated = u64::try_from(operation_count)
+        .ok()
+        .and_then(|count| {
+            count.checked_mul(gleaph_graph_kernel::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION)
+        })
+        .ok_or_else(|| format!("{entrypoint} operation count overflows instruction estimate"))?;
+    if estimated > gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS {
+        return Err(format!(
+            "{entrypoint} exceeds the dynamic instruction budget estimate"
+        ));
+    }
+    Ok(())
+}
+
 /// Conservative budget for the synchronous derived-index drain that follows
 /// a successful batch. Observed cost is ~1.5K instructions; this reserve is
 /// deliberately large to absorb spikes under index pressure.
@@ -275,6 +293,7 @@ pub fn execute_ordered_edge_batch(
         .validate()
         .map_err(|error| format!("ordered Graph request validation: {error}"))?;
     let OrderedEdgeBatchGraphRequest::V1(request) = &args.request;
+    ensure_ordered_batch_instruction_budget(request.items.len(), "ordered edge batch")?;
     #[cfg(target_family = "wasm")]
     if request.target_graph_canister != ic_cdk::api::canister_self() {
         return Err("ordered Graph request target canister does not match receiver".into());
@@ -397,6 +416,7 @@ pub fn execute_ordered_vertex_batch(
         .validate()
         .map_err(|error| format!("ordered vertex Graph request validation: {error}"))?;
     let OrderedVertexBatchGraphRequest::V1(request) = &args.request;
+    ensure_ordered_batch_instruction_budget(request.items.len(), "ordered vertex batch")?;
     #[cfg(target_family = "wasm")]
     if request.target_graph_canister != ic_cdk::api::canister_self() {
         return Err("ordered vertex Graph request target canister does not match receiver".into());
@@ -481,6 +501,7 @@ pub fn execute_ordered_mixed_batch(
         .validate()
         .map_err(|error| format!("ordered mixed Graph request validation: {error}"))?;
     let OrderedMixedBatchGraphRequest::V1(request) = &args.request;
+    ensure_ordered_batch_instruction_budget(request.operations.len(), "ordered mixed batch")?;
     #[cfg(target_family = "wasm")]
     if request.target_graph_canister != ic_cdk::api::canister_self() {
         return Err("ordered mixed Graph request target canister does not match receiver".into());
@@ -2394,9 +2415,6 @@ pub async fn backfill_vertex_embeddings(
         .await
 }
 
-/// Maximum vertices per finalize call (`forward` + `reverse` lists).
-const MAX_BULK_INGEST_FINALIZE_VERTICES: usize = 256;
-
 pub fn finalize_bulk_ingest(
     args: gleaph_graph_kernel::federation::BulkIngestFinalizeArgs,
 ) -> Result<gleaph_graph_kernel::federation::BulkIngestFinalizeResult, String> {
@@ -2413,13 +2431,6 @@ pub fn finalize_bulk_ingest(
             args.target_shard_id, routing.shard_id
         ));
     }
-    let total_vertices = args.forward_vertices.len() + args.reverse_vertices.len();
-    if total_vertices > MAX_BULK_INGEST_FINALIZE_VERTICES {
-        return Err(format!(
-            "vertex list too long: {total_vertices} > {MAX_BULK_INGEST_FINALIZE_VERTICES}"
-        ));
-    }
-
     let spec = BulkIngestFinalizeSpec {
         forward_vertices: args
             .forward_vertices
@@ -2494,6 +2505,16 @@ mod tests {
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
     const TEST_ELEMENT_ID_ENCODING_KEY: [u8; 16] = ElementIdEncodingKey::host_test_fixture().0;
+
+    #[test]
+    fn ordered_batch_instruction_admission_is_derived_from_shared_budget() {
+        let per_operation = gleaph_graph_kernel::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION;
+        let max_operations = gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS / per_operation;
+        assert!(ensure_ordered_batch_instruction_budget(max_operations as usize, "test").is_ok());
+        assert!(
+            ensure_ordered_batch_instruction_budget((max_operations + 1) as usize, "test").is_err()
+        );
+    }
 
     #[test]
     fn execute_plan_result_payload_guard_accepts_boundary_and_rejects_next_byte() {

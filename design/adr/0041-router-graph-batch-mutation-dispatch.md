@@ -4,7 +4,7 @@ Status: Implemented
 
 ## Context
 
-The Router currently accepts a fixed page of idempotent GQL mutations, but
+The Router accepts a caller-provided list of idempotent GQL mutations, but
 executes each mutation with a separate `execute_plan_update` inter-canister
 call to the target Graph canister. This preserves per-mutation idempotency but
 repeats the inter-canister call overhead, update-message base cost, Candid
@@ -13,12 +13,12 @@ boundary, and callback handling for every seed.
 The ICP cycle-cost model charges an inter-canister request/response overhead and
 an update-message base cost in addition to the instructions and inline property bytes.
 The cost applies to each call even when Router and Graph are on the same subnet.
-The existing fixed-page API therefore reduces ingress calls but does not reduce
+The existing cursor-based API therefore reduces ingress calls but does not reduce
 the dominant Router-to-Graph call count.
 
 ## Problem
 
-Reduce Router-to-Graph call overhead for fixed-page bulk mutation execution
+Reduce Router-to-Graph call overhead for cursor-based bulk mutation execution
 without weakening the existing per-mutation idempotency, shard-local atomicity,
 Router saga, or recovery contracts.
 
@@ -29,7 +29,7 @@ mutations have committed.
 ## Decision
 
 Add a Graph-canister `execute_plan_update_batch` endpoint and make Router group
-the mutations in one fixed page by target Graph canister. Router sends one batch
+the mutations in one dynamically sized page by target Graph canister. Router sends one batch
 call per target Graph canister, not necessarily one call for the whole page when
 the page spans multiple shards.
 
@@ -63,12 +63,10 @@ ceiling is 2 MiB, matching ICP's ingress and cross-subnet request limit; this
 keeps the transport valid if canisters move between subnets even though same-
 subnet requests permit a larger payload.
 
-Because the IC limits the number of outstanding inter-canister calls a
-call context can enqueue, the Router also bounds each `gql_execute_idempotent_batch`
-wave to `MAX_BATCH_WAVE_ITEMS` mutations and the total number of mutations
-processed in a single ingress call to `MAX_MUTATIONS_PER_INGRESS`. These caps
-keep the per-call context resource envelope well below the IC threshold while
-preserving the caller's cursor continuation semantics.
+The Router does not impose a fixed wave or ingress mutation-count cap. It
+selects each Graph transport chunk from the encoded payload ceiling and the
+shared instruction-budget cutoff; the continuation cursor is the safety
+boundary when the current ingress can no longer admit another mutation.
 
 The public `gql_execute_idempotent_batch` ingress and its response use the same
 2 MiB conservative payload check. This prevents a caller from bypassing the
@@ -104,11 +102,12 @@ This reduces calls but collapses independent idempotency and failure boundaries
 into one GQL mutation. It would require a new durable submutation journal and a
 new recovery contract. It is rejected for this slice.
 
-### Add Graph batch dispatch first, then dynamic paging
+### Add Graph batch dispatch with dynamic paging
 
-This preserves the existing fixed-page behavior while reducing the dominant
-call count. Dynamic paging can later choose how many items to place in the same
-Graph batch using the Router call-context instruction counter. This is selected.
+This preserves the independent mutation boundaries while reducing the dominant
+call count. Dynamic paging chooses how many items to place in the same Graph
+batch using encoded payload size and the Router call-context instruction counter.
+This is selected.
 
 ## Invariants and failure behavior
 

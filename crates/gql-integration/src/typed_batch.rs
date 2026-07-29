@@ -59,13 +59,6 @@ pub enum TypedBatchEligibility {
     Ineligible { reason: &'static str },
 }
 
-/// Maximum number of [`PlanOp::InsertEdge`] operators allowed in a typed V1 plan.
-///
-/// A single-anchor threaded bundle already bounds existing-state reads; this cap additionally
-/// bounds the distinct source variables that can become hot-forward vertices, keeping the
-/// Graph→Router response size predictable.
-const MAX_TYPED_BATCH_INSERT_EDGE_OPS: usize = 64;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TypedBatchPlanBounds {
     insert_edges_per_input_row: usize,
@@ -78,7 +71,7 @@ pub(crate) struct TypedBatchPlanBounds {
 /// - the bundle requires the write path;
 /// - update execution produces no `rows_blob`; output metadata therefore does not affect the wire;
 /// - the plan is a single-anchor threaded bundle, so all graph reads come from the seeded anchor;
-/// - the number of `InsertEdge` operators is bounded.
+/// - the number of `InsertEdge` operators is counted for the response-bound proof.
 ///
 /// This function is exported so the Graph canister can re-validate the plan before executing
 /// the typed endpoint, independent of any Router-side decision.
@@ -100,9 +93,6 @@ fn validate_typed_batch_plan(plan_blob: &[u8]) -> Result<TypedBatchPlanBounds, &
         insert_edges_per_input_row = insert_edges_per_input_row
             .checked_add(plan_insert_edges)
             .ok_or("typed V1 edge-insert bound overflow")?;
-        if insert_edges_per_input_row > MAX_TYPED_BATCH_INSERT_EDGE_OPS {
-            return Err("typed V1 plan exceeds the allowed number of edge inserts");
-        }
     }
     Ok(TypedBatchPlanBounds {
         insert_edges_per_input_row,
@@ -360,11 +350,6 @@ pub fn classify_typed_batch_eligibility(operations: &[ExecutePlanArgs]) -> Typed
                 reason: "typed V1 requires complete_prefix_rows=true",
             };
         }
-        if seed.rows.len() > 1024 {
-            return TypedBatchEligibility::Ineligible {
-                reason: "typed V1 supports at most 1024 seed rows per operation",
-            };
-        }
         candidate_operations.push(TypedBatchCandidateOp {
             params_blob: op.params_blob.clone(),
             seed,
@@ -399,8 +384,8 @@ pub fn classify_typed_batch_candidate(
     if !indexed_embeddings.is_empty() {
         return Err("typed V1 does not support indexed-embedding dispatch");
     }
-    if candidate.operations.is_empty() || candidate.operations.len() > 1024 {
-        return Err("typed V1 operation count must be 1..=1024");
+    if candidate.operations.is_empty() {
+        return Err("typed V1 requires at least one operation");
     }
     let plan_bounds = validate_typed_batch_plan(&candidate.plan_blob)?;
     for op in &candidate.operations {
@@ -409,9 +394,6 @@ pub fn classify_typed_batch_candidate(
         }
         if !op.seed.complete_prefix_rows {
             return Err("typed V1 requires complete_prefix_rows=true");
-        }
-        if op.seed.rows.len() > 1024 {
-            return Err("typed V1 supports at most 1024 seed rows per operation");
         }
         if op.params_blob.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             return Err("typed V1 params_blob exceeds the safe payload limit");
@@ -480,9 +462,6 @@ pub fn validate_typed_batch_eligibility_for_graph(
         }
         if !op.seed.complete_prefix_rows {
             return Err("typed V1 requires complete_prefix_rows=true");
-        }
-        if op.seed.rows.len() > 1024 {
-            return Err("typed V1 supports at most 1024 seed rows per operation");
         }
         if op.params_blob.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         {
@@ -939,7 +918,7 @@ mod tests {
                 ExecutePlanBatchMode::Dynamic,
             )
             .expect_err("empty candidate")
-            .contains("1..=1024")
+            .contains("at least one operation")
         );
 
         let TypedBatchEligibility::Eligible(mut candidate) =
@@ -996,7 +975,7 @@ mod tests {
             .expect("measured POSTED shape fits");
 
         let oversized = TypedBatchPlanBounds {
-            insert_edges_per_input_row: MAX_TYPED_BATCH_INSERT_EDGE_OPS,
+            insert_edges_per_input_row: 64,
         };
         let err = validate_typed_batch_response_bound(std::iter::repeat_n(1024, 1024), oversized)
             .expect_err("worst-case response must be rejected before allocation");

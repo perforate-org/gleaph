@@ -208,9 +208,6 @@ pub struct OrderedEdgeBatchGraphRequestV1 {
     pub items: Vec<OrderedEdgeBatchGraphItemV1>,
 }
 
-pub const MAX_ORDERED_EDGE_BATCH_ITEMS: usize = 1_024;
-pub const MAX_ORDERED_EDGE_PROPERTIES_PER_ITEM: usize = 256;
-
 /// One logical vertex in the versioned Router → Graph vertex request.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct OrderedVertexBatchGraphItemV1 {
@@ -234,18 +231,11 @@ pub struct OrderedVertexBatchGraphRequestV1 {
     pub items: Vec<OrderedVertexBatchGraphItemV1>,
 }
 
-pub const MAX_ORDERED_VERTEX_BATCH_ITEMS: usize = 1_024;
-pub const MAX_ORDERED_VERTEX_PROPERTIES_PER_ITEM: usize = 256;
-
 impl OrderedVertexBatchGraphRequest {
     pub fn validate(&self) -> Result<(), String> {
         let OrderedVertexBatchGraphRequest::V1(request) = self;
-        if request.items.is_empty() || request.items.len() > MAX_ORDERED_VERTEX_BATCH_ITEMS {
-            return Err(format!(
-                "ordered vertex batch requires 1..={} items, got {}",
-                MAX_ORDERED_VERTEX_BATCH_ITEMS,
-                request.items.len()
-            ));
+        if request.items.is_empty() {
+            return Err("ordered vertex batch requires at least one item".into());
         }
         if request.target_graph_canister == Principal::anonymous() {
             return Err("ordered vertex batch target graph canister must not be anonymous".into());
@@ -254,11 +244,6 @@ impl OrderedVertexBatchGraphRequest {
             if item.resolved_vertex_labels.contains(&0) {
                 return Err(format!(
                     "ordered vertex item {ordinal} contains a reserved label"
-                ));
-            }
-            if item.resolved_initial_properties.len() > MAX_ORDERED_VERTEX_PROPERTIES_PER_ITEM {
-                return Err(format!(
-                    "ordered vertex item {ordinal} has too many initial properties"
                 ));
             }
             let mut property_ids = BTreeSet::new();
@@ -281,6 +266,11 @@ impl OrderedVertexBatchGraphRequest {
                     ));
                 }
             }
+        }
+        let encoded = Encode!(self)
+            .map_err(|error| format!("ordered vertex batch request encode failed: {error}"))?;
+        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("ordered vertex batch request exceeds the safe payload limit".into());
         }
         Ok(())
     }
@@ -332,19 +322,11 @@ pub struct OrderedMixedBatchGraphRequestV1 {
     pub operations: Vec<OrderedMixedGraphOperationV1>,
 }
 
-pub const MAX_ORDERED_MIXED_BATCH_OPERATIONS: usize = 1_024;
-
 impl OrderedMixedBatchGraphRequest {
     pub fn validate(&self) -> Result<(), String> {
         let OrderedMixedBatchGraphRequest::V1(request) = self;
-        if request.operations.is_empty()
-            || request.operations.len() > MAX_ORDERED_MIXED_BATCH_OPERATIONS
-        {
-            return Err(format!(
-                "ordered mixed batch requires 1..={} operations, got {}",
-                MAX_ORDERED_MIXED_BATCH_OPERATIONS,
-                request.operations.len()
-            ));
+        if request.operations.is_empty() {
+            return Err("ordered mixed batch requires at least one operation".into());
         }
         if request.target_graph_canister == Principal::anonymous() {
             return Err("ordered mixed batch target graph canister must not be anonymous".into());
@@ -515,11 +497,6 @@ fn validate_ordered_initial_properties(
     properties: &[ResolvedOrderedEdgePropertyV1],
     operation_kind: &str,
 ) -> Result<(), String> {
-    if properties.len() > MAX_ORDERED_VERTEX_PROPERTIES_PER_ITEM {
-        return Err(format!(
-            "ordered mixed {operation_kind} operation {operation_ordinal} has too many initial properties"
-        ));
-    }
     let mut property_ids = BTreeSet::new();
     for property in properties {
         if property.property_id.raw() == 0 {
@@ -621,12 +598,8 @@ impl OrderedEdgeBatchGraphArgs {
 impl OrderedEdgeBatchGraphRequest {
     pub fn validate(&self) -> Result<(), String> {
         let OrderedEdgeBatchGraphRequest::V1(request) = self;
-        if request.items.is_empty() || request.items.len() > MAX_ORDERED_EDGE_BATCH_ITEMS {
-            return Err(format!(
-                "ordered edge batch requires 1..={} items, got {}",
-                MAX_ORDERED_EDGE_BATCH_ITEMS,
-                request.items.len()
-            ));
+        if request.items.is_empty() {
+            return Err("ordered edge batch requires at least one item".into());
         }
         if request.target_graph_canister == Principal::anonymous() {
             return Err("ordered edge batch target graph canister must not be anonymous".into());
@@ -635,11 +608,6 @@ impl OrderedEdgeBatchGraphRequest {
             if item.inline_property_bytes.len() > MAX_EDGE_INLINE_PROPERTY_BYTES {
                 return Err(format!(
                     "ordered edge item {ordinal} inline property bytes exceed bound"
-                ));
-            }
-            if item.resolved_initial_edge_properties.len() > MAX_ORDERED_EDGE_PROPERTIES_PER_ITEM {
-                return Err(format!(
-                    "ordered edge item {ordinal} has too many initial properties"
                 ));
             }
             let mut property_ids = BTreeSet::new();
@@ -651,6 +619,11 @@ impl OrderedEdgeBatchGraphRequest {
                     ));
                 }
             }
+        }
+        let encoded = Encode!(self)
+            .map_err(|error| format!("ordered edge batch request encode failed: {error}"))?;
+        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("ordered edge batch request exceeds the safe payload limit".into());
         }
         Ok(())
     }
@@ -910,12 +883,10 @@ impl ExecutePlanBatchTypedArgs {
     /// Checks cardinality, complete-row shape, per-operation bounds, and the encoded request size.
     /// It does not re-encode individual seeds; the one full-request encode is the only byte proof.
     pub fn validate(&self) -> Result<(), String> {
-        const MAX_OPS: usize = 1024;
-        const MAX_ROWS_PER_SEED: usize = 1024;
         let ops = self.operations.len();
-        if ops == 0 || ops > MAX_OPS {
+        if ops == 0 {
             return Err(format!(
-                "typed batch V1 requires 1..={MAX_OPS} operations, got {ops}"
+                "typed batch V1 requires at least one operation, got {ops}"
             ));
         }
         for (i, op) in self.operations.iter().enumerate() {
@@ -927,11 +898,6 @@ impl ExecutePlanBatchTypedArgs {
             if !op.seed.complete_prefix_rows {
                 return Err(format!(
                     "typed batch V1 op {i} requires complete_prefix_rows=true"
-                ));
-            }
-            if op.seed.rows.len() > MAX_ROWS_PER_SEED {
-                return Err(format!(
-                    "typed batch V1 op {i} exceeds {MAX_ROWS_PER_SEED} seed rows"
                 ));
             }
             if op.params_blob.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
@@ -1286,9 +1252,6 @@ pub fn validate_graph_mutation_journal_fields(
     Ok(())
 }
 
-/// Maximum canonical forward vertices retained in an ordered batch receipt.
-pub const MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES: usize = 2_048;
-
 /// Durable aggregate receipt returned by a completed ordered Graph edge batch.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct GraphOrderedEdgeBatchReceiptV1 {
@@ -1329,9 +1292,6 @@ impl GraphOrderedMixedBatchReceiptV1 {
         if operation_count != self.logical_operation_count {
             return Err("ordered mixed receipt counts must sum to logical_operation_count");
         }
-        if self.hot_forward_vertices.len() > MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES {
-            return Err("ordered mixed receipt hot-forward vertex bound exceeded");
-        }
         if self
             .hot_forward_vertices
             .windows(2)
@@ -1339,15 +1299,16 @@ impl GraphOrderedMixedBatchReceiptV1 {
         {
             return Err("ordered mixed receipt hot-forward vertices must be sorted and unique");
         }
+        let encoded = Encode!(self).map_err(|_| "ordered mixed receipt encode failed")?;
+        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("ordered mixed receipt exceeds the safe payload limit");
+        }
         Ok(())
     }
 }
 
 impl GraphOrderedVertexBatchReceiptV1 {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.hot_forward_vertices.len() > MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES {
-            return Err("ordered vertex receipt hot-forward vertex bound exceeded");
-        }
         if self
             .hot_forward_vertices
             .windows(2)
@@ -1355,22 +1316,27 @@ impl GraphOrderedVertexBatchReceiptV1 {
         {
             return Err("ordered vertex receipt hot-forward vertices must be sorted and unique");
         }
+        let encoded = Encode!(self).map_err(|_| "ordered vertex receipt encode failed")?;
+        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("ordered vertex receipt exceeds the safe payload limit");
+        }
         Ok(())
     }
 }
 
 impl GraphOrderedEdgeBatchReceiptV1 {
-    /// Validate the bounded canonical hot-vertex projection retained by the receipt.
+    /// Validate the canonical hot-vertex projection retained by the receipt.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.hot_forward_vertices.len() > MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES {
-            return Err("ordered receipt hot-forward vertex bound exceeded");
-        }
         if self
             .hot_forward_vertices
             .windows(2)
             .any(|pair| pair[0] >= pair[1])
         {
             return Err("ordered receipt hot-forward vertices must be sorted and unique");
+        }
+        let encoded = Encode!(self).map_err(|_| "ordered edge receipt encode failed")?;
+        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("ordered edge receipt exceeds the safe payload limit");
         }
         Ok(())
     }
@@ -2107,6 +2073,30 @@ mod tests {
                 .unwrap_err()
                 .contains("repeats property id")
         );
+    }
+
+    #[test]
+    fn ordered_edge_request_uses_payload_instead_of_fixed_item_count() {
+        let item = OrderedEdgeBatchGraphItemV1 {
+            source_local_vertex_id: 1,
+            target_local_vertex_id: 2,
+            directed: true,
+            catalog_edge_label_id: None,
+            inline_property_bytes: Vec::new(),
+            resolved_initial_edge_properties: Vec::new(),
+        };
+        let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(7),
+            target_shard_id: ShardId::new(2),
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![item; 1_025],
+        });
+
+        request
+            .validate()
+            .expect("payload-sized edge request should not hit a fixed item cap");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 05:22:27 UTC +0000
+Anchor timestamp: 2026-07-29 06:05:19 UTC +0000
 
 ## Context
 
@@ -346,17 +346,12 @@ fallback, and maintenance behavior are derived from the validated request and
 owner policy, not caller-selected modes. The shared constructors enforce:
 
 ```text
-1 <= items.len <= 1_024
-initial_edge_properties.len <= 128 per item
 logical-graph/label/property name UTF-8 bytes <= 256
 CanonicalGqlValueBytesV1.len <= 65_536 per value
-physical_projection_count <= 2_048
 actual encoded public request <= MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
 actual encoded Graph request <= MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-actual encoded Router mutation record in every lifecycle state
-    <= MAX_ROUTER_MUTATION_RECORD_BYTES
-MAX_ROUTER_MUTATION_RECORD_BYTES
-    == MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+ordered operation count is admitted by the shared dynamic instruction estimate
+and the encoded payload ceiling
 ```
 
 All count multiplication and encoded-length arithmetic is checked. The full
@@ -1235,8 +1230,7 @@ GraphOrderedEdgeBatchReceiptV1 {
     logical_edge_count: u64,
     emitted_delta_first_seq: Option<ShardEventSeq>,
     emitted_delta_last_seq: Option<ShardEventSeq>,
-    hot_forward_vertices:
-        BoundedVec<LocalVertexId, MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES>,
+    hot_forward_vertices: Vec<LocalVertexId>,
 }
 ```
 
@@ -1251,15 +1245,15 @@ stable schema. The retirement acknowledgement remains a separate
 `OrderedMutationRetirementAck::V1` envelope because it is a distinct
 Router-to-Graph capability response.
 
-`MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES = 2_048` is owned with the receipt wire
-in `gleaph-graph-kernel` and equals the maximum physical projection count of one
-admitted request. Graph sorts the list by `LocalVertexId`, removes duplicates,
-and rejects a non-canonical or oversized list before committing the ordered
-journal/receipt. The ordered Graph journal constructor and wire encoder, Graph
-response encoder, Router response decoder, Router progress constructor, and
-stable-record decoder all enforce the same constant and canonical order.
-Existing `GraphMutationRequestIdentityV1::PlanExecution` journal entries retain
-their current independent 4,096 hot-vertex codec bound.
+Graph sorts the hot-forward vertex list by `LocalVertexId`, removes duplicates,
+and rejects a non-canonical list before committing the ordered journal/receipt.
+The shared encoded payload bound is the response-size boundary; the ordered
+receipt wire does not impose a separate fixed cardinality cap. The ordered
+Graph journal constructor and wire encoder, Graph response encoder, Router
+response decoder, Router progress constructor, and stable-record decoder all
+preserve the same canonical order. Existing
+`GraphMutationRequestIdentityV1::PlanExecution` journal entries retain their
+current independent 4,096 hot-vertex codec bound.
 
 The replacement V1 removes the current unbounded diagnostic strings. The
 Router facade owns the two bounded diagnostic types and their constructors;
@@ -1274,11 +1268,9 @@ rendered diagnostic explicitly records that fact rather than pretending to
 preserve the full upstream string. Ordered terminal errors are reconstructed
 exactly from their code and bounded structured fields.
 
-`MAX_ROUTER_MUTATION_RECORD_BYTES` equals
-`MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES` for this fresh V1 layout. Every
-Router payload variant—routing, active, terminal, retry-diagnostic, and
-completed—is encoded and checked against that logical bound in its owning
-constructor, decoder, and before every stable-map replacement.
+Every Router payload variant—routing, active, terminal, retry-diagnostic, and
+completed—is encoded and checked against the shared logical payload bound in
+its owning constructor, decoder, and before every stable-map replacement.
 `RouterMutationRecord::Storable::BOUND` nevertheless remains
 `Bound::Unbounded`: this is the stable-structures physical allocation strategy,
 not permission for an unbounded logical value. Setting a 2 MiB variable-size
@@ -1293,11 +1285,11 @@ A record is not admitted merely because its initial encoding fits. Before an
 ordered active envelope is persisted, Router computes the maximum encoded size
 of every reachable non-compacted shape using that exact request: each target
 progress variant with a receipt containing exactly
-`MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES` canonical ids, both optional sequence
-fields present, and the largest permitted active retry diagnostic. The maximum
-must fit
-`MAX_ROUTER_MUTATION_RECORD_BYTES`; otherwise admission fails terminally before
-dispatch. Routing-terminal and completed shapes are checked independently and
+the largest reachable canonical hot-forward vertex list for that exact
+request, both optional sequence fields present, and the largest permitted
+active retry diagnostic. The maximum must fit
+the shared payload bound; otherwise admission fails terminally before dispatch.
+Routing-terminal and completed shapes are checked independently and
 are smaller by construction. Fresh-layout constructors for retained
 plan-execution variants likewise reserve their maximum permitted diagnostic and
 progress overhead. The maximum includes `RetirementPending` with its full
@@ -2273,10 +2265,10 @@ At minimum, implementation must cover:
   reachable receipt/diagnostic progress shape would exceed the record bound
   rejected before dispatch, plus the largest admitted envelope advancing
   through every progress state without a size failure;
-- ordered receipts with zero and exactly 2,048 sorted unique hot-forward
-  vertices round-tripping through Graph journal/wire, Graph response, Router
-  progress, and stable record; 2,049, duplicate, or descending ids rejected at
-  every decoding/construction boundary;
+- ordered receipts with zero and large sorted unique hot-forward vertices
+  round-tripping through Graph journal/wire, Graph response, Router progress,
+  and stable record; duplicate or descending ids rejected at every
+  decoding/construction boundary, and the encoded payload bound enforced;
 - `RouterMutationRecord::Storable::BOUND` remaining physically unbounded while
   the facade rejects an encoded record one byte over the logical 2 MiB maximum
   in every lifecycle variant;
@@ -2394,12 +2386,13 @@ Adversarial tests must reject:
   active/completed ordered payload carrying `terminal_failure`;
 - an ordered transient diagnostic representable as a terminal code, arbitrary
   upstream text persisted without the bounded diagnostic constructor, or any
-  Router lifecycle record exceeding `MAX_ROUTER_MUTATION_RECORD_BYTES`;
+  Router lifecycle record exceeding the shared encoded payload bound;
 - an active envelope admitted without reserving enough encoded headroom for its
   largest reachable receipt and retry diagnostic, including a callback that
   commits Graph state but cannot persist `CanonicalCommitted`;
-- an ordered receipt with more than 2,048 hot-forward vertices, duplicate or
-  non-ascending ids, or a Graph/Router boundary applying a different bound;
+- an ordered receipt whose encoded payload exceeds the shared payload bound,
+  duplicate or non-ascending ids, or a Graph/Router boundary applying a
+  different bound;
 - a physical 2 MiB `Storable::Bounded` maximum substituted for the logical
   encoded-size guard without the required stable-map benchmark evidence;
 - invalid ordered target progress transitions, premature envelope compaction, or

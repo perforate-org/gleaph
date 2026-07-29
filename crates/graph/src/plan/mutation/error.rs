@@ -98,10 +98,6 @@ pub enum PlanMutationError {
         expected: &'static str,
     },
     InvalidFinalizeVertexListArg,
-    TooManyFinalizeVertices {
-        count: usize,
-        max: usize,
-    },
     MissingProcedureYield {
         variable: String,
     },
@@ -204,9 +200,6 @@ impl fmt::Display for PlanMutationError {
             }
             Self::InvalidFinalizeVertexListArg => {
                 write!(f, "GLEAPH.VERTEX_LIST expects bound node variables")
-            }
-            Self::TooManyFinalizeVertices { count, max } => {
-                write!(f, "finalize vertex list too long: {count} > {max}")
             }
             Self::MissingProcedureYield { variable } => {
                 write!(f, "missing CALL YIELD binding '{variable}'")

@@ -188,8 +188,8 @@ impl OrderedEdgeBatchPublicRequest {
         if request.logical_graph_name.is_empty() {
             return Err("ordered edge batch logical graph name must not be empty".into());
         }
-        if request.items.is_empty() || request.items.len() > 1_024 {
-            return Err("ordered edge batch item count must be 1..=1024".into());
+        if request.items.is_empty() {
+            return Err("ordered edge batch requires at least one item".into());
         }
         for (ordinal, item) in request.items.iter().enumerate() {
             for (endpoint_name, endpoint) in [("source", &item.source), ("target", &item.target)] {
@@ -427,8 +427,8 @@ impl OrderedVertexBatchPublicRequest {
         if request.logical_graph_name.is_empty() {
             return Err("ordered vertex batch logical graph name must not be empty".into());
         }
-        if request.items.is_empty() || request.items.len() > 1_024 {
-            return Err("ordered vertex batch item count must be 1..=1024".into());
+        if request.items.is_empty() {
+            return Err("ordered vertex batch requires at least one item".into());
         }
         for (ordinal, item) in request.items.iter().enumerate() {
             for label in &item.vertex_labels {
@@ -614,8 +614,8 @@ impl OrderedMixedBatchPublicRequest {
         if request.logical_graph_name.is_empty() {
             return Err("ordered mixed batch logical graph name must not be empty".into());
         }
-        if request.operations.is_empty() || request.operations.len() > 1_024 {
-            return Err("ordered mixed batch operation count must be 1..=1024".into());
+        if request.operations.is_empty() {
+            return Err("ordered mixed batch requires at least one operation".into());
         }
         if !request
             .operations

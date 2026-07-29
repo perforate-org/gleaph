@@ -480,7 +480,7 @@ mod tests {
             args,
         ))
         .expect_err("empty ordered batch must be rejected");
-        assert!(err.contains("requires 1..="));
+        assert!(err.contains("requires at least one item"));
     }
 
     #[test]

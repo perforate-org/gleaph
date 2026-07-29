@@ -673,10 +673,9 @@ impl TypedSeedBulkReplayV1 {
     /// Validate the invariants required for a durable typed seed replay payload.
     ///
     /// - `mode == Update`
-    /// - `1 <= total_ops <= 1024`
+    /// - `total_ops` is non-zero
     /// - `operations.len() == total_ops`
     /// - every operation has empty grouped `entries` and `complete_prefix_rows == true`
-    /// - every operation has at most 1,024 complete seed rows
     /// - every `params` blob is at most `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`
     pub(crate) fn validate(&self) -> Result<(), RouterError> {
         if self.shared.mode != GqlExecutionMode::Update {
@@ -684,9 +683,9 @@ impl TypedSeedBulkReplayV1 {
                 "typed bulk V1 requires Update mode".into(),
             ));
         }
-        if self.total_ops == 0 || self.total_ops > 1024 {
+        if self.total_ops == 0 {
             return Err(RouterError::InvalidArgument(
-                "typed bulk total_ops must be 1..=1024".into(),
+                "typed bulk total_ops must be non-zero".into(),
             ));
         }
         let expected = self.total_ops as usize;
@@ -704,11 +703,6 @@ impl TypedSeedBulkReplayV1 {
             if !op.seed_bindings.complete_prefix_rows {
                 return Err(RouterError::InvalidArgument(format!(
                     "typed bulk op {i} requires complete_prefix_rows=true"
-                )));
-            }
-            if op.seed_bindings.rows.len() > 1024 {
-                return Err(RouterError::InvalidArgument(format!(
-                    "typed bulk op {i} exceeds 1024 seed rows"
                 )));
             }
             if op.params.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {

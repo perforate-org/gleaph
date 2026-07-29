@@ -8,16 +8,13 @@ Make `gql_execute_idempotent_batch` a cursor-based continuation API. This is a
 breaking replacement for the former separate dynamic endpoint. The caller
 supplies a mutation list, `start_index`, an optional instruction budget, and an
 optional maximum item count. There is no caller-visible item-count cap when
-`max_items` is omitted, but the Router enforces internal hard caps per wave and
-per ingress call to stay within the IC's per-call context resource envelope
-(see ADR 0041). Within those caps the Router consumes all remaining input that
-fits its instruction and encoded-payload budgets. The Router executes the
-selected mutations in waves, reusing ADR 0041's Graph-canister batch boundary.
-Graph transport chunks each target's operations by encoded request size.
-Between waves it reads the current Router call-context instruction counter and
-stops before starting another wave when the requested budget is reached, or when
-the per-ingress mutation limit (`MAX_MUTATIONS_PER_INGRESS`) requires a
-continuation cursor.
+`max_items` is omitted, and the Router consumes all remaining input that fits
+its instruction and encoded-payload budgets. The Router executes the selected
+mutations in dynamically sized waves, reusing ADR 0041's Graph-canister batch
+boundary. Graph transport chunks each target's operations by encoded request
+size. Between waves it reads the current Router call-context instruction
+counter and stops before starting another wave when the requested budget or
+encoded-payload boundary requires a continuation cursor.
 
 The default and maximum budget is 35B instructions, leaving 5B headroom below
 the 40B update-call limit for the final wave and response construction. A
@@ -60,8 +57,7 @@ limit and item-local journal boundary.
 - The caller must retain the original mutation list and feed back `next_index`.
 - A budget exhausted before the first wave is a validation error, not an empty
   successful page, preventing a cursor that cannot advance.
-- Internal per-wave (`MAX_BATCH_WAVE_ITEMS`) and per-ingress
-  (`MAX_MUTATIONS_PER_INGRESS`) caps prevent call-context resource exhaustion
+- Payload and instruction-budget probes prevent call-context resource exhaustion
   on very large pages while still allowing continuation from the returned cursor.
 
 ## Follow-up

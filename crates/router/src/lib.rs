@@ -71,11 +71,6 @@ use ic_cdk_macros::{init, post_upgrade, query, update};
 use crate::provisioning::sender::send_accept_envelope;
 use crate::types::RouterOutboundError;
 
-/// Maximum number of mutations processed in a single `gql_execute_idempotent_batch` ingress
-/// call. Each wave issues a bounded number of inter-canister calls; capping the total per
-/// ingress prevents the call context from exhausting the IC's per-message resource envelope.
-const MAX_MUTATIONS_PER_INGRESS: usize = 1024;
-
 #[cfg(target_family = "wasm")]
 fn current_instruction_counter() -> u64 {
     ic_cdk::api::call_context_instruction_counter()
@@ -397,10 +392,7 @@ async fn gql_execute_idempotent_batch(
 
     let start_cursor = args.start_index as usize;
     let mut cursor = start_cursor;
-    let end = args
-        .mutations
-        .len()
-        .min(start_cursor + MAX_MUTATIONS_PER_INGRESS);
+    let end = args.mutations.len();
     let mut results = Vec::new();
     #[cfg(feature = "batch-instr-log")]
     let ingress_start_instr = current_instruction_counter();

@@ -37,6 +37,11 @@ pub const UPDATE_CALL_INSTRUCTION_HEADROOM: u64 = 5_000_000_000;
 pub const MAX_DYNAMIC_UPDATE_INSTRUCTIONS: u64 =
     MAX_UPDATE_CALL_INSTRUCTIONS - UPDATE_CALL_INSTRUCTION_HEADROOM;
 
+/// Conservative cost estimate used only for pre-dispatch batch sizing when an endpoint has no
+/// resumable per-operation cursor. Measured operation cost remains authoritative for continuation
+/// paths.
+pub const GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION: u64 = 500_000_000;
+
 /// Headroom reserved by Graph's dynamic batch cutoff for final bookkeeping.
 pub const GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM: u64 = 2_000_000_000;
 

@@ -101,8 +101,6 @@ pub enum BatchPlacementError {
     ProjectedCapacityOverflow,
     /// A count or size projection sum overflowed.
     ProjectedCountOverflow,
-    /// The logical edge batch exceeded the bounded input limit.
-    BatchTooLarge,
     /// A stable-memory read or placement observation failed.
     PlacementReadFailed(String),
     /// A leaf contains inline property bytes with incompatible widths.
@@ -152,7 +150,6 @@ impl std::fmt::Display for BatchPlacementError {
                 )
             }
             Self::OrdinalOverflow => write!(f, "batch logical ordinal overflow"),
-            Self::BatchTooLarge => write!(f, "batch logical edge count exceeds the bounded limit"),
             Self::PlacementReadFailed(detail) => {
                 write!(f, "placement read failed: {detail}")
             }
@@ -529,14 +526,7 @@ impl GraphStore {
     /// logical edge into physical intents; groups by LARA ownership; and reads
     /// existing bucket occupancy to produce a projected-capacity summary. No
     /// canonical state is written.
-    /// Maximum logical edges accepted in one read-only planning call.
-    ///
-    /// This is a focused-slice bound for the baseline planner; later slices that
-    /// add ingress chunking may raise it once request-size and instruction
-    /// budgets are measured.
-    pub const MAX_LOGICAL_EDGES: u32 = 1024 * 1024;
-
-    /// Validate a bounded batch and expand it into physical half-edge
+    /// Validate a batch and expand it into physical half-edge
     /// intents. This is reusable by callers that need the intents without the
     /// full placement summary.
     pub(crate) fn expand_batch_edge_intents(
@@ -545,12 +535,6 @@ impl GraphStore {
     ) -> Result<Vec<BatchEdgeIntent>, BatchPlacementError> {
         #[cfg(feature = "canbench")]
         let _scope = canbench_rs::bench_scope("ordered_batch_expand_intents");
-        let logical_count =
-            u32::try_from(edges.len()).map_err(|_| BatchPlacementError::BatchTooLarge)?;
-        if logical_count > Self::MAX_LOGICAL_EDGES {
-            return Err(BatchPlacementError::BatchTooLarge);
-        }
-
         let mut intents = Vec::with_capacity(edges.len().checked_mul(2).unwrap_or(edges.len()));
 
         for (ordinal, input) in edges.iter().enumerate() {
@@ -644,7 +628,7 @@ impl GraphStore {
         let physical_intent_count = u64::try_from(intents.len())
             .map_err(|_| BatchPlacementError::ProjectedCountOverflow)?;
         let logical_edge_count =
-            u32::try_from(edges.len()).map_err(|_| BatchPlacementError::BatchTooLarge)?;
+            u32::try_from(edges.len()).map_err(|_| BatchPlacementError::OrdinalOverflow)?;
 
         Ok(BatchPlacementSummary {
             logical_edge_count,
