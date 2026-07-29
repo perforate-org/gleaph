@@ -2103,6 +2103,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     Candid roundtrip, order-sensitivity, and invalid ordinal tests are active.
     Graph phase execution, allocation-table publication, durable mixed journal
     identity, aggregate receipt, and Router dispatch remain planned.
+32. **Partially implemented (2026-07-29 04:06:20 UTC +0000):** the Graph-owned
+    journal contract now admits a mixed identity with operation/vertex/edge counts,
+    and the kernel defines the corresponding aggregate receipt, replay result, and
+    retirement acknowledgement shapes. The manual stable journal codec roundtrips
+    the mixed identity and rejects inconsistent phase counts. Mixed canonical
+    execution, journal admission, and Router lifecycle wiring remain planned.
 
 ## Test contract
 

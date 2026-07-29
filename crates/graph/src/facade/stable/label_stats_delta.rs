@@ -330,6 +330,20 @@ fn encode_request_identity(buf: &mut Vec<u8>, identity: &GraphMutationRequestIde
             buf.extend_from_slice(graph_request_fingerprint);
             encode_u32_le(buf, *logical_item_count);
         }
+        GraphMutationRequestIdentityV1::OrderedMixedBatch {
+            canonical_encoding_version,
+            graph_request_fingerprint,
+            logical_operation_count,
+            logical_vertex_count,
+            logical_edge_count,
+        } => {
+            encode_u8(buf, 3);
+            encode_u16_le(buf, *canonical_encoding_version);
+            buf.extend_from_slice(graph_request_fingerprint);
+            encode_u32_le(buf, *logical_operation_count);
+            encode_u32_le(buf, *logical_vertex_count);
+            encode_u32_le(buf, *logical_edge_count);
+        }
     }
 }
 
@@ -358,6 +372,22 @@ fn decode_request_identity(bytes: &[u8], offset: &mut usize) -> GraphMutationReq
                 canonical_encoding_version,
                 graph_request_fingerprint,
                 logical_item_count,
+            }
+        }
+        3 => {
+            let canonical_encoding_version = decode_u16_le(bytes, offset);
+            let mut graph_request_fingerprint = [0u8; 32];
+            graph_request_fingerprint.copy_from_slice(&bytes[*offset..*offset + 32]);
+            *offset += 32;
+            let logical_operation_count = decode_u32_le(bytes, offset);
+            let logical_vertex_count = decode_u32_le(bytes, offset);
+            let logical_edge_count = decode_u32_le(bytes, offset);
+            GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                canonical_encoding_version,
+                graph_request_fingerprint,
+                logical_operation_count,
+                logical_vertex_count,
+                logical_edge_count,
             }
         }
         tag => panic!("unknown graph request identity tag {}", tag),
@@ -660,7 +690,9 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
 const JOURNAL_MAX_APPENDIX: u32 = {
     let hot_forward = 4 + MAX_HOT_FORWARD_VERTICES * 4;
     let bulk = 4 + 4 + 4 + MAX_BULK_ROW_COUNTS * 8;
-    let request_identity = 1 + 2 + 32 + 4;
+    // The mixed identity carries operation, vertex, and edge counts in addition to
+    // the common version/fingerprint/item-count fields.
+    let request_identity = 1 + 2 + 32 + 12;
     let retirement = 1 + 8;
     hot_forward + bulk + request_identity + retirement
 };
@@ -1175,6 +1207,61 @@ mod tests {
         let wire = decoded.wire();
         assert_eq!(wire.request_identity(), original.request_identity());
         assert_eq!(wire.retirement(), GraphMutationRetirementWireV1::Retired);
+    }
+
+    #[test]
+    fn roundtrip_journal_mixed_identity_and_receipt_counts() {
+        let original = GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
+            mutation_id: 125,
+            state: MutationJournalState::Completed,
+            row_count: 3,
+            emitted_delta_first_seq: Some(12),
+            emitted_delta_last_seq: Some(14),
+            hot_forward_vertices: vec![4, 8],
+            recorded_at_ns: Some(78),
+            next_index: None,
+            bulk_progress: None,
+            request_identity: GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                canonical_encoding_version: 1,
+                graph_request_fingerprint: [7; 32],
+                logical_operation_count: 3,
+                logical_vertex_count: 1,
+                logical_edge_count: 2,
+            },
+            retirement: GraphMutationRetirementV1::Active,
+        });
+        let bytes = original.clone().into_bytes();
+        let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded, original);
+        assert_eq!(
+            decoded.wire().request_identity(),
+            original.request_identity()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ordered mixed journal counts must sum to logical_operation_count")]
+    fn mixed_journal_codec_rejects_inconsistent_phase_counts() {
+        let entry = GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
+            mutation_id: 126,
+            state: MutationJournalState::Completed,
+            row_count: 3,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: Vec::new(),
+            recorded_at_ns: Some(79),
+            next_index: None,
+            bulk_progress: None,
+            request_identity: GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                canonical_encoding_version: 1,
+                graph_request_fingerprint: [8; 32],
+                logical_operation_count: 3,
+                logical_vertex_count: 1,
+                logical_edge_count: 1,
+            },
+            retirement: GraphMutationRetirementV1::Active,
+        });
+        let _ = entry.into_bytes();
     }
 
     #[test]

@@ -1081,6 +1081,14 @@ pub enum GraphMutationRequestIdentityV1 {
         graph_request_fingerprint: [u8; 32],
         logical_item_count: u32,
     },
+    /// Order-sensitive identity for the mixed vertex/edge two-phase envelope.
+    OrderedMixedBatch {
+        canonical_encoding_version: u16,
+        graph_request_fingerprint: [u8; 32],
+        logical_operation_count: u32,
+        logical_vertex_count: u32,
+        logical_edge_count: u32,
+    },
 }
 
 /// Stable Graph-owned retirement state for an ordered batch journal entry.
@@ -1155,6 +1163,34 @@ pub fn validate_graph_mutation_journal_fields(
                 return Err("ordered vertex journal row_count must equal logical_item_count");
             }
         }
+        GraphMutationRequestIdentityV1::OrderedMixedBatch {
+            logical_operation_count,
+            logical_vertex_count,
+            logical_edge_count,
+            ..
+        } => {
+            if retirement == GraphMutationRetirementWireV1::NotApplicable {
+                return Err("ordered mixed journal entry must have retirement state");
+            }
+            if state != MutationJournalState::Completed {
+                return Err("ordered mixed journal entry must be completed");
+            }
+            if next_index.is_some() {
+                return Err("ordered mixed journal entry must not have next_index");
+            }
+            if bulk_progress.is_some() {
+                return Err("ordered mixed journal entry must not have bulk progress");
+            }
+            let expected_count = u64::from(*logical_vertex_count)
+                .checked_add(u64::from(*logical_edge_count))
+                .ok_or("ordered mixed journal logical count overflow")?;
+            if expected_count != u64::from(*logical_operation_count) {
+                return Err("ordered mixed journal counts must sum to logical_operation_count");
+            }
+            if row_count != u64::from(*logical_operation_count) {
+                return Err("ordered mixed journal row_count must equal logical_operation_count");
+            }
+        }
     }
     Ok(())
 }
@@ -1178,6 +1214,42 @@ pub struct GraphOrderedVertexBatchReceiptV1 {
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
     pub hot_forward_vertices: Vec<LocalVertexId>,
+}
+
+/// Durable aggregate receipt returned by a completed mixed Graph batch.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GraphOrderedMixedBatchReceiptV1 {
+    pub logical_operation_count: u64,
+    pub logical_vertex_count: u64,
+    pub logical_edge_count: u64,
+    pub emitted_delta_first_seq: Option<ShardEventSeq>,
+    pub emitted_delta_last_seq: Option<ShardEventSeq>,
+    pub hot_forward_vertices: Vec<LocalVertexId>,
+}
+
+impl GraphOrderedMixedBatchReceiptV1 {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let Some(operation_count) = self
+            .logical_vertex_count
+            .checked_add(self.logical_edge_count)
+        else {
+            return Err("ordered mixed receipt logical count overflow");
+        };
+        if operation_count != self.logical_operation_count {
+            return Err("ordered mixed receipt counts must sum to logical_operation_count");
+        }
+        if self.hot_forward_vertices.len() > MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES {
+            return Err("ordered mixed receipt hot-forward vertex bound exceeded");
+        }
+        if self
+            .hot_forward_vertices
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err("ordered mixed receipt hot-forward vertices must be sorted and unique");
+        }
+        Ok(())
+    }
 }
 
 impl GraphOrderedVertexBatchReceiptV1 {
@@ -1242,6 +1314,20 @@ pub enum GraphOrderedVertexBatchResultV1 {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphOrderedMixedBatchResult {
+    V1(GraphOrderedMixedBatchResultV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphOrderedMixedBatchResultV1 {
+    Completed(GraphOrderedMixedBatchReceiptV1),
+    MutationRetired {
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    },
+}
+
 impl GraphOrderedVertexBatchResult {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
@@ -1256,6 +1342,15 @@ impl GraphOrderedEdgeBatchResult {
         match self {
             Self::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt)) => receipt.validate(),
             Self::V1(GraphOrderedEdgeBatchResultV1::MutationRetired { .. }) => Ok(()),
+        }
+    }
+}
+
+impl GraphOrderedMixedBatchResult {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::V1(GraphOrderedMixedBatchResultV1::Completed(receipt)) => receipt.validate(),
+            Self::V1(GraphOrderedMixedBatchResultV1::MutationRetired { .. }) => Ok(()),
         }
     }
 }
@@ -1292,6 +1387,27 @@ pub struct OrderedVertexMutationRetirementAckV1 {
     pub mutation_id: MutationId,
     pub graph_request_fingerprint: [u8; 32],
     pub receipt: GraphOrderedVertexBatchReceiptV1,
+}
+
+/// Graph-owned acknowledgement for mixed ordered mutation retirement.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum OrderedMixedMutationRetirementAck {
+    V1(OrderedMixedMutationRetirementAckV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct OrderedMixedMutationRetirementAckV1 {
+    pub mutation_id: MutationId,
+    pub graph_request_fingerprint: [u8; 32],
+    pub receipt: GraphOrderedMixedBatchReceiptV1,
+}
+
+impl OrderedMixedMutationRetirementAck {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::V1(ack) => ack.receipt.validate(),
+        }
+    }
 }
 
 impl OrderedVertexMutationRetirementAck {
