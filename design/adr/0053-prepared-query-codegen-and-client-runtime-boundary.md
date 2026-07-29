@@ -3,7 +3,7 @@
 Date: 2026-07-29
 Status: proposed
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 22:07:04 UTC +0000
+Anchor timestamp: 2026-07-29 23:41:58 UTC +0000
 
 ## Context
 
@@ -249,6 +249,27 @@ When implementation begins, the bounded order should be:
 5. add the remaining profiles after the wire contract is exercised; and
 6. replace or remove the old `crates/cli` codegen residue only in its planned CLI rewrite.
 
+### Initial implementation slice
+
+The first implementation is intentionally partial and does not accept the Router metadata ABI.
+`gleaph-codegen` now provides:
+
+- a versioned local `PreparedManifest` model and fail-closed validation for graph identity,
+  operation uniqueness, parameter/result names, sort keys, and query/update semantics;
+- a TypeScript output profile exposed by `generate_typescript`; and
+- a standalone `gleaph-codegen --manifest <path> --target typescript` entrypoint that writes to
+  stdout or an explicit output path.
+
+The generated TypeScript composes with the current `@gleaph/sdk` `GraphClient`, emits
+operation-specific parameter and row types, encodes semantic parameter values, and selects
+`executePrepared` versus `executePreparedMutation`. Transport, Candid, authorization, and
+common errors remain SDK-owned. The local manifest shape is an implementation scaffold, not yet
+the accepted Router endpoint ABI. Consistency options and idempotent updates fail closed in this
+profile until the corresponding runtime methods are part of the stable SDK boundary.
+
+The Rust application-client, Rust canister, and Motoko profiles, Router manifest endpoint, and
+accepted result-wire compatibility policy remain planned work.
+
 ## Design documentation impact
 
 - `design/architecture/overview.md` should link this ADR as the planned codegen/runtime boundary.
@@ -256,4 +277,3 @@ When implementation begins, the bounded order should be:
   implemented, not treated as evidence that the planned manifest API already exists.
 - `design/implementation-gaps.md` should record the Router metadata/API gap and any prepared
   visibility decision that remains open.
-

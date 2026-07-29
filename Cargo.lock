@@ -1208,6 +1208,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-codegen"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "gleaph-gql"
 version = "0.0.1"
 dependencies = [
