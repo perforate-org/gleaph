@@ -1,6 +1,8 @@
 //! Routes derived index operations to federated vertex or local edge backends.
 
-use gleaph_graph_kernel::entry::PropertyEntity;
+use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::{PropertyEntity, PropertyId};
+use ic_stable_lara::VertexId;
 
 use super::{PropertyValueChange, index_ops_for_value_change};
 
@@ -41,5 +43,24 @@ pub(crate) fn dispatch_property_index_ops(change: PropertyValueChange<'_>) {
                 );
             }
         }
+    }
+}
+
+/// Dispatches vertex property changes while borrowing the pending queue once per batch.
+pub(crate) fn dispatch_vertex_property_index_ops_bulk<'a>(
+    changes: &[(VertexId, PropertyId, Option<&'a Value>, &'a Value)],
+) {
+    let mut pending = Vec::new();
+    for (vertex_id, property_id, previous, value) in changes {
+        if !crate::index::catalog_context::is_vertex_property_indexed(*property_id) {
+            continue;
+        }
+        pending.push((
+            *vertex_id,
+            index_ops_for_value_change(*property_id, *previous, Some(*value)),
+        ));
+    }
+    for (vertex_id, ops) in pending {
+        crate::index::pending::push_vertex_index_ops(vertex_id, ops);
     }
 }

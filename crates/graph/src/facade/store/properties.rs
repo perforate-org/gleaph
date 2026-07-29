@@ -2,7 +2,9 @@
 
 use super::super::VertexPropertyStoreError;
 use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
-use crate::property::{PropertyValueChange, dispatch_property_index_ops};
+use crate::property::{
+    PropertyValueChange, dispatch_property_index_ops, dispatch_vertex_property_index_ops_bulk,
+};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::{VertexId, labeled::CanonicalEdgeOccurrence};
@@ -36,15 +38,14 @@ impl GraphStore {
                 })
                 .collect::<Result<Vec<_>, _>>()
         })?;
-        for ((vertex_id, property_id, value), (_, _, previous)) in assignments.iter().zip(previous)
-        {
-            dispatch_property_index_ops(PropertyValueChange::vertex(
-                *vertex_id,
-                *property_id,
-                previous.as_ref(),
-                Some(value),
-            ));
-        }
+        let changes = assignments
+            .iter()
+            .zip(previous.iter())
+            .map(|((vertex_id, property_id, value), (_, _, previous))| {
+                (*vertex_id, *property_id, previous.as_ref(), value)
+            })
+            .collect::<Vec<_>>();
+        dispatch_vertex_property_index_ops_bulk(&changes);
         Ok(())
     }
 

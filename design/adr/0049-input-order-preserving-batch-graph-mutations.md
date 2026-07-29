@@ -1997,7 +1997,7 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     `GraphOrderedEdgeBatchReceiptV1`. The receipt becomes available after
     canonical Graph commit and is preserved through projection, retirement, and
     exact-key replay; coverage asserts the initial and replayed receipts match.
-18. **Partially implemented (2026-07-29 02:19:03 UTC +0000):** GraphStore now
+18. **Partially implemented (2026-07-29 02:37:18 UTC +0000):** GraphStore now
     exposes an internal allocation-only bulk row primitive that returns local
     `VertexId`s in request order. Focused unit coverage proves empty-input
     no-op behavior, ordered ids, and readable rows; scalar-vs-bulk canbench
@@ -2005,7 +2005,9 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     row writes, while forward/reverse wrappers grow segment metadata once for
     the final count. The Graph bulk mutation substrate now co-writes vertex
     label sidecars and property values through the existing canonical stores,
-    retaining label-pending and property-index dispatch. Complete-set preflight and the
+    retaining label-pending and property-index dispatch. Vertex property-index
+    dispatch now batches pending-queue insertion while preserving the existing
+    catalog filter and remove-then-insert transition order. Complete-set preflight and the
     public vertex contract remain planned. The completed placement must still
     project and validate the complete vertex set before canonical writes, group
     compatible allocations without exposing physical locations, preserve

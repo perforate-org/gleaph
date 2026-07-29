@@ -153,8 +153,18 @@ pub(crate) fn to_index_mutation(op: &PendingPostingOp) -> IndexPostingMutation {
 }
 
 pub(crate) fn push_vertex_index_op(vertex_id: VertexId, op: PropertyIndexOp) {
+    push_vertex_index_ops(vertex_id, std::iter::once(op));
+}
+
+pub(crate) fn push_vertex_index_ops(
+    vertex_id: VertexId,
+    ops: impl IntoIterator<Item = PropertyIndexOp>,
+) {
     let vid = u32::try_from(u64::from(vertex_id)).unwrap_or(0);
-    let pending = match op {
+    if !GraphStore::new().federation_configured() {
+        return;
+    }
+    let pending = ops.into_iter().map(|op| match op {
         PropertyIndexOp::Insert {
             property_id,
             payload_bytes,
@@ -171,8 +181,8 @@ pub(crate) fn push_vertex_index_op(vertex_id: VertexId, op: PropertyIndexOp) {
             payload_bytes,
             vertex_id: vid,
         },
-    };
-    push(pending);
+    });
+    PENDING.with(|p| p.borrow_mut().extend(pending));
 }
 
 async fn compensate_index_ops(
