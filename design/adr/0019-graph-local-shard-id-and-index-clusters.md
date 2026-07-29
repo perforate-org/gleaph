@@ -261,7 +261,8 @@ index_principal = index_cluster[group_index]
 
 | Case | Policy |
 |------|--------|
-| Standalone (`n = 1`) | `shard_id = 0`, `group_index = 0`, `|index_cluster| = 1` |
+| Standalone (`n = 1`) with Property Index enabled | `shard_id = 0`, `group_index = 0`, `|index_cluster| = 1` |
+| Indexless first shard (planned) | `shard_id = 0`; `index_cluster` may be empty after the Router registry is changed to support absent Property Index bindings ([ADR 0054](0054-provisioned-logical-graph-topology-and-resource-activation.md)); current registration requires an index canister |
 | Shard registration | Router assigns next graph-local `shard_id = n`; computes `group_index`; extends `index_cluster` when a new group is needed, or fails before committing the shard |
 | `ShardRegistryEntry.index_canister` | **Denormalized cache** of `index_principal` — must match formula at commit ([registry invariants](0011-gql-graph-resolution-and-catalog-scoping.md)) |
 

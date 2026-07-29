@@ -24,7 +24,11 @@ flowchart TB
 |----------|-------|--------------------------------|
 | Router | `crates/router` | RBAC decisions, ad-hoc GQL parse+plan entry, prepared registry, shard registry, resolution catalogs, multi-shard `dispatch_plan_blob` |
 | Graph | `crates/graph` | Stable graph state, `execute_plan_*` entrypoints, local indexes |
-| Graph index | `crates/graph-index` | Global property equality postings and lookup APIs returning `PostingHit { shard_id, vertex_id }` |
+| Graph index | `crates/graph-index` | Optional global property equality postings and lookup APIs returning `PostingHit { shard_id, vertex_id }` |
+| Vector index | `crates/graph-vector-index` | Optional derived vector search state and ANN lookup APIs |
+| Provision | `crates/provision` | Service-wide durable canister issuance jobs, receipts, artifact/release handling, and deployment trust binding ([ADR 0035](../adr/0035-provision-canister-and-issuance-protocol.md)) |
+
+The planned provisioned topology is described by [ADR 0054](../adr/0054-provisioned-logical-graph-topology-and-resource-activation.md): initial bootstrap creates Router, the default logical graph, and its first Graph shard; optional Property, Vector, Text, and Procedure canisters are activated by subsequent requests. Text Index and Procedure are not current Router canisters in this overview and remain future integration surfaces.
 
 Graph shards **do not** expose arbitrary GQL to end users; they accept `ExecutePlanArgs` from the router (or sibling graph shards for federation helpers).
 
@@ -93,7 +97,8 @@ A composite query must not call graph update methods (`plan_exec.rs` module docs
 | Mode | Configuration | Behavior |
 |------|---------------|----------|
 | **Standalone graph** | No `FederationRouting` in graph metadata | `GlobalVertexId(0, local)`; single-process dev/tests |
-| **Federated graph** | Router + N shards + index (`m` ≥ 1 Principals) | Shard routing via router; vertex existence on graph shard ([ADR 0017](../adr/0017-graph-vertex-existence-ssot.md)); per-shard `index_canister`; index split strategy deferred ([ADR 0010](../adr/0010-index-sharding-extensibility.md)); cross-shard expand deferred |
+| **Federated graph (current)** | Router + N shards + index cluster | Shard routing via router; vertex existence on graph shard ([ADR 0017](../adr/0017-graph-vertex-existence-ssot.md)); current shard registration requires an `index_canister` and completes the attach handshake; cross-shard expand deferred |
+| **Provisioned graph (target)** | Router + N shards; optional index cluster | Initial bootstrap may be indexless; Property/Vector/Text/Procedure resources are activated independently as their provisioning and registration contracts are implemented ([ADR 0054](../adr/0054-provisioned-logical-graph-topology-and-resource-activation.md)) |
 
 See [federation/model.md](../federation/model.md).
 
@@ -110,3 +115,4 @@ See [federation/model.md](../federation/model.md).
 - [federation/model.md](../federation/model.md)
 - [security/rbac-and-prepared.md](../security/rbac-and-prepared.md)
 - [ADR 0053: Prepared-query code generation and client-runtime boundary](../adr/0053-prepared-query-codegen-and-client-runtime-boundary.md)
+- [ADR 0054: Provisioned logical-graph topology and on-demand resource activation](../adr/0054-provisioned-logical-graph-topology-and-resource-activation.md)

@@ -96,6 +96,8 @@ cleanup has been reconciled.
 Deployment bootstrap is out of band: governance installs Router and Provision and binds their
 principals. Subsequent logical-graph, shard, and index issuance uses this protocol.
 
+The resource selection policy for those requests is defined separately by [ADR 0054](0054-provisioned-logical-graph-topology-and-resource-activation.md): initial bootstrap creates Router, the default logical graph, and its first Graph shard; optional index and procedure resources are requested independently. ADR 0035 remains the source of truth for issuance idempotency, durable effect progress, receipts, and reconciliation.
+
 ## Ownership and invariants
 
 | Invariant | Enforcer |
@@ -173,4 +175,5 @@ Slice 7 (2026-07-07) implements the durable bootstrap authority region (`PROVISI
 - [ADR 0036](0036-versioned-wasm-artifact-catalog.md) — compatible release selection and artifacts.
 - [ADR 0037](0037-provisioned-canister-lifecycle-and-controllers.md) — cleanup and controllers.
 - [ADR 0038](0038-provisioning-authorization-and-cycles-funding.md) — admission and cycle reservation.
+- [ADR 0054](0054-provisioned-logical-graph-topology-and-resource-activation.md) — bootstrap resource selection, logical-graph topology, and placement policy.
 - Plan 0061b (release manifest + active-release pointer + activation) and Plan 0061c (install transfer + artifact audit log + PocketIC) build on the artifact catalog.
