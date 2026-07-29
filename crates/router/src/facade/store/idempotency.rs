@@ -613,6 +613,9 @@ impl RouterStore {
                         | crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(
                             _
                         )
+                        | crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedVertexBatch(
+                            _
+                        )
                     );
                 if !record.as_v1().routing_in_progress
                     && !record.is_terminal()

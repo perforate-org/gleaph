@@ -2073,6 +2073,13 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     vertex-specific retirement from a durable Graph receipt. Existing ordered
     canonical-commit and retirement-ack fault injection points now cover the
     vertex path as well. Runtime PocketIC recovery coverage remains to be added.
+28. **Validated (2026-07-29 03:47:42 UTC +0000):** PocketIC now covers vertex-only
+    canonical-receipt failure and retirement-acknowledgement loss. Both cases
+    prove that recovery reaches `Completed` and that an exact retry reuses the
+    original mutation id. The complete ADR 0049 public edge/vertex target passes
+    all 9 tests. The recovery scan was corrected to include the vertex replay
+    envelope, and stale mutation-status wrapper access in the fixture was aligned
+    with the current helper contract.
 
 ## Test contract
 
