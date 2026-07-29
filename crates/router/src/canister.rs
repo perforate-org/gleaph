@@ -175,6 +175,13 @@ pub(crate) async fn execute_ordered_vertex_batch(
     crate::gql::execute_ordered_vertex_batch_public(request).await
 }
 
+/// ADR 0049: execute one order-preserving public mixed vertex/edge batch.
+pub(crate) async fn execute_ordered_mixed_batch(
+    request: crate::types::OrderedMixedBatchPublicRequest,
+) -> Result<crate::types::OrderedMixedBatchResponse, RouterError> {
+    crate::gql::execute_ordered_mixed_batch_public(request).await
+}
+
 /// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga so the autonomous
 /// recovery driver's convergence can be exercised end-to-end. `mutation_id` must name a mutation
 /// already committed on the graph's live shards (typically the token from a prior idempotent DML on

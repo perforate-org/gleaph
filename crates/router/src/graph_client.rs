@@ -170,10 +170,6 @@ pub async fn execute_ordered_vertex_batch_on_graph(
 }
 
 /// Router → Graph: journal-first ordered mixed vertex/edge execution (ADR 0049).
-#[allow(
-    dead_code,
-    reason = "wired into the mixed Router lifecycle in the next slice"
-)]
 pub async fn execute_ordered_mixed_batch_on_graph(
     graph: Principal,
     args: OrderedMixedBatchGraphArgs,

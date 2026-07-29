@@ -61,6 +61,39 @@ pub struct OrderedVertexBatchResponse {
     pub receipt: Option<gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1>,
 }
 
+/// Public result for one mixed ordered batch. The receipt is present after Graph commits the
+/// canonical vertex and edge phases; projection and retirement may still be pending.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OrderedMixedBatchResponse {
+    pub status: MutationStatus,
+    pub receipt: Option<gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchReceiptV1>,
+}
+
+impl OrderedMixedBatchResponse {
+    pub fn from_record(record: &RouterMutationRecord) -> Self {
+        let receipt = match record.payload() {
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedMixedBatch(
+                replay,
+            ) => match &replay.target.progress {
+                crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt)
+                | crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt)
+                | crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt)
+                | crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::RetirementPending(receipt) => Some(receipt.clone()),
+                crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::CanonicalPending => None,
+            },
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+                receipt,
+                ..
+            } => Some(receipt.clone()),
+            _ => None,
+        };
+        Self {
+            status: MutationStatus::from_record(record),
+            receipt,
+        }
+    }
+}
+
 impl OrderedVertexBatchResponse {
     pub fn from_record(record: &RouterMutationRecord) -> Self {
         let receipt = match record.payload() {
@@ -639,6 +672,44 @@ impl OrderedMixedBatchPublicRequest {
             return Err("ordered mixed batch exceeds the safe payload bound".into());
         }
         Ok(())
+    }
+
+    /// Compute the Router-owned idempotency fingerprint without including the client key.
+    pub fn public_fingerprint(&self) -> Result<[u8; 32], String> {
+        self.validate()?;
+        let Self::V1(request) = self;
+        let mut operations = request.operations.clone();
+        for operation in &mut operations {
+            match operation {
+                OrderedMixedBatchOperationV1::Vertex(item) => {
+                    item.vertex_labels
+                        .sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+                    item.initial_properties.sort_by(|left, right| {
+                        left.property_name
+                            .as_bytes()
+                            .cmp(right.property_name.as_bytes())
+                    });
+                }
+                OrderedMixedBatchOperationV1::Edge(item) => {
+                    item.initial_edge_properties.sort_by(|left, right| {
+                        left.property_name
+                            .as_bytes()
+                            .cmp(right.property_name.as_bytes())
+                    });
+                }
+            }
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(b"gleaph:ordered-mixed-public:v1\0");
+        hasher.update(
+            Encode!(&(
+                request.logical_graph_name.clone(),
+                request.target_shard_id,
+                operations
+            ))
+            .map_err(|error| format!("ordered mixed public request encode: {error}"))?,
+        );
+        Ok(hasher.finalize().into())
     }
 
     /// Convert the public request into the immutable Graph envelope after Router has resolved
@@ -1753,10 +1824,15 @@ mod tests {
             ],
         });
         request.validate().expect("valid mixed request");
+        let fingerprint = request.public_fingerprint().expect("mixed fingerprint");
         let bytes = Encode!(&request).expect("encode mixed request");
         let decoded: OrderedMixedBatchPublicRequest =
             Decode!(&bytes, OrderedMixedBatchPublicRequest).expect("decode mixed request");
         assert_eq!(decoded, request);
+        let mut retry = request.clone();
+        let OrderedMixedBatchPublicRequest::V1(ref mut retry_request) = retry;
+        retry_request.client_mutation_key = "different-retry-key".into();
+        assert_eq!(retry.public_fingerprint().unwrap(), fingerprint);
     }
 
     #[test]

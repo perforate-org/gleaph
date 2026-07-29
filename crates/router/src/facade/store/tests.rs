@@ -2246,9 +2246,10 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         RouterMutationRequestIdentityV1, RouterOrderedMixedBatchTargetV1,
     };
     use gleaph_graph_kernel::plan_exec::{
-        OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1,
-        OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1,
-        OrderedVertexBatchGraphItemV1, ordered_mixed_batch_graph_request_fingerprint,
+        GraphOrderedMixedBatchReceiptV1, OrderedMixedBatchGraphRequest,
+        OrderedMixedBatchGraphRequestV1, OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1,
+        OrderedMixedGraphOperationV1, OrderedVertexBatchGraphItemV1,
+        ordered_mixed_batch_graph_request_fingerprint,
     };
 
     let store = RouterStore::new();
@@ -2332,6 +2333,33 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         record.payload(),
         RouterMutationPayloadV1::OrderedMixedBatch(replay)
             if matches!(replay.target.progress, OrderedMixedBatchTargetProgressV1::CanonicalPending)
+    ));
+
+    let receipt = GraphOrderedMixedBatchReceiptV1 {
+        logical_operation_count: 2,
+        logical_vertex_count: 1,
+        logical_edge_count: 1,
+        emitted_delta_first_seq: None,
+        emitted_delta_last_seq: None,
+        hot_forward_vertices: Vec::new(),
+    };
+    store
+        .record_ordered_mixed_batch_canonical_committed(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+            receipt.clone(),
+        )
+        .expect("mixed canonical receipt");
+    let record = store
+        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .expect("mixed canonical record");
+    assert!(matches!(
+        record.payload(),
+        RouterMutationPayloadV1::OrderedMixedBatch(replay)
+            if matches!(replay.target.progress, OrderedMixedBatchTargetProgressV1::CanonicalCommitted(ref persisted) if persisted == &receipt)
     ));
 }
 

@@ -114,6 +114,40 @@ impl RouterStore {
         Ok((labels, properties))
     }
 
+    /// Resolve both vocabularies for a mixed ordered batch without mutating the catalogs.
+    pub(crate) fn resolve_ordered_mixed_catalogs(
+        &self,
+        graph_id: GraphId,
+        vertex_label_names: impl IntoIterator<Item = String>,
+        edge_label_names: impl IntoIterator<Item = String>,
+        property_names: impl IntoIterator<Item = String>,
+    ) -> Result<(ResolvedLabelTable, ResolvedPropertyTable), RouterError> {
+        let (vertex_labels, _) = self.resolve_ordered_vertex_catalogs(
+            graph_id,
+            vertex_label_names,
+            std::iter::empty::<String>(),
+        )?;
+        let (edge_labels, _) = self.resolve_ordered_edge_catalogs(
+            graph_id,
+            edge_label_names.into_iter().map(Some),
+            std::iter::empty::<String>(),
+        )?;
+        let mut labels = vertex_labels;
+        labels.edge = edge_labels.edge;
+        let mut properties = ResolvedPropertyTable::default();
+        for name in property_names {
+            validate_metadata_name(&name)?;
+            if properties.properties.iter().any(|entry| entry.name == name) {
+                continue;
+            }
+            properties.properties.push(ResolvedProperty {
+                id: self.lookup_property_id(graph_id, &name)?,
+                name,
+            });
+        }
+        Ok((labels, properties))
+    }
+
     pub(crate) fn commit_intern_graph_type_vocabulary(
         graph_id: GraphId,
         def: &gleaph_gql::ast::GraphTypeDefinition,

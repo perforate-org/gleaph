@@ -514,6 +514,14 @@ async fn execute_ordered_vertex_batch(
     canister::execute_ordered_vertex_batch(request).await
 }
 
+/// ADR 0049: execute one order-preserving public mixed vertex/edge batch.
+#[update]
+async fn execute_ordered_mixed_batch(
+    request: types::OrderedMixedBatchPublicRequest,
+) -> Result<types::OrderedMixedBatchResponse, RouterError> {
+    canister::execute_ordered_mixed_batch(request).await
+}
+
 /// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga referencing an
 /// already-committed `mutation_id`, then arm the recovery timer. Lets the E2E suite drive the
 /// autonomous recovery driver from `ProjectionPending` to `Completed` without a client retry.

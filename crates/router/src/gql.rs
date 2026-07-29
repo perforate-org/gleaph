@@ -189,8 +189,9 @@ use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::label_stats::RouterMutationShardV1;
 use crate::facade::stable::label_stats::{
-    OrderedEdgeBatchTargetProgressV1, OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
-    RouterOrderedEdgeBatchTargetV1, RouterOrderedVertexBatchTargetV1,
+    OrderedEdgeBatchTargetProgressV1, OrderedMixedBatchTargetProgressV1,
+    OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1, RouterOrderedEdgeBatchTargetV1,
+    RouterOrderedMixedBatchTargetV1, RouterOrderedVertexBatchTargetV1,
 };
 use crate::facade::stable::reservation_catalog::ConfirmOutcome;
 use crate::facade::store::uniqueness::{
@@ -210,11 +211,11 @@ use crate::federation::{
 };
 use crate::graph_client::{
     ack_label_stats_deltas_through, ack_unique_effects, execute_ordered_edge_batch_on_graph,
-    execute_ordered_vertex_batch_on_graph, execute_plan_batch_on_graph,
-    execute_plan_batch_typed_v1_on_graph, execute_plan_on_graph, get_mutation_journal_entries,
-    get_mutation_journal_entry, index_pending_min_mutation_id, list_pending_label_stats_deltas,
-    read_unique_effect_proof, read_unique_release_effects, retire_ordered_mutation_on_graph,
-    retire_ordered_vertex_mutation_on_graph,
+    execute_ordered_mixed_batch_on_graph, execute_ordered_vertex_batch_on_graph,
+    execute_plan_batch_on_graph, execute_plan_batch_typed_v1_on_graph, execute_plan_on_graph,
+    get_mutation_journal_entries, get_mutation_journal_entry, index_pending_min_mutation_id,
+    list_pending_label_stats_deltas, read_unique_effect_proof, read_unique_release_effects,
+    retire_ordered_mutation_on_graph, retire_ordered_vertex_mutation_on_graph,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -1723,6 +1724,212 @@ pub(crate) async fn execute_ordered_vertex_batch_public(
             RouterError::Internal("ordered vertex mutation record disappeared".into())
         })?;
     Ok(crate::types::OrderedVertexBatchResponse::from_record(
+        &record,
+    ))
+}
+
+/// Admit one mixed ordered batch and persist its Graph canonical receipt. This entry point stops
+/// at `CanonicalCommitted`; projection and retirement are intentionally represented as
+/// non-terminal durable progress for the following lifecycle slice.
+pub(crate) async fn execute_ordered_mixed_batch_public(
+    request: crate::types::OrderedMixedBatchPublicRequest,
+) -> Result<crate::types::OrderedMixedBatchResponse, RouterError> {
+    let caller = msg_caller();
+    let public_fingerprint = request
+        .public_fingerprint()
+        .map_err(RouterError::InvalidArgument)?;
+    let (
+        client_key,
+        logical_graph_name,
+        target_shard_id,
+        public_operation_count,
+        public_vertex_count,
+        public_edge_count,
+        vertex_label_names,
+        edge_label_names,
+        property_names,
+    ) = match &request {
+        crate::types::OrderedMixedBatchPublicRequest::V1(request) => {
+            let public_vertex_count = request
+                .operations
+                .iter()
+                .filter(|operation| {
+                    matches!(
+                        operation,
+                        crate::types::OrderedMixedBatchOperationV1::Vertex(_)
+                    )
+                })
+                .count() as u32;
+            let public_operation_count = request.operations.len() as u32;
+            (
+                request.client_mutation_key.clone(),
+                request.logical_graph_name.clone(),
+                request.target_shard_id,
+                public_operation_count,
+                public_vertex_count,
+                public_operation_count - public_vertex_count,
+                request
+                    .operations
+                    .iter()
+                    .flat_map(|operation| match operation {
+                        crate::types::OrderedMixedBatchOperationV1::Vertex(item) => {
+                            item.vertex_labels.clone()
+                        }
+                        crate::types::OrderedMixedBatchOperationV1::Edge(_) => Vec::new(),
+                    })
+                    .collect::<Vec<_>>(),
+                request
+                    .operations
+                    .iter()
+                    .filter_map(|operation| match operation {
+                        crate::types::OrderedMixedBatchOperationV1::Vertex(_) => None,
+                        crate::types::OrderedMixedBatchOperationV1::Edge(item) => {
+                            item.edge_label_name.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+                request
+                    .operations
+                    .iter()
+                    .flat_map(|operation| match operation {
+                        crate::types::OrderedMixedBatchOperationV1::Vertex(item) => item
+                            .initial_properties
+                            .iter()
+                            .map(|property| property.property_name.clone())
+                            .collect::<Vec<_>>(),
+                        crate::types::OrderedMixedBatchOperationV1::Edge(item) => item
+                            .initial_edge_properties
+                            .iter()
+                            .map(|property| property.property_name.clone())
+                            .collect::<Vec<_>>(),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let target_shard = store.resolve_shard(graph_id, target_shard_id)?;
+    let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
+    let (resolved_labels, resolved_properties) = store.resolve_ordered_mixed_catalogs(
+        graph_id,
+        vertex_label_names,
+        edge_label_names,
+        property_names,
+    )?;
+    let graph_request = request
+        .into_graph_request(
+            graph_id,
+            target_shard_id,
+            target_shard.graph_canister,
+            &encoding_key,
+            resolved_labels.clone(),
+            resolved_properties.clone(),
+        )
+        .map_err(RouterError::InvalidArgument)?;
+    let graph_request_fingerprint =
+        gleaph_graph_kernel::plan_exec::ordered_mixed_batch_graph_request_fingerprint(
+            &graph_request,
+        )
+        .map_err(RouterError::InvalidArgument)?;
+    let reservation = store.reserve_mutation_id_for_client_key(
+        caller,
+        graph_id,
+        &client_key,
+        public_fingerprint.to_vec(),
+    )?;
+    if !reservation.routing_owner {
+        let record = store
+            .router_mutation_record(caller, graph_id, &client_key)
+            .ok_or_else(|| {
+                RouterError::Internal("ordered mixed mutation reservation disappeared".into())
+            })?;
+        if !matches!(
+            record.payload(),
+            RouterMutationPayloadV1::OrderedMixedBatch(_)
+                | RouterMutationPayloadV1::CompletedOrderedMixedBatch { .. }
+        ) {
+            return Err(RouterError::Conflict(
+                "client_mutation_key belongs to a different mutation kind".into(),
+            ));
+        }
+        return Ok(crate::types::OrderedMixedBatchResponse::from_record(
+            &record,
+        ));
+    }
+    let mutation_id = reservation.mutation_id;
+    let target = RouterOrderedMixedBatchTargetV1 {
+        graph_request_fingerprint,
+        request: match graph_request {
+            gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequest::V1(request) => request,
+        },
+        progress: OrderedMixedBatchTargetProgressV1::CanonicalPending,
+        projection_watermark: None,
+    };
+    if let Err(error) = store.transition_to_ordered_mixed_batch(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        public_fingerprint,
+        public_operation_count,
+        public_vertex_count,
+        public_edge_count,
+        resolved_labels,
+        resolved_properties,
+        target,
+    ) {
+        store.abandon_router_mutation_routing_reservation(caller, graph_id, &client_key)?;
+        return Err(error);
+    }
+    let graph_request = store
+        .router_mutation_record(caller, graph_id, &client_key)
+        .and_then(|record| match record.payload() {
+            RouterMutationPayloadV1::OrderedMixedBatch(replay) => {
+                Some(replay.target.request.clone())
+            }
+            _ => None,
+        })
+        .map(gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequest::V1)
+        .ok_or_else(|| {
+            RouterError::Internal(
+                "ordered mixed Graph request missing after durable transition".into(),
+            )
+        })?;
+    let graph_result = execute_ordered_mixed_batch_on_graph(
+        target_shard.graph_canister,
+        gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgs::V1(
+            gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphArgsV1 {
+                mutation_id,
+                graph_request_fingerprint,
+                request: graph_request,
+            },
+        ),
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    let receipt = match graph_result {
+        gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchResult::V1(
+            gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchResultV1::Completed(receipt),
+        ) => receipt,
+        _ => {
+            return Err(RouterError::InvalidArgument(
+                "ordered mixed Graph admission did not return a canonical receipt".into(),
+            ));
+        }
+    };
+    store.record_ordered_mixed_batch_canonical_committed(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+        receipt,
+    )?;
+    let record = store
+        .router_mutation_record(caller, graph_id, &client_key)
+        .ok_or_else(|| RouterError::Internal("ordered mixed mutation record disappeared".into()))?;
+    Ok(crate::types::OrderedMixedBatchResponse::from_record(
         &record,
     ))
 }

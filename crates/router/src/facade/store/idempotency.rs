@@ -984,6 +984,67 @@ impl RouterStore {
         })
     }
 
+    /// Persist the Graph-owned canonical receipt for an ordered mixed batch.
+    pub fn record_ordered_mixed_batch_canonical_committed(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+        receipt: gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchReceiptV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        receipt
+            .validate()
+            .map_err(|error| RouterError::InvalidArgument(error.into()))?;
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered mixed canonical completion".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered mixed canonical completion requires an OrderedMixedBatch payload"
+                            .into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered mixed canonical completion"
+                        .into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedMixedBatchTargetProgressV1::CanonicalPending => {
+                    replay.target.progress =
+                        OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt);
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedMixedBatchTargetProgressV1::CanonicalCommitted(existing)
+                    if existing == &receipt =>
+                {
+                    Ok(())
+                }
+                _ => Err(RouterError::Conflict(
+                    "ordered mixed canonical completion conflicts with persisted progress".into(),
+                )),
+            }
+        })
+    }
+
     pub fn record_ordered_vertex_batch_projection_pending(
         &self,
         caller: Principal,

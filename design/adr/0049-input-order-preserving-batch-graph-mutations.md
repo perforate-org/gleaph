@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 02:33:47 UTC +0000
+Anchor timestamp: 2026-07-29 04:39:01 UTC +0000
 
 ## Context
 
@@ -42,8 +42,9 @@ extension vectors, and malformed binary rejection vectors are now active. The
 Router mixed public shape and the Graph-owned immutable mixed envelope are now
 defined and validated. Graph-side mixed phase execution, allocation-table
 resolution, and durable aggregate receipt/replay are active; Router mixed replay
-identity/target persistence is now active, while Graph dispatch, projection
-lifecycle, retirement, and recovery wiring remain planned. The existing generic
+identity/target persistence, Graph dispatch, and the canonical receipt transition
+are now active; projection lifecycle, retirement, and recovery wiring remain
+planned. The existing generic
 plan batch runner does not implement this protocol.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
@@ -202,22 +203,20 @@ graph-scoped catalogs, validates the declared inline schema, and converts the
 inline property to the exact fixed-width LARA bytes. Missing, duplicate, malformed,
 oversized, or type-incompatible names/values fail during pre-envelope admission.
 
-It does not expose vertex insertion, combined new-vertex/new-edge mutation,
-existing inline-property update, or existing vertex/edge property update. ADR 0045
-stages 5–7 remain planned internal GraphStore/LARA primitives, but they do not
-retain or create an unordered public endpoint. A later public batch operation
-requires an explicit revision of this ADR with an exhaustive operation enum,
-operation-specific sequential semantics, replay identity, atomicity proof, and
-benchmarks. Until then, the ordered edge-insert endpoint is the only specialized
-public batch surface and fully replaces ADR 0045's unshipped unordered endpoint.
+It does not expose existing inline-property update or existing vertex/edge property
+update. The versioned ordered vertex and mixed batch endpoints now expose the
+Graph canonical-commit boundary; their projection, retirement, and recovery
+transitions remain non-terminal follow-up work. ADR 0045 stages 5–7 remain planned
+internal GraphStore/LARA primitives, and the unordered public endpoint remains
+unshipped. Every public operation uses an exhaustive enum, operation-specific
+replay identity, and a bounded failure contract.
 
-### Follow-up: vertex bulk placement and mixed vertex/edge batches
+### Vertex bulk placement and mixed vertex/edge batches
 
-The next batch-mutation extension may add vertex insertion, but it must remain a
-separately versioned operation contract. The current generic plan batch runner
-can execute multiple `InsertVertex` operations, but invokes the normal vertex
-mutation boundary per operation; it is not a vertex bulk-placement
-implementation.
+Vertex insertion is a separately versioned operation contract. The current
+generic plan batch runner can execute multiple `InsertVertex` operations, but
+invokes the normal vertex mutation boundary per operation; the ordered vertex
+endpoint uses the Graph bulk placement substrate instead.
 
 The planned optimized mixed path is staged, within one Graph-shard request, as:
 
@@ -2139,6 +2138,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     The target validates the mixed Graph fingerprint and exact vertex/edge counts
     before releasing the routing lease. Mixed dispatch, receipt transitions,
     projection, retirement, and recovery remain planned.
+37. **Partially implemented (2026-07-29 04:39:01 UTC +0000):** Router now exposes
+    the mixed public update endpoint, resolves vertex/edge/property catalogs
+    read-only, dispatches the immutable mixed Graph envelope, and persists the
+    Graph aggregate receipt as `CanonicalCommitted`. Projection, retirement, and
+    recovery remain non-terminal lifecycle work; the endpoint does not claim a
+    completed result before those transitions are durable.
 
 ## Test contract
 
