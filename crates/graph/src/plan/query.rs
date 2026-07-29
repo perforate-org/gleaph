@@ -12,6 +12,7 @@ mod sort_keys;
 pub use error::PlanQueryError;
 pub use executor::EdgeBinding;
 pub use executor::PlanQueryExecutor;
+pub(crate) use executor::validate_and_decode_inline_struct;
 pub use executor::{
     PathBinding, PlanBinding, PlanQueryResult, execute_plan_query, execute_plan_query_bindings,
     execute_plan_query_bindings_with_initial_rows, materialize_plan_rows,

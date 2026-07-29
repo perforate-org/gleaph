@@ -11,6 +11,7 @@ use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
+use gleaph_graph_kernel::plan_exec::ResolvedInlineSchema;
 use ic_stable_lara::VertexId;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
@@ -44,30 +45,41 @@ use crate::plan::query::row::PlanRow;
 /// `PropertyId` for per-hop reads. Struct inline schemas are excluded from `COST BY` in Slice 25.
 /// Returns `Ok(None)` when the expression is not a direct inline-property access (e.g.
 /// a non-inline-property expression), letting the caller fall back to the generic evaluator.
+#[derive(Clone, Debug)]
+struct PreparedInlineCost {
+    property_id: PropertyId,
+    field_path: Vec<String>,
+}
+
+fn property_access_path(expr: &Expr, edge_var: &str) -> Option<Vec<String>> {
+    match &expr.kind {
+        ExprKind::Variable(name) if name == edge_var => Some(Vec::new()),
+        ExprKind::PropertyAccess { expr, property } => {
+            let mut path = property_access_path(expr, edge_var)?;
+            path.push(property.clone());
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
 fn prepare_inline_property_cost(
     expr: &Expr,
     edge_var: &str,
     execution: &GqlExecutionContext,
     label_id: Option<EdgeLabelId>,
-) -> Result<Option<PropertyId>, PlanQueryError> {
+) -> Result<Option<PreparedInlineCost>, PlanQueryError> {
     let label_id = match label_id {
         Some(id) => id,
         None => return Ok(None),
     };
-    let ExprKind::PropertyAccess {
-        expr: base,
-        property,
-    } = &expr.kind
-    else {
+    let Some(path) = property_access_path(expr, edge_var) else {
         return Ok(None);
     };
-    let ExprKind::Variable(v) = &base.kind else {
-        return Ok(None);
-    };
-    if v != edge_var {
+    if path.is_empty() {
         return Ok(None);
     }
-    let property_name = property.as_str();
+    let property_name = path[0].as_str();
     let Some(property_id) = execution.resolved_property_id(property_name) else {
         return Err(PlanQueryError::GleaphCost {
             message: format!(
@@ -89,7 +101,33 @@ fn prepare_inline_property_cost(
             ),
         });
     }
-    Ok(Some(property_id))
+    let Some(schema) = execution.resolved_edge_label_inline_schema(label_id) else {
+        return Ok(None);
+    };
+    if path.len() == 1 {
+        if !schema.is_scalar() {
+            return Err(PlanQueryError::GleaphCost {
+                message: "COST BY e.property requires a scalar inline property or a struct field"
+                    .into(),
+            });
+        }
+    } else {
+        let ResolvedInlineSchema::Struct { fields, .. } = schema else {
+            return Err(PlanQueryError::GleaphCost {
+                message: format!("COST BY e.{property_name} has no nested field"),
+            });
+        };
+        let field_path = path[1..].join(".");
+        if !fields.iter().any(|field| field.name == field_path) {
+            return Err(PlanQueryError::GleaphCost {
+                message: format!("COST BY e.{field_path} is not declared in the inline struct"),
+            });
+        }
+    }
+    Ok(Some(PreparedInlineCost {
+        property_id,
+        field_path: path[1..].to_vec(),
+    }))
 }
 
 pub(crate) fn weighted_shortest_can_use_hop_count(mode: ShortestMode, cost_expr: &Expr) -> bool {
@@ -573,7 +611,7 @@ pub(crate) fn weighted_shortest_paths_between(
                         edge_var,
                         edge_binding.clone(),
                         parameters,
-                        prepared_inline_cost,
+                        prepared_inline_cost.clone(),
                     )?;
                     hop_cost_cache
                         .entry(outer)
@@ -727,7 +765,7 @@ fn weighted_shortest_k_paths_between(
                         edge_var,
                         edge_binding.clone(),
                         parameters,
-                        prepared_inline_cost,
+                        prepared_inline_cost.clone(),
                     )?;
                     hop_cost_cache
                         .entry(outer)
@@ -800,17 +838,38 @@ fn eval_shortest_hop_cost(
     edge_var: &str,
     edge_binding: EdgeBinding,
     parameters: &BTreeMap<String, Value>,
-    prepared_inline_cost: Option<PropertyId>,
+    prepared_inline_cost: Option<PreparedInlineCost>,
 ) -> Result<WeightedCost, PlanQueryError> {
-    if let Some(property_id) = prepared_inline_cost {
+    if let Some(prepared) = prepared_inline_cost {
         let value = try_read_inline_edge_property(
             &edge_binding,
-            property_id,
+            prepared.property_id,
             execution.resolved_labels.as_ref(),
         )?
         .ok_or_else(|| PlanQueryError::GleaphCost {
             message: "COST BY e.property: inline property read returned no value".into(),
         })?;
+        let value = if prepared.field_path.is_empty() {
+            value
+        } else {
+            let mut current = value;
+            for field in prepared.field_path {
+                let Value::Record(fields) = current else {
+                    return Err(PlanQueryError::GleaphCost {
+                        message: "COST BY inline struct field encountered a non-record value"
+                            .into(),
+                    });
+                };
+                current = fields
+                    .into_iter()
+                    .find(|(name, _)| name == &field)
+                    .map(|(_, value)| value)
+                    .ok_or_else(|| PlanQueryError::GleaphCost {
+                        message: format!("COST BY inline struct field `{field}` is missing"),
+                    })?;
+            }
+            current
+        };
         return WeightedCost::from_value(value);
     }
     let mut row = PlanRow::new();

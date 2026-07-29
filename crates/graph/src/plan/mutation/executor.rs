@@ -5,6 +5,7 @@ use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar
 use crate::facade::mutation_executor::{GraphMutationExecutor, insert_vertex_with_async};
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
+use crate::plan::query::validate_and_decode_inline_struct;
 use crate::property::{ensure_persistable, ensure_property_id};
 use gleaph_gql::Value;
 use gleaph_gql::ast::ExprKind;
@@ -17,7 +18,7 @@ use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
 use gleaph_graph_kernel::entry::{ConstraintNameId, EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{
-    ConstrainedPropertyDispatch, LabelStatsDelta, ResolvedInlineSchema,
+    ConstrainedPropertyDispatch, LabelStatsDelta, ResolvedInlineSchema, ResolvedInlineStructField,
 };
 use ic_stable_lara::VertexId;
 #[cfg(test)]
@@ -590,7 +591,8 @@ fn execute_set_item(
             value,
         } => {
             let value = evaluator.eval(property.as_ref(), value)?;
-            let property_id = resolve_property_id(execution, property.as_ref())?;
+            let property_id =
+                resolve_property_id(execution, top_level_property(property.as_ref()))?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
                 store
@@ -600,12 +602,18 @@ fn execute_set_item(
             }
 
             if let Some(edge) = bindings.edges.get(variable.as_ref()) {
-                reject_struct_inline_mutation(execution, *edge)?;
                 if is_inline_edge_property(execution, *edge, property_id) {
-                    let inline_property_bytes =
-                        encode_inline_edge_property(execution, *edge, property_id, &value)?;
+                    let inline_property_bytes = encode_inline_edge_property(
+                        store,
+                        execution,
+                        *edge,
+                        property.as_ref(),
+                        property_id,
+                        &value,
+                    )?;
                     store.update_edge_inline_property_at_handle(*edge, &inline_property_bytes)?;
                 } else {
+                    reject_struct_inline_mutation(execution, *edge)?;
                     store.set_edge_property(
                         edge.occurrence(LabeledOrientation::Forward),
                         property_id,
@@ -725,7 +733,9 @@ fn execute_remove_item(
 ) -> Result<(), PlanMutationError> {
     match item {
         RemovePlanItem::Property { variable, property } => {
-            let Some(property_id) = execution.resolved_property_id(property.as_ref()) else {
+            let Some(property_id) =
+                execution.resolved_property_id(top_level_property(property.as_ref()))
+            else {
                 return Ok(());
             };
 
@@ -1207,18 +1217,8 @@ fn classify_edge_assignments(
         return Ok((None, validate_sidecar_properties(execution, assignments)?));
     };
 
-    let (inline_property_id, profile) = match inline_schema {
-        ResolvedInlineSchema::Scalar { property_id } => (
-            property_id,
-            execution.resolved_edge_inline_property_profile(label_id),
-        ),
-        ResolvedInlineSchema::Struct { property_id, .. } => {
-            return Err(PlanMutationError::UnsupportedInlineStructMutation {
-                label: label_name_or_id(execution, label_id),
-                property: property_name_or_id(execution, property_id),
-            });
-        }
-    };
+    let inline_property_id = inline_schema.property_id();
+    let profile = execution.resolved_edge_inline_property_profile(label_id);
 
     let mut inline_property: Option<Value> = None;
     let mut sidecar = Vec::new();
@@ -1236,6 +1236,12 @@ fn classify_edge_assignments(
     }
 
     let Some(value) = inline_property else {
+        if inline_schema.is_struct() {
+            return Err(PlanMutationError::UnsupportedInlineStructMutation {
+                label: label_name_or_id(execution, label_id),
+                property: property_name_or_id(execution, inline_property_id),
+            });
+        }
         return Err(PlanMutationError::MissingRequiredInlineProperty {
             label: label_name_or_id(execution, label_id),
             property: property_name_or_id(execution, inline_property_id),
@@ -1248,13 +1254,19 @@ fn classify_edge_assignments(
         });
     }
 
-    let inline_property_bytes =
-        encode_edge_inline_property_scalar(&profile, &value).map_err(|err| {
-            PlanMutationError::InvalidInlinePropertyValue {
+    let inline_property_bytes = match inline_schema {
+        ResolvedInlineSchema::Scalar { .. } => encode_edge_inline_property_scalar(&profile, &value)
+            .map_err(|err| PlanMutationError::InvalidInlinePropertyValue {
                 property: property_name_or_id(execution, inline_property_id),
                 reason: err.to_string(),
-            }
-        })?;
+            })?,
+        ResolvedInlineSchema::Struct { fields, .. } => encode_inline_struct_value(
+            &fields,
+            &value,
+            &profile,
+            &property_name_or_id(execution, inline_property_id),
+        )?,
+    };
 
     Ok((
         Some(InlineScalarProperty {
@@ -1281,11 +1293,10 @@ fn is_inline_edge_property(
         .is_some_and(|schema| schema.property_id() == property_id)
 }
 
-/// Rejects any mutation on an edge whose resolved inline schema is Struct.
-///
-/// Scalar labels allow ordinary mutation; non-inline labels allow sidecar mutation. This is the
-/// label-wide fail-closed gate used by per-property SET/REMOVE before checking whether the requested
-/// property equals the top-level inline property.
+fn top_level_property(property: &str) -> &str {
+    property.split('.').next().unwrap_or(property)
+}
+
 fn reject_struct_inline_mutation(
     execution: &GqlExecutionContext,
     handle: EdgeHandle,
@@ -1305,11 +1316,18 @@ fn reject_struct_inline_mutation(
     Ok(())
 }
 
+/// Rejects any mutation on an edge whose resolved inline schema is Struct.
+///
+/// Scalar labels allow ordinary mutation; non-inline labels allow sidecar mutation. This is the
+/// label-wide fail-closed gate used by per-property SET/REMOVE before checking whether the requested
+/// property equals the top-level inline property.
 /// Encode a single inline property value for an existing edge, failing closed on any schema or
 /// value mismatch.
 fn encode_inline_edge_property(
+    store: &GraphStore,
     execution: &GqlExecutionContext,
     handle: EdgeHandle,
+    property_path: &str,
     property_id: PropertyId,
     value: &Value,
 ) -> Result<Vec<u8>, PlanMutationError> {
@@ -1331,24 +1349,139 @@ fn encode_inline_edge_property(
             reason: "property is not the inline scalar for this edge label".to_owned(),
         });
     }
-    if !inline_schema.is_scalar() {
-        return Err(PlanMutationError::UnsupportedInlineStructMutation {
-            label: label_name_or_id(execution, label_id),
-            property: property_name_or_id(execution, property_id),
-        });
-    }
     if matches!(value, Value::Null) {
         return Err(PlanMutationError::NullInlineProperty {
             property: property_name_or_id(execution, property_id),
         });
     }
     let profile = execution.resolved_edge_inline_property_profile(label_id);
-    encode_edge_inline_property_scalar(&profile, value).map_err(|err| {
-        PlanMutationError::InvalidInlinePropertyValue {
-            property: property_name_or_id(execution, property_id),
-            reason: err.to_string(),
+    match inline_schema {
+        ResolvedInlineSchema::Scalar { .. } => {
+            if property_path.contains('.') {
+                return Err(PlanMutationError::InvalidInlinePropertyValue {
+                    property: property_path.to_owned(),
+                    reason: "scalar inline property has no nested fields".into(),
+                });
+            }
+            encode_edge_inline_property_scalar(&profile, value).map_err(|err| {
+                PlanMutationError::InvalidInlinePropertyValue {
+                    property: property_name_or_id(execution, property_id),
+                    reason: err.to_string(),
+                }
+            })
         }
-    })
+        ResolvedInlineSchema::Struct { fields, .. } => {
+            let relative = property_path
+                .split_once('.')
+                .map(|(_, relative)| relative)
+                .unwrap_or("");
+            let struct_value = if relative.is_empty() {
+                value.clone()
+            } else {
+                let edge_record = store
+                    .find_outgoing_edge_record(handle)
+                    .map_err(GraphStoreError::from)?
+                    .ok_or_else(|| PlanMutationError::MissingElementBinding {
+                        variable: property_path.to_owned(),
+                    })?;
+                let current = validate_and_decode_inline_struct(
+                    handle.label_id.raw(),
+                    edge_record.inline_property.as_slice(),
+                    &fields,
+                )
+                .map_err(|err| PlanMutationError::InvalidInlinePropertyValue {
+                    property: property_path.to_owned(),
+                    reason: err.to_string(),
+                })?;
+                let mut current = current;
+                set_inline_record_field(&mut current, relative, value.clone())?;
+                current
+            };
+            encode_inline_struct_value(&fields, &struct_value, &profile, property_path)
+        }
+    }
+}
+
+fn set_inline_record_field(
+    value: &mut Value,
+    path: &str,
+    replacement: Value,
+) -> Result<(), PlanMutationError> {
+    let mut parts = path.split('.');
+    let head = parts.next().unwrap_or_default();
+    let Value::Record(record) = value else {
+        return Err(PlanMutationError::InvalidInlinePropertyValue {
+            property: path.to_owned(),
+            reason: "inline struct value is not a record".into(),
+        });
+    };
+    let Some(field) = record.iter_mut().find(|(name, _)| name == head) else {
+        return Err(PlanMutationError::InvalidInlinePropertyValue {
+            property: path.to_owned(),
+            reason: "inline struct field does not exist".into(),
+        });
+    };
+    if let Some(tail) = parts.next() {
+        let mut nested = tail.to_owned();
+        for part in parts {
+            nested.push('.');
+            nested.push_str(part);
+        }
+        set_inline_record_field(&mut field.1, &nested, replacement)
+    } else {
+        if matches!(replacement, Value::Null) {
+            return Err(PlanMutationError::NullInlineProperty {
+                property: path.to_owned(),
+            });
+        }
+        field.1 = replacement;
+        Ok(())
+    }
+}
+
+fn inline_record_value_at_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = value;
+    for part in path.split('.') {
+        let Value::Record(fields) = current else {
+            return None;
+        };
+        current = &fields.iter().find(|(name, _)| name == part)?.1;
+    }
+    Some(current)
+}
+
+fn encode_inline_struct_value(
+    fields: &[ResolvedInlineStructField],
+    value: &Value,
+    profile: &EdgeInlinePropertyProfile,
+    property: &str,
+) -> Result<Vec<u8>, PlanMutationError> {
+    let mut bytes = vec![0; usize::from(profile.required_byte_width())];
+    for field in fields {
+        let Some(field_value) = inline_record_value_at_path(value, &field.name) else {
+            return Err(PlanMutationError::InvalidInlinePropertyValue {
+                property: property.to_owned(),
+                reason: format!("missing inline struct field `{}`", field.name),
+            });
+        };
+        let encoded =
+            encode_edge_inline_property_scalar(&field.profile, field_value).map_err(|err| {
+                PlanMutationError::InvalidInlinePropertyValue {
+                    property: property.to_owned(),
+                    reason: format!("field `{}`: {err}", field.name),
+                }
+            })?;
+        let start = usize::from(field.byte_offset);
+        let end = start + encoded.len();
+        if end > bytes.len() {
+            return Err(PlanMutationError::InvalidInlinePropertyValue {
+                property: property.to_owned(),
+                reason: "inline struct field exceeds byte width".into(),
+            });
+        }
+        bytes[start..end].copy_from_slice(&encoded);
+    }
+    Ok(bytes)
 }
 
 /// Preflight an all-properties replacement on a bound edge: resolve ids, classify the inline
@@ -1360,19 +1493,6 @@ fn prepare_edge_record_replacement(
 ) -> Result<(Option<Vec<u8>>, Vec<(PropertyId, Value)>), PlanMutationError> {
     let label = crate::facade::catalog_edge_label_from_wire(edge.label_id);
     let inline = label.and_then(|label_id| execution.resolved_edge_label_inline_schema(label_id));
-
-    // Label-wide fail-closed gate: Struct-labeled edges have no mutation contract in Slice 25,
-    // so reject before classifying any assignment or touching existing sidecar state.
-    if let Some(ref schema) = inline
-        && schema.is_struct()
-    {
-        return Err(PlanMutationError::UnsupportedInlineStructMutation {
-            label: label
-                .and_then(|id| execution.resolved_edge_label_name(id))
-                .unwrap_or_default(),
-            property: property_name_or_id(execution, schema.property_id()),
-        });
-    }
 
     let mut inline_property: Option<Value> = None;
     let mut sidecar = Vec::new();
@@ -1397,6 +1517,14 @@ fn prepare_edge_record_replacement(
         let expected_inline_id = schema.property_id();
         let profile = execution.resolved_edge_inline_property_profile(label.unwrap());
         let Some(value) = inline_property else {
+            if schema.is_struct() {
+                return Err(PlanMutationError::UnsupportedInlineStructMutation {
+                    label: label
+                        .and_then(|id| execution.resolved_edge_label_name(id))
+                        .unwrap_or_default(),
+                    property: property_name_or_id(execution, expected_inline_id),
+                });
+            }
             return Err(PlanMutationError::MissingRequiredInlineProperty {
                 label: label
                     .and_then(|id| execution.resolved_edge_label_name(id))
@@ -1409,14 +1537,22 @@ fn prepare_edge_record_replacement(
                 property: property_name_or_id(execution, expected_inline_id),
             });
         }
-        Some(
-            encode_edge_inline_property_scalar(&profile, &value).map_err(|err| {
-                PlanMutationError::InvalidInlinePropertyValue {
-                    property: property_name_or_id(execution, expected_inline_id),
-                    reason: err.to_string(),
-                }
-            })?,
-        )
+        Some(match schema {
+            ResolvedInlineSchema::Scalar { .. } => {
+                encode_edge_inline_property_scalar(&profile, &value).map_err(|err| {
+                    PlanMutationError::InvalidInlinePropertyValue {
+                        property: property_name_or_id(execution, expected_inline_id),
+                        reason: err.to_string(),
+                    }
+                })?
+            }
+            ResolvedInlineSchema::Struct { fields, .. } => encode_inline_struct_value(
+                &fields,
+                &value,
+                &profile,
+                &property_name_or_id(execution, expected_inline_id),
+            )?,
+        })
     } else {
         None
     };
@@ -4216,7 +4352,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_edge_struct_insert_rejects() {
+    fn inline_edge_struct_insert_accepts_full_record() {
         let store = GraphStore::new();
         let (_label, _property) = install_inline_struct_road_fixture();
         let plan = PhysicalPlan {
@@ -4239,10 +4375,20 @@ mod tests {
                     labels: vec!["InlineStructRoad".into()],
                     properties: vec![PropertyAssignment {
                         name: "stats".into(),
-                        value: Expr::new(ExprKind::RecordLiteral(vec![(
-                            "score".into(),
-                            Expr::new(ExprKind::Literal(Value::Float64(3.5))),
-                        )])),
+                        value: Expr::new(ExprKind::RecordLiteral(vec![
+                            (
+                                "score".into(),
+                                Expr::new(ExprKind::Literal(Value::Float64(3.5))),
+                            ),
+                            (
+                                "confidence".into(),
+                                Expr::new(ExprKind::Literal(Value::Float64(0.75))),
+                            ),
+                            (
+                                "updated_at".into(),
+                                Expr::new(ExprKind::Literal(Value::Uint64(1_700_000_000))),
+                            ),
+                        ])),
                     }],
                 },
             ],
@@ -4251,20 +4397,13 @@ mod tests {
             ..Default::default()
         };
 
-        let err = store
+        store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
-            .expect_err("struct insert must fail closed");
-        assert!(
-            matches!(
-                err,
-                PlanMutationError::UnsupportedInlineStructMutation { .. }
-            ),
-            "got {err:?}"
-        );
+            .expect("struct insert should pack the full record");
     }
 
     #[test]
-    fn inline_edge_struct_set_rejects() {
+    fn inline_edge_struct_set_accepts_full_record() {
         let store = GraphStore::new();
         let (label, _property) = install_inline_struct_road_fixture();
         let (a, b, handle) = insert_inline_struct_edge(&store, label);
@@ -4273,10 +4412,20 @@ mod tests {
             items: vec![SetPlanItem::Property {
                 variable: "e".into(),
                 property: "stats".into(),
-                value: Expr::new(ExprKind::RecordLiteral(vec![(
-                    "score".into(),
-                    Expr::new(ExprKind::Literal(Value::Float64(9.0))),
-                )])),
+                value: Expr::new(ExprKind::RecordLiteral(vec![
+                    (
+                        "score".into(),
+                        Expr::new(ExprKind::Literal(Value::Float64(9.0))),
+                    ),
+                    (
+                        "confidence".into(),
+                        Expr::new(ExprKind::Literal(Value::Float64(0.5))),
+                    ),
+                    (
+                        "updated_at".into(),
+                        Expr::new(ExprKind::Literal(Value::Uint64(1_700_000_001))),
+                    ),
+                ])),
             }],
         }];
         let parameters = BTreeMap::<String, Value>::new();
@@ -4285,20 +4434,46 @@ mod tests {
         bindings.vertices.insert("b".into(), b);
         bindings.edges.insert("e".into(), handle);
 
-        let err = execute_ops_with_bindings(
+        execute_ops_with_bindings(
             &store,
             &ops,
             &parameters,
             GqlExecutionContext::default(),
             &mut bindings,
         )
-        .expect_err("struct set must fail closed");
-        assert!(
-            matches!(
-                err,
-                PlanMutationError::UnsupportedInlineStructMutation { .. }
-            ),
-            "got {err:?}"
+        .expect("struct SET should repack the full record");
+    }
+
+    #[test]
+    fn inline_edge_struct_field_set_updates_only_target_field() {
+        let store = GraphStore::new();
+        let (label, _property) = install_inline_struct_road_fixture();
+        let (a, b, handle) = insert_inline_struct_edge(&store, label);
+        let ops = vec![PlanOp::SetProperties {
+            items: vec![SetPlanItem::Property {
+                variable: "e".into(),
+                property: "stats.score".into(),
+                value: Expr::new(ExprKind::Literal(Value::Float64(9.0))),
+            }],
+        }];
+        let parameters = BTreeMap::<String, Value>::new();
+        let mut bindings = PlanMutationBindings::default();
+        bindings.vertices.insert("a".into(), a);
+        bindings.vertices.insert("b".into(), b);
+        bindings.edges.insert("e".into(), handle);
+
+        execute_ops_with_bindings(
+            &store,
+            &ops,
+            &parameters,
+            GqlExecutionContext::default(),
+            &mut bindings,
+        )
+        .expect("struct field SET should read-modify-write the inline bytes");
+        let mut expected = pack_stats_inline_property(9.0, 0.75, 1_700_000_000);
+        assert_eq!(
+            find_out_edge_inline_property(&store, a, b),
+            Some(std::mem::take(&mut expected))
         );
     }
 
@@ -4338,7 +4513,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_edge_struct_all_properties_replacement_rejects() {
+    fn inline_edge_struct_all_properties_replacement_accepts_full_record() {
         let store = GraphStore::new();
         let (label, _property) = install_inline_struct_road_fixture();
         let (a, b, handle) = insert_inline_struct_edge(&store, label);
@@ -4348,10 +4523,20 @@ mod tests {
                 variable: "e".into(),
                 value: Expr::new(ExprKind::RecordLiteral(vec![(
                     "stats".into(),
-                    Expr::new(ExprKind::RecordLiteral(vec![(
-                        "score".into(),
-                        Expr::new(ExprKind::Literal(Value::Float64(9.0))),
-                    )])),
+                    Expr::new(ExprKind::RecordLiteral(vec![
+                        (
+                            "score".into(),
+                            Expr::new(ExprKind::Literal(Value::Float64(9.0))),
+                        ),
+                        (
+                            "confidence".into(),
+                            Expr::new(ExprKind::Literal(Value::Float64(0.5))),
+                        ),
+                        (
+                            "updated_at".into(),
+                            Expr::new(ExprKind::Literal(Value::Uint64(1_700_000_001))),
+                        ),
+                    ])),
                 )])),
             }],
         }];
@@ -4361,21 +4546,14 @@ mod tests {
         bindings.vertices.insert("b".into(), b);
         bindings.edges.insert("e".into(), handle);
 
-        let err = execute_ops_with_bindings(
+        execute_ops_with_bindings(
             &store,
             &ops,
             &parameters,
             GqlExecutionContext::default(),
             &mut bindings,
         )
-        .expect_err("struct all-properties replacement must fail closed");
-        assert!(
-            matches!(
-                err,
-                PlanMutationError::UnsupportedInlineStructMutation { .. }
-            ),
-            "got {err:?}"
-        );
+        .expect("struct all-properties replacement should repack the full record");
     }
 
     // A wrong implementation could still allow sidecar-only mutations on an InlineStruct label.

@@ -12,7 +12,8 @@ mod wcoj;
 
 pub use bindings::EdgeBinding;
 pub(crate) use eval::{
-    binding_to_value, eval_sort_expr, project_row, try_read_inline_edge_property, value_row,
+    binding_to_value, eval_sort_expr, project_row, try_read_inline_edge_property,
+    validate_and_decode_inline_struct, value_row,
 };
 pub(crate) use ops::execute_ops_from;
 pub use path::PathBinding;

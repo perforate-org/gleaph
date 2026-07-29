@@ -3371,6 +3371,32 @@ mod graph_type_catalog_vocabulary {
     }
 
     #[test]
+    fn create_graph_type_nested_record_inline_ddl_flattens_schema_paths() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+        let ddl = "CREATE GRAPH TYPE gt { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { stats RECORD { score FLOAT32, meta RECORD { source UINT16 } } INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH g TYPED gt";
+        apply_catalog_statement_block(&catalog_block_from(ddl)).expect("apply ddl");
+
+        let label_id = store.lookup_edge_label_id(graph_id, "ROAD").expect("label");
+        let (_, schema) = ROUTER_EDGE_INLINE_PROPERTY_PROFILES
+            .with_borrow(|s| s.get_profile_and_inline_schema(graph_id, label_id));
+        let Some(ResolvedInlineSchema::Struct { fields, .. }) = schema else {
+            panic!("expected struct schema");
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["score", "meta.source"]
+        );
+    }
+
+    #[test]
     fn create_graph_any_skips_vocabulary_intern() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());

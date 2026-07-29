@@ -1376,6 +1376,32 @@ fn create_graph_type_edge_inline_property_ast() {
 }
 
 #[test]
+fn create_graph_type_nested_record_inline_property_ast() {
+    let program = parse_program_ok(
+        "CREATE GRAPH TYPE myType { DIRECTED EDGE Road LABEL ROAD { stats RECORD { score FLOAT32, meta RECORD { source UINT16 } } INLINE } CONNECTING (city -> city) }",
+    );
+    let statement = &program
+        .transaction_activity
+        .as_ref()
+        .expect("expected transaction activity")
+        .body
+        .as_ref()
+        .unwrap()
+        .first;
+    let Statement::CreateGraphType(stmt) = statement else {
+        panic!("expected create graph type statement, got {statement:?}");
+    };
+    let [GraphTypeElement::Edge(edge)] = &stmt.definition.elements[..] else {
+        panic!("expected one edge element");
+    };
+    assert!(matches!(
+        edge.properties[0].value_type,
+        ValueType::Record { .. }
+    ));
+    assert!(edge.properties[0].inline);
+}
+
+#[test]
 fn create_graph_type_phrase_left_edge_ast() {
     let program = parse_program_ok(
         "CREATE GRAPH TYPE myType { DIRECTED EDGE ManagedBy LABEL ManagedBy CONNECTING (manager <- employee) }",

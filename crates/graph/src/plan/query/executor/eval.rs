@@ -216,7 +216,7 @@ pub(crate) fn try_read_inline_edge_property(
     }
 }
 
-fn validate_and_decode_inline_struct(
+pub(crate) fn validate_and_decode_inline_struct(
     label_id_raw: u16,
     inline_property_bytes: &[u8],
     fields: &[ResolvedInlineStructField],
@@ -306,10 +306,45 @@ fn validate_and_decode_inline_struct(
                         field.name
                     ),
                 })?;
-        record_fields.push((field.name.clone(), value));
+        insert_inline_record_field(&mut record_fields, &field.name, value)?;
     }
 
     Ok(Value::Record(record_fields))
+}
+
+fn insert_inline_record_field(
+    fields: &mut Vec<(String, Value)>,
+    path: &str,
+    value: Value,
+) -> Result<(), PlanQueryError> {
+    let mut parts = path.split('.');
+    let name = parts.next().unwrap_or_default();
+    if name.is_empty() {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: "inline struct field path is empty".into(),
+        });
+    }
+    let Some(rest) = parts.next() else {
+        fields.push((name.to_owned(), value));
+        return Ok(());
+    };
+    let mut nested_path = rest.to_owned();
+    for part in parts {
+        nested_path.push('.');
+        nested_path.push_str(part);
+    }
+    let Some((_, existing)) = fields.iter_mut().find(|(field, _)| field == name) else {
+        let mut nested = Vec::new();
+        insert_inline_record_field(&mut nested, &nested_path, value)?;
+        fields.push((name.to_owned(), Value::Record(nested)));
+        return Ok(());
+    };
+    let Value::Record(nested) = existing else {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!("inline struct field path `{path}` conflicts with a scalar"),
+        });
+    };
+    insert_inline_record_field(nested, &nested_path, value)
 }
 
 impl QueryExprEvaluator<'_> {
@@ -3176,6 +3211,50 @@ mod tests {
         assert_eq!(
             fields[2],
             ("updated_at".to_string(), Value::Uint64(1_700_000_000))
+        );
+    }
+
+    #[test]
+    fn inline_struct_edge_property_read_reconstructs_nested_record() {
+        let mut inline_property = Vec::new();
+        inline_property.extend_from_slice(&3.5f32.to_le_bytes());
+        inline_property.extend_from_slice(&7u16.to_le_bytes());
+        let binding = inline_edge_binding(&inline_property);
+        let table = resolved_label_table_with_inline_struct(
+            7,
+            42,
+            6,
+            vec![
+                (
+                    "score".to_string(),
+                    0,
+                    EdgeInlinePropertyProfile {
+                        byte_width: 4,
+                        encoding: EdgeInlinePropertyEncoding::F32,
+                    },
+                ),
+                (
+                    "meta.source".to_string(),
+                    4,
+                    EdgeInlinePropertyProfile {
+                        byte_width: 2,
+                        encoding: EdgeInlinePropertyEncoding::RawU16,
+                    },
+                ),
+            ],
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode nested struct")
+            .expect("inline property bytes");
+        assert_eq!(
+            value,
+            Value::Record(vec![
+                ("score".into(), Value::Float32(3.5)),
+                (
+                    "meta".into(),
+                    Value::Record(vec![("source".into(), Value::Uint16(7))]),
+                ),
+            ])
         );
     }
 

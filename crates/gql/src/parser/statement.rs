@@ -1078,7 +1078,11 @@ impl Parser<'_> {
 
         if self.eat_token(&Token::Dot) {
             // v.prop = expr
-            let property = self.expect_ident()?;
+            let mut property = self.expect_ident()?;
+            while self.eat_token(&Token::Dot) {
+                property.push('.');
+                property.push_str(&self.expect_ident()?);
+            }
             self.expect_token(&Token::Eq)?;
             let value = self.parse_expr()?;
             Ok(SetItem::Property {
@@ -1141,7 +1145,11 @@ impl Parser<'_> {
         let variable = self.expect_ident()?;
 
         if self.eat_token(&Token::Dot) {
-            let property = self.expect_ident()?;
+            let mut property = self.expect_ident()?;
+            while self.eat_token(&Token::Dot) {
+                property.push('.');
+                property.push_str(&self.expect_ident()?);
+            }
             Ok(RemoveItem::Property {
                 span: self.span_since(start),
                 variable,

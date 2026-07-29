@@ -43,6 +43,38 @@ enum InlineSchema {
     Struct { fields: Vec<InlineStructFieldSpec> },
 }
 
+const MAX_INLINE_RECORD_DEPTH: usize = 4;
+
+fn flatten_inline_record_fields(
+    prefix: &str,
+    fields: &[gleaph_gql::ast::RecordFieldType],
+    depth: usize,
+    output: &mut Vec<InlineStructFieldSpec>,
+) -> Result<(), RouterError> {
+    if depth > MAX_INLINE_RECORD_DEPTH {
+        return Err(RouterError::InvalidArgument(format!(
+            "INLINE RECORD nesting exceeds maximum depth {MAX_INLINE_RECORD_DEPTH}"
+        )));
+    }
+    for field in fields {
+        let name = if prefix.is_empty() {
+            field.name.clone()
+        } else {
+            format!("{prefix}.{}", field.name)
+        };
+        match &field.value_type {
+            ValueType::Record { fields, .. } => {
+                flatten_inline_record_fields(&name, fields, depth + 1, output)?;
+            }
+            value_type => output.push(InlineStructFieldSpec {
+                name,
+                scalar_type: inline_scalar_type(value_type)?,
+            }),
+        }
+    }
+    Ok(())
+}
+
 fn edge_schema_keys(edge: &EdgeTypeDef) -> Vec<String> {
     let mut keys = edge
         .label_set
@@ -255,16 +287,9 @@ impl RouterStore {
             }
             let schema = match &property.value_type {
                 ValueType::Record { fields, .. } => {
-                    let fields = fields
-                        .iter()
-                        .map(|field| {
-                            Ok(InlineStructFieldSpec {
-                                name: field.name.clone(),
-                                scalar_type: inline_scalar_type(&field.value_type)?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, RouterError>>()?;
-                    InlineSchema::Struct { fields }
+                    let mut flattened = Vec::new();
+                    flatten_inline_record_fields("", fields, 0, &mut flattened)?;
+                    InlineSchema::Struct { fields: flattened }
                 }
                 value_type => InlineSchema::Scalar {
                     scalar_type: inline_scalar_type(value_type)?,

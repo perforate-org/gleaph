@@ -1037,7 +1037,8 @@ fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
                 for item in items {
                     match item {
                         SetPlanItem::Property { property, .. } => {
-                            uses.add_property(property, PropertyUseIntent::CreateIfMissing);
+                            let top = Str::from(property.split('.').next().unwrap_or(property));
+                            uses.add_property(&top, PropertyUseIntent::CreateIfMissing);
                         }
                         SetPlanItem::AllProperties { value, .. } => {
                             collect_property_names_from_expr(value, uses);
@@ -1049,7 +1050,8 @@ fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
             PlanOp::RemoveProperties { items } => {
                 for item in items {
                     if let RemovePlanItem::Property { property, .. } = item {
-                        uses.add_property(property, PropertyUseIntent::ReadExisting);
+                        let top = Str::from(property.split('.').next().unwrap_or(property));
+                        uses.add_property(&top, PropertyUseIntent::ReadExisting);
                     }
                 }
             }
