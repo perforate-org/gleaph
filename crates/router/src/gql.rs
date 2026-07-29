@@ -1924,7 +1924,33 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
         &client_key,
         mutation_id,
         graph_request_fingerprint,
-        receipt,
+        receipt.clone(),
+    )?;
+    store.record_ordered_mixed_batch_projection_pending(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+    )?;
+    advance_label_stats_projection_through(
+        &store,
+        graph_id,
+        target_shard.graph_canister,
+        target_shard_id,
+        receipt.emitted_delta_last_seq,
+    )
+    .await?;
+    store.record_ordered_mixed_batch_projection_advanced(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+        MutationTokenShard {
+            shard_id: target_shard_id,
+            label_stats_seq: receipt.emitted_delta_last_seq,
+        },
     )?;
     let record = store
         .router_mutation_record(caller, graph_id, &client_key)

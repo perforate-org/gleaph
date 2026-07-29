@@ -1045,6 +1045,118 @@ impl RouterStore {
         })
     }
 
+    pub fn record_ordered_mixed_batch_projection_pending(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered mixed projection pending".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered mixed projection pending requires an OrderedMixedBatch payload"
+                            .into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered mixed projection pending".into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt) => {
+                    replay.target.progress =
+                        OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt.clone());
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedMixedBatchTargetProgressV1::ProjectionPending(_) => Ok(()),
+                _ => Err(RouterError::Conflict(
+                    "ordered mixed projection pending conflicts with persisted progress".into(),
+                )),
+            }
+        })
+    }
+
+    pub fn record_ordered_mixed_batch_projection_advanced(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+        watermark: gleaph_graph_kernel::plan_exec::MutationTokenShard,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered mixed projection advancement".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered mixed projection advancement requires an OrderedMixedBatch payload".into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered mixed projection advancement".into(),
+                ));
+            }
+            if watermark.shard_id != replay.target.request.target_shard_id {
+                return Err(RouterError::Conflict(
+                    "ordered mixed projection watermark targets a different shard".into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt) => {
+                    replay.target.progress =
+                        OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
+                    replay.target.projection_watermark = Some(watermark);
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(_)
+                    if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
+                {
+                    Ok(())
+                }
+                _ => Err(RouterError::Conflict(
+                    "ordered mixed projection advancement conflicts with persisted progress".into(),
+                )),
+            }
+        })
+    }
+
     pub fn record_ordered_vertex_batch_projection_pending(
         &self,
         caller: Principal,

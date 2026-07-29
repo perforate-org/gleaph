@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 04:39:01 UTC +0000
+Anchor timestamp: 2026-07-29 04:51:14 UTC +0000
 
 ## Context
 
@@ -42,9 +42,9 @@ extension vectors, and malformed binary rejection vectors are now active. The
 Router mixed public shape and the Graph-owned immutable mixed envelope are now
 defined and validated. Graph-side mixed phase execution, allocation-table
 resolution, and durable aggregate receipt/replay are active; Router mixed replay
-identity/target persistence, Graph dispatch, and the canonical receipt transition
-are now active; projection lifecycle, retirement, and recovery wiring remain
-planned. The existing generic
+identity/target persistence, Graph dispatch, the canonical receipt transition,
+and the Router-owned label-stats projection transition are now active; retirement
+and recovery wiring remain planned. The existing generic
 plan batch runner does not implement this protocol.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
@@ -2144,6 +2144,11 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     Graph aggregate receipt as `CanonicalCommitted`. Projection, retirement, and
     recovery remain non-terminal lifecycle work; the endpoint does not claim a
     completed result before those transitions are durable.
+38. **Partially implemented (2026-07-29 04:51:14 UTC +0000):** Mixed canonical
+    receipts now advance through `ProjectionPending` and the existing bounded
+    label-stats projection driver to `ProjectionAdvanced`, preserving the
+    shard-scoped watermark in the durable replay target. Retirement and
+    background recovery remain separate follow-up transitions.
 
 ## Test contract
 
