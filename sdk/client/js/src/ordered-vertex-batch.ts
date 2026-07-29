@@ -13,7 +13,6 @@ export interface OrderedVertexBatchPublicRequest {
 export interface OrderedVertexBatchPublicRequestV1 {
   client_mutation_key: string;
   logical_graph_name: string;
-  target_shard_id: number;
   items: OrderedVertexInsertPublicItem[];
 }
 
@@ -30,7 +29,6 @@ export interface OrderedVertexInsertPublicItemInput {
 export interface OrderedVertexBatchPublicRequestInput {
   client_mutation_key: string;
   logical_graph_name: string;
-  target_shard_id: number;
   items: OrderedVertexInsertPublicItemInput[];
 }
 
@@ -55,13 +53,6 @@ export function makeOrderedVertexBatchPublicRequest(
   if (input.logical_graph_name.length === 0) {
     throw new Error("logical_graph_name must not be empty");
   }
-  if (
-    !Number.isInteger(input.target_shard_id) ||
-    input.target_shard_id < 0 ||
-    input.target_shard_id > 0xffff_ffff
-  ) {
-    throw new Error("target_shard_id must be a uint32");
-  }
   if (input.items.length === 0 || input.items.length > MAX_ITEMS) {
     throw new Error("items must contain 1..=1024 entries");
   }
@@ -70,7 +61,6 @@ export function makeOrderedVertexBatchPublicRequest(
     V1: {
       client_mutation_key: input.client_mutation_key,
       logical_graph_name: input.logical_graph_name,
-      target_shard_id: input.target_shard_id,
       items: input.items.map((item, ordinal) => {
         const labels = [...(item.vertex_labels ?? [])];
         for (const label of labels) {

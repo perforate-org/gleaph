@@ -14,7 +14,6 @@ export type OrderedMixedBatchPublicRequest = {
 export interface OrderedMixedBatchPublicRequestV1 {
   client_mutation_key: string;
   logical_graph_name: string;
-  target_shard_id: number;
   operations: OrderedMixedBatchOperation[];
 }
 
@@ -41,7 +40,6 @@ export type OrderedMixedEndpoint = { Existing: Uint8Array } | { NewVertexOrdinal
 export interface OrderedMixedBatchPublicRequestInput {
   client_mutation_key: string;
   logical_graph_name: string;
-  target_shard_id: number;
   operations: OrderedMixedBatchOperationInput[];
 }
 
@@ -122,13 +120,6 @@ export function makeOrderedMixedBatchPublicRequest(
   if (input.logical_graph_name.length === 0) {
     throw new Error("logical_graph_name must not be empty");
   }
-  if (
-    !Number.isInteger(input.target_shard_id) ||
-    input.target_shard_id < 0 ||
-    input.target_shard_id > 0xffff_ffff
-  ) {
-    throw new Error("target_shard_id must be a uint32");
-  }
   if (input.operations.length === 0 || input.operations.length > MAX_ITEMS) {
     throw new Error("operations must contain 1..=1024 entries");
   }
@@ -144,7 +135,6 @@ export function makeOrderedMixedBatchPublicRequest(
     V1: {
       client_mutation_key: input.client_mutation_key,
       logical_graph_name: input.logical_graph_name,
-      target_shard_id: input.target_shard_id,
       operations: input.operations.map((operation, ordinal) => {
         if ("vertex" in operation) {
           const labels = [...(operation.vertex.vertex_labels ?? [])];

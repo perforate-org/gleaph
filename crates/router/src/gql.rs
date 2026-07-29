@@ -1248,9 +1248,8 @@ pub async fn gql_execute_idempotent(
 
 /// Admit and execute one public ordered edge batch (ADR 0049).
 ///
-/// V1 intentionally requires one existing catalog vocabulary and one target Graph shard. The
-/// durable Router record is installed before the canonical Graph call, then the ordered lifecycle
-/// is advanced through projection and fingerprint-bound retirement.
+/// V1 requires one existing catalog vocabulary. Router derives the target Graph shard from the
+/// encoded endpoints; the public request does not expose physical routing state.
 pub(crate) async fn execute_ordered_edge_batch_public(
     request: crate::types::OrderedEdgeBatchPublicRequest,
 ) -> Result<crate::types::OrderedEdgeBatchResponse, RouterError> {
@@ -1498,9 +1497,8 @@ pub(crate) async fn execute_ordered_edge_batch_public(
 
 /// Admit and execute one public ordered vertex batch (ADR 0049).
 ///
-/// V1 selects exactly one Graph shard explicitly because new vertices do not have an endpoint from
-/// which Router could derive ownership. This slice persists the replay envelope before the Graph
-/// call and records the canonical receipt; projection and retirement are subsequent transitions.
+/// V1 selects the graph's latest live shard, following ADR 0029's placement authority. The public
+/// request does not expose the physical shard id; Router resolves it before the Graph call.
 pub(crate) async fn execute_ordered_vertex_batch_public(
     request: crate::types::OrderedVertexBatchPublicRequest,
 ) -> Result<crate::types::OrderedVertexBatchResponse, RouterError> {
@@ -1508,39 +1506,44 @@ pub(crate) async fn execute_ordered_vertex_batch_public(
     let public_fingerprint = request
         .public_fingerprint()
         .map_err(RouterError::InvalidArgument)?;
-    let (client_key, logical_graph_name, target_shard_id, label_names, property_names) =
-        match &request {
-            crate::types::OrderedVertexBatchPublicRequest::V1(request) => (
-                request.client_mutation_key.clone(),
-                request.logical_graph_name.clone(),
-                request.target_shard_id,
-                request
-                    .items
-                    .iter()
-                    .flat_map(|item| item.vertex_labels.iter().cloned())
-                    .collect::<Vec<_>>(),
-                request
-                    .items
-                    .iter()
-                    .flat_map(|item| {
-                        item.initial_properties
-                            .iter()
-                            .map(|property| property.property_name.clone())
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        };
+    let (client_key, logical_graph_name, label_names, property_names) = match &request {
+        crate::types::OrderedVertexBatchPublicRequest::V1(request) => (
+            request.client_mutation_key.clone(),
+            request.logical_graph_name.clone(),
+            request
+                .items
+                .iter()
+                .flat_map(|item| item.vertex_labels.iter().cloned())
+                .collect::<Vec<_>>(),
+            request
+                .items
+                .iter()
+                .flat_map(|item| {
+                    item.initial_properties
+                        .iter()
+                        .map(|property| property.property_name.clone())
+                })
+                .collect::<Vec<_>>(),
+        ),
+    };
     let public_item_count = match &request {
         crate::types::OrderedVertexBatchPublicRequest::V1(request) => request.items.len() as u32,
     };
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let target =
+        crate::federation::latest_shard_routing(&store.list_live_shards_for_graph_id(graph_id)?)?
+            .into_iter()
+            .next()
+            .ok_or(RouterError::ShardNotRegistered)?;
+    let target_shard_id = target.shard_id;
     let target_shard = store.resolve_shard(graph_id, target_shard_id)?;
     let (resolved_labels, resolved_properties) =
         store.resolve_ordered_vertex_catalogs(graph_id, label_names, property_names)?;
     let graph_request = request
         .into_graph_request(
             graph_id,
+            target_shard_id,
             target_shard.graph_canister,
             resolved_labels.clone(),
             resolved_properties.clone(),
@@ -1742,7 +1745,6 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
     let (
         client_key,
         logical_graph_name,
-        target_shard_id,
         public_operation_count,
         public_vertex_count,
         public_edge_count,
@@ -1765,7 +1767,6 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
             (
                 request.client_mutation_key.clone(),
                 request.logical_graph_name.clone(),
-                request.target_shard_id,
                 public_operation_count,
                 public_vertex_count,
                 public_operation_count - public_vertex_count,
@@ -1810,8 +1811,23 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
     };
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
-    let target_shard = store.resolve_shard(graph_id, target_shard_id)?;
     let encoding_key = store.graph_element_id_encoding_key(graph_id)?;
+    let target_shard_id = match request
+        .existing_endpoint_shard(&encoding_key)
+        .map_err(RouterError::InvalidArgument)?
+    {
+        Some(shard_id) => shard_id,
+        None => {
+            crate::federation::latest_shard_routing(
+                &store.list_live_shards_for_graph_id(graph_id)?,
+            )?
+            .into_iter()
+            .next()
+            .ok_or(RouterError::ShardNotRegistered)?
+            .shard_id
+        }
+    };
+    let target_shard = store.resolve_shard(graph_id, target_shard_id)?;
     let (resolved_labels, resolved_properties) = store.resolve_ordered_mixed_catalogs(
         graph_id,
         vertex_label_names,

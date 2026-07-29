@@ -96,7 +96,6 @@ if (item.edge_label_name.length !== 1 || item.inline_property.length !== 1) {
 const orderedVertexRequest = makeOrderedVertexBatchPublicRequest({
   client_mutation_key: "sdk-vertex-conformance",
   logical_graph_name: "tenant.main",
-  target_shard_id: 7,
   items: [
     {
       vertex_labels: ["User", "Person"],
@@ -119,7 +118,6 @@ if (
 const orderedMixedRequest = makeOrderedMixedBatchPublicRequest({
   client_mutation_key: "sdk-mixed-conformance",
   logical_graph_name: "tenant.main",
-  target_shard_id: 7,
   operations: [
     { vertex: { vertex_labels: ["User", "Person"], initial_properties: { zeta: { Int64: 7n } } } },
     {
@@ -219,7 +217,6 @@ assertBuilderRejects(
   {
     client_mutation_key: "missing-edge",
     logical_graph_name: "tenant.main",
-    target_shard_id: 0,
     operations: [{ vertex: { vertex_labels: ["Person"] } }],
   },
   "mixed request without edge",
@@ -229,7 +226,6 @@ assertBuilderRejects(
   {
     client_mutation_key: "missing-vertex",
     logical_graph_name: "tenant.main",
-    target_shard_id: 0,
     operations: [
       {
         edge: {
@@ -247,7 +243,6 @@ assertBuilderRejects(
   {
     client_mutation_key: "invalid-existing-endpoint",
     logical_graph_name: "tenant.main",
-    target_shard_id: 0,
     operations: [
       { vertex: {} },
       {
@@ -266,7 +261,6 @@ assertBuilderRejects(
   {
     client_mutation_key: "invalid-label",
     logical_graph_name: "tenant.main",
-    target_shard_id: 0,
     operations: [
       { vertex: {} },
       {
@@ -286,7 +280,6 @@ assertBuilderRejects(
   {
     client_mutation_key: "invalid-property",
     logical_graph_name: "tenant.main",
-    target_shard_id: 0,
     operations: [
       { vertex: { initial_properties: { "": { Text: "invalid" } } } },
       {
@@ -305,7 +298,6 @@ assertBuilderRejects(
   {
     client_mutation_key: "invalid-forward-ordinal",
     logical_graph_name: "tenant.main",
-    target_shard_id: 0,
     operations: [
       { vertex: {} },
       {
@@ -324,7 +316,6 @@ assertBuilderRejects(
   {
     client_mutation_key: "invalid-ordinal",
     logical_graph_name: "tenant.main",
-    target_shard_id: 0,
     operations: [
       { vertex: {} },
       {
@@ -356,29 +347,8 @@ assertBuilderRejects(
 );
 assertBuilderRejects(
   {
-    client_mutation_key: "invalid-shard",
-    logical_graph_name: "tenant.main",
-    target_shard_id: -1,
-    items: [{ vertex_labels: ["Person"] }],
-  },
-  "negative target shard",
-  makeOrderedVertexBatchPublicRequest,
-);
-assertBuilderRejects(
-  {
-    client_mutation_key: "wide-shard",
-    logical_graph_name: "tenant.main",
-    target_shard_id: 0x1_0000_0000,
-    items: [{ vertex_labels: ["Person"] }],
-  },
-  "vertex shard above uint32",
-  makeOrderedVertexBatchPublicRequest,
-);
-assertBuilderRejects(
-  {
     client_mutation_key: "invalid-label",
     logical_graph_name: "tenant.main",
-    target_shard_id: 0,
     items: [{ vertex_labels: [""] }],
   },
   "empty vertex label",

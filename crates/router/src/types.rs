@@ -406,9 +406,6 @@ pub enum OrderedVertexBatchPublicRequest {
 pub struct OrderedVertexBatchPublicRequestV1 {
     pub client_mutation_key: String,
     pub logical_graph_name: String,
-    /// New vertices have no endpoint from which Router can infer ownership, so the target shard is
-    /// explicit and must be resolved to a registered Graph canister before dispatch.
-    pub target_shard_id: ShardId,
     pub items: Vec<OrderedVertexInsertPublicItemV1>,
 }
 
@@ -484,12 +481,8 @@ impl OrderedVertexBatchPublicRequest {
         let mut hasher = Sha256::new();
         hasher.update(b"gleaph:ordered-vertex-public:v1\0");
         hasher.update(
-            Encode!(&(
-                request.logical_graph_name.clone(),
-                request.target_shard_id,
-                items
-            ))
-            .map_err(|error| format!("ordered vertex public request encode: {error}"))?,
+            Encode!(&(request.logical_graph_name.clone(), items))
+                .map_err(|error| format!("ordered vertex public request encode: {error}"))?,
         );
         Ok(hasher.finalize().into())
     }
@@ -497,6 +490,7 @@ impl OrderedVertexBatchPublicRequest {
     pub fn into_graph_request(
         &self,
         graph_id: GraphId,
+        target_shard_id: ShardId,
         target_graph_canister: Principal,
         resolved_labels: gleaph_graph_kernel::plan_exec::ResolvedLabelTable,
         resolved_properties: gleaph_graph_kernel::plan_exec::ResolvedPropertyTable,
@@ -555,7 +549,7 @@ impl OrderedVertexBatchPublicRequest {
         let request = gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequest::V1(
             gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphRequestV1 {
                 graph_id,
-                target_shard_id: request.target_shard_id,
+                target_shard_id,
                 target_graph_canister,
                 resolved_labels,
                 resolved_properties,
@@ -579,7 +573,6 @@ pub enum OrderedMixedBatchPublicRequest {
 pub struct OrderedMixedBatchPublicRequestV1 {
     pub client_mutation_key: String,
     pub logical_graph_name: String,
-    pub target_shard_id: ShardId,
     pub operations: Vec<OrderedMixedBatchOperationV1>,
 }
 
@@ -702,12 +695,8 @@ impl OrderedMixedBatchPublicRequest {
         let mut hasher = Sha256::new();
         hasher.update(b"gleaph:ordered-mixed-public:v1\0");
         hasher.update(
-            Encode!(&(
-                request.logical_graph_name.clone(),
-                request.target_shard_id,
-                operations
-            ))
-            .map_err(|error| format!("ordered mixed public request encode: {error}"))?,
+            Encode!(&(request.logical_graph_name.clone(), operations))
+                .map_err(|error| format!("ordered mixed public request encode: {error}"))?,
         );
         Ok(hasher.finalize().into())
     }
@@ -836,6 +825,44 @@ impl OrderedMixedBatchPublicRequest {
         );
         graph_request.validate()?;
         Ok(graph_request)
+    }
+
+    /// Return the shard carried by existing endpoints, proving that all such endpoints agree.
+    /// New-vertex-only requests return `None`; Router then applies the graph's latest-shard
+    /// placement policy.
+    pub fn existing_endpoint_shard(
+        &self,
+        encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+    ) -> Result<Option<ShardId>, String> {
+        self.validate()?;
+        let Self::V1(request) = self;
+        let mut target_shard = None;
+        for (ordinal, operation) in request.operations.iter().enumerate() {
+            let OrderedMixedBatchOperationV1::Edge(item) = operation else {
+                continue;
+            };
+            for (name, endpoint) in [("source", &item.source), ("target", &item.target)] {
+                let OrderedMixedEndpointPublicV1::Existing(bytes) = endpoint else {
+                    continue;
+                };
+                let encoded: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
+                    bytes.as_slice().try_into().map_err(|_| {
+                        format!("mixed operation {ordinal} {name} endpoint has invalid width")
+                    })?;
+                let vertex = gleaph_graph_kernel::federation::decode_global_vertex_id(
+                    encoding_key,
+                    gleaph_graph_kernel::federation::EncodedVertexId(encoded),
+                );
+                if let Some(expected) = target_shard {
+                    if expected != vertex.shard_id {
+                        return Err("ordered mixed batch resolves to multiple shards".into());
+                    }
+                } else {
+                    target_shard = Some(vertex.shard_id);
+                }
+            }
+        }
+        Ok(target_shard)
     }
 }
 
@@ -1781,7 +1808,6 @@ mod tests {
         let request = OrderedVertexBatchPublicRequest::V1(OrderedVertexBatchPublicRequestV1 {
             client_mutation_key: "vertex-1".into(),
             logical_graph_name: "tenant.main".into(),
-            target_shard_id: ShardId::new(3),
             items: vec![OrderedVertexInsertPublicItemV1 {
                 vertex_labels: vec!["Person".into(), "User".into()],
                 initial_properties: vec![OrderedEdgePropertyPublicV1 {
@@ -1807,7 +1833,6 @@ mod tests {
         let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
             client_mutation_key: "mixed-1".into(),
             logical_graph_name: "tenant.main".into(),
-            target_shard_id: ShardId::new(3),
             operations: vec![
                 OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
                     vertex_labels: vec!["Person".into()],
@@ -1836,11 +1861,73 @@ mod tests {
     }
 
     #[test]
+    fn ordered_mixed_target_shard_comes_from_existing_endpoints() {
+        let key = gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture();
+        let existing = gleaph_graph_kernel::federation::encode_global_vertex_id(
+            &key,
+            GlobalVertexId::new(ShardId::new(4), 11),
+        );
+        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+            client_mutation_key: "mixed-placement".into(),
+            logical_graph_name: "tenant.main".into(),
+            operations: vec![
+                OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+                    vertex_labels: Vec::new(),
+                    initial_properties: Vec::new(),
+                }),
+                OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
+                    source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
+                    target: OrderedMixedEndpointPublicV1::Existing(existing.0.to_vec()),
+                    directed: true,
+                    edge_label_name: None,
+                    inline_property: None,
+                    initial_edge_properties: Vec::new(),
+                }),
+            ],
+        });
+        assert_eq!(
+            request.existing_endpoint_shard(&key).unwrap(),
+            Some(ShardId::new(4))
+        );
+    }
+
+    #[test]
+    fn ordered_mixed_target_shard_rejects_existing_endpoints_from_multiple_shards() {
+        let key = gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture();
+        let first = gleaph_graph_kernel::federation::encode_global_vertex_id(
+            &key,
+            GlobalVertexId::new(ShardId::new(4), 11),
+        );
+        let second = gleaph_graph_kernel::federation::encode_global_vertex_id(
+            &key,
+            GlobalVertexId::new(ShardId::new(5), 12),
+        );
+        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+            client_mutation_key: "mixed-placement-conflict".into(),
+            logical_graph_name: "tenant.main".into(),
+            operations: vec![
+                OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+                    vertex_labels: Vec::new(),
+                    initial_properties: Vec::new(),
+                }),
+                OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
+                    source: OrderedMixedEndpointPublicV1::Existing(first.0.to_vec()),
+                    target: OrderedMixedEndpointPublicV1::Existing(second.0.to_vec()),
+                    directed: true,
+                    edge_label_name: None,
+                    inline_property: None,
+                    initial_edge_properties: Vec::new(),
+                }),
+            ],
+        });
+        assert!(request.existing_endpoint_shard(&key).is_err());
+    }
+
+    #[test]
     fn ordered_mixed_public_request_converts_to_graph_operation_phases() {
         let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
             client_mutation_key: "mixed-convert".into(),
             logical_graph_name: "tenant.main".into(),
-            target_shard_id: ShardId::new(3),
             operations: vec![
                 OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
                     vertex_labels: Vec::new(),
@@ -1890,7 +1977,6 @@ mod tests {
         let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
             client_mutation_key: "mixed-2".into(),
             logical_graph_name: "tenant.main".into(),
-            target_shard_id: ShardId::new(3),
             operations: vec![OrderedMixedBatchOperationV1::Edge(
                 OrderedMixedEdgeInsertPublicItemV1 {
                     source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),

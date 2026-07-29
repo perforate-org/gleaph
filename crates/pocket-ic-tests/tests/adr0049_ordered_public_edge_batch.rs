@@ -4,13 +4,13 @@ use gleaph_gql::Value;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, RouterError, encode_global_vertex_id};
 use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, SOURCE_SHARD, admin_intern_edge_label, admin_intern_property,
-    admin_intern_vertex_label, arm_router_fault, e2e_insert_vertex,
-    e2e_reverse_resolved_edge_property, evict_graph_mutation_journal,
-    execute_ordered_edge_batch_as_admin, execute_ordered_mixed_batch_as_admin,
-    execute_ordered_vertex_batch_as_admin, federation_graph_element_id_encoding_key_bytes,
-    gql_execute_idempotent_as_admin, gql_query_as_admin, install_single_shard_federation,
-    mutation_status_as_admin, run_router_recovery_timer,
+    FederationEnv, admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
+    arm_router_fault, e2e_insert_vertex, e2e_reverse_resolved_edge_property,
+    evict_graph_mutation_journal, execute_ordered_edge_batch_as_admin,
+    execute_ordered_mixed_batch_as_admin, execute_ordered_vertex_batch_as_admin,
+    federation_graph_element_id_encoding_key_bytes, gql_execute_idempotent_as_admin,
+    gql_query_as_admin, install_single_shard_federation, mutation_status_as_admin,
+    run_router_recovery_timer,
 };
 use gleaph_router::types::{
     OrderedEdgeBatchPublicRequest, OrderedEdgeBatchPublicRequestV1, OrderedEdgeInsertPublicItemV1,
@@ -24,7 +24,6 @@ fn ordered_vertex_request(key: &str) -> OrderedVertexBatchPublicRequest {
     OrderedVertexBatchPublicRequest::V1(OrderedVertexBatchPublicRequestV1 {
         client_mutation_key: key.into(),
         logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
-        target_shard_id: SOURCE_SHARD,
         items: vec![
             OrderedVertexInsertPublicItemV1 {
                 vertex_labels: vec!["Person".into()],
@@ -64,7 +63,6 @@ fn ordered_mixed_request(env: &FederationEnv, key: &str) -> OrderedMixedBatchPub
     OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
         client_mutation_key: key.into(),
         logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
-        target_shard_id: SOURCE_SHARD,
         operations: vec![
             OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
                 vertex_labels: vec!["Person".into()],

@@ -3,7 +3,13 @@
 Date: 2026-07-23
 Status: Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 09:44:48 UTC +0000
+Anchor timestamp: 2026-07-29 09:55:36 UTC +0000
+
+The 2026-07-29 public-surface correction removes physical `target_shard_id`
+from the vertex and mixed V1 requests. Earlier implementation-slice notes
+below that mention explicit target-shard selection describe the superseded
+intermediate shape; the active contract follows ADR 0029's Router-owned
+latest-shard placement rule.
 
 ## Context
 
@@ -248,6 +254,17 @@ Complete-set preflight, request-local endpoint resolution, and the public mixed
 vertex/edge contract are implemented for the current single-shard v1 boundary.
 Free-span-aware placement remains an internal optimization opportunity, not an
 unimplemented public capability.
+
+Placement is selected by Router's existing federation contract, not by the
+public batch caller. A vertex-only batch has no existing endpoint and is placed
+on the live shard with the greatest graph-local `shard_id` (the graph's latest
+shard), using `latest_shard_routing`. A mixed batch with existing endpoints is
+placed on their one common shard; a mixed batch whose endpoints are all
+request-local new-vertex ordinals uses the same latest-shard rule. Existing
+endpoints resolving to different shards are rejected before the replay envelope
+is persisted. The resolved `target_shard_id` and canister principal are
+internal Router-to-Graph envelope fields only; neither is part of the public
+V1 request or its public fingerprint.
 
 Edges are placed after the vertex phase because an edge may refer to a vertex
 created earlier in the same request. The edge phase reuses the existing
@@ -2399,7 +2416,8 @@ At minimum, implementation must cover:
 - cross-shard logical edge or multi-shard public-batch rejection before active
   ordered payload persistence or any Graph dispatch;
 - public vertex-only and mixed vertex/edge operations, with generated SDK
-  builders, explicit target-shard selection, and request-local vertex ordinals;
+  builders, Router-owned latest/anchor placement selection, and request-local
+  vertex ordinals;
 - vertex-only bulk placement proving cheaper row publication than the generic
   per-operation `InsertVertex` runner without changing allocated `VertexId`
   semantics or exposing physical locations;
@@ -2655,7 +2673,10 @@ and split invariant ownership. Rejected.
   request-kind-aware ordered retirement predicate.
 - ADR 0029 permits bounded autonomous retirement recovery as post-canonical
   work and exact journal-only reconciliation of an ordered unknown canonical
-  outcome while continuing to forbid background canonical redispatch.
+  outcome while continuing to forbid background canonical redispatch. Its
+  latest-shard placement rule is also the source of truth for unanchored
+  ordered vertex and mixed batches; the public API does not select a physical
+  shard.
 - `design/storage/lara.md` records ADR 0049 as partially implemented and
   distinguishes its active order contract and scalar fallback from the
   implemented ADR 0045 substrate.
