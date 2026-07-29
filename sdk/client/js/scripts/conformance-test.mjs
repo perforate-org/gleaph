@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { encodeCanonicalGqlValue, bytesToHex } from "../src/canonical-value.ts";
 import { makeOrderedEdgeBatchPublicRequest } from "../src/ordered-edge-batch.ts";
 import { makeOrderedVertexBatchPublicRequest } from "../src/ordered-vertex-batch.ts";
+import { makeOrderedMixedBatchPublicRequest } from "../src/ordered-mixed-batch.ts";
 
 const fixturePath = new URL(
   "../../../../crates/graph-kernel/conformance/gql_value_vectors.json",
@@ -115,6 +116,38 @@ if (
   throw new Error("ordered vertex public request does not canonicalize catalog order");
 }
 
+const orderedMixedRequest = makeOrderedMixedBatchPublicRequest({
+  client_mutation_key: "sdk-mixed-conformance",
+  logical_graph_name: "tenant.main",
+  target_shard_id: 7,
+  operations: [
+    { vertex: { vertex_labels: ["User", "Person"], initial_properties: { zeta: { Int64: 7n } } } },
+    {
+      edge: {
+        source: { new_vertex_ordinal: 0 },
+        target: { existing: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]) },
+        directed: true,
+        edge_label_name: "follows",
+        inline_property: { Text: "inline" },
+        initial_edge_properties: { alpha: { Text: "first" } },
+      },
+    },
+  ],
+});
+const [mixedVertex, mixedEdge] = orderedMixedRequest.V1.operations;
+if (
+  !mixedVertex ||
+  !("Vertex" in mixedVertex) ||
+  mixedVertex.Vertex.vertex_labels.join(",") !== "Person,User" ||
+  !mixedEdge ||
+  !("Edge" in mixedEdge) ||
+  mixedEdge.Edge.source.NewVertexOrdinal !== 0 ||
+  mixedEdge.Edge.edge_label_name.length !== 1 ||
+  mixedEdge.Edge.inline_property.length !== 1
+) {
+  throw new Error("ordered mixed public request does not preserve the canonical Candid shape");
+}
+
 function assertBuilderRejects(input, name, builder = makeOrderedEdgeBatchPublicRequest) {
   let rejected = false;
   try {
@@ -138,6 +171,35 @@ assertBuilderRejects(
     ],
   },
   "invalid endpoint width",
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "missing-edge",
+    logical_graph_name: "tenant.main",
+    target_shard_id: 0,
+    operations: [{ vertex: { vertex_labels: ["Person"] } }],
+  },
+  "mixed request without edge",
+  makeOrderedMixedBatchPublicRequest,
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "invalid-ordinal",
+    logical_graph_name: "tenant.main",
+    target_shard_id: 0,
+    operations: [
+      { vertex: {} },
+      {
+        edge: {
+          source: { new_vertex_ordinal: -1 },
+          target: { existing: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]) },
+          directed: true,
+        },
+      },
+    ],
+  },
+  "negative mixed vertex ordinal",
+  makeOrderedMixedBatchPublicRequest,
 );
 assertBuilderRejects(
   {
@@ -176,5 +238,5 @@ assertBuilderRejects(
 );
 
 console.log(
-  `sdk/js conformance: ${fixture.vectors.length} value vectors and ordered edge/vertex request builders passed`,
+  `sdk/js conformance: ${fixture.vectors.length} value vectors and ordered edge/vertex/mixed request builders passed`,
 );

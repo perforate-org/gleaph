@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 05:10:07 UTC +0000
+Anchor timestamp: 2026-07-29 05:13:11 UTC +0000
 
 ## Context
 
@@ -2165,6 +2165,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     receipt and after Graph retirement acknowledgement. Both cases verify the
     durable lifecycle converges to `Completed` and an exact retry replays the
     same mutation identity; the broader failure matrix remains open.
+42. **Partially implemented (2026-07-29 05:13:11 UTC +0000):** The JavaScript
+    SDK now exposes a mixed ordered-batch builder with canonical value encoding,
+    UTF-8 catalog/property ordering, Candid option shapes, request-local vertex
+    ordinals, and boundary rejection. Its conformance script covers the mixed
+    success shape and missing-edge/invalid-ordinal cases; the complete SDK
+    conformance matrix remains open.
 
 ## Test contract
 

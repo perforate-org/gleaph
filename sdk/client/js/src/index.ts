@@ -47,6 +47,20 @@ export type {
   OrderedVertexInsertPublicItem,
   OrderedVertexInsertPublicItemInput,
 } from "./ordered-vertex-batch";
+export { makeOrderedMixedBatchPublicRequest } from "./ordered-mixed-batch";
+export type {
+  OrderedMixedBatchOperation,
+  OrderedMixedBatchOperationInput,
+  OrderedMixedBatchPublicRequest,
+  OrderedMixedBatchPublicRequestInput,
+  OrderedMixedBatchPublicRequestV1,
+  OrderedMixedEdgeInsertPublicItem,
+  OrderedMixedEdgeInsertPublicItemInput,
+  OrderedMixedEndpoint,
+  OrderedMixedEndpointInput,
+  OrderedVertexInsertPublicItem,
+  OrderedVertexInsertPublicItemInput,
+} from "./ordered-mixed-batch";
 export {
   fromApiValue,
   isApiValue,
