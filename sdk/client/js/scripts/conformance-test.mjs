@@ -184,6 +184,101 @@ assertBuilderRejects(
 );
 assertBuilderRejects(
   {
+    client_mutation_key: "missing-vertex",
+    logical_graph_name: "tenant.main",
+    target_shard_id: 0,
+    operations: [
+      {
+        edge: {
+          source: { new_vertex_ordinal: 0 },
+          target: { existing: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]) },
+          directed: true,
+        },
+      },
+    ],
+  },
+  "mixed request without vertex",
+  makeOrderedMixedBatchPublicRequest,
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "invalid-existing-endpoint",
+    logical_graph_name: "tenant.main",
+    target_shard_id: 0,
+    operations: [
+      { vertex: {} },
+      {
+        edge: {
+          source: { new_vertex_ordinal: 0 },
+          target: { existing: Uint8Array.of(2) },
+          directed: true,
+        },
+      },
+    ],
+  },
+  "mixed existing endpoint width",
+  makeOrderedMixedBatchPublicRequest,
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "invalid-label",
+    logical_graph_name: "tenant.main",
+    target_shard_id: 0,
+    operations: [
+      { vertex: {} },
+      {
+        edge: {
+          source: { new_vertex_ordinal: 0 },
+          target: { existing: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]) },
+          directed: true,
+          edge_label_name: "",
+        },
+      },
+    ],
+  },
+  "mixed empty edge label",
+  makeOrderedMixedBatchPublicRequest,
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "invalid-property",
+    logical_graph_name: "tenant.main",
+    target_shard_id: 0,
+    operations: [
+      { vertex: { initial_properties: { "": { Text: "invalid" } } } },
+      {
+        edge: {
+          source: { new_vertex_ordinal: 0 },
+          target: { existing: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]) },
+          directed: true,
+        },
+      },
+    ],
+  },
+  "mixed empty property name",
+  makeOrderedMixedBatchPublicRequest,
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "invalid-forward-ordinal",
+    logical_graph_name: "tenant.main",
+    target_shard_id: 0,
+    operations: [
+      { vertex: {} },
+      {
+        edge: {
+          source: { new_vertex_ordinal: 1 },
+          target: { existing: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]) },
+          directed: true,
+        },
+      },
+    ],
+  },
+  "mixed forward vertex ordinal",
+  makeOrderedMixedBatchPublicRequest,
+);
+assertBuilderRejects(
+  {
     client_mutation_key: "invalid-ordinal",
     logical_graph_name: "tenant.main",
     target_shard_id: 0,

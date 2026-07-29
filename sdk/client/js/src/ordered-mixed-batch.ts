@@ -91,7 +91,11 @@ function properties(values: Record<string, ApiValue> | undefined): OrderedEdgePr
   }));
 }
 
-function endpoint(value: OrderedMixedEndpointInput, ordinal: number): OrderedMixedEndpoint {
+function endpoint(
+  value: OrderedMixedEndpointInput,
+  ordinal: number,
+  vertexCount: number,
+): OrderedMixedEndpoint {
   if ("existing" in value) {
     if (value.existing.byteLength !== 8) {
       throw new Error(`operations[${ordinal}] endpoint must be exactly 8 bytes`);
@@ -100,6 +104,9 @@ function endpoint(value: OrderedMixedEndpointInput, ordinal: number): OrderedMix
   }
   if (!Number.isInteger(value.new_vertex_ordinal) || value.new_vertex_ordinal < 0) {
     throw new Error(`operations[${ordinal}] new_vertex_ordinal must be a non-negative integer`);
+  }
+  if (value.new_vertex_ordinal >= vertexCount) {
+    throw new Error(`operations[${ordinal}] new_vertex_ordinal is out of range`);
   }
   return { NewVertexOrdinal: value.new_vertex_ordinal };
 }
@@ -115,8 +122,12 @@ export function makeOrderedMixedBatchPublicRequest(
   if (input.logical_graph_name.length === 0) {
     throw new Error("logical_graph_name must not be empty");
   }
-  if (!Number.isInteger(input.target_shard_id) || input.target_shard_id < 0) {
-    throw new Error("target_shard_id must be a non-negative integer");
+  if (
+    !Number.isInteger(input.target_shard_id) ||
+    input.target_shard_id < 0 ||
+    input.target_shard_id > 0xffff_ffff
+  ) {
+    throw new Error("target_shard_id must be a uint32");
   }
   if (input.operations.length === 0 || input.operations.length > MAX_ITEMS) {
     throw new Error("operations must contain 1..=1024 entries");
@@ -127,6 +138,7 @@ export function makeOrderedMixedBatchPublicRequest(
   if (!input.operations.some((operation) => "edge" in operation)) {
     throw new Error("operations must contain at least one edge");
   }
+  const vertexCount = input.operations.filter((operation) => "vertex" in operation).length;
 
   return {
     V1: {
@@ -160,8 +172,8 @@ export function makeOrderedMixedBatchPublicRequest(
         }
         return {
           Edge: {
-            source: endpoint(item.source, ordinal),
-            target: endpoint(item.target, ordinal),
+            source: endpoint(item.source, ordinal, vertexCount),
+            target: endpoint(item.target, ordinal, vertexCount),
             directed: item.directed,
             edge_label_name: option(item.edge_label_name),
             inline_property: option(inline),

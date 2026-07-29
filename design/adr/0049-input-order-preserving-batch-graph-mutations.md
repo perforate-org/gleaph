@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 05:13:11 UTC +0000
+Anchor timestamp: 2026-07-29 05:17:17 UTC +0000
 
 ## Context
 
@@ -2171,6 +2171,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     ordinals, and boundary rejection. Its conformance script covers the mixed
     success shape and missing-edge/invalid-ordinal cases; the complete SDK
     conformance matrix remains open.
+43. **Partially implemented (2026-07-29 05:17:17 UTC +0000):** The mixed SDK
+    conformance matrix now covers missing vertex/edge operations, uint32 shard
+    bounds, existing-endpoint width, forward ordinal range, empty edge labels,
+    and empty property names. Duplicate property-name cases remain represented
+    by the Rust/Candid boundary because the JS input uses a Record and cannot
+    express duplicate keys.
 
 ## Test contract
 
