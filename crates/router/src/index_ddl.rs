@@ -228,10 +228,13 @@ fn parse_on_property(cur: &mut Cursor<'_>) -> Result<String, IndexDdlParseError>
     cur.skip_ws();
     let _var = cur.parse_ident()?;
     cur.expect('.')?;
-    let property = cur.parse_ident()?;
+    let mut parts = vec![cur.parse_ident()?];
+    while cur.try_consume('.') {
+        parts.push(cur.parse_ident()?);
+    }
     cur.skip_ws();
     cur.expect(')')?;
-    Ok(property)
+    Ok(parts.join("."))
 }
 
 struct Cursor<'a> {
@@ -405,6 +408,16 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn create_edge_index_accepts_nested_property_path() {
+        let parsed =
+            parse_ok("CREATE INDEX affinity_score FOR ()-[e:AFFINITY]-() ON (e.stats.score)");
+        let IndexDdlStatement::Create { target, .. } = parsed else {
+            panic!("expected create");
+        };
+        assert_eq!(target.property, "stats.score");
     }
 
     #[test]

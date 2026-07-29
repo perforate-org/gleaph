@@ -186,8 +186,10 @@ explicit `ResolvedLabelTable`.
 offset, exact scalar profile) for each fixed-size inline struct field. It validates the projection
 against the inline property bytes width and decodes the inline property bytes into a declaration-ordered GQL `Value::Record`;
 `e.stats.field` works uniformly in projection, filter, comparison, aggregate input, and `ORDER BY`.
-**Struct mutation packing:** remains planned (Slice 26). `COST BY` over a struct field and property
-indexes on inline struct fields also remain planned.
+**Struct mutation packing:** implemented (Slice 25). `COST BY` over a struct field is implemented,
+and inline struct leaf indexes are implemented: the Router interns each dotted leaf path as a
+property identity and Graph decodes that leaf from canonical inline property bytes for posting
+maintenance.
 
 ## Mutation write semantics (implemented)
 

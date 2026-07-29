@@ -360,6 +360,15 @@ impl EdgeInlinePropertySchemaRecord {
             Self::UnnamedProfile { .. } => None,
         }
     }
+
+    pub fn inline_struct_field_paths(&self) -> Vec<String> {
+        match self {
+            Self::InlineStruct { field_specs, .. } => {
+                field_specs.iter().map(|field| field.name.clone()).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
 }
 
 const SCHEMA_RECORD_VERSION: u8 = 2;

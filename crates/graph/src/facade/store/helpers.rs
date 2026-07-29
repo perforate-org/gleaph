@@ -17,7 +17,7 @@ use ic_stable_lara::{
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-use crate::property::dispatch_inline_scalar_index_removal;
+use crate::property::dispatch_inline_index_removals;
 
 pub(super) struct GraphSidecarMoveObserver {
     pub(super) inline_moves: Vec<(VertexId, EdgeSlotMove)>,
@@ -84,7 +84,7 @@ impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
                 None => return,
             }
         };
-        let _ = dispatch_inline_scalar_index_removal(
+        let _ = dispatch_inline_index_removals(
             canonical.owner_vertex_id,
             canonical.label_id.raw(),
             canonical.slot_index.raw(),

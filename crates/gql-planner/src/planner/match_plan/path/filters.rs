@@ -347,15 +347,27 @@ fn find_first_indexed_edge_eq_in_conjunctions(
 pub(super) fn parse_edge_var_property_equality(expr: &Expr) -> Option<(String, String, ScanValue)> {
     if let ExprKind::Compare { left, op, right } = &expr.kind
         && *op == CmpOp::Eq
-        && let ExprKind::PropertyAccess {
-            expr: inner,
-            property,
-        } = &left.kind
-        && let ExprKind::Variable(v) = &inner.kind
+        && let Some((v, property)) = edge_property_access_path(left)
     {
         return anchor::scan_value_from_expr(right).map(|sv| (v.clone(), property.clone(), sv));
     }
     None
+}
+
+fn edge_property_access_path(expr: &Expr) -> Option<(String, String)> {
+    match &expr.kind {
+        ExprKind::PropertyAccess {
+            expr: inner,
+            property,
+        } => {
+            if let ExprKind::Variable(variable) = &inner.kind {
+                return Some((variable.clone(), property.clone()));
+            }
+            let (variable, prefix) = edge_property_access_path(inner)?;
+            Some((variable, format!("{prefix}.{property}")))
+        }
+        _ => None,
+    }
 }
 
 fn strip_edge_var_prop_eq_from_where(where_conjuncts: &mut Vec<Expr>, edge_var: &str, prop: &str) {

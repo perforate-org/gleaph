@@ -77,6 +77,35 @@ pub(crate) fn should_maintain_edge_posting(wire_label_id: u16, property_id: Prop
     )
 }
 
+/// Return the indexed edge-property identities applicable to one physical edge label. The
+/// returned property id is the posting key: for an inline struct leaf it is the Router-interned
+/// dotted field property id, while `field_path` identifies the corresponding decoded leaf.
+pub(crate) fn indexed_edge_memberships(
+    wire_label_id: u16,
+    inline_property_id: PropertyId,
+) -> Vec<(PropertyId, String)> {
+    with_catalog(
+        |catalog| {
+            catalog
+                .edge_indexes
+                .iter()
+                .filter(|m| {
+                    edge_posting_matches_registration(wire_label_id, m.label_id, m.direction_tag)
+                })
+                .filter_map(|m| {
+                    if m.field_path.is_empty() {
+                        (m.property_id == inline_property_id.raw())
+                            .then(|| (PropertyId::from_raw(m.property_id), String::new()))
+                    } else {
+                        Some((PropertyId::from_raw(m.property_id), m.field_path.clone()))
+                    }
+                })
+                .collect()
+        },
+        Vec::new(),
+    )
+}
+
 fn edge_posting_matches_registration(wire_label_id: u16, label_id: u16, direction_tag: u8) -> bool {
     use ic_stable_lara::labeled::BUCKET_LABEL_DIRECTED_BIT;
     let wire = LaraLabelId::from_raw(wire_label_id);
@@ -206,6 +235,7 @@ mod tests {
                 label_id: label.raw(),
                 property_id: property.raw(),
                 direction_tag: 1,
+                field_path: String::new(),
             }],
             ..Default::default()
         });
@@ -275,11 +305,81 @@ mod tests {
                 label_id: 1,
                 property_id: 1,
                 direction_tag: 1, // PointingRight: directed only
+                field_path: String::new(),
             }],
             ..Default::default()
         });
         assert!(should_maintain_edge_posting(0x8001, pid));
         assert!(!should_maintain_edge_posting(0x0001, pid));
+    }
+
+    #[test]
+    fn indexed_inline_struct_field_emits_leaf_posting() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_index_canister: None,
+            }))
+            .expect("configure index routing");
+        crate::index::edge_pending::clear_pending();
+
+        let label = EdgeLabelId::from_raw(2);
+        let top_property = PropertyId::from_raw(910);
+        let field_property = PropertyId::from_raw(911);
+        let scalar = EdgeInlinePropertyProfile {
+            byte_width: 4,
+            encoding: EdgeInlinePropertyEncoding::F32,
+        };
+        crate::test_labels::install_test_edge_inline_struct_property(
+            label,
+            top_property,
+            vec![
+                ("stats.score".into(), 0, scalar.clone()),
+                ("stats.confidence".into(), 4, scalar),
+            ],
+        );
+        crate::test_labels::install_test_edge_inline_property_profile(
+            label,
+            EdgeInlinePropertyProfile {
+                byte_width: 8,
+                encoding: EdgeInlinePropertyEncoding::RawBytes,
+            },
+        );
+        let _catalog = enter(IndexedPropertyCatalog {
+            edge_property_ids: vec![field_property.raw()],
+            edge_indexes: vec![IndexedEdgeMembership {
+                label_id: label.raw(),
+                property_id: field_property.raw(),
+                direction_tag: 1,
+                field_path: "stats.score".into(),
+            }],
+            ..Default::default()
+        });
+
+        let source = store.insert_vertex().expect("source");
+        let target = store.insert_vertex().expect("target");
+        store
+            .insert_directed_edge_with_inline_property_bytes(
+                source,
+                target,
+                Some(label),
+                &[1.5f32.to_le_bytes(), 0.25f32.to_le_bytes()].concat(),
+            )
+            .expect("insert inline struct edge");
+        let pending = crate::index::edge_pending::take_pending();
+        assert!(matches!(
+            pending.as_slice(),
+            [crate::index::edge_pending::PendingEdgePostingOp::Insert {
+                property_id,
+                payload_bytes,
+                ..
+            }] if *property_id == field_property.raw()
+                && *payload_bytes == gleaph_gql::value_to_index_key_bytes(&Value::Float32(1.5)).unwrap().unwrap()
+        ));
+        store.set_federation_routing(None).expect("clear routing");
     }
 
     #[test]

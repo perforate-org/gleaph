@@ -12,6 +12,7 @@ use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 
 use crate::edge_index_direction::tag_from_byte;
 use crate::facade::stable::{ROUTER_INDEXED_PROPERTY_SET, ROUTER_NAMED_INDEXES};
+use crate::facade::store::RouterStore;
 use crate::planner_stats::{EdgeIndexMembership, RouterGraphStats};
 use crate::state::RouterError;
 
@@ -210,6 +211,11 @@ pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
                 property_id: def.property_id,
                 label_id: def.label_id,
                 direction: tag,
+                field_path: RouterStore::new()
+                    .reverse_property_name(graph_id, def.property_id)
+                    .ok()
+                    .filter(|name| name.contains('.'))
+                    .unwrap_or_default(),
             });
         }
     });

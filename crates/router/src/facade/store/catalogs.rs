@@ -487,8 +487,6 @@ impl RouterStore {
             }
         }
 
-        // Struct inline fields still have no field-level index maintenance. Scalar inline values
-        // are maintained by Graph and may coexist with a property index.
         if let Some(label_id) = existing_label_id
             && let Some(property_id) = existing_property_id
             && edge_index_uses_property_label(graph_id, property_id, label_id.raw())
@@ -509,10 +507,22 @@ impl RouterStore {
                 .with_borrow(|catalog| catalog.peek_next_id(graph_id, property_name))
                 .map_err(|e| catalog_error_to_router(e, "property"))?;
         }
+        for field in layout.field_specs() {
+            let field_name = format!("{property_name}.{}", field.name);
+            ROUTER_PROPERTY_CATALOG
+                .with_borrow(|catalog| catalog.peek_next_id(graph_id, &field_name))
+                .map_err(|e| catalog_error_to_router(e, "property"))?;
+        }
 
         // --- commit: idempotent intern + schema record write ---
         let label_id = Self::commit_intern_edge_label_name(graph_id, edge_label_name)?;
         let property_id = Self::commit_intern_property_name(graph_id, property_name)?;
+        for field in layout.field_specs() {
+            Self::commit_intern_property_name(
+                graph_id,
+                &format!("{property_name}.{}", field.name),
+            )?;
+        }
         ROUTER_EDGE_INLINE_PROPERTY_PROFILES
             .with_borrow_mut(|store| {
                 store.set_inline_struct_schema(graph_id, label_id, property_id, layout)

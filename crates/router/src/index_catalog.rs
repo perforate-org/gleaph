@@ -78,12 +78,9 @@ async fn create_index(
         ) as u8,
     };
 
-    // Struct inline properties still have no field-level index maintenance. Scalar inline
-    // properties are maintained from their fixed-width bytes by Graph, so they may coexist with
-    // an edge property index.
     if target.kind == IndexedPropertyKind::Edge
-        && ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|store| {
-            store
+        && ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|profiles| {
+            profiles
                 .get_record(graph_id, EdgeLabelId::from_raw(label_id))
                 .is_some_and(|record| {
                     record.is_inline_struct() && record.inline_property_id() == Some(property_id)
@@ -91,9 +88,34 @@ async fn create_index(
         })
     {
         return Err(RouterError::Conflict(format!(
-            "edge label {} has an inline struct schema for property {}; field-level inline indexes are not supported",
+            "edge label {} has an inline struct property {}; index a leaf field instead",
             target.label, target.property
         )));
+    }
+    if target.kind == IndexedPropertyKind::Edge && target.property.contains('.') {
+        let (top, _) = target
+            .property
+            .split_once('.')
+            .expect("contains dot implies split_once");
+        let top_id = store.lookup_property_id(graph_id, top)?;
+        let is_field = ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|profiles| {
+            profiles
+                .get_record(graph_id, EdgeLabelId::from_raw(label_id))
+                .is_some_and(|record| {
+                    record.is_inline_struct()
+                        && record.inline_property_id() == Some(top_id)
+                        && record
+                            .inline_struct_field_paths()
+                            .iter()
+                            .any(|p| p == &target.property)
+                })
+        });
+        if !is_field {
+            return Err(RouterError::InvalidArgument(format!(
+                "edge index property {} is not an inline struct leaf on label {}",
+                target.property, target.label
+            )));
+        }
     }
 
     let entry = IndexCatalogEntry {

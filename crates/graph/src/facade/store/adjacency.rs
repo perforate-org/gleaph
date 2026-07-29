@@ -7,8 +7,8 @@ use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use crate::property::{
-    PropertyValueChange, dispatch_inline_scalar_index_removal, dispatch_property_index_ops,
-    inline_scalar_index_value,
+    PropertyValueChange, dispatch_inline_index_removals, dispatch_property_index_ops,
+    inline_index_values,
 };
 
 /// Local edge insert journal payload after LARA reports the canonical handle.
@@ -64,7 +64,7 @@ impl GraphStore {
             } else {
                 None
             };
-        dispatch_inline_scalar_index_removal(
+        dispatch_inline_index_removals(
             canonical.owner_vertex_id,
             canonical.label_id.raw(),
             canonical.slot_index.raw(),
@@ -139,8 +139,8 @@ impl GraphStore {
             spec.inline_property_bytes,
             spec.canonical,
         )?;
-        if let Some((property_id, value)) =
-            inline_scalar_index_value(spec.canonical.label_id.raw(), spec.inline_property_bytes)
+        for (property_id, value) in
+            inline_index_values(spec.canonical.label_id.raw(), spec.inline_property_bytes)
                 .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?
         {
             dispatch_property_index_ops(PropertyValueChange::edge(

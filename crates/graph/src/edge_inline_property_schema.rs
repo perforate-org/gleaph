@@ -62,6 +62,16 @@ pub(crate) fn resolved_edge_label_with(
     }
     #[cfg(any(test, feature = "canbench"))]
     {
+        if let Some(schema) = crate::test_labels::edge_inline_struct_schema_for_id(label) {
+            let profile = crate::test_labels::edge_inline_property_profile_for_id(label)?;
+            let name = crate::test_labels::edge_label_name_for_id(label).unwrap_or_default();
+            return Some(ResolvedEdgeLabel::with_inline_schema(
+                name,
+                label,
+                profile,
+                Some(schema),
+            ));
+        }
         let profile = crate::test_labels::edge_inline_property_profile_for_id(label)?;
         if profile.required_byte_width() == 0 {
             return None;

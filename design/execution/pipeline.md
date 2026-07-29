@@ -224,7 +224,7 @@ Projection, filtering, comparison, aggregate input, `ORDER BY`, and shortest-pat
 
 ### Inline edge property mutation packing
 
-Ordinary GQL edge mutations for an `InlineScalar` edge label write the named inline property only through the fixed-width inline property bytes slot, never through the sidecar `EDGE_PROPERTIES` store or a Property Index maintenance queue. For an `InlineStruct` edge label, any edge mutation path that writes or removes a property (insert, `SET e.prop`, all-properties replacement, or `REMOVE e.prop`) is rejected fail-closed until Slice 26. This is a label-wide schema gate: even sidecar property SET/REMOVE on a Struct-labeled edge cannot fall through, because Slice 25 defines no mutation contract for that label shape.
+Ordinary GQL edge mutations for an `InlineScalar` edge label write the named inline property only through the fixed-width inline property bytes slot, never through the sidecar `EDGE_PROPERTIES` store or a Property Index maintenance queue. For an `InlineStruct` edge label, full and field-level mutation paths pack the canonical inline property bytes; the top-level struct property never falls through to sidecar storage. Leaf index postings are decoded from those same bytes and updated with the ordinary edge posting lifecycle.
 
 1. The mutation executor resolves the concrete edge label and reads `inline_schema` from the `ResolvedEdgeLabel` projection supplied by the Router; for a scalar schema it derives the inline property profile from the same projection.
 2. Before any adjacency record is created, every assignment for the mutation is evaluated, property

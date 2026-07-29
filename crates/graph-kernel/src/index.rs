@@ -514,13 +514,14 @@ pub struct RegisterIndexedEdgeIndexArgs {
 }
 
 /// One edge index membership `(label, property, direction)` in [`IndexedPropertyCatalog`].
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct IndexedEdgeMembership {
     pub label_id: u16,
     pub property_id: u32,
     pub direction_tag: u8,
+    /// Empty for a scalar/top-level edge property; the canonical dotted path for an inline
+    /// struct leaf otherwise (for example, `stats.score`).
+    pub field_path: String,
 }
 
 /// Router-sourced snapshot of which properties are indexed (ADR 0023 D1/D3).

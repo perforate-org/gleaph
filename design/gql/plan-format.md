@@ -268,7 +268,7 @@ For `InsertEdge` and edge-target `SetProperties` / `SetProperties::AllProperties
 Graph classifies evaluated assignments using the `ResolvedEdgeLabel.inline_schema` projection:
 
 - For an `InlineScalar` schema, exactly one assignment for the property id is required. Missing, duplicate, `NULL`, overflowing, signedness-mismatched, non-finite, or malformed fixed-byte values fail closed before any storage write.
-- For an `InlineStruct` schema, any edge mutation path (insert, `SET e.prop`, all-properties replacement, or `REMOVE e.prop`) is rejected fail-closed until Slice 26. This is a label-wide gate: even sidecar property SET/REMOVE on a Struct-labeled edge cannot fall through, because Slice 25 defines no mutation contract for that label shape. The top-level struct property is never written to sidecar state.
+- For an `InlineStruct` schema, full and field-level edge mutation paths use the canonical inline property bytes and never write the top-level struct property to sidecar state. Leaf indexes use the Router-interned dotted field property identity and are maintained from the same bytes.
 - The inline property is encoded into the exact fixed-width inline property bytes using one Graph-owned scalar
   codec shared with read and predicate paths.
 - `InsertEdge` calls the existing inline-property-bytes-aware edge insert commits (`insert_*_edge_with_inline_property_bytes`)

@@ -13,9 +13,7 @@ use gleaph_graph_kernel::index::IndexedPropertyKind;
 use crate::edge_index_direction::{
     EdgeIndexDirectionTag, index_applies_to_query, tag_to_direction,
 };
-use crate::facade::stable::{
-    ROUTER_EDGE_INLINE_PROPERTY_PROFILES, ROUTER_EDGE_LABEL_CATALOG, ROUTER_PROPERTY_CATALOG,
-};
+use crate::facade::stable::ROUTER_PROPERTY_CATALOG;
 use crate::facade::store::RouterStore;
 
 /// One administrator-defined index (ADR 0009 §4).
@@ -29,11 +27,12 @@ pub struct IndexCatalogEntry {
 }
 
 /// Semantic identity of an edge property index (ADR 0012).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgeIndexMembership {
     pub property_id: PropertyId,
     pub label_id: u16,
     pub direction: EdgeIndexDirectionTag,
+    pub field_path: String,
 }
 
 /// Per-graph indexed property membership for cost-based planning.
@@ -94,6 +93,7 @@ impl RouterGraphStats {
                     label_id: m.label_id,
                     property_id: m.property_id.raw(),
                     direction_tag: m.direction as u8,
+                    field_path: m.field_path.clone(),
                 })
                 .collect(),
         }
@@ -139,6 +139,8 @@ impl RouterGraphStats {
             self.edge_indexes.iter().any(|entry| {
                 entry.property_id == property_id
                     && entry.label_id == label_id
+                    && ((entry.field_path.is_empty() && !property.contains('.'))
+                        || entry.field_path == property)
                     && index_applies_to_query(tag_to_direction(entry.direction), query_direction)
             })
         })
@@ -179,50 +181,13 @@ impl GraphStats for RouterGraphStats {
         direction: EdgeDirection,
     ) -> bool {
         match label {
-            Some(label) => {
-                // Struct inline fields remain excluded because field-level index maintenance is
-                // not implemented. Scalar inline values are maintained as ordinary index values.
-                let label_id = RouterStore::new()
-                    .lookup_edge_label_id(self.graph_id, label)
-                    .ok();
-                let property_id = ROUTER_PROPERTY_CATALOG
-                    .with_borrow(|catalog| catalog.get_id(self.graph_id, property));
-                let inline_matches = label_id.is_some()
-                    && property_id.is_some()
-                    && ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|store| {
-                        store
-                            .get_record(self.graph_id, label_id.unwrap())
-                            .is_some_and(|record| {
-                                record.is_inline_struct()
-                                    && record.inline_property_id() == property_id
-                            })
-                    });
-                !inline_matches && self.is_edge_indexed_for(label, property, direction)
-            }
+            Some(label) => self.is_edge_indexed_for(label, property, direction),
             None => {
-                // Struct inline fields remain excluded from wildcard planning because their field
-                // postings are not maintained. Scalar inline properties share the same posting
-                // representation as sidecar values and can participate in the scan.
-                let Some(property_id) = ROUTER_PROPERTY_CATALOG
+                let Some(_property_id) = ROUTER_PROPERTY_CATALOG
                     .with_borrow(|catalog| catalog.get_id(self.graph_id, property))
                 else {
                     return false;
                 };
-                let any_label_is_inline = ROUTER_EDGE_LABEL_CATALOG.with_borrow(|catalog| {
-                    catalog.iter_ids_for_graph(self.graph_id).any(|label_id| {
-                        ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|store| {
-                            store
-                                .get_record(self.graph_id, label_id)
-                                .is_some_and(|record| {
-                                    record.is_inline_struct()
-                                        && record.inline_property_id() == Some(property_id)
-                                })
-                        })
-                    })
-                });
-                if any_label_is_inline {
-                    return false;
-                }
                 self.is_edge_property_indexed(property)
             }
         }
@@ -301,6 +266,7 @@ mod tests {
                 property_id,
                 label_id: 1,
                 direction: EdgeIndexDirectionTag::PointingRight,
+                field_path: String::new(),
             }]
             .into_iter()
             .collect(),
