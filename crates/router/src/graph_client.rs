@@ -9,8 +9,9 @@ use gleaph_graph_kernel::plan_exec::{
     GetMutationJournalEntriesArgs, GetMutationJournalEntriesResult, GraphMutationJournalEntryWire,
     GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult, GraphOrderedVertexBatchResult,
     LabelStatsDeltaEventWire, MutationId, OrderedEdgeBatchGraphArgs, OrderedMixedBatchGraphArgs,
-    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs,
-    OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementArgs, ShardEventSeq,
+    OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck, OrderedMutationRetirementArgs,
+    OrderedVertexBatchGraphArgs, OrderedVertexMutationRetirementAck,
+    OrderedVertexMutationRetirementArgs, ShardEventSeq,
 };
 
 #[cfg(target_family = "wasm")]
@@ -194,6 +195,17 @@ pub async fn retire_ordered_mutation_on_graph(
         call_graph_result(graph, "retire_ordered_mutation", args).await?;
     ack.validate()
         .map_err(|e| format!("ordered mutation retirement acknowledgement validation: {e}"))?;
+    Ok(ack)
+}
+
+pub async fn retire_ordered_mixed_mutation_on_graph(
+    graph: Principal,
+    args: OrderedMutationRetirementArgs,
+) -> Result<OrderedMixedMutationRetirementAck, String> {
+    let ack: OrderedMixedMutationRetirementAck =
+        call_graph_result(graph, "retire_ordered_mixed_mutation", args).await?;
+    ack.validate()
+        .map_err(|e| format!("ordered mixed retirement acknowledgement validation: {e}"))?;
     Ok(ack)
 }
 

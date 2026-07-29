@@ -10,7 +10,8 @@ use gleaph_graph_kernel::plan_exec::{
     GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult,
     GraphOrderedMixedBatchResultV1, GraphOrderedVertexBatchReceiptV1,
     GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1, LabelStatsDelta,
-    LabelStatsDeltaEventWire, MutationId, MutationJournalState, OrderedMutationRetirementAck,
+    LabelStatsDeltaEventWire, MutationId, MutationJournalState, OrderedMixedMutationRetirementAck,
+    OrderedMixedMutationRetirementAckV1, OrderedMutationRetirementAck,
     OrderedMutationRetirementAckV1, OrderedVertexMutationRetirementAck,
     OrderedVertexMutationRetirementAckV1, ShardEventSeq,
 };
@@ -546,6 +547,66 @@ impl GraphStore {
         graph_request_fingerprint: [u8; 32],
     ) -> Result<Option<OrderedMutationRetirementAck>, &'static str> {
         self.retire_ordered_mutation_at(ic_time_ns(), mutation_id, graph_request_fingerprint)
+    }
+
+    pub(crate) fn retire_ordered_mixed_mutation_at(
+        &self,
+        now_ns: u64,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<Option<OrderedMixedMutationRetirementAck>, &'static str> {
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+            let Some(mut entry) = journal.get(mutation_id) else {
+                return Ok(None);
+            };
+            let GraphMutationRequestIdentityV1::OrderedMixedBatch {
+                graph_request_fingerprint: stored_fingerprint,
+                logical_operation_count,
+                logical_vertex_count,
+                logical_edge_count,
+                ..
+            } = entry.request_identity()
+            else {
+                return Err("retirement requires an ordered mixed journal entry");
+            };
+            if *stored_fingerprint != graph_request_fingerprint {
+                return Err("retirement fingerprint conflicts with journal identity");
+            }
+            let receipt = GraphOrderedMixedBatchReceiptV1 {
+                logical_operation_count: u64::from(*logical_operation_count),
+                logical_vertex_count: u64::from(*logical_vertex_count),
+                logical_edge_count: u64::from(*logical_edge_count),
+                emitted_delta_first_seq: entry.emitted_delta_first_seq(),
+                emitted_delta_last_seq: entry.emitted_delta_last_seq(),
+                hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+            };
+            receipt.validate()?;
+            match entry.retirement() {
+                GraphMutationRetirementV1::Active => {
+                    entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: now_ns });
+                    journal.insert(entry);
+                }
+                GraphMutationRetirementV1::Retired { .. } => {}
+                GraphMutationRetirementV1::NotApplicable => {
+                    return Err("ordered mixed journal entry has no retirement state");
+                }
+            }
+            let ack = OrderedMixedMutationRetirementAck::V1(OrderedMixedMutationRetirementAckV1 {
+                mutation_id,
+                graph_request_fingerprint,
+                receipt,
+            });
+            ack.validate()?;
+            Ok(Some(ack))
+        })
+    }
+
+    pub(crate) fn retire_ordered_mixed_mutation(
+        &self,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<Option<OrderedMixedMutationRetirementAck>, &'static str> {
+        self.retire_ordered_mixed_mutation_at(ic_time_ns(), mutation_id, graph_request_fingerprint)
     }
 
     pub(crate) fn retire_ordered_vertex_mutation_at(

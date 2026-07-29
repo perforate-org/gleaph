@@ -151,6 +151,14 @@ fn retire_ordered_mutation(
     canister::handlers::retire_ordered_mutation(args)
 }
 
+/// Router → graph: fingerprint-bound ordered mixed mutation retirement (ADR 0049).
+#[update(guard = "guard_router_canister")]
+fn retire_ordered_mixed_mutation(
+    args: gleaph_graph_kernel::plan_exec::OrderedMutationRetirementArgs,
+) -> Result<gleaph_graph_kernel::plan_exec::OrderedMixedMutationRetirementAck, String> {
+    canister::handlers::retire_ordered_mixed_mutation(args)
+}
+
 #[query(guard = "guard_router_canister")]
 fn get_mutation_journal_entries(
     args: gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesArgs,

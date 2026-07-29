@@ -2392,6 +2392,36 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
             if matches!(replay.target.progress, OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(_))
                 && replay.target.projection_watermark.is_some()
     ));
+    store
+        .record_ordered_mixed_batch_retirement_pending(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+        )
+        .expect("mixed retirement pending");
+    store
+        .record_ordered_mixed_batch_retired(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            graph_fingerprint,
+            receipt.clone(),
+        )
+        .expect("mixed retirement complete");
+    let record = store
+        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .expect("mixed completed record");
+    assert!(matches!(
+        record.payload(),
+        RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+            receipt: persisted,
+            projection_watermark: _
+        } if persisted == &receipt
+    ));
+    assert_eq!(record.as_v1().completed_row_count, Some(2));
 }
 
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only

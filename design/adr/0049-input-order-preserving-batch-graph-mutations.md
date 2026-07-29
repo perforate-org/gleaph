@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 04:51:14 UTC +0000
+Anchor timestamp: 2026-07-29 04:57:09 UTC +0000
 
 ## Context
 
@@ -43,8 +43,9 @@ Router mixed public shape and the Graph-owned immutable mixed envelope are now
 defined and validated. Graph-side mixed phase execution, allocation-table
 resolution, and durable aggregate receipt/replay are active; Router mixed replay
 identity/target persistence, Graph dispatch, the canonical receipt transition,
-and the Router-owned label-stats projection transition are now active; retirement
-and recovery wiring remain planned. The existing generic
+and the Router-owned label-stats projection transition are now active; mixed
+fingerprint-bound retirement is now active, while background recovery wiring
+remains planned. The existing generic
 plan batch runner does not implement this protocol.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
@@ -2149,6 +2150,11 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     label-stats projection driver to `ProjectionAdvanced`, preserving the
     shard-scoped watermark in the durable replay target. Retirement and
     background recovery remain separate follow-up transitions.
+39. **Partially implemented (2026-07-29 04:57:09 UTC +0000):** Mixed replay
+    targets now enter `RetirementPending`, call a mixed-specific Graph retirement
+    endpoint, verify the aggregate receipt/fingerprint ack, and transition to
+    `CompletedOrderedMixedBatch` with the persisted projection watermark.
+    Background recovery for mixed records remains planned.
 
 ## Test contract
 

@@ -1157,6 +1157,139 @@ impl RouterStore {
         })
     }
 
+    pub fn record_ordered_mixed_batch_retirement_pending(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered mixed retirement pending".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered mixed retirement pending requires an OrderedMixedBatch payload"
+                            .into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered mixed retirement pending".into(),
+                ));
+            }
+            if replay.target.projection_watermark.is_none() {
+                return Err(RouterError::Conflict(
+                    "ordered mixed retirement requires a persisted projection watermark".into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt) => {
+                    replay.target.progress =
+                        OrderedMixedBatchTargetProgressV1::RetirementPending(receipt.clone());
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedMixedBatchTargetProgressV1::RetirementPending(_) => Ok(()),
+                _ => Err(RouterError::Conflict(
+                    "ordered mixed retirement pending conflicts with persisted progress".into(),
+                )),
+            }
+        })
+    }
+
+    pub fn record_ordered_mixed_batch_retired(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+        receipt: gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchReceiptV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
+        receipt
+            .validate()
+            .map_err(|error| RouterError::InvalidArgument(error.into()))?;
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered mixed retirement completion".into(),
+                ));
+            }
+            let watermark = match &v1.payload {
+                RouterMutationPayloadV1::OrderedMixedBatch(replay) => {
+                    if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                        return Err(RouterError::Conflict(
+                            "Graph request fingerprint mismatch at ordered mixed retirement completion".into(),
+                        ));
+                    }
+                    if !matches!(
+                        &replay.target.progress,
+                        crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::RetirementPending(existing_receipt)
+                            if existing_receipt == &receipt
+                    ) {
+                        return Err(RouterError::Conflict(
+                            "ordered mixed retirement completion requires RetirementPending progress".into(),
+                        ));
+                    }
+                    replay.target.projection_watermark.clone().ok_or_else(|| {
+                        RouterError::Conflict(
+                            "ordered mixed retirement completion requires a projection watermark".into(),
+                        )
+                    })?
+                }
+                RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+                    receipt: existing_receipt,
+                    ..
+                } if existing_receipt == &receipt => return Ok(()),
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered mixed retirement completion requires an ordered replay payload".into(),
+                    ));
+                }
+            };
+            v1.payload = RouterMutationPayloadV1::CompletedOrderedMixedBatch {
+                receipt,
+                projection_watermark: watermark,
+            };
+            v1.completed_row_count = Some(
+                match &v1.payload {
+                    RouterMutationPayloadV1::CompletedOrderedMixedBatch { receipt, .. } => {
+                        receipt.logical_operation_count
+                    }
+                    _ => unreachable!(),
+                },
+            );
+            v1.resolved_labels = None;
+            v1.resolved_properties = None;
+            v1.routing_in_progress = false;
+            v1.routing_lease_ns = None;
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
     pub fn record_ordered_vertex_batch_projection_pending(
         &self,
         caller: Principal,

@@ -31,8 +31,8 @@ use gleaph_graph_kernel::plan_exec::{
     GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult, GraphOrderedVertexBatchResult,
     GraphOrderedVertexBatchResultV1, MutationId, OrderedEdgeBatchGraphArgs,
     OrderedEdgeBatchGraphRequest, OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphRequest,
-    OrderedMixedGraphOperationV1, OrderedMutationRetirementAck, OrderedMutationRetirementArgs,
-    OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphRequest,
+    OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck,
+    OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphRequest,
     OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementArgs, ResolvedSearchWire,
     SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
 };
@@ -1361,6 +1361,17 @@ pub fn retire_ordered_mutation(
         .retire_ordered_mutation(args.mutation_id, args.graph_request_fingerprint)
         .map_err(str::to_string)?
         .ok_or_else(|| "ordered mutation journal entry not found".to_string())
+}
+
+/// Router → graph: retire an exact ordered mixed mutation after projection convergence.
+pub fn retire_ordered_mixed_mutation(
+    args: OrderedMutationRetirementArgs,
+) -> Result<OrderedMixedMutationRetirementAck, String> {
+    let OrderedMutationRetirementArgs::V1(args) = args;
+    GraphStore::new()
+        .retire_ordered_mixed_mutation(args.mutation_id, args.graph_request_fingerprint)
+        .map_err(str::to_string)?
+        .ok_or_else(|| "ordered mixed mutation journal entry not found".to_string())
 }
 
 /// Router → graph: retire an exact ordered vertex mutation after projection convergence.
