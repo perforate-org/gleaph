@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-07-25
-Anchor timestamp: 2026-07-25 01:42:16 UTC +0000
+Last updated: 2026-07-29
+Anchor timestamp: 2026-07-29 13:19:19 UTC +0000
 
 ## Status
 
@@ -303,6 +303,173 @@ defect from being rediscovered without its prior reasoning.
   `gql_run::tests::{block_match_next_insert_edge_keeps_endpoints,wire_block_match_next_insert_edge_keeps_endpoints,block_match_next_insert_edge_shares_source}`.
 - **Related contracts:** [gql/plan-format.md](gql/plan-format.md),
   [execution/pipeline.md](execution/pipeline.md)
+
+## Property and index capability gaps
+
+The following status was verified against the implementation at the anchor timestamp above.
+The canonical property-index contract remains [design/index/property-index.md](index/property-index.md);
+this section records only the remaining gaps and the boundary at which each one is owned.
+
+### Priority order
+
+| Priority | Work item | Current status |
+|---|---|---|
+| P0 | Backfill existing sidecar and INLINE values before advertising an index as active | Open — GAP-2026-07-29-001 |
+| P1 | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring | Planned/Open — GAP-2026-07-29-002, GAP-2026-07-29-004 |
+| P1 | Add edge range postings, Router seed planning, and execution support | Open — GAP-2026-07-29-003 |
+| P2 | Add vertex nested-record field indexes with a canonical dotted-path contract | Planned — GAP-2026-07-29-005 |
+| P2 | Add record/list index semantics and tests, after the scalar/leaf contract is fixed | Planned |
+| P3 | Decide edge-property uniqueness enforcement and multi-canister index sharding axes | Planned |
+
+The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:
+the ordered scan primitive already exists through `StableBTreeMap::range()`; the remaining work is
+to expose its capability at every required planner and entity boundary. Range support must not be
+reimplemented as a full-bucket materialization.
+
+### Range index status
+
+Range traversal itself is **implemented**, not missing: `graph-index` converts the encoded bounds to
+a half-open `StableBTreeMap::range()` scan, and paginated, label-sieved vertex range endpoints are
+available. Router `SEARCH ... WHERE` also uses those endpoints for the supported numeric range
+shapes. The missing pieces are planner coverage and edge symmetry, not the basic range scan.
+
+### GAP-2026-07-29-001 — Existing INLINE values are not included by property-index backfill
+
+- **Status:** Open
+- **Severity:** P0 index correctness
+- **Owner:** Router backfill orchestration and Graph inline-property backfill boundary
+- **Observed behavior:** The edge-property backfill scans canonical `EDGE_PROPERTIES` only. Existing
+  values stored in the edge inline-property region are therefore not enumerated by that backfill,
+  although subsequent mutations can maintain an indexed inline property when the router supplies
+  the active catalog.
+- **Expected or needed behavior:** Creating or enabling an index on an eligible INLINE property must
+  converge existing inline values before the index is advertised as active; the backfill cursor and
+  posting owner must cover the inline storage domain as well as the sidecar domain.
+- **Evidence:** `crates/graph/src/index/edge_property_backfill.rs` calls
+  `scan_edge_properties_batch`; inline storage is owned by `crates/graph/src/edge_inline_property_schema.rs`
+  and the edge store helpers. `design/storage/labeled-edge-inline-properties.md` describes the
+  inline bytes as canonical for the declared inline property.
+- **Impact:** A newly created index can miss pre-existing inline values and return incomplete
+  equality/range candidates until those values are rewritten.
+- **Next decision:** Define one resumable backfill contract covering sidecar and inline entries,
+  including duplicate suppression, removal/rebuild behavior, and the active-index transition.
+
+### GAP-2026-07-29-002 — Normal `MATCH` planning does not select vertex range indexes
+
+- **Status:** Open
+- **Severity:** P1 query capability
+- **Owner:** Router catalog projection and GQL planner statistics boundary
+- **Observed behavior:** The graph-index range API and `SEARCH` range path are present, but
+  `RouterGraphStats::is_vertex_property_range_indexed` returns `false` unconditionally. The normal
+  `MATCH ... WHERE` planner therefore cannot use a vertex range index through its planner-statistics
+  contract.
+- **Expected or needed behavior:** The Router should project the active range-capable vertex
+  properties into planner statistics, while retaining the existing fail-closed behavior for
+  properties without an active index.
+- **Evidence:** `crates/router/src/planner_stats.rs::is_vertex_property_range_indexed` and
+  `crates/router/src/index_client.rs::lookup_range_page`; the latter is already used by
+  `crates/router/src/gql_search.rs`.
+- **Impact:** A range index may exist and be queryable through `SEARCH`, yet ordinary MATCH planning
+  falls back to non-index execution or rejects the index-backed path.
+- **Next decision:** Add range capability to the Router's active catalog projection and planner
+  selection, then cover bounded one-sided and two-sided MATCH predicates with planner and execution
+  tests. Keep the `StableBTreeMap::range()` storage primitive unchanged.
+
+### GAP-2026-07-29-003 — Edge range index has no query/planner path
+
+- **Status:** Open
+- **Severity:** P1 query capability
+- **Owner:** Graph-index edge posting API, Router edge seed planning, and Graph edge candidate execution
+- **Observed behavior:** Edge postings support equality lookup and paged equality lookup, but no
+  `lookup_edge_range` endpoint, edge range request path, or edge range planner-statistics capability
+  exists. The implemented `PostingRangeRequest` path is vertex-posting oriented.
+- **Expected or needed behavior:** An edge property declared indexable should support the same
+  encoded ordering contract for bounded range predicates, including label/direction scoping and
+  resumable pages, before the planner emits an edge range scan.
+- **Evidence:** `crates/graph-index/src/facade/store/edge_postings.rs` exposes
+  `lookup_edge_equal` / `lookup_edge_equal_page`; `crates/router/src/planner_stats.rs` exposes only
+  edge equality membership; no `lookup_edge_range` symbol exists in `crates/graph-index` or
+  `crates/router`.
+- **Impact:** `COST BY e.stats.field` and edge filters can use an equality index, but a numeric range
+  predicate on an edge property cannot use the existing ordered posting storage.
+- **Next decision:** Reuse the existing sortable encoded value and `StableBTreeMap::range()`
+  primitive, adding an edge-specific cursor/request that preserves `(label_id, shard_id,
+  owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
+
+### GAP-2026-07-29-004 — INLINE removal/NULL transitions need explicit posting semantics
+
+- **Status:** Planned
+- **Severity:** P1 index consistency
+- **Owner:** Graph inline-property mutation and index posting dispatch
+- **Observed behavior:** Inline index maintenance now supports eligible scalar values and struct leaf
+  paths, but the contract for removing a field, assigning `NULL`, and changing a struct shape is not
+  yet recorded as a complete old-key/new-key transition.
+- **Expected or needed behavior:** Every mutation must remove the old sortable posting when the
+  indexed value disappears or becomes non-indexable, and insert the new posting only after the
+  inline bytes and decoded value agree. A missing/NULL value must never remain queryable as a stale
+  posting.
+- **Evidence:** `crates/graph/src/property/inline_dispatch.rs`,
+  `crates/graph/src/facade/store/edge_profiles.rs`, and the inline-property contract in
+  `design/storage/labeled-edge-inline-properties.md`.
+- **Impact:** Deletes and shape changes can leave false-positive index candidates even when scalar
+  replacement is correct.
+- **Next decision:** Add mutation-contract tests for remove, NULL, missing nested field, and
+  non-indexable replacement before widening inline index coverage.
+
+### GAP-2026-07-29-005 — Vertex nested-record indexes are not yet symmetrical with edge INLINE fields
+
+- **Status:** Planned
+- **Severity:** P2 query capability
+- **Owner:** Vertex property storage, planner property-path resolution, and property-index backfill
+- **Observed behavior:** Edge INLINE struct leaf paths can be indexed, while the corresponding
+  vertex nested-record field path is not a generally supported indexed property domain.
+- **Expected or needed behavior:** A declared vertex index on a bounded nested field must use one
+  canonical dotted path, validate the record shape, and maintain/backfill the leaf posting with the
+  same old-key/new-key semantics.
+- **Evidence:** Current inline field dispatch in `crates/graph/src/property/inline_dispatch.rs` and
+  the vertex property index/backfill paths in `crates/graph/src/index/`.
+- **Impact:** `COST BY v.stats.field` and vertex nested-field range/equality planning cannot rely on
+  the same index contract as edge inline fields.
+- **Next decision:** Decide whether vertex nested fields share the edge dotted-path encoding or use a
+  separate record-index key domain; record/list values remain out of scope until that choice is made.
+
+### GAP-2026-07-29-006 — Index activation is not yet documented as a convergence gate
+
+- **Status:** Planned
+- **Severity:** P0 index correctness
+- **Owner:** Router index catalog and backfill lifecycle
+- **Observed behavior:** DML posting maintenance is driven by the Router-projected active catalog,
+  while backfill is a separate resumable operation. The contract does not yet state one atomic or
+  explicitly staged transition from index creation to active query use after all relevant canonical
+  domains have converged.
+- **Expected or needed behavior:** A newly declared index must remain pending until sidecar and
+  INLINE backfill has completed for every attached shard, or the query planner must explicitly treat
+  it as incomplete and fail closed. Rebuild/drop must use the same lifecycle rule.
+- **Evidence:** `crates/router/src/facade/store/backfill.rs`, `crates/router/src/planner_stats.rs`,
+  and `design/index/property-index.md`'s router-owned active catalog description.
+- **Impact:** A query can observe an index that is structurally present but incomplete, producing
+  false negatives rather than merely falling back to a slower plan.
+- **Next decision:** Add a Router-owned lifecycle state and per-shard completion condition, or
+  formally constrain index creation to an operator-managed backfill window with planner suppression.
+
+### GAP-2026-07-29-007 — Edge uniqueness and index-canister sharding remain design work
+
+- **Status:** Planned
+- **Severity:** P3 product/capacity capability
+- **Owner:** Router DDL/catalog for uniqueness; graph-index deployment and routing for sharding
+- **Observed behavior:** Edge property indexes provide equality/range candidate postings but do not
+  enforce uniqueness. Per-graph index clusters exist, while subject/range split axes across multiple
+  index canisters remain planned.
+- **Expected or needed behavior:** If uniqueness is exposed in DDL, the owning mutation boundary
+  must reserve/check the key atomically with the canonical write. If an index is split, Router
+  routing must preserve graph, subject, label, and range completeness without changing posting
+  ordering semantics.
+- **Evidence:** `design/index/property-index.md` Phase E and Non-goals; [ADR 0010](adr/0010-index-sharding-extensibility.md);
+  current edge posting APIs in `crates/graph-index/src/facade/store/edge_postings.rs`.
+- **Impact:** Declaring these capabilities prematurely would either allow duplicate values or make
+  range/equality results incomplete across index canisters.
+- **Next decision:** Keep both capabilities out of the public contract until their owner boundary,
+  atomicity, routing, and rebuild semantics receive separate design decisions.
 
 ## Review cadence
 
