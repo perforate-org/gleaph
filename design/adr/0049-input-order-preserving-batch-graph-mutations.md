@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 06:05:19 UTC +0000
+Anchor timestamp: 2026-07-29 08:43:47 UTC +0000
 
 ## Context
 
@@ -35,8 +35,10 @@ This ADR is partially implemented. ADR 0048's owner boundary and alias removal
 are complete; this ADR does not introduce another counterpart compatibility
 path. The public single-shard ordered edge-batch endpoint, Graph journal-first
 execution, scalar fallback, projection/retirement lifecycle, and basic recovery
-are active. Unsupported optimized geometry, full failure/recovery coverage, the
-full SDK conformance matrix, and fresh-release activation remain open. Core
+are active. Unsupported optimized geometry remains on the scalar fallback path.
+The failure/recovery coverage and SDK conformance matrix are validated for the
+current v1 target. Fresh-release activation is verified by the serial PocketIC
+release-set target; production activation remains an operational cutover. Core
 Rust/JS canonical-value vectors, integer/temporal boundary vectors, Principal
 extension vectors, and malformed binary rejection vectors are now active. The
 Router mixed public shape and the Graph-owned immutable mixed envelope are now
@@ -1912,8 +1914,8 @@ not rewritten as though unfinished unordered product behavior shipped.
     existing-bucket edge-only expansion path, from +3.69% to +0.35% for the
     inline-property expansion path, and removed the approximately 14% scalar
     resident-bucket projection regression. These are measured implementation
-    optimizations; persisted canbench artifacts remain unchanged until the
-    complete affected suite is intentionally refreshed.
+    optimizations; the complete affected canbench suites are refreshed only in
+    the final benchmark step after the implementation slice is stable.
     **Implemented and measured (2026-07-29 00:22:09 UTC +0000):** reverse and
     undirected query bindings now retain the canonical occurrence and defer
     CounterpartScan until a sidecar property projection actually needs the
@@ -1968,8 +1970,23 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh
     Router, Graph, and derived-index state; reject mixed-version activation.
+    **Completed (2026-07-29 08:43:47 UTC +0000):** the dedicated
+    `adr0049_ordered_public_edge_batch` target passed serially with 11/11 tests
+    against fresh Router, Graph, and Property Index state. It covers edge
+    commit/replay, properties and inline values, mixed/parallel shapes,
+    canonical-receipt and retirement-acknowledgement loss, journal eviction,
+    and vertex/mixed lifecycle recovery. Parallel execution was stopped after
+    PocketIC environments stalled concurrently; serial execution completed in
+    181.85 seconds.
 16. Run unfiltered `canbench --persist` in every affected crate before updating
-    final benchmark artifacts and activation status.
+    final benchmark artifacts and activation status. **Completed (2026-07-29
+    07:31:00 UTC +0000):** Graph, Router, and `ic-stable-lara` were each run
+    unfiltered. Router (29 benchmarks) and `ic-stable-lara` (126 benchmarks)
+    reported no significant changes. Graph artifacts were refreshed; its
+    ordered batch paths are within noise, while scalar fan-out and parallel
+    controls retain approximately 4–7% regressions and remain a follow-up
+    investigation; it does not invalidate the fresh-layout PocketIC activation
+    result above.
 17. **Partially implemented (2026-07-29 01:49:46 UTC +0000):** add the shared
     `graph-kernel` canonical GQL value vector fixture and verify the Rust
     encoder plus the JavaScript SDK encoder against the same expected bytes.
@@ -2181,6 +2198,35 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     scalar result is reproducibly 2.07% above the persisted baseline and is
     retained as a follow-up regression investigation; this measurement does not
     authorize fresh-release activation or claim the full benchmark gate complete.
+    **Final artifact refresh (2026-07-29 07:31:00 UTC +0000):** the unfiltered
+    Graph, Router, and `ic-stable-lara` suites were persisted. The Router and
+    LARA suites remain within noise; the Graph scalar fan-out and parallel
+    controls still show approximately 4–7% regressions, so the benchmark gate
+    remains open pending that investigation.
+    **Scoped follow-up (2026-07-29 07:47:12 UTC +0000):** repeated focused runs of
+    `bench_scalar_fan_out_128_width_0`, `bench_scalar_fan_out_1024_width_0`,
+    `bench_scalar_two_parallel_per_bucket_128_width_0`, and
+    `bench_ordered_all_scalar_mixed_256_width_0` were stable at the refreshed
+    values. The scalar owner boundary and the width-0 LARA insert path have no
+    corresponding ADR 0049 code change after the persisted baseline; the later
+    LARA changes add batch-only APIs. A clean `3a065e07` rebuild reproduces the
+    old values (128: 7.56M; 1024: 63.57M), and `7e3beaf1` still reproduces them
+    (128: 7.55M; 1024: 63.47M), while `328bbe3e` reproduces the new values
+    (128: 8.09M; 1024: 67.56M). The regression boundary is therefore narrowed to
+    `7e3beaf1..328bbe3e`; no scalar workaround was introduced.
+    **Boundary confirmation (2026-07-29 08:19:38 UTC +0000):** `824a51b4` still
+    reproduces the old values (128: 7.64M; 1024: 63.96M), while the immediately
+    following `567bd2f2` reproduces the regression (128: 7.98M; 1024: 66.69M).
+    The boundary is therefore the mixed-execution commit itself. Marking its
+    mixed-only functions `#[inline(never)]` did not change scalar counts, so the
+    next investigation target is whole-module Wasm code generation rather than
+    the scalar owner boundary.
+    **Wasm comparison (2026-07-29 08:22:32 UTC +0000):** a clean `824a51b4`
+    Graph canbench Wasm was 22,086,999 bytes; the current rebuilt Wasm is
+    22,234,032 bytes (+147,033 bytes, +0.67%). The scalar probe remains 8.09M
+    instructions after the reverted isolation experiment. This confirms a
+    whole-module artifact change, but does not yet justify a semantic scalar
+    optimization.
 
 ## Test contract
 
