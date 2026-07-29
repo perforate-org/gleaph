@@ -1,33 +1,18 @@
-//! Instruction budgets for Internet Computer execution contexts.
-//!
-//! See [`IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT`] for the platform ceiling this
-//! module is aligned with.
+//! Graph-owned maintenance budgets derived from the shared execution limits in
+//! `gleaph-graph-kernel`.
 
+use gleaph_graph_kernel::{
+    MAX_TIMER_MAINTENANCE_INSTRUCTIONS, TIMER_MAINTENANCE_INSTRUCTION_HEADROOM,
+};
 use ic_stable_lara::MaintenanceBudget;
-
-/// Documented ICP limit for **instructions per update call / heartbeat / timer**.
-///
-/// Source: [ICP Cycles Costs — Resource limits](https://docs.internetcomputer.org/references/cycles-costs/#resource-limits)
-/// (“Instructions per update call / heartbeat / timer: 40 billion”). If the
-/// network documentation changes, update this constant to match.
-pub const IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT: u64 = 40_000_000_000;
-
-/// Dynamic Graph update-batch ceiling. Keep this below the platform limit so
-/// the final operation and response bookkeeping cannot run into the message
-/// instruction limit before the batch can return its continuation cursor.
-pub const GRAPH_UPDATE_DYNAMIC_INSTRUCTION_HEADROOM: u64 = 5_000_000_000;
-pub const GRAPH_UPDATE_DYNAMIC_INSTRUCTION_BUDGET: u64 =
-    IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT - GRAPH_UPDATE_DYNAMIC_INSTRUCTION_HEADROOM;
 
 /// Conservative per-tick cap for LARA deferred maintenance under timer/heartbeat.
 ///
-/// Set below [`IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT`] to leave headroom for
-/// non-LARA work in the same message (serialization, logging, etc.).
-pub const GRAPH_TIMER_LARA_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
+/// Set below the shared update-call ceiling to leave headroom for non-LARA work.
+pub const GRAPH_TIMER_LARA_MAX_INSTRUCTIONS: u64 = MAX_TIMER_MAINTENANCE_INSTRUCTIONS;
 
-/// Reserved instruction headroom checked against [`GRAPH_TIMER_LARA_MAX_INSTRUCTIONS`]
-/// inside LARA's maintenance loop (see `ic-stable-lara` `MaintenanceBudget`).
-pub const GRAPH_TIMER_LARA_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
+/// Reserved instruction headroom checked inside LARA's maintenance loop.
+pub const GRAPH_TIMER_LARA_RESERVE_INSTRUCTIONS: u64 = TIMER_MAINTENANCE_INSTRUCTION_HEADROOM;
 
 /// Delay before the next deferred-maintenance tick when a tick filled its
 /// instruction budget (backlog under pressure). Floor set by single-threaded
@@ -138,10 +123,10 @@ mod tests {
 
     #[test]
     fn dynamic_update_budget_leaves_platform_headroom() {
-        assert_eq!(GRAPH_UPDATE_DYNAMIC_INSTRUCTION_BUDGET, 35_000_000_000);
         assert_eq!(
-            GRAPH_UPDATE_DYNAMIC_INSTRUCTION_BUDGET + GRAPH_UPDATE_DYNAMIC_INSTRUCTION_HEADROOM,
-            IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT
+            gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS
+                + gleaph_graph_kernel::UPDATE_CALL_INSTRUCTION_HEADROOM,
+            gleaph_graph_kernel::MAX_UPDATE_CALL_INSTRUCTIONS
         );
     }
 
@@ -149,7 +134,7 @@ mod tests {
     fn timer_budget_is_positive_and_below_ic_limit() {
         let b = timer_lara_maintenance_budget();
         assert!(b.max_instructions > 0);
-        assert!(b.max_instructions < IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT);
+        assert!(b.max_instructions < gleaph_graph_kernel::MAX_UPDATE_CALL_INSTRUCTIONS);
         assert!(b.reserve_instructions < b.max_instructions);
     }
 }

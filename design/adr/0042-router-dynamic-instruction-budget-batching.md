@@ -25,6 +25,14 @@ caller-supplied budget cannot exceed that safe maximum. `next_index` is returned
 when more mutations remain; retrying from the same cursor is safe because each
 mutation keeps its existing client mutation key and Graph mutation id.
 
+The numeric execution limits are owned by `gleaph-graph-kernel`: the 2 MiB
+cross-canister payload ceiling is `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`,
+the 40B update ceiling is `MAX_UPDATE_CALL_INSTRUCTIONS`, the 5B query ceiling is
+`MAX_QUERY_CALL_INSTRUCTIONS`, and the 35B dynamic update budget is derived from
+`UPDATE_CALL_INSTRUCTION_HEADROOM`. Router and Graph cutoff paths use the shared
+headroom constants from that crate rather than defining independent numeric
+copies, so a future platform-limit increase changes one source of truth.
+
 Within a dynamic Graph call, Graph executes until its own 35B safety budget and
 returns the first unattempted operation. If the Router call context is still
 below its budget, Router sends the remaining operations to that Graph again.

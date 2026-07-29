@@ -71,12 +71,6 @@ use ic_cdk_macros::{init, post_upgrade, query, update};
 use crate::provisioning::sender::send_accept_envelope;
 use crate::types::RouterOutboundError;
 
-const MAX_UPDATE_CALL_INSTRUCTIONS: u64 = 40_000_000_000;
-const DYNAMIC_INSTRUCTION_HEADROOM: u64 = 5_000_000_000;
-const MAX_DYNAMIC_INSTRUCTION_BUDGET: u64 =
-    MAX_UPDATE_CALL_INSTRUCTIONS - DYNAMIC_INSTRUCTION_HEADROOM;
-const DEFAULT_DYNAMIC_INSTRUCTION_BUDGET: u64 = MAX_DYNAMIC_INSTRUCTION_BUDGET;
-
 /// Maximum number of mutations processed in a single `gql_execute_idempotent_batch` ingress
 /// call. Each wave issues a bounded number of inter-canister calls; capping the total per
 /// ingress prevents the call context from exhausting the IC's per-message resource envelope.
@@ -390,12 +384,13 @@ async fn gql_execute_idempotent_batch(
         )));
     }
     let budget = match args.instruction_budget {
-        None => DEFAULT_DYNAMIC_INSTRUCTION_BUDGET,
-        Some(value) if value <= MAX_DYNAMIC_INSTRUCTION_BUDGET => value,
+        None => gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS,
+        Some(value) if value <= gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS => value,
         value => {
             return Err(RouterError::InvalidArgument(format!(
-                "instruction_budget {:?} exceeds safe maximum {MAX_DYNAMIC_INSTRUCTION_BUDGET}",
-                value
+                "instruction_budget {:?} exceeds safe maximum {}",
+                value,
+                gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS
             )));
         }
     };
@@ -412,7 +407,8 @@ async fn gql_execute_idempotent_batch(
     let preflight = gql::PreflightContext::new();
     let caller = ic_cdk::api::msg_caller();
     while cursor < end {
-        let stop_threshold = budget.saturating_sub(crate::batch_wave::ROUTER_WORK_HEADROOM);
+        let stop_threshold =
+            budget.saturating_sub(gleaph_graph_kernel::ROUTER_BATCH_WORK_INSTRUCTION_HEADROOM);
         if current_instruction_counter() >= stop_threshold {
             break;
         }

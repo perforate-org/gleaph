@@ -8,10 +8,6 @@ use std::collections::BTreeMap;
 
 use candid::Principal;
 
-/// Headroom reserved for the Router to finish an ingress after preparing mutations.
-/// Covers prefetch/dispatch, response encode, and any final bookkeeping.
-pub(crate) const ROUTER_WORK_HEADROOM: u64 = 4_000_000_000;
-
 /// One mutation prepared through the classification phase.
 ///
 /// All async prefetch (journal, anchors) is already resolved; the executor only needs to run

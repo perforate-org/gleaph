@@ -2159,7 +2159,7 @@ mod outbound_tests {
                 mutation_key: "dynamic-item-0".to_owned(),
             }],
             start_index: 3,
-            instruction_budget: Some(35_000_000_000),
+            instruction_budget: Some(gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS),
         };
         let bytes = Encode!(&args).expect("encode dynamic batch args");
         let decoded: GqlExecuteIdempotentBatchArgs =

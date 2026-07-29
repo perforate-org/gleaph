@@ -1,7 +1,7 @@
 # Execution pipeline
 
-Last updated: 2026-07-23
-Anchor timestamp: 2026-07-21 01:42:34 UTC +0000
+Last updated: 2026-07-29
+Anchor timestamp: 2026-07-29 05:40:47 UTC +0000
 
 ## Purpose
 
@@ -21,6 +21,14 @@ shard result again while merging and validates the final `GqlQueryResult` before
 the caller. These checks reject oversized results explicitly; they never truncate rows. Vector
 `SEARCH` remains bounded by `MAX_VECTOR_SEARCH_TOP_K`, but that bound applies only to search hits,
 not to later graph expansion or join cardinality.
+
+The shared transport and execution ceilings are defined in
+`gleaph-graph-kernel`: `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES` for the
+portable 2 MiB payload ceiling, `MAX_QUERY_CALL_INSTRUCTIONS` for bounded query
+execution, and `MAX_UPDATE_CALL_INSTRUCTIONS` with its derived dynamic budget
+and cutoff headrooms for update execution. Router and Graph use these constants
+directly so platform-limit changes do not require synchronized numeric edits in
+each canister crate.
 
 ## Entry points
 

@@ -5515,8 +5515,8 @@ fn graph_batch_chunk_len_for_dispatches(
         )));
     }
     const ESTIMATED_INSTR_PER_GRAPH_OP: u64 = 500_000_000;
-    const GRAPH_DYNAMIC_INSTRUCTION_BUDGET: u64 = 35_000_000_000;
-    let instr_limited = (GRAPH_DYNAMIC_INSTRUCTION_BUDGET / ESTIMATED_INSTR_PER_GRAPH_OP)
+    let instr_limited = (gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS
+        / ESTIMATED_INSTR_PER_GRAPH_OP)
         .try_into()
         .unwrap_or(usize::MAX)
         .max(1);

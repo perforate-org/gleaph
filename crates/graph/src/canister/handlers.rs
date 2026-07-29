@@ -180,19 +180,10 @@ fn ensure_execution_mode(
     Ok(())
 }
 
-const QUERY_DYNAMIC_INSTRUCTION_BUDGET: u64 = 5_000_000_000;
-
-/// Platform instruction ceiling per update call (40B on ICP).
-const GRAPH_UPDATE_INSTRUCTION_LIMIT: u64 = crate::facade::IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT;
-
 /// Conservative budget for the synchronous derived-index drain that follows
 /// a successful batch. Observed cost is ~1.5K instructions; this reserve is
 /// deliberately large to absorb spikes under index pressure.
 const BATCH_DRAIN_BUDGET_ESTIMATE: u64 = 500_000_000;
-
-/// Fixed headroom for response serialization, logging, and post-loop
-/// bookkeeping so the canister never approaches the hard 40B limit.
-const BATCH_FINAL_BOOKKEEPING_HEADROOM: u64 = 2_000_000_000;
 
 /// Returns true if starting another operation would risk exceeding the per-
 /// update-call instruction limit before we can safely return `next_index`.
@@ -209,7 +200,7 @@ fn should_cutoff_batch(
         .saturating_add(next_op_estimate)
         .saturating_add(drain_budget)
         .saturating_add(headroom);
-    projected >= GRAPH_UPDATE_INSTRUCTION_LIMIT
+    projected >= gleaph_graph_kernel::MAX_UPDATE_CALL_INSTRUCTIONS
 }
 
 fn ensure_execute_plan_result_payload(
@@ -981,7 +972,7 @@ async fn execute_plan_batch_internal(
                 before,
                 max_instr,
                 BATCH_DRAIN_BUDGET_ESTIMATE,
-                BATCH_FINAL_BOOKKEEPING_HEADROOM,
+                gleaph_graph_kernel::GRAPH_BATCH_FINAL_BOOKKEEPING_INSTRUCTION_HEADROOM,
             )
         {
             next_index = Some(index as u32);
@@ -1392,7 +1383,7 @@ pub fn get_mutation_journal_entries(
     let mut entries = Vec::with_capacity(args.mutation_ids.len());
     let mut next = None;
     for mutation_id in args.mutation_ids.into_iter() {
-        if message_instruction_counter() >= QUERY_DYNAMIC_INSTRUCTION_BUDGET {
+        if message_instruction_counter() >= gleaph_graph_kernel::MAX_QUERY_CALL_INSTRUCTIONS {
             next = Some(mutation_id);
             break;
         }
