@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 01:06:23 UTC +0000
+Anchor timestamp: 2026-07-29 01:15:09 UTC +0000
 
 ## Context
 
@@ -1909,6 +1909,14 @@ batch suite passes all 24 tests, including the non-tail-span case. The existing
 `gleaph-graph` missing-reverse-bucket test still reports
 `CollectAllocationOverflow` even with these LARA changes reverted, so it remains
 a pre-existing baseline failure and is not attributed to this slice.
+
+**Fixed and tested (2026-07-29 01:15:09 UTC +0000):** retrying batch
+reservation after preparing a missing bucket no longer reuses cached existing
+bucket slots. Preparing a descriptor can rewrite the owner's contiguous
+descriptor window, so the retry rereads canonical bucket metadata whenever the
+preparation created any bucket. This fixes the missing-reverse-bucket batch
+case while retaining the existing-bucket cache for retries that do not mutate
+descriptor layout. The Graph batch suite passes all 87 tests.
 
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.

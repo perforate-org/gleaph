@@ -883,23 +883,27 @@ where
             for run in &plan.runs {
                 if seen.insert((run.owner_vertex_id, run.label_id)) {
                     let vertex = self.vertices.get(run.owner_vertex_id);
-                    match self
+                    let bucket_missing = match self
                         .find_bucket(run.owner_vertex_id, &vertex, run.label_id)
                         .map_err(OneOrientationBatchError::from)?
                     {
                         BucketSearch::Found { slot, bucket } => {
                             existing_buckets
                                 .insert((run.owner_vertex_id, run.label_id), (slot, bucket));
+                            false
                         }
                         BucketSearch::Missing { .. } => {
                             new_buckets.push((run.owner_vertex_id, run.label_id));
-                            self.ensure_label_bucket_inline_property_byte_width(
-                                run.owner_vertex_id,
-                                run.label_id,
-                                run.inline_property_width,
-                            )
-                            .map_err(OneOrientationBatchError::from)?;
+                            true
                         }
+                    };
+                    if bucket_missing {
+                        self.ensure_label_bucket_inline_property_byte_width(
+                            run.owner_vertex_id,
+                            run.label_id,
+                            run.inline_property_width,
+                        )
+                        .map_err(OneOrientationBatchError::from)?;
                     }
                 }
             }
@@ -949,6 +953,15 @@ where
             Ok(reservation) => Ok(reservation),
             Err(OneOrientationBatchError::BucketNotFound { .. }) => {
                 let (new_buckets, existing_buckets) = self.prepare_batch_buckets(plan)?;
+                let existing_buckets = if new_buckets.is_empty() {
+                    existing_buckets
+                } else {
+                    // Preparing a new descriptor can rewrite the owning vertex's
+                    // contiguous descriptor window. Cached existing-bucket slots
+                    // are therefore invalid for this retry; preflight must reread
+                    // the canonical descriptor layout.
+                    std::collections::BTreeMap::new()
+                };
                 match self.reserve_one_orientation_batch_prepared(
                     plan,
                     new_buckets.clone(),
