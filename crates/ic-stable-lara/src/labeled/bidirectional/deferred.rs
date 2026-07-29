@@ -2905,6 +2905,32 @@ where
         Ok(())
     }
 
+    /// Replaces a contiguous run of vertex rows in both orientations.
+    pub fn set_vertex_rows(
+        &self,
+        start: VertexId,
+        rows: impl IntoIterator<Item = crate::labeled::record::LabeledVertex>,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let rows: Vec<_> = rows.into_iter().collect();
+        let end = u32::from(start)
+            .checked_add(u32::try_from(rows.len()).expect("vertex row batch exceeds u32::MAX"))
+            .ok_or(DeferredBidirectionalLabeledError::VertexOutOfRange {
+                vid: start,
+                len: self.forward.vertex_count(),
+            })?;
+        if end > self.forward.vertex_count().0 || end > self.reverse.vertex_count().0 {
+            return Err(DeferredBidirectionalLabeledError::VertexOutOfRange {
+                vid: start,
+                len: self.forward.vertex_count(),
+            });
+        }
+        self.forward
+            .vertices()
+            .set_many(start, rows.iter().cloned());
+        self.reverse.vertices().set_many(start, rows);
+        Ok(())
+    }
+
     /// Directed outgoing edges at `src` in ascending slot order.
     pub fn directed_out_edges(
         &self,

@@ -117,9 +117,8 @@ pub fn insert_vertices_with(
             (vertex_id, vertex, labels.clone())
         })
         .collect();
-    for (vertex_id, vertex) in store.commit_set_vertex_labels_bulk(&label_assignments)? {
-        store.set_vertex(vertex_id, vertex)?;
-    }
+    let labeled_rows = store.commit_set_vertex_labels_bulk(&label_assignments)?;
+    store.set_vertex_rows_bulk(&labeled_rows)?;
     let properties: Vec<_> = ids
         .iter()
         .copied()

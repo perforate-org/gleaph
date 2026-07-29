@@ -19,4 +19,19 @@ impl GraphStore {
         let row = vertex.into();
         GRAPH.with_borrow(|graph| graph.set_vertex_row(vertex_id, &row))
     }
+
+    pub(crate) fn set_vertex_rows_bulk(
+        &self,
+        rows: &[(VertexId, Vertex)],
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let Some((start, _)) = rows.first() else {
+            return Ok(());
+        };
+        for (offset, (vertex_id, _)) in rows.iter().enumerate() {
+            assert_eq!(u32::from(*vertex_id), u32::from(*start) + offset as u32);
+        }
+        GRAPH.with_borrow(|graph| {
+            graph.set_vertex_rows(*start, rows.iter().map(|(_, vertex)| (*vertex).into()))
+        })
+    }
 }

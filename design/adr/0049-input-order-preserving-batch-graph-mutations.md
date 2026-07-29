@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 08:43:47 UTC +0000
+Anchor timestamp: 2026-07-29 09:03:50 UTC +0000
 
 ## Context
 
@@ -240,6 +240,13 @@ free-span-aware bulk placement where that reduces stable-memory writes. It must
 preserve request-local result order without exposing physical allocation
 locations as public identity. The allocated `VertexId` table is request-local
 planning state, not a second durable vertex identity.
+
+The current internal placement substrate now publishes an already allocated,
+contiguous vertex-row run with one fixed-width write per orientation after
+label assignment. This reduces row-publication writes without changing the
+request-local id order, label-pending transition, or property-index dispatch.
+Complete-set preflight, free-span-aware placement, and the public mixed
+vertex/edge contract remain separate follow-up work.
 
 Edges are placed after the vertex phase because an edge may refer to a vertex
 created earlier in the same request. The edge phase reuses the existing
@@ -2024,6 +2031,13 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     properties before row allocation, so these failures leave no newly allocated rows.
     Full scalar-vs-bulk vertex mutation canbench probes now include label and property
     sidecar writes in addition to the allocation-only baseline.
+    **Optimized and tested (2026-07-29 09:03:50 UTC +0000):** after label
+    assignment, Graph now replaces the contiguous forward/reverse vertex-row
+    runs with one fixed-width bulk write per orientation instead of one write
+    per row. Focused canbench remains within noise for the complete
+    label/property path; the row-only bulk path remains materially cheaper than
+    scalar publication. This does not activate the planned public vertex or
+    mixed endpoint.
     Complete-set preflight and the
     public vertex contract remain planned. The completed placement must still
     project and validate the complete vertex set before canonical writes, group

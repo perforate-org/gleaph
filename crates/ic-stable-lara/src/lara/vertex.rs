@@ -494,6 +494,28 @@ impl<V: CsrVertex, M: Memory> VertexStore<V, M> {
         );
     }
 
+    /// Replaces a contiguous run of existing vertex rows with one stable-memory write.
+    pub(crate) fn set_many(&self, start: VertexId, items: impl IntoIterator<Item = V>) {
+        let items: Vec<V> = items.into_iter().collect();
+        let start_index = u64::from(start);
+        let end_index = start_index
+            .checked_add(items.len() as u64)
+            .expect("vertex row range overflow");
+        assert!(end_index <= u64::from(self.len()));
+        if items.is_empty() {
+            return;
+        }
+        let byte_len = items
+            .len()
+            .checked_mul(V::BYTES)
+            .expect("vertex row byte length overflow");
+        let mut bytes = Vec::with_capacity(byte_len);
+        for item in items {
+            bytes.extend_from_slice(&item.to_bytes_checked());
+        }
+        crate::write(&self.memory, self.entry_offset(start_index), &bytes);
+    }
+
     /// Appends a vertex row and grows stable memory if necessary.
     pub(crate) fn push(&self, item: V) -> Result<(), GrowFailed> {
         let len = self.len();
@@ -584,7 +606,8 @@ fn verify_vertex_width<V: CsrVertex>() -> Result<(), InitError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Vertex, VertexFieldError};
+    use super::{Vertex, VertexFieldError, VertexStore};
+    use crate::VectorMemory;
     use crate::{
         lara::edge::DEFAULT_MAX_LOG_ENTRIES,
         slab_index::{SLOT_INDEX_MASK, encode_locator_word, pack_vertex_tail28},
@@ -598,6 +621,27 @@ mod tests {
     fn vertex_row_is_16_bytes() {
         assert_eq!(size_of::<Vertex>(), 16);
         assert_eq!(Vertex::BYTES, 16);
+    }
+
+    #[test]
+    fn set_many_replaces_contiguous_rows() {
+        let store = VertexStore::new(VectorMemory::default()).expect("vertex store");
+        for index in 0..4 {
+            store
+                .push(Vertex::from_parts(index, 0, 0, -1, false))
+                .expect("vertex row");
+        }
+
+        let replacement = [
+            Vertex::from_parts(10, 1, 2, -1, false),
+            Vertex::from_parts(11, 3, 4, 7, true),
+        ];
+        store.set_many(1.into(), replacement);
+
+        assert_eq!(store.get(0.into()).base_slot_start(), 0);
+        assert_eq!(store.get(1.into()), replacement[0]);
+        assert_eq!(store.get(2.into()), replacement[1]);
+        assert_eq!(store.get(3.into()).base_slot_start(), 3);
     }
 
     #[test]
