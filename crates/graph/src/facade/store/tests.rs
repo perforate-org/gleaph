@@ -134,6 +134,29 @@ fn bulk_vertex_insert_preflights_before_allocating_rows() {
 }
 
 #[test]
+fn bulk_vertex_insert_rejects_duplicate_properties_before_allocating_rows() {
+    let store = GraphStore::new();
+    let before = store.vertex_count();
+    let property_id = PropertyId::from_raw(7);
+    let err = crate::facade::mutation_executor::insert_vertices_with(
+        &store,
+        vec![(
+            Vec::new(),
+            vec![
+                (property_id, Value::Int64(1)),
+                (property_id, Value::Int64(2)),
+            ],
+        )],
+    )
+    .expect_err("duplicate property ids must fail closed");
+    assert!(matches!(
+        err,
+        GraphStoreError::DuplicateBulkVertexProperty { .. }
+    ));
+    assert_eq!(store.vertex_count(), before);
+}
+
+#[test]
 fn social_style_leaf_sharing_keeps_alices_third_post_writable() {
     let store = GraphStore::new();
     let initial: Vec<_> = (0..15)

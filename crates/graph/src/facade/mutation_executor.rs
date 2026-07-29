@@ -3,6 +3,7 @@ use super::{VertexLabelStoreError, VertexPropertyStoreError};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, Vertex, VertexLabelId};
 use ic_stable_lara::VertexId;
+use std::collections::BTreeSet;
 
 pub trait GraphMutationExecutor {
     fn insert_vertex_with(
@@ -78,7 +79,7 @@ pub fn insert_vertices_with(
     store: &GraphStore,
     vertices: Vec<(Vec<VertexLabelId>, Vec<(PropertyId, Value)>)>,
 ) -> Result<Vec<VertexId>, GraphStoreError> {
-    for (labels, properties) in &vertices {
+    for (vertex_ordinal, (labels, properties)) in vertices.iter().enumerate() {
         if let Some(label_id) = labels
             .iter()
             .copied()
@@ -88,7 +89,14 @@ pub fn insert_vertices_with(
                 VertexLabelStoreError::ReservedLabelId(label_id),
             ));
         }
+        let mut property_ids = BTreeSet::new();
         for (property_id, value) in properties {
+            if !property_ids.insert(*property_id) {
+                return Err(GraphStoreError::DuplicateBulkVertexProperty {
+                    vertex_ordinal,
+                    property_id: *property_id,
+                });
+            }
             crate::property::ensure_property_id(*property_id).map_err(|id| {
                 GraphStoreError::PropertyValue(VertexPropertyStoreError::ReservedPropertyId(id))
             })?;

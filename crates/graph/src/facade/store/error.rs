@@ -4,7 +4,7 @@ use super::super::{
     PropertyCatalogError, VertexEmbeddingStoreError, VertexLabelStoreError,
     VertexPropertyStoreError,
 };
-use gleaph_graph_kernel::entry::EdgeLabelId;
+use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 use ic_stable_lara::{
     DeferredBidirectionalLabeledError, VertexId, labeled::BucketLabelKey as LaraLabelId,
 };
@@ -50,6 +50,11 @@ pub enum GraphStoreError {
     /// before the vertex is tombstoned so a tracking failure can never leave a
     /// tombstoned vertex with ungated, visible incident edges.
     PendingPurgeTracking(BitmapError),
+    /// One vertex item repeats an initial property id.
+    DuplicateBulkVertexProperty {
+        vertex_ordinal: usize,
+        property_id: PropertyId,
+    },
     /// CounterpartScan failed to resolve the canonical edge occurrence.
     CounterpartLookup(ic_stable_lara::bidirectional::counterpart::CounterpartLookupError),
 }
@@ -113,6 +118,14 @@ impl fmt::Display for GraphStoreError {
             Self::PendingPurgeTracking(err) => {
                 write!(f, "failed to record vertex pending-purge: {err}")
             }
+            Self::DuplicateBulkVertexProperty {
+                vertex_ordinal,
+                property_id,
+            } => write!(
+                f,
+                "bulk vertex item {vertex_ordinal} repeats property id {}",
+                property_id.raw()
+            ),
             Self::CounterpartLookup(err) => {
                 write!(f, "edge counterpart lookup failed: {err}")
             }
@@ -138,6 +151,7 @@ impl std::error::Error for GraphStoreError {
             | Self::RemoteEdgeNotSupported
             | Self::FederatedExpandPayload { .. }
             | Self::VertexTombstoned => None,
+            Self::DuplicateBulkVertexProperty { .. } => None,
         }
     }
 }
