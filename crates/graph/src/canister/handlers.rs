@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::facade::mutation_executor::insert_vertices_with;
 use crate::facade::{BatchEdgeInput, FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::gql_run::{
@@ -27,9 +28,11 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
     ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode, GraphMutationRequestIdentityV1,
-    GraphOrderedEdgeBatchResult, MutationId, OrderedEdgeBatchGraphArgs,
-    OrderedEdgeBatchGraphRequest, OrderedMutationRetirementAck, OrderedMutationRetirementArgs,
-    ResolvedSearchWire, SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
+    GraphOrderedEdgeBatchResult, GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1,
+    MutationId, OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphRequest,
+    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs,
+    OrderedVertexBatchGraphRequest, ResolvedSearchWire, SeedBindingsWire, ShardEventSeq,
+    bound_typed_batch_error,
 };
 
 use super::types::GraphInitArgs;
@@ -389,6 +392,85 @@ pub fn execute_ordered_edge_batch(
     };
     crate::edge_inline_property_schema::clear_execution_resolved_labels();
     result
+}
+
+/// Router → Graph: journal-first ordered vertex bulk placement (ADR 0049).
+pub fn execute_ordered_vertex_batch(
+    args: OrderedVertexBatchGraphArgs,
+) -> Result<GraphOrderedVertexBatchResult, String> {
+    args.recompute_and_validate_fingerprint()?;
+    let OrderedVertexBatchGraphArgs::V1(args) = &args;
+    args.request
+        .validate()
+        .map_err(|error| format!("ordered vertex Graph request validation: {error}"))?;
+    let OrderedVertexBatchGraphRequest::V1(request) = &args.request;
+    #[cfg(target_family = "wasm")]
+    if request.target_graph_canister != ic_cdk::api::canister_self() {
+        return Err("ordered vertex Graph request target canister does not match receiver".into());
+    }
+
+    let logical_item_count = u32::try_from(request.items.len())
+        .map_err(|_| "ordered vertex Graph request item count exceeds u32".to_string())?;
+    let identity = GraphMutationRequestIdentityV1::OrderedVertexBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: args.graph_request_fingerprint,
+        logical_item_count,
+    };
+    let store = GraphStore::new();
+    if let Some(result) = store
+        .ordered_vertex_batch_replay_result(args.mutation_id, &identity)
+        .map_err(str::to_string)?
+    {
+        return Ok(result);
+    }
+
+    let vertices = request
+        .items
+        .iter()
+        .map(|item| {
+            let labels = item
+                .resolved_vertex_labels
+                .iter()
+                .copied()
+                .map(gleaph_graph_kernel::entry::VertexLabelId::from_raw)
+                .collect();
+            let properties = item
+                .resolved_initial_properties
+                .iter()
+                .map(|property| {
+                    let value = Value::from_binary_bytes(&property.value).map_err(|error| {
+                        format!(
+                            "ordered vertex property {} value decode failed: {error}",
+                            property.property_id.raw()
+                        )
+                    })?;
+                    Ok((property.property_id, value))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok((labels, properties))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let ids = insert_vertices_with(&store, vertices).map_err(|error| error.to_string())?;
+    let mut hot_forward_vertices: Vec<_> = ids.iter().copied().map(u32::from).collect();
+    hot_forward_vertices.sort_unstable();
+    store.commit_record_completed_ordered_vertex_batch_journal(
+        args.mutation_id,
+        identity,
+        ids.len() as u64,
+        None,
+        None,
+        hot_forward_vertices.clone(),
+    );
+    Ok(GraphOrderedVertexBatchResult::V1(
+        GraphOrderedVertexBatchResultV1::Completed(
+            gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1 {
+                logical_vertex_count: ids.len() as u64,
+                emitted_delta_first_seq: None,
+                emitted_delta_last_seq: None,
+                hot_forward_vertices,
+            },
+        ),
+    ))
 }
 
 pub async fn execute_plan_update_batch(
@@ -2233,16 +2315,20 @@ mod tests {
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_graph_kernel::entry::{
-        EdgeInlinePropertyProfile, EdgeLabelId, GraphId, VertexLabelId,
+        EdgeInlinePropertyProfile, EdgeLabelId, GraphId, PropertyId, VertexLabelId,
     };
     use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ElementIdEncodingKey, ShardId};
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
-        ExecutePlanTypedOp, GraphOrderedEdgeBatchResultV1, OrderedEdgeBatchGraphArgs,
-        OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1, OrderedEdgeBatchGraphRequest,
-        OrderedEdgeBatchGraphRequestV1, ResolvedEdgeLabel, ResolvedLabelTable,
-        ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry, SeedBindingsWire,
-        SeedRowWire, SeedVertexBinding, ordered_edge_batch_graph_request_fingerprint,
+        ExecutePlanTypedOp, GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchResultV1,
+        OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1,
+        OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1, OrderedVertexBatchGraphArgs,
+        OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1,
+        OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1, ResolvedEdgeLabel,
+        ResolvedLabelTable, ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry,
+        SeedBindingsWire, SeedRowWire, SeedVertexBinding,
+        ordered_edge_batch_graph_request_fingerprint,
+        ordered_vertex_batch_graph_request_fingerprint,
     };
     use ic_stable_lara::CsrEdge;
 
@@ -2410,6 +2496,43 @@ mod tests {
         };
         let seed_blob = Encode!(&seeds).expect("encode seeds");
         (plan_blob, seed_blob, local_vid)
+    }
+
+    #[test]
+    fn ordered_vertex_handler_commits_and_replays_the_vertex_receipt() {
+        let request = OrderedVertexBatchGraphRequest::V1(OrderedVertexBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(72),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![OrderedVertexBatchGraphItemV1 {
+                resolved_vertex_labels: vec![72],
+                resolved_initial_properties: vec![
+                    gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 {
+                        property_id: PropertyId::from_raw(72),
+                        value: Value::Int64(42).to_binary_bytes().expect("encode property"),
+                    },
+                ],
+            }],
+        });
+        let fingerprint =
+            ordered_vertex_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
+            mutation_id: 72_001,
+            graph_request_fingerprint: fingerprint,
+            request,
+        });
+        let result = execute_ordered_vertex_batch(args.clone()).expect("vertex batch execution");
+        let GraphOrderedVertexBatchResult::V1(GraphOrderedVertexBatchResultV1::Completed(receipt)) =
+            &result
+        else {
+            panic!("expected completed vertex receipt");
+        };
+        assert_eq!(receipt.logical_vertex_count, 1);
+        assert_eq!(receipt.hot_forward_vertices.len(), 1);
+        let replay = execute_ordered_vertex_batch(args).expect("vertex batch replay");
+        assert_eq!(result, replay);
     }
 
     /// ADR 0044 scalar handler contract: `execute_plan_update` (single-message update) must omit

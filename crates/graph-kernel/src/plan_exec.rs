@@ -804,6 +804,12 @@ pub enum GraphMutationRequestIdentityV1 {
         graph_request_fingerprint: [u8; 32],
         logical_item_count: u32,
     },
+    /// Order-sensitive identity for the ADR 0049 vertex bulk-placement envelope.
+    OrderedVertexBatch {
+        canonical_encoding_version: u16,
+        graph_request_fingerprint: [u8; 32],
+        logical_item_count: u32,
+    },
 }
 
 /// Stable Graph-owned retirement state for an ordered batch journal entry.
@@ -859,6 +865,25 @@ pub fn validate_graph_mutation_journal_fields(
                 return Err("ordered journal row_count must equal logical_item_count");
             }
         }
+        GraphMutationRequestIdentityV1::OrderedVertexBatch {
+            logical_item_count, ..
+        } => {
+            if retirement == GraphMutationRetirementWireV1::NotApplicable {
+                return Err("ordered vertex journal entry must have retirement state");
+            }
+            if state != MutationJournalState::Completed {
+                return Err("ordered vertex journal entry must be completed");
+            }
+            if next_index.is_some() {
+                return Err("ordered vertex journal entry must not have next_index");
+            }
+            if bulk_progress.is_some() {
+                return Err("ordered vertex journal entry must not have bulk progress");
+            }
+            if row_count != u64::from(*logical_item_count) {
+                return Err("ordered vertex journal row_count must equal logical_item_count");
+            }
+        }
     }
     Ok(())
 }
@@ -873,6 +898,31 @@ pub struct GraphOrderedEdgeBatchReceiptV1 {
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
     pub hot_forward_vertices: Vec<LocalVertexId>,
+}
+
+/// Durable aggregate receipt returned by a completed ordered Graph vertex batch.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GraphOrderedVertexBatchReceiptV1 {
+    pub logical_vertex_count: u64,
+    pub emitted_delta_first_seq: Option<ShardEventSeq>,
+    pub emitted_delta_last_seq: Option<ShardEventSeq>,
+    pub hot_forward_vertices: Vec<LocalVertexId>,
+}
+
+impl GraphOrderedVertexBatchReceiptV1 {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.hot_forward_vertices.len() > MAX_ORDERED_EDGE_HOT_FORWARD_VERTICES {
+            return Err("ordered vertex receipt hot-forward vertex bound exceeded");
+        }
+        if self
+            .hot_forward_vertices
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err("ordered vertex receipt hot-forward vertices must be sorted and unique");
+        }
+        Ok(())
+    }
 }
 
 impl GraphOrderedEdgeBatchReceiptV1 {
@@ -905,6 +955,29 @@ pub enum GraphOrderedEdgeBatchResultV1 {
         mutation_id: MutationId,
         graph_request_fingerprint: [u8; 32],
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphOrderedVertexBatchResult {
+    V1(GraphOrderedVertexBatchResultV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GraphOrderedVertexBatchResultV1 {
+    Completed(GraphOrderedVertexBatchReceiptV1),
+    MutationRetired {
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    },
+}
+
+impl GraphOrderedVertexBatchResult {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::V1(GraphOrderedVertexBatchResultV1::Completed(receipt)) => receipt.validate(),
+            Self::V1(GraphOrderedVertexBatchResultV1::MutationRetired { .. }) => Ok(()),
+        }
+    }
 }
 
 impl GraphOrderedEdgeBatchResult {

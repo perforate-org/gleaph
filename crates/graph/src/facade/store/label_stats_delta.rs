@@ -7,7 +7,8 @@ use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
     GraphBulkMutationProgress, GraphMutationJournalEntryWire, GraphMutationRequestIdentityV1,
     GraphMutationRetirementV1, GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult,
-    GraphOrderedEdgeBatchResultV1, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
+    GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult,
+    GraphOrderedVertexBatchResultV1, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
     MutationJournalState, OrderedMutationRetirementAck, OrderedMutationRetirementAckV1,
     ShardEventSeq,
 };
@@ -137,6 +138,110 @@ impl GraphStore {
         let result = GraphOrderedEdgeBatchResult::V1(result);
         result.validate()?;
         Ok(Some(result))
+    }
+
+    fn ordered_vertex_receipt(
+        entry: &GraphMutationJournalEntry,
+    ) -> Result<GraphOrderedVertexBatchReceiptV1, &'static str> {
+        let receipt = GraphOrderedVertexBatchReceiptV1 {
+            logical_vertex_count: entry.row_count(),
+            emitted_delta_first_seq: entry.emitted_delta_first_seq(),
+            emitted_delta_last_seq: entry.emitted_delta_last_seq(),
+            hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub(crate) fn ordered_vertex_batch_replay_result(
+        &self,
+        mutation_id: MutationId,
+        expected_identity: &GraphMutationRequestIdentityV1,
+    ) -> Result<Option<GraphOrderedVertexBatchResult>, &'static str> {
+        let Some(entry) = self.mutation_journal_entry_for_replay(mutation_id, expected_identity)?
+        else {
+            return Ok(None);
+        };
+        let GraphMutationRequestIdentityV1::OrderedVertexBatch {
+            graph_request_fingerprint,
+            ..
+        } = expected_identity
+        else {
+            return Err("ordered vertex replay requires OrderedVertexBatch identity");
+        };
+        let result = match entry.retirement() {
+            GraphMutationRetirementV1::Active => {
+                GraphOrderedVertexBatchResultV1::Completed(Self::ordered_vertex_receipt(&entry)?)
+            }
+            GraphMutationRetirementV1::Retired { .. } => {
+                GraphOrderedVertexBatchResultV1::MutationRetired {
+                    mutation_id,
+                    graph_request_fingerprint: *graph_request_fingerprint,
+                }
+            }
+            GraphMutationRetirementV1::NotApplicable => {
+                return Err("ordered vertex replay entry has no retirement state");
+            }
+        };
+        let result = GraphOrderedVertexBatchResult::V1(result);
+        result.validate()?;
+        Ok(Some(result))
+    }
+
+    pub(crate) fn commit_record_completed_ordered_vertex_batch_journal_at(
+        &self,
+        now_ns: u64,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<LocalVertexId>,
+    ) {
+        let receipt = GraphOrderedVertexBatchReceiptV1 {
+            logical_vertex_count: row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices: hot_forward_vertices.clone(),
+        };
+        receipt
+            .validate()
+            .expect("invalid ordered vertex journal receipt");
+        let mut entry = GraphMutationJournalEntry::completed(
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+            now_ns,
+        );
+        entry.set_request_identity(request_identity);
+        entry.set_retirement(GraphMutationRetirementV1::Active);
+        entry
+            .wire()
+            .validate()
+            .expect("invalid ordered vertex journal entry");
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| m.insert(entry));
+    }
+
+    pub(crate) fn commit_record_completed_ordered_vertex_batch_journal(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<LocalVertexId>,
+    ) {
+        self.commit_record_completed_ordered_vertex_batch_journal_at(
+            ic_time_ns(),
+            mutation_id,
+            request_identity,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+        );
     }
 
     pub fn get_mutation_journal_entry(

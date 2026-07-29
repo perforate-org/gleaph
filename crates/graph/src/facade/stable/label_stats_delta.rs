@@ -320,6 +320,16 @@ fn encode_request_identity(buf: &mut Vec<u8>, identity: &GraphMutationRequestIde
             buf.extend_from_slice(graph_request_fingerprint);
             encode_u32_le(buf, *logical_item_count);
         }
+        GraphMutationRequestIdentityV1::OrderedVertexBatch {
+            canonical_encoding_version,
+            graph_request_fingerprint,
+            logical_item_count,
+        } => {
+            encode_u8(buf, 2);
+            encode_u16_le(buf, *canonical_encoding_version);
+            buf.extend_from_slice(graph_request_fingerprint);
+            encode_u32_le(buf, *logical_item_count);
+        }
     }
 }
 
@@ -333,6 +343,18 @@ fn decode_request_identity(bytes: &[u8], offset: &mut usize) -> GraphMutationReq
             *offset += 32;
             let logical_item_count = decode_u32_le(bytes, offset);
             GraphMutationRequestIdentityV1::OrderedEdgeBatch {
+                canonical_encoding_version,
+                graph_request_fingerprint,
+                logical_item_count,
+            }
+        }
+        2 => {
+            let canonical_encoding_version = decode_u16_le(bytes, offset);
+            let mut graph_request_fingerprint = [0u8; 32];
+            graph_request_fingerprint.copy_from_slice(&bytes[*offset..*offset + 32]);
+            *offset += 32;
+            let logical_item_count = decode_u32_le(bytes, offset);
+            GraphMutationRequestIdentityV1::OrderedVertexBatch {
                 canonical_encoding_version,
                 graph_request_fingerprint,
                 logical_item_count,
