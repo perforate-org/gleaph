@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 04:57:09 UTC +0000
+Anchor timestamp: 2026-07-29 04:59:57 UTC +0000
 
 ## Context
 
@@ -44,8 +44,8 @@ defined and validated. Graph-side mixed phase execution, allocation-table
 resolution, and durable aggregate receipt/replay are active; Router mixed replay
 identity/target persistence, Graph dispatch, the canonical receipt transition,
 and the Router-owned label-stats projection transition are now active; mixed
-fingerprint-bound retirement is now active, while background recovery wiring
-remains planned. The existing generic
+fingerprint-bound retirement and background recovery are now active. The existing
+generic
 plan batch runner does not implement this protocol.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
@@ -2155,6 +2155,11 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     endpoint, verify the aggregate receipt/fingerprint ack, and transition to
     `CompletedOrderedMixedBatch` with the persisted projection watermark.
     Background recovery for mixed records remains planned.
+40. **Partially implemented (2026-07-29 04:59:57 UTC +0000):** The recovery
+    driver now handles mixed replay targets without canonical redispatch. It
+    records an explicit retry diagnostic for `CanonicalPending`, and resumes
+    projection, mixed Graph retirement, receipt verification, and terminal
+    completion for every later durable phase.
 
 ## Test contract
 

@@ -6158,6 +6158,131 @@ async fn recover_ordered_edge_batch_record(
 }
 
 #[cfg(target_family = "wasm")]
+/// Projection/retirement recovery for a durable ordered mixed batch. The mixed Graph receipt is
+/// already sufficient to resume after a lost Router callback; canonical-pending remains explicit
+/// retry-only and is never redispatched by this driver.
+async fn recover_ordered_mixed_batch_record(
+    store: &RouterStore,
+    key: &crate::facade::stable::label_stats::ClientMutationKey,
+    record: &crate::facade::stable::label_stats::RouterMutationRecord,
+) -> Result<(), RouterError> {
+    use crate::facade::stable::label_stats::{
+        OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
+    };
+    use gleaph_graph_kernel::plan_exec::{
+        OrderedMutationRetirementArgs, OrderedMutationRetirementArgsV1,
+    };
+
+    let replay = match record.payload() {
+        RouterMutationPayloadV1::OrderedMixedBatch(replay) => replay.clone(),
+        _ => return Ok(()),
+    };
+    let target = &replay.target;
+    let graph = target.request.target_graph_canister;
+    let shard_id = target.request.target_shard_id;
+    let mutation_id = record.as_v1().mutation_id;
+    let fingerprint = target.graph_request_fingerprint;
+    let receipt = match &target.progress {
+        OrderedMixedBatchTargetProgressV1::CanonicalPending => {
+            store.record_router_mutation_last_error(
+                key,
+                "ordered mixed canonical write pending; explicit retry is required".into(),
+            )?;
+            return Ok(());
+        }
+        OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt)
+        | OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt)
+        | OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt)
+        | OrderedMixedBatchTargetProgressV1::RetirementPending(receipt) => receipt.clone(),
+    };
+
+    if matches!(
+        target.progress,
+        OrderedMixedBatchTargetProgressV1::CanonicalCommitted(_)
+    ) {
+        store.record_ordered_mixed_batch_projection_pending(
+            key.caller,
+            key.graph_id,
+            &key.client_key,
+            mutation_id,
+            fingerprint,
+        )?;
+    }
+    if matches!(
+        target.progress,
+        OrderedMixedBatchTargetProgressV1::CanonicalCommitted(_)
+            | OrderedMixedBatchTargetProgressV1::ProjectionPending(_)
+    ) {
+        advance_label_stats_projection_through(
+            store,
+            key.graph_id,
+            graph,
+            shard_id,
+            receipt.emitted_delta_last_seq,
+        )
+        .await?;
+        store.record_ordered_mixed_batch_projection_advanced(
+            key.caller,
+            key.graph_id,
+            &key.client_key,
+            mutation_id,
+            fingerprint,
+            MutationTokenShard {
+                shard_id,
+                label_stats_seq: receipt.emitted_delta_last_seq,
+            },
+        )?;
+    }
+
+    let current = store
+        .router_mutation_record(key.caller, key.graph_id, &key.client_key)
+        .ok_or_else(|| RouterError::Internal("ordered mixed recovery record disappeared".into()))?;
+    if matches!(
+        current.payload(),
+        RouterMutationPayloadV1::OrderedMixedBatch(replay)
+            if matches!(
+                replay.target.progress,
+                OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(_)
+            )
+    ) {
+        store.record_ordered_mixed_batch_retirement_pending(
+            key.caller,
+            key.graph_id,
+            &key.client_key,
+            mutation_id,
+            fingerprint,
+        )?;
+    }
+
+    let ack = retire_ordered_mixed_mutation_on_graph(
+        graph,
+        OrderedMutationRetirementArgs::V1(OrderedMutationRetirementArgsV1 {
+            mutation_id,
+            graph_request_fingerprint: fingerprint,
+        }),
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    let gleaph_graph_kernel::plan_exec::OrderedMixedMutationRetirementAck::V1(ack) = ack;
+    if ack.mutation_id != mutation_id
+        || ack.graph_request_fingerprint != fingerprint
+        || ack.receipt != receipt
+    {
+        return Err(RouterError::InvalidArgument(
+            "ordered mixed retirement acknowledgement does not match durable target".into(),
+        ));
+    }
+    store.record_ordered_mixed_batch_retired(
+        key.caller,
+        key.graph_id,
+        &key.client_key,
+        mutation_id,
+        fingerprint,
+        ack.receipt,
+    )
+}
+
+#[cfg(target_family = "wasm")]
 /// Projection/retirement recovery for a durable ordered vertex batch. Canonical-pending records
 /// remain explicit-retry-only; once Graph has committed, the stored vertex receipt is sufficient to
 /// resume projection and fingerprint-bound retirement without reconstructing public input.
@@ -6324,6 +6449,19 @@ pub(crate) async fn recover_mutation_record(
         crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedVertexBatch(_)
     ) {
         return match recover_ordered_vertex_batch_record(store, key, &record).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                store.record_router_mutation_last_error(key, error.to_string())?;
+                Ok(())
+            }
+        };
+    }
+
+    if matches!(
+        record.payload(),
+        crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedMixedBatch(_)
+    ) {
+        return match recover_ordered_mixed_batch_record(store, key, &record).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 store.record_router_mutation_last_error(key, error.to_string())?;
