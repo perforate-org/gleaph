@@ -1,7 +1,7 @@
 use super::helpers::{edge_storage_label, lara_label};
 use super::*;
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, VertexRef};
+use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, Vertex, VertexRef};
 use ic_stable_lara::{
     MaintenanceBudget, OutEdgeOrder, VertexId,
     labeled::{
@@ -44,6 +44,53 @@ fn install_edge_label_inline_property_profile_stores_and_returns_profile() {
             .encoding,
         EdgeInlinePropertyEncoding::F32
     ));
+}
+
+#[test]
+fn bulk_vertex_rows_return_request_ordered_ids_and_preserve_rows() {
+    let store = GraphStore::new();
+    let rows = vec![Vertex::default(), Vertex::default(), Vertex::default()];
+
+    let ids = store
+        .insert_vertex_rows_bulk(rows)
+        .expect("bulk vertex allocation");
+
+    assert_eq!(
+        ids,
+        vec![VertexId::from(0), VertexId::from(1), VertexId::from(2)]
+    );
+    assert_eq!(u32::from(store.vertex_count()), 3);
+    for id in ids {
+        assert!(store.vertex(id).is_some(), "bulk vertex {id:?} is readable");
+    }
+}
+
+#[test]
+fn bulk_vertex_rows_empty_input_is_a_noop() {
+    let store = GraphStore::new();
+
+    assert!(
+        store
+            .insert_vertex_rows_bulk(Vec::new())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(u32::from(store.vertex_count()), 0);
+}
+
+#[test]
+fn bulk_vertex_insert_applies_request_order_without_exposing_allocation_layout() {
+    let store = GraphStore::new();
+
+    let ids = crate::facade::mutation_executor::insert_vertices_with(
+        &store,
+        vec![(Vec::new(), Vec::new()), (Vec::new(), Vec::new())],
+    )
+    .expect("bulk vertex insert");
+
+    assert_eq!(ids, vec![VertexId::from(0), VertexId::from(1)]);
+    assert!(store.vertex(ids[0]).is_some());
+    assert!(store.vertex(ids[1]).is_some());
 }
 
 #[test]

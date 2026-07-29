@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 02:06:06 UTC +0000
+Anchor timestamp: 2026-07-29 02:20:40 UTC +0000
 
 ## Context
 
@@ -1997,8 +1997,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     `GraphOrderedEdgeBatchReceiptV1`. The receipt becomes available after
     canonical Graph commit and is preserved through projection, retirement, and
     exact-key replay; coverage asserts the initial and replayed receipts match.
-18. **Planned (2026-07-29):** add an explicitly versioned vertex-batch contract
-    and implement Graph/LARA vertex bulk placement. The implementation must
+18. **Partially implemented (2026-07-29 02:19:03 UTC +0000):** GraphStore now
+    exposes an internal allocation-only bulk row primitive that returns local
+    `VertexId`s in request order. Focused unit coverage proves empty-input
+    no-op behavior, ordered ids, and readable rows; scalar-vs-bulk canbench
+    probes are added. Labels, properties, complete-set preflight, and the
+    public vertex contract remain planned. The completed placement must still
     project and validate the complete vertex set before canonical writes, group
     compatible allocations without exposing physical locations, preserve
     request-local result order, and benchmark bulk placement against the

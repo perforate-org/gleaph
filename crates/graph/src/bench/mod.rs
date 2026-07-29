@@ -2378,6 +2378,35 @@ fn bench_graph_canonical_segment_insert_bundle_16() -> canbench_rs::BenchResult 
     })
 }
 
+/// Allocation-only baseline for the future vertex bulk-placement substrate.
+#[bench(raw)]
+fn bench_graph_vertex_row_scalar_16() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("vertex_row_scalar_16");
+        for _ in 0..16 {
+            black_box(store.insert_vertex().expect("scalar vertex allocation"));
+        }
+    })
+}
+
+/// Allocation-only bulk boundary baseline; row layout and stable writes remain canonical.
+#[bench(raw)]
+fn bench_graph_vertex_row_bulk_16() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("vertex_row_bulk_16");
+        let rows = (0..16).map(|_| Vertex::default());
+        black_box(
+            store
+                .insert_vertex_rows_bulk(rows)
+                .expect("bulk vertex allocation"),
+        );
+    })
+}
+
 // --- ADR 0030 unique-effect outbox benches (graph-shard side of the cross-shard TCC) ---
 //
 // These complement the Router-side reservation benches (`crates/router/src/bench.rs`) by measuring

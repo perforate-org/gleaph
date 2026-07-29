@@ -70,6 +70,28 @@ pub async fn insert_vertex_with_async(
     Ok(vertex_id)
 }
 
+/// Insert request-ordered vertices using one bulk row-allocation phase followed by the existing
+/// canonical label/property setters. This is the Graph-side substrate for future vertex bulk
+/// placement; it does not expose physical allocation locations.
+pub fn insert_vertices_with(
+    store: &GraphStore,
+    vertices: Vec<(Vec<VertexLabelId>, Vec<(PropertyId, Value)>)>,
+) -> Result<Vec<VertexId>, GraphStoreError> {
+    let ids = store.insert_vertex_rows_bulk((0..vertices.len()).map(|_| Vertex::default()))?;
+    for (vertex_id, (labels, properties)) in ids.iter().copied().zip(vertices) {
+        let vertex = store
+            .vertex(vertex_id)
+            .expect("newly inserted bulk vertex must be readable");
+        let vertex = store.set_vertex_labels(vertex_id, vertex, labels)?;
+        store.set_vertex(vertex_id, vertex)?;
+        for (property_id, value) in properties {
+            store.assert_local_vertex_writable(vertex_id)?;
+            store.set_vertex_property(vertex_id, property_id, value)?;
+        }
+    }
+    Ok(ids)
+}
+
 impl GraphMutationExecutor for GraphStore {
     fn insert_vertex_with(
         &self,

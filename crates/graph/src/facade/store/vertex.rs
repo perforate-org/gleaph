@@ -32,6 +32,25 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
     }
 
+    /// Append a request-ordered group of vertex rows while holding one GraphStore mutation
+    /// boundary. This is the allocation substrate for future vertex bulk placement; labels,
+    /// properties, indexes, and mixed edge resolution remain separate phases.
+    pub(crate) fn insert_vertex_rows_bulk(
+        &self,
+        rows: impl IntoIterator<Item = Vertex>,
+    ) -> Result<Vec<VertexId>, GraphStoreError> {
+        let rows: Vec<_> = rows.into_iter().collect();
+        self.with_graph_mut(|graph| {
+            rows.into_iter()
+                .map(|row| {
+                    graph
+                        .push_vertex_row(row.into())
+                        .map_err(GraphStoreError::from)
+                })
+                .collect()
+        })
+    }
+
     pub fn global_vertex_id(&self, vertex_id: VertexId) -> Option<GlobalVertexId> {
         let local = federation_routing::local_vertex_id_raw(vertex_id);
         let shard_id = self
