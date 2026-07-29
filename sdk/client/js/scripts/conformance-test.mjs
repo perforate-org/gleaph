@@ -47,4 +47,19 @@ for (const vector of fixture.vectors) {
   }
 }
 
+for (const vector of fixture.invalid_sdk_values) {
+  const value = {
+    Float64NaN: { Float64: Number.NaN },
+    Float64Infinity: { Float64: Number.POSITIVE_INFINITY },
+    UnsafeInt64Number: { Int64: Number.MAX_SAFE_INTEGER + 1 },
+  }[vector.kind];
+  let rejected = false;
+  try {
+    encodeCanonicalGqlValue(value);
+  } catch {
+    rejected = true;
+  }
+  if (!rejected) throw new Error(`${vector.name}: invalid SDK value was accepted`);
+}
+
 console.log(`sdk/js canonical value conformance: ${fixture.vectors.length} vectors passed`);

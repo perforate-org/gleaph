@@ -1,10 +1,12 @@
 use gleaph_gql::Value;
+use gleaph_gql_ic::{IcExtensionBinaryDecode, Principal, PrincipalValue};
 use serde_json::Value as JsonValue;
 
 #[derive(serde::Deserialize)]
 struct Fixture {
     version: u32,
     vectors: Vec<Vector>,
+    invalid_binary_vectors: Vec<InvalidBinaryVector>,
 }
 
 #[derive(serde::Deserialize)]
@@ -12,6 +14,12 @@ struct Vector {
     name: String,
     value: JsonValue,
     canonical_bytes_hex: String,
+}
+
+#[derive(serde::Deserialize)]
+struct InvalidBinaryVector {
+    name: String,
+    bytes_hex: String,
 }
 
 fn hex_bytes(value: &str) -> Vec<u8> {
@@ -79,6 +87,9 @@ fn value_from_fixture(value: &JsonValue) -> Value {
                 payload["nanos"].as_u64().expect("nanos") as u32,
             )
         }
+        "Principal" => Value::from(PrincipalValue(
+            Principal::from_text(payload.as_str().expect("Principal text")).expect("Principal"),
+        )),
         other => panic!("unsupported fixture tag: {other}"),
     }
 }
@@ -102,5 +113,14 @@ fn rust_encoder_matches_shared_sdk_vectors() {
             "{}",
             vector.name
         );
+    }
+
+    for vector in fixture.invalid_binary_vectors {
+        let error = Value::from_binary_bytes_with_extensions(
+            &hex_bytes(&vector.bytes_hex),
+            &IcExtensionBinaryDecode::INSTANCE,
+        )
+        .expect_err("invalid binary vector must be rejected");
+        assert!(!error.to_string().is_empty(), "{}", vector.name);
     }
 }

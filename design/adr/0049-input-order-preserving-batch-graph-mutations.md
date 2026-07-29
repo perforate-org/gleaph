@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 01:43:40 UTC +0000
+Anchor timestamp: 2026-07-29 01:49:46 UTC +0000
 
 ## Context
 
@@ -36,9 +36,10 @@ are complete; this ADR does not introduce another counterpart compatibility
 path. The public single-shard ordered edge-batch endpoint, Graph journal-first
 execution, scalar fallback, projection/retirement lifecycle, and basic recovery
 are active. Unsupported optimized geometry, full failure/recovery coverage, the
-complete SDK invalid/boundary conformance matrix, and fresh-release activation
-remain open. Core Rust/JS canonical-value vectors are now active. Vertex bulk
-placement and mixed vertex/edge batches are later extensions; they are not
+full SDK conformance matrix, and fresh-release activation remain open. Core
+Rust/JS canonical-value vectors, integer/temporal boundary vectors, Principal
+extension vectors, and malformed binary rejection vectors are now active. Vertex
+bulk placement and mixed vertex/edge batches are later extensions; they are not
 implied by the current edge-only endpoint or by the existing generic plan batch
 runner.
 
@@ -1972,12 +1973,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     Router, Graph, and derived-index state; reject mixed-version activation.
 16. Run unfiltered `canbench --persist` in every affected crate before updating
     final benchmark artifacts and activation status.
-17. **Partially implemented (2026-07-29 01:43:40 UTC +0000):** add the shared
+17. **Partially implemented (2026-07-29 01:49:46 UTC +0000):** add the shared
     `graph-kernel` canonical GQL value vector fixture and verify the Rust
     encoder plus the JavaScript SDK encoder against the same expected bytes.
-    The core scalar, temporal, list, and record vectors are active. Invalid,
-    maximum-boundary, extension-heavy, and public ordered-batch request-builder
-    coverage remain planned.
+    Core scalar, temporal, list, record, integer-boundary, Principal-extension,
+    and malformed-binary vectors are active. The full invalid SDK matrix and
+    public ordered-batch request-builder coverage remain planned.
 18. **Planned (2026-07-29):** add an explicitly versioned vertex-batch contract
     and implement Graph/LARA vertex bulk placement. The implementation must
     project and validate the complete vertex set before canonical writes, group

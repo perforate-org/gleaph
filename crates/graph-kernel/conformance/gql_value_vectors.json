@@ -22,6 +22,25 @@
       "name": "date_time",
       "value": { "DateTime": { "seconds": "1700000000", "nanos": 123 } },
       "canonical_bytes_hex": "1700f15365000000007b000000"
-    }
+    },
+    { "name": "int64_min", "value": { "Int64": "-9223372036854775808" }, "canonical_bytes_hex": "050000000000000080" },
+    { "name": "int64_max", "value": { "Int64": "9223372036854775807" }, "canonical_bytes_hex": "05ffffffffffffff7f" },
+    { "name": "uint64_max", "value": { "Uint64": "18446744073709551615" }, "canonical_bytes_hex": "0bffffffffffffffff" },
+    {
+      "name": "datetime_nanos_max",
+      "value": { "DateTime": { "seconds": "0", "nanos": 4294967295 } },
+      "canonical_bytes_hex": "170000000000000000ffffffff"
+    },
+    { "name": "principal_management_canister", "value": { "Principal": "aaaaa-aa" }, "canonical_bytes_hex": "2200" }
+  ],
+  "invalid_binary_vectors": [
+    { "name": "invalid_tag", "bytes_hex": "ff" },
+    { "name": "truncated_int64", "bytes_hex": "05" },
+    { "name": "trailing_bytes", "bytes_hex": "0000" }
+  ],
+  "invalid_sdk_values": [
+    { "name": "float64_nan", "kind": "Float64NaN" },
+    { "name": "float64_infinity", "kind": "Float64Infinity" },
+    { "name": "unsafe_int64_number", "kind": "UnsafeInt64Number" }
   ]
 }
