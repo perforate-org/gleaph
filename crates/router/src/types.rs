@@ -147,7 +147,15 @@ impl OrderedEdgeBatchPublicRequest {
         hasher.update(b"gleaph:ordered-edge-public:v1\0");
         let encoded = match self {
             Self::V1(request) => {
-                Encode!(&(request.logical_graph_name.clone(), request.items.clone()))
+                let mut items = request.items.clone();
+                for item in &mut items {
+                    item.initial_edge_properties.sort_by(|left, right| {
+                        left.property_name
+                            .as_bytes()
+                            .cmp(right.property_name.as_bytes())
+                    });
+                }
+                Encode!(&(request.logical_graph_name.clone(), items))
                     .map_err(|error| format!("ordered public request encode: {error}"))?
             }
         };
@@ -1121,6 +1129,43 @@ mod tests {
         let OrderedEdgeBatchPublicRequest::V1(ref mut retry_request) = retry;
         retry_request.client_mutation_key = "different-retry-key".into();
         assert_eq!(retry.public_fingerprint().unwrap(), fingerprint);
+    }
+
+    #[test]
+    fn ordered_public_fingerprint_canonicalizes_property_order_only() {
+        let mut request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+            client_mutation_key: "ordered-property-order".into(),
+            logical_graph_name: "tenant.main".into(),
+            items: vec![OrderedEdgeInsertPublicItemV1 {
+                source: vec![1; 8],
+                target: vec![2; 8],
+                directed: true,
+                edge_label_name: None,
+                inline_property: None,
+                initial_edge_properties: vec![
+                    OrderedEdgePropertyPublicV1 {
+                        property_name: "zeta".into(),
+                        value: vec![1],
+                    },
+                    OrderedEdgePropertyPublicV1 {
+                        property_name: "alpha".into(),
+                        value: vec![2],
+                    },
+                ],
+            }],
+        });
+        let fingerprint = request.public_fingerprint().expect("fingerprint");
+        {
+            let OrderedEdgeBatchPublicRequest::V1(ref mut request_v1) = request;
+            request_v1.items[0].initial_edge_properties.swap(0, 1);
+        }
+        assert_eq!(request.public_fingerprint().unwrap(), fingerprint);
+
+        {
+            let OrderedEdgeBatchPublicRequest::V1(ref mut request_v1) = request;
+            request_v1.items[0].target = vec![3; 8];
+        }
+        assert_ne!(request.public_fingerprint().unwrap(), fingerprint);
     }
 
     #[test]

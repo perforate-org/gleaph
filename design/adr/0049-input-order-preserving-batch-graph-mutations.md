@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 01:49:46 UTC +0000
+Anchor timestamp: 2026-07-29 01:55:38 UTC +0000
 
 ## Context
 
@@ -1978,7 +1978,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     encoder plus the JavaScript SDK encoder against the same expected bytes.
     Core scalar, temporal, list, record, integer-boundary, Principal-extension,
     and malformed-binary vectors are active. The full invalid SDK matrix and
-    public ordered-batch request-builder coverage remain planned.
+    public ordered-batch request-builder coverage remain planned. **Partially
+    implemented (2026-07-29 01:55:38 UTC +0000):** Router's public fingerprint
+    now sorts each item's initial property assignments by property-name UTF-8
+    bytes before encoding, so property-list permutation is canonical while the
+    edge-item array remains order-sensitive. Regression coverage proves both
+    halves of this contract.
 18. **Planned (2026-07-29):** add an explicitly versioned vertex-batch contract
     and implement Graph/LARA vertex bulk placement. The implementation must
     project and validate the complete vertex set before canonical writes, group
