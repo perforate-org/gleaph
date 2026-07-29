@@ -2024,6 +2024,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     Add one durable two-phase receipt/recovery contract, including edge-phase
     failure after vertex preparation/commit, exact retry, derived-index
     convergence, and benchmarks for vertex-only, edge-only, and mixed batches.
+20. **Partially implemented (2026-07-29 02:55:21 UTC +0000):** the shared Graph
+    kernel now defines a versioned vertex-only request envelope with raw `u16`
+    label ids, canonical property bytes, bounded duplicate/reserved-id validation,
+    and a domain-separated order-sensitive fingerprint. It is wire-tested but not
+    yet connected to a Graph canister endpoint, Router admission, journal identity,
+    or aggregate receipt; those remain the next integration slice.
 
 ## Test contract
 

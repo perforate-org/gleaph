@@ -211,6 +211,105 @@ pub struct OrderedEdgeBatchGraphRequestV1 {
 pub const MAX_ORDERED_EDGE_BATCH_ITEMS: usize = 1_024;
 pub const MAX_ORDERED_EDGE_PROPERTIES_PER_ITEM: usize = 256;
 
+/// One logical vertex in the versioned Router → Graph vertex request.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedVertexBatchGraphItemV1 {
+    pub resolved_vertex_labels: Vec<u16>,
+    pub resolved_initial_properties: Vec<ResolvedOrderedEdgePropertyV1>,
+}
+
+/// Versioned immutable Router → Graph canonical request for vertex bulk placement.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum OrderedVertexBatchGraphRequest {
+    V1(OrderedVertexBatchGraphRequestV1),
+}
+
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedVertexBatchGraphRequestV1 {
+    pub graph_id: GraphId,
+    pub target_shard_id: ShardId,
+    pub target_graph_canister: Principal,
+    pub resolved_labels: ResolvedLabelTable,
+    pub resolved_properties: ResolvedPropertyTable,
+    pub items: Vec<OrderedVertexBatchGraphItemV1>,
+}
+
+pub const MAX_ORDERED_VERTEX_BATCH_ITEMS: usize = 1_024;
+pub const MAX_ORDERED_VERTEX_PROPERTIES_PER_ITEM: usize = 256;
+
+impl OrderedVertexBatchGraphRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        let OrderedVertexBatchGraphRequest::V1(request) = self;
+        if request.items.is_empty() || request.items.len() > MAX_ORDERED_VERTEX_BATCH_ITEMS {
+            return Err(format!(
+                "ordered vertex batch requires 1..={} items, got {}",
+                MAX_ORDERED_VERTEX_BATCH_ITEMS,
+                request.items.len()
+            ));
+        }
+        if request.target_graph_canister == Principal::anonymous() {
+            return Err("ordered vertex batch target graph canister must not be anonymous".into());
+        }
+        for (ordinal, item) in request.items.iter().enumerate() {
+            if item.resolved_vertex_labels.contains(&0) {
+                return Err(format!(
+                    "ordered vertex item {ordinal} contains a reserved label"
+                ));
+            }
+            if item.resolved_initial_properties.len() > MAX_ORDERED_VERTEX_PROPERTIES_PER_ITEM {
+                return Err(format!(
+                    "ordered vertex item {ordinal} has too many initial properties"
+                ));
+            }
+            let mut property_ids = BTreeSet::new();
+            for property in &item.resolved_initial_properties {
+                if property.property_id.raw() == 0 {
+                    return Err(format!(
+                        "ordered vertex item {ordinal} contains reserved property id"
+                    ));
+                }
+                if !property_ids.insert(property.property_id) {
+                    return Err(format!(
+                        "ordered vertex item {ordinal} repeats property id {}",
+                        property.property_id.raw()
+                    ));
+                }
+                if property.value.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+                    return Err(format!(
+                        "ordered vertex item {ordinal} property {} exceeds value bound",
+                        property.property_id.raw()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Internal Graph execution envelope for the vertex-only bulk-placement slice.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum OrderedVertexBatchGraphArgs {
+    V1(OrderedVertexBatchGraphArgsV1),
+}
+
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedVertexBatchGraphArgsV1 {
+    pub mutation_id: MutationId,
+    pub graph_request_fingerprint: [u8; 32],
+    pub request: OrderedVertexBatchGraphRequest,
+}
+
+impl OrderedVertexBatchGraphArgs {
+    pub fn recompute_and_validate_fingerprint(&self) -> Result<[u8; 32], String> {
+        let OrderedVertexBatchGraphArgs::V1(args) = self;
+        let fingerprint = ordered_vertex_batch_graph_request_fingerprint(&args.request)?;
+        if fingerprint != args.graph_request_fingerprint {
+            return Err("ordered vertex Graph request fingerprint mismatch".into());
+        }
+        Ok(fingerprint)
+    }
+}
+
 /// Immutable Graph execution envelope. The transmitted fingerprint is integrity metadata; the
 /// Graph recomputes it from `request` before journal lookup.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
@@ -275,6 +374,7 @@ impl OrderedEdgeBatchGraphRequest {
 }
 
 pub const ORDERED_EDGE_GRAPH_FINGERPRINT_DOMAIN: &[u8] = b"gleaph:ordered-edge-graph:v1\0";
+pub const ORDERED_VERTEX_GRAPH_FINGERPRINT_DOMAIN: &[u8] = b"gleaph:ordered-vertex-graph:v1\0";
 
 fn encode_len_prefixed_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
@@ -400,6 +500,44 @@ pub fn ordered_edge_batch_graph_request_fingerprint(
     let bytes = encode_ordered_edge_batch_graph_request(request)?;
     let mut hasher = Sha256::new();
     hasher.update(ORDERED_EDGE_GRAPH_FINGERPRINT_DOMAIN);
+    hasher.update(bytes);
+    Ok(hasher.finalize().into())
+}
+
+/// Encode the exact vertex Graph request without its derived fingerprint or mutation id.
+pub fn encode_ordered_vertex_batch_graph_request(
+    request: &OrderedVertexBatchGraphRequest,
+) -> Result<Vec<u8>, String> {
+    request.validate()?;
+    let OrderedVertexBatchGraphRequest::V1(request) = request;
+    let mut out = Vec::new();
+    out.push(1);
+    out.extend_from_slice(&request.graph_id.raw().to_le_bytes());
+    out.extend_from_slice(&request.target_shard_id.raw().to_le_bytes());
+    encode_len_prefixed_bytes(&mut out, request.target_graph_canister.as_slice());
+    encode_resolved_labels(&mut out, &request.resolved_labels);
+    encode_resolved_properties(&mut out, &request.resolved_properties);
+    out.extend_from_slice(&(request.items.len() as u32).to_le_bytes());
+    for item in &request.items {
+        out.extend_from_slice(&(item.resolved_vertex_labels.len() as u32).to_le_bytes());
+        for label in &item.resolved_vertex_labels {
+            out.extend_from_slice(&label.to_le_bytes());
+        }
+        out.extend_from_slice(&(item.resolved_initial_properties.len() as u32).to_le_bytes());
+        for property in &item.resolved_initial_properties {
+            out.extend_from_slice(&property.property_id.raw().to_le_bytes());
+            encode_len_prefixed_bytes(&mut out, &property.value);
+        }
+    }
+    Ok(out)
+}
+
+pub fn ordered_vertex_batch_graph_request_fingerprint(
+    request: &OrderedVertexBatchGraphRequest,
+) -> Result<[u8; 32], String> {
+    let bytes = encode_ordered_vertex_batch_graph_request(request)?;
+    let mut hasher = Sha256::new();
+    hasher.update(ORDERED_VERTEX_GRAPH_FINGERPRINT_DOMAIN);
     hasher.update(bytes);
     Ok(hasher.finalize().into())
 }
@@ -1385,6 +1523,61 @@ mod tests {
                 .unwrap_err()
                 .contains("repeats property id")
         );
+    }
+
+    #[test]
+    fn ordered_vertex_graph_request_roundtrip_and_fingerprint_is_order_sensitive() {
+        let request = OrderedVertexBatchGraphRequest::V1(OrderedVertexBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(7),
+            target_shard_id: ShardId::new(2),
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![OrderedVertexBatchGraphItemV1 {
+                resolved_vertex_labels: vec![3],
+                resolved_initial_properties: vec![ResolvedOrderedEdgePropertyV1 {
+                    property_id: PropertyId::from_raw(4),
+                    value: vec![1, 2],
+                }],
+            }],
+        });
+        request
+            .validate()
+            .expect("valid ordered vertex graph request");
+        let bytes = Encode!(&request).expect("encode ordered vertex graph request");
+        let decoded: OrderedVertexBatchGraphRequest =
+            Decode!(&bytes, OrderedVertexBatchGraphRequest).expect("decode vertex request");
+        assert_eq!(request, decoded);
+
+        let fingerprint = ordered_vertex_batch_graph_request_fingerprint(&request)
+            .expect("vertex request fingerprint");
+        let mut reordered = request.clone();
+        let OrderedVertexBatchGraphRequest::V1(request) = &mut reordered;
+        request.items[0].resolved_vertex_labels.push(5);
+        assert_ne!(
+            fingerprint,
+            ordered_vertex_batch_graph_request_fingerprint(&reordered)
+                .expect("reordered vertex fingerprint")
+        );
+    }
+
+    #[test]
+    fn ordered_vertex_graph_request_rejects_reserved_property_id() {
+        let request = OrderedVertexBatchGraphRequest::V1(OrderedVertexBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(7),
+            target_shard_id: ShardId::new(2),
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![OrderedVertexBatchGraphItemV1 {
+                resolved_vertex_labels: Vec::new(),
+                resolved_initial_properties: vec![ResolvedOrderedEdgePropertyV1 {
+                    property_id: PropertyId::from_raw(0),
+                    value: Vec::new(),
+                }],
+            }],
+        });
+        assert!(request.validate().is_err());
     }
 
     #[test]
