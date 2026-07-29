@@ -7,10 +7,10 @@ use gleaph_graph_kernel::federation::{
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchResult, ExecutePlanResult,
     GetMutationJournalEntriesArgs, GetMutationJournalEntriesResult, GraphMutationJournalEntryWire,
-    GraphOrderedEdgeBatchResult, GraphOrderedVertexBatchResult, LabelStatsDeltaEventWire,
-    MutationId, OrderedEdgeBatchGraphArgs, OrderedMutationRetirementAck,
-    OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, OrderedVertexMutationRetirementAck,
-    OrderedVertexMutationRetirementArgs, ShardEventSeq,
+    GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult, GraphOrderedVertexBatchResult,
+    LabelStatsDeltaEventWire, MutationId, OrderedEdgeBatchGraphArgs, OrderedMixedBatchGraphArgs,
+    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs,
+    OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementArgs, ShardEventSeq,
 };
 
 #[cfg(target_family = "wasm")]
@@ -166,6 +166,25 @@ pub async fn execute_ordered_vertex_batch_on_graph(
     result
         .validate()
         .map_err(|e| format!("ordered vertex batch result validation: {e}"))?;
+    Ok(result)
+}
+
+/// Router → Graph: journal-first ordered mixed vertex/edge execution (ADR 0049).
+#[allow(
+    dead_code,
+    reason = "wired into the mixed Router lifecycle in the next slice"
+)]
+pub async fn execute_ordered_mixed_batch_on_graph(
+    graph: Principal,
+    args: OrderedMixedBatchGraphArgs,
+) -> Result<GraphOrderedMixedBatchResult, String> {
+    args.recompute_and_validate_fingerprint()
+        .map_err(|e| format!("ordered mixed batch validation: {e}"))?;
+    let result: GraphOrderedMixedBatchResult =
+        call_graph_result(graph, "execute_ordered_mixed_batch", args).await?;
+    result
+        .validate()
+        .map_err(|e| format!("ordered mixed batch result validation: {e}"))?;
     Ok(result)
 }
 

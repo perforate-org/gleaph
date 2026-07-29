@@ -2125,6 +2125,13 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     visible vertex phase cannot be reported as an ordinary failed request. A
     focused handler test covers commit and exact replay. Router dispatch,
     projection lifecycle, retirement, and recovery remain planned.
+35. **Partially implemented (2026-07-29 04:29:21 UTC +0000):** Router now converts
+    the validated public mixed operation array into the immutable Graph envelope,
+    decodes existing element ids at the Router boundary, rejects cross-shard
+    endpoints, preserves request-local new-vertex ordinals, and exposes the
+    fingerprint/result-validating Graph client call. The public update endpoint
+    remains gated until the durable mixed Router replay, projection, retirement,
+    and recovery lifecycle is wired.
 
 ## Test contract
 

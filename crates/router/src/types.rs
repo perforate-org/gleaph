@@ -535,8 +535,8 @@ impl OrderedVertexBatchPublicRequest {
 }
 
 /// Versioned public request for the narrow mixed vertex/edge insertion follow-up (ADR 0049).
-/// The execution endpoint is intentionally not published until the Graph two-phase envelope is
-/// available; this type fixes validation and request-local endpoint semantics first.
+/// The public update endpoint remains gated on the durable Router lifecycle; this type owns the
+/// validated public shape and its conversion into the immutable Graph two-phase envelope.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum OrderedMixedBatchPublicRequest {
     V1(OrderedMixedBatchPublicRequestV1),
@@ -584,6 +584,17 @@ impl OrderedMixedBatchPublicRequest {
         if request.operations.is_empty() || request.operations.len() > 1_024 {
             return Err("ordered mixed batch operation count must be 1..=1024".into());
         }
+        if !request
+            .operations
+            .iter()
+            .any(|operation| matches!(operation, OrderedMixedBatchOperationV1::Vertex(_)))
+            || !request
+                .operations
+                .iter()
+                .any(|operation| matches!(operation, OrderedMixedBatchOperationV1::Edge(_)))
+        {
+            return Err("ordered mixed batch requires at least one vertex and one edge".into());
+        }
         let vertex_count = request
             .operations
             .iter()
@@ -628,6 +639,182 @@ impl OrderedMixedBatchPublicRequest {
             return Err("ordered mixed batch exceeds the safe payload bound".into());
         }
         Ok(())
+    }
+
+    /// Convert the public request into the immutable Graph envelope after Router has resolved
+    /// the graph catalogs. Existing endpoints are decoded here so the selected shard is checked
+    /// at the Router → Graph boundary; new-vertex ordinals remain request-local references.
+    pub fn into_graph_request(
+        &self,
+        graph_id: GraphId,
+        target_shard_id: ShardId,
+        target_graph_canister: Principal,
+        encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+        resolved_labels: gleaph_graph_kernel::plan_exec::ResolvedLabelTable,
+        resolved_properties: gleaph_graph_kernel::plan_exec::ResolvedPropertyTable,
+    ) -> Result<gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequest, String> {
+        self.validate()?;
+        let Self::V1(request) = self;
+        let operations = request
+            .operations
+            .iter()
+            .enumerate()
+            .map(|(ordinal, operation)| match operation {
+                OrderedMixedBatchOperationV1::Vertex(item) => {
+                    let labels = item
+                        .vertex_labels
+                        .iter()
+                        .map(|name| {
+                            resolved_labels
+                                .vertex
+                                .iter()
+                                .find(|entry| entry.name == *name)
+                                .map(|entry| entry.id.raw())
+                                .ok_or_else(|| {
+                                    format!("ordered mixed vertex label {name} was not resolved")
+                                })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let properties = item
+                        .initial_properties
+                        .iter()
+                        .map(|property| {
+                            resolved_initial_property(
+                                &resolved_properties,
+                                &property.property_name,
+                                property.value.clone(),
+                            )
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    Ok(
+                        gleaph_graph_kernel::plan_exec::OrderedMixedGraphOperationV1::Vertex(
+                            gleaph_graph_kernel::plan_exec::OrderedVertexBatchGraphItemV1 {
+                                resolved_vertex_labels: labels,
+                                resolved_initial_properties: properties,
+                            },
+                        ),
+                    )
+                }
+                OrderedMixedBatchOperationV1::Edge(item) => {
+                    let source = decode_mixed_endpoint(
+                        ordinal,
+                        "source",
+                        &item.source,
+                        encoding_key,
+                        target_shard_id,
+                    )?;
+                    let target = decode_mixed_endpoint(
+                        ordinal,
+                        "target",
+                        &item.target,
+                        encoding_key,
+                        target_shard_id,
+                    )?;
+                    let catalog_edge_label_id = item
+                        .edge_label_name
+                        .as_ref()
+                        .map(|name| {
+                            resolved_labels
+                                .edge
+                                .iter()
+                                .find(|entry| entry.name == *name)
+                                .map(|entry| entry.id)
+                                .ok_or_else(|| {
+                                    format!("ordered mixed edge label {name} was not resolved")
+                                })
+                        })
+                        .transpose()?;
+                    let properties = item
+                        .initial_edge_properties
+                        .iter()
+                        .map(|property| {
+                            resolved_initial_property(
+                                &resolved_properties,
+                                &property.property_name,
+                                property.value.clone(),
+                            )
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    Ok(
+                        gleaph_graph_kernel::plan_exec::OrderedMixedGraphOperationV1::Edge(
+                            gleaph_graph_kernel::plan_exec::OrderedMixedGraphEdgeItemV1 {
+                                source,
+                                target,
+                                directed: item.directed,
+                                catalog_edge_label_id,
+                                inline_property_bytes: item
+                                    .inline_property
+                                    .clone()
+                                    .unwrap_or_default(),
+                                resolved_initial_edge_properties: properties,
+                            },
+                        ),
+                    )
+                }
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let graph_request = gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequest::V1(
+            gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequestV1 {
+                graph_id,
+                target_shard_id,
+                target_graph_canister,
+                resolved_labels,
+                resolved_properties,
+                operations,
+            },
+        );
+        graph_request.validate()?;
+        Ok(graph_request)
+    }
+}
+
+fn resolved_initial_property(
+    resolved_properties: &gleaph_graph_kernel::plan_exec::ResolvedPropertyTable,
+    property_name: &str,
+    value: Vec<u8>,
+) -> Result<gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1, String> {
+    let property_id = resolved_properties
+        .properties
+        .iter()
+        .find(|entry| entry.name == property_name)
+        .map(|entry| entry.id)
+        .ok_or_else(|| format!("ordered mixed property {property_name} was not resolved"))?;
+    Ok(gleaph_graph_kernel::plan_exec::ResolvedOrderedEdgePropertyV1 { property_id, value })
+}
+
+fn decode_mixed_endpoint(
+    ordinal: usize,
+    name: &str,
+    endpoint: &OrderedMixedEndpointPublicV1,
+    encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
+    target_shard_id: ShardId,
+) -> Result<gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1, String> {
+    match endpoint {
+        OrderedMixedEndpointPublicV1::NewVertexOrdinal(vertex_ordinal) => Ok(
+            gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1::NewVertexOrdinal(
+                *vertex_ordinal,
+            ),
+        ),
+        OrderedMixedEndpointPublicV1::Existing(bytes) => {
+            let encoded: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
+                bytes.as_slice().try_into().map_err(|_| {
+                    format!("mixed operation {ordinal} {name} endpoint has invalid width")
+                })?;
+            let vertex = gleaph_graph_kernel::federation::decode_global_vertex_id(
+                encoding_key,
+                gleaph_graph_kernel::federation::EncodedVertexId(encoded),
+            );
+            if vertex.shard_id != target_shard_id {
+                return Err(format!(
+                    "mixed operation {ordinal} {name} endpoint does not target the selected shard"
+                ));
+            }
+            Ok(
+                gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1::Existing(
+                    vertex.local_vertex_id,
+                ),
+            )
+        }
     }
 }
 
@@ -1570,6 +1757,56 @@ mod tests {
         let decoded: OrderedMixedBatchPublicRequest =
             Decode!(&bytes, OrderedMixedBatchPublicRequest).expect("decode mixed request");
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn ordered_mixed_public_request_converts_to_graph_operation_phases() {
+        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+            client_mutation_key: "mixed-convert".into(),
+            logical_graph_name: "tenant.main".into(),
+            target_shard_id: ShardId::new(3),
+            operations: vec![
+                OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+                    vertex_labels: Vec::new(),
+                    initial_properties: Vec::new(),
+                }),
+                OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
+                    source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
+                    target: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
+                    directed: false,
+                    edge_label_name: None,
+                    inline_property: Some(vec![7, 8]),
+                    initial_edge_properties: Vec::new(),
+                }),
+            ],
+        });
+        let graph_request = request
+            .into_graph_request(
+                GraphId::from_raw(11),
+                ShardId::new(3),
+                Principal::from_slice(&[1]),
+                &gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
+                Default::default(),
+                Default::default(),
+            )
+            .expect("convert mixed public request");
+        let gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequest::V1(graph_request) =
+            graph_request;
+        assert_eq!(graph_request.operations.len(), 2);
+        assert!(matches!(
+            graph_request.operations[0],
+            gleaph_graph_kernel::plan_exec::OrderedMixedGraphOperationV1::Vertex(_)
+        ));
+        let gleaph_graph_kernel::plan_exec::OrderedMixedGraphOperationV1::Edge(edge) =
+            &graph_request.operations[1]
+        else {
+            panic!("second operation must remain an edge");
+        };
+        assert_eq!(
+            edge.source,
+            gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1::NewVertexOrdinal(0)
+        );
+        assert_eq!(edge.inline_property_bytes, vec![7, 8]);
     }
 
     #[test]
