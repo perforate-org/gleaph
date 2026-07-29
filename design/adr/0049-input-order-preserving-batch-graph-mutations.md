@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 01:55:38 UTC +0000
+Anchor timestamp: 2026-07-29 01:58:25 UTC +0000
 
 ## Context
 
@@ -1984,6 +1984,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     bytes before encoding, so property-list permutation is canonical while the
     edge-item array remains order-sensitive. Regression coverage proves both
     halves of this contract.
+    **Partially implemented (2026-07-29 01:58:25 UTC +0000):** the JavaScript
+    SDK now exports a standalone builder for the Candid-shaped public V1 edge
+    request. It encodes inline and initial property values with the shared
+    canonical value codec, validates endpoint/key/item and inline bounds, emits
+    Candid option arrays, preserves edge-item order, and sorts property names by
+    UTF-8 bytes. It does not compute fingerprints or perform Router admission.
 18. **Planned (2026-07-29):** add an explicitly versioned vertex-batch contract
     and implement Graph/LARA vertex bulk placement. The implementation must
     project and validate the complete vertex set before canonical writes, group

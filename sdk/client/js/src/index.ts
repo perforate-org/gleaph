@@ -29,6 +29,16 @@ export {
 } from "./helpers";
 export { GleaphCanisterError, GleaphSdkError } from "./errors";
 export { bytesToHex, encodeCanonicalGqlValue } from "./canonical-value";
+export { makeOrderedEdgeBatchPublicRequest } from "./ordered-edge-batch";
+export type {
+  CandidOption,
+  OrderedEdgeBatchPublicRequest,
+  OrderedEdgeBatchPublicRequestInput,
+  OrderedEdgeBatchPublicRequestV1,
+  OrderedEdgeInsertPublicItem,
+  OrderedEdgeInsertPublicItemInput,
+  OrderedEdgePropertyPublic,
+} from "./ordered-edge-batch";
 export {
   fromApiValue,
   isApiValue,

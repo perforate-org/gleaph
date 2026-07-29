@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { encodeCanonicalGqlValue, bytesToHex } from "../src/canonical-value.ts";
+import { makeOrderedEdgeBatchPublicRequest } from "../src/ordered-edge-batch.ts";
 
 const fixturePath = new URL(
   "../../../../crates/graph-kernel/conformance/gql_value_vectors.json",
@@ -62,4 +63,74 @@ for (const vector of fixture.invalid_sdk_values) {
   if (!rejected) throw new Error(`${vector.name}: invalid SDK value was accepted`);
 }
 
-console.log(`sdk/js canonical value conformance: ${fixture.vectors.length} vectors passed`);
+const orderedRequest = makeOrderedEdgeBatchPublicRequest({
+  client_mutation_key: "sdk-conformance",
+  logical_graph_name: "tenant.main",
+  items: [
+    {
+      source: Uint8Array.from([1, 1, 1, 1, 1, 1, 1, 1]),
+      target: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]),
+      directed: true,
+      edge_label_name: "follows",
+      inline_property: { Text: "inline" },
+      initial_edge_properties: {
+        zeta: { Int64: 7n },
+        alpha: { Text: "first" },
+      },
+    },
+  ],
+});
+const [item] = orderedRequest.V1.items;
+if (
+  !item ||
+  item.initial_edge_properties.map(({ property_name }) => property_name).join(",") !== "alpha,zeta"
+) {
+  throw new Error("ordered public request does not canonicalize property order");
+}
+if (item.edge_label_name.length !== 1 || item.inline_property.length !== 1) {
+  throw new Error("ordered public request option shape is not Candid-compatible");
+}
+
+function assertBuilderRejects(input, name) {
+  let rejected = false;
+  try {
+    makeOrderedEdgeBatchPublicRequest(input);
+  } catch {
+    rejected = true;
+  }
+  if (!rejected) throw new Error(`${name}: invalid ordered request was accepted`);
+}
+
+assertBuilderRejects(
+  {
+    client_mutation_key: "invalid-endpoint",
+    logical_graph_name: "tenant.main",
+    items: [
+      {
+        source: Uint8Array.of(1),
+        target: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]),
+        directed: true,
+      },
+    ],
+  },
+  "invalid endpoint width",
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "invalid-property",
+    logical_graph_name: "tenant.main",
+    items: [
+      {
+        source: Uint8Array.from([1, 1, 1, 1, 1, 1, 1, 1]),
+        target: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]),
+        directed: true,
+        initial_edge_properties: { "": { Text: "invalid" } },
+      },
+    ],
+  },
+  "empty property name",
+);
+
+console.log(
+  `sdk/js conformance: ${fixture.vectors.length} value vectors and ordered request builder passed`,
+);
