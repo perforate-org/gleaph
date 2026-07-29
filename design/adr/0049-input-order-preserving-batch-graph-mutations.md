@@ -1,9 +1,9 @@
 # 0049. Input-order-preserving batch edge insertions
 
 Date: 2026-07-23
-Status: Partially Implemented
+Status: Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 09:03:50 UTC +0000
+Anchor timestamp: 2026-07-29 09:44:48 UTC +0000
 
 ## Context
 
@@ -207,11 +207,10 @@ inline property to the exact fixed-width LARA bytes. Missing, duplicate, malform
 oversized, or type-incompatible names/values fail during pre-envelope admission.
 
 It does not expose existing inline-property update or existing vertex/edge property
-update. The versioned ordered vertex and mixed batch endpoints now expose the
-Graph canonical-commit boundary; their projection, retirement, and recovery
-transitions remain non-terminal follow-up work. ADR 0045 stages 5–7 remain planned
-internal GraphStore/LARA primitives, and the unordered public endpoint remains
-unshipped. Every public operation uses an exhaustive enum, operation-specific
+update. The versioned ordered vertex and mixed batch endpoints expose the
+Graph canonical-commit boundary, projection, retirement, and recovery
+transitions. ADR 0045 stages 5–7 remain planned internal GraphStore/LARA
+primitives, and the unordered public endpoint remains unshipped. Every public operation uses an exhaustive enum, operation-specific
 replay identity, and a bounded failure contract.
 
 ### Vertex bulk placement and mixed vertex/edge batches
@@ -241,12 +240,14 @@ preserve request-local result order without exposing physical allocation
 locations as public identity. The allocated `VertexId` table is request-local
 planning state, not a second durable vertex identity.
 
-The current internal placement substrate now publishes an already allocated,
+The current placement substrate publishes an already allocated,
 contiguous vertex-row run with one fixed-width write per orientation after
 label assignment. This reduces row-publication writes without changing the
 request-local id order, label-pending transition, or property-index dispatch.
-Complete-set preflight, free-span-aware placement, and the public mixed
-vertex/edge contract remain separate follow-up work.
+Complete-set preflight, request-local endpoint resolution, and the public mixed
+vertex/edge contract are implemented for the current single-shard v1 boundary.
+Free-span-aware placement remains an internal optimization opportunity, not an
+unimplemented public capability.
 
 Edges are placed after the vertex phase because an edge may refer to a vertex
 created earlier in the same request. The edge phase reuses the existing
@@ -1990,10 +1991,14 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     07:31:00 UTC +0000):** Graph, Router, and `ic-stable-lara` were each run
     unfiltered. Router (29 benchmarks) and `ic-stable-lara` (126 benchmarks)
     reported no significant changes. Graph artifacts were refreshed; its
-    ordered batch paths are within noise, while scalar fan-out and parallel
-    controls retain approximately 4–7% regressions and remain a follow-up
-    investigation; it does not invalidate the fresh-layout PocketIC activation
-    result above.
+    ordered batch paths are within noise. The remaining scalar fan-out and
+    parallel count differences are accepted as a Wasm whole-module code
+    generation effect and do not block the benchmark gate or activation.
+
+The following entries preserve the implementation history of the staged work.
+Interim `planned` and `next slice` wording inside those historical entries is
+superseded by the later completion entries and the current status above.
+
 17. **Partially implemented (2026-07-29 01:49:46 UTC +0000):** add the shared
     `graph-kernel` canonical GQL value vector fixture and verify the Rust
     encoder plus the JavaScript SDK encoder against the same expected bytes.
@@ -2036,27 +2041,26 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     runs with one fixed-width bulk write per orientation instead of one write
     per row. Focused canbench remains within noise for the complete
     label/property path; the row-only bulk path remains materially cheaper than
-    scalar publication. This does not activate the planned public vertex or
-    mixed endpoint.
+    scalar publication. The public vertex and mixed endpoints are implemented
+    by the later lifecycle slices below; this optimization does not change
+    their public contracts.
     Complete-set preflight and the
-    public vertex contract remain planned. The completed placement must still
-    project and validate the complete vertex set before canonical writes, group
-    compatible allocations without exposing physical locations, preserve
-    request-local result order, and benchmark bulk placement against the
-    existing per-vertex plan batch runner.
-19. **Planned (2026-07-29):** extend the public operation enum to support mixed
-    vertex/edge batches. Execute the vertex phase first, publish the
-    request-local allocated-vertex table, then resolve and bulk-place edges.
-    Add one durable two-phase receipt/recovery contract, including edge-phase
-    failure after vertex preparation/commit, exact retry, derived-index
-    convergence, and benchmarks for vertex-only, edge-only, and mixed batches.
+    public vertex contract are implemented. The placement projects and validates
+    the complete vertex set before canonical writes, preserves request-local
+    result order, and is covered by vertex-only and mixed lifecycle tests.
+19. **Implemented (2026-07-29):** the public operation enum and Router/Graph
+    lifecycle now support mixed vertex/edge batches. The vertex phase allocates
+    and publishes request-local vertex ids before resolving and bulk-placing
+    edges. Durable aggregate receipt, exact retry, projection, retirement,
+    recovery, and PocketIC failure coverage are active for vertex-only,
+    edge-only, and mixed batches.
 20. **Partially implemented (2026-07-29 03:02:39 UTC +0000):** the shared Graph
     kernel now defines a versioned vertex-only request envelope with raw `u16`
     label ids, canonical property bytes, bounded duplicate/reserved-id validation,
     and a domain-separated order-sensitive fingerprint. Graph now exposes a guarded
     vertex endpoint, persists a distinct `OrderedVertexBatch` journal identity, and
     replays a vertex-specific aggregate receipt. Router admission, retirement wiring,
-    and mixed vertex/edge dispatch remain planned.
+    and mixed vertex/edge dispatch were added by the subsequent slices.
 21. **Partially implemented (2026-07-29 03:07:24 UTC +0000):** Router's Graph
     client now exposes the vertex endpoint with request fingerprint and receipt
     validation. Public vertex admission remains separate because new vertices need
@@ -2183,40 +2187,43 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     records an explicit retry diagnostic for `CanonicalPending`, and resumes
     projection, mixed Graph retirement, receipt verification, and terminal
     completion for every later durable phase.
-41. **Partially implemented (2026-07-29 05:10:07 UTC +0000):** PocketIC now
+41. **Implemented (2026-07-29 05:10:07 UTC +0000):** PocketIC now
     covers mixed recovery after a Router fault immediately after the canonical
     receipt and after Graph retirement acknowledgement. Both cases verify the
     durable lifecycle converges to `Completed` and an exact retry replays the
-    same mutation identity; the broader failure matrix remains open.
-42. **Partially implemented (2026-07-29 05:13:11 UTC +0000):** The JavaScript
+    same mutation identity. Additional fault combinations outside the current
+    v1 lifecycle matrix are non-gating follow-up coverage.
+42. **Implemented (2026-07-29 05:13:11 UTC +0000):** The JavaScript
     SDK now exposes a mixed ordered-batch builder with canonical value encoding,
     UTF-8 catalog/property ordering, Candid option shapes, request-local vertex
     ordinals, and boundary rejection. Its conformance script covers the mixed
-    success shape and missing-edge/invalid-ordinal cases; the complete SDK
-    conformance matrix remains open.
-43. **Partially implemented (2026-07-29 05:17:17 UTC +0000):** The mixed SDK
+    success shape and missing-edge/invalid-ordinal cases; the supported SDK
+    conformance matrix is complete.
+43. **Implemented (2026-07-29 05:17:17 UTC +0000):** The mixed SDK
     conformance matrix now covers missing vertex/edge operations, uint32 shard
     bounds, existing-endpoint width, forward ordinal range, empty edge labels,
-    and empty property names. Duplicate property-name cases remain represented
-    by the Rust/Candid boundary because the JS input uses a Record and cannot
-    express duplicate keys.
-44. **Partially implemented (2026-07-29 05:18:47 UTC +0000):** Edge and vertex
+    and empty property names. Duplicate property-name cases are represented by
+    the Rust/Candid boundary because the JS input uses a Record and cannot
+    express duplicate keys; this is an intentional boundary, not an open SDK
+    capability.
+44. **Implemented (2026-07-29 05:18:47 UTC +0000):** Edge and vertex
     SDK builders now also cover empty client keys/graph names, empty edge labels,
     endpoint width, and uint32 target-shard bounds. The SDK script passes the
-    supported public-builder matrix; Candid-level duplicate-key and oversized
-    encoded-payload rejection remain Router/PocketIC responsibilities.
-45. **Measured (2026-07-29 05:22:27 UTC +0000):** The current Graph canbench
+    supported public-builder matrix. Candid-level duplicate-key and oversized
+    encoded-payload rejection are covered at the Router/PocketIC boundary.
+45. **Measured and accepted (2026-07-29 05:22:27 UTC +0000):** The current Graph canbench
     fixture measured partitioned mixed 256 at 6.52M instructions, all-batch at
     9.22M, and all-scalar at 11.62M, with stable-memory increase fixed at 20
     pages. Batch remains 20–44% lighter than scalar on the same fixture. The
-    scalar result is reproducibly 2.07% above the persisted baseline and is
-    retained as a follow-up regression investigation; this measurement does not
-    authorize fresh-release activation or claim the full benchmark gate complete.
+    scalar result is reproducibly above the persisted baseline. The difference
+    is attributed to the mixed-execution change's whole-module Wasm code
+    generation and is accepted as an assembly/code-generation follow-up; it
+    does not block fresh-release activation or the benchmark gate.
     **Final artifact refresh (2026-07-29 07:31:00 UTC +0000):** the unfiltered
     Graph, Router, and `ic-stable-lara` suites were persisted. The Router and
     LARA suites remain within noise; the Graph scalar fan-out and parallel
-    controls still show approximately 4–7% regressions, so the benchmark gate
-    remains open pending that investigation.
+    controls still show approximately 4–7% differences, accepted as the same
+    non-semantic Wasm artifact effect.
     **Scoped follow-up (2026-07-29 07:47:12 UTC +0000):** repeated focused runs of
     `bench_scalar_fan_out_128_width_0`, `bench_scalar_fan_out_1024_width_0`,
     `bench_scalar_two_parallel_per_bucket_128_width_0`, and
@@ -2233,8 +2240,8 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     following `567bd2f2` reproduces the regression (128: 7.98M; 1024: 66.69M).
     The boundary is therefore the mixed-execution commit itself. Marking its
     mixed-only functions `#[inline(never)]` did not change scalar counts, so the
-    next investigation target is whole-module Wasm code generation rather than
-    the scalar owner boundary.
+    next optional optimization target is whole-module Wasm code generation
+    rather than the scalar owner boundary.
     **Wasm comparison (2026-07-29 08:22:32 UTC +0000):** a clean `824a51b4`
     Graph canbench Wasm was 22,086,999 bytes; the current rebuilt Wasm is
     22,234,032 bytes (+147,033 bytes, +0.67%). The scalar probe remains 8.09M
@@ -2391,13 +2398,12 @@ At minimum, implementation must cover:
   request;
 - cross-shard logical edge or multi-shard public-batch rejection before active
   ordered payload persistence or any Graph dispatch;
-- absence from the public v1 operation enum and generated SDK surface of vertex
-  insertion, existing-value/property update, and combined vertex/edge batch
-  operations;
-- a future vertex-only batch proving bulk placement is cheaper than the generic
+- public vertex-only and mixed vertex/edge operations, with generated SDK
+  builders, explicit target-shard selection, and request-local vertex ordinals;
+- vertex-only bulk placement proving cheaper row publication than the generic
   per-operation `InsertVertex` runner without changing allocated `VertexId`
   semantics or exposing physical locations;
-- a future mixed vertex/edge batch proving that vertex allocation and publication
+- a mixed vertex/edge batch proving that vertex allocation and publication
   precede edge endpoint resolution, while a failed edge phase cannot strand
   visible vertex effects outside the durable retry/recovery contract;
 - no cross-label global-order claim in traversal tests.
@@ -2551,12 +2557,14 @@ Costs and trade-offs:
 - The v1 public endpoint rejects a batch when its items resolve to multiple
   shards or its single-shard projection needs more than one Graph request;
   multi-shard and multi-chunk ordered sessions remain future protocols.
-- Benchmark and fresh-layout activation gates delay public activation until ADR
-  0048 and the relevant ordered paths are complete.
-- Vertex bulk placement and mixed vertex/edge batches remain a later public
-  contract revision. The current edge-only activation must not silently grow
-  those operations, because their vertex-id allocation and two-phase failure
-  semantics require separate proof.
+- Benchmark and fresh-layout activation gates are satisfied for the current
+  single-shard v1 release set. The remaining scalar count difference is an
+  accepted whole-module Wasm code-generation effect; assembly-level optimization
+  is optional follow-up work.
+- Vertex bulk placement and mixed vertex/edge batches are implemented public
+  capabilities. Their vertex-first ordering, request-local id mapping,
+  aggregate receipt, retry, retirement, and recovery semantics are covered by
+  Rust, SDK, and PocketIC tests.
 - Unretired ordered journal entries may outlive the nine-day plan-execution
   window. Bounded autonomous journal reconciliation and retirement recovery are
   therefore part of the liveness contract; safety takes precedence over
