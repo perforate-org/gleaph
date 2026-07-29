@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 01:15:09 UTC +0000
+Anchor timestamp: 2026-07-29 01:32:08 UTC +0000
 
 ## Context
 
@@ -36,7 +36,9 @@ are complete; this ADR does not introduce another counterpart compatibility
 path. The public single-shard ordered edge-batch endpoint, Graph journal-first
 execution, scalar fallback, projection/retirement lifecycle, and basic recovery
 are active. Unsupported optimized geometry, full failure/recovery coverage,
-SDK conformance, and fresh-release activation remain open.
+SDK conformance, and fresh-release activation remain open. Vertex bulk placement
+and mixed vertex/edge batches are later extensions; they are not implied by the
+current edge-only endpoint or by the existing generic plan batch runner.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
 Graph does not interpret an application timestamp, target id, ranking value, or
@@ -202,6 +204,50 @@ requires an explicit revision of this ADR with an exhaustive operation enum,
 operation-specific sequential semantics, replay identity, atomicity proof, and
 benchmarks. Until then, the ordered edge-insert endpoint is the only specialized
 public batch surface and fully replaces ADR 0045's unshipped unordered endpoint.
+
+### Follow-up: vertex bulk placement and mixed vertex/edge batches
+
+The next batch-mutation extension may add vertex insertion, but it must remain a
+separately versioned operation contract. The current generic plan batch runner
+can execute multiple `InsertVertex` operations, but invokes the normal vertex
+mutation boundary per operation; it is not a vertex bulk-placement
+implementation.
+
+The planned optimized mixed path is staged, within one Graph-shard request, as:
+
+```text
+public ordered operations
+  -> validate/catalog-resolve all vertex and edge inputs
+  -> reserve and bulk-place new vertices
+  -> publish the request-local logical-vertex -> allocated-VertexId table
+  -> resolve edge endpoints that reference those new vertices
+  -> reserve and bulk-place edges using the existing ordered edge substrate
+  -> commit one aggregate receipt and derived-index work
+```
+
+Vertex placement remains owned by Graph/LARA's vertex storage boundary. It must
+project the complete new-vertex set before canonical writes, group compatible
+records by the owning allocation/layout domain, and use contiguous or
+free-span-aware bulk placement where that reduces stable-memory writes. It must
+preserve request-local result order without exposing physical allocation
+locations as public identity. The allocated `VertexId` table is request-local
+planning state, not a second durable vertex identity.
+
+Edges are placed after the vertex phase because an edge may refer to a vertex
+created earlier in the same request. The edge phase reuses the existing
+logical-ordinal, counterpart/pair-rank, bucket-local-order, sidecar, and LARA
+reservation contracts. Vertex and edge work must not be interleaved merely to
+improve locality when doing so would make endpoint resolution or recovery
+ambiguous.
+
+This extension is not complete until its failure contract is explicit. A vertex
+commit followed by an edge admission or placement failure must either be
+prevented by a complete preflight/reservation proof or represented by a durable
+pending/compensation state; it must never be reported as an ordinary terminal
+failure after vertex effects are visible. The same request fingerprint, exact
+retry behavior, derived-index convergence, and receipt cardinality must cover
+both phases. Cross-shard new-vertex references remain outside this follow-up
+unless a separate atomic multi-shard protocol is accepted.
 
 Every v1 public batch targets exactly one Graph shard. Router must resolve both
 endpoints of every logical edge to that same shard, and the one Graph request
@@ -1924,6 +1970,18 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     Router, Graph, and derived-index state; reject mixed-version activation.
 16. Run unfiltered `canbench --persist` in every affected crate before updating
     final benchmark artifacts and activation status.
+17. **Planned (2026-07-29):** add an explicitly versioned vertex-batch contract
+    and implement Graph/LARA vertex bulk placement. The implementation must
+    project and validate the complete vertex set before canonical writes, group
+    compatible allocations without exposing physical locations, preserve
+    request-local result order, and benchmark bulk placement against the
+    existing per-vertex plan batch runner.
+18. **Planned (2026-07-29):** extend the public operation enum to support mixed
+    vertex/edge batches. Execute the vertex phase first, publish the
+    request-local allocated-vertex table, then resolve and bulk-place edges.
+    Add one durable two-phase receipt/recovery contract, including edge-phase
+    failure after vertex preparation/commit, exact retry, derived-index
+    convergence, and benchmarks for vertex-only, edge-only, and mixed batches.
 
 ## Test contract
 
@@ -2077,6 +2135,12 @@ At minimum, implementation must cover:
 - absence from the public v1 operation enum and generated SDK surface of vertex
   insertion, existing-value/property update, and combined vertex/edge batch
   operations;
+- a future vertex-only batch proving bulk placement is cheaper than the generic
+  per-operation `InsertVertex` runner without changing allocated `VertexId`
+  semantics or exposing physical locations;
+- a future mixed vertex/edge batch proving that vertex allocation and publication
+  precede edge endpoint resolution, while a failed edge phase cannot strand
+  visible vertex effects outside the durable retry/recovery contract;
 - no cross-label global-order claim in traversal tests.
 
 Adversarial tests must reject:
@@ -2229,6 +2293,10 @@ Costs and trade-offs:
   multi-shard and multi-chunk ordered sessions remain future protocols.
 - Benchmark and fresh-layout activation gates delay public activation until ADR
   0048 and the relevant ordered paths are complete.
+- Vertex bulk placement and mixed vertex/edge batches remain a later public
+  contract revision. The current edge-only activation must not silently grow
+  those operations, because their vertex-id allocation and two-phase failure
+  semantics require separate proof.
 - Unretired ordered journal entries may outlive the nine-day plan-execution
   window. Bounded autonomous journal reconciliation and retirement recovery are
   therefore part of the liveness contract; safety takes precedence over
