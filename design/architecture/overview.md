@@ -109,3 +109,4 @@ See [federation/model.md](../federation/model.md).
 - [gql/layers.md](../gql/layers.md)
 - [federation/model.md](../federation/model.md)
 - [security/rbac-and-prepared.md](../security/rbac-and-prepared.md)
+- [ADR 0053: Prepared-query code generation and client-runtime boundary](../adr/0053-prepared-query-codegen-and-client-runtime-boundary.md)
