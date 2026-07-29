@@ -2031,6 +2031,11 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     vertex endpoint, persists a distinct `OrderedVertexBatch` journal identity, and
     replays a vertex-specific aggregate receipt. Router admission, retirement wiring,
     and mixed vertex/edge dispatch remain planned.
+21. **Partially implemented (2026-07-29 03:07:24 UTC +0000):** Router's Graph
+    client now exposes the vertex endpoint with request fingerprint and receipt
+    validation. Public vertex admission remains separate because new vertices need
+    an explicit target-shard selection and a Router journal payload/lifecycle shape;
+    no implicit first-shard fallback is introduced.
 
 ## Test contract
 

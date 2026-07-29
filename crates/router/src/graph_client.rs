@@ -7,8 +7,9 @@ use gleaph_graph_kernel::federation::{
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchResult, ExecutePlanResult,
     GetMutationJournalEntriesArgs, GetMutationJournalEntriesResult, GraphMutationJournalEntryWire,
-    GraphOrderedEdgeBatchResult, LabelStatsDeltaEventWire, MutationId, OrderedEdgeBatchGraphArgs,
-    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, ShardEventSeq,
+    GraphOrderedEdgeBatchResult, GraphOrderedVertexBatchResult, LabelStatsDeltaEventWire,
+    MutationId, OrderedEdgeBatchGraphArgs, OrderedMutationRetirementAck,
+    OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, ShardEventSeq,
 };
 
 #[cfg(target_family = "wasm")]
@@ -148,6 +149,22 @@ pub async fn execute_ordered_edge_batch_on_graph(
     result
         .validate()
         .map_err(|e| format!("ordered edge batch result validation: {e}"))?;
+    Ok(result)
+}
+
+/// Router → Graph: journal-first ordered vertex bulk placement (ADR 0049).
+#[allow(dead_code)]
+pub async fn execute_ordered_vertex_batch_on_graph(
+    graph: Principal,
+    args: OrderedVertexBatchGraphArgs,
+) -> Result<GraphOrderedVertexBatchResult, String> {
+    args.recompute_and_validate_fingerprint()
+        .map_err(|e| format!("ordered vertex batch validation: {e}"))?;
+    let result: GraphOrderedVertexBatchResult =
+        call_graph_result(graph, "execute_ordered_vertex_batch", args).await?;
+    result
+        .validate()
+        .map_err(|e| format!("ordered vertex batch result validation: {e}"))?;
     Ok(result)
 }
 
