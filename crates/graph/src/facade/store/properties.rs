@@ -116,9 +116,13 @@ impl GraphStore {
         handle: super::handle::EdgeHandle,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<(), super::error::GraphStoreError> {
+        let mut properties = properties.into_iter();
+        let Some(first) = properties.next() else {
+            return Ok(());
+        };
         let written = EDGE_PROPERTIES.with_borrow_mut(|store| {
-            properties
-                .into_iter()
+            std::iter::once(first)
+                .chain(properties)
                 .map(|(property_id, value)| {
                     store
                         .set(

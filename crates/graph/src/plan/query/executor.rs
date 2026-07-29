@@ -301,7 +301,10 @@ pub(crate) fn edge_to_projected_record(
                 value
             } else {
                 store
-                    .edge_property_at_canonical_handle(binding.canonical_handle, property_id)
+                    .edge_property_at_canonical_handle(
+                        binding.resolved_canonical_handle(store)?,
+                        property_id,
+                    )
                     .unwrap_or(Value::Null)
             }
         } else {

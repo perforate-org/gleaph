@@ -871,6 +871,13 @@ where
         let extra = needed_bytes.saturating_sub(had_bytes);
         let alloc_delta;
 
+        // A fixed-width update can overwrite the existing span in place. This is
+        // the common scalar mutation case and must not turn into a free-span
+        // allocation merely because the span is not at the slab tail.
+        if needed_bytes == had_bytes {
+            return Ok(bucket);
+        }
+
         if had_bytes == 0 {
             // First span for this bucket: bump the occupied tail when the slab already
             // has bytes so we do not place a second bucket at offset 0.

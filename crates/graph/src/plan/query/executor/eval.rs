@@ -801,7 +801,10 @@ impl QueryExprEvaluator<'_> {
                         None => Ok(Value::Null),
                         Some(property_id) => Ok(self
                             .store
-                            .edge_property_at_canonical_handle(edge.canonical_handle, property_id)
+                            .edge_property_at_canonical_handle(
+                                edge.resolved_canonical_handle(self.store)?,
+                                property_id,
+                            )
                             .unwrap_or(Value::Null)),
                     }
                 }
@@ -1120,7 +1123,9 @@ fn edge_to_value(
             Value::Bool(storage.is_undirected()),
         ),
         ("properties".to_owned(), {
-            store.edge_properties_gql_record_at_canonical_handle(binding.canonical_handle)
+            store.edge_properties_gql_record_at_canonical_handle(
+                binding.resolved_canonical_handle(store)?,
+            )
         }),
     ]))
 }

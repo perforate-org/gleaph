@@ -134,22 +134,18 @@ pub(crate) fn edge_binding_for_scanned_expand(
         label_id: LaraLabelId::from_raw(edge.label_id),
         slot_index: edge.edge_slot_index.raw().into(),
     };
-    // The traversal handle identifies the row that was actually scanned. The
-    // sidecar handle is a separate contract: reverse and undirected rows may
-    // have a different logical slot from their canonical owner, so derive it
-    // through CounterpartScan instead of reusing the scanned slot.
-    let canonical_handle = match direction {
-        EdgeDirection::PointingRight => handle,
-        EdgeDirection::PointingLeft | EdgeDirection::Undirected => store
-            .canonical_edge_handle_from_occurrence(canonical_edge_occurrence_for_expand(
-                probe_vertex_id,
-                direction,
-                &edge,
-            )?)
-            .map_err(PlanQueryError::from)?,
-        other => return Err(PlanQueryError::UnsupportedDirection(other)),
-    };
-    Ok(EdgeBinding::from_edge(handle, edge).with_canonical_handle(canonical_handle))
+    // The traversal handle identifies the row that was actually scanned. Reverse and
+    // undirected rows need a counterpart scan only if a later sidecar read asks for
+    // the canonical owner; topology and inline-property paths stay scan-only.
+    match direction {
+        EdgeDirection::PointingRight => Ok(EdgeBinding::from_edge(handle, edge)),
+        EdgeDirection::PointingLeft | EdgeDirection::Undirected => {
+            let occurrence =
+                canonical_edge_occurrence_for_expand(probe_vertex_id, direction, &edge)?;
+            Ok(EdgeBinding::from_edge(handle, edge).with_canonical_occurrence(occurrence))
+        }
+        other => Err(PlanQueryError::UnsupportedDirection(other)),
+    }
 }
 
 pub(crate) fn edge_binding_for_expand(

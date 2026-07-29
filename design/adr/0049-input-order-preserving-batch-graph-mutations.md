@@ -1865,6 +1865,21 @@ not rewritten as though unfinished unordered product behavior shipped.
     resident-bucket projection regression. These are measured implementation
     optimizations; persisted canbench artifacts remain unchanged until the
     complete affected suite is intentionally refreshed.
+    **Implemented and measured (2026-07-29 00:22:09 UTC +0000):** reverse and
+    undirected query bindings now retain the canonical occurrence and defer
+    CounterpartScan until a sidecar property projection actually needs the
+    canonical owner. Topology and inline-property-bytes-first scans therefore
+    remain scan-only. The scalar canonical-sidecar helper also returns before
+    opening the stable property map when the property list is empty, avoiding
+    an unintended map initialization on ordinary edge inserts. Finally, a
+    fixed-width inline-property update overwrites its existing span in place;
+    it does not invoke free-span allocation merely because the span is not at
+    the slab tail. Focused Graph canbenches recovered the incoming selective
+    scan from 41.50M to 0.60M instructions, 50k setup from +10.65% and +64
+    stable-memory pages to within noise with 8 pages, canonical edge insertion
+    from +228.57% stable-memory growth to within noise with 28 pages, and the
+    scalar fixed-edge inline update from +14.30% to 4.16M instructions
+    (-46.86%). Fan-out and two-parallel scalar controls are also within noise.
 14. Remove the unordered endpoint/path unless the evidence gate requires an
     explicit ADR revision.
 15. Exercise the compatibility-free release-set activation against fresh

@@ -6,6 +6,7 @@ use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{Edge, EdgeInlinePropertyBytes};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 use ic_stable_lara::VertexId;
+use ic_stable_lara::labeled::CanonicalEdgeOccurrence;
 use ic_stable_lara::traits::CsrEdge;
 
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
@@ -17,8 +18,11 @@ use super::super::error::PlanQueryError;
 pub struct EdgeBinding {
     /// Physical or alias-key handle produced by the traversal that produced this binding.
     pub handle: EdgeHandle,
-    /// Canonical forward sidecar handle for property reads and index postings.
+    /// Eager canonical handle for bindings whose occurrence is already canonical.
+    /// Deferred bindings resolve through `canonical_occurrence` on sidecar access.
     pub canonical_handle: EdgeHandle,
+    /// Reverse or undirected occurrences are resolved only if a sidecar read needs them.
+    canonical_occurrence: Option<CanonicalEdgeOccurrence>,
     pub inline_property: EdgeInlinePropertyBytes,
 }
 
@@ -37,14 +41,24 @@ impl EdgeBinding {
         Self {
             handle,
             canonical_handle: handle,
+            canonical_occurrence: None,
             inline_property: edge.inline_property,
         }
     }
 
-    /// Return a copy of this binding with the canonical sidecar handle replaced.
-    pub(crate) fn with_canonical_handle(mut self, canonical_handle: EdgeHandle) -> Self {
-        self.canonical_handle = canonical_handle;
+    pub(crate) fn with_canonical_occurrence(mut self, occurrence: CanonicalEdgeOccurrence) -> Self {
+        self.canonical_occurrence = Some(occurrence);
         self
+    }
+
+    pub(crate) fn resolved_canonical_handle(
+        &self,
+        store: &GraphStore,
+    ) -> Result<EdgeHandle, GraphStoreError> {
+        self.canonical_occurrence
+            .map_or(Ok(self.canonical_handle), |occurrence| {
+                store.canonical_edge_handle_from_occurrence(occurrence)
+            })
     }
 
     /// Edge binding from a federated wire hit on another shard (no local CSR hydration).
@@ -53,6 +67,7 @@ impl EdgeBinding {
         Self {
             handle,
             canonical_handle: handle,
+            canonical_occurrence: None,
             inline_property: hit.inline_property(),
         }
     }
