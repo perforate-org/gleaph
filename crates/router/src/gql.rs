@@ -1644,6 +1644,12 @@ pub(crate) async fn execute_ordered_vertex_batch_public(
         graph_request_fingerprint,
         receipt.clone(),
     )?;
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::fail_after_ordered_canonical_commit() {
+        return Err(RouterError::Internal(
+            "pocket-ic-e2e ordered vertex canonical commit fault".into(),
+        ));
+    }
     store.record_ordered_vertex_batch_projection_pending(
         caller,
         graph_id,
@@ -1695,6 +1701,12 @@ pub(crate) async fn execute_ordered_vertex_batch_public(
     {
         return Err(RouterError::InvalidArgument(
             "ordered vertex retirement acknowledgement does not match receipt".into(),
+        ));
+    }
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::fail_after_ordered_retirement_ack() {
+        return Err(RouterError::Internal(
+            "pocket-ic-e2e ordered vertex retirement acknowledgement fault".into(),
         ));
     }
     store.record_ordered_vertex_batch_retired(
@@ -5877,6 +5889,133 @@ async fn recover_ordered_edge_batch_record(
 }
 
 #[cfg(target_family = "wasm")]
+/// Projection/retirement recovery for a durable ordered vertex batch. Canonical-pending records
+/// remain explicit-retry-only; once Graph has committed, the stored vertex receipt is sufficient to
+/// resume projection and fingerprint-bound retirement without reconstructing public input.
+async fn recover_ordered_vertex_batch_record(
+    store: &RouterStore,
+    key: &crate::facade::stable::label_stats::ClientMutationKey,
+    record: &crate::facade::stable::label_stats::RouterMutationRecord,
+) -> Result<(), RouterError> {
+    use crate::facade::stable::label_stats::{
+        OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
+    };
+    use gleaph_graph_kernel::plan_exec::{
+        OrderedVertexMutationRetirementArgs, OrderedVertexMutationRetirementArgsV1,
+    };
+
+    let replay = match record.payload() {
+        RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay.clone(),
+        _ => return Ok(()),
+    };
+    let target = &replay.target;
+    let graph = target.request.target_graph_canister;
+    let shard_id = target.request.target_shard_id;
+    let mutation_id = record.as_v1().mutation_id;
+    let fingerprint = target.graph_request_fingerprint;
+    let receipt = match &target.progress {
+        OrderedVertexBatchTargetProgressV1::CanonicalPending => {
+            store.record_router_mutation_last_error(
+                key,
+                "ordered vertex canonical write pending; explicit retry is required".into(),
+            )?;
+            return Ok(());
+        }
+        OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt)
+        | OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt)
+        | OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt)
+        | OrderedVertexBatchTargetProgressV1::RetirementPending(receipt) => receipt.clone(),
+    };
+
+    if matches!(
+        target.progress,
+        OrderedVertexBatchTargetProgressV1::CanonicalCommitted(_)
+    ) {
+        store.record_ordered_vertex_batch_projection_pending(
+            key.caller,
+            key.graph_id,
+            &key.client_key,
+            mutation_id,
+            fingerprint,
+        )?;
+    }
+    if matches!(
+        target.progress,
+        OrderedVertexBatchTargetProgressV1::CanonicalCommitted(_)
+            | OrderedVertexBatchTargetProgressV1::ProjectionPending(_)
+    ) {
+        advance_label_stats_projection_through(
+            store,
+            key.graph_id,
+            graph,
+            shard_id,
+            receipt.emitted_delta_last_seq,
+        )
+        .await?;
+        store.record_ordered_vertex_batch_projection_advanced(
+            key.caller,
+            key.graph_id,
+            &key.client_key,
+            mutation_id,
+            fingerprint,
+            MutationTokenShard {
+                shard_id,
+                label_stats_seq: receipt.emitted_delta_last_seq,
+            },
+        )?;
+    }
+
+    let current = store
+        .router_mutation_record(key.caller, key.graph_id, &key.client_key)
+        .ok_or_else(|| {
+            RouterError::Internal("ordered vertex recovery record disappeared".into())
+        })?;
+    if matches!(
+        current.payload(),
+        RouterMutationPayloadV1::OrderedVertexBatch(replay)
+            if matches!(
+                replay.target.progress,
+                OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(_)
+            )
+    ) {
+        store.record_ordered_vertex_batch_retirement_pending(
+            key.caller,
+            key.graph_id,
+            &key.client_key,
+            mutation_id,
+            fingerprint,
+        )?;
+    }
+
+    let ack = retire_ordered_vertex_mutation_on_graph(
+        graph,
+        OrderedVertexMutationRetirementArgs::V1(OrderedVertexMutationRetirementArgsV1 {
+            mutation_id,
+            graph_request_fingerprint: fingerprint,
+        }),
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    let gleaph_graph_kernel::plan_exec::OrderedVertexMutationRetirementAck::V1(ack) = ack;
+    if ack.mutation_id != mutation_id
+        || ack.graph_request_fingerprint != fingerprint
+        || ack.receipt != receipt
+    {
+        return Err(RouterError::InvalidArgument(
+            "ordered vertex retirement acknowledgement does not match durable target".into(),
+        ));
+    }
+    store.record_ordered_vertex_batch_retired(
+        key.caller,
+        key.graph_id,
+        &key.client_key,
+        mutation_id,
+        fingerprint,
+        ack.receipt,
+    )
+}
+
+#[cfg(target_family = "wasm")]
 pub(crate) async fn recover_mutation_record(
     store: &RouterStore,
     key: &ClientMutationKey,
@@ -5903,6 +6042,19 @@ pub(crate) async fn recover_mutation_record(
         crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(_)
     ) {
         return match recover_ordered_edge_batch_record(store, key, &record).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                store.record_router_mutation_last_error(key, error.to_string())?;
+                Ok(())
+            }
+        };
+    }
+
+    if matches!(
+        record.payload(),
+        crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedVertexBatch(_)
+    ) {
+        return match recover_ordered_vertex_batch_record(store, key, &record).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 store.record_router_mutation_last_error(key, error.to_string())?;

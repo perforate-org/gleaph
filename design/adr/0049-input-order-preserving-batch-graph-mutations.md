@@ -2067,6 +2067,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     public vertex path advances the label-stats watermark and retires the Graph
     journal before returning the compacted aggregate receipt. Autonomous recovery
     and lost-callback fault coverage remain the next slice.
+27. **Partially implemented (2026-07-29 03:38:57 UTC +0000):** Router recovery now
+    recognizes ordered vertex replay records. It refuses background canonical
+    redispatch while `CanonicalPending`, but resumes projection advancement and
+    vertex-specific retirement from a durable Graph receipt. Existing ordered
+    canonical-commit and retirement-ack fault injection points now cover the
+    vertex path as well. Runtime PocketIC recovery coverage remains to be added.
 
 ## Test contract
 
