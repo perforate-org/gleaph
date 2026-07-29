@@ -402,6 +402,97 @@ impl OrderedMixedBatchGraphRequest {
         }
         Ok(())
     }
+
+    /// Build the two phase-specific Graph requests after vertex allocation.
+    ///
+    /// The caller supplies the allocated local ids in request-local vertex ordinal
+    /// order. This helper performs no writes and does not expose physical placement;
+    /// it only converts new-vertex references into the existing ordered edge request
+    /// shape owned by the Graph edge path.
+    pub fn plan_phases(
+        &self,
+        allocated_vertex_ids: &[LocalVertexId],
+    ) -> Result<OrderedMixedBatchPhasePlanV1, String> {
+        self.validate()?;
+        let OrderedMixedBatchGraphRequest::V1(request) = self;
+        let expected_vertex_count = request
+            .operations
+            .iter()
+            .filter(|operation| matches!(operation, OrderedMixedGraphOperationV1::Vertex(_)))
+            .count();
+        if allocated_vertex_ids.len() != expected_vertex_count {
+            return Err(format!(
+                "ordered mixed phase allocation returned {} vertex ids, expected {}",
+                allocated_vertex_ids.len(),
+                expected_vertex_count
+            ));
+        }
+
+        let mut vertices = Vec::with_capacity(expected_vertex_count);
+        let mut edges = Vec::new();
+        let mut vertex_ordinal = 0usize;
+        for operation in &request.operations {
+            match operation {
+                OrderedMixedGraphOperationV1::Vertex(item) => {
+                    vertices.push(item.clone());
+                    vertex_ordinal += 1;
+                }
+                OrderedMixedGraphOperationV1::Edge(item) => {
+                    let source = resolve_ordered_mixed_endpoint(item.source, allocated_vertex_ids)?;
+                    let target = resolve_ordered_mixed_endpoint(item.target, allocated_vertex_ids)?;
+                    edges.push(OrderedEdgeBatchGraphItemV1 {
+                        source_local_vertex_id: source,
+                        target_local_vertex_id: target,
+                        directed: item.directed,
+                        catalog_edge_label_id: item.catalog_edge_label_id,
+                        inline_property_bytes: item.inline_property_bytes.clone(),
+                        resolved_initial_edge_properties: item
+                            .resolved_initial_edge_properties
+                            .clone(),
+                    });
+                }
+            }
+        }
+        debug_assert_eq!(vertex_ordinal, allocated_vertex_ids.len());
+        Ok(OrderedMixedBatchPhasePlanV1 {
+            vertex_request: OrderedVertexBatchGraphRequest::V1(OrderedVertexBatchGraphRequestV1 {
+                graph_id: request.graph_id,
+                target_shard_id: request.target_shard_id,
+                target_graph_canister: request.target_graph_canister,
+                resolved_labels: request.resolved_labels.clone(),
+                resolved_properties: request.resolved_properties.clone(),
+                items: vertices,
+            }),
+            edge_request: OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
+                graph_id: request.graph_id,
+                target_shard_id: request.target_shard_id,
+                target_graph_canister: request.target_graph_canister,
+                resolved_labels: request.resolved_labels.clone(),
+                resolved_properties: request.resolved_properties.clone(),
+                items: edges,
+            }),
+        })
+    }
+}
+
+/// The immutable phase requests derived from a mixed Graph envelope.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct OrderedMixedBatchPhasePlanV1 {
+    pub vertex_request: OrderedVertexBatchGraphRequest,
+    pub edge_request: OrderedEdgeBatchGraphRequest,
+}
+
+fn resolve_ordered_mixed_endpoint(
+    endpoint: OrderedMixedGraphEndpointV1,
+    allocated_vertex_ids: &[LocalVertexId],
+) -> Result<LocalVertexId, String> {
+    match endpoint {
+        OrderedMixedGraphEndpointV1::Existing(vertex_id) => Ok(vertex_id),
+        OrderedMixedGraphEndpointV1::NewVertexOrdinal(ordinal) => allocated_vertex_ids
+            .get(ordinal as usize)
+            .copied()
+            .ok_or_else(|| format!("ordered mixed vertex ordinal {ordinal} has no allocation")),
+    }
 }
 
 fn validate_ordered_mixed_endpoint(
@@ -2140,6 +2231,43 @@ mod tests {
         });
         let error = request.validate().expect_err("forward ordinal must reject");
         assert!(error.contains("vertex ordinal 1"));
+    }
+
+    #[test]
+    fn ordered_mixed_graph_request_plans_vertex_then_edge_phases() {
+        let request = OrderedMixedBatchGraphRequest::V1(OrderedMixedBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(7),
+            target_shard_id: ShardId::new(2),
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            operations: vec![
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: vec![3],
+                    resolved_initial_properties: Vec::new(),
+                }),
+                OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
+                    source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(0),
+                    target: OrderedMixedGraphEndpointV1::Existing(9),
+                    directed: true,
+                    catalog_edge_label_id: None,
+                    inline_property_bytes: Vec::new(),
+                    resolved_initial_edge_properties: Vec::new(),
+                }),
+            ],
+        });
+        let phases = request.plan_phases(&[41]).expect("mixed phase planning");
+        let OrderedVertexBatchGraphRequest::V1(vertices) = phases.vertex_request;
+        assert_eq!(vertices.items.len(), 1);
+        let OrderedEdgeBatchGraphRequest::V1(edges) = phases.edge_request;
+        assert_eq!(edges.items.len(), 1);
+        assert_eq!(edges.items[0].source_local_vertex_id, 41);
+        assert_eq!(edges.items[0].target_local_vertex_id, 9);
+
+        let error = request
+            .plan_phases(&[])
+            .expect_err("allocation cardinality must be exact");
+        assert!(error.contains("expected 1"));
     }
 
     #[test]

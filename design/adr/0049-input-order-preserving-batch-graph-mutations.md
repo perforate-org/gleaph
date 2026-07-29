@@ -2109,6 +2109,13 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     retirement acknowledgement shapes. The manual stable journal codec roundtrips
     the mixed identity and rejects inconsistent phase counts. Mixed canonical
     execution, journal admission, and Router lifecycle wiring remain planned.
+33. **Partially implemented (2026-07-29 04:11:39 UTC +0000):** the Graph kernel
+    now provides a pure phase planner that accepts allocated local vertex ids in
+    request-local ordinal order, verifies exact allocation cardinality, resolves
+    existing/new endpoints, and emits the existing vertex and ordered-edge Graph
+    request shapes. It performs no canonical write and does not expose physical
+    placement. Vertex allocation, phase execution, journal admission, and Router
+    lifecycle wiring remain planned.
 
 ## Test contract
 
