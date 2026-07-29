@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 05:18:47 UTC +0000
+Anchor timestamp: 2026-07-29 05:22:27 UTC +0000
 
 ## Context
 
@@ -2182,6 +2182,13 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     endpoint width, and uint32 target-shard bounds. The SDK script passes the
     supported public-builder matrix; Candid-level duplicate-key and oversized
     encoded-payload rejection remain Router/PocketIC responsibilities.
+45. **Measured (2026-07-29 05:22:27 UTC +0000):** The current Graph canbench
+    fixture measured partitioned mixed 256 at 6.52M instructions, all-batch at
+    9.22M, and all-scalar at 11.62M, with stable-memory increase fixed at 20
+    pages. Batch remains 20–44% lighter than scalar on the same fixture. The
+    scalar result is reproducibly 2.07% above the persisted baseline and is
+    retained as a follow-up regression investigation; this measurement does not
+    authorize fresh-release activation or claim the full benchmark gate complete.
 
 ## Test contract
 
