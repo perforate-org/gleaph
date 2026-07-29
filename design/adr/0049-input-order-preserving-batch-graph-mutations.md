@@ -2046,6 +2046,14 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     explicit target-shard identity. The Router saga payload and lifecycle transitions
     remain intentionally unimplemented until their stable variant and recovery rules
     are added together.
+24. **Partially implemented (2026-07-29 03:21:22 UTC +0000):** Router now has
+    vertex-specific request identity, replay target, progress, canonical receipt,
+    and compacted-completion variants. Admission can atomically replace the
+    pristine scalar reservation with the vertex replay envelope, and canonical
+    completion is idempotent and fingerprint-bound. Vertex records derive the
+    same lifecycle phases as ordered edge records while retaining a distinct
+    receipt type. Public Router dispatch, projection/retirement transitions, and
+    recovery execution remain the next slice.
 
 ## Test contract
 

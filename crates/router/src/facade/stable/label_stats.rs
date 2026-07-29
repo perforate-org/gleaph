@@ -6,10 +6,11 @@ use gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
-    GqlExecutionMode, GraphOrderedEdgeBatchReceiptV1, MutationId, MutationLifecyclePhase,
-    MutationTokenShard, OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1,
-    ResolvedLabelTable, ResolvedPropertyTable, SeedBindingsWire,
-    ordered_edge_batch_graph_request_fingerprint,
+    GqlExecutionMode, GraphOrderedEdgeBatchReceiptV1, GraphOrderedVertexBatchReceiptV1, MutationId,
+    MutationLifecyclePhase, MutationTokenShard, OrderedEdgeBatchGraphRequest,
+    OrderedEdgeBatchGraphRequestV1, OrderedVertexBatchGraphRequest,
+    OrderedVertexBatchGraphRequestV1, ResolvedLabelTable, ResolvedPropertyTable, SeedBindingsWire,
+    ordered_edge_batch_graph_request_fingerprint, ordered_vertex_batch_graph_request_fingerprint,
 };
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
@@ -231,6 +232,10 @@ pub enum RouterMutationRequestIdentityV1 {
         public_fingerprint: [u8; 32],
         public_item_count: u32,
     },
+    OrderedVertexBatch {
+        public_fingerprint: [u8; 32],
+        public_item_count: u32,
+    },
 }
 
 impl RouterMutationRequestIdentityV1 {
@@ -242,6 +247,9 @@ impl RouterMutationRequestIdentityV1 {
             Self::OrderedEdgeBatch {
                 public_fingerprint, ..
             } => public_fingerprint,
+            Self::OrderedVertexBatch {
+                public_fingerprint, ..
+            } => public_fingerprint,
         }
     }
 
@@ -249,6 +257,9 @@ impl RouterMutationRequestIdentityV1 {
         match self {
             Self::PlanExecution { .. } => None,
             Self::OrderedEdgeBatch {
+                public_item_count, ..
+            } => Some(*public_item_count),
+            Self::OrderedVertexBatch {
                 public_item_count, ..
             } => Some(*public_item_count),
         }
@@ -336,6 +347,82 @@ pub struct RouterOrderedEdgeBatchReplayV1 {
     pub target: RouterOrderedEdgeBatchTargetV1,
 }
 
+/// Router-owned progress for one single-target ordered vertex batch.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum OrderedVertexBatchTargetProgressV1 {
+    CanonicalPending,
+    CanonicalCommitted(GraphOrderedVertexBatchReceiptV1),
+    ProjectionPending(GraphOrderedVertexBatchReceiptV1),
+    ProjectionAdvanced(GraphOrderedVertexBatchReceiptV1),
+    RetirementPending(GraphOrderedVertexBatchReceiptV1),
+}
+
+impl OrderedVertexBatchTargetProgressV1 {
+    fn receipt(&self) -> Option<&GraphOrderedVertexBatchReceiptV1> {
+        match self {
+            Self::CanonicalPending => None,
+            Self::CanonicalCommitted(receipt)
+            | Self::ProjectionPending(receipt)
+            | Self::ProjectionAdvanced(receipt)
+            | Self::RetirementPending(receipt) => Some(receipt),
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), RouterError> {
+        if let Some(receipt) = self.receipt() {
+            receipt
+                .validate()
+                .map_err(|error| RouterError::InvalidArgument(error.into()))?;
+        }
+        Ok(())
+    }
+}
+
+/// Durable replay target for one ordered Graph vertex request.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RouterOrderedVertexBatchTargetV1 {
+    pub graph_request_fingerprint: [u8; 32],
+    pub request: OrderedVertexBatchGraphRequestV1,
+    pub progress: OrderedVertexBatchTargetProgressV1,
+    pub projection_watermark: Option<MutationTokenShard>,
+}
+
+impl RouterOrderedVertexBatchTargetV1 {
+    pub(crate) fn validate(&self) -> Result<(), RouterError> {
+        let request = OrderedVertexBatchGraphRequest::V1(self.request.clone());
+        let fingerprint = ordered_vertex_batch_graph_request_fingerprint(&request)
+            .map_err(|error| RouterError::InvalidArgument(error.to_string()))?;
+        if fingerprint != self.graph_request_fingerprint {
+            return Err(RouterError::Conflict(
+                "ordered vertex Graph request fingerprint mismatch in Router replay target".into(),
+            ));
+        }
+        let watermark_required = matches!(
+            self.progress,
+            OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(_)
+                | OrderedVertexBatchTargetProgressV1::RetirementPending(_)
+        );
+        if self.projection_watermark.is_some() != watermark_required {
+            return Err(RouterError::Conflict(
+                "ordered vertex projection watermark does not match target progress".into(),
+            ));
+        }
+        if let Some(watermark) = &self.projection_watermark
+            && watermark.shard_id != self.request.target_shard_id
+        {
+            return Err(RouterError::Conflict(
+                "ordered vertex projection watermark targets a different shard".into(),
+            ));
+        }
+        self.progress.validate()
+    }
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RouterOrderedVertexBatchReplayV1 {
+    pub target: RouterOrderedVertexBatchTargetV1,
+}
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RouterMutationRecordV1 {
     pub mutation_id: MutationId,
@@ -386,6 +473,10 @@ pub enum RouterMutationPayloadV1 {
     OrderedEdgeBatchRouting,
     /// Ordered edge batch with one durable Graph target and explicit progress.
     OrderedEdgeBatch(Box<RouterOrderedEdgeBatchReplayV1>),
+    /// Ordered vertex batch admitted but not yet materialized into its Graph replay target.
+    OrderedVertexBatchRouting,
+    /// Ordered vertex batch with one durable Graph target and explicit progress.
+    OrderedVertexBatch(Box<RouterOrderedVertexBatchReplayV1>),
     /// Terminal compacted form for both legacy and typed bulk. Typed completion retains the
     /// ordered per-operation row counts required to reproduce the original batch result; legacy
     /// completion uses an empty vector because that path only owns the aggregate row count.
@@ -396,6 +487,11 @@ pub enum RouterMutationPayloadV1 {
     /// Compacted ordered completion retained after projection convergence.
     CompletedOrderedEdgeBatch {
         receipt: GraphOrderedEdgeBatchReceiptV1,
+        projection_watermark: MutationTokenShard,
+    },
+    /// Compacted ordered vertex completion retained after projection convergence.
+    CompletedOrderedVertexBatch {
+        receipt: GraphOrderedVertexBatchReceiptV1,
         projection_watermark: MutationTokenShard,
     },
 }
@@ -631,8 +727,11 @@ impl RouterMutationRecord {
                 | RouterMutationPayloadV1::TypedSeedBulk(_)
                 | RouterMutationPayloadV1::OrderedEdgeBatchRouting
                 | RouterMutationPayloadV1::OrderedEdgeBatch(_)
+                | RouterMutationPayloadV1::OrderedVertexBatchRouting
+                | RouterMutationPayloadV1::OrderedVertexBatch(_)
                 | RouterMutationPayloadV1::CompletedBulk { .. }
                 | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
+                | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. }
         )
     }
 
@@ -649,6 +748,15 @@ impl RouterMutationRecord {
                     .len()
                     .try_into()
                     .expect("ordered request item bound fits u32"),
+            ),
+            RouterMutationPayloadV1::OrderedVertexBatch(replay) => Some(
+                replay
+                    .target
+                    .request
+                    .items
+                    .len()
+                    .try_into()
+                    .expect("ordered vertex request item bound fits u32"),
             ),
             RouterMutationPayloadV1::CompletedBulk { total_ops, .. } => Some(*total_ops),
             _ => None,
@@ -746,6 +854,21 @@ impl RouterMutationRecord {
                 OrderedEdgeBatchTargetProgressV1::ProjectionPending(_)
                 | OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(_)
                 | OrderedEdgeBatchTargetProgressV1::RetirementPending(_) => {
+                    MutationLifecyclePhase::ProjectionPending
+                }
+            };
+        }
+        if let RouterMutationPayloadV1::OrderedVertexBatch(replay) = self.payload() {
+            return match replay.target.progress {
+                OrderedVertexBatchTargetProgressV1::CanonicalPending => {
+                    MutationLifecyclePhase::CanonicalPending
+                }
+                OrderedVertexBatchTargetProgressV1::CanonicalCommitted(_) => {
+                    MutationLifecyclePhase::CanonicalCommitted
+                }
+                OrderedVertexBatchTargetProgressV1::ProjectionPending(_)
+                | OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(_)
+                | OrderedVertexBatchTargetProgressV1::RetirementPending(_) => {
                     MutationLifecyclePhase::ProjectionPending
                 }
             };
@@ -864,9 +987,12 @@ mod tests {
     use crate::facade::store::compact_completed_record;
     use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
     use gleaph_graph_kernel::plan_exec::{
-        GraphOrderedEdgeBatchReceiptV1, OrderedEdgeBatchGraphItemV1, ResolvedLabelTable,
-        ResolvedProperty, ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry,
-        SeedRowWire, ordered_edge_batch_graph_request_fingerprint,
+        GraphOrderedEdgeBatchReceiptV1, GraphOrderedVertexBatchReceiptV1,
+        OrderedEdgeBatchGraphItemV1, OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest,
+        OrderedVertexBatchGraphRequestV1, ResolvedLabelTable, ResolvedProperty,
+        ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry, SeedRowWire,
+        ordered_edge_batch_graph_request_fingerprint,
+        ordered_vertex_batch_graph_request_fingerprint,
     };
     use ic_stable_structures::Storable;
 
@@ -896,6 +1022,57 @@ mod tests {
             decoded.as_v1().request_identity.public_item_count(),
             Some(3)
         );
+    }
+
+    #[test]
+    fn ordered_vertex_router_replay_round_trips_and_validates() {
+        let request = OrderedVertexBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(1),
+            target_shard_id: ShardId::new(2),
+            target_graph_canister: Principal::from_slice(&[1]),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            items: vec![OrderedVertexBatchGraphItemV1 {
+                resolved_vertex_labels: vec![7],
+                resolved_initial_properties: Vec::new(),
+            }],
+        };
+        let request_envelope = OrderedVertexBatchGraphRequest::V1(request.clone());
+        let fingerprint = ordered_vertex_batch_graph_request_fingerprint(&request_envelope)
+            .expect("ordered vertex request fingerprint");
+        let target = RouterOrderedVertexBatchTargetV1 {
+            graph_request_fingerprint: fingerprint,
+            request,
+            progress: OrderedVertexBatchTargetProgressV1::CanonicalCommitted(
+                GraphOrderedVertexBatchReceiptV1 {
+                    logical_vertex_count: 1,
+                    emitted_delta_first_seq: None,
+                    emitted_delta_last_seq: None,
+                    hot_forward_vertices: Vec::new(),
+                },
+            ),
+            projection_watermark: None,
+        };
+        target
+            .validate()
+            .expect("valid ordered vertex replay target");
+
+        let mut record = RouterMutationRecord::new(3, 42, vec![9; 32]);
+        record.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::OrderedVertexBatch {
+            public_fingerprint: [7; 32],
+            public_item_count: 1,
+        };
+        record.as_v1_mut().routing_in_progress = false;
+        record.as_v1_mut().payload = RouterMutationPayloadV1::OrderedVertexBatch(Box::new(
+            RouterOrderedVertexBatchReplayV1 { target },
+        ));
+        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
+        assert_eq!(decoded, record);
+        assert_eq!(
+            decoded.lifecycle_phase(),
+            MutationLifecyclePhase::CanonicalCommitted
+        );
+        assert_eq!(decoded.bulk_total_ops(), Some(1));
     }
 
     #[test]

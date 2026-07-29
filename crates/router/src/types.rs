@@ -53,6 +53,39 @@ pub struct OrderedEdgeBatchResponse {
     pub receipt: Option<gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchReceiptV1>,
 }
 
+/// Public result for one ordered vertex batch. The receipt is available once Graph commits the
+/// canonical rows; later projection and retirement states retain the same aggregate receipt.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OrderedVertexBatchResponse {
+    pub status: MutationStatus,
+    pub receipt: Option<gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1>,
+}
+
+impl OrderedVertexBatchResponse {
+    pub fn from_record(record: &RouterMutationRecord) -> Self {
+        let receipt = match record.payload() {
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedVertexBatch(
+                replay,
+            ) => match &replay.target.progress {
+                crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt)
+                | crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt)
+                | crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt)
+                | crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::RetirementPending(receipt) => Some(receipt.clone()),
+                crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::CanonicalPending => None,
+            },
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+                receipt,
+                ..
+            } => Some(receipt.clone()),
+            _ => None,
+        };
+        Self {
+            status: MutationStatus::from_record(record),
+            receipt,
+        }
+    }
+}
+
 impl OrderedEdgeBatchResponse {
     pub fn from_record(record: &RouterMutationRecord) -> Self {
         let receipt = match record.payload() {

@@ -67,6 +67,7 @@ fn ordered_replay_target_active(record: &RouterMutationRecord) -> bool {
     matches!(
         record.payload(),
         RouterMutationPayloadV1::OrderedEdgeBatch(_)
+            | RouterMutationPayloadV1::OrderedVertexBatch(_)
     ) && !record.is_terminal()
 }
 
@@ -166,8 +167,11 @@ pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
         }
         RouterMutationPayloadV1::OrderedEdgeBatchRouting
         | RouterMutationPayloadV1::OrderedEdgeBatch(_)
+        | RouterMutationPayloadV1::OrderedVertexBatchRouting
+        | RouterMutationPayloadV1::OrderedVertexBatch(_)
         | RouterMutationPayloadV1::CompletedBulk { .. }
-        | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. } => {}
+        | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
+        | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. } => {}
     }
 }
 
@@ -238,7 +242,9 @@ impl RouterStore {
             if matches!(
                 record.payload(),
                 RouterMutationPayloadV1::OrderedEdgeBatch(_)
+                    | RouterMutationPayloadV1::OrderedVertexBatch(_)
                     | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
+                    | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. }
             ) {
                 return Ok(ClientMutationReservation {
                     mutation_id: record.as_v1().mutation_id,
@@ -706,6 +712,150 @@ impl RouterStore {
             }
             m.insert(key, record);
             Ok(())
+        })
+    }
+
+    /// Atomically transition a pristine scalar reservation to an ordered Graph vertex replay
+    /// payload. The vertex variant is deliberately separate from the edge variant so a client key
+    /// cannot replay a request through the wrong Graph endpoint or receipt type.
+    pub fn transition_to_ordered_vertex_batch(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        public_fingerprint: [u8; 32],
+        public_item_count: u32,
+        resolved_labels: ResolvedLabelTable,
+        resolved_properties: ResolvedPropertyTable,
+        target: crate::facade::stable::label_stats::RouterOrderedVertexBatchTargetV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
+            RouterMutationRequestIdentityV1, RouterOrderedVertexBatchReplayV1,
+        };
+        target.validate()?;
+        if target.request.items.len() != public_item_count as usize {
+            return Err(RouterError::InvalidArgument(
+                "ordered public vertex item count does not match Graph request".into(),
+            ));
+        }
+        if !matches!(
+            target.progress,
+            OrderedVertexBatchTargetProgressV1::CanonicalPending
+        ) {
+            return Err(RouterError::InvalidArgument(
+                "ordered vertex Graph target must be pristine at admission".into(),
+            ));
+        }
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered vertex batch transition".into(),
+                ));
+            }
+            if v1.request_identity.request_fingerprint() != public_fingerprint {
+                return Err(RouterError::Conflict(
+                    "public request fingerprint mismatch at ordered vertex batch transition".into(),
+                ));
+            }
+            if !v1.routing_in_progress {
+                return Err(RouterError::Conflict(
+                    "ordered vertex batch transition requires an active routing reservation".into(),
+                ));
+            }
+            if v1.completed_row_count.is_some() {
+                return Err(RouterError::Conflict(
+                    "ordered vertex batch transition refused: record already completed".into(),
+                ));
+            }
+            if !matches!(
+                v1.payload,
+                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty()
+            ) {
+                return Err(RouterError::Conflict(
+                    "ordered vertex batch transition requires a pristine scalar reservation".into(),
+                ));
+            }
+            v1.request_identity = RouterMutationRequestIdentityV1::OrderedVertexBatch {
+                public_fingerprint,
+                public_item_count,
+            };
+            v1.resolved_labels = Some(resolved_labels);
+            v1.resolved_properties = Some(resolved_properties);
+            v1.payload = RouterMutationPayloadV1::OrderedVertexBatch(Box::new(
+                RouterOrderedVertexBatchReplayV1 { target },
+            ));
+            v1.routing_in_progress = false;
+            v1.routing_lease_ns = None;
+            if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+                return Err(RouterError::InvalidArgument(
+                    "ordered vertex batch record exceeds safe inter-canister payload bound".into(),
+                ));
+            }
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
+    /// Persist the Graph-owned canonical receipt for an ordered vertex batch.
+    pub fn record_ordered_vertex_batch_canonical_committed(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+        receipt: gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        receipt
+            .validate()
+            .map_err(|error| RouterError::InvalidArgument(error.into()))?;
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered vertex canonical completion".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered vertex canonical completion requires an OrderedVertexBatch payload".into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered vertex canonical completion".into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedVertexBatchTargetProgressV1::CanonicalPending => {
+                    replay.target.progress =
+                        OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt);
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedVertexBatchTargetProgressV1::CanonicalCommitted(existing)
+                    if existing == &receipt => Ok(()),
+                _ => Err(RouterError::Conflict(
+                    "ordered vertex canonical completion received after progress advanced".into(),
+                )),
+            }
         })
     }
 
