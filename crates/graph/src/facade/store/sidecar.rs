@@ -14,10 +14,14 @@ impl GraphStore {
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moves: impl IntoIterator<Item = EdgeSlotMove>,
-    ) {
+    ) -> Result<(), super::error::GraphStoreError> {
         for moved in moves {
             Self::move_edge_sidecars(orientation, owner_vertex_id, moved);
+            if orientation == LabeledOrientation::Forward {
+                GraphStore::new().rekey_inline_scalar_index_for_move(owner_vertex_id, moved)?;
+            }
         }
+        Ok(())
     }
 
     pub(super) fn vertex_has_incident_edges(
@@ -164,7 +168,8 @@ mod tests {
                     new_slot_index: 1,
                 },
             ],
-        );
+        )
+        .expect("rekey inline index slots");
 
         assert_eq!(
             store

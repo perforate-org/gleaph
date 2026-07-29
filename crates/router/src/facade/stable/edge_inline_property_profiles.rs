@@ -343,6 +343,10 @@ impl EdgeInlinePropertySchemaRecord {
         matches!(self, Self::InlineScalar { .. })
     }
 
+    pub fn is_inline_struct(&self) -> bool {
+        matches!(self, Self::InlineStruct { .. })
+    }
+
     /// True for any named inline schema (scalar or struct).
     pub fn is_named_inline(&self) -> bool {
         matches!(self, Self::InlineScalar { .. } | Self::InlineStruct { .. })

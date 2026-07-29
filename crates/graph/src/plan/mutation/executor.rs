@@ -1378,12 +1378,11 @@ fn encode_inline_edge_property(
             let struct_value = if relative.is_empty() {
                 value.clone()
             } else {
-                let edge_record = store
-                    .find_outgoing_edge_record(handle)
-                    .map_err(GraphStoreError::from)?
-                    .ok_or_else(|| PlanMutationError::MissingElementBinding {
+                let edge_record = store.find_outgoing_edge_record(handle)?.ok_or_else(|| {
+                    PlanMutationError::MissingElementBinding {
                         variable: property_path.to_owned(),
-                    })?;
+                    }
+                })?;
                 let current = validate_and_decode_inline_struct(
                     handle.label_id.raw(),
                     edge_record.inline_property.as_slice(),

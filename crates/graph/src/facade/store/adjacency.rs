@@ -1,11 +1,15 @@
 //! Adjacency storage domain: canonical edge writes, journal, and maintenance.
 
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeTarget, TaggedEdgeLabelId};
-use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
+use ic_stable_lara::{VertexId, labeled::LabeledOrientation, traits::CsrEdge};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
+use crate::property::{
+    PropertyValueChange, dispatch_inline_scalar_index_removal, dispatch_property_index_ops,
+    inline_scalar_index_value,
+};
 
 /// Local edge insert journal payload after LARA reports the canonical handle.
 pub(super) struct EdgeInsertSpec<'a> {
@@ -60,6 +64,13 @@ impl GraphStore {
             } else {
                 None
             };
+        dispatch_inline_scalar_index_removal(
+            canonical.owner_vertex_id,
+            canonical.label_id.raw(),
+            canonical.slot_index.raw(),
+            edge.edge_inline_property_bytes(),
+        )
+        .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?;
         self.commit_clear_edge_sidecars_at_canonical(canonical);
         let removal = self.with_graph_mut(|graph| {
             graph.remove_forward_edge_at_slot_with_move(
@@ -77,7 +88,7 @@ impl GraphStore {
             LabeledOrientation::Forward,
             canonical.owner_vertex_id,
             removal.moves,
-        );
+        )?;
         let Some(counterpart) = counterpart else {
             self.drain_deferred_maintenance()?;
             return Ok(());
@@ -95,7 +106,7 @@ impl GraphStore {
                     LabeledOrientation::Forward,
                     counterpart.owner_vertex_id,
                     removal.into_iter().flat_map(|removal| removal.moves),
-                );
+                )?;
             }
         } else {
             debug_assert_eq!(counterpart.orientation, LabeledOrientation::Reverse);
@@ -110,7 +121,7 @@ impl GraphStore {
                 LabeledOrientation::Reverse,
                 counterpart.owner_vertex_id,
                 removal.into_iter().flat_map(|removal| removal.moves),
-            );
+            )?;
         }
         self.drain_deferred_maintenance()
     }
@@ -128,6 +139,19 @@ impl GraphStore {
             spec.inline_property_bytes,
             spec.canonical,
         )?;
+        if let Some((property_id, value)) =
+            inline_scalar_index_value(spec.canonical.label_id.raw(), spec.inline_property_bytes)
+                .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?
+        {
+            dispatch_property_index_ops(PropertyValueChange::edge(
+                spec.canonical.owner_vertex_id,
+                spec.canonical.label_id.raw(),
+                spec.canonical.slot_index.raw(),
+                property_id,
+                None,
+                Some(&value),
+            ));
+        }
         self.run_post_edge_insert_maintenance()
     }
 }

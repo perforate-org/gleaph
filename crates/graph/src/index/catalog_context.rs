@@ -125,6 +125,9 @@ mod tests {
     use crate::index::edge_lookup;
     use crate::property::{PropertyValueChange, dispatch_property_index_ops};
     use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::{
+        EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
+    };
     use gleaph_graph_kernel::index::IndexedEdgeMembership;
 
     #[test]
@@ -172,6 +175,95 @@ mod tests {
             edge_lookup::lookup_edge_equal_local_sync(None, pid, &key, None).expect("lookup");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].owner_vertex_id, owner);
+    }
+
+    #[test]
+    fn indexed_scalar_inline_property_emits_insert_update_and_remove_postings() {
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_index_canister: None,
+            }))
+            .expect("configure index routing");
+        crate::index::edge_pending::clear_pending();
+
+        let label = EdgeLabelId::from_raw(1);
+        let property = PropertyId::from_raw(901);
+        crate::test_labels::install_test_edge_inline_property_profile(
+            label,
+            EdgeInlinePropertyProfile {
+                byte_width: 4,
+                encoding: EdgeInlinePropertyEncoding::F32,
+            },
+        );
+        crate::test_labels::install_test_edge_inline_property(label, property);
+        let _catalog = enter(IndexedPropertyCatalog {
+            edge_property_ids: vec![property.raw()],
+            edge_indexes: vec![IndexedEdgeMembership {
+                label_id: label.raw(),
+                property_id: property.raw(),
+                direction_tag: 1,
+            }],
+            ..Default::default()
+        });
+
+        let source = store.insert_vertex().expect("source");
+        let target = store.insert_vertex().expect("target");
+        let wire_label = label.pack(gleaph_graph_kernel::entry::EdgeDirectedness::Directed);
+        let handle = store
+            .insert_directed_edge_with_inline_property_bytes(
+                source,
+                target,
+                Some(label),
+                &1.5f32.to_le_bytes(),
+            )
+            .expect("insert inline edge");
+        let inserted = crate::index::edge_pending::take_pending();
+        assert!(matches!(
+            inserted.as_slice(),
+            [crate::index::edge_pending::PendingEdgePostingOp::Insert {
+                property_id,
+                label_id,
+                payload_bytes,
+                ..
+            }] if *property_id == property.raw()
+                && *label_id == wire_label.raw()
+                && *payload_bytes == gleaph_gql::value_to_index_key_bytes(&Value::Float32(1.5)).unwrap().unwrap()
+        ));
+
+        store
+            .update_edge_inline_property_at_handle(handle, &2.5f32.to_le_bytes())
+            .expect("update inline edge");
+        let updated = crate::index::edge_pending::take_pending();
+        assert_eq!(updated.len(), 2);
+        assert!(matches!(
+            &updated[0],
+            crate::index::edge_pending::PendingEdgePostingOp::Remove { property_id, .. }
+                if *property_id == property.raw()
+        ));
+        assert!(matches!(
+            &updated[1],
+            crate::index::edge_pending::PendingEdgePostingOp::Insert { property_id, .. }
+                if *property_id == property.raw()
+        ));
+
+        store
+            .delete_edge_by_handle(handle)
+            .expect("delete inline edge");
+        let removed = crate::index::edge_pending::take_pending();
+        assert!(matches!(
+            removed.as_slice(),
+            [crate::index::edge_pending::PendingEdgePostingOp::Remove {
+                property_id,
+                payload_bytes,
+                ..
+            }] if *property_id == property.raw()
+                && *payload_bytes == gleaph_gql::value_to_index_key_bytes(&Value::Float32(2.5)).unwrap().unwrap()
+        ));
+        store.set_federation_routing(None).expect("clear routing");
     }
 
     #[test]

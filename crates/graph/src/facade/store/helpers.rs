@@ -17,8 +17,11 @@ use ic_stable_lara::{
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
+use crate::property::dispatch_inline_scalar_index_removal;
 
-pub(super) struct GraphSidecarMoveObserver;
+pub(super) struct GraphSidecarMoveObserver {
+    pub(super) inline_moves: Vec<(VertexId, EdgeSlotMove)>,
+}
 
 impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
     fn edge_slot_moved(
@@ -31,6 +34,9 @@ impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
         moved: EdgeSlotMove,
     ) {
         GraphStore::move_edge_sidecars(orientation, vid, moved);
+        if orientation == LabeledOrientation::Forward {
+            self.inline_moves.push((vid, moved));
+        }
     }
 }
 
@@ -78,6 +84,12 @@ impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
                 None => return,
             }
         };
+        let _ = dispatch_inline_scalar_index_removal(
+            canonical.owner_vertex_id,
+            canonical.label_id.raw(),
+            canonical.slot_index.raw(),
+            canonical.edge.edge_inline_property_bytes(),
+        );
         self.store
             .commit_clear_edge_sidecars_at_canonical(EdgeHandle {
                 owner_vertex_id: canonical.owner_vertex_id,

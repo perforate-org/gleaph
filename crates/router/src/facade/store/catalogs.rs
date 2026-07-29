@@ -403,18 +403,6 @@ impl RouterStore {
             }
         }
 
-        // Inline/index conflict guard (ADR 0034 Slice 21/24): a sidecar edge Property Index
-        // for the same (label, property) would be semantically stale because inline property bytes
-        // mutations do not maintain postings. Reject the DDL before any catalog write.
-        if let Some(label_id) = existing_label_id
-            && let Some(property_id) = existing_property_id
-            && edge_index_uses_property_label(graph_id, property_id, label_id.raw())
-        {
-            return Err(RouterError::Conflict(format!(
-                "edge label {edge_label_name} already has a property index on {property_name}; drop the index before creating an inline schema"
-            )));
-        }
-
         // Capacity preflight: prove id allocation will succeed before any mutation.
         if existing_label_id.is_none() {
             ROUTER_EDGE_LABEL_CATALOG
@@ -499,15 +487,14 @@ impl RouterStore {
             }
         }
 
-        // Inline/index conflict guard (ADR 0034 Slice 21): a sidecar edge Property Index
-        // for the same (label, property) would be semantically stale because inline property bytes
-        // mutations do not maintain postings. Reject the DDL before any catalog write.
+        // Struct inline fields still have no field-level index maintenance. Scalar inline values
+        // are maintained by Graph and may coexist with a property index.
         if let Some(label_id) = existing_label_id
             && let Some(property_id) = existing_property_id
             && edge_index_uses_property_label(graph_id, property_id, label_id.raw())
         {
             return Err(RouterError::Conflict(format!(
-                "edge label {edge_label_name} already has a property index on {property_name}; drop the index before creating an inline struct schema"
+                "edge label {edge_label_name} already has a property index on {property_name}; inline struct field indexes are not supported"
             )));
         }
 

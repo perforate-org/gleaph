@@ -10,8 +10,45 @@ use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{catalog_edge_label_from_wire, validate_edge_inline_property_bytes_for_label};
+use crate::property::{
+    PropertyValueChange, dispatch_property_index_ops, inline_scalar_index_value,
+};
 
 impl GraphStore {
+    pub(super) fn rekey_inline_scalar_index_for_move(
+        &self,
+        owner_vertex_id: ic_stable_lara::VertexId,
+        moved: ic_stable_lara::labeled::EdgeSlotMove,
+    ) -> Result<(), GraphStoreError> {
+        let new_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.new_slot_index);
+        let Some((edge, _)) = self.lookup_edge_entry(new_handle)? else {
+            return Ok(());
+        };
+        let Some((property_id, value)) =
+            inline_scalar_index_value(moved.label_id.raw(), edge.edge_inline_property_bytes())
+                .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?
+        else {
+            return Ok(());
+        };
+        dispatch_property_index_ops(PropertyValueChange::edge(
+            owner_vertex_id,
+            moved.label_id.raw(),
+            moved.old_slot_index,
+            property_id,
+            Some(&value),
+            None,
+        ));
+        dispatch_property_index_ops(PropertyValueChange::edge(
+            owner_vertex_id,
+            moved.label_id.raw(),
+            moved.new_slot_index,
+            property_id,
+            None,
+            Some(&value),
+        ));
+        Ok(())
+    }
+
     pub fn edge_label_inline_property_profile(
         &self,
         label: EdgeLabelId,
@@ -70,6 +107,12 @@ impl GraphStore {
             })?,
             inline_property_bytes,
         );
+        let previous_index_value =
+            inline_scalar_index_value(canonical.label_id.raw(), edge.edge_inline_property_bytes())
+                .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?;
+        let new_index_value =
+            inline_scalar_index_value(canonical.label_id.raw(), inline_property_bytes)
+                .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?;
 
         let update_occurrence = |occurrence: CanonicalEdgeOccurrence| {
             self.with_graph_mut(|graph| match occurrence.orientation {
@@ -107,6 +150,17 @@ impl GraphStore {
                 label_id: mirrored.label_id,
                 slot_index: mirrored.slot_index.raw(),
             });
+        }
+
+        if let Some((property_id, previous)) = previous_index_value {
+            dispatch_property_index_ops(PropertyValueChange::edge(
+                canonical.owner_vertex_id,
+                canonical.label_id.raw(),
+                canonical.slot_index.raw(),
+                property_id,
+                Some(&previous),
+                new_index_value.as_ref().map(|(_, value)| value),
+            ));
         }
 
         Ok(())

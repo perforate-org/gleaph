@@ -180,9 +180,8 @@ impl GraphStats for RouterGraphStats {
     ) -> bool {
         match label {
             Some(label) => {
-                // Defensive guard: a named inline schema (scalar or struct) is the canonical read source for its
-                // (label, property) pair. Until inline-index maintenance exists, exclude the pair
-                // from planner stats so a stale sidecar index cannot drive planning.
+                // Struct inline fields remain excluded because field-level index maintenance is
+                // not implemented. Scalar inline values are maintained as ordinary index values.
                 let label_id = RouterStore::new()
                     .lookup_edge_label_id(self.graph_id, label)
                     .ok();
@@ -194,18 +193,16 @@ impl GraphStats for RouterGraphStats {
                         store
                             .get_record(self.graph_id, label_id.unwrap())
                             .is_some_and(|record| {
-                                record.is_named_inline()
+                                record.is_inline_struct()
                                     && record.inline_property_id() == property_id
                             })
                     });
                 !inline_matches && self.is_edge_indexed_for(label, property, direction)
             }
             None => {
-                // Fail-closed for wildcard / compound label expressions: if any edge label in this
-                // graph has the property as its named inline slot, we cannot answer "is this property
-                // indexed?" with a simple yes based only on a sidecar edge index for some other label.
-                // The planner would otherwise fuse a predicate into an EdgeIndexScan that ignores
-                // inline edges carrying the same property id in their inline property bytes.
+                // Struct inline fields remain excluded from wildcard planning because their field
+                // postings are not maintained. Scalar inline properties share the same posting
+                // representation as sidecar values and can participate in the scan.
                 let Some(property_id) = ROUTER_PROPERTY_CATALOG
                     .with_borrow(|catalog| catalog.get_id(self.graph_id, property))
                 else {
@@ -217,7 +214,7 @@ impl GraphStats for RouterGraphStats {
                             store
                                 .get_record(self.graph_id, label_id)
                                 .is_some_and(|record| {
-                                    record.is_named_inline()
+                                    record.is_inline_struct()
                                         && record.inline_property_id() == Some(property_id)
                                 })
                         })
