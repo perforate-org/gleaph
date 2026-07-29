@@ -39,6 +39,14 @@ export type {
   OrderedEdgeInsertPublicItemInput,
   OrderedEdgePropertyPublic,
 } from "./ordered-edge-batch";
+export { makeOrderedVertexBatchPublicRequest } from "./ordered-vertex-batch";
+export type {
+  OrderedVertexBatchPublicRequest,
+  OrderedVertexBatchPublicRequestInput,
+  OrderedVertexBatchPublicRequestV1,
+  OrderedVertexInsertPublicItem,
+  OrderedVertexInsertPublicItemInput,
+} from "./ordered-vertex-batch";
 export {
   fromApiValue,
   isApiValue,

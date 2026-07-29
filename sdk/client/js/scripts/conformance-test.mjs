@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { encodeCanonicalGqlValue, bytesToHex } from "../src/canonical-value.ts";
 import { makeOrderedEdgeBatchPublicRequest } from "../src/ordered-edge-batch.ts";
+import { makeOrderedVertexBatchPublicRequest } from "../src/ordered-vertex-batch.ts";
 
 const fixturePath = new URL(
   "../../../../crates/graph-kernel/conformance/gql_value_vectors.json",
@@ -91,10 +92,33 @@ if (item.edge_label_name.length !== 1 || item.inline_property.length !== 1) {
   throw new Error("ordered public request option shape is not Candid-compatible");
 }
 
-function assertBuilderRejects(input, name) {
+const orderedVertexRequest = makeOrderedVertexBatchPublicRequest({
+  client_mutation_key: "sdk-vertex-conformance",
+  logical_graph_name: "tenant.main",
+  target_shard_id: 7,
+  items: [
+    {
+      vertex_labels: ["User", "Person"],
+      initial_properties: {
+        zeta: { Int64: 7n },
+        alpha: { Text: "first" },
+      },
+    },
+  ],
+});
+const [vertexItem] = orderedVertexRequest.V1.items;
+if (
+  !vertexItem ||
+  vertexItem.vertex_labels.join(",") !== "Person,User" ||
+  vertexItem.initial_properties.map(({ property_name }) => property_name).join(",") !== "alpha,zeta"
+) {
+  throw new Error("ordered vertex public request does not canonicalize catalog order");
+}
+
+function assertBuilderRejects(input, name, builder = makeOrderedEdgeBatchPublicRequest) {
   let rejected = false;
   try {
-    makeOrderedEdgeBatchPublicRequest(input);
+    builder(input);
   } catch {
     rejected = true;
   }
@@ -130,7 +154,27 @@ assertBuilderRejects(
   },
   "empty property name",
 );
+assertBuilderRejects(
+  {
+    client_mutation_key: "invalid-shard",
+    logical_graph_name: "tenant.main",
+    target_shard_id: -1,
+    items: [{ vertex_labels: ["Person"] }],
+  },
+  "negative target shard",
+  makeOrderedVertexBatchPublicRequest,
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "invalid-label",
+    logical_graph_name: "tenant.main",
+    target_shard_id: 0,
+    items: [{ vertex_labels: [""] }],
+  },
+  "empty vertex label",
+  makeOrderedVertexBatchPublicRequest,
+);
 
 console.log(
-  `sdk/js conformance: ${fixture.vectors.length} value vectors and ordered request builder passed`,
+  `sdk/js conformance: ${fixture.vectors.length} value vectors and ordered edge/vertex request builders passed`,
 );

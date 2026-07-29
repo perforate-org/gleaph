@@ -2080,6 +2080,13 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     all 9 tests. The recovery scan was corrected to include the vertex replay
     envelope, and stale mutation-status wrapper access in the fixture was aligned
     with the current helper contract.
+29. **Partially implemented (2026-07-29 03:50:16 UTC +0000):** the JavaScript SDK now exports a
+    vertex-only public request builder. It validates the explicit target shard,
+    bounded item/key input, labels, and property names; encodes property values
+    through the shared canonical codec; and canonicalizes label/property order
+    by UTF-8 bytes. SDK conformance now covers both edge and vertex builders,
+    including invalid target-shard and empty-label cases. Full SDK package check
+    remains blocked by pre-existing formatting drift in unrelated files.
 
 ## Test contract
 
