@@ -1235,6 +1235,7 @@ dependencies = [
  "ic-stable-structures",
  "rkyv 0.8.17",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

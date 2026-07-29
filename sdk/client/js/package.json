@@ -16,7 +16,7 @@
   },
   "scripts": {
     "check": "vp check",
-    "test": "node --eval \"console.log('sdk/js: no tests yet')\"",
+    "test": "node --experimental-strip-types ./scripts/conformance-test.mjs",
     "build": "vp pack"
   },
   "peerDependencies": {

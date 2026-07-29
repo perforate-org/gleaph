@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 01:32:08 UTC +0000
+Anchor timestamp: 2026-07-29 01:43:40 UTC +0000
 
 ## Context
 
@@ -35,10 +35,12 @@ This ADR is partially implemented. ADR 0048's owner boundary and alias removal
 are complete; this ADR does not introduce another counterpart compatibility
 path. The public single-shard ordered edge-batch endpoint, Graph journal-first
 execution, scalar fallback, projection/retirement lifecycle, and basic recovery
-are active. Unsupported optimized geometry, full failure/recovery coverage,
-SDK conformance, and fresh-release activation remain open. Vertex bulk placement
-and mixed vertex/edge batches are later extensions; they are not implied by the
-current edge-only endpoint or by the existing generic plan batch runner.
+are active. Unsupported optimized geometry, full failure/recovery coverage, the
+complete SDK invalid/boundary conformance matrix, and fresh-release activation
+remain open. Core Rust/JS canonical-value vectors are now active. Vertex bulk
+placement and mixed vertex/edge batches are later extensions; they are not
+implied by the current edge-only endpoint or by the existing generic plan batch
+runner.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
 Graph does not interpret an application timestamp, target id, ranking value, or
@@ -1970,13 +1972,19 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     Router, Graph, and derived-index state; reject mixed-version activation.
 16. Run unfiltered `canbench --persist` in every affected crate before updating
     final benchmark artifacts and activation status.
-17. **Planned (2026-07-29):** add an explicitly versioned vertex-batch contract
+17. **Partially implemented (2026-07-29 01:43:40 UTC +0000):** add the shared
+    `graph-kernel` canonical GQL value vector fixture and verify the Rust
+    encoder plus the JavaScript SDK encoder against the same expected bytes.
+    The core scalar, temporal, list, and record vectors are active. Invalid,
+    maximum-boundary, extension-heavy, and public ordered-batch request-builder
+    coverage remain planned.
+18. **Planned (2026-07-29):** add an explicitly versioned vertex-batch contract
     and implement Graph/LARA vertex bulk placement. The implementation must
     project and validate the complete vertex set before canonical writes, group
     compatible allocations without exposing physical locations, preserve
     request-local result order, and benchmark bulk placement against the
     existing per-vertex plan batch runner.
-18. **Planned (2026-07-29):** extend the public operation enum to support mixed
+19. **Planned (2026-07-29):** extend the public operation enum to support mixed
     vertex/edge batches. Execute the vertex phase first, publish the
     request-local allocated-vertex table, then resolve and bulk-place edges.
     Add one durable two-phase receipt/recovery contract, including edge-phase

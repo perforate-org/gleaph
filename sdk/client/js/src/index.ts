@@ -28,6 +28,7 @@ export {
   USE_GRAPH_PUSHDOWN_WARNING_PREFIX,
 } from "./helpers";
 export { GleaphCanisterError, GleaphSdkError } from "./errors";
+export { bytesToHex, encodeCanonicalGqlValue } from "./canonical-value";
 export {
   fromApiValue,
   isApiValue,

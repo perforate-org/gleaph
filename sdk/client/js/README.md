@@ -11,6 +11,8 @@ Current scope:
 - `USE GRAPH` pushdown helpers
 - IC canister transport factory
 - `ApiValue` codec and request builders
+- canonical GQL value encoding for independently encoded mutation boundaries
+- Rust/JavaScript conformance vectors for the canonical value codec
 - prepared-query codegen runtime surface (`executePrepared` / `executePreparedMutation`)
 - codegen integration with `gleaph-codegen`
 

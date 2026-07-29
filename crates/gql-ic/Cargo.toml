@@ -19,3 +19,4 @@ thiserror.workspace = true
 
 [dev-dependencies]
 rkyv.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }

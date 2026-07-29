@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "vectors": [
+    { "name": "null", "value": { "Null": null }, "canonical_bytes_hex": "00" },
+    { "name": "bool_true", "value": { "Bool": true }, "canonical_bytes_hex": "0101" },
+    { "name": "int64_negative", "value": { "Int64": "-42" }, "canonical_bytes_hex": "05d6ffffffffffffff" },
+    { "name": "uint64", "value": { "Uint64": "42" }, "canonical_bytes_hex": "0b2a00000000000000" },
+    { "name": "float64", "value": { "Float64": 1.5 }, "canonical_bytes_hex": "10000000000000f83f" },
+    { "name": "text", "value": { "Text": "road" }, "canonical_bytes_hex": "1204000000726f6164" },
+    { "name": "bytes", "value": { "Bytes": "00ff" }, "canonical_bytes_hex": "130200000000ff" },
+    {
+      "name": "list",
+      "value": { "List": [{ "Int64": "1" }, { "Text": "x" }] },
+      "canonical_bytes_hex": "1c02000000050100000000000000120100000078"
+    },
+    {
+      "name": "record_preserves_field_order",
+      "value": { "Record": { "b": { "Int64": "2" }, "a": { "Text": "x" } } },
+      "canonical_bytes_hex": "1e0200000001000000620502000000000000000100000061120100000078"
+    },
+    {
+      "name": "date_time",
+      "value": { "DateTime": { "seconds": "1700000000", "nanos": 123 } },
+      "canonical_bytes_hex": "1700f15365000000007b000000"
+    }
+  ]
+}
