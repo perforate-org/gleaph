@@ -41,8 +41,9 @@ Rust/JS canonical-value vectors, integer/temporal boundary vectors, Principal
 extension vectors, and malformed binary rejection vectors are now active. The
 Router mixed public shape and the Graph-owned immutable mixed envelope are now
 defined and validated. Graph-side mixed phase execution, allocation-table
-resolution, and durable aggregate receipt/replay are active; Router dispatch,
-projection lifecycle, and recovery wiring remain planned. The existing generic
+resolution, and durable aggregate receipt/replay are active; Router mixed replay
+identity/target persistence is now active, while Graph dispatch, projection
+lifecycle, retirement, and recovery wiring remain planned. The existing generic
 plan batch runner does not implement this protocol.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
@@ -2132,6 +2133,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     fingerprint/result-validating Graph client call. The public update endpoint
     remains gated until the durable mixed Router replay, projection, retirement,
     and recovery lifecycle is wired.
+36. **Partially implemented (2026-07-29 04:35:30 UTC +0000):** Router now persists
+    the mixed request identity, phase counts, Graph replay target, and canonical-
+    pending progress by atomically replacing the pristine scalar reservation.
+    The target validates the mixed Graph fingerprint and exact vertex/edge counts
+    before releasing the routing lease. Mixed dispatch, receipt transitions,
+    projection, retirement, and recovery remain planned.
 
 ## Test contract
 

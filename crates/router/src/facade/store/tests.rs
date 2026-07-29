@@ -2239,6 +2239,102 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     assert_eq!(record.as_v1().completed_row_count, Some(1));
 }
 
+#[test]
+fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
+    use crate::facade::stable::label_stats::{
+        OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
+        RouterMutationRequestIdentityV1, RouterOrderedMixedBatchTargetV1,
+    };
+    use gleaph_graph_kernel::plan_exec::{
+        OrderedMixedBatchGraphRequest, OrderedMixedBatchGraphRequestV1,
+        OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1, OrderedMixedGraphOperationV1,
+        OrderedVertexBatchGraphItemV1, ordered_mixed_batch_graph_request_fingerprint,
+    };
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let caller = graph_principal(1);
+    let client_key = "ordered-mixed-transition";
+    let public_fingerprint = [8; 32];
+    store
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            public_fingerprint.to_vec(),
+        )
+        .expect("mixed reservation");
+
+    let request = OrderedMixedBatchGraphRequestV1 {
+        graph_id: tenant_main_graph_id(),
+        target_shard_id: ShardId::new(0),
+        target_graph_canister: graph_principal(9),
+        resolved_labels: Default::default(),
+        resolved_properties: Default::default(),
+        operations: vec![
+            OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                resolved_vertex_labels: Vec::new(),
+                resolved_initial_properties: Vec::new(),
+            }),
+            OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
+                source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(0),
+                target: OrderedMixedGraphEndpointV1::NewVertexOrdinal(0),
+                directed: false,
+                catalog_edge_label_id: None,
+                inline_property_bytes: Vec::new(),
+                resolved_initial_edge_properties: Vec::new(),
+            }),
+        ],
+    };
+    let graph_request = OrderedMixedBatchGraphRequest::V1(request.clone());
+    let graph_fingerprint = ordered_mixed_batch_graph_request_fingerprint(&graph_request)
+        .expect("mixed Graph request fingerprint");
+    let target = RouterOrderedMixedBatchTargetV1 {
+        graph_request_fingerprint: graph_fingerprint,
+        request,
+        progress: OrderedMixedBatchTargetProgressV1::CanonicalPending,
+        projection_watermark: None,
+    };
+    store
+        .transition_to_ordered_mixed_batch(
+            caller,
+            tenant_main_graph_id(),
+            client_key,
+            1,
+            public_fingerprint,
+            2,
+            1,
+            1,
+            Default::default(),
+            Default::default(),
+            target,
+        )
+        .expect("mixed transition");
+
+    let record = store
+        .router_mutation_record(caller, tenant_main_graph_id(), client_key)
+        .expect("mixed record");
+    assert!(!record.as_v1().routing_in_progress);
+    assert!(matches!(
+        record.as_v1().request_identity,
+        RouterMutationRequestIdentityV1::OrderedMixedBatch {
+            public_operation_count: 2,
+            public_vertex_count: 1,
+            public_edge_count: 1,
+            ..
+        }
+    ));
+    assert!(matches!(
+        record.payload(),
+        RouterMutationPayloadV1::OrderedMixedBatch(replay)
+            if matches!(replay.target.progress, OrderedMixedBatchTargetProgressV1::CanonicalPending)
+    ));
+}
+
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only
 // ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only
 // reclaim terminal ones; the old "not routing" rule wrongly stranded committed-but-unprojected

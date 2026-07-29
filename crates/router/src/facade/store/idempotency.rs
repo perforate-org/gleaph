@@ -68,6 +68,7 @@ fn ordered_replay_target_active(record: &RouterMutationRecord) -> bool {
         record.payload(),
         RouterMutationPayloadV1::OrderedEdgeBatch(_)
             | RouterMutationPayloadV1::OrderedVertexBatch(_)
+            | RouterMutationPayloadV1::OrderedMixedBatch(_)
     ) && !record.is_terminal()
 }
 
@@ -169,9 +170,12 @@ pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
         | RouterMutationPayloadV1::OrderedEdgeBatch(_)
         | RouterMutationPayloadV1::OrderedVertexBatchRouting
         | RouterMutationPayloadV1::OrderedVertexBatch(_)
+        | RouterMutationPayloadV1::OrderedMixedBatchRouting
+        | RouterMutationPayloadV1::OrderedMixedBatch(_)
         | RouterMutationPayloadV1::CompletedBulk { .. }
         | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
-        | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. } => {}
+        | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. }
+        | RouterMutationPayloadV1::CompletedOrderedMixedBatch { .. } => {}
     }
 }
 
@@ -243,8 +247,10 @@ impl RouterStore {
                 record.payload(),
                 RouterMutationPayloadV1::OrderedEdgeBatch(_)
                     | RouterMutationPayloadV1::OrderedVertexBatch(_)
+                    | RouterMutationPayloadV1::OrderedMixedBatch(_)
                     | RouterMutationPayloadV1::CompletedOrderedEdgeBatch { .. }
                     | RouterMutationPayloadV1::CompletedOrderedVertexBatch { .. }
+                    | RouterMutationPayloadV1::CompletedOrderedMixedBatch { .. }
             ) {
                 return Ok(ClientMutationReservation {
                     mutation_id: record.as_v1().mutation_id,
@@ -616,6 +622,9 @@ impl RouterStore {
                         | crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedVertexBatch(
                             _
                         )
+                        | crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedMixedBatch(
+                            _
+                        )
                     );
                 if !record.as_v1().routing_in_progress
                     && !record.is_terminal()
@@ -799,6 +808,119 @@ impl RouterStore {
             if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
                 return Err(RouterError::InvalidArgument(
                     "ordered vertex batch record exceeds safe inter-canister payload bound".into(),
+                ));
+            }
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
+    /// Atomically transition a pristine scalar reservation to an ordered Graph mixed replay
+    /// payload. The phase counts remain Router-owned request identity and are checked against the
+    /// immutable Graph operation table before the routing lease is released.
+    pub fn transition_to_ordered_mixed_batch(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        public_fingerprint: [u8; 32],
+        public_operation_count: u32,
+        public_vertex_count: u32,
+        public_edge_count: u32,
+        resolved_labels: ResolvedLabelTable,
+        resolved_properties: ResolvedPropertyTable,
+        target: crate::facade::stable::label_stats::RouterOrderedMixedBatchTargetV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedMixedBatchTargetProgressV1, RouterMutationPayloadV1,
+            RouterMutationRequestIdentityV1, RouterOrderedMixedBatchReplayV1,
+        };
+        target.validate()?;
+        if target.request.operations.len() != public_operation_count as usize {
+            return Err(RouterError::InvalidArgument(
+                "ordered mixed public operation count does not match Graph request".into(),
+            ));
+        }
+        let actual_vertex_count = target
+            .request
+            .operations
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation,
+                    gleaph_graph_kernel::plan_exec::OrderedMixedGraphOperationV1::Vertex(_)
+                )
+            })
+            .count() as u32;
+        let actual_edge_count = public_operation_count
+            .checked_sub(actual_vertex_count)
+            .ok_or_else(|| {
+                RouterError::InvalidArgument("mixed operation count underflow".into())
+            })?;
+        if actual_vertex_count != public_vertex_count || actual_edge_count != public_edge_count {
+            return Err(RouterError::InvalidArgument(
+                "ordered mixed phase counts do not match Graph request".into(),
+            ));
+        }
+        if !matches!(
+            target.progress,
+            OrderedMixedBatchTargetProgressV1::CanonicalPending
+        ) {
+            return Err(RouterError::InvalidArgument(
+                "ordered mixed Graph target must be pristine at admission".into(),
+            ));
+        }
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered mixed batch transition".into(),
+                ));
+            }
+            if v1.request_identity.request_fingerprint() != public_fingerprint {
+                return Err(RouterError::Conflict(
+                    "public request fingerprint mismatch at ordered mixed batch transition".into(),
+                ));
+            }
+            if !v1.routing_in_progress {
+                return Err(RouterError::Conflict(
+                    "ordered mixed batch transition requires an active routing reservation".into(),
+                ));
+            }
+            if v1.completed_row_count.is_some() {
+                return Err(RouterError::Conflict(
+                    "ordered mixed batch transition refused: record already completed".into(),
+                ));
+            }
+            if !matches!(
+                v1.payload,
+                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty()
+            ) {
+                return Err(RouterError::Conflict(
+                    "ordered mixed batch transition requires a pristine scalar reservation".into(),
+                ));
+            }
+            v1.request_identity = RouterMutationRequestIdentityV1::OrderedMixedBatch {
+                public_fingerprint,
+                public_operation_count,
+                public_vertex_count,
+                public_edge_count,
+            };
+            v1.resolved_labels = Some(resolved_labels);
+            v1.resolved_properties = Some(resolved_properties);
+            v1.payload = RouterMutationPayloadV1::OrderedMixedBatch(Box::new(
+                RouterOrderedMixedBatchReplayV1 { target },
+            ));
+            v1.routing_in_progress = false;
+            v1.routing_lease_ns = None;
+            if record.to_bytes().len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+                return Err(RouterError::InvalidArgument(
+                    "ordered mixed batch record exceeds safe inter-canister payload bound".into(),
                 ));
             }
             m.insert(key, record);
