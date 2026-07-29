@@ -55,8 +55,12 @@ export function makeOrderedVertexBatchPublicRequest(
   if (input.logical_graph_name.length === 0) {
     throw new Error("logical_graph_name must not be empty");
   }
-  if (!Number.isInteger(input.target_shard_id) || input.target_shard_id < 0) {
-    throw new Error("target_shard_id must be a non-negative integer");
+  if (
+    !Number.isInteger(input.target_shard_id) ||
+    input.target_shard_id < 0 ||
+    input.target_shard_id > 0xffff_ffff
+  ) {
+    throw new Error("target_shard_id must be a uint32");
   }
   if (input.items.length === 0 || input.items.length > MAX_ITEMS) {
     throw new Error("items must contain 1..=1024 entries");

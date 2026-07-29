@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 05:17:17 UTC +0000
+Anchor timestamp: 2026-07-29 05:18:47 UTC +0000
 
 ## Context
 
@@ -2177,6 +2177,11 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     and empty property names. Duplicate property-name cases remain represented
     by the Rust/Candid boundary because the JS input uses a Record and cannot
     express duplicate keys.
+44. **Partially implemented (2026-07-29 05:18:47 UTC +0000):** Edge and vertex
+    SDK builders now also cover empty client keys/graph names, empty edge labels,
+    endpoint width, and uint32 target-shard bounds. The SDK script passes the
+    supported public-builder matrix; Candid-level duplicate-key and oversized
+    encoded-payload rejection remain Router/PocketIC responsibilities.
 
 ## Test contract
 

@@ -174,6 +174,49 @@ assertBuilderRejects(
 );
 assertBuilderRejects(
   {
+    client_mutation_key: "",
+    logical_graph_name: "tenant.main",
+    items: [
+      {
+        source: Uint8Array.from([1, 1, 1, 1, 1, 1, 1, 1]),
+        target: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]),
+        directed: true,
+      },
+    ],
+  },
+  "empty edge client key",
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "empty-graph",
+    logical_graph_name: "",
+    items: [
+      {
+        source: Uint8Array.from([1, 1, 1, 1, 1, 1, 1, 1]),
+        target: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]),
+        directed: true,
+      },
+    ],
+  },
+  "empty edge graph name",
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "empty-edge-label",
+    logical_graph_name: "tenant.main",
+    items: [
+      {
+        source: Uint8Array.from([1, 1, 1, 1, 1, 1, 1, 1]),
+        target: Uint8Array.from([2, 2, 2, 2, 2, 2, 2, 2]),
+        directed: true,
+        edge_label_name: "",
+      },
+    ],
+  },
+  "empty edge label",
+);
+assertBuilderRejects(
+  {
     client_mutation_key: "missing-edge",
     logical_graph_name: "tenant.main",
     target_shard_id: 0,
@@ -319,6 +362,16 @@ assertBuilderRejects(
     items: [{ vertex_labels: ["Person"] }],
   },
   "negative target shard",
+  makeOrderedVertexBatchPublicRequest,
+);
+assertBuilderRejects(
+  {
+    client_mutation_key: "wide-shard",
+    logical_graph_name: "tenant.main",
+    target_shard_id: 0x1_0000_0000,
+    items: [{ vertex_labels: ["Person"] }],
+  },
+  "vertex shard above uint32",
   makeOrderedVertexBatchPublicRequest,
 );
 assertBuilderRejects(
