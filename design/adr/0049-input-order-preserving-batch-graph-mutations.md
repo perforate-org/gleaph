@@ -2054,6 +2054,12 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     same lifecycle phases as ordered edge records while retaining a distinct
     receipt type. Public Router dispatch, projection/retirement transitions, and
     recovery execution remain the next slice.
+25. **Partially implemented (2026-07-29 03:26:38 UTC +0000):** the public Router
+    vertex endpoint now resolves the explicit target shard and catalogs, persists
+    the vertex replay envelope before dispatch, invokes the Graph vertex endpoint,
+    and records the fingerprint-bound canonical vertex receipt. Exact-key replay
+    returns the durable vertex response. Projection advancement, ordered
+    retirement, and recovery after a lost callback remain planned.
 
 ## Test contract
 
