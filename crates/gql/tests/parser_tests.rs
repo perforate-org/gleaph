@@ -1350,6 +1350,31 @@ fn create_graph_type_phrase_edge_ast() {
     );
 }
 
+#[cfg(feature = "gleaph")]
+#[test]
+fn create_graph_type_edge_inline_property_ast() {
+    let program = parse_program_ok(
+        "CREATE GRAPH TYPE myType { DIRECTED EDGE Road LABEL ROAD { distance FLOAT32 INLINE } CONNECTING (city -> city) }",
+    );
+    let statement = &program
+        .transaction_activity
+        .as_ref()
+        .expect("expected transaction activity")
+        .body
+        .as_ref()
+        .unwrap()
+        .first;
+    let Statement::CreateGraphType(stmt) = statement else {
+        panic!("expected create graph type statement, got {statement:?}");
+    };
+    let [GraphTypeElement::Edge(edge)] = &stmt.definition.elements[..] else {
+        panic!("expected one edge element");
+    };
+    assert_eq!(edge.properties.len(), 1);
+    assert!(edge.properties[0].inline);
+    assert_eq!(edge.properties[0].name, "distance");
+}
+
 #[test]
 fn create_graph_type_phrase_left_edge_ast() {
     let program = parse_program_ok(

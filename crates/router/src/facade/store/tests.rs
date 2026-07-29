@@ -3346,6 +3346,31 @@ mod graph_type_catalog_vocabulary {
     }
 
     #[test]
+    fn create_graph_type_edge_inline_ddl_registers_schema() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        let ddl = "CREATE GRAPH TYPE gt { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance FLOAT32 INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH g TYPED gt";
+        apply_catalog_statement_block(&catalog_block_from(ddl)).expect("apply ddl");
+
+        let label_id = store.lookup_edge_label_id(graph_id, "ROAD").expect("label");
+        let property_id = store
+            .lookup_property_id(graph_id, "distance")
+            .expect("property");
+        assert_eq!(
+            ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|s| s.get_record(graph_id, label_id)),
+            Some(EdgeInlinePropertySchemaRecord::InlineScalar {
+                property_id,
+                scalar_type: InlineScalarType::F32,
+            })
+        );
+    }
+
+    #[test]
     fn create_graph_any_skips_vocabulary_intern() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
@@ -3970,15 +3995,15 @@ fn inline_struct_schema_creates_label_property_and_record() {
             "AFFINITY",
             "stats",
             vec![
-                crate::edge_inline_property_ddl::InlineEdgeStructField {
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
                     name: "score".into(),
                     scalar_type: InlineScalarType::F32,
                 },
-                crate::edge_inline_property_ddl::InlineEdgeStructField {
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
                     name: "confidence".into(),
                     scalar_type: InlineScalarType::F32,
                 },
-                crate::edge_inline_property_ddl::InlineEdgeStructField {
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
                     name: "updated_at".into(),
                     scalar_type: InlineScalarType::U64,
                 },
@@ -4054,11 +4079,11 @@ fn inline_struct_schema_is_idempotent() {
     let graph_id = lookup_graph_id("tenant.struct_idem").expect("graph");
 
     let fields = vec![
-        crate::edge_inline_property_ddl::InlineEdgeStructField {
+        crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
             name: "score".into(),
             scalar_type: InlineScalarType::F32,
         },
-        crate::edge_inline_property_ddl::InlineEdgeStructField {
+        crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
             name: "confidence".into(),
             scalar_type: InlineScalarType::F32,
         },
@@ -4095,10 +4120,12 @@ fn inline_struct_schema_conflicts_with_scalar() {
             graph_id,
             "AFFINITY",
             "stats",
-            vec![crate::edge_inline_property_ddl::InlineEdgeStructField {
-                name: "score".into(),
-                scalar_type: InlineScalarType::F32,
-            }],
+            vec![
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
+                    name: "score".into(),
+                    scalar_type: InlineScalarType::F32,
+                },
+            ],
         )
         .expect_err("conflict");
     assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
@@ -4118,10 +4145,12 @@ fn inline_scalar_schema_conflicts_with_struct() {
             graph_id,
             "AFFINITY",
             "stats",
-            vec![crate::edge_inline_property_ddl::InlineEdgeStructField {
-                name: "score".into(),
-                scalar_type: InlineScalarType::F32,
-            }],
+            vec![
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
+                    name: "score".into(),
+                    scalar_type: InlineScalarType::F32,
+                },
+            ],
         )
         .expect("struct");
 
@@ -4151,11 +4180,11 @@ fn inline_struct_schema_conflicts_on_reordered_fields() {
             "AFFINITY",
             "stats",
             vec![
-                crate::edge_inline_property_ddl::InlineEdgeStructField {
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
                     name: "a".into(),
                     scalar_type: InlineScalarType::U8,
                 },
-                crate::edge_inline_property_ddl::InlineEdgeStructField {
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
                     name: "b".into(),
                     scalar_type: InlineScalarType::U16,
                 },
@@ -4169,11 +4198,11 @@ fn inline_struct_schema_conflicts_on_reordered_fields() {
             "AFFINITY",
             "stats",
             vec![
-                crate::edge_inline_property_ddl::InlineEdgeStructField {
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
                     name: "b".into(),
                     scalar_type: InlineScalarType::U16,
                 },
-                crate::edge_inline_property_ddl::InlineEdgeStructField {
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
                     name: "a".into(),
                     scalar_type: InlineScalarType::U8,
                 },
@@ -4220,10 +4249,12 @@ fn inline_struct_schema_rejects_invalid_field_name() {
             graph_id,
             "AFFINITY",
             "stats",
-            vec![crate::edge_inline_property_ddl::InlineEdgeStructField {
-                name: long_name,
-                scalar_type: InlineScalarType::U8,
-            }],
+            vec![
+                crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
+                    name: long_name,
+                    scalar_type: InlineScalarType::U8,
+                },
+            ],
         )
         .expect_err("invalid field name");
     assert!(
@@ -4246,10 +4277,13 @@ fn inline_struct_schema_record_too_large_leaves_no_catalog_mutation() {
     // Build a struct whose encoded stable record exceeds the 1024-byte envelope.
     let mut fields = Vec::new();
     for i in 0..64 {
-        fields.push(crate::edge_inline_property_ddl::InlineEdgeStructField {
-            name: format!("very_long_field_name_to_inflate_record_size_{:03}", i),
-            scalar_type: crate::facade::stable::edge_inline_property_profiles::InlineScalarType::U8,
-        });
+        fields.push(
+            crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
+                name: format!("very_long_field_name_to_inflate_record_size_{:03}", i),
+                scalar_type:
+                    crate::facade::stable::edge_inline_property_profiles::InlineScalarType::U8,
+            },
+        );
     }
     let err = store
         .commit_set_edge_label_inline_struct_schema(graph_id, "AFFINITY", "stats", fields)

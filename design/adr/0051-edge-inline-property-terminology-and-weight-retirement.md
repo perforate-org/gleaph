@@ -2,8 +2,8 @@
 
 Date: 2026-07-26
 Status: implemented
-Last revised: 2026-07-27
-Anchor timestamp: 2026-07-26 20:03:57 UTC +0000
+Last revised: 2026-07-29
+Anchor timestamp: 2026-07-29 10:48:56 UTC +0000
 
 ## Context
 
@@ -11,8 +11,11 @@ Gleaph's GQL dialect exposes fast, fixed-width edge-local data through the `INLI
 modifier. The public syntax is ordinary property access:
 
 ```gql
-CREATE EDGE LABEL ROAD {
-  distance FLOAT32 INLINE
+CREATE GRAPH TYPE RoadGraph {
+  NODE City AS city,
+  DIRECTED EDGE Road LABEL ROAD {
+    distance FLOAT32 INLINE
+  } CONNECTING (city -> city)
 }
 
 MATCH (a)-[e:ROAD]->(b)
@@ -120,7 +123,7 @@ Use exactly these names:
 
 | Concept                         | Canonical term                 | Notes                                                       |
 | ------------------------------- | ------------------------------ | ----------------------------------------------------------- |
-| GQL syntax / user-facing idea   | **inline property**            | `CREATE EDGE LABEL ... { <prop> <type> INLINE }`, `e.prop`. |
+| GQL syntax / user-facing idea   | **inline property**            | `CREATE GRAPH TYPE ... { ... EDGE ... { <prop> <type> INLINE } CONNECTING ... }`, `e.prop`. |
 | Logical schema / catalog record | **inline property schema**     | Router SSOT: `(GraphId, EdgeLabelId) → schema record`.      |
 | Physical byte width + encoding  | **inline property profile**    | Wire-carried profile consumed by Graph.                     |
 | Stored fixed-width bytes        | **inline property bytes**      | LARA slab/log/blob bytes. Avoid "payload".                  |

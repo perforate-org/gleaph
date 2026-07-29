@@ -325,19 +325,6 @@ fn bench_inline_graph_id() -> gleaph_graph_kernel::entry::GraphId {
 }
 
 #[bench(raw)]
-fn bench_inline_edge_scalar_ddl_parse() -> canbench_rs::BenchResult {
-    canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("inline_scalar_ddl_parse");
-        let stmt = crate::edge_inline_property_ddl::try_parse(
-            "CREATE EDGE LABEL ROAD { distance FLOAT32 INLINE }",
-        )
-        .expect("recognised")
-        .expect("valid");
-        black_box(stmt);
-    })
-}
-
-#[bench(raw)]
 fn bench_inline_edge_scalar_schema_lookup() -> canbench_rs::BenchResult {
     let _store = RouterStore::new();
     let graph_id = bench_inline_graph_id();

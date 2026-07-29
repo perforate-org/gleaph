@@ -1,11 +1,11 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-07-27
-Anchor timestamp: 2026-07-27 00:00:00 UTC +0000
+Last updated: 2026-07-29
+Anchor timestamp: 2026-07-29 10:48:56 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`), Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration (`CREATE EDGE LABEL ... { <property> { ... } INLINE }`), and Slice 25 ordinary read access to fixed-size inline edge struct fields (`e.stats` returns a record; `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence) are implemented**; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, nested structs, and generic `CREATE GRAPH TYPE` `INLINE` annotations remain planned; vector-index DDL remains planned.** This document
+**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration inside `CREATE GRAPH TYPE` edge definitions, Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline property bytes, Slice 24 fixed-size inline struct schema registration inside `CREATE GRAPH TYPE` edge definitions, and Slice 25 ordinary read access to fixed-size inline edge struct fields (`e.stats` returns a record; `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence) are implemented**; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, and nested structs remain planned; vector-index DDL remains planned.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -40,7 +40,7 @@ semantics.
 | ----------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                                                                                                                                                                                                                                                                          | `gleaph-gql-ic` value extension                                                             |
 | IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                                                                                                                                                                                                                                                                          | Graph execution context                                                                     |
-| Edge inline property             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar `INLINE` schema registration, read access, mutation packing, and shortest-path `COST BY e.property` implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`, `INSERT ... {distance: 7}`, `SET e.distance = 9`, `ANY SHORTEST ... COST BY e.distance`); **fixed-size struct schema registration and ordinary struct field reads are implemented** (`CREATE EDGE LABEL ... { <property> { ... } INLINE }`; `e.stats` returns a record, `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence); struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, and nested structs remain planned | Router schema/catalog + Graph edge inline property execution                                        |
+| Edge inline property             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar and fixed-size struct `INLINE` schema registration inside `CREATE GRAPH TYPE` edge definitions, read access, mutation packing, and shortest-path `COST BY e.property` implemented**; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, and nested structs remain planned | Router schema/catalog + Graph edge inline property execution                                        |
 | Shortest-path cost            | `COST BY e.distance`                                                      | **Implemented** for the bounded direct-property shape: one concrete edge label, one declared edge variable, and exactly `e.<inline-property>`; compound expressions and label-expression costs remain planned | Graph query planner/executor                                                                |
 | Legacy edge weight function   | `GLEAPH.WEIGHT(e)`                                                        | Removed (ADR 0051 Phase B); use ordinary `e.<inline-property>` access and `COST BY e.<inline-property>`                                                                                                                                                                                        | Graph query executor                                                                        |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
@@ -119,8 +119,11 @@ read access, mutation packing, and `COST BY e.<inline-property>` are implemented
 logical query surface is ordinary property access:
 
 ```gql
-CREATE EDGE LABEL ROAD {
-  distance FLOAT32 INLINE
+CREATE GRAPH TYPE RoadGraph {
+  NODE City AS city,
+  DIRECTED EDGE Road LABEL ROAD {
+    distance FLOAT32 INLINE
+  } CONNECTING (city -> city)
 }
 
 MATCH (a)-[e:ROAD]->(b)
@@ -136,40 +139,52 @@ struct.
 Allowed:
 
 ```gql
-CREATE EDGE LABEL LIKED {
-  score FLOAT32 INLINE
+CREATE GRAPH TYPE LikedGraph {
+  NODE User AS user,
+  DIRECTED EDGE Liked LABEL LIKED {
+    score FLOAT32 INLINE
+  } CONNECTING (user -> user)
 }
 ```
 
 Allowed:
 
 ```gql
-CREATE EDGE LABEL AFFINITY {
-  stats {
-    score FLOAT32,
-    confidence FLOAT32,
-    updated_at UINT64
-  } INLINE
+CREATE GRAPH TYPE AffinityGraph {
+  NODE User AS user,
+  DIRECTED EDGE Affinity LABEL AFFINITY {
+    stats {
+      score FLOAT32,
+      confidence FLOAT32,
+      updated_at UINT64
+    } INLINE
+  } CONNECTING (user -> user)
 }
 ```
 
 Not allowed:
 
 ```gql
-CREATE EDGE LABEL LIKED {
-  score FLOAT32 INLINE,
-  confidence FLOAT32 INLINE
+CREATE GRAPH TYPE InvalidGraph {
+  NODE User AS user,
+  DIRECTED EDGE Liked LABEL LIKED {
+    score FLOAT32 INLINE,
+    confidence FLOAT32 INLINE
+  } CONNECTING (user -> user)
 }
 ```
 
 Use a fixed-size struct instead:
 
 ```gql
-CREATE EDGE LABEL LIKED {
-  stats {
-    score FLOAT32,
-    confidence FLOAT32
-  } INLINE
+CREATE GRAPH TYPE LikedGraph {
+  NODE User AS user,
+  DIRECTED EDGE Liked LABEL LIKED {
+    stats {
+      score FLOAT32,
+      confidence FLOAT32
+    } INLINE
+  } CONNECTING (user -> user)
 }
 ```
 
@@ -180,11 +195,14 @@ embeddings are not inline by default.
 
 **Status:** Implemented.
 
-The Router now accepts a standalone scalar-only `INLINE` schema declaration:
+The Router now accepts scalar `INLINE` schema declarations inside `CREATE GRAPH TYPE` edge definitions:
 
 ```gql
-CREATE EDGE LABEL ROAD {
-  distance FLOAT32 INLINE
+CREATE GRAPH TYPE RoadGraph {
+  NODE City AS city,
+  DIRECTED EDGE Road LABEL ROAD {
+    distance FLOAT32 INLINE
+  } CONNECTING (city -> city)
 }
 ```
 
@@ -217,15 +235,18 @@ definitions. Those remain planned.
 
 **Status:** Implemented.
 
-The Router now accepts a standalone fixed-size inline struct declaration:
+The Router now accepts fixed-size inline struct declarations inside `CREATE GRAPH TYPE` edge definitions:
 
 ```gql
-CREATE EDGE LABEL AFFINITY {
-  stats {
-    score FLOAT32,
-    confidence FLOAT32,
-    updated_at UINT64
-  } INLINE
+CREATE GRAPH TYPE AffinityGraph {
+  NODE User AS user,
+  DIRECTED EDGE Affinity LABEL AFFINITY {
+    stats {
+      score FLOAT32,
+      confidence FLOAT32,
+      updated_at UINT64
+    } INLINE
+  } CONNECTING (user -> user)
 }
 ```
 
@@ -250,7 +271,7 @@ same declaration order, and the same field scalar types are supplied. Any incomp
 redeclaration, any scalar/struct conflict, any legacy unnamed inline property profile, and any property-index
 conflict on the same (label, property) are rejected before any catalog or schema mutation. Struct
 field reads (`e.stats.score`), struct mutation packing, `COST BY` over a struct field, and generic
-`CREATE GRAPH TYPE ... INLINE` annotations remain planned.
+`INLINE` annotations are accepted only on edge properties inside `CREATE GRAPH TYPE` definitions.
 
 ### Relationship to the removed `GLEAPH.WEIGHT`
 
@@ -740,12 +761,15 @@ it is a search/ranking operation instead of standard indexed pattern matching.
 ## GraphRAG example
 
 ```gql
-CREATE EDGE LABEL MENTIONS {
-  evidence {
-    confidence FLOAT32,
-    source_rank UINT16,
-    observed_at UINT64
-  } INLINE
+CREATE GRAPH TYPE GraphRagGraph {
+  NODE Chunk AS chunk,
+  DIRECTED EDGE Mentions LABEL MENTIONS {
+    evidence {
+      confidence FLOAT32,
+      source_rank UINT16,
+      observed_at UINT64
+    } INLINE
+  } CONNECTING (chunk -> chunk)
 }
 
 CREATE VECTOR INDEX chunk_embedding
@@ -791,7 +815,7 @@ This expresses the intended flow:
 | 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix and non-leading `SEARCH` after a bound vertex, vertex-only, leading and non-leading `SEARCH ... WHERE` with one to eight `AND`-connected equalities on distinct properties, one numeric range, a two-sided numeric range, mixed equality-plus-one-sided-range, mixed equality-plus-two-sided-range, same-property equality disjunctions, cross-property pure equality disjunctions (where property names may repeat or differ), same-property pure numeric-range disjunctions, and cross-property pure numeric-range disjunctions, all backed by active vertex property indexes; `DISTANCE AS` and `SCORE AS` for cosine |
 | 5     | Add result hydration from vector hits to graph vertex bindings                                         | Implemented via row-shaped `SeedBindingsWire`                                                                        |
 | 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared`      |
-| 7     | Add scalar `INLINE` edge-property schema syntax, ordinary read access (`e.inline_field`), ordinary mutation packing (`INSERT`/`SET`/`REMOVE` semantics), and bounded ordinary `COST BY e.inline_field` shortest-path cost into the inline property bytes; add fixed-size struct inline schema registration and ordinary struct field reads (`e.stats`, `e.stats.field`) | Implemented: scalar inline schema registration, read access, mutation packing, and bounded `COST BY e.property` are complete; fixed-size struct schema registration and ordinary struct field reads are complete; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, nested structs, and generic `CREATE GRAPH TYPE` `INLINE` annotations remain planned |
+| 7     | Add scalar `INLINE` edge-property schema syntax inside `CREATE GRAPH TYPE` edge definitions, ordinary read access (`e.inline_field`), ordinary mutation packing (`INSERT`/`SET`/`REMOVE` semantics), and bounded ordinary `COST BY e.inline_field` shortest-path cost into the inline property bytes; add fixed-size struct inline schema registration and ordinary struct field reads (`e.stats`, `e.stats.field`) | Implemented: scalar and fixed-size struct inline schema registration now use `CREATE GRAPH TYPE` edge definitions; read access, scalar mutation packing, and bounded `COST BY e.property` are complete; struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, and nested structs remain planned |
 | 8     | Remove daily-query use of `GLEAPH.WEIGHT`; ordinary inline property access is now required              | Removed (ADR 0051 Phase B)                                                                                           |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.

@@ -52,6 +52,13 @@ fn is_catalog_ddl_statement(stmt: &Statement) -> bool {
 }
 
 pub(crate) fn apply_catalog_statement_block(block: &StatementBlock) -> Result<(), RouterError> {
+    for stmt in block.iter_statements() {
+        if let Statement::CreateGraph(create) = stmt
+            && let Some(gleaph_gql::ast::GraphTypeSpec::Inline(definition)) = &create.graph_type
+        {
+            validate_inline_graph_type_schemas(definition)?;
+        }
+    }
     ROUTER_GRAPH_TYPE_CATALOG.with_borrow_mut(|type_catalog| {
         ROUTER_GQL_GRAPH_CATALOG.with_borrow_mut(|catalog| {
             let mut type_lookup = RouterGraphTypeLookup::new(type_catalog);
@@ -73,6 +80,28 @@ pub(crate) fn apply_catalog_statement_block(block: &StatementBlock) -> Result<()
             Ok(())
         })
     })
+}
+
+fn validate_inline_graph_type_schemas(
+    definition: &gleaph_gql::ast::GraphTypeDefinition,
+) -> Result<(), RouterError> {
+    for element in &definition.elements {
+        let gleaph_gql::ast::GraphTypeElement::Edge(edge) = element else {
+            continue;
+        };
+        let count = edge
+            .properties
+            .iter()
+            .filter(|property| property.inline)
+            .count();
+        if count > 1 {
+            return Err(RouterError::InvalidArgument(format!(
+                "edge type `{}` declares more than one INLINE property",
+                edge.name.as_deref().unwrap_or("<unnamed>")
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn try_property_schema_for_graph_id(

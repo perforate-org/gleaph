@@ -25,7 +25,9 @@ const EDGE_LABEL: &str = "ROAD";
 const PROPERTY: &str = "distance";
 
 fn inline_ddl() -> String {
-    format!("CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }}")
+    format!(
+        "CREATE GRAPH TYPE IF NOT EXISTS road_type {{ NODE City AS city, DIRECTED EDGE Road LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }} CONNECTING (city -> city) }} NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type"
+    )
 }
 
 fn road_inline_property_bytes(value: u16) -> Vec<u8> {
@@ -48,7 +50,7 @@ fn scenario_unauthorized_ddl_is_forbidden_before_creation(env: &FederationEnv) {
     // Attempt an adversarial type declaration before any authorized schema exists.
     // If this wrote anything to the catalog, the later canonical UINT16 creation would be
     // poisoned and fail observably.
-    let query = "CREATE EDGE LABEL ROAD { distance FLOAT64 INLINE }";
+    let query = "CREATE GRAPH TYPE IF NOT EXISTS road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance FLOAT64 INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type";
     let params: Vec<u8> = Vec::new();
     let mutation_key = "adr0034_inline_scalar_schema_unauthorized".to_string();
     let bytes = env
@@ -82,7 +84,7 @@ fn scenario_exact_replay_is_idempotent(env: &FederationEnv) {
 fn scenario_conflicting_ddl_is_rejected(env: &FederationEnv) {
     let err = gql_execute_idempotent_as_admin_expect_err(
         env,
-        "CREATE EDGE LABEL ROAD { distance FLOAT64 INLINE }",
+        "CREATE GRAPH TYPE IF NOT EXISTS road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance FLOAT64 INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type",
         "adr0034_inline_scalar_schema_conflict",
     );
     assert!(

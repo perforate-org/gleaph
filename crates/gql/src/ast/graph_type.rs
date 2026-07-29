@@ -128,6 +128,10 @@ pub struct PropertyDef {
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub value_type: ValueType,
     pub not_null: bool,
+    /// Gleaph's fixed-width edge storage modifier. This is meaningful only for
+    /// properties declared on an edge type; node properties must leave it false.
+    #[cfg(feature = "gleaph")]
+    pub inline: bool,
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
     pub default_value: Option<Expr>,
 }

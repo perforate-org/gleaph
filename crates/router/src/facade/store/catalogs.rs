@@ -12,7 +12,8 @@ use crate::facade::stable::constraint_name_catalog::{
     intern_constraint_name, lookup_constraint_name_id,
 };
 use crate::facade::stable::edge_inline_property_profiles::{
-    EdgeInlinePropertyProfileStoreError, InlineScalarType, InlineStructLayout,
+    EdgeInlinePropertyProfileStoreError, InlineScalarType, InlineStructFieldSpec,
+    InlineStructLayout,
 };
 use crate::facade::stable::graph_catalog::{
     catalog_error_to_router, list_live_shards_for_graph_id, resolve_registered_graph_id,
@@ -22,6 +23,7 @@ use crate::facade::stable::reservation_catalog::ProofShard;
 use crate::state::RouterError;
 use crate::types::{EdgeLabelId, PropertyId, VertexLabelId};
 use candid::Principal;
+use gleaph_gql::ast::{EdgeTypeDef, GraphTypeDefinition, GraphTypeElement, ValueType};
 use gleaph_gql::type_check::collect_graph_type_vocabulary;
 use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan, PropertyUseIntent};
 use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, GraphId};
@@ -34,6 +36,61 @@ use super::{RouterStore, validate_metadata_name};
 
 fn map_edge_inline_property_profile_err(err: EdgeInlinePropertyProfileStoreError) -> RouterError {
     RouterError::InvalidArgument(err.to_string())
+}
+
+enum InlineSchema {
+    Scalar { scalar_type: InlineScalarType },
+    Struct { fields: Vec<InlineStructFieldSpec> },
+}
+
+fn edge_schema_keys(edge: &EdgeTypeDef) -> Vec<String> {
+    let mut keys = edge
+        .label_set
+        .as_ref()
+        .map(|labels| labels.labels.clone())
+        .unwrap_or_default();
+    if keys.is_empty()
+        && let Some(name) = &edge.name
+    {
+        keys.push(name.clone());
+    }
+    keys
+}
+
+fn inline_scalar_type(value_type: &ValueType) -> Result<InlineScalarType, RouterError> {
+    let value_type = match value_type {
+        ValueType::NotNull(inner) => inner.as_ref(),
+        value_type => value_type,
+    };
+    let scalar = match value_type {
+        ValueType::Uint8 { .. } => InlineScalarType::U8,
+        ValueType::Uint16 { .. } => InlineScalarType::U16,
+        ValueType::Uint32 { .. } => InlineScalarType::U32,
+        ValueType::Uint64 { .. } => InlineScalarType::U64,
+        ValueType::Uint128 { .. } => InlineScalarType::U128,
+        ValueType::Int8 { .. } => InlineScalarType::I8,
+        ValueType::Int16 { .. } => InlineScalarType::I16,
+        ValueType::Int32 { .. } => InlineScalarType::I32,
+        ValueType::Int64 { .. } => InlineScalarType::I64,
+        ValueType::Int128 { .. } => InlineScalarType::I128,
+        ValueType::Float16 { .. } => InlineScalarType::F16,
+        ValueType::Float32 { .. } => InlineScalarType::F32,
+        ValueType::Float64 { .. } => InlineScalarType::F64,
+        ValueType::ExtensionType { name } if name.parts.len() == 1 => {
+            InlineScalarType::from_ddl_name(&name.parts[0]).ok_or_else(|| {
+                RouterError::InvalidArgument(format!(
+                    "unsupported INLINE scalar type `{}`",
+                    name.parts[0]
+                ))
+            })?
+        }
+        _ => {
+            return Err(RouterError::InvalidArgument(
+                "INLINE requires a fixed-width scalar type or a fixed-size RECORD".into(),
+            ));
+        }
+    };
+    Ok(scalar)
 }
 
 impl RouterStore {
@@ -165,6 +222,76 @@ impl RouterStore {
             validate_metadata_name(name)?;
             Self::commit_intern_property_name(graph_id, name)?;
         }
+        Self::commit_graph_type_inline_schemas(graph_id, def)?;
+        Ok(())
+    }
+
+    fn commit_graph_type_inline_schemas(
+        graph_id: GraphId,
+        def: &GraphTypeDefinition,
+    ) -> Result<(), RouterError> {
+        let store = RouterStore::new();
+        for element in &def.elements {
+            let GraphTypeElement::Edge(edge) = element else {
+                continue;
+            };
+            let inline = edge.properties.iter().filter(|property| property.inline);
+            let mut inline = inline.peekable();
+            let Some(property) = inline.next() else {
+                continue;
+            };
+            if inline.next().is_some() {
+                return Err(RouterError::InvalidArgument(format!(
+                    "edge type `{}` declares more than one INLINE property",
+                    edge.name.as_deref().unwrap_or("<unnamed>")
+                )));
+            }
+
+            let labels = edge_schema_keys(edge);
+            if labels.is_empty() {
+                return Err(RouterError::InvalidArgument(
+                    "an INLINE edge property requires an edge name or label".into(),
+                ));
+            }
+            let schema = match &property.value_type {
+                ValueType::Record { fields, .. } => {
+                    let fields = fields
+                        .iter()
+                        .map(|field| {
+                            Ok(InlineStructFieldSpec {
+                                name: field.name.clone(),
+                                scalar_type: inline_scalar_type(&field.value_type)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, RouterError>>()?;
+                    InlineSchema::Struct { fields }
+                }
+                value_type => InlineSchema::Scalar {
+                    scalar_type: inline_scalar_type(value_type)?,
+                },
+            };
+
+            for label in labels {
+                match &schema {
+                    InlineSchema::Scalar { scalar_type } => {
+                        store.commit_set_edge_label_inline_scalar_schema(
+                            graph_id,
+                            &label,
+                            &property.name,
+                            *scalar_type,
+                        )?;
+                    }
+                    InlineSchema::Struct { fields } => {
+                        store.commit_set_edge_label_inline_struct_schema(
+                            graph_id,
+                            &label,
+                            &property.name,
+                            fields.clone(),
+                        )?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -290,20 +417,19 @@ impl RouterStore {
         graph_id: GraphId,
         edge_label_name: &str,
         property_name: &str,
-        fields: Vec<crate::edge_inline_property_ddl::InlineEdgeStructField>,
+        fields: Vec<InlineStructFieldSpec>,
     ) -> Result<(), RouterError> {
-        use crate::edge_inline_property_ddl::InlineEdgeStructField;
         validate_metadata_name(edge_label_name)?;
         validate_metadata_name(property_name)?;
 
-        for InlineEdgeStructField { name, .. } in &fields {
+        for InlineStructFieldSpec { name, .. } in &fields {
             validate_metadata_name(name)?;
         }
 
         // Validate the canonical layout before any catalog allocation.
         let declared: Vec<(String, InlineScalarType)> = fields
             .into_iter()
-            .map(|InlineEdgeStructField { name, scalar_type }| (name, scalar_type))
+            .map(|InlineStructFieldSpec { name, scalar_type }| (name, scalar_type))
             .collect();
         let layout = InlineStructLayout::from_fields_with_record_bound(
             declared,

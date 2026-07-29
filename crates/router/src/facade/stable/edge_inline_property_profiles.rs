@@ -14,7 +14,7 @@ use gleaph_graph_kernel::scoped_name_catalog::GraphScopedIdKey;
 use ic_stable_structures::{Memory, StableBTreeMap};
 use std::cell::RefCell;
 
-/// Fixed-width scalar types accepted in a standalone `CREATE EDGE LABEL ... INLINE` declaration.
+/// Fixed-width scalar types accepted in an edge `INLINE` property declaration.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Serialize, serde::Deserialize,
 )]

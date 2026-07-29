@@ -147,7 +147,7 @@ fn ordered_public_edge_batch_persists_property_and_inline_values() {
     let env = install_single_shard_federation();
     gql_execute_idempotent_as_admin(
         &env,
-        "CREATE EDGE LABEL ROAD { distance UINT16 INLINE }",
+        "CREATE GRAPH TYPE IF NOT EXISTS road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance UINT16 INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type",
         "adr0049-inline-schema",
     );
     let edge_label = admin_intern_edge_label(&env, "ROAD");
@@ -198,7 +198,7 @@ fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
     let env = install_single_shard_federation();
     gql_execute_idempotent_as_admin(
         &env,
-        "CREATE EDGE LABEL ROAD { distance UINT16 INLINE }",
+        "CREATE GRAPH TYPE IF NOT EXISTS road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance UINT16 INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type",
         "adr0049-mixed-schema",
     );
     admin_intern_edge_label(&env, "ROAD");

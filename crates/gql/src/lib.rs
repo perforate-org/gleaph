@@ -12,7 +12,8 @@
 //!
 //! - `cypher` -- Enables Cypher-compatible syntax extensions (e.g. relationship patterns, property access).
 //! - `sql-compat` -- Enables SQL-compatible syntax extensions (e.g. SQL-style expressions and operators).
-//! - `gleaph` -- Enables Gleaph-specific GQL syntax extensions such as `SEARCH ... IN (VECTOR INDEX ...)`.
+//! - `gleaph` -- Enables Gleaph-specific GQL syntax extensions such as `SEARCH ... IN (VECTOR INDEX ...)`
+//!   and edge `INLINE` schema modifiers.
 //!   This feature is **non-default**; standard-GQL consumers should not enable it.
 //! - `format` -- Enables the AST-based query formatter (`crate::format`). Does not imply `gleaph`;
 //!   select both features to format Gleaph-specific syntax.

@@ -25,7 +25,7 @@ const PROPERTY: &str = "stats";
 
 fn inline_struct_ddl() -> String {
     format!(
-        "CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} {{ score FLOAT32, confidence FLOAT32, updated_at UINT64 }} INLINE }}"
+        "CREATE GRAPH TYPE IF NOT EXISTS affinity_type {{ NODE User AS user, DIRECTED EDGE Affinity LABEL {EDGE_LABEL} {{ {PROPERTY} {{ score FLOAT32, confidence FLOAT32, updated_at UINT64 }} INLINE }} CONNECTING (user -> user) }} NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED affinity_type"
     )
 }
 

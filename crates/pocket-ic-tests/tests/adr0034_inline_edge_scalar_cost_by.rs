@@ -35,7 +35,9 @@ fn setup() -> FederationEnv {
     let env = install_single_shard_federation();
     gql_execute_idempotent_as_admin(
         &env,
-        &format!("CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }}"),
+        &format!(
+            "CREATE GRAPH TYPE IF NOT EXISTS road_type {{ NODE City AS city, DIRECTED EDGE Road LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }} CONNECTING (city -> city) }} NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type"
+        ),
         "adr0034_inline_scalar_cost_by_schema_edge",
     );
     env

@@ -17,7 +17,9 @@ const EDGE_LABEL: &str = "ROAD";
 const PROPERTY: &str = "distance";
 
 fn inline_ddl() -> String {
-    format!("CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }}")
+    format!(
+        "CREATE GRAPH TYPE IF NOT EXISTS road_type {{ NODE City AS city, DIRECTED EDGE Road LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }} CONNECTING (city -> city) }} NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type"
+    )
 }
 
 fn setup() -> FederationEnv {

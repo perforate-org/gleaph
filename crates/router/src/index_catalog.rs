@@ -423,10 +423,12 @@ mod tests {
                 graph_id,
                 "AFFINITY",
                 "stats",
-                vec![crate::edge_inline_property_ddl::InlineEdgeStructField {
-                    name: "score".into(),
-                    scalar_type: InlineScalarType::F32,
-                }],
+                vec![
+                    crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
+                        name: "score".into(),
+                        scalar_type: InlineScalarType::F32,
+                    },
+                ],
             )
             .expect("create inline struct schema");
 
@@ -480,10 +482,12 @@ mod tests {
                 graph_id,
                 "AFFINITY",
                 "stats",
-                vec![crate::edge_inline_property_ddl::InlineEdgeStructField {
-                    name: "score".into(),
-                    scalar_type: InlineScalarType::F32,
-                }],
+                vec![
+                    crate::facade::stable::edge_inline_property_profiles::InlineStructFieldSpec {
+                        name: "score".into(),
+                        scalar_type: InlineScalarType::F32,
+                    },
+                ],
             )
             .expect_err("inline struct on indexed property should fail");
         assert!(

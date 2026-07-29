@@ -396,7 +396,7 @@ impl Parser<'_> {
             None
         };
         let properties = if self.at_token(&Token::LBrace) {
-            self.parse_graph_type_property_defs()?
+            self.parse_graph_type_property_defs(false)?
         } else {
             Vec::new()
         };
@@ -432,6 +432,11 @@ impl Parser<'_> {
         } else {
             None
         };
+        let properties = if self.at_token(&Token::LBrace) {
+            self.parse_graph_type_property_defs(true)?
+        } else {
+            Vec::new()
+        };
         match direction {
             EdgeDirection::PointingRight => self.expect_token(&Token::BracketRightArrow)?,
             EdgeDirection::Undirected => self.expect_token(&Token::RightBracketTilde)?,
@@ -459,7 +464,7 @@ impl Parser<'_> {
             source,
             destination,
             label_set,
-            properties: Vec::new(),
+            properties,
         })
     }
 
@@ -480,7 +485,7 @@ impl Parser<'_> {
             None
         };
         let properties = if self.at_token(&Token::LBrace) {
-            self.parse_graph_type_property_defs()?
+            self.parse_graph_type_property_defs(false)?
         } else {
             Vec::new()
         };
@@ -523,7 +528,7 @@ impl Parser<'_> {
             None
         };
         let properties = if self.at_token(&Token::LBrace) {
-            self.parse_graph_type_property_defs()?
+            self.parse_graph_type_property_defs(true)?
         } else {
             Vec::new()
         };
@@ -594,14 +599,17 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_graph_type_property_defs(&mut self) -> Result<Vec<PropertyDef>, GqlError> {
+    fn parse_graph_type_property_defs(
+        &mut self,
+        allow_inline: bool,
+    ) -> Result<Vec<PropertyDef>, GqlError> {
         self.expect_token(&Token::LBrace)?;
         let mut properties = Vec::new();
         if self.eat_token(&Token::RBrace) {
             return Ok(properties);
         }
         loop {
-            properties.push(self.parse_graph_type_property_def()?);
+            properties.push(self.parse_graph_type_property_def(allow_inline)?);
             if self.eat_token(&Token::Comma) {
                 continue;
             }
@@ -611,7 +619,10 @@ impl Parser<'_> {
         Ok(properties)
     }
 
-    fn parse_graph_type_property_def(&mut self) -> Result<PropertyDef, GqlError> {
+    fn parse_graph_type_property_def(
+        &mut self,
+        allow_inline: bool,
+    ) -> Result<PropertyDef, GqlError> {
         let start = self.save();
         let name = self.expect_ident()?;
         let value_type = self.parse_value_type()?;
@@ -619,11 +630,20 @@ impl Parser<'_> {
             ValueType::NotNull(inner) => (*inner, true),
             other => (other, false),
         };
+        #[cfg(feature = "gleaph")]
+        let inline = self.eat_keyword("INLINE");
+        #[cfg(not(feature = "gleaph"))]
+        let inline = false;
+        if inline && !allow_inline {
+            return Err(self.expected("edge property INLINE modifier"));
+        }
         Ok(PropertyDef {
             span: self.span_since(start),
             name,
             value_type,
             not_null,
+            #[cfg(feature = "gleaph")]
+            inline,
             default_value: None,
         })
     }
