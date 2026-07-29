@@ -2041,6 +2041,11 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     canonical property bytes, bounded duplicate validation, and conversion into the
     Graph envelope. Read-only vertex-label/property catalog resolution is also present;
     client-key reservation and saga persistence are still the next slice.
+23. **Partially implemented (2026-07-29 03:13:16 UTC +0000):** the public vertex
+    request contract now has roundtrip and retry-fingerprint coverage, including
+    explicit target-shard identity. The Router saga payload and lifecycle transitions
+    remain intentionally unimplemented until their stable variant and recovery rules
+    are added together.
 
 ## Test contract
 

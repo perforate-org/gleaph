@@ -1336,6 +1336,32 @@ mod tests {
     }
 
     #[test]
+    fn ordered_vertex_public_request_round_trips_and_fingerprints_without_client_key() {
+        let request = OrderedVertexBatchPublicRequest::V1(OrderedVertexBatchPublicRequestV1 {
+            client_mutation_key: "vertex-1".into(),
+            logical_graph_name: "tenant.main".into(),
+            target_shard_id: ShardId::new(3),
+            items: vec![OrderedVertexInsertPublicItemV1 {
+                vertex_labels: vec!["Person".into(), "User".into()],
+                initial_properties: vec![OrderedEdgePropertyPublicV1 {
+                    property_name: "name".into(),
+                    value: vec![1, 2],
+                }],
+            }],
+        });
+        request.validate().expect("valid ordered vertex request");
+        let fingerprint = request.public_fingerprint().expect("vertex fingerprint");
+        let bytes = Encode!(&request).expect("encode ordered vertex request");
+        let decoded: OrderedVertexBatchPublicRequest =
+            Decode!(&bytes, OrderedVertexBatchPublicRequest).expect("decode vertex request");
+        assert_eq!(decoded, request);
+        let mut retry = request.clone();
+        let OrderedVertexBatchPublicRequest::V1(ref mut retry_request) = retry;
+        retry_request.client_mutation_key = "different-retry-key".into();
+        assert_eq!(retry.public_fingerprint().unwrap(), fingerprint);
+    }
+
+    #[test]
     fn ordered_public_fingerprint_canonicalizes_property_order_only() {
         let mut request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
             client_mutation_key: "ordered-property-order".into(),
