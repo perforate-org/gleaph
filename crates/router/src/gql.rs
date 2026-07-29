@@ -214,6 +214,7 @@ use crate::graph_client::{
     execute_plan_batch_typed_v1_on_graph, execute_plan_on_graph, get_mutation_journal_entries,
     get_mutation_journal_entry, index_pending_min_mutation_id, list_pending_label_stats_deltas,
     read_unique_effect_proof, read_unique_release_effects, retire_ordered_mutation_on_graph,
+    retire_ordered_vertex_mutation_on_graph,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -1641,7 +1642,68 @@ pub(crate) async fn execute_ordered_vertex_batch_public(
         &client_key,
         mutation_id,
         graph_request_fingerprint,
-        receipt,
+        receipt.clone(),
+    )?;
+    store.record_ordered_vertex_batch_projection_pending(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+    )?;
+    advance_label_stats_projection_through(
+        &store,
+        graph_id,
+        target_shard.graph_canister,
+        target_shard_id,
+        receipt.emitted_delta_last_seq,
+    )
+    .await?;
+    store.record_ordered_vertex_batch_projection_advanced(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+        MutationTokenShard {
+            shard_id: target_shard_id,
+            label_stats_seq: receipt.emitted_delta_last_seq,
+        },
+    )?;
+    store.record_ordered_vertex_batch_retirement_pending(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+    )?;
+    let ack = retire_ordered_vertex_mutation_on_graph(
+        target_shard.graph_canister,
+        gleaph_graph_kernel::plan_exec::OrderedVertexMutationRetirementArgs::V1(
+            gleaph_graph_kernel::plan_exec::OrderedVertexMutationRetirementArgsV1 {
+                mutation_id,
+                graph_request_fingerprint,
+            },
+        ),
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    let gleaph_graph_kernel::plan_exec::OrderedVertexMutationRetirementAck::V1(ack) = ack;
+    if ack.mutation_id != mutation_id
+        || ack.graph_request_fingerprint != graph_request_fingerprint
+        || ack.receipt != receipt
+    {
+        return Err(RouterError::InvalidArgument(
+            "ordered vertex retirement acknowledgement does not match receipt".into(),
+        ));
+    }
+    store.record_ordered_vertex_batch_retired(
+        caller,
+        graph_id,
+        &client_key,
+        mutation_id,
+        graph_request_fingerprint,
+        ack.receipt,
     )?;
     let record = store
         .router_mutation_record(caller, graph_id, &client_key)

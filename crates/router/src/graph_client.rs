@@ -9,7 +9,8 @@ use gleaph_graph_kernel::plan_exec::{
     GetMutationJournalEntriesArgs, GetMutationJournalEntriesResult, GraphMutationJournalEntryWire,
     GraphOrderedEdgeBatchResult, GraphOrderedVertexBatchResult, LabelStatsDeltaEventWire,
     MutationId, OrderedEdgeBatchGraphArgs, OrderedMutationRetirementAck,
-    OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, ShardEventSeq,
+    OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, OrderedVertexMutationRetirementAck,
+    OrderedVertexMutationRetirementArgs, ShardEventSeq,
 };
 
 #[cfg(target_family = "wasm")]
@@ -178,6 +179,18 @@ pub async fn retire_ordered_mutation_on_graph(
         call_graph_result(graph, "retire_ordered_mutation", args).await?;
     ack.validate()
         .map_err(|e| format!("ordered mutation retirement acknowledgement validation: {e}"))?;
+    Ok(ack)
+}
+
+/// Router → Graph: fingerprint-bound ordered vertex mutation retirement (ADR 0049).
+pub async fn retire_ordered_vertex_mutation_on_graph(
+    graph: Principal,
+    args: OrderedVertexMutationRetirementArgs,
+) -> Result<OrderedVertexMutationRetirementAck, String> {
+    let ack: OrderedVertexMutationRetirementAck =
+        call_graph_result(graph, "retire_ordered_vertex_mutation", args).await?;
+    ack.validate()
+        .map_err(|e| format!("ordered vertex retirement acknowledgement validation: {e}"))?;
     Ok(ack)
 }
 

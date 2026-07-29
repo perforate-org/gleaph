@@ -10,7 +10,7 @@ use gleaph_graph_kernel::plan_exec::{
     GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult,
     GraphOrderedVertexBatchResultV1, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
     MutationJournalState, OrderedMutationRetirementAck, OrderedMutationRetirementAckV1,
-    ShardEventSeq,
+    OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementAckV1, ShardEventSeq,
 };
 use std::cell::RefCell;
 
@@ -450,6 +450,56 @@ impl GraphStore {
         graph_request_fingerprint: [u8; 32],
     ) -> Result<Option<OrderedMutationRetirementAck>, &'static str> {
         self.retire_ordered_mutation_at(ic_time_ns(), mutation_id, graph_request_fingerprint)
+    }
+
+    pub(crate) fn retire_ordered_vertex_mutation_at(
+        &self,
+        now_ns: u64,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<Option<OrderedVertexMutationRetirementAck>, &'static str> {
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+            let Some(mut entry) = journal.get(mutation_id) else {
+                return Ok(None);
+            };
+            let GraphMutationRequestIdentityV1::OrderedVertexBatch {
+                graph_request_fingerprint: stored_fingerprint,
+                ..
+            } = entry.request_identity()
+            else {
+                return Err("vertex retirement requires an ordered vertex journal entry");
+            };
+            if *stored_fingerprint != graph_request_fingerprint {
+                return Err("vertex retirement fingerprint conflicts with journal identity");
+            }
+            let receipt = Self::ordered_vertex_receipt(&entry)?;
+            match entry.retirement() {
+                GraphMutationRetirementV1::Active => {
+                    entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: now_ns });
+                    journal.insert(entry);
+                }
+                GraphMutationRetirementV1::Retired { .. } => {}
+                GraphMutationRetirementV1::NotApplicable => {
+                    return Err("ordered vertex journal entry has no retirement state");
+                }
+            }
+            let ack =
+                OrderedVertexMutationRetirementAck::V1(OrderedVertexMutationRetirementAckV1 {
+                    mutation_id,
+                    graph_request_fingerprint,
+                    receipt,
+                });
+            ack.validate()?;
+            Ok(Some(ack))
+        })
+    }
+
+    pub(crate) fn retire_ordered_vertex_mutation(
+        &self,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<Option<OrderedVertexMutationRetirementAck>, &'static str> {
+        self.retire_ordered_vertex_mutation_at(ic_time_ns(), mutation_id, graph_request_fingerprint)
     }
 
     /// Record a bulk mutation journal entry with an operation cursor and progress metadata

@@ -2060,6 +2060,13 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     and records the fingerprint-bound canonical vertex receipt. Exact-key replay
     returns the durable vertex response. Projection advancement, ordered
     retirement, and recovery after a lost callback remain planned.
+26. **Partially implemented (2026-07-29 03:36:04 UTC +0000):** vertex-only
+    projection-pending, projection-advanced, retirement-pending, and retired
+    transitions are now persisted with vertex-specific receipt types. Graph
+    exposes a vertex-specific fingerprint-bound retirement capability, and the
+    public vertex path advances the label-stats watermark and retires the Graph
+    journal before returning the compacted aggregate receipt. Autonomous recovery
+    and lost-callback fault coverage remain the next slice.
 
 ## Test contract
 

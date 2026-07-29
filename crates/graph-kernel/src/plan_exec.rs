@@ -1010,6 +1010,27 @@ impl OrderedMutationRetirementAck {
     }
 }
 
+/// Graph-owned acknowledgement for vertex-only ordered mutation retirement.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum OrderedVertexMutationRetirementAck {
+    V1(OrderedVertexMutationRetirementAckV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct OrderedVertexMutationRetirementAckV1 {
+    pub mutation_id: MutationId,
+    pub graph_request_fingerprint: [u8; 32],
+    pub receipt: GraphOrderedVertexBatchReceiptV1,
+}
+
+impl OrderedVertexMutationRetirementAck {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::V1(ack) => ack.receipt.validate(),
+        }
+    }
+}
+
 /// Arguments for the internal Router-to-Graph ordered retirement call.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum OrderedMutationRetirementArgs {
@@ -1018,6 +1039,18 @@ pub enum OrderedMutationRetirementArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct OrderedMutationRetirementArgsV1 {
+    pub mutation_id: MutationId,
+    pub graph_request_fingerprint: [u8; 32],
+}
+
+/// Arguments for vertex-only ordered mutation retirement.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum OrderedVertexMutationRetirementArgs {
+    V1(OrderedVertexMutationRetirementArgsV1),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct OrderedVertexMutationRetirementArgsV1 {
     pub mutation_id: MutationId,
     pub graph_request_fingerprint: [u8; 32],
 }

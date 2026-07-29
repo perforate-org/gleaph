@@ -859,6 +859,254 @@ impl RouterStore {
         })
     }
 
+    pub fn record_ordered_vertex_batch_projection_pending(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered vertex projection pending".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered vertex projection pending requires an OrderedVertexBatch payload"
+                            .into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered vertex projection pending"
+                        .into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt) => {
+                    replay.target.progress =
+                        OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt.clone());
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedVertexBatchTargetProgressV1::ProjectionPending(_) => Ok(()),
+                _ => Err(RouterError::Conflict(
+                    "ordered vertex projection pending conflicts with persisted progress".into(),
+                )),
+            }
+        })
+    }
+
+    pub fn record_ordered_vertex_batch_projection_advanced(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+        watermark: gleaph_graph_kernel::plan_exec::MutationTokenShard,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered vertex projection advancement".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered vertex projection advancement requires an OrderedVertexBatch payload".into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered vertex projection advancement".into(),
+                ));
+            }
+            if watermark.shard_id != replay.target.request.target_shard_id {
+                return Err(RouterError::Conflict(
+                    "ordered vertex projection watermark targets a different shard".into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt) => {
+                    replay.target.progress =
+                        OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt.clone());
+                    replay.target.projection_watermark = Some(watermark);
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(_)
+                    if replay.target.projection_watermark.as_ref() == Some(&watermark) =>
+                {
+                    Ok(())
+                }
+                _ => Err(RouterError::Conflict(
+                    "ordered vertex projection advancement conflicts with persisted progress".into(),
+                )),
+            }
+        })
+    }
+
+    pub fn record_ordered_vertex_batch_retirement_pending(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::{
+            OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
+        };
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered vertex retirement pending".into(),
+                ));
+            }
+            let replay = match &mut v1.payload {
+                RouterMutationPayloadV1::OrderedVertexBatch(replay) => replay,
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered vertex retirement pending requires an OrderedVertexBatch payload"
+                            .into(),
+                    ));
+                }
+            };
+            if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                return Err(RouterError::Conflict(
+                    "Graph request fingerprint mismatch at ordered vertex retirement pending"
+                        .into(),
+                ));
+            }
+            if replay.target.projection_watermark.is_none() {
+                return Err(RouterError::Conflict(
+                    "ordered vertex retirement requires a persisted projection watermark".into(),
+                ));
+            }
+            match &replay.target.progress {
+                OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt) => {
+                    replay.target.progress =
+                        OrderedVertexBatchTargetProgressV1::RetirementPending(receipt.clone());
+                    m.insert(key, record);
+                    Ok(())
+                }
+                OrderedVertexBatchTargetProgressV1::RetirementPending(_) => Ok(()),
+                _ => Err(RouterError::Conflict(
+                    "ordered vertex retirement pending conflicts with persisted progress".into(),
+                )),
+            }
+        })
+    }
+
+    pub fn record_ordered_vertex_batch_retired(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        graph_request_fingerprint: [u8; 32],
+        receipt: gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1,
+    ) -> Result<(), RouterError> {
+        use crate::facade::stable::label_stats::RouterMutationPayloadV1;
+        receipt
+            .validate()
+            .map_err(|error| RouterError::InvalidArgument(error.into()))?;
+        let key = client_mutation_key(caller, graph_id, client_key);
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let mut record = m
+                .get(&key)
+                .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
+            let v1 = record.as_v1_mut();
+            if v1.mutation_id != mutation_id {
+                return Err(RouterError::Conflict(
+                    "mutation_id mismatch at ordered vertex retirement completion".into(),
+                ));
+            }
+            let watermark = match &v1.payload {
+                RouterMutationPayloadV1::OrderedVertexBatch(replay) => {
+                    if replay.target.graph_request_fingerprint != graph_request_fingerprint {
+                        return Err(RouterError::Conflict(
+                            "Graph request fingerprint mismatch at ordered vertex retirement completion".into(),
+                        ));
+                    }
+                    if !matches!(
+                        &replay.target.progress,
+                        crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::RetirementPending(
+                            existing_receipt,
+                        ) if existing_receipt == &receipt
+                    ) {
+                        return Err(RouterError::Conflict(
+                            "ordered vertex retirement completion requires RetirementPending progress".into(),
+                        ));
+                    }
+                    replay.target.projection_watermark.clone().ok_or_else(|| {
+                        RouterError::Conflict(
+                            "ordered vertex retirement completion requires a projection watermark".into(),
+                        )
+                    })?
+                }
+                RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+                    receipt: existing_receipt,
+                    ..
+                } if existing_receipt == &receipt => return Ok(()),
+                _ => {
+                    return Err(RouterError::Conflict(
+                        "ordered vertex retirement completion requires an ordered replay payload".into(),
+                    ));
+                }
+            };
+            v1.payload = RouterMutationPayloadV1::CompletedOrderedVertexBatch {
+                receipt,
+                projection_watermark: watermark,
+            };
+            v1.completed_row_count = Some(
+                match &v1.payload {
+                    RouterMutationPayloadV1::CompletedOrderedVertexBatch { receipt, .. } => {
+                        receipt.logical_vertex_count
+                    }
+                    _ => unreachable!(),
+                },
+            );
+            v1.resolved_labels = None;
+            v1.resolved_properties = None;
+            v1.routing_in_progress = false;
+            v1.routing_lease_ns = None;
+            m.insert(key, record);
+            Ok(())
+        })
+    }
+
     /// Persist the Graph-owned canonical receipt for an ordered edge batch.
     ///
     /// The transition is idempotent for the exact same receipt and rejects every other progress
