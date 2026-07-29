@@ -2087,6 +2087,13 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     by UTF-8 bytes. SDK conformance now covers both edge and vertex builders,
     including invalid target-shard and empty-label cases. Full SDK package check
     remains blocked by pre-existing formatting drift in unrelated files.
+30. **Partially implemented (2026-07-29 03:54:20 UTC +0000):** the Router now
+    defines the narrow mixed vertex/edge public operation contract. It carries an
+    explicit target shard, distinguishes existing encoded endpoints from
+    request-local new-vertex ordinals, rejects forward/out-of-range ordinals and
+    invalid sidecar/inline inputs, and has Candid roundtrip coverage. No public
+    dispatch endpoint is exposed yet; the next slice must add the Graph-owned
+    two-phase envelope and durable mixed receipt before admission is published.
 
 ## Test contract
 

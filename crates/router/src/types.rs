@@ -534,6 +534,156 @@ impl OrderedVertexBatchPublicRequest {
     }
 }
 
+/// Versioned public request for the narrow mixed vertex/edge insertion follow-up (ADR 0049).
+/// The execution endpoint is intentionally not published until the Graph two-phase envelope is
+/// available; this type fixes validation and request-local endpoint semantics first.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum OrderedMixedBatchPublicRequest {
+    V1(OrderedMixedBatchPublicRequestV1),
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OrderedMixedBatchPublicRequestV1 {
+    pub client_mutation_key: String,
+    pub logical_graph_name: String,
+    pub target_shard_id: ShardId,
+    pub operations: Vec<OrderedMixedBatchOperationV1>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum OrderedMixedBatchOperationV1 {
+    Vertex(OrderedVertexInsertPublicItemV1),
+    Edge(OrderedMixedEdgeInsertPublicItemV1),
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OrderedMixedEdgeInsertPublicItemV1 {
+    pub source: OrderedMixedEndpointPublicV1,
+    pub target: OrderedMixedEndpointPublicV1,
+    pub directed: bool,
+    pub edge_label_name: Option<String>,
+    pub inline_property: Option<Vec<u8>>,
+    pub initial_edge_properties: Vec<OrderedEdgePropertyPublicV1>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum OrderedMixedEndpointPublicV1 {
+    Existing(Vec<u8>),
+    NewVertexOrdinal(u32),
+}
+
+impl OrderedMixedBatchPublicRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        let Self::V1(request) = self;
+        if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
+            return Err("ordered mixed batch client mutation key must be 1..=256 bytes".into());
+        }
+        if request.logical_graph_name.is_empty() {
+            return Err("ordered mixed batch logical graph name must not be empty".into());
+        }
+        if request.operations.is_empty() || request.operations.len() > 1_024 {
+            return Err("ordered mixed batch operation count must be 1..=1024".into());
+        }
+        let vertex_count = request
+            .operations
+            .iter()
+            .filter(|operation| matches!(operation, OrderedMixedBatchOperationV1::Vertex(_)))
+            .count() as u32;
+        for (ordinal, operation) in request.operations.iter().enumerate() {
+            match operation {
+                OrderedMixedBatchOperationV1::Vertex(item) => {
+                    for label in &item.vertex_labels {
+                        if label.is_empty() {
+                            return Err(format!(
+                                "mixed operation {ordinal} contains an empty vertex label"
+                            ));
+                        }
+                    }
+                    validate_public_properties(ordinal, &item.initial_properties)?;
+                }
+                OrderedMixedBatchOperationV1::Edge(item) => {
+                    validate_mixed_endpoint(ordinal, "source", &item.source, vertex_count)?;
+                    validate_mixed_endpoint(ordinal, "target", &item.target, vertex_count)?;
+                    if let Some(label) = &item.edge_label_name
+                        && label.is_empty()
+                    {
+                        return Err(format!(
+                            "mixed operation {ordinal} contains an empty edge label"
+                        ));
+                    }
+                    if let Some(inline) = &item.inline_property
+                        && inline.len() > gleaph_graph_kernel::entry::MAX_EDGE_INLINE_PROPERTY_BYTES
+                    {
+                        return Err(format!(
+                            "mixed operation {ordinal} inline property exceeds the byte bound"
+                        ));
+                    }
+                    validate_public_properties(ordinal, &item.initial_edge_properties)?;
+                }
+            }
+        }
+        let encoded =
+            Encode!(self).map_err(|error| format!("ordered mixed batch encode: {error}"))?;
+        if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("ordered mixed batch exceeds the safe payload bound".into());
+        }
+        Ok(())
+    }
+}
+
+fn validate_mixed_endpoint(
+    ordinal: usize,
+    name: &str,
+    endpoint: &OrderedMixedEndpointPublicV1,
+    vertex_count: u32,
+) -> Result<(), String> {
+    match endpoint {
+        OrderedMixedEndpointPublicV1::Existing(bytes)
+            if bytes.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES =>
+        {
+            Err(format!(
+                "mixed operation {ordinal} {name} must be exactly {} bytes",
+                gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+            ))
+        }
+        OrderedMixedEndpointPublicV1::NewVertexOrdinal(vertex_ordinal)
+            if *vertex_ordinal >= vertex_count =>
+        {
+            Err(format!(
+                "mixed operation {ordinal} {name} references unknown vertex ordinal {vertex_ordinal}"
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_public_properties(
+    ordinal: usize,
+    properties: &[OrderedEdgePropertyPublicV1],
+) -> Result<(), String> {
+    let mut names = BTreeSet::new();
+    for property in properties {
+        if property.property_name.is_empty() {
+            return Err(format!(
+                "mixed operation {ordinal} contains an empty property name"
+            ));
+        }
+        if !names.insert(&property.property_name) {
+            return Err(format!(
+                "mixed operation {ordinal} repeats property name {}",
+                property.property_name
+            ));
+        }
+        if property.value.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        {
+            return Err(format!(
+                "mixed operation {ordinal} property value exceeds the payload bound"
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl MutationStatus {
     pub fn from_record(record: &RouterMutationRecord) -> Self {
         let phase = record.lifecycle_phase();
@@ -1392,6 +1542,54 @@ mod tests {
         let OrderedVertexBatchPublicRequest::V1(ref mut retry_request) = retry;
         retry_request.client_mutation_key = "different-retry-key".into();
         assert_eq!(retry.public_fingerprint().unwrap(), fingerprint);
+    }
+
+    #[test]
+    fn ordered_mixed_public_request_round_trips_and_validates_local_vertex_ordinals() {
+        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+            client_mutation_key: "mixed-1".into(),
+            logical_graph_name: "tenant.main".into(),
+            target_shard_id: ShardId::new(3),
+            operations: vec![
+                OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+                    vertex_labels: vec!["Person".into()],
+                    initial_properties: Vec::new(),
+                }),
+                OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
+                    source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
+                    target: OrderedMixedEndpointPublicV1::Existing(vec![2; 8]),
+                    directed: true,
+                    edge_label_name: None,
+                    inline_property: None,
+                    initial_edge_properties: Vec::new(),
+                }),
+            ],
+        });
+        request.validate().expect("valid mixed request");
+        let bytes = Encode!(&request).expect("encode mixed request");
+        let decoded: OrderedMixedBatchPublicRequest =
+            Decode!(&bytes, OrderedMixedBatchPublicRequest).expect("decode mixed request");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn ordered_mixed_public_request_rejects_forward_vertex_ordinal() {
+        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+            client_mutation_key: "mixed-2".into(),
+            logical_graph_name: "tenant.main".into(),
+            target_shard_id: ShardId::new(3),
+            operations: vec![OrderedMixedBatchOperationV1::Edge(
+                OrderedMixedEdgeInsertPublicItemV1 {
+                    source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
+                    target: OrderedMixedEndpointPublicV1::Existing(vec![2; 8]),
+                    directed: true,
+                    edge_label_name: None,
+                    inline_property: None,
+                    initial_edge_properties: Vec::new(),
+                },
+            )],
+        });
+        assert!(request.validate().is_err());
     }
 
     #[test]
