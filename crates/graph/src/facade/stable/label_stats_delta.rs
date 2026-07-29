@@ -1,5 +1,6 @@
 //! Stable label stats delta log and graph mutation journal (ADR 0015).
 
+use gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use gleaph_graph_kernel::entry::{EdgeLabelId, VertexLabelId};
 use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
@@ -204,12 +205,6 @@ impl GraphMutationJournalEntry {
 
 const JOURNAL_LAYOUT_VERSION: u8 = 1;
 const LABEL_DELTA_LAYOUT_VERSION: u8 = 1;
-
-// Sensible production bounds. They are fail-closed: encoding panics if exceeded.
-const MAX_HOT_FORWARD_VERTICES: u32 = 4096;
-const MAX_BULK_OPERATION_COUNT: u32 = 4096;
-const MAX_BULK_ROW_COUNTS: u32 = 4096;
-const MAX_LABEL_DELTAS_PER_KIND: u32 = 256;
 
 // Primary record sizes.
 // Journal primary is fixed regardless of which Option fields are set: a validity
@@ -483,31 +478,29 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
     let appendix_start = buf.len();
 
     if !v1.hot_forward_vertices.is_empty() {
-        let count = v1.hot_forward_vertices.len() as u32;
         assert!(
-            count <= MAX_HOT_FORWARD_VERTICES,
-            "hot_forward_vertices {} exceeds bound {}",
-            count,
-            MAX_HOT_FORWARD_VERTICES
+            v1.hot_forward_vertices.len() <= u32::MAX as usize,
+            "hot_forward_vertices count exceeds u32"
         );
+        let count = v1.hot_forward_vertices.len() as u32;
         encode_u32_le(&mut buf, count);
         for &vid in &v1.hot_forward_vertices {
             encode_u32_le(&mut buf, vid);
         }
+        assert_payload_limit(&buf, "graph mutation journal entry");
     }
 
     if let Some(GraphBulkMutationProgress::V1(progress)) = &v1.bulk_progress {
         assert!(
-            progress.operation_count <= MAX_BULK_OPERATION_COUNT,
-            "bulk operation_count {} exceeds bound {}",
-            progress.operation_count,
-            MAX_BULK_OPERATION_COUNT
+            progress.operation_row_counts.len() <= u32::MAX as usize,
+            "bulk operation row count exceeds u32"
         );
         let row_count_len = progress.operation_row_counts.len() as u32;
         assert!(
-            row_count_len <= progress.operation_count && row_count_len <= MAX_BULK_ROW_COUNTS,
-            "bulk operation_row_counts length {} exceeds bounds",
-            row_count_len
+            row_count_len <= progress.operation_count,
+            "bulk operation_row_counts length {} exceeds operation count {}",
+            row_count_len,
+            progress.operation_count
         );
         encode_u32_le(&mut buf, progress.operation_count);
         encode_u32_le(&mut buf, progress.completed_count);
@@ -515,19 +508,35 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
         for &rc in &progress.operation_row_counts {
             encode_u64_le(&mut buf, rc);
         }
+        assert_payload_limit(&buf, "graph mutation journal entry");
     }
 
     if flags & APPENDIX_REQUEST_IDENTITY != 0 {
         encode_request_identity(&mut buf, &v1.request_identity);
+        assert_payload_limit(&buf, "graph mutation journal entry");
     }
     if flags & APPENDIX_RETIREMENT != 0 {
         encode_retirement(&mut buf, &v1.retirement);
+        assert_payload_limit(&buf, "graph mutation journal entry");
     }
 
     let appendix_len = (buf.len() - appendix_start) as u32;
     buf[appendix_len_offset..appendix_len_offset + 4].copy_from_slice(&appendix_len.to_le_bytes());
 
     buf
+}
+
+#[inline(always)]
+fn assert_payload_limit(bytes: &[u8], kind: &str) {
+    if bytes.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        payload_limit_violation(kind);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn payload_limit_violation(kind: &str) -> ! {
+    panic!("{kind} exceeds the safe payload limit");
 }
 
 fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
@@ -577,6 +586,11 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
     let flags = decode_u8(bytes, &mut offset);
     let appendix_len = decode_u32_le(bytes, &mut offset) as usize;
 
+    assert!(
+        bytes.len() <= MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
+        "journal entry exceeds the safe payload limit"
+    );
+
     let expected_len = JOURNAL_PRIMARY_SIZE + appendix_len;
     assert_eq!(
         bytes.len(),
@@ -587,10 +601,6 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
     );
 
     let appendix_end = JOURNAL_PRIMARY_SIZE + appendix_len;
-    assert!(
-        appendix_len <= JOURNAL_MAX_APPENDIX as usize,
-        "journal appendix exceeds bound"
-    );
     let mut hot_forward_vertices = Vec::new();
     let mut bulk_progress = None;
     let mut request_identity = GraphMutationRequestIdentityV1::PlanExecution;
@@ -599,10 +609,6 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
     let mut appendix_offset = JOURNAL_PRIMARY_SIZE;
     if flags & APPENDIX_HOT_FORWARD != 0 {
         let count = decode_u32_le(bytes, &mut appendix_offset) as usize;
-        assert!(
-            count <= MAX_HOT_FORWARD_VERTICES as usize,
-            "hot_forward count exceeds bound"
-        );
         assert!(
             appendix_offset + count * 4 <= appendix_end,
             "hot_forward appendix overflow"
@@ -618,16 +624,12 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         let completed_count = decode_u32_le(bytes, &mut appendix_offset);
         let row_count_len = decode_u32_le(bytes, &mut appendix_offset);
         assert!(
-            operation_count <= MAX_BULK_OPERATION_COUNT,
-            "bulk operation_count exceeds bound"
-        );
-        assert!(
             completed_count <= operation_count,
             "bulk completed_count exceeds operation_count"
         );
         assert!(
-            row_count_len <= operation_count && row_count_len <= MAX_BULK_ROW_COUNTS,
-            "bulk row-count length exceeds bound"
+            row_count_len <= operation_count,
+            "bulk row-count length exceeds operation count"
         );
         assert!(
             appendix_offset + (row_count_len as usize) * 8 <= appendix_end,
@@ -687,18 +689,9 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
     entry
 }
 
-const JOURNAL_MAX_APPENDIX: u32 = {
-    let hot_forward = 4 + MAX_HOT_FORWARD_VERTICES * 4;
-    let bulk = 4 + 4 + 4 + MAX_BULK_ROW_COUNTS * 8;
-    // The mixed identity carries operation, vertex, and edge counts in addition to
-    // the common version/fingerprint/item-count fields.
-    let request_identity = 1 + 2 + 32 + 12;
-    let retirement = 1 + 8;
-    hot_forward + bulk + request_identity + retirement
-};
-
 impl Storable for GraphMutationJournalEntry {
-    // Deliberately Unbounded: the manual layout already enforces encode-time bounds.
+    // Deliberately Unbounded: the manual layout is length-delimited and the
+    // encoded payload limit is checked by the codec.
     // Bounded values make StableBTreeMap fresh-key insert regression because the
     // allocated node grows with max_size (see Plan 0120 measurements).
     const BOUND: Bound = Bound::Unbounded;
@@ -754,13 +747,11 @@ fn encode_label_stats_delta_event(event: &LabelStatsDeltaEventWire) -> Vec<u8> {
     let appendix_start = buf.len();
 
     let vertex = &event.label_stats_delta.vertex;
-    let vertex_count = vertex.len() as u32;
     assert!(
-        vertex_count <= MAX_LABEL_DELTAS_PER_KIND,
-        "vertex label deltas {} exceeds bound {}",
-        vertex_count,
-        MAX_LABEL_DELTAS_PER_KIND
+        vertex.len() <= u32::MAX as usize,
+        "vertex label delta count exceeds u32"
     );
+    let vertex_count = vertex.len() as u32;
     encode_u32_le(&mut buf, vertex_count);
     for &(label, delta) in vertex {
         encode_u16_le(&mut buf, label.raw());
@@ -768,13 +759,11 @@ fn encode_label_stats_delta_event(event: &LabelStatsDeltaEventWire) -> Vec<u8> {
     }
 
     let edge = &event.label_stats_delta.edge;
-    let edge_count = edge.len() as u32;
     assert!(
-        edge_count <= MAX_LABEL_DELTAS_PER_KIND,
-        "edge label deltas {} exceeds bound {}",
-        edge_count,
-        MAX_LABEL_DELTAS_PER_KIND
+        edge.len() <= u32::MAX as usize,
+        "edge label delta count exceeds u32"
     );
+    let edge_count = edge.len() as u32;
     encode_u32_le(&mut buf, edge_count);
     for &(label, delta) in edge {
         encode_u16_le(&mut buf, label.raw());
@@ -783,6 +772,11 @@ fn encode_label_stats_delta_event(event: &LabelStatsDeltaEventWire) -> Vec<u8> {
 
     let appendix_len = (buf.len() - appendix_start) as u32;
     buf[appendix_len_offset..appendix_len_offset + 4].copy_from_slice(&appendix_len.to_le_bytes());
+
+    assert!(
+        buf.len() <= MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
+        "label stats delta event exceeds the safe payload limit"
+    );
 
     buf
 }
@@ -806,6 +800,11 @@ fn decode_label_stats_delta_event(bytes: &[u8]) -> LabelStatsDeltaEventWire {
     let shard_event_seq = decode_u64_le(bytes, &mut offset);
     let appendix_len = decode_u32_le(bytes, &mut offset) as usize;
 
+    assert!(
+        bytes.len() <= MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
+        "label delta event exceeds the safe payload limit"
+    );
+
     let expected_len = LABEL_DELTA_PRIMARY_SIZE + appendix_len;
     assert_eq!(
         bytes.len(),
@@ -816,16 +815,8 @@ fn decode_label_stats_delta_event(bytes: &[u8]) -> LabelStatsDeltaEventWire {
     );
 
     let appendix_end = LABEL_DELTA_PRIMARY_SIZE + appendix_len;
-    assert!(
-        appendix_len <= LABEL_DELTA_MAX_APPENDIX as usize,
-        "label delta appendix exceeds bound"
-    );
 
     let vertex_count = decode_u32_le(bytes, &mut offset) as usize;
-    assert!(
-        vertex_count <= MAX_LABEL_DELTAS_PER_KIND as usize,
-        "vertex label delta count exceeds bound"
-    );
     assert!(
         offset + vertex_count * 10 <= appendix_end,
         "vertex label delta appendix overflow"
@@ -838,10 +829,6 @@ fn decode_label_stats_delta_event(bytes: &[u8]) -> LabelStatsDeltaEventWire {
     }
 
     let edge_count = decode_u32_le(bytes, &mut offset) as usize;
-    assert!(
-        edge_count <= MAX_LABEL_DELTAS_PER_KIND as usize,
-        "edge label delta count exceeds bound"
-    );
     assert!(
         offset + edge_count * 10 <= appendix_end,
         "edge label delta appendix overflow"
@@ -866,13 +853,9 @@ fn decode_label_stats_delta_event(bytes: &[u8]) -> LabelStatsDeltaEventWire {
     }
 }
 
-const LABEL_DELTA_MAX_APPENDIX: u32 = {
-    let kind = 4 + MAX_LABEL_DELTAS_PER_KIND * 10;
-    kind * 2
-};
-
 impl Storable for StoredLabelStatsDeltaEvent {
-    // Deliberately Unbounded: the manual layout already enforces encode-time bounds.
+    // Deliberately Unbounded: the manual layout is length-delimited and the
+    // encoded payload limit is checked by the codec.
     // Bounded values make StableBTreeMap fresh-key insert regress for the same node-size reason.
     const BOUND: Bound = Bound::Unbounded;
 
@@ -1409,42 +1392,66 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "hot_forward_vertices")]
-    fn bound_enforced_hot_forward_overflow() {
+    fn hot_forward_vertices_are_sized_by_payload() {
         let mut entry = GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
-        entry.set_hot_forward_vertices(vec![0u32; (MAX_HOT_FORWARD_VERTICES + 1) as usize]);
-        let _ = entry.into_bytes();
+        entry.set_hot_forward_vertices(vec![0u32; 4097]);
+        let bytes = entry.clone().into_bytes();
+        assert!(bytes.len() < MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES);
+        assert_eq!(
+            GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes)),
+            entry
+        );
     }
 
     #[test]
-    #[should_panic(expected = "vertex label deltas")]
-    fn bound_enforced_label_vertex_overflow() {
+    fn label_deltas_are_sized_by_payload() {
         let event = LabelStatsDeltaEventWire {
             mutation_id: 1,
             shard_event_seq: 1,
             label_stats_delta: LabelStatsDelta {
-                vertex: vec![
-                    (VertexLabelId::from_raw(1), 1);
-                    (MAX_LABEL_DELTAS_PER_KIND + 1) as usize
-                ],
+                vertex: vec![(VertexLabelId::from_raw(1), 1); 257],
                 edge: vec![],
             },
         };
-        let _ = StoredLabelStatsDeltaEvent::from(event).into_bytes();
+        let bytes = StoredLabelStatsDeltaEvent::from(event.clone()).into_bytes();
+        assert!(bytes.len() < MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES);
+        assert_eq!(
+            LabelStatsDeltaEventWire::from(StoredLabelStatsDeltaEvent::from_bytes(Cow::Owned(
+                bytes
+            ))),
+            event
+        );
     }
 
     #[test]
-    #[should_panic(expected = "hot_forward count exceeds bound")]
-    fn malformed_journal_decode_rejects_oversized_hot_forward_count() {
+    fn bulk_progress_is_sized_by_payload() {
+        let mut entry = GraphMutationJournalEntry::completed(2, 1, None, None, Vec::new(), 0);
+        entry.set_next_index(Some(1));
+        entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(
+            4097,
+            4096,
+            vec![1; 4097],
+        )));
+        let bytes = entry.clone().into_bytes();
+        assert!(bytes.len() < MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES);
+        assert_eq!(
+            GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes)),
+            entry
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "journal entry exceeds the safe payload limit")]
+    fn malformed_journal_decode_rejects_oversized_payload() {
         let mut bytes =
             GraphMutationJournalEntry::completed(1, 1, None, None, vec![7], 0).into_bytes();
-        bytes[52..56].copy_from_slice(&(MAX_HOT_FORWARD_VERTICES + 1).to_le_bytes());
+        bytes.resize(MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES + 1, 0);
         GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
     }
 
     #[test]
-    #[should_panic(expected = "vertex label delta count exceeds bound")]
-    fn malformed_label_delta_decode_rejects_oversized_count() {
+    #[should_panic(expected = "label delta event exceeds the safe payload limit")]
+    fn malformed_label_delta_decode_rejects_oversized_payload() {
         let event = LabelStatsDeltaEventWire {
             mutation_id: 1,
             shard_event_seq: 1,
@@ -1454,7 +1461,7 @@ mod tests {
             },
         };
         let mut bytes = StoredLabelStatsDeltaEvent::from(event).into_bytes();
-        bytes[21..25].copy_from_slice(&(MAX_LABEL_DELTAS_PER_KIND + 1).to_le_bytes());
+        bytes.resize(MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES + 1, 0);
         StoredLabelStatsDeltaEvent::from_bytes(Cow::Owned(bytes));
     }
 }

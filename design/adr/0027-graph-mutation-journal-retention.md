@@ -176,7 +176,7 @@ Non-invasive encode probes show that the journal entry encode cost
 - Overwriting an existing journal key is much more expensive (~257 K residual),
   but canonical writes use fresh `mutation_id`s.
 
-## Addendum: fixed-length manual layout (Plan 0120, 2026-07-23)
+## Addendum: fixed-length manual layout (Plan 0120, 2026-07-23; revised 2026-07-29)
 
 `GraphMutationJournalEntry` now uses a versioned, fixed-length primary record
 plus an optional appendix instead of Candid encoding:
@@ -187,11 +187,13 @@ plus an optional appendix instead of Candid encoding:
   length (4). The bitmap marks which optional slots are live.
 - Appendix: `hot_forward_vertices` (`count` + `count * u32`) and/or bulk progress
   (`operation_count`, `completed_count`, `row_count_len`, `row_count_len * u64`).
-- Encode-time bounds assertions fail closed for `hot_forward_vertices` and bulk
-  progress row counts.
+- The appendix remains length-delimited and accepts any `u32`-representable
+  hot-forward or bulk-progress count that fits the shared
+  `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES` limit; decode applies the
+  same byte boundary.
 - `Storable::BOUND` remains `Unbounded`. A `Bounded` experiment with a large
   `max_size` regressed `StableBTreeMap` fresh-key inserts, so bounds enforcement
-  stays at encode time.
+  logical payload enforcement stays at encode and decode time.
 
 Measured impact vs. the Plan 0119 Candid baseline:
 

@@ -439,7 +439,7 @@ Non-invasive encode probes show that the label-stats delta event encode cost
 - The fixed Candid overhead, not byte length or stable-page I/O, is the
   dominant cost.
 
-## Addendum: fixed-length manual layout (Plan 0120, 2026-07-23)
+## Addendum: fixed-length manual layout (Plan 0120, 2026-07-23; revised 2026-07-29)
 
 `StoredLabelStatsDeltaEvent` now uses a versioned, fixed-length primary record
 plus a variable-length appendix instead of Candid encoding:
@@ -447,11 +447,12 @@ plus a variable-length appendix instead of Candid encoding:
 - Primary: version (1), `mutation_id` (8), `shard_event_seq` (8), appendix length (4).
 - Appendix: vertex label deltas (`count` + `count * (u16 + i64)`) followed by edge
   label deltas in the same shape.
-- Encode-time bounds assertions fail closed if either kind exceeds
-  `MAX_LABEL_DELTAS_PER_KIND`.
+- The appendix remains length-delimited and accepts any `u32`-representable
+  count that fits the shared `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`
+  limit; decode applies the same byte boundary.
 - `Storable::BOUND` remains `Unbounded`. A `Bounded` experiment with a large
   `max_size` regressed `StableBTreeMap` fresh-key inserts, so bounds enforcement
-  stays at encode time.
+  logical payload enforcement stays at encode and decode time.
 
 Measured impact vs. the Plan 0119 Candid baseline:
 
