@@ -7,10 +7,12 @@ use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
     GraphBulkMutationProgress, GraphMutationJournalEntryWire, GraphMutationRequestIdentityV1,
     GraphMutationRetirementV1, GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult,
-    GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchReceiptV1, GraphOrderedVertexBatchResult,
-    GraphOrderedVertexBatchResultV1, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
-    MutationJournalState, OrderedMutationRetirementAck, OrderedMutationRetirementAckV1,
-    OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementAckV1, ShardEventSeq,
+    GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult,
+    GraphOrderedMixedBatchResultV1, GraphOrderedVertexBatchReceiptV1,
+    GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1, LabelStatsDelta,
+    LabelStatsDeltaEventWire, MutationId, MutationJournalState, OrderedMutationRetirementAck,
+    OrderedMutationRetirementAckV1, OrderedVertexMutationRetirementAck,
+    OrderedVertexMutationRetirementAckV1, ShardEventSeq,
 };
 use std::cell::RefCell;
 
@@ -186,6 +188,100 @@ impl GraphStore {
         let result = GraphOrderedVertexBatchResult::V1(result);
         result.validate()?;
         Ok(Some(result))
+    }
+
+    pub(crate) fn ordered_mixed_batch_replay_result(
+        &self,
+        mutation_id: MutationId,
+        expected_identity: &GraphMutationRequestIdentityV1,
+    ) -> Result<Option<GraphOrderedMixedBatchResult>, &'static str> {
+        let Some(entry) = self.mutation_journal_entry_for_replay(mutation_id, expected_identity)?
+        else {
+            return Ok(None);
+        };
+        let GraphMutationRequestIdentityV1::OrderedMixedBatch {
+            graph_request_fingerprint,
+            logical_operation_count,
+            logical_vertex_count,
+            logical_edge_count,
+            ..
+        } = expected_identity
+        else {
+            return Err("mixed replay requires OrderedMixedBatch identity");
+        };
+        let result = match entry.retirement() {
+            GraphMutationRetirementV1::Active => {
+                let receipt = GraphOrderedMixedBatchReceiptV1 {
+                    logical_operation_count: u64::from(*logical_operation_count),
+                    logical_vertex_count: u64::from(*logical_vertex_count),
+                    logical_edge_count: u64::from(*logical_edge_count),
+                    emitted_delta_first_seq: entry.emitted_delta_first_seq(),
+                    emitted_delta_last_seq: entry.emitted_delta_last_seq(),
+                    hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+                };
+                receipt.validate()?;
+                GraphOrderedMixedBatchResultV1::Completed(receipt)
+            }
+            GraphMutationRetirementV1::Retired { .. } => {
+                GraphOrderedMixedBatchResultV1::MutationRetired {
+                    mutation_id,
+                    graph_request_fingerprint: *graph_request_fingerprint,
+                }
+            }
+            GraphMutationRetirementV1::NotApplicable => {
+                return Err("ordered mixed replay entry has no retirement state");
+            }
+        };
+        let result = GraphOrderedMixedBatchResult::V1(result);
+        result.validate()?;
+        Ok(Some(result))
+    }
+
+    pub(crate) fn commit_record_completed_ordered_mixed_batch_journal(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<LocalVertexId>,
+    ) {
+        let GraphMutationRequestIdentityV1::OrderedMixedBatch {
+            logical_operation_count,
+            logical_vertex_count,
+            logical_edge_count,
+            ..
+        } = &request_identity
+        else {
+            panic!("mixed journal requires OrderedMixedBatch identity");
+        };
+        let receipt = GraphOrderedMixedBatchReceiptV1 {
+            logical_operation_count: u64::from(*logical_operation_count),
+            logical_vertex_count: u64::from(*logical_vertex_count),
+            logical_edge_count: u64::from(*logical_edge_count),
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices: hot_forward_vertices.clone(),
+        };
+        receipt
+            .validate()
+            .expect("invalid ordered mixed journal receipt");
+        assert_eq!(row_count, receipt.logical_operation_count);
+        let mut entry = GraphMutationJournalEntry::completed(
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+            ic_time_ns(),
+        );
+        entry.set_request_identity(request_identity);
+        entry.set_retirement(GraphMutationRetirementV1::Active);
+        entry
+            .wire()
+            .validate()
+            .expect("invalid ordered mixed journal entry");
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| m.insert(entry));
     }
 
     pub(crate) fn commit_record_completed_ordered_vertex_batch_journal_at(

@@ -10,7 +10,8 @@ use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use gleaph_graph_kernel::federation::{HOT_FORWARD_EDGE_INSERT_THRESHOLD, LocalVertexId};
 use gleaph_graph_kernel::plan_exec::{
     GraphMutationRequestIdentityV1, GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult,
-    GraphOrderedEdgeBatchResultV1, LabelStatsDelta, MutationId,
+    GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult,
+    GraphOrderedMixedBatchResultV1, LabelStatsDelta, MutationId,
 };
 use ic_stable_lara::VertexId;
 #[cfg(test)]
@@ -348,6 +349,138 @@ impl GraphStore {
             }
             Ok(BatchEdgeInsertResult::RecoverableGeometry { .. }) => Ok(self
                 .execute_ordered_edge_batch_scalar_fallback(mutation_id, request_identity, edges)),
+            Err(error) => Err(OrderedEdgeBatchExecutionError::Validation(error)),
+        }
+    }
+
+    /// Execute the edge phase of a mixed batch and publish one mixed aggregate receipt.
+    ///
+    /// Vertex allocation and all endpoint resolution happen at the caller boundary. This
+    /// method owns only the existing ordered edge placement, sidecars, label delta, and
+    /// mixed journal completion after the edge phase has started.
+    pub(crate) fn execute_ordered_edge_phase_for_mixed(
+        &self,
+        mutation_id: MutationId,
+        request_identity: GraphMutationRequestIdentityV1,
+        edges: &[BatchEdgeInput],
+        logical_vertex_count: u64,
+        logical_operation_count: u64,
+    ) -> Result<GraphOrderedMixedBatchResult, OrderedEdgeBatchExecutionError> {
+        let classification = self
+            .classify_batch_edge_insertion(edges)
+            .map_err(OrderedEdgeBatchExecutionError::Validation)?;
+        let result = if !edges.is_empty()
+            && classification.logical_ordinals_with_multi_runs.len() == edges.len()
+        {
+            match self.execute_mixed_clean_slab(edges, &classification.intents) {
+                Ok(()) => Ok(()),
+                Err(error) if error.is_recoverable_geometry() => {
+                    self.execute_ordered_scalar_edges(edges);
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            self.plan_batch_edge_insertion_with_classification(edges, &classification)
+                .map_err(OrderedEdgeBatchExecutionError::Validation)
+                .and_then(|summary| {
+                    let batch_ordinals = summary.logical_ordinals_requiring_batch();
+                    if batch_ordinals.is_empty() {
+                        self.execute_ordered_scalar_edges(edges);
+                        return Ok(());
+                    }
+                    if batch_ordinals.len() < edges.len() {
+                        return self.execute_mixed_partitioned(edges, batch_ordinals);
+                    }
+                    match self.execute_mixed_clean_slab(edges, &classification.intents) {
+                        Ok(()) => Ok(()),
+                        Err(error) if error.is_recoverable_geometry() => {
+                            self.execute_ordered_scalar_edges(edges);
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }
+                })
+        };
+        result?;
+
+        let label_stats_delta = ordered_edge_label_stats_delta(edges);
+        let delta_event = (!label_stats_delta.edge.is_empty()).then(|| {
+            self.commit_append_label_stats_delta(mutation_id, label_stats_delta)
+                .unwrap_or_else(|error| {
+                    panic!("mixed Graph label delta append after canonical write: {error}")
+                })
+        });
+        let (emitted_delta_first_seq, emitted_delta_last_seq) = delta_event
+            .as_ref()
+            .map(|event| (Some(event.shard_event_seq), Some(event.shard_event_seq)))
+            .unwrap_or((None, None));
+        let receipt = GraphOrderedMixedBatchReceiptV1 {
+            logical_operation_count,
+            logical_vertex_count,
+            logical_edge_count: edges.len() as u64,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices: ordered_hot_forward_vertices(edges),
+        };
+        receipt
+            .validate()
+            .expect("mixed Graph receipt must satisfy its bounded contract");
+        self.commit_record_completed_ordered_mixed_batch_journal(
+            mutation_id,
+            request_identity,
+            logical_operation_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            receipt.hot_forward_vertices.clone(),
+        );
+        Ok(GraphOrderedMixedBatchResult::V1(
+            GraphOrderedMixedBatchResultV1::Completed(receipt),
+        ))
+    }
+
+    fn execute_mixed_clean_slab(
+        &self,
+        edges: &[BatchEdgeInput],
+        intents: &[BatchEdgeIntent],
+    ) -> Result<(), OrderedEdgeBatchExecutionError> {
+        let result = self
+            .try_insert_ordered_edge_batch_clean_slab_with_intents(edges, intents)
+            .map_err(OrderedEdgeBatchExecutionError::Validation)?;
+        if let BatchEdgeInsertResult::RecoverableGeometry { error } = result {
+            return Err(OrderedEdgeBatchExecutionError::RecoverableGeometry(error));
+        }
+        self.commit_ordered_edge_batch_initial_sidecars(edges, &result);
+        Ok(())
+    }
+
+    fn execute_mixed_partitioned(
+        &self,
+        edges: &[BatchEdgeInput],
+        batch_ordinals: &BTreeSet<u32>,
+    ) -> Result<(), OrderedEdgeBatchExecutionError> {
+        let (batch_edges, scalar_edges): (Vec<_>, Vec<_>) = edges
+            .iter()
+            .enumerate()
+            .partition(|(ordinal, _)| batch_ordinals.contains(&(*ordinal as u32)));
+        let batch_edges: Vec<_> = batch_edges
+            .into_iter()
+            .map(|(_, edge)| edge.clone())
+            .collect();
+        let scalar_edges: Vec<_> = scalar_edges
+            .into_iter()
+            .map(|(_, edge)| edge.clone())
+            .collect();
+        match self.try_insert_ordered_edge_batch_clean_slab(&batch_edges) {
+            Ok(result @ BatchEdgeInsertResult::Committed { .. }) => {
+                self.commit_ordered_edge_batch_initial_sidecars(&batch_edges, &result);
+                self.execute_ordered_scalar_edges(&scalar_edges);
+                Ok(())
+            }
+            Ok(BatchEdgeInsertResult::RecoverableGeometry { .. }) => {
+                self.execute_ordered_scalar_edges(edges);
+                Ok(())
+            }
             Err(error) => Err(OrderedEdgeBatchExecutionError::Validation(error)),
         }
     }

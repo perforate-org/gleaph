@@ -40,9 +40,10 @@ full SDK conformance matrix, and fresh-release activation remain open. Core
 Rust/JS canonical-value vectors, integer/temporal boundary vectors, Principal
 extension vectors, and malformed binary rejection vectors are now active. The
 Router mixed public shape and the Graph-owned immutable mixed envelope are now
-defined and validated, but mixed dispatch, the vertex allocation table, and the
-durable two-phase receipt remain planned; the existing edge/vertex endpoints and
-generic plan batch runner do not implement that protocol.
+defined and validated. Graph-side mixed phase execution, allocation-table
+resolution, and durable aggregate receipt/replay are active; Router dispatch,
+projection lifecycle, and recovery wiring remain planned. The existing generic
+plan batch runner does not implement this protocol.
 
 The term **input-order-preserving batch** is used instead of **sorted batch**.
 Graph does not interpret an application timestamp, target id, ranking value, or
@@ -2116,6 +2117,14 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     request shapes. It performs no canonical write and does not expose physical
     placement. Vertex allocation, phase execution, journal admission, and Router
     lifecycle wiring remain planned.
+34. **Partially implemented (2026-07-29 04:20:46 UTC +0000):** the Graph handler
+    now executes the mixed two-phase path: it decodes all values before the first
+    write, bulk-allocates vertices, resolves request-local endpoints, reuses the
+    ordered edge writer, and commits one mixed aggregate receipt/journal entry.
+    Post-allocation failures trap instead of returning a recoverable error, so a
+    visible vertex phase cannot be reported as an ordinary failed request. A
+    focused handler test covers commit and exact replay. Router dispatch,
+    projection lifecycle, retirement, and recovery remain planned.
 
 ## Test contract
 

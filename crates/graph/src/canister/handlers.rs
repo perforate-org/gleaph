@@ -28,12 +28,13 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
     ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode, GraphMutationRequestIdentityV1,
-    GraphOrderedEdgeBatchResult, GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1,
-    MutationId, OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphRequest,
-    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs,
-    OrderedVertexBatchGraphRequest, OrderedVertexMutationRetirementAck,
-    OrderedVertexMutationRetirementArgs, ResolvedSearchWire, SeedBindingsWire, ShardEventSeq,
-    bound_typed_batch_error,
+    GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult, GraphOrderedVertexBatchResult,
+    GraphOrderedVertexBatchResultV1, MutationId, OrderedEdgeBatchGraphArgs,
+    OrderedEdgeBatchGraphRequest, OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphRequest,
+    OrderedMixedGraphOperationV1, OrderedMutationRetirementAck, OrderedMutationRetirementArgs,
+    OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphRequest,
+    OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementArgs, ResolvedSearchWire,
+    SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
 };
 
 use super::types::GraphInitArgs;
@@ -472,6 +473,148 @@ pub fn execute_ordered_vertex_batch(
             },
         ),
     ))
+}
+
+/// Router → Graph: journal-first mixed vertex/edge execution (ADR 0049).
+///
+/// The vertex phase is allocated in request-local ordinal order. The phase planner then
+/// resolves new endpoints and the existing ordered edge writer performs the edge phase.
+/// Any failure after vertex allocation is an invariant violation and traps so a Graph update
+/// cannot expose stranded vertices as an ordinary recoverable error.
+pub fn execute_ordered_mixed_batch(
+    args: OrderedMixedBatchGraphArgs,
+) -> Result<GraphOrderedMixedBatchResult, String> {
+    args.recompute_and_validate_fingerprint()?;
+    let OrderedMixedBatchGraphArgs::V1(args) = &args;
+    args.request
+        .validate()
+        .map_err(|error| format!("ordered mixed Graph request validation: {error}"))?;
+    let OrderedMixedBatchGraphRequest::V1(request) = &args.request;
+    #[cfg(target_family = "wasm")]
+    if request.target_graph_canister != ic_cdk::api::canister_self() {
+        return Err("ordered mixed Graph request target canister does not match receiver".into());
+    }
+
+    let logical_operation_count = u32::try_from(request.operations.len())
+        .map_err(|_| "ordered mixed Graph operation count exceeds u32".to_string())?;
+    let logical_vertex_count = request
+        .operations
+        .iter()
+        .filter(|operation| matches!(operation, OrderedMixedGraphOperationV1::Vertex(_)))
+        .count() as u32;
+    let logical_edge_count = logical_operation_count - logical_vertex_count;
+    let identity = GraphMutationRequestIdentityV1::OrderedMixedBatch {
+        canonical_encoding_version: 1,
+        graph_request_fingerprint: args.graph_request_fingerprint,
+        logical_operation_count,
+        logical_vertex_count,
+        logical_edge_count,
+    };
+    let store = GraphStore::new();
+    if let Some(result) = store
+        .ordered_mixed_batch_replay_result(args.mutation_id, &identity)
+        .map_err(str::to_string)?
+    {
+        return Ok(result);
+    }
+
+    // Decode every fallible property value before the first canonical vertex write.
+    let mut vertices = Vec::new();
+    let mut edge_properties = Vec::new();
+    for operation in &request.operations {
+        match operation {
+            OrderedMixedGraphOperationV1::Vertex(item) => {
+                let properties = item
+                    .resolved_initial_properties
+                    .iter()
+                    .map(|property| {
+                        let value = Value::from_binary_bytes(&property.value).map_err(|error| {
+                            format!(
+                                "ordered mixed vertex property {} value decode failed: {error}",
+                                property.property_id.raw()
+                            )
+                        })?;
+                        Ok((
+                            gleaph_graph_kernel::entry::PropertyId::from_raw(
+                                property.property_id.raw(),
+                            ),
+                            value,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let labels = item
+                    .resolved_vertex_labels
+                    .iter()
+                    .copied()
+                    .map(gleaph_graph_kernel::entry::VertexLabelId::from_raw)
+                    .collect();
+                vertices.push((labels, properties));
+            }
+            OrderedMixedGraphOperationV1::Edge(item) => {
+                let properties = item
+                    .resolved_initial_edge_properties
+                    .iter()
+                    .map(|property| {
+                        let value = Value::from_binary_bytes(&property.value).map_err(|error| {
+                            format!(
+                                "ordered mixed edge property {} value decode failed: {error}",
+                                property.property_id.raw()
+                            )
+                        })?;
+                        Ok((
+                            gleaph_graph_kernel::entry::PropertyId::from_raw(
+                                property.property_id.raw(),
+                            ),
+                            value,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                edge_properties.push(properties);
+            }
+        }
+    }
+
+    let allocated_vertex_ids = insert_vertices_with(&store, vertices).unwrap_or_else(|error| {
+        panic!("ordered mixed vertex phase failed after preflight: {error}")
+    });
+    let allocated_local_ids: Vec<u32> = allocated_vertex_ids
+        .iter()
+        .copied()
+        .map(u32::from)
+        .collect();
+    let phases = args
+        .request
+        .plan_phases(&allocated_local_ids)
+        .unwrap_or_else(|error| {
+            panic!("ordered mixed phase planning failed after vertex write: {error}")
+        });
+    let OrderedEdgeBatchGraphRequest::V1(edge_request) = phases.edge_request;
+    let edges = edge_request
+        .items
+        .into_iter()
+        .zip(edge_properties)
+        .map(|(item, initial_edge_properties)| BatchEdgeInput {
+            source_vertex_id: item.source_local_vertex_id.into(),
+            target_vertex_id: item.target_local_vertex_id.into(),
+            catalog_label: item.catalog_edge_label_id,
+            directed: item.directed,
+            inline_property_bytes: item.inline_property_bytes,
+            initial_edge_properties,
+        })
+        .collect::<Vec<_>>();
+    let result = store
+        .execute_ordered_edge_phase_for_mixed(
+            args.mutation_id,
+            identity,
+            &edges,
+            u64::from(logical_vertex_count),
+            u64::from(logical_operation_count),
+        )
+        .unwrap_or_else(|error| {
+            panic!("ordered mixed edge phase failed after vertex write: {error}")
+        });
+    result.validate().map_err(str::to_string)?;
+    Ok(result)
 }
 
 pub async fn execute_plan_update_batch(
@@ -2334,12 +2477,15 @@ mod tests {
         ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
         ExecutePlanTypedOp, GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchResultV1,
         OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1,
-        OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1, OrderedVertexBatchGraphArgs,
-        OrderedVertexBatchGraphArgsV1, OrderedVertexBatchGraphItemV1,
-        OrderedVertexBatchGraphRequest, OrderedVertexBatchGraphRequestV1, ResolvedEdgeLabel,
-        ResolvedLabelTable, ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry,
-        SeedBindingsWire, SeedRowWire, SeedVertexBinding,
-        ordered_edge_batch_graph_request_fingerprint,
+        OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs,
+        OrderedMixedBatchGraphArgsV1, OrderedMixedBatchGraphRequest,
+        OrderedMixedBatchGraphRequestV1, OrderedMixedGraphEdgeItemV1, OrderedMixedGraphEndpointV1,
+        OrderedMixedGraphOperationV1, OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphArgsV1,
+        OrderedVertexBatchGraphItemV1, OrderedVertexBatchGraphRequest,
+        OrderedVertexBatchGraphRequestV1, ResolvedEdgeLabel, ResolvedLabelTable,
+        ResolvedPropertyTable, ResolvedVertexLabel, SeedBindingEntry, SeedBindingsWire,
+        SeedRowWire, SeedVertexBinding, ordered_edge_batch_graph_request_fingerprint,
+        ordered_mixed_batch_graph_request_fingerprint,
         ordered_vertex_batch_graph_request_fingerprint,
     };
     use ic_stable_lara::CsrEdge;
@@ -2544,6 +2690,54 @@ mod tests {
         assert_eq!(receipt.logical_vertex_count, 1);
         assert_eq!(receipt.hot_forward_vertices.len(), 1);
         let replay = execute_ordered_vertex_batch(args).expect("vertex batch replay");
+        assert_eq!(result, replay);
+    }
+
+    #[test]
+    fn ordered_mixed_handler_allocates_vertices_then_commits_and_replays_edges() {
+        let request = OrderedMixedBatchGraphRequest::V1(OrderedMixedBatchGraphRequestV1 {
+            graph_id: GraphId::from_raw(73),
+            target_shard_id: TEST_SHARD_ID,
+            target_graph_canister: Principal::management_canister(),
+            resolved_labels: ResolvedLabelTable::default(),
+            resolved_properties: ResolvedPropertyTable::default(),
+            operations: vec![
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: Vec::new(),
+                    resolved_initial_properties: Vec::new(),
+                }),
+                OrderedMixedGraphOperationV1::Vertex(OrderedVertexBatchGraphItemV1 {
+                    resolved_vertex_labels: Vec::new(),
+                    resolved_initial_properties: Vec::new(),
+                }),
+                OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
+                    source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(0),
+                    target: OrderedMixedGraphEndpointV1::NewVertexOrdinal(1),
+                    directed: true,
+                    catalog_edge_label_id: None,
+                    inline_property_bytes: Vec::new(),
+                    resolved_initial_edge_properties: Vec::new(),
+                }),
+            ],
+        });
+        let fingerprint =
+            ordered_mixed_batch_graph_request_fingerprint(&request).expect("fingerprint");
+        let args = OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
+            mutation_id: 73_001,
+            graph_request_fingerprint: fingerprint,
+            request,
+        });
+        let result = execute_ordered_mixed_batch(args.clone()).expect("mixed batch execution");
+        let GraphOrderedMixedBatchResult::V1(
+            gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchResultV1::Completed(receipt),
+        ) = &result
+        else {
+            panic!("expected completed mixed receipt");
+        };
+        assert_eq!(receipt.logical_operation_count, 3);
+        assert_eq!(receipt.logical_vertex_count, 2);
+        assert_eq!(receipt.logical_edge_count, 1);
+        let replay = execute_ordered_mixed_batch(args).expect("mixed batch replay");
         assert_eq!(result, replay);
     }
 
