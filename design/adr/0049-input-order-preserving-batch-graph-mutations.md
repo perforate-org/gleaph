@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Partially Implemented
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 04:59:57 UTC +0000
+Anchor timestamp: 2026-07-29 05:10:07 UTC +0000
 
 ## Context
 
@@ -2160,6 +2160,11 @@ descriptor layout. The Graph batch suite passes all 87 tests.
     records an explicit retry diagnostic for `CanonicalPending`, and resumes
     projection, mixed Graph retirement, receipt verification, and terminal
     completion for every later durable phase.
+41. **Partially implemented (2026-07-29 05:10:07 UTC +0000):** PocketIC now
+    covers mixed recovery after a Router fault immediately after the canonical
+    receipt and after Graph retirement acknowledgement. Both cases verify the
+    durable lifecycle converges to `Completed` and an exact retry replays the
+    same mutation identity; the broader failure matrix remains open.
 
 ## Test contract
 

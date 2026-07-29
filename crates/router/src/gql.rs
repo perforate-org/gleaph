@@ -1927,6 +1927,12 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
         graph_request_fingerprint,
         receipt.clone(),
     )?;
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::fail_after_ordered_canonical_commit() {
+        return Err(RouterError::Internal(
+            "pocket-ic-e2e ordered mixed canonical commit fault".into(),
+        ));
+    }
     store.record_ordered_mixed_batch_projection_pending(
         caller,
         graph_id,
@@ -1978,6 +1984,12 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
     {
         return Err(RouterError::InvalidArgument(
             "ordered mixed retirement acknowledgement does not match receipt".into(),
+        ));
+    }
+    #[cfg(feature = "pocket-ic-e2e")]
+    if crate::test_fault::fail_after_ordered_retirement_ack() {
+        return Err(RouterError::Internal(
+            "pocket-ic-e2e ordered mixed retirement acknowledgement fault".into(),
         ));
     }
     store.record_ordered_mixed_batch_retired(

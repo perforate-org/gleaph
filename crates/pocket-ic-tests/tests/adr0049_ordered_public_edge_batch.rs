@@ -7,13 +7,15 @@ use gleaph_pocket_ic_tests::{
     FederationEnv, SOURCE_SHARD, admin_intern_edge_label, admin_intern_property,
     admin_intern_vertex_label, arm_router_fault, e2e_insert_vertex,
     e2e_reverse_resolved_edge_property, evict_graph_mutation_journal,
-    execute_ordered_edge_batch_as_admin, execute_ordered_vertex_batch_as_admin,
-    federation_graph_element_id_encoding_key_bytes, gql_execute_idempotent_as_admin,
-    gql_query_as_admin, install_single_shard_federation, mutation_status_as_admin,
-    run_router_recovery_timer,
+    execute_ordered_edge_batch_as_admin, execute_ordered_mixed_batch_as_admin,
+    execute_ordered_vertex_batch_as_admin, federation_graph_element_id_encoding_key_bytes,
+    gql_execute_idempotent_as_admin, gql_query_as_admin, install_single_shard_federation,
+    mutation_status_as_admin, run_router_recovery_timer,
 };
 use gleaph_router::types::{
     OrderedEdgeBatchPublicRequest, OrderedEdgeBatchPublicRequestV1, OrderedEdgeInsertPublicItemV1,
+    OrderedMixedBatchOperationV1, OrderedMixedBatchPublicRequest, OrderedMixedBatchPublicRequestV1,
+    OrderedMixedEdgeInsertPublicItemV1, OrderedMixedEndpointPublicV1,
     OrderedVertexBatchPublicRequest, OrderedVertexBatchPublicRequestV1,
     OrderedVertexInsertPublicItemV1,
 };
@@ -53,6 +55,32 @@ fn ordered_request(env: &FederationEnv) -> OrderedEdgeBatchPublicRequest {
             inline_property: None,
             initial_edge_properties: Vec::new(),
         }],
+    })
+}
+
+fn ordered_mixed_request(env: &FederationEnv, key: &str) -> OrderedMixedBatchPublicRequest {
+    let target = e2e_insert_vertex(env, env.graph_source).global_vertex_id;
+    let encoding_key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(env));
+    OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+        client_mutation_key: key.into(),
+        logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
+        target_shard_id: SOURCE_SHARD,
+        operations: vec![
+            OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+                vertex_labels: vec!["Person".into()],
+                initial_properties: Vec::new(),
+            }),
+            OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
+                source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
+                target: OrderedMixedEndpointPublicV1::Existing(
+                    encode_global_vertex_id(&encoding_key, target).0.to_vec(),
+                ),
+                directed: true,
+                edge_label_name: None,
+                inline_property: None,
+                initial_edge_properties: Vec::new(),
+            }),
+        ],
     })
 }
 
@@ -497,6 +525,76 @@ fn ordered_public_vertex_batch_recovers_after_retirement_acknowledgement_loss() 
 
     let replay = execute_ordered_vertex_batch_as_admin(&env, request)
         .expect("completed ordered vertex retry must replay");
+    assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(replay.status.mutation_id, completed.mutation_id);
+}
+
+#[test]
+fn ordered_public_mixed_batch_recovers_after_canonical_receipt_failure() {
+    let env = install_single_shard_federation();
+    admin_intern_vertex_label(&env, "Person");
+    let request = ordered_mixed_request(&env, "adr0049-public-mixed-replay");
+
+    arm_router_fault(&env, 4);
+    let error = execute_ordered_mixed_batch_as_admin(&env, request.clone()).unwrap_err();
+    assert!(matches!(
+        error,
+        RouterError::Internal(message) if message.contains("canonical commit fault")
+    ));
+
+    arm_router_fault(&env, 0);
+    let pending = mutation_status_as_admin(
+        &env,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        "adr0049-public-mixed-replay",
+    )
+    .expect("mixed canonical receipt status");
+    assert_eq!(pending.phase, MutationLifecyclePhase::CanonicalCommitted);
+
+    run_router_recovery_timer(&env);
+    let completed = mutation_status_as_admin(
+        &env,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        "adr0049-public-mixed-replay",
+    )
+    .expect("recovered mixed mutation status");
+    assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
+}
+
+#[test]
+fn ordered_public_mixed_batch_recovers_after_retirement_acknowledgement_loss() {
+    let env = install_single_shard_federation();
+    admin_intern_vertex_label(&env, "Person");
+    let request = ordered_mixed_request(&env, "adr0049-public-mixed-retirement");
+
+    arm_router_fault(&env, 5);
+    let error = execute_ordered_mixed_batch_as_admin(&env, request.clone()).unwrap_err();
+    assert!(matches!(
+        error,
+        RouterError::Internal(message)
+            if message.contains("retirement acknowledgement fault")
+    ));
+
+    arm_router_fault(&env, 0);
+    let pending = mutation_status_as_admin(
+        &env,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        "adr0049-public-mixed-retirement",
+    )
+    .expect("mixed retirement-pending status");
+    assert_eq!(pending.phase, MutationLifecyclePhase::ProjectionPending);
+
+    run_router_recovery_timer(&env);
+    let completed = mutation_status_as_admin(
+        &env,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        "adr0049-public-mixed-retirement",
+    )
+    .expect("recovered mixed retirement status");
+    assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
+
+    let replay = execute_ordered_mixed_batch_as_admin(&env, request)
+        .expect("completed mixed retry must replay");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, completed.mutation_id);
 }
