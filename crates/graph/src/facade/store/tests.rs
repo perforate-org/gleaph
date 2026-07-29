@@ -1,7 +1,9 @@
 use super::helpers::{edge_storage_label, lara_label};
 use super::*;
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, Vertex, VertexRef};
+use gleaph_graph_kernel::entry::{
+    EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, PropertyId, Vertex, VertexRef,
+};
 use ic_stable_lara::{
     MaintenanceBudget, OutEdgeOrder, VertexId,
     labeled::{
@@ -116,6 +118,19 @@ fn bulk_vertex_insert_co_writes_labels_and_properties_through_canonical_stores()
             Some(Value::Text(expected.into()))
         );
     }
+}
+
+#[test]
+fn bulk_vertex_insert_preflights_before_allocating_rows() {
+    let store = GraphStore::new();
+    let before = store.vertex_count();
+    let err = crate::facade::mutation_executor::insert_vertices_with(
+        &store,
+        vec![(Vec::new(), vec![(PropertyId::from_raw(0), Value::Int64(1))])],
+    )
+    .expect_err("reserved property id must fail before row allocation");
+    assert!(matches!(err, GraphStoreError::PropertyValue(_)));
+    assert_eq!(store.vertex_count(), before);
 }
 
 #[test]

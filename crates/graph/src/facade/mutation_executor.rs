@@ -1,4 +1,5 @@
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
+use super::{VertexLabelStoreError, VertexPropertyStoreError};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, Vertex, VertexLabelId};
 use ic_stable_lara::VertexId;
@@ -77,6 +78,25 @@ pub fn insert_vertices_with(
     store: &GraphStore,
     vertices: Vec<(Vec<VertexLabelId>, Vec<(PropertyId, Value)>)>,
 ) -> Result<Vec<VertexId>, GraphStoreError> {
+    for (labels, properties) in &vertices {
+        if let Some(label_id) = labels
+            .iter()
+            .copied()
+            .find(|label_id| label_id.is_reserved())
+        {
+            return Err(GraphStoreError::VertexLabel(
+                VertexLabelStoreError::ReservedLabelId(label_id),
+            ));
+        }
+        for (property_id, value) in properties {
+            crate::property::ensure_property_id(*property_id).map_err(|id| {
+                GraphStoreError::PropertyValue(VertexPropertyStoreError::ReservedPropertyId(id))
+            })?;
+            crate::property::ensure_persistable(value).map_err(|error| {
+                GraphStoreError::PropertyValue(VertexPropertyStoreError::InvalidValue(error))
+            })?;
+        }
+    }
     let ids = store.insert_vertex_rows_bulk((0..vertices.len()).map(|_| Vertex::default()))?;
     let label_assignments: Vec<_> = ids
         .iter()
