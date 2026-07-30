@@ -8,4 +8,6 @@ license.workspace = true
 gleaph-prepared-api.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+prettyplease = "0.2"
+syn = { version = "2", features = ["full"] }
 thiserror.workspace = true

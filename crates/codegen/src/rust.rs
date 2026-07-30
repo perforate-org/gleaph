@@ -4,7 +4,7 @@
 //! executor trait. Transport, response decoding, and error policy remain owned by the Rust
 //! runtime that implements the trait.
 
-use crate::common::append_line_doc;
+use crate::common::{append_line_doc, format_rust_source};
 use crate::ir::normalize_manifest;
 use crate::{CodegenIr, ManifestError, OperationKind, PreparedManifest, SemanticType};
 
@@ -12,7 +12,7 @@ use crate::{CodegenIr, ManifestError, OperationKind, PreparedManifest, SemanticT
 pub fn generate_rust(manifest: &PreparedManifest) -> Result<String, ManifestError> {
     let ir = normalize_manifest(manifest)?;
     validate_runtime_features(&ir)?;
-    Ok(generate_rust_ir(&ir))
+    format_rust_source(generate_rust_ir(&ir))
 }
 
 fn validate_runtime_features(ir: &CodegenIr) -> Result<(), ManifestError> {

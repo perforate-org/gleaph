@@ -101,6 +101,9 @@ pub enum ManifestError {
         /// Duplicate field name.
         field: String,
     },
+    /// Generated Rust source could not be parsed for formatting.
+    #[error("generated Rust source is invalid: {0}")]
+    RustSource(String),
     /// Idempotency metadata was declared for a query operation.
     #[error("idempotency is only supported for update operation {0:?}")]
     IdempotencyOnQuery(String),
@@ -278,6 +281,14 @@ mod tests {
         }
     }
 
+    fn compact(source: &str) -> String {
+        source.split_whitespace().collect()
+    }
+
+    fn contains_compact(source: &str, expected: &str) -> bool {
+        compact(source).contains(&compact(expected))
+    }
+
     #[test]
     fn parses_and_validates_manifest() {
         let input = serde_json::to_string(&manifest()).unwrap();
@@ -336,9 +347,10 @@ mod tests {
         assert!(output.contains("pub struct FindUsersParams"));
         assert!(output.contains("pub struct FindUsersRow"));
         assert!(output.contains("self.executor.execute_query::<FindUsersRow>"));
-        assert!(
-            output.contains("pub async fn find_users(&self, sort: Option<Vec<PreparedSortSpec>>)")
-        );
+        assert!(contains_compact(
+            &output,
+            "pub async fn find_users(&self, sort: Option<Vec<PreparedSortSpec>> ,)",
+        ));
         assert!(!output.contains("&self, ,"));
         assert!(output.contains("pub trait PreparedExecutor"));
         assert!(!output.contains("ic-agent"));
@@ -473,7 +485,10 @@ mod tests {
         let output = generate_rust_canister(&value).unwrap();
         assert!(output.contains("pub term: gleaph_cdk::GqlRecord"));
         assert!(output.contains("GqlValue::Record(self.term)"));
-        assert!(output.contains("self.executor.execute_gql::<FindUsersRow>"));
+        assert!(contains_compact(
+            &output,
+            "self.executor.execute_gql::<FindUsersRow>",
+        ));
     }
 
     #[test]
@@ -549,11 +564,10 @@ mod tests {
         assert!(output.contains("GqlValue::LocalDateTime(self.local_created_at.seconds"));
         assert!(output.contains("GqlValue::ZonedDateTime(self.window.seconds"));
         assert!(output.contains("GqlValue::Duration(self.duration.months"));
-        assert!(
-            output.contains(
-                "GqlValue::List(self.ids.into_iter().map(|value| GqlValue::Int32(value))"
-            )
-        );
+        assert!(contains_compact(
+            &output,
+            "GqlValue::List(self.ids.into_iter().map(|value| GqlValue::Int32(value))",
+        ));
     }
 
     #[test]
@@ -592,8 +606,9 @@ mod tests {
         assert!(output.contains("impl gleaph_cdk::FromGqlRow for FindUsersRow"));
         assert!(output.contains("PreparedDateTime { seconds, nanos }"));
         assert!(output.contains("gleaph_cdk::gql_principal_from_value(value)?"));
-        assert!(output.contains("GqlValue::List(value) => value.into_iter()"));
-        assert!(output.contains("GqlValue::Null => ()"));
+        assert!(contains_compact(&output, "GqlValue::List(value)"));
+        assert!(contains_compact(&output, "value.into_iter()"));
+        assert!(contains_compact(&output, "GqlValue::Null"));
     }
 
     #[test]
