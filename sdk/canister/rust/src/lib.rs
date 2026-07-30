@@ -18,6 +18,12 @@ pub use serde_json;
 
 /// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
 pub use gleaph_gql::Value as GqlValue;
+pub use gleaph_gql_ic_wire::GqlPrincipal;
+
+/// Wrap an IC Principal extension as a logical GQL value.
+pub fn gql_principal_value(principal: GqlPrincipal) -> GqlValue {
+    GqlValue::Extension(Box::new(principal))
+}
 
 /// Rust signed binary256 integer used by generated canister bindings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -718,6 +724,20 @@ mod tests {
         assert_eq!(int256.to_string(), "-123456789012345678901234567890");
         assert_eq!(uint256.to_string(), "123456789012345678901234567890");
         assert_eq!(decimal.to_string(), "123.4500");
+    }
+
+    #[test]
+    fn principal_value_uses_the_shared_extension() {
+        let principal = GqlPrincipal::from_inner(Principal::anonymous());
+        assert!(matches!(
+            gql_principal_value(principal),
+            GqlValue::Extension(_)
+        ));
+        let encoded = serde_json::to_string(&principal).unwrap();
+        assert_eq!(
+            serde_json::from_str::<GqlPrincipal>(&encoded).unwrap(),
+            principal
+        );
     }
 
     #[cfg(feature = "nightly-f128")]

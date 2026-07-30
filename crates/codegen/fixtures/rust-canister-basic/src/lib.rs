@@ -19,6 +19,13 @@ pub struct PreparedCanisterResponse<Row> {
     pub rows: Vec<Row>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(crate = "gleaph_cdk::serde")]
+pub enum PreparedPathElement {
+    Vertex(Vec<u8>),
+    Edge(Vec<u8>),
+}
+
 pub trait PreparedCanisterExecutor {
     type Error;
 
@@ -52,6 +59,10 @@ pub struct FindUsersParams {
     pub unsigned: gleaph_cdk::GqlUint256,
     #[serde(rename = "price")]
     pub price: gleaph_cdk::GqlDecimal,
+    #[serde(rename = "owner")]
+    pub owner: gleaph_cdk::GqlPrincipal,
+    #[serde(rename = "route")]
+    pub route: Vec<PreparedPathElement>,
 }
 
 impl FindUsersParams {
@@ -64,6 +75,26 @@ impl FindUsersParams {
                 GqlValue::Uint256(self.unsigned.into_inner()),
             ),
             ("price".to_string(), GqlValue::Decimal(self.price.into_inner())),
+            (
+                "owner".to_string(),
+                gleaph_cdk::gql_principal_value(self.owner),
+            ),
+            (
+                "route".to_string(),
+                GqlValue::Path(
+                    self.route
+                        .into_iter()
+                        .map(|value| match value {
+                            PreparedPathElement::Vertex(value) => {
+                                gleaph_cdk::GqlPathElement::Vertex(value.into())
+                            }
+                            PreparedPathElement::Edge(value) => {
+                                gleaph_cdk::GqlPathElement::Edge(value.into())
+                            }
+                        })
+                        .collect(),
+                ),
+            ),
         ]
     }
 }

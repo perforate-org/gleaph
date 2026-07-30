@@ -232,9 +232,15 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
         crate::SemanticType::Decimal => format!("GqlValue::Decimal({access}.into_inner())"),
         crate::SemanticType::Text => format!("GqlValue::Text({access})"),
         crate::SemanticType::Bytes => format!("GqlValue::Bytes({access})"),
+        crate::SemanticType::Principal => {
+            format!("gleaph_cdk::gql_principal_value({access})")
+        }
         crate::SemanticType::Date => format!("GqlValue::Date({access})"),
         crate::SemanticType::Time => format!("GqlValue::Time({access})"),
         crate::SemanticType::LocalTime => format!("GqlValue::LocalTime({access})"),
+        crate::SemanticType::Path => format!(
+            "GqlValue::Path({access}.into_iter().map(|value| match value {{ PreparedPathElement::Vertex(value) => gleaph_cdk::GqlPathElement::Vertex(value.into()), PreparedPathElement::Edge(value) => gleaph_cdk::GqlPathElement::Edge(value.into()) }}).collect())"
+        ),
         crate::SemanticType::List { element } => {
             let element = gql_value_expression("value", element)?;
             format!("GqlValue::List({access}.into_iter().map(|value| {element}).collect())")
@@ -274,6 +280,7 @@ fn canister_rust_type(semantic_type: &crate::SemanticType) -> String {
         crate::SemanticType::Float128 => "gleaph_cdk::GqlFloat128".to_string(),
         crate::SemanticType::Float256 => "gleaph_cdk::GqlFloat256".to_string(),
         crate::SemanticType::Decimal => "gleaph_cdk::GqlDecimal".to_string(),
+        crate::SemanticType::Principal => "gleaph_cdk::GqlPrincipal".to_string(),
         crate::SemanticType::Record { .. } => {
             "std::collections::BTreeMap<String, gleaph_cdk::serde_json::Value>".to_string()
         }

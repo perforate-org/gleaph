@@ -620,6 +620,30 @@ mod tests {
     }
 
     #[test]
+    fn generates_principal_and_path_gql_param_conversions() {
+        let mut value = manifest();
+        value.operations[0].parameters = vec![
+            Parameter {
+                name: "owner".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Principal,
+            },
+            Parameter {
+                name: "route".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Path,
+            },
+        ];
+        let output = generate_rust_canister(&value).unwrap();
+        assert!(output.contains("pub owner: gleaph_cdk::GqlPrincipal"));
+        assert!(output.contains("gleaph_cdk::gql_principal_value(self.owner)"));
+        assert!(output.contains("GqlValue::Path(self.route.into_iter()"));
+        assert!(output.contains("gleaph_cdk::GqlPathElement::Vertex"));
+    }
+
+    #[test]
     fn normalizes_operation_names_once_for_all_profiles() {
         let ir = manifest().normalize().unwrap();
         let operation = &ir.operations[0];

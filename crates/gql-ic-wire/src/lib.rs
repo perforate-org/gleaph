@@ -87,6 +87,38 @@ pub enum GqlWireValue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GqlPrincipal(pub Principal);
 
+impl GqlPrincipal {
+    /// Construct from an Internet Computer principal.
+    pub const fn from_inner(principal: Principal) -> Self {
+        Self(principal)
+    }
+
+    /// Return the wrapped Internet Computer principal.
+    pub const fn into_inner(self) -> Principal {
+        self.0
+    }
+}
+
+impl Serialize for GqlPrincipal {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0.to_text())
+    }
+}
+
+impl<'de> Deserialize<'de> for GqlPrincipal {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Principal::from_text(String::deserialize(deserializer)?)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for GqlPrincipal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -319,6 +351,14 @@ mod tests {
             .try_into_gql_value()
             .unwrap();
         assert!(matches!(value, Value::Extension(_)));
+    }
+
+    #[test]
+    fn principal_serde_round_trips_text_form() {
+        let principal = GqlPrincipal::from_inner(Principal::anonymous());
+        let encoded = serde_json::to_string(&principal).unwrap();
+        let decoded: GqlPrincipal = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, principal);
     }
 
     #[test]
