@@ -105,7 +105,7 @@ export function makeOrderedEdgeBatchPublicRequest(
           const length = Math.min(leftBytes.length, rightBytes.length);
           for (let index = 0; index < length; index += 1) {
             if (leftBytes[index] !== rightBytes[index]) {
-              return leftBytes[index] - rightBytes[index];
+              return leftBytes[index]! - rightBytes[index]!;
             }
           }
           return leftBytes.length - rightBytes.length;

@@ -37,7 +37,7 @@ function sortUtf8(left: string, right: string): number {
   const rightBytes = utf8.encode(right);
   const length = Math.min(leftBytes.length, rightBytes.length);
   for (let index = 0; index < length; index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
+    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index]! - rightBytes[index]!;
   }
   return leftBytes.length - rightBytes.length;
 }

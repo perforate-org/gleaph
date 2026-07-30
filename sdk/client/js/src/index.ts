@@ -58,8 +58,8 @@ export type {
   OrderedMixedEdgeInsertPublicItemInput,
   OrderedMixedEndpoint,
   OrderedMixedEndpointInput,
-  OrderedVertexInsertPublicItem,
-  OrderedVertexInsertPublicItemInput,
+  OrderedVertexInsertPublicItem as OrderedMixedVertexInsertPublicItem,
+  OrderedVertexInsertPublicItemInput as OrderedMixedVertexInsertPublicItemInput,
 } from "./ordered-mixed-batch";
 export {
   fromApiValue,
