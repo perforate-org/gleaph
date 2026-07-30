@@ -20,11 +20,107 @@ pub use serde_json;
 pub use gleaph_gql::Value as GqlValue;
 
 /// Rust binary256 value used by generated canister bindings.
-pub type GqlFloat256 = f256::f256;
+///
+/// The Serde representation is exactly 32 little-endian bytes. The wrapper is necessary because
+/// the upstream `f256` type intentionally does not provide Serde implementations.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GqlFloat256(f256::f256);
+
+impl GqlFloat256 {
+    /// Construct a logical GQL float256 from the upstream numeric value.
+    pub const fn from_inner(value: f256::f256) -> Self {
+        Self(value)
+    }
+
+    /// Return the upstream numeric value.
+    pub const fn into_inner(self) -> f256::f256 {
+        self.0
+    }
+
+    /// Construct from the canonical little-endian wire representation.
+    pub const fn from_le_bytes(bytes: [u8; 32]) -> Self {
+        Self(f256::f256::from_le_bytes(bytes))
+    }
+
+    /// Return the canonical little-endian wire representation.
+    pub const fn to_le_bytes(self) -> [u8; 32] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl serde::Serialize for GqlFloat256 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.to_le_bytes())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GqlFloat256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = Vec::<u8>::deserialize(deserializer)?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|bytes: Vec<u8>| serde::de::Error::invalid_length(bytes.len(), &"32 bytes"))?;
+        Ok(Self::from_le_bytes(bytes))
+    }
+}
 
 /// Rust binary128 value used by generated canister bindings.
 #[cfg(feature = "nightly-f128")]
-pub type GqlFloat128 = f128;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GqlFloat128(f128);
+
+#[cfg(feature = "nightly-f128")]
+impl GqlFloat128 {
+    /// Construct a logical GQL float128 from the primitive value.
+    pub const fn from_inner(value: f128) -> Self {
+        Self(value)
+    }
+
+    /// Return the primitive value.
+    pub const fn into_inner(self) -> f128 {
+        self.0
+    }
+
+    /// Construct from the canonical little-endian wire representation.
+    pub const fn from_le_bytes(bytes: [u8; 16]) -> Self {
+        Self(f128::from_bits(u128::from_le_bytes(bytes)))
+    }
+
+    /// Return the canonical little-endian wire representation.
+    pub const fn to_le_bytes(self) -> [u8; 16] {
+        self.0.to_bits().to_le_bytes()
+    }
+}
+
+#[cfg(feature = "nightly-f128")]
+impl serde::Serialize for GqlFloat128 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.to_le_bytes())
+    }
+}
+
+#[cfg(feature = "nightly-f128")]
+impl<'de> serde::Deserialize<'de> for GqlFloat128 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = Vec::<u8>::deserialize(deserializer)?;
+        let bytes: [u8; 16] = bytes
+            .try_into()
+            .map_err(|bytes: Vec<u8>| serde::de::Error::invalid_length(bytes.len(), &"16 bytes"))?;
+        Ok(Self::from_le_bytes(bytes))
+    }
+}
 
 /// Ordered GQL record representation.
 ///
@@ -370,5 +466,38 @@ mod tests {
             rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
         };
         assert_eq!(response.decode_rows().unwrap(), Some(rows));
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct StableFloatSerdeFixture {
+        float256: GqlFloat256,
+        #[cfg(feature = "nightly-f128")]
+        float128: GqlFloat128,
+    }
+
+    #[test]
+    fn shared_wide_float_types_support_serde_derives() {
+        fn assert_serde<T: serde::Serialize + for<'de> serde::Deserialize<'de>>() {}
+
+        assert_serde::<StableFloatSerdeFixture>();
+    }
+
+    #[test]
+    fn float256_serde_uses_exact_little_endian_bytes() {
+        let bytes = [0xabu8; 32];
+        let value = GqlFloat256::from_le_bytes(bytes);
+        let encoded = serde_json::to_vec(&value).expect("serialize float256");
+        let decoded: GqlFloat256 = serde_json::from_slice(&encoded).expect("deserialize float256");
+        assert_eq!(decoded.to_le_bytes(), bytes);
+    }
+
+    #[cfg(feature = "nightly-f128")]
+    #[test]
+    fn float128_serde_uses_exact_little_endian_bytes() {
+        let bytes = [0xabu8; 16];
+        let value = GqlFloat128::from_le_bytes(bytes);
+        let encoded = serde_json::to_vec(&value).expect("serialize float128");
+        let decoded: GqlFloat128 = serde_json::from_slice(&encoded).expect("deserialize float128");
+        assert_eq!(decoded.to_le_bytes(), bytes);
     }
 }

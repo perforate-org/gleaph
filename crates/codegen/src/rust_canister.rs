@@ -30,6 +30,7 @@ fn generate_ir(ir: &CodegenIr) -> String {
     out.push_str(
         "/// Result returned by a canister-side prepared-query executor.\n\
          #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+         #[serde(crate = \"gleaph_cdk::serde\")]\n\
          pub struct PreparedCanisterResponse<Row> {\n\
              /// Number of rows observed by the runtime.\n\
              pub row_count: u64,\n\
@@ -74,7 +75,7 @@ fn generate_ir(ir: &CodegenIr) -> String {
         let operation = &operation_ir.operation;
         let type_name = &operation_ir.type_name;
         out.push_str(&format!(
-            "/// Parameters for the prepared operation {}.\n#[derive(Clone, Debug, Deserialize, Serialize)]\npub struct {}Params {{\n",
+            "/// Parameters for the prepared operation {}.\n#[derive(Clone, Debug, Deserialize, Serialize)]\n#[serde(crate = \"gleaph_cdk::serde\")]\npub struct {}Params {{\n",
             operation.name, type_name
         ));
         for parameter in &operation.parameters {
@@ -90,7 +91,7 @@ fn generate_ir(ir: &CodegenIr) -> String {
         }
         out.push_str("}\n\n");
         out.push_str(&format!(
-            "/// One result row from the prepared operation {}.\n#[derive(Clone, Debug, Deserialize, Serialize)]\npub struct {}Row {{\n",
+            "/// One result row from the prepared operation {}.\n#[derive(Clone, Debug, Deserialize, Serialize)]\n#[serde(crate = \"gleaph_cdk::serde\")]\npub struct {}Row {{\n",
             operation.name, type_name
         ));
         for column in &operation.result.columns {
@@ -153,18 +154,23 @@ fn generate_ir(ir: &CodegenIr) -> String {
 fn runtime_types() -> &'static str {
     "/// Date-time representation used by generated declarations.\n\
      #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+     #[serde(crate = \"gleaph_cdk::serde\")]\n\
      pub struct PreparedDateTime { pub seconds: i64, pub nanos: u32 }\n\n\
      /// Zoned date-time representation used by generated declarations.\n\
      #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+     #[serde(crate = \"gleaph_cdk::serde\")]\n\
      pub struct PreparedZonedDateTime { pub seconds: i64, pub nanos: u32, pub offset_seconds: i32 }\n\n\
      /// Zoned time representation used by generated declarations.\n\
      #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+     #[serde(crate = \"gleaph_cdk::serde\")]\n\
      pub struct PreparedZonedTime { pub nanos: u64, pub offset_seconds: i32 }\n\n\
      /// Duration representation used by generated declarations.\n\
      #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+     #[serde(crate = \"gleaph_cdk::serde\")]\n\
      pub struct PreparedDuration { pub months: i32, pub nanos: i64 }\n\n\
      /// Path element representation used by generated declarations.\n\
      #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+     #[serde(crate = \"gleaph_cdk::serde\")]\n\
      pub enum PreparedPathElement { Vertex(Vec<u8>), Edge(Vec<u8>) }\n\n"
 }
 

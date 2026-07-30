@@ -1,0 +1,10 @@
+[package]
+name = "gleaph-codegen-rust-canister-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+gleaph-cdk = { path = "../../../../sdk/canister/rust" }
