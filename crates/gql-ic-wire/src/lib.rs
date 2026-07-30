@@ -3,7 +3,13 @@
 //! This crate intentionally contains no graph-kernel or planner dependency. It is suitable for
 //! SDK and canister runtimes that need to decode Router response blobs.
 
-use candid::CandidType;
+use std::any::Any;
+use std::borrow::Cow;
+use std::fmt;
+
+use candid::{CandidType, Principal};
+use ethnum::{I256, U256};
+use gleaph_gql::{ExtensionValue, Value};
 use serde::{Deserialize, Serialize};
 
 /// A path element in a GQL result value.
@@ -75,6 +81,41 @@ pub enum GqlWireValue {
     Record(Vec<(String, GqlWireValue)>),
 }
 
+/// Principal extension used when projecting IC wire values into logical GQL values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GqlPrincipal(pub Principal);
+
+impl fmt::Display for GqlPrincipal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl ExtensionValue for GqlPrincipal {
+    fn type_name(&self) -> &str {
+        "PRINCIPAL"
+    }
+
+    fn clone_box(&self) -> Box<dyn ExtensionValue> {
+        Box::new(*self)
+    }
+
+    fn eq_ext(&self, other: &dyn ExtensionValue) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self == other)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn short_blob(&self) -> Option<Cow<'_, [u8]>> {
+        Some(Cow::Borrowed(self.0.as_slice()))
+    }
+}
+
 /// One result row as ordered column/value pairs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, CandidType)]
 pub struct GqlWireRow {
@@ -95,6 +136,12 @@ pub enum GqlWireDecodeError {
     /// Candid payload was not a valid GQL rows envelope.
     #[error("invalid GQL rows Candid blob: {0}")]
     Candid(String),
+    /// A wire value uses a representation not yet projected by this codec.
+    #[error("unsupported GQL wire value: {0}")]
+    UnsupportedValue(&'static str),
+    /// A wire value contains an invalid textual numeric representation.
+    #[error("invalid GQL wire numeric value: {0}")]
+    InvalidNumeric(&'static str),
 }
 
 /// Decode the opaque `rows_blob` carried by a Router response.
@@ -105,6 +152,117 @@ pub fn decode_rows_blob(bytes: &[u8]) -> Result<GqlWireRows, GqlWireDecodeError>
 /// Encode rows into the Router response blob format.
 pub fn encode_rows_blob(rows: &GqlWireRows) -> Result<Vec<u8>, GqlWireDecodeError> {
     candid::encode_one(rows).map_err(|error| GqlWireDecodeError::Candid(error.to_string()))
+}
+
+impl GqlWireValue {
+    /// Project one IC wire value into the logical GQL value model.
+    pub fn try_into_gql_value(self) -> Result<Value, GqlWireDecodeError> {
+        Ok(match self {
+            Self::Null => Value::Null,
+            Self::Bool(value) => Value::Bool(value),
+            Self::Int8(value) => Value::Int8(value),
+            Self::Int16(value) => Value::Int16(value),
+            Self::Int32(value) => Value::Int32(value),
+            Self::Int64(value) => Value::Int64(value),
+            Self::Int128(value) => Value::Int128(value),
+            Self::Int256(value) => Value::Int256(gleaph_gql::types::Int256(
+                value
+                    .parse::<I256>()
+                    .map_err(|_| GqlWireDecodeError::InvalidNumeric("Int256"))?,
+            )),
+            Self::Uint8(value) => Value::Uint8(value),
+            Self::Uint16(value) => Value::Uint16(value),
+            Self::Uint32(value) => Value::Uint32(value),
+            Self::Uint64(value) => Value::Uint64(value),
+            Self::Uint128(value) => Value::Uint128(value),
+            Self::Uint256(value) => Value::Uint256(gleaph_gql::types::Uint256(
+                value
+                    .parse::<U256>()
+                    .map_err(|_| GqlWireDecodeError::InvalidNumeric("Uint256"))?,
+            )),
+            Self::Float16(bits) => Value::Float16(half::f16::from_bits(bits)),
+            Self::Float32(value) => Value::Float32(value),
+            Self::Float64(value) => Value::Float64(value),
+            Self::Float128(_) => return Err(GqlWireDecodeError::UnsupportedValue("Float128")),
+            Self::Float256(_) => return Err(GqlWireDecodeError::UnsupportedValue("Float256")),
+            Self::Decimal(value) => Value::Decimal(gleaph_gql::types::Decimal(
+                value
+                    .parse::<rust_decimal::Decimal>()
+                    .map_err(|_| GqlWireDecodeError::InvalidNumeric("Decimal"))?,
+            )),
+            Self::Text(value) => Value::Text(value),
+            Self::Bytes(value) => Value::Bytes(value),
+            Self::Date(value) => Value::Date(value),
+            Self::Time(value) => Value::Time(value),
+            Self::LocalTime(value) => Value::LocalTime(value),
+            Self::DateTime { seconds, nanos } => Value::DateTime(seconds, nanos),
+            Self::LocalDateTime { seconds, nanos } => Value::LocalDateTime(seconds, nanos),
+            Self::ZonedDateTime {
+                seconds,
+                nanos,
+                offset_seconds,
+            } => Value::ZonedDateTime(seconds, nanos, offset_seconds),
+            Self::ZonedTime {
+                nanos,
+                offset_seconds,
+            } => Value::ZonedTime(nanos, offset_seconds),
+            Self::Duration { months, nanos } => Value::Duration(months, nanos),
+            Self::Principal(bytes) => Value::Extension(Box::new(GqlPrincipal(
+                Principal::try_from_slice(&bytes)
+                    .map_err(|_| GqlWireDecodeError::InvalidNumeric("Principal"))?,
+            ))),
+            Self::ExtensionLeaf { .. } => {
+                return Err(GqlWireDecodeError::UnsupportedValue("ExtensionLeaf"));
+            }
+            Self::ValueBinary(bytes) => Value::from_binary_bytes(&bytes)
+                .map_err(|_| GqlWireDecodeError::UnsupportedValue("ValueBinary"))?,
+            Self::List(values) => Value::List(
+                values
+                    .into_iter()
+                    .map(Self::try_into_gql_value)
+                    .collect::<Result<_, _>>()?,
+            ),
+            Self::Path(elements) => Value::Path(
+                elements
+                    .into_iter()
+                    .map(|element| match element {
+                        GqlWirePathElement::Vertex(id) => {
+                            gleaph_gql::types::PathElement::Vertex(id.into())
+                        }
+                        GqlWirePathElement::Edge(id) => {
+                            gleaph_gql::types::PathElement::Edge(id.into())
+                        }
+                    })
+                    .collect(),
+            ),
+            Self::Record(fields) => Value::Record(
+                fields
+                    .into_iter()
+                    .map(|(name, value)| Ok((name, value.try_into_gql_value()?)))
+                    .collect::<Result<_, GqlWireDecodeError>>()?,
+            ),
+        })
+    }
+}
+
+impl GqlWireRow {
+    /// Project one wire row into an ordered logical GQL record.
+    pub fn try_into_gql_row(self) -> Result<Vec<(String, Value)>, GqlWireDecodeError> {
+        self.columns
+            .into_iter()
+            .map(|(name, value)| Ok((name, value.try_into_gql_value()?)))
+            .collect()
+    }
+}
+
+impl GqlWireRows {
+    /// Project all rows into ordered logical GQL records.
+    pub fn try_into_gql_rows(self) -> Result<Vec<Vec<(String, Value)>>, GqlWireDecodeError> {
+        self.rows
+            .into_iter()
+            .map(GqlWireRow::try_into_gql_row)
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -120,5 +278,36 @@ mod tests {
         };
         let decoded = decode_rows_blob(&encode_rows_blob(&rows).unwrap()).unwrap();
         assert_eq!(decoded, rows);
+    }
+
+    #[test]
+    fn projects_exact_scalars_and_principal() {
+        assert_eq!(
+            GqlWireValue::Int256("-7".into())
+                .try_into_gql_value()
+                .unwrap()
+                .to_string(),
+            "-7"
+        );
+        assert_eq!(
+            GqlWireValue::Decimal("1.25".into())
+                .try_into_gql_value()
+                .unwrap()
+                .to_string(),
+            "1.25"
+        );
+        let principal = Principal::anonymous();
+        let value = GqlWireValue::Principal(principal.as_slice().to_vec())
+            .try_into_gql_value()
+            .unwrap();
+        assert!(matches!(value, Value::Extension(_)));
+    }
+
+    #[test]
+    fn rejects_unimplemented_wide_float_projection() {
+        assert_eq!(
+            GqlWireValue::Float128(vec![0; 16]).try_into_gql_value(),
+            Err(GqlWireDecodeError::UnsupportedValue("Float128"))
+        );
     }
 }
