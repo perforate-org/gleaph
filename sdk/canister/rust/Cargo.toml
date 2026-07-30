@@ -8,6 +8,7 @@ description = "Gleaph canister SDK helpers for inter-canister calls to the Gleap
 [dependencies]
 candid.workspace = true
 f256.workspace = true
+half.workspace = true
 gleaph-gql = { path = "../../../crates/gql", default-features = false, features = ["f256"] }
 gleaph-gql-ic-wire.workspace = true
 ic-cdk.workspace = true

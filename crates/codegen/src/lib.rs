@@ -575,6 +575,8 @@ mod tests {
         assert!(output.contains("pub quad: gleaph_cdk::GqlFloat128"));
         assert!(output.contains("pub oct: gleaph_cdk::GqlFloat256"));
         assert!(output.contains("#[serde(crate = \"gleaph_cdk::serde\")]"));
+        assert!(output.contains("GqlValue::Float128(self.quad.into_inner())"));
+        assert!(output.contains("GqlValue::Float256(self.oct.into_inner())"));
     }
 
     #[test]

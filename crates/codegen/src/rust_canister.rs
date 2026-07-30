@@ -216,8 +216,17 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
         crate::SemanticType::Uint64 => format!("GqlValue::Uint64({access})"),
         crate::SemanticType::Int128 => format!("GqlValue::Int128({access})"),
         crate::SemanticType::Uint128 => format!("GqlValue::Uint128({access})"),
+        crate::SemanticType::Float16 => {
+            format!("GqlValue::Float16(gleaph_cdk::GqlFloat16::from_bits({access}).into_inner())")
+        }
         crate::SemanticType::Float32 => format!("GqlValue::Float32({access})"),
         crate::SemanticType::Float64 => format!("GqlValue::Float64({access})"),
+        crate::SemanticType::Float128 => {
+            format!("GqlValue::Float128({access}.into_inner())")
+        }
+        crate::SemanticType::Float256 => {
+            format!("GqlValue::Float256({access}.into_inner())")
+        }
         crate::SemanticType::Text => format!("GqlValue::Text({access})"),
         crate::SemanticType::Bytes => format!("GqlValue::Bytes({access})"),
         crate::SemanticType::Date => format!("GqlValue::Date({access})"),

@@ -19,6 +19,45 @@ pub use serde_json;
 /// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
 pub use gleaph_gql::Value as GqlValue;
 
+/// Rust binary16 value used by generated canister bindings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GqlFloat16(half::f16);
+
+impl GqlFloat16 {
+    /// Construct from the IEEE 754 binary16 bit pattern.
+    pub const fn from_bits(bits: u16) -> Self {
+        Self(half::f16::from_bits(bits))
+    }
+
+    /// Return the IEEE 754 binary16 bit pattern.
+    pub const fn to_bits(self) -> u16 {
+        self.0.to_bits()
+    }
+
+    /// Return the upstream half-precision value.
+    pub const fn into_inner(self) -> half::f16 {
+        self.0
+    }
+}
+
+impl serde::Serialize for GqlFloat16 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u16(self.to_bits())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GqlFloat16 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self::from_bits(u16::deserialize(deserializer)?))
+    }
+}
+
 /// Rust binary256 value used by generated canister bindings.
 ///
 /// The Serde representation is exactly 32 little-endian bytes. The wrapper is necessary because
@@ -489,6 +528,14 @@ mod tests {
         let encoded = serde_json::to_vec(&value).expect("serialize float256");
         let decoded: GqlFloat256 = serde_json::from_slice(&encoded).expect("deserialize float256");
         assert_eq!(decoded.to_le_bytes(), bytes);
+    }
+
+    #[test]
+    fn float16_serde_uses_exact_bit_pattern() {
+        let value = GqlFloat16::from_bits(0x3c00);
+        let encoded = serde_json::to_vec(&value).expect("serialize float16");
+        let decoded: GqlFloat16 = serde_json::from_slice(&encoded).expect("deserialize float16");
+        assert_eq!(decoded.to_bits(), 0x3c00);
     }
 
     #[cfg(feature = "nightly-f128")]

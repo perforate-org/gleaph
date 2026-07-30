@@ -1206,6 +1206,7 @@ dependencies = [
  "f256",
  "gleaph-gql",
  "gleaph-gql-ic-wire",
+ "half 2.7.1",
  "ic-cdk",
  "serde",
  "serde_json",
