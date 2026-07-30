@@ -196,6 +196,21 @@ impl PreparedQueryClient {
         call_prepared_query(self.canister_id, name, params).await
     }
 
+    /// Execute a named prepared query from logical GQL parameters.
+    pub async fn execute_gql_params<R>(
+        &self,
+        name: impl Into<String>,
+        params: GqlParams,
+    ) -> Result<R, PreparedCallError>
+    where
+        R: CandidType + for<'de> Deserialize<'de>,
+    {
+        let params = encode_gql_params(params).map_err(|error| PreparedCallError::Decode {
+            message: format!("failed to encode GQL params: {error:?}"),
+        })?;
+        call_prepared_query(self.canister_id, name, params).await
+    }
+
     /// Execute dynamic GQL through the configured Router canister.
     pub async fn gql_query<R>(
         &self,
