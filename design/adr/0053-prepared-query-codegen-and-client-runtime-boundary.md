@@ -3,7 +3,7 @@
 Date: 2026-07-29
 Status: proposed
 Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 23:41:58 UTC +0000
+Anchor timestamp: 2026-07-29 23:52:17 UTC +0000
 
 ## Context
 
@@ -256,9 +256,10 @@ The first implementation is intentionally partial and does not accept the Router
 
 - a versioned local `PreparedManifest` model and fail-closed validation for graph identity,
   operation uniqueness, parameter/result names, sort keys, and query/update semantics;
-- a TypeScript output profile exposed by `generate_typescript`; and
-- a standalone `gleaph-codegen --manifest <path> --target typescript` entrypoint that writes to
-  stdout or an explicit output path.
+- TypeScript and JavaScript output profiles exposed by `generate_typescript` and
+  `generate_javascript`; and
+- a standalone `gleaph-codegen --manifest <path> --target <typescript|javascript>` entrypoint that
+  writes to stdout or an explicit output path.
 
 The generated TypeScript composes with the current `@gleaph/sdk` `GraphClient`, emits
 operation-specific parameter and row types, encodes semantic parameter values, and selects

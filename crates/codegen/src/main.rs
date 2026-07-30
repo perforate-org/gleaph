@@ -1,4 +1,4 @@
-use gleaph_codegen::{PreparedManifest, generate_typescript};
+use gleaph_codegen::{PreparedManifest, generate_javascript, generate_typescript};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("gleaph-codegen: {message}");
             eprintln!(
-                "usage: gleaph-codegen --manifest <path> --target typescript [--output <path>]"
+                "usage: gleaph-codegen --manifest <path> --target <typescript|javascript> [--output <path>]"
             );
             ExitCode::FAILURE
         }
@@ -35,7 +35,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "--output" => output = Some(PathBuf::from(value()?.clone())),
             "-h" | "--help" => {
                 println!(
-                    "usage: gleaph-codegen --manifest <path> --target typescript [--output <path>]"
+                    "usage: gleaph-codegen --manifest <path> --target <typescript|javascript> [--output <path>]"
                 );
                 return Ok(());
             }
@@ -46,15 +46,20 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
     let manifest_path = manifest_path.ok_or("--manifest is required")?;
     let target = target.ok_or("--target is required")?;
-    if target != "typescript" && target != "ts" {
+    if !matches!(target.as_str(), "typescript" | "ts" | "javascript" | "js") {
         return Err(format!(
-            "unsupported target {target:?}; only typescript is available"
+            "unsupported target {target:?}; expected typescript or javascript"
         ));
     }
     let input = fs::read_to_string(&manifest_path)
         .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
     let manifest = PreparedManifest::from_json(&input).map_err(|error| error.to_string())?;
-    let generated = generate_typescript(&manifest).map_err(|error| error.to_string())?;
+    let generated = match target.as_str() {
+        "typescript" | "ts" => generate_typescript(&manifest),
+        "javascript" | "js" => generate_javascript(&manifest),
+        _ => unreachable!("target was validated above"),
+    }
+    .map_err(|error| error.to_string())?;
     if let Some(output) = output {
         fs::write(&output, generated)
             .map_err(|error| format!("write {}: {error}", output.display()))?;
