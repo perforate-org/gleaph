@@ -8,6 +8,12 @@
 
 use candid::{CandidType, Deserialize, Principal};
 
+/// Serde facade used by generated canister bindings.
+pub use serde;
+
+/// JSON facade used by generated canister bindings for open record values.
+pub use serde_json;
+
 /// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
 pub use gleaph_gql::Value as GqlValue;
 

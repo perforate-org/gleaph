@@ -10,3 +10,4 @@ candid.workspace = true
 gleaph-gql.workspace = true
 ic-cdk.workspace = true
 serde.workspace = true
+serde_json.workspace = true

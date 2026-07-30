@@ -532,13 +532,24 @@ mod tests {
 
     #[test]
     fn generates_rust_canister_facade_with_runtime_boundary() {
-        let output = generate_rust_canister(&manifest()).unwrap();
+        let mut value = manifest();
+        value.operations[0].result.columns[0].semantic_type = SemanticType::Record {
+            fields: vec![RecordField {
+                name: "display".into(),
+                semantic_type: SemanticType::Text,
+                nullable: false,
+            }],
+        };
+        let output = generate_rust_canister(&value).unwrap();
         assert!(output.contains("pub trait PreparedCanisterExecutor"));
         assert!(output.contains("fn encode_params<T: Serialize>"));
         assert!(output.contains("pub struct PreparedCanisterQueries"));
         assert!(output.contains("use gleaph_cdk::GqlParams"));
         assert!(output.contains("fn execute_gql<'a, Row>"));
         assert!(output.contains("execute_query::<FindUsersRow>"));
+        assert!(!output.contains("use serde::"));
+        assert!(output.contains("gleaph_cdk::serde_json::Value"));
+        assert!(!output.contains("use serde_json"));
         assert!(!output.contains("ic-agent"));
     }
 

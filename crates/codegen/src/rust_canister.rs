@@ -20,8 +20,8 @@ fn generate_ir(ir: &CodegenIr) -> String {
          use std::future::Future;\n\
          use std::pin::Pin;\n\
          use gleaph_cdk::GqlParams;\n\
-         use serde::de::DeserializeOwned;\n\
-         use serde::{Deserialize, Serialize};\n\n",
+         use gleaph_cdk::serde::de::DeserializeOwned;\n\
+         use gleaph_cdk::serde::{Deserialize, Serialize};\n\n",
     );
     out.push_str(&format!(
         "pub const GLEAPH_GRAPH_ID: &str = {:?};\n\n",
@@ -79,7 +79,7 @@ fn generate_ir(ir: &CodegenIr) -> String {
         ));
         for parameter in &operation.parameters {
             let field = rust_field(&parameter.name);
-            let mut ty = rust_type(&parameter.semantic_type);
+            let mut ty = canister_rust_type(&parameter.semantic_type);
             if !parameter.required || parameter.nullable {
                 ty = format!("Option<{ty}>");
             }
@@ -96,9 +96,9 @@ fn generate_ir(ir: &CodegenIr) -> String {
         for column in &operation.result.columns {
             let field = rust_field(&column.name);
             let ty = if column.nullable {
-                format!("Option<{}>", rust_type(&column.semantic_type))
+                format!("Option<{}>", canister_rust_type(&column.semantic_type))
             } else {
-                rust_type(&column.semantic_type)
+                canister_rust_type(&column.semantic_type)
             };
             out.push_str(&format!(
                 "    /// Wire column {}.\n    #[serde(rename = {:?})]\n    pub {field}: {ty},\n",
@@ -166,4 +166,16 @@ fn runtime_types() -> &'static str {
      /// Path element representation used by generated declarations.\n\
      #[derive(Clone, Debug, Deserialize, Serialize)]\n\
      pub enum PreparedPathElement { Vertex(Vec<u8>), Edge(Vec<u8>) }\n\n"
+}
+
+fn canister_rust_type(semantic_type: &crate::SemanticType) -> String {
+    match semantic_type {
+        crate::SemanticType::Record { .. } => {
+            "std::collections::BTreeMap<String, gleaph_cdk::serde_json::Value>".to_string()
+        }
+        crate::SemanticType::List { element } => {
+            format!("Vec<{}>", canister_rust_type(element))
+        }
+        _ => rust_type(semantic_type),
+    }
 }
