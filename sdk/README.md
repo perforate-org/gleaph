@@ -29,9 +29,12 @@ Location: `sdk/canister/rust`
 
 Rust canister SDK seeded with helpers used by application canisters that delegate fixed read scenarios to the Gleaph Router. The initial API is intentionally small:
 
+- `GqlValue`, `GqlRecord`, `GqlParams`, and `GqlRow` — shared logical GQL value types for dynamic GQL and prepared operations.
+- `encode_gql_params(params)` — compact-binary encoding for ordered logical GQL parameters.
+- `call_gql_query::<R>(canister_id, query, params)` — bounded-wait inter-canister call to the Router's dynamic `gql_query` endpoint.
 - `encode_prepared_query_args(name, params)` — Candid-encode the `(String, Vec<u8>)` argument tuple used by Router prepared queries.
 - `call_prepared_query::<R>(canister_id, name, params)` — bounded-wait inter-canister call to `prepared_execute_query` with structured reject/decode errors.
-- `PreparedQueryClient` — thin canister-id-bound wrapper around `call_prepared_query`.
+- `GleaphClient` — canister-id-bound wrapper for dynamic GQL and prepared operations.
 
 Admin/management operations are not included; they belong in `sdk/admin/rust` when that slice lands.
 
