@@ -19,6 +19,161 @@ pub use serde_json;
 /// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
 pub use gleaph_gql::Value as GqlValue;
 
+/// Rust signed binary256 integer used by generated canister bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GqlInt256(gleaph_gql::types::Int256);
+
+impl GqlInt256 {
+    /// Construct from the shared GQL integer wrapper.
+    pub const fn from_inner(value: gleaph_gql::types::Int256) -> Self {
+        Self(value)
+    }
+
+    /// Return the shared GQL integer wrapper.
+    pub const fn into_inner(self) -> gleaph_gql::types::Int256 {
+        self.0
+    }
+}
+
+impl core::fmt::Display for GqlInt256 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl core::str::FromStr for GqlInt256 {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .parse::<gleaph_gql::types::Int256>()
+            .map(Self::from_inner)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl serde::Serialize for GqlInt256 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GqlInt256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <Self as core::str::FromStr>::from_str(&String::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Rust unsigned binary256 integer used by generated canister bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GqlUint256(gleaph_gql::types::Uint256);
+
+impl GqlUint256 {
+    /// Construct from the shared GQL integer wrapper.
+    pub const fn from_inner(value: gleaph_gql::types::Uint256) -> Self {
+        Self(value)
+    }
+
+    /// Return the shared GQL integer wrapper.
+    pub const fn into_inner(self) -> gleaph_gql::types::Uint256 {
+        self.0
+    }
+}
+
+impl core::fmt::Display for GqlUint256 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl core::str::FromStr for GqlUint256 {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .parse::<gleaph_gql::types::Uint256>()
+            .map(Self::from_inner)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl serde::Serialize for GqlUint256 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GqlUint256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <Self as core::str::FromStr>::from_str(&String::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Rust decimal value used by generated canister bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GqlDecimal(gleaph_gql::types::Decimal);
+
+impl GqlDecimal {
+    /// Construct from the shared GQL decimal wrapper.
+    pub const fn from_inner(value: gleaph_gql::types::Decimal) -> Self {
+        Self(value)
+    }
+
+    /// Return the shared GQL decimal wrapper.
+    pub const fn into_inner(self) -> gleaph_gql::types::Decimal {
+        self.0
+    }
+}
+
+impl core::fmt::Display for GqlDecimal {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl core::str::FromStr for GqlDecimal {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        gleaph_gql::types::Decimal::parse(value)
+            .map(Self::from_inner)
+            .ok_or_else(|| format!("invalid GQL decimal {value:?}"))
+    }
+}
+
+impl serde::Serialize for GqlDecimal {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GqlDecimal {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <Self as core::str::FromStr>::from_str(&String::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// Rust binary16 value used by generated canister bindings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GqlFloat16(half::f16);
@@ -536,6 +691,33 @@ mod tests {
         let encoded = serde_json::to_vec(&value).expect("serialize float16");
         let decoded: GqlFloat16 = serde_json::from_slice(&encoded).expect("deserialize float16");
         assert_eq!(decoded.to_bits(), 0x3c00);
+    }
+
+    #[test]
+    fn exact_integer_and_decimal_wrappers_round_trip_through_serde() {
+        let int256: GqlInt256 = "-123456789012345678901234567890".parse().unwrap();
+        let uint256: GqlUint256 = "123456789012345678901234567890".parse().unwrap();
+        let decimal: GqlDecimal = "123.4500".parse().unwrap();
+
+        let int256_json = serde_json::to_string(&int256).unwrap();
+        let uint256_json = serde_json::to_string(&uint256).unwrap();
+        let decimal_json = serde_json::to_string(&decimal).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<GqlInt256>(&int256_json).unwrap(),
+            int256
+        );
+        assert_eq!(
+            serde_json::from_str::<GqlUint256>(&uint256_json).unwrap(),
+            uint256
+        );
+        assert_eq!(
+            serde_json::from_str::<GqlDecimal>(&decimal_json).unwrap(),
+            decimal
+        );
+        assert_eq!(int256.to_string(), "-123456789012345678901234567890");
+        assert_eq!(uint256.to_string(), "123456789012345678901234567890");
+        assert_eq!(decimal.to_string(), "123.4500");
     }
 
     #[cfg(feature = "nightly-f128")]

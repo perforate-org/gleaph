@@ -46,11 +46,25 @@ pub trait PreparedCanisterExecutor {
 pub struct FindUsersParams {
     #[serde(rename = "limit")]
     pub limit: u64,
+    #[serde(rename = "signed")]
+    pub signed: gleaph_cdk::GqlInt256,
+    #[serde(rename = "unsigned")]
+    pub unsigned: gleaph_cdk::GqlUint256,
+    #[serde(rename = "price")]
+    pub price: gleaph_cdk::GqlDecimal,
 }
 
 impl FindUsersParams {
     pub fn into_gql_params(self) -> GqlParams {
-        vec![("limit".to_string(), GqlValue::Uint64(self.limit))]
+        vec![
+            ("limit".to_string(), GqlValue::Uint64(self.limit)),
+            ("signed".to_string(), GqlValue::Int256(self.signed.into_inner())),
+            (
+                "unsigned".to_string(),
+                GqlValue::Uint256(self.unsigned.into_inner()),
+            ),
+            ("price".to_string(), GqlValue::Decimal(self.price.into_inner())),
+        ]
     }
 }
 

@@ -570,13 +570,37 @@ mod tests {
                 nullable: false,
                 semantic_type: SemanticType::Float256,
             },
+            Parameter {
+                name: "signed".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Int256,
+            },
+            Parameter {
+                name: "unsigned".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Uint256,
+            },
+            Parameter {
+                name: "price".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Decimal,
+            },
         ];
         let output = generate_rust_canister(&value).unwrap();
         assert!(output.contains("pub quad: gleaph_cdk::GqlFloat128"));
         assert!(output.contains("pub oct: gleaph_cdk::GqlFloat256"));
+        assert!(output.contains("pub signed: gleaph_cdk::GqlInt256"));
+        assert!(output.contains("pub unsigned: gleaph_cdk::GqlUint256"));
+        assert!(output.contains("pub price: gleaph_cdk::GqlDecimal"));
         assert!(output.contains("#[serde(crate = \"gleaph_cdk::serde\")]"));
         assert!(output.contains("GqlValue::Float128(self.quad.into_inner())"));
         assert!(output.contains("GqlValue::Float256(self.oct.into_inner())"));
+        assert!(output.contains("GqlValue::Int256(self.signed.into_inner())"));
+        assert!(output.contains("GqlValue::Uint256(self.unsigned.into_inner())"));
+        assert!(output.contains("GqlValue::Decimal(self.price.into_inner())"));
     }
 
     #[test]
