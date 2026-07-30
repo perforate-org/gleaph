@@ -62,7 +62,7 @@ fn generate_ir(ir: &CodegenIr) -> String {
             "public type {executor_type} = {{\n  {method} : (Text, {type_name}Params) -> async {response};\n}};\n\n"
         ));
         body.push_str(&format!(
-            "public class {type_name}Queries(executor : {executor_type}) {{\n  /// Execute the prepared operation.\n  public func execute(params : {type_name}Params) : async {response} {{\n    await executor.{method}({}, params)\n  }};\n}};\n\n",
+            "public class {type_name}Queries(executor : {executor_type}) {{\n  /// Execute the prepared operation.\n  public func execute(params : {type_name}Params) : async {response} {{\n    await executor.{method}({}, params);\n  }};\n}};\n\n",
             motoko_string(&operation.name)
         ));
     }
