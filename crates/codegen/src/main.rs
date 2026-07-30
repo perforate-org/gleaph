@@ -1,6 +1,9 @@
 //! Command-line entrypoint for generating prepared-query client adapters.
 
-use gleaph_codegen::{PreparedManifest, generate_javascript, generate_rust, generate_typescript};
+use gleaph_codegen::{
+    PreparedManifest, generate_javascript, generate_rust, generate_rust_canister,
+    generate_typescript,
+};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -12,7 +15,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("gleaph-codegen: {message}");
             eprintln!(
-                "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust> [--output <path>]"
+                "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister> [--output <path>]"
             );
             ExitCode::FAILURE
         }
@@ -37,7 +40,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "--output" => output = Some(PathBuf::from(value()?.clone())),
             "-h" | "--help" => {
                 println!(
-                    "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust> [--output <path>]"
+                    "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister> [--output <path>]"
                 );
                 return Ok(());
             }
@@ -50,10 +53,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let target = target.ok_or("--target is required")?;
     if !matches!(
         target.as_str(),
-        "typescript" | "ts" | "javascript" | "js" | "rust" | "rs"
+        "typescript" | "ts" | "javascript" | "js" | "rust" | "rs" | "rust-canister"
     ) {
         return Err(format!(
-            "unsupported target {target:?}; expected typescript, javascript, or rust"
+            "unsupported target {target:?}; expected typescript, javascript, rust, or rust-canister"
         ));
     }
     let input = fs::read_to_string(&manifest_path)
@@ -63,6 +66,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "typescript" | "ts" => generate_typescript(&manifest),
         "javascript" | "js" => generate_javascript(&manifest),
         "rust" | "rs" => generate_rust(&manifest),
+        "rust-canister" => generate_rust_canister(&manifest),
         _ => unreachable!("target was validated above"),
     }
     .map_err(|error| error.to_string())?;

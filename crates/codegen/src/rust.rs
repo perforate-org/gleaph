@@ -239,7 +239,7 @@ fn generate_rust_ir(ir: &CodegenIr) -> String {
     out
 }
 
-fn rust_field(name: &str) -> String {
+pub(crate) fn rust_field(name: &str) -> String {
     let mut result = String::new();
     for (index, c) in name.chars().enumerate() {
         if c.is_ascii_alphanumeric() || c == '_' {
@@ -263,7 +263,7 @@ fn rust_field(name: &str) -> String {
     }
 }
 
-fn rust_type(semantic_type: &SemanticType) -> String {
+pub(crate) fn rust_type(semantic_type: &SemanticType) -> String {
     match semantic_type {
         SemanticType::Null => "()".to_string(),
         SemanticType::Bool => "bool".to_string(),

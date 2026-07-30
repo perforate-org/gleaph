@@ -10,11 +10,13 @@ mod common;
 mod ir;
 mod javascript;
 mod rust;
+mod rust_canister;
 mod typescript;
 
 pub use ir::{CodegenIr, OperationIr};
 pub use javascript::generate_javascript;
 pub use rust::generate_rust;
+pub use rust_canister::generate_rust_canister;
 pub use typescript::generate_typescript;
 
 use serde::{Deserialize, Serialize};
@@ -525,6 +527,16 @@ mod tests {
         );
         assert!(!output.contains("&self, ,"));
         assert!(output.contains("pub trait PreparedExecutor"));
+        assert!(!output.contains("ic-agent"));
+    }
+
+    #[test]
+    fn generates_rust_canister_facade_with_runtime_boundary() {
+        let output = generate_rust_canister(&manifest()).unwrap();
+        assert!(output.contains("pub trait PreparedCanisterExecutor"));
+        assert!(output.contains("fn encode_params<T: Serialize>"));
+        assert!(output.contains("pub struct PreparedCanisterQueries"));
+        assert!(output.contains("execute_query::<FindUsersRow>"));
         assert!(!output.contains("ic-agent"));
     }
 
