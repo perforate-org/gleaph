@@ -100,7 +100,8 @@ The prepared-query manifest and `crates/codegen` IR must describe the exact scal
 The current `SemanticType::Int64`/`Float64`-only model is replaced by a complete scalar model,
 including all supported integer and floating-point widths.
 
-The manifest version is 2 for this schema. A manifest containing an
+The manifest version remains 1 for this pre-release schema. Its contents are replaced in place;
+there is no compatibility decoder for the former widening contract. A manifest containing an
 unknown scalar variant or unsupported floating-point representation fails closed during
 validation and generation.
 
@@ -177,7 +178,7 @@ in this order:
 2. `IcWireValue` scalar variants and conversion tests were replaced;
 3. Router prepared result types and Candid declarations were updated;
 4. JS/TS SDK `ApiValue`, IDL, and runtime conversion were updated;
-5. `crates/codegen` `SemanticType` and manifest version 2 were expanded across all profiles;
+5. `crates/codegen` `SemanticType` was expanded in manifest version 1 across all profiles;
 6. Rust SDK/CDK and Motoko runtime helpers were updated; and
 7. round-trip and boundary-value tests were added across scalar families, including nested records
    and lists.
@@ -204,7 +205,7 @@ The accepted implementation satisfies:
 ## Implementation status
 
 Implemented in the pre-release wire contract. `IcWireValue`, the GQL compact codec, the JS SDK
-IDL/types, and codegen manifest version 2 preserve exact integer and floating-point scalar
+IDL/types, and codegen manifest version 1 preserve exact integer and floating-point scalar
 variants. `Float16` uses its raw `u16` bits; `Float128` and `Float256` use canonical 16-byte and
 32-byte little-endian representations. Runtime-specific wrapper ergonomics remain owned by the
 SDK/CDK profiles and can be extended without changing this wire contract.

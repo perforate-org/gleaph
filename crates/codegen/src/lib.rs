@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// The manifest format understood by this crate.
-pub const MANIFEST_VERSION: u32 = 2;
+pub const MANIFEST_VERSION: u32 = 1;
 
 /// A graph-scoped prepared-query metadata snapshot.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -384,6 +384,15 @@ mod tests {
     fn parses_and_validates_manifest() {
         let input = serde_json::to_string(&manifest()).unwrap();
         assert_eq!(PreparedManifest::from_json(&input).unwrap(), manifest());
+    }
+
+    #[test]
+    fn exact_scalar_contract_reuses_manifest_version_one() {
+        assert_eq!(MANIFEST_VERSION, 1);
+
+        let mut value = manifest();
+        value.manifest_version = 2;
+        assert_eq!(value.validate(), Err(ManifestError::UnsupportedVersion(2)));
     }
 
     #[test]
