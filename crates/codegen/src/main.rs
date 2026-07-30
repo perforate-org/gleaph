@@ -87,3 +87,56 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::run;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_output_path() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after the Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("gleaph-codegen-cli-{nonce}.ts"))
+    }
+
+    #[test]
+    fn generates_typescript_alias_to_explicit_output() {
+        let fixture_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/typescript-basic");
+        let manifest = fixture_dir.join("manifest.json");
+        let output = temporary_output_path();
+
+        run(vec![
+            "--manifest".into(),
+            manifest.to_string_lossy().into_owned(),
+            "--target".into(),
+            "ts".into(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+        ])
+        .expect("CLI should generate the TypeScript fixture");
+
+        let generated = fs::read_to_string(&output).expect("CLI should write the output file");
+        let expected = fs::read_to_string(fixture_dir.join("generated.ts"))
+            .expect("TypeScript fixture should exist");
+        assert_eq!(generated, expected);
+        fs::remove_file(output).expect("temporary output should be removable");
+    }
+
+    #[test]
+    fn rejects_unknown_target() {
+        let error = run(vec![
+            "--manifest".into(),
+            "manifest.json".into(),
+            "--target".into(),
+            "swift".into(),
+        ])
+        .expect_err("unknown targets must fail before reading the manifest");
+
+        assert!(error.contains("unsupported target \"swift\""));
+    }
+}
