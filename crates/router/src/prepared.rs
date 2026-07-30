@@ -603,7 +603,10 @@ pub(crate) fn prepared_key(graph_id: GraphId, name: &str) -> PreparedPlanKey {
 
 #[cfg(test)]
 mod tests {
-    use super::prepared_key;
+    use super::{
+        PreparedPlanRecord, PreparedPlanRecordV1, cached_prepared_cache, insert_prepared_plan,
+        prepared_key, rebuild_prepared_caches_after_upgrade,
+    };
     use gleaph_graph_kernel::entry::GraphId;
 
     #[test]
@@ -660,5 +663,46 @@ mod tests {
             matches!(&cost, ShortestPathCost::EdgeCostExpr { edge_var, .. } if edge_var.as_ref() == "e"),
             "expected COST BY in prepared planning to lower to EdgeCostExpr, got {cost:?}"
         );
+    }
+
+    #[test]
+    fn upgrade_rebuilds_prepared_cache_from_source_with_doc_comments() {
+        let store = crate::facade::store::RouterStore::new();
+        let owner = Principal::from_slice(&[2; 29]);
+        let graph_id = GraphId::from_raw(9);
+        crate::facade::auth::grant_admins(&[owner]);
+        store
+            .admin_register_graph(
+                owner,
+                GraphRegistryEntry {
+                    graph_id,
+                    graph_name: "prepared-runtime-cache".to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: false,
+                },
+            )
+            .expect("register graph");
+
+        let key = prepared_key(graph_id, "doc-query");
+        insert_prepared_plan(
+            key.clone(),
+            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                query: "/// generated docs\nMATCH (n:PreparedRuntimeCache) RETURN n".into(),
+                metadata: None,
+            }),
+        );
+
+        rebuild_prepared_caches_after_upgrade();
+
+        let cache = cached_prepared_cache(&key).expect("cache rebuilt");
+        assert_eq!(cache._program.doc_comments[0].text, "generated docs");
+        assert_eq!(cache._comments[0].text, " generated docs");
+        assert!(!cache.requires_write_path);
     }
 }
