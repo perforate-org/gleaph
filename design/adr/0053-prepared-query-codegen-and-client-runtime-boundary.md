@@ -223,7 +223,8 @@ The following points are intentionally not resolved by this proposed ADR:
 2. **Manifest authority:** Are parameter/result types inferred and frozen at registration, supplied
    explicitly by the registrar, or allowed to be generated only from a checked-in manifest?
 3. **Result schema:** What is the stable row/column wire shape, including nullability, nested
-   records, large integers, decimals, paths, and temporal values?
+   records, large integers, decimals, paths, and temporal values? Scalar width and floating-point
+   representation are governed by [ADR 0055](0055-exact-scalar-types-at-router-api-boundary.md).
 4. **SDK naming migration:** Does the JS SDK eventually rename `GraphClient`/`createGraphClient`
    to `GleaphClient`/`createGleaphClient`, and is that in this slice or a separate SDK ADR?
 5. **Rust SDK:** What package owns the non-CDK Rust client, and does it share a transport trait with
