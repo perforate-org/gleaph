@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_unsupported_typed_params_on_raw_executor_boundary() {
+    fn generates_record_params_as_shared_gql_records() {
         let mut value = manifest();
         value.operations[0].parameters[0].semantic_type = SemanticType::Record {
             fields: vec![RecordField {
@@ -614,9 +614,9 @@ mod tests {
             }],
         };
         let output = generate_rust_canister(&value).unwrap();
-        assert!(!output.contains("pub fn into_gql_params(self) -> GqlParams"));
-        assert!(output.contains("self.executor.execute_query::<FindUsersRow>"));
-        assert!(!output.contains("use gleaph_cdk::GqlValue;"));
+        assert!(output.contains("pub term: gleaph_cdk::GqlRecord"));
+        assert!(output.contains("GqlValue::Record(self.term)"));
+        assert!(output.contains("self.executor.execute_gql::<FindUsersRow>"));
     }
 
     #[test]
@@ -641,6 +641,55 @@ mod tests {
         assert!(output.contains("gleaph_cdk::gql_principal_value(self.owner)"));
         assert!(output.contains("GqlValue::Path(self.route.into_iter()"));
         assert!(output.contains("gleaph_cdk::GqlPathElement::Vertex"));
+    }
+
+    #[test]
+    fn generates_temporal_and_list_gql_param_conversions() {
+        let mut value = manifest();
+        value.operations[0].parameters = vec![
+            Parameter {
+                name: "created_at".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::DateTime,
+            },
+            Parameter {
+                name: "local_created_at".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::LocalDateTime,
+            },
+            Parameter {
+                name: "window".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::ZonedDateTime,
+            },
+            Parameter {
+                name: "duration".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Duration,
+            },
+            Parameter {
+                name: "ids".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::List {
+                    element: Box::new(SemanticType::Int32),
+                },
+            },
+        ];
+        let output = generate_rust_canister(&value).unwrap();
+        assert!(output.contains("GqlValue::DateTime(self.created_at.seconds"));
+        assert!(output.contains("GqlValue::LocalDateTime(self.local_created_at.seconds"));
+        assert!(output.contains("GqlValue::ZonedDateTime(self.window.seconds"));
+        assert!(output.contains("GqlValue::Duration(self.duration.months"));
+        assert!(
+            output.contains(
+                "GqlValue::List(self.ids.into_iter().map(|value| GqlValue::Int32(value))"
+            )
+        );
     }
 
     #[test]

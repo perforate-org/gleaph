@@ -90,7 +90,7 @@ fn generate_ir(ir: &CodegenIr) -> String {
         ));
         for parameter in &operation.parameters {
             let field = rust_field(&parameter.name);
-            let mut ty = canister_rust_type(&parameter.semantic_type);
+            let mut ty = canister_param_rust_type(&parameter.semantic_type);
             if !parameter.required || parameter.nullable {
                 ty = format!("Option<{ty}>");
             }
@@ -238,6 +238,26 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
         crate::SemanticType::Date => format!("GqlValue::Date({access})"),
         crate::SemanticType::Time => format!("GqlValue::Time({access})"),
         crate::SemanticType::LocalTime => format!("GqlValue::LocalTime({access})"),
+        crate::SemanticType::DateTime | crate::SemanticType::LocalDateTime => {
+            let variant = match semantic_type {
+                crate::SemanticType::DateTime => "DateTime",
+                crate::SemanticType::LocalDateTime => "LocalDateTime",
+                _ => unreachable!(),
+            };
+            format!("GqlValue::{variant}({access}.seconds, {access}.nanos)")
+        }
+        crate::SemanticType::ZonedDateTime => {
+            format!(
+                "GqlValue::ZonedDateTime({access}.seconds, {access}.nanos, {access}.offset_seconds)"
+            )
+        }
+        crate::SemanticType::ZonedTime => {
+            format!("GqlValue::ZonedTime({access}.nanos, {access}.offset_seconds)")
+        }
+        crate::SemanticType::Duration => {
+            format!("GqlValue::Duration({access}.months, {access}.nanos)")
+        }
+        crate::SemanticType::Record { .. } => format!("GqlValue::Record({access})"),
         crate::SemanticType::Path => format!(
             "GqlValue::Path({access}.into_iter().map(|value| match value {{ PreparedPathElement::Vertex(value) => gleaph_cdk::GqlPathElement::Vertex(value.into()), PreparedPathElement::Edge(value) => gleaph_cdk::GqlPathElement::Edge(value.into()) }}).collect())"
         ),
@@ -245,7 +265,6 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
             let element = gql_value_expression("value", element)?;
             format!("GqlValue::List({access}.into_iter().map(|value| {element}).collect())")
         }
-        _ => return None,
     };
     Some(value)
 }
@@ -288,5 +307,15 @@ fn canister_rust_type(semantic_type: &crate::SemanticType) -> String {
             format!("Vec<{}>", canister_rust_type(element))
         }
         _ => rust_type(semantic_type),
+    }
+}
+
+fn canister_param_rust_type(semantic_type: &crate::SemanticType) -> String {
+    match semantic_type {
+        crate::SemanticType::Record { .. } => "gleaph_cdk::GqlRecord".to_string(),
+        crate::SemanticType::List { element } => {
+            format!("Vec<{}>", canister_param_rust_type(element))
+        }
+        _ => canister_rust_type(semantic_type),
     }
 }
