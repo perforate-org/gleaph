@@ -16,8 +16,8 @@ for single-shard selective complete-row seeds on incapable shards, removing the 
 prepare overhead (0 instr/item on a fresh deploy versus the Plan 0115 82,129,243 instr/item fallback
 tax) while preserving post-routing typed rejection for multi-shard and non-early-known targets.
 Other groups continue to use the legacy fallback.
-Last revised: 2026-07-22
-Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
+Last revised: 2026-07-30
+Anchor timestamp: 2026-07-30 03:35:16 UTC +0000
 
 ## Context
 
@@ -388,10 +388,12 @@ sufficient, such as a shared seed relation.
 
 - Typed V1 admits only a group whose complete actual encoded request fits under
   `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`. The existing binary-search sizing helper is
-  reused as a full-request proof; an oversized distinct-seed group selects the sequential scalar
-  path before typed persistence.
-  Multi-request typed size chunking is deferred because splitting one Graph journal ordinal space
-  requires a separate protocol decision.
+  reused as a full-request proof. An oversized group is split into consecutive wire operations by
+  the largest fitting complete-row prefix; an oversized single row selects the sequential scalar
+  path before typed persistence. The durable `logical_operation_chunk_counts` mapping preserves
+  the logical-to-wire relationship, so Graph journal continuation remains ordered by wire ordinal
+  while Router aggregates one result per logical operation. This replaces the former deferred
+  multi-request limitation without introducing a second journal protocol.
 - An independent operation-count/instruction bound remains: `Dynamic` mode in Graph stops at the
   first unattempted operation when the instruction budget is exhausted.
 - The encoded size probe is performed before the inter-canister call, so no call is issued with an
