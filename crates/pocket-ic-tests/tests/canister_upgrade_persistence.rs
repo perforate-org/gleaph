@@ -10,6 +10,7 @@
 //! byte-for-byte identical — then proves the graph is still writable.
 
 use candid::{Decode, Encode};
+use gleaph_codegen::{generate_typescript, parse_manifest};
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::federation::ShardId;
@@ -180,6 +181,13 @@ fn prepared_manifest_exposes_doc_and_parameter_metadata() {
         operation.parameters[0].description.as_deref(),
         Some("Search term")
     );
+
+    let snapshot = serde_json::to_string(&manifest).expect("serialize manifest snapshot");
+    let parsed = parse_manifest(&snapshot).expect("codegen accepts Router manifest snapshot");
+    let generated = generate_typescript(&parsed).expect("generate TypeScript from Router manifest");
+    assert!(generated.contains("Find people by term"));
+    assert!(generated.contains("Search term"));
+    assert!(generated.contains("term"));
 }
 
 #[test]

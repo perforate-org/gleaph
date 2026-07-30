@@ -1413,6 +1413,7 @@ dependencies = [
  "candid",
  "cargo_metadata",
  "flate2",
+ "gleaph-codegen",
  "gleaph-gql",
  "gleaph-gql-ic",
  "gleaph-gql-planner",
