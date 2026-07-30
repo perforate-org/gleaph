@@ -36,9 +36,7 @@ export type ApiValue =
   | { Path: ApiPathElement[] }
   | { Record: Record<string, ApiValue> };
 
-export type ApiPathElement =
-  | { Vertex: Uint8Array }
-  | { Edge: Uint8Array };
+export type ApiPathElement = { Vertex: Uint8Array } | { Edge: Uint8Array };
 
 export interface ApiQueryRequest {
   query: string;

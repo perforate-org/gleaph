@@ -26,17 +26,13 @@ export interface GraphClient {
   execute(request: ApiQueryRequest): Promise<ApiQueryResponse>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
   listPrepared(): Promise<ApiListPreparedResponse>;
-  executePrepared(
-    request: ApiExecutePreparedRequest,
-  ): Promise<ApiQueryResponse>;
+  executePrepared(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse>;
   executePrepared(
     name: string,
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
   ): Promise<ApiQueryResponse>;
-  executePreparedMutation(
-    request: ApiExecutePreparedRequest,
-  ): Promise<ApiQueryResponse>;
+  executePreparedMutation(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse>;
   executePreparedMutation(
     name: string,
     params?: Record<string, unknown | ApiValue>,

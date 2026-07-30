@@ -1,15 +1,6 @@
-import {
-  Actor,
-  HttpAgent,
-  type ActorSubclass,
-  type Identity,
-} from "@icp-sdk/core/agent";
+import { Actor, HttpAgent, type ActorSubclass, type Identity } from "@icp-sdk/core/agent";
 import { Principal } from "@icp-sdk/core/principal";
-import {
-  createGraphClient,
-  type GraphClient,
-  type GraphTransport,
-} from "./client";
+import { createGraphClient, type GraphClient, type GraphTransport } from "./client";
 import { GleaphCanisterError } from "./errors";
 import { graphIdlFactory } from "./idl";
 import type {
@@ -60,15 +51,12 @@ export interface IcGraphTransportOptions {
 }
 
 function principalFrom(canisterId: string | Principal): Principal {
-  return typeof canisterId === "string"
-    ? Principal.fromText(canisterId)
-    : canisterId;
+  return typeof canisterId === "string" ? Principal.fromText(canisterId) : canisterId;
 }
 
-function toCandidParams(params: Record<string, ReturnType<typeof toApiParams>[string]>): [
-  string,
-  ReturnType<typeof toApiParams>[string],
-][] {
+function toCandidParams(
+  params: Record<string, ReturnType<typeof toApiParams>[string]>,
+): [string, ReturnType<typeof toApiParams>[string]][] {
   return Object.entries(params);
 }
 
@@ -94,7 +82,11 @@ class IcGraphTransport implements GraphTransport {
 
   async prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse> {
     return unwrapResult<ApiPrepareResponse>(
-      await this.actor.prepare(request.name, request.query, request.options ? [request.options] : []),
+      await this.actor.prepare(
+        request.name,
+        request.query,
+        request.options ? [request.options] : [],
+      ),
     );
   }
 
@@ -102,9 +94,7 @@ class IcGraphTransport implements GraphTransport {
     return unwrapResult<ApiListPreparedResponse>(await this.actor.list_prepared_api());
   }
 
-  async executePreparedQuery(
-    request: ApiExecutePreparedRequest,
-  ): Promise<ApiQueryResponse> {
+  async executePreparedQuery(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse> {
     return unwrapResult<ApiQueryResponse>(
       await this.actor.execute_prepared_query(
         request.name,
@@ -114,9 +104,7 @@ class IcGraphTransport implements GraphTransport {
     );
   }
 
-  async executePreparedUpdate(
-    request: ApiExecutePreparedRequest,
-  ): Promise<ApiQueryResponse> {
+  async executePreparedUpdate(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse> {
     return unwrapResult<ApiQueryResponse>(
       await this.actor.execute_prepared_update(
         request.name,
@@ -154,9 +142,7 @@ export async function createIcGraphTransport(
   return new IcGraphTransport(actor);
 }
 
-export async function createIcGraphClient(
-  options: IcGraphTransportOptions,
-): Promise<GraphClient> {
+export async function createIcGraphClient(options: IcGraphTransportOptions): Promise<GraphClient> {
   const transport = await createIcGraphTransport(options);
   return createGraphClient(transport);
 }

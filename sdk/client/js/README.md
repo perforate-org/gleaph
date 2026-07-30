@@ -30,9 +30,7 @@ const graph = await createIcGraphClient({
 });
 
 const plan = await graph.plan(
-  makeQueryRequest(
-    "USE myGraph MATCH ANY SHORTEST (a)-[:KNOWS]->{1,3}(b) RETURN b",
-  ),
+  makeQueryRequest("USE myGraph MATCH ANY SHORTEST (a)-[:KNOWS]->{1,3}(b) RETURN b"),
 );
 
 console.log(unsupportedUseGraphPushdowns(plan));

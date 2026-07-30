@@ -1,13 +1,13 @@
 {
   "name": "@gleaph/sdk",
-  "private": true,
   "version": "0.0.0",
-  "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "private": true,
   "files": [
     "dist"
   ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -19,11 +19,11 @@
     "test": "node --experimental-strip-types ./scripts/conformance-test.mjs",
     "build": "vp pack"
   },
-  "peerDependencies": {
-    "@icp-sdk/core": ">=5.4.0"
-  },
   "devDependencies": {
     "@icp-sdk/core": "^5.4.0",
     "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "@icp-sdk/core": ">=5.4.0"
   }
 }

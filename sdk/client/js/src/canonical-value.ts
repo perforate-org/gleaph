@@ -174,11 +174,13 @@ function appendValue(out: number[], value: ApiValue): void {
     appendU8(out, 16);
     appendF64(out, value.Float64);
   } else if ("Float128" in value) {
-    if (value.Float128.byteLength !== 16) throw new Error("Float128 must contain 16 canonical bytes");
+    if (value.Float128.byteLength !== 16)
+      throw new Error("Float128 must contain 16 canonical bytes");
     appendU8(out, 31);
     appendBytes(out, value.Float128);
   } else if ("Float256" in value) {
-    if (value.Float256.byteLength !== 32) throw new Error("Float256 must contain 32 canonical bytes");
+    if (value.Float256.byteLength !== 32)
+      throw new Error("Float256 must contain 32 canonical bytes");
     appendU8(out, 32);
     appendBytes(out, value.Float256);
   } else if ("Decimal" in value) {

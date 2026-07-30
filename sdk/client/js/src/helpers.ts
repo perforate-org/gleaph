@@ -5,12 +5,9 @@ import type {
   ApiUseGraphPushdownInfo,
 } from "./types";
 
-export const USE_GRAPH_PUSHDOWN_WARNING_PREFIX =
-  "remote USE GRAPH pushdown unavailable";
+export const USE_GRAPH_PUSHDOWN_WARNING_PREFIX = "remote USE GRAPH pushdown unavailable";
 
-export function isUnsupportedUseGraphPushdown(
-  info: ApiUseGraphPushdownInfo,
-): boolean {
+export function isUnsupportedUseGraphPushdown(info: ApiUseGraphPushdownInfo): boolean {
   return !info.supported;
 }
 
@@ -23,9 +20,7 @@ export function unsupportedUseGraphPushdowns(
   return value.use_graph_pushdown.filter(isUnsupportedUseGraphPushdown);
 }
 
-export function useGraphPushdownWarnings(
-  value: Pick<ApiQueryResponse, "execution">,
-): string[] {
+export function useGraphPushdownWarnings(value: Pick<ApiQueryResponse, "execution">): string[] {
   return value.execution.warnings.filter((warning) =>
     warning.startsWith(USE_GRAPH_PUSHDOWN_WARNING_PREFIX),
   );

@@ -48,9 +48,7 @@ const API_VALUE_TAGS = new Set([
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
-    typeof value === "object" &&
-    value !== null &&
-    Object.getPrototypeOf(value) === Object.prototype
+    typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype
   );
 }
 
@@ -214,9 +212,7 @@ export function fromApiValue(value: ApiValue): unknown {
 export function toApiParams(
   params: Record<string, unknown | ApiValue> = {},
 ): Record<string, ApiValue> {
-  return Object.fromEntries(
-    Object.entries(params).map(([key, value]) => [key, toApiValue(value)]),
-  );
+  return Object.fromEntries(Object.entries(params).map(([key, value]) => [key, toApiValue(value)]));
 }
 
 export function makeQueryRequest(
