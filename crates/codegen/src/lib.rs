@@ -5,9 +5,11 @@
 //! endpoint can use the same wire shape as local generation snapshots.
 
 mod common;
+mod ir;
 mod javascript;
 mod typescript;
 
+pub use ir::{CodegenIr, OperationIr};
 pub use javascript::generate_javascript;
 pub use typescript::generate_typescript;
 
@@ -301,5 +303,15 @@ mod tests {
         assert!(output.contains("client.executePrepared(\"find-users\""));
         assert!(!output.contains("interface FindUsersParams"));
         assert!(!output.contains(" as const"));
+    }
+
+    #[test]
+    fn normalizes_operation_names_once_for_all_profiles() {
+        let ir = manifest().normalize().unwrap();
+        let operation = &ir.operations[0];
+        assert_eq!(operation.wire_name, "find-users");
+        assert_eq!(operation.type_name, "FindUsers");
+        assert_eq!(operation.params_type_name, "FindUsersParams");
+        assert_eq!(operation.row_type_name, "FindUsersRow");
     }
 }
