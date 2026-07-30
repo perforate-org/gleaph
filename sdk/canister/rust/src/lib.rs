@@ -62,11 +62,53 @@ pub async fn call_prepared_query<R>(
 where
     R: CandidType + for<'de> Deserialize<'de>,
 {
+    let args = encode_prepared_query_args(name, params);
+    call_prepared_method(canister_id, "prepared_execute_query", args).await
+}
+
+/// Make a bounded-wait call to `prepared_execute_update` on `canister_id`.
+///
+/// The returned type is normally `u64` for the current Router endpoint. The generic form keeps
+/// the helper usable with a future result-wire contract without duplicating call error handling.
+pub async fn call_prepared_update<R>(
+    canister_id: Principal,
+    name: impl Into<String>,
+    params: Vec<u8>,
+) -> Result<R, PreparedCallError>
+where
+    R: CandidType + for<'de> Deserialize<'de>,
+{
+    let args = encode_prepared_query_args(name, params);
+    call_prepared_method(canister_id, "prepared_execute_update", args).await
+}
+
+/// Make a bounded-wait call to `prepared_execute_update_idempotent` on `canister_id`.
+pub async fn call_prepared_update_idempotent<R>(
+    canister_id: Principal,
+    name: impl Into<String>,
+    params: Vec<u8>,
+    client_mutation_key: impl Into<String>,
+) -> Result<R, PreparedCallError>
+where
+    R: CandidType + for<'de> Deserialize<'de>,
+{
+    let args = candid::utils::encode_args((name.into(), params, client_mutation_key.into()))
+        .expect("Candid encode prepared idempotent update arguments");
+    call_prepared_method(canister_id, "prepared_execute_update_idempotent", args).await
+}
+
+async fn call_prepared_method<R>(
+    canister_id: Principal,
+    method: &str,
+    args: Vec<u8>,
+) -> Result<R, PreparedCallError>
+where
+    R: CandidType + for<'de> Deserialize<'de>,
+{
     use ic_cdk::call::{CallFailed, Response};
 
-    let args = encode_prepared_query_args(name, params);
     let call_result: Result<Response, CallFailed> =
-        ic_cdk::call::Call::bounded_wait(canister_id, "prepared_execute_query")
+        ic_cdk::call::Call::bounded_wait(canister_id, method)
             .with_raw_args(&args)
             .await;
 
@@ -111,6 +153,31 @@ impl PreparedQueryClient {
     {
         call_prepared_query(self.canister_id, name, params).await
     }
+
+    /// Execute a named prepared update through the configured Router canister.
+    pub async fn execute_update<R>(
+        &self,
+        name: impl Into<String>,
+        params: Vec<u8>,
+    ) -> Result<R, PreparedCallError>
+    where
+        R: CandidType + for<'de> Deserialize<'de>,
+    {
+        call_prepared_update(self.canister_id, name, params).await
+    }
+
+    /// Execute an idempotent named prepared update through the configured Router canister.
+    pub async fn execute_update_idempotent<R>(
+        &self,
+        name: impl Into<String>,
+        params: Vec<u8>,
+        client_mutation_key: impl Into<String>,
+    ) -> Result<R, PreparedCallError>
+    where
+        R: CandidType + for<'de> Deserialize<'de>,
+    {
+        call_prepared_update_idempotent(self.canister_id, name, params, client_mutation_key).await
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +206,21 @@ mod tests {
         let text = format!("{err}");
         assert!(text.contains("no query"), "{text}");
         assert!(text.contains("CanisterReject"), "{text}");
+    }
+
+    #[test]
+    fn encode_prepared_idempotent_update_args_round_trips() {
+        let encoded = candid::utils::encode_args((
+            "increment".to_string(),
+            vec![1_u8, 2, 3],
+            "request-1".to_string(),
+        ))
+        .expect("encode args");
+        let decoded: (String, Vec<u8>, String) =
+            candid::utils::decode_args(&encoded).expect("decode args");
+        assert_eq!(
+            decoded,
+            ("increment".into(), vec![1, 2, 3], "request-1".into())
+        );
     }
 }
