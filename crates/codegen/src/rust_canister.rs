@@ -170,6 +170,8 @@ fn runtime_types() -> &'static str {
 
 fn canister_rust_type(semantic_type: &crate::SemanticType) -> String {
     match semantic_type {
+        crate::SemanticType::Float128 => "gleaph_cdk::GqlFloat128".to_string(),
+        crate::SemanticType::Float256 => "gleaph_cdk::GqlFloat256".to_string(),
         crate::SemanticType::Record { .. } => {
             "std::collections::BTreeMap<String, gleaph_cdk::serde_json::Value>".to_string()
         }

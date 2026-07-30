@@ -6,6 +6,8 @@
 //! a bounded-wait inter-canister call, but it does not know application-specific scenario names or
 //! semantics.
 
+#![cfg_attr(feature = "nightly-f128", feature(f128))]
+
 use candid::{CandidType, Deserialize, Principal};
 
 /// Serde facade used by generated canister bindings.
@@ -16,6 +18,13 @@ pub use serde_json;
 
 /// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
 pub use gleaph_gql::Value as GqlValue;
+
+/// Rust binary256 value used by generated canister bindings.
+pub type GqlFloat256 = f256::f256;
+
+/// Rust binary128 value used by generated canister bindings.
+#[cfg(feature = "nightly-f128")]
+pub type GqlFloat128 = f128;
 
 /// Ordered GQL record representation.
 ///

@@ -554,6 +554,28 @@ mod tests {
     }
 
     #[test]
+    fn generates_cdk_float_types_for_rust_canister_profile() {
+        let mut value = manifest();
+        value.operations[0].parameters = vec![
+            Parameter {
+                name: "quad".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Float128,
+            },
+            Parameter {
+                name: "oct".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Float256,
+            },
+        ];
+        let output = generate_rust_canister(&value).unwrap();
+        assert!(output.contains("pub quad: gleaph_cdk::GqlFloat128"));
+        assert!(output.contains("pub oct: gleaph_cdk::GqlFloat256"));
+    }
+
+    #[test]
     fn normalizes_operation_names_once_for_all_profiles() {
         let ir = manifest().normalize().unwrap();
         let operation = &ir.operations[0];
