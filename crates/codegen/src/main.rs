@@ -182,6 +182,32 @@ mod tests {
     }
 
     #[test]
+    fn generates_motoko_fixture() {
+        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/motoko-basic");
+        let output = temporary_output_path();
+
+        run(vec![
+            "--manifest".into(),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("fixtures/typescript-basic/manifest.json")
+                .to_string_lossy()
+                .into_owned(),
+            "--target".into(),
+            "motoko".into(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+        ])
+        .expect("CLI should generate the Motoko fixture");
+
+        let generated = fs::read_to_string(&output).expect("CLI should write the output file");
+        let expected = fs::read_to_string(fixture_dir.join("src/generated.mo"))
+            .expect("Motoko fixture should exist");
+        assert_eq!(generated, expected);
+        assert!(generated.contains("module {"));
+        fs::remove_file(output).expect("temporary output should be removable");
+    }
+
+    #[test]
     fn rejects_unknown_target() {
         let error = run(vec![
             "--manifest".into(),

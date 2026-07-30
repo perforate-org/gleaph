@@ -411,7 +411,12 @@ mod tests {
         assert!(output.contains("public class FindUsersQueries"));
         assert!(output.contains("/// Find users by their search term."));
         assert!(output.contains("/// Text to search for."));
-        assert!(output.contains("import Principal \"mo:core/Principal\";"));
+        assert!(!output.contains("import Principal \"mo:core/Principal\";"));
+
+        let mut principal_manifest = manifest();
+        principal_manifest.operations[0].parameters[0].semantic_type = SemanticType::Principal;
+        let principal_output = generate_motoko(&principal_manifest).unwrap();
+        assert!(principal_output.contains("import Principal \"mo:core/Principal\";"));
     }
 
     #[test]
