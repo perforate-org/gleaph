@@ -97,6 +97,50 @@ fn generate_rust_ir(ir: &CodegenIr) -> String {
                  Row: DeserializeOwned + 'a;\n\
          }\n\n",
     );
+    out.push_str(
+        "/// Date-time representation used by generated Rust declarations.\n\
+         #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+         pub struct PreparedDateTime {\n\
+             /// Unix seconds.\n\
+             pub seconds: i64,\n\
+             /// Nanoseconds within the second.\n\
+             pub nanos: u32,\n\
+         }\n\n\
+         /// Zoned date-time representation used by generated Rust declarations.\n\
+         #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+         pub struct PreparedZonedDateTime {\n\
+             /// Unix seconds.\n\
+             pub seconds: i64,\n\
+             /// Nanoseconds within the second.\n\
+             pub nanos: u32,\n\
+             /// UTC offset in seconds.\n\
+             pub offset_seconds: i32,\n\
+         }\n\n\
+         /// Zoned time representation used by generated Rust declarations.\n\
+         #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+         pub struct PreparedZonedTime {\n\
+             /// Nanoseconds since midnight.\n\
+             pub nanos: u64,\n\
+             /// UTC offset in seconds.\n\
+             pub offset_seconds: i32,\n\
+         }\n\n\
+         /// Duration representation used by generated Rust declarations.\n\
+         #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+         pub struct PreparedDuration {\n\
+             /// Calendar months.\n\
+             pub months: i32,\n\
+             /// Nanoseconds.\n\
+             pub nanos: i64,\n\
+         }\n\n\
+         /// Path element representation used by generated Rust declarations.\n\
+         #[derive(Clone, Debug, Deserialize, Serialize)]\n\
+         pub enum PreparedPathElement {\n\
+             /// Vertex identifier.\n\
+             Vertex(Vec<u8>),\n\
+             /// Edge identifier.\n\
+             Edge(Vec<u8>),\n\
+         }\n\n",
+    );
 
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;
@@ -242,8 +286,15 @@ fn rust_type(semantic_type: &SemanticType) -> String {
         SemanticType::Float128 | SemanticType::Float256 => "Vec<u8>".to_string(),
         SemanticType::Text => "String".to_string(),
         SemanticType::Bytes => "Vec<u8>".to_string(),
-        SemanticType::Date | SemanticType::Time => "i64".to_string(),
+        SemanticType::Date => "i32".to_string(),
+        SemanticType::Time | SemanticType::LocalTime => "u64".to_string(),
+        SemanticType::DateTime | SemanticType::LocalDateTime => "PreparedDateTime".to_string(),
+        SemanticType::ZonedDateTime => "PreparedZonedDateTime".to_string(),
+        SemanticType::ZonedTime => "PreparedZonedTime".to_string(),
+        SemanticType::Duration => "PreparedDuration".to_string(),
         SemanticType::Principal => "String".to_string(),
         SemanticType::List { element } => format!("Vec<{}>", rust_type(element)),
+        SemanticType::Path => "Vec<PreparedPathElement>".to_string(),
+        SemanticType::Record { .. } => "BTreeMap<String, serde_json::Value>".to_string(),
     }
 }

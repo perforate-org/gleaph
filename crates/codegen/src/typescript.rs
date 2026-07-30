@@ -18,6 +18,7 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
     out.push_str(
         "import type { ApiQueryResponse, ApiValue, GraphClient, PreparedSortSpec } from \"@gleaph/sdk\";\n",
     );
+    out.push_str("import type { ApiPathElement } from \"@gleaph/sdk\";\n");
     out.push_str("import { fromApiValue } from \"@gleaph/sdk\";\n\n");
     out.push_str("export const GLEAPH_GRAPH_ID = ");
     out.push_str(&json_string(&ir.graph_id));
@@ -180,10 +181,34 @@ fn ts_type(semantic_type: &SemanticType, nullable: bool) -> String {
         | SemanticType::Date => "number".to_string(),
         SemanticType::Float128 | SemanticType::Float256 => "Uint8Array".to_string(),
         SemanticType::Time => "bigint | number".to_string(),
+        SemanticType::LocalTime => "bigint | number".to_string(),
+        SemanticType::DateTime | SemanticType::LocalDateTime => {
+            "{ seconds: bigint | number; nanos: number }".to_string()
+        }
+        SemanticType::ZonedDateTime => {
+            "{ seconds: bigint | number; nanos: number; offset_seconds: number }".to_string()
+        }
+        SemanticType::ZonedTime => "{ nanos: bigint | number; offset_seconds: number }".to_string(),
+        SemanticType::Duration => "{ months: number; nanos: bigint | number }".to_string(),
         SemanticType::Text => "string".to_string(),
         SemanticType::Principal => "PrincipalLike".to_string(),
         SemanticType::Bytes => "Uint8Array".to_string(),
         SemanticType::List { element } => format!("Array<{}>", ts_type(element, false)),
+        SemanticType::Path => "ApiPathElement[]".to_string(),
+        SemanticType::Record { fields } => {
+            let fields = fields
+                .iter()
+                .map(|field| {
+                    format!(
+                        "{}: {}",
+                        ts_property(&field.name),
+                        ts_type(&field.semantic_type, field.nullable)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("{{ {fields} }}")
+        }
     };
     if nullable {
         format!("{base} | null")

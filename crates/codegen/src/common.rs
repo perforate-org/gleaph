@@ -31,11 +31,31 @@ pub(crate) fn encode_expression(access: &str, semantic_type: &SemanticType) -> S
         SemanticType::Bytes => format!("{{ Bytes: {access} }}"),
         SemanticType::Date => format!("{{ Date: {access} }}"),
         SemanticType::Time => format!("{{ Time: {access} }}"),
+        SemanticType::LocalTime => format!("{{ LocalTime: {access} }}"),
+        SemanticType::DateTime => format!("{{ DateTime: {access} }}"),
+        SemanticType::LocalDateTime => format!("{{ LocalDateTime: {access} }}"),
+        SemanticType::ZonedDateTime => format!("{{ ZonedDateTime: {access} }}"),
+        SemanticType::ZonedTime => format!("{{ ZonedTime: {access} }}"),
+        SemanticType::Duration => format!("{{ Duration: {access} }}"),
         SemanticType::Principal => format!("{{ Principal: {access} }}"),
         SemanticType::List { element } => format!(
             "{{ List: {access}.map((value) => {}) }}",
             encode_expression("value", element)
         ),
+        SemanticType::Path => format!("{{ Path: {access} }}"),
+        SemanticType::Record { fields } => {
+            let fields = fields
+                .iter()
+                .map(|field| {
+                    let key = json_string(&field.name);
+                    let value =
+                        encode_expression(&format!("{access}[{key}]"), &field.semantic_type);
+                    format!("[{key}, {value}]")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ Record: Object.fromEntries([{fields}]) }}")
+        }
     }
 }
 

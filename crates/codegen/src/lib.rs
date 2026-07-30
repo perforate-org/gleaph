@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// The manifest format understood by this crate.
-pub const MANIFEST_VERSION: u32 = 1;
+pub const MANIFEST_VERSION: u32 = 2;
 
 /// A graph-scoped prepared-query metadata snapshot.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -176,11 +176,43 @@ pub enum SemanticType {
     Time,
     /// An Internet Computer principal.
     Principal,
+    /// Nanoseconds since midnight in UTC.
+    LocalTime,
+    /// UTC date-time represented as seconds and nanoseconds.
+    DateTime,
+    /// Time-zone-free local date-time represented as seconds and nanoseconds.
+    LocalDateTime,
+    /// Date-time with an explicit UTC offset.
+    ZonedDateTime,
+    /// Time with an explicit UTC offset.
+    ZonedTime,
+    /// ISO-8601 duration represented as months and nanoseconds.
+    Duration,
     /// A homogeneous list of values.
     List {
         /// Type of each list element.
         element: Box<SemanticType>,
     },
+    /// A named-field record.
+    Record {
+        /// Fields in their wire order.
+        fields: Vec<RecordField>,
+    },
+    /// A path consisting of vertex and edge identifiers.
+    Path,
+}
+
+/// A field in a semantic record.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RecordField {
+    /// Field name in the wire representation.
+    pub name: String,
+    /// Field semantic type.
+    #[serde(rename = "type")]
+    pub semantic_type: SemanticType,
+    /// Whether the field may contain null.
+    #[serde(default)]
+    pub nullable: bool,
 }
 
 /// Validation or profile error encountered while loading a manifest.
@@ -244,6 +276,17 @@ pub enum ManifestError {
         operation: String,
         /// Duplicate sort-key identifier.
         key: String,
+    },
+    /// A record field name is empty or whitespace-only.
+    #[error("record field name must not be empty in {0:?}")]
+    EmptyRecordFieldName(String),
+    /// Two fields in one record use the same name.
+    #[error("duplicate record field {field:?} in {path:?}")]
+    DuplicateRecordField {
+        /// Path to the containing record.
+        path: String,
+        /// Duplicate field name.
+        field: String,
     },
     /// Idempotency metadata was declared for a query operation.
     #[error("idempotency is only supported for update operation {0:?}")]
@@ -329,6 +372,22 @@ impl PreparedManifest {
                 }
             }
 
+            for parameter in &operation.parameters {
+                validate_semantic_type(
+                    &parameter.semantic_type,
+                    &format!(
+                        "operation {:?} parameter {:?}",
+                        operation.name, parameter.name
+                    ),
+                )?;
+            }
+            for column in &operation.result.columns {
+                validate_semantic_type(
+                    &column.semantic_type,
+                    &format!("operation {:?} column {:?}", operation.name, column.name),
+                )?;
+            }
+
             let mut sort_keys = BTreeSet::new();
             for sort in &operation.allowed_sorts {
                 if sort.key.trim().is_empty() {
@@ -343,6 +402,32 @@ impl PreparedManifest {
             }
         }
         Ok(())
+    }
+}
+
+fn validate_semantic_type(semantic_type: &SemanticType, path: &str) -> Result<(), ManifestError> {
+    match semantic_type {
+        SemanticType::List { element } => validate_semantic_type(element, path),
+        SemanticType::Record { fields } => {
+            let mut names = BTreeSet::new();
+            for field in fields {
+                if field.name.trim().is_empty() {
+                    return Err(ManifestError::EmptyRecordFieldName(path.to_owned()));
+                }
+                if !names.insert(&field.name) {
+                    return Err(ManifestError::DuplicateRecordField {
+                        path: path.to_owned(),
+                        field: field.name.clone(),
+                    });
+                }
+                validate_semantic_type(
+                    &field.semantic_type,
+                    &format!("{path} record field {:?}", field.name),
+                )?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 
@@ -387,12 +472,12 @@ mod tests {
     }
 
     #[test]
-    fn exact_scalar_contract_reuses_manifest_version_one() {
-        assert_eq!(MANIFEST_VERSION, 1);
+    fn exact_manifest_schema_uses_version_two() {
+        assert_eq!(MANIFEST_VERSION, 2);
 
         let mut value = manifest();
-        value.manifest_version = 2;
-        assert_eq!(value.validate(), Err(ManifestError::UnsupportedVersion(2)));
+        value.manifest_version = 1;
+        assert_eq!(value.validate(), Err(ManifestError::UnsupportedVersion(1)));
     }
 
     #[test]
@@ -485,5 +570,106 @@ mod tests {
         assert!(rust.contains("pub small: i8"));
         assert!(rust.contains("pub wide_float: Vec<u8>"));
         assert!(rust.contains("pub user_name: u32"));
+    }
+
+    #[test]
+    fn supports_temporal_path_and_record_types_in_all_profiles() {
+        let mut value = manifest();
+        value.operations[0].parameters = vec![
+            Parameter {
+                name: "local_time".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::LocalTime,
+            },
+            Parameter {
+                name: "when".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::ZonedDateTime,
+            },
+            Parameter {
+                name: "metadata".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Record {
+                    fields: vec![
+                        RecordField {
+                            name: "created_at".into(),
+                            semantic_type: SemanticType::DateTime,
+                            nullable: false,
+                        },
+                        RecordField {
+                            name: "path".into(),
+                            semantic_type: SemanticType::Path,
+                            nullable: true,
+                        },
+                    ],
+                },
+            },
+        ];
+        value.operations[0].result.columns = vec![
+            Column {
+                name: "local".into(),
+                semantic_type: SemanticType::LocalDateTime,
+                nullable: false,
+            },
+            Column {
+                name: "duration".into(),
+                semantic_type: SemanticType::Duration,
+                nullable: false,
+            },
+            Column {
+                name: "zoned_time".into(),
+                semantic_type: SemanticType::ZonedTime,
+                nullable: false,
+            },
+        ];
+
+        let typescript = generate_typescript(&value).unwrap();
+        assert!(typescript.contains("local_time: bigint | number"));
+        assert!(typescript.contains("when: { seconds: bigint | number"));
+        assert!(typescript.contains("metadata: { created_at: { seconds: bigint | number"));
+        assert!(typescript.contains("local: { seconds: bigint | number"));
+        assert!(typescript.contains("duration: { months: number"));
+        assert!(typescript.contains("zoned_time: { nanos: bigint | number"));
+
+        let javascript = generate_javascript(&value).unwrap();
+        assert!(javascript.contains(r#"{ LocalTime: params["local_time"] }"#));
+        assert!(javascript.contains(r#"{ ZonedDateTime: params["when"] }"#));
+        assert!(javascript.contains(r#"{ DateTime: params["metadata"]["created_at"] }"#));
+        assert!(javascript.contains(r#"{ Path: params["metadata"]["path"] }"#));
+
+        let rust = generate_rust(&value).unwrap();
+        assert!(rust.contains("pub local_time: u64"));
+        assert!(rust.contains("pub when: PreparedZonedDateTime"));
+        assert!(rust.contains("pub metadata: BTreeMap<String, serde_json::Value>"));
+        assert!(rust.contains("pub local: PreparedDateTime"));
+        assert!(rust.contains("pub duration: PreparedDuration"));
+        assert!(rust.contains("pub zoned_time: PreparedZonedTime"));
+        assert!(!rust.contains("\n+"));
+    }
+
+    #[test]
+    fn rejects_duplicate_nested_record_fields() {
+        let mut value = manifest();
+        value.operations[0].parameters[0].semantic_type = SemanticType::Record {
+            fields: vec![
+                RecordField {
+                    name: "value".into(),
+                    semantic_type: SemanticType::Int32,
+                    nullable: false,
+                },
+                RecordField {
+                    name: "value".into(),
+                    semantic_type: SemanticType::Int32,
+                    nullable: false,
+                },
+            ],
+        };
+        assert!(matches!(
+            value.validate(),
+            Err(ManifestError::DuplicateRecordField { field, .. }) if field == "value"
+        ));
     }
 }
