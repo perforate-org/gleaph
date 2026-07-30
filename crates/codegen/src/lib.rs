@@ -743,12 +743,18 @@ mod tests {
                 },
                 nullable: false,
             },
+            Column {
+                name: "deleted_at".into(),
+                semantic_type: SemanticType::Null,
+                nullable: false,
+            },
         ];
         let output = generate_rust_canister(&value).unwrap();
         assert!(output.contains("impl gleaph_cdk::FromGqlRow for FindUsersRow"));
         assert!(output.contains("PreparedDateTime { seconds, nanos }"));
         assert!(output.contains("gleaph_cdk::gql_principal_from_value(value)?"));
         assert!(output.contains("GqlValue::List(value) => value.into_iter()"));
+        assert!(output.contains("GqlValue::Null => ()"));
     }
 
     #[test]

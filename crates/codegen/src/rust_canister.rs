@@ -305,6 +305,9 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
 
 fn row_value_expression(semantic_type: &crate::SemanticType) -> Option<String> {
     let value = match semantic_type {
+        crate::SemanticType::Null => {
+            "match value { GqlValue::Null => (), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Null\")) }"
+        }
         crate::SemanticType::Bool => {
             "match value { GqlValue::Bool(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Bool\")) }"
         }
@@ -403,7 +406,6 @@ fn row_value_expression(semantic_type: &crate::SemanticType) -> Option<String> {
                 "match value {{ GqlValue::List(value) => value.into_iter().map(|value| {{ {element} }}).collect::<Result<Vec<_>, _>>()?, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"List\")) }}"
             ));
         }
-        _ => return None,
     };
     Some(value.to_string())
 }
