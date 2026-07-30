@@ -202,6 +202,8 @@ fn prepared_register_core(
     let mut metadata = metadata;
     if let Some(metadata) = &mut metadata {
         crate::prepared_documentation::apply_to_operation(&cache._program.doc_comments, metadata);
+        crate::prepared_documentation::validate_typed_parameters(&cache._program, metadata)
+            .map_err(RouterError::InvalidArgument)?;
     }
     if let Some(metadata) = &metadata {
         let expected_kind = if requires_write_path {

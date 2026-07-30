@@ -6,8 +6,13 @@
 
 use std::collections::BTreeMap;
 
+use gleaph_gql::ast::ValueType;
+use gleaph_gql::ast::{
+    BindingTypeAnnotation, ExprKind, GqlProgram, ProcedureBindingInitializer, ProcedureBindingKind,
+    Statement,
+};
 use gleaph_gql::token::DocComment;
-use gleaph_prepared_api::PreparedOperation;
+use gleaph_prepared_api::{PreparedOperation, SemanticType};
 
 /// Apply GQL source documentation to metadata fields that were not explicitly supplied.
 pub(crate) fn apply_to_operation(comments: &[DocComment], operation: &mut PreparedOperation) {
@@ -20,6 +25,153 @@ pub(crate) fn apply_to_operation(comments: &[DocComment], operation: &mut Prepar
             parameter.description = documentation.parameters.get(&parameter.name).cloned();
         }
     }
+}
+
+/// Validate typed GQL value bindings against the manifest parameter contract.
+pub(crate) fn validate_typed_parameters(
+    program: &GqlProgram,
+    operation: &PreparedOperation,
+) -> Result<(), String> {
+    let declarations = collect_typed_parameters(program)?;
+    for (name, (semantic_type, not_null)) in declarations {
+        let parameter = operation
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == name)
+            .ok_or_else(|| format!("typed GQL parameter {name:?} is missing from metadata"))?;
+        if parameter.semantic_type != semantic_type {
+            return Err(format!(
+                "typed GQL parameter {name:?} has type {:?}, metadata declares {:?}",
+                semantic_type, parameter.semantic_type
+            ));
+        }
+        if not_null && parameter.nullable {
+            return Err(format!(
+                "typed GQL parameter {name:?} is NOT NULL but metadata permits null"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_typed_parameters(
+    program: &GqlProgram,
+) -> Result<BTreeMap<String, (SemanticType, bool)>, String> {
+    let body = program
+        .transaction_activity
+        .as_ref()
+        .and_then(|activity| activity.body.as_ref())
+        .ok_or_else(|| "missing transaction body".to_owned())?;
+    let mut declarations = BTreeMap::new();
+    for statement in body.iter_statements() {
+        collect_statement_bindings(statement, &mut declarations)?;
+    }
+    Ok(declarations)
+}
+
+fn collect_statement_bindings(
+    statement: &Statement,
+    declarations: &mut BTreeMap<String, (SemanticType, bool)>,
+) -> Result<(), String> {
+    let Statement::Query(query) = statement else {
+        return Ok(());
+    };
+    for linear in std::iter::once(&query.left).chain(query.rest.iter().map(|(_, query)| query)) {
+        for binding in &linear.prefix_bindings {
+            if binding.kind != ProcedureBindingKind::Value {
+                continue;
+            }
+            let Some(BindingTypeAnnotation::Value(value_type)) = &binding.type_annotation else {
+                continue;
+            };
+            let ProcedureBindingInitializer::Expr(expr) = &binding.initializer else {
+                continue;
+            };
+            let ExprKind::Parameter(parameter) = &expr.kind else {
+                continue;
+            };
+            let name = parameter.trim_start_matches('$');
+            if name.is_empty() || name != binding.variable {
+                continue;
+            }
+            let (semantic_type, not_null) = semantic_type_from_value_type(value_type)
+                .ok_or_else(|| format!("unsupported typed GQL parameter type {name:?}"))?;
+            if declarations
+                .insert(name.to_owned(), (semantic_type, not_null))
+                .is_some()
+            {
+                return Err(format!("duplicate typed GQL parameter {name:?}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn semantic_type_from_value_type(value_type: &ValueType) -> Option<(SemanticType, bool)> {
+    let (value_type, not_null) = match value_type {
+        ValueType::NotNull(inner) => (&**inner, true),
+        value_type => (value_type, false),
+    };
+    let semantic_type = match value_type {
+        ValueType::Bool { .. } => SemanticType::Bool,
+        ValueType::String { .. } | ValueType::Char { .. } | ValueType::Varchar { .. } => {
+            SemanticType::Text
+        }
+        ValueType::Bytes { .. } | ValueType::Binary { .. } | ValueType::Varbinary { .. } => {
+            SemanticType::Bytes
+        }
+        ValueType::Int8 { .. } => SemanticType::Int8,
+        ValueType::Int16 { .. } => SemanticType::Int16,
+        ValueType::Int32 { .. } => SemanticType::Int32,
+        ValueType::Int64 { .. } => SemanticType::Int64,
+        ValueType::Int128 { .. } => SemanticType::Int128,
+        ValueType::Int256 { .. } => SemanticType::Int256,
+        ValueType::Uint8 { .. } => SemanticType::Uint8,
+        ValueType::Uint16 { .. } => SemanticType::Uint16,
+        ValueType::Uint32 { .. } => SemanticType::Uint32,
+        ValueType::Uint64 { .. } => SemanticType::Uint64,
+        ValueType::Uint128 { .. } => SemanticType::Uint128,
+        ValueType::Uint256 { .. } => SemanticType::Uint256,
+        ValueType::Float16 { .. } => SemanticType::Float16,
+        ValueType::Float32 { .. } => SemanticType::Float32,
+        ValueType::Float64 { .. } => SemanticType::Float64,
+        ValueType::Float128 => SemanticType::Float128,
+        ValueType::Float256 => SemanticType::Float256,
+        ValueType::Decimal { .. } => SemanticType::Decimal,
+        ValueType::Date => SemanticType::Date,
+        ValueType::Time => SemanticType::Time,
+        ValueType::LocalTime { .. } => SemanticType::LocalTime,
+        ValueType::DateTime => SemanticType::DateTime,
+        ValueType::LocalDateTime { .. } => SemanticType::LocalDateTime,
+        ValueType::ZonedDateTime { .. } => SemanticType::ZonedDateTime,
+        ValueType::ZonedTime { .. } => SemanticType::ZonedTime,
+        ValueType::Duration | ValueType::DurationYearToMonth | ValueType::DurationDayToSecond => {
+            SemanticType::Duration
+        }
+        ValueType::List { element_type, .. } => {
+            let (element, _) = semantic_type_from_value_type(element_type)?;
+            SemanticType::List {
+                element: Box::new(element),
+            }
+        }
+        ValueType::Path => SemanticType::Path,
+        ValueType::Record { fields, .. } => SemanticType::Record {
+            fields: fields
+                .iter()
+                .map(|field| {
+                    let (semantic_type, nullable) =
+                        semantic_type_from_value_type(&field.value_type)?;
+                    Some(gleaph_prepared_api::RecordField {
+                        name: field.name.clone(),
+                        semantic_type,
+                        nullable: !nullable,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        },
+        _ => return None,
+    };
+    Some((semantic_type, not_null))
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -144,5 +296,18 @@ mod tests {
             operation.parameters[1].description.as_deref(),
             Some("explicit")
         );
+    }
+
+    #[test]
+    fn validates_typed_external_parameter_against_metadata() {
+        let program =
+            gleaph_gql::parser::parse("VALUE term TYPED STRING = $term MATCH (n) RETURN n")
+                .expect("typed value binding should parse");
+        let mut operation = operation();
+        operation.parameters[0].semantic_type = SemanticType::Text;
+        validate_typed_parameters(&program, &operation).expect("matching type should pass");
+        operation.parameters[0].semantic_type = SemanticType::Int32;
+        let error = validate_typed_parameters(&program, &operation).expect_err("type mismatch");
+        assert!(error.contains("typed GQL parameter"));
     }
 }

@@ -276,6 +276,9 @@ as a release-stable contract.
 - source documentation convention for metadata-aware registration: ordinary /// lines describe
   the operation and /// @param <name> <text> describes an input parameter; explicit metadata
   descriptions take precedence;
+- typed GQL value bindings may declare prepared input parameters, for example
+  VALUE term TYPED STRING = $term. Metadata-aware registration validates the declared GQL
+  semantic type and nullability against the manifest parameter contract before catalog mutation;
 - a `gleaph-prepared-api` contract crate containing the Candid/Serde manifest types shared by
   future Router metadata endpoints and the generator;
 - a GQL-generic output-type inference API used as the substrate for Router-owned manifest
