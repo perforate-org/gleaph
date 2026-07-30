@@ -1417,6 +1417,7 @@ dependencies = [
  "gleaph-gql-ic",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
+ "gleaph-prepared-api",
  "gleaph-provision",
  "gleaph-router",
  "gleaph-social-demo-gateway",

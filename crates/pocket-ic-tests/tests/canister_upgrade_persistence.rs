@@ -18,9 +18,10 @@ use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_execute_idempotent_as_admin,
     gql_query_as_admin, install_single_shard_federation, knowledge_map_live_query,
-    prepared_execute_query_with_params_as, prepared_register_as_admin, seed_knowledge_map_graph,
-    wasm_bytes,
+    prepared_execute_query_with_params_as, prepared_manifest_as_admin, prepared_register_as_admin,
+    seed_knowledge_map_graph, wasm_bytes,
 };
+use gleaph_prepared_api::{OperationKind, PreparedOperation, ResultSchema};
 use gleaph_router::types::{
     AdminVertexPropertyBackfillStepArgs, VertexPropertyBackfillShardStatus,
 };
@@ -124,6 +125,61 @@ fn prepared_query_survives_router_upgrade_cache_rebuild() {
     let after = prepared_execute_query_with_params_as(&env, env.admin, query_name, Vec::new());
     assert_eq!(after.row_count, before.row_count);
     assert_eq!(edge_ids(&after), edge_ids(&before));
+}
+
+#[test]
+fn prepared_manifest_exposes_doc_and_parameter_metadata() {
+    let env = install_single_shard_federation();
+    let name = "manifest-docs-and-parameters";
+    let query = "/// Find people by term\n/// @param term Search term\nVALUE term TYPED STRING = $term MATCH (n) RETURN n";
+
+    use candid::Encode;
+    let metadata = PreparedOperation {
+        name: name.to_owned(),
+        description: None,
+        kind: OperationKind::Query,
+        parameters: Vec::new(),
+        result: ResultSchema {
+            columns: Vec::new(),
+        },
+        supports_consistency: false,
+        supports_idempotency: false,
+        allowed_sorts: Vec::new(),
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "prepared_register_with_metadata",
+            Encode!(&name.to_owned(), &query.to_owned(), &metadata)
+                .expect("encode prepared_register_with_metadata"),
+        )
+        .expect("prepared_register_with_metadata call");
+    let result = candid::Decode!(&bytes, Result<(), gleaph_graph_kernel::federation::RouterError>)
+        .expect("decode prepared_register_with_metadata");
+    assert!(
+        result.is_ok(),
+        "prepared metadata registration failed: {result:?}"
+    );
+
+    let manifest = prepared_manifest_as_admin(&env, GRAPH_NAME);
+    assert_eq!(manifest.manifest_version, 1);
+    let operation = manifest
+        .operations
+        .iter()
+        .find(|operation| operation.name == name)
+        .expect("registered operation in manifest");
+    assert_eq!(
+        operation.description.as_deref(),
+        Some("Find people by term")
+    );
+    assert_eq!(operation.parameters.len(), 1);
+    assert_eq!(operation.parameters[0].name, "term");
+    assert_eq!(
+        operation.parameters[0].description.as_deref(),
+        Some("Search term")
+    );
 }
 
 #[test]

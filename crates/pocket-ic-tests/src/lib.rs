@@ -1817,6 +1817,29 @@ pub fn prepared_register_as_admin(env: &FederationEnv, name: &str, query: &str) 
     }
 }
 
+/// Read the prepared manifest for the default graph as the bootstrap admin principal.
+pub fn prepared_manifest_as_admin(
+    env: &FederationEnv,
+    graph_name: &str,
+) -> gleaph_prepared_api::PreparedManifest {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "prepared_manifest",
+            Encode!(&graph_name.to_string()).expect("encode prepared_manifest"),
+        )
+        .unwrap_or_else(|e| panic!("prepared_manifest on router: {e:?}"));
+    match Decode!(&bytes, Result<gleaph_prepared_api::PreparedManifest, RouterError>) {
+        Ok(Ok(manifest)) => manifest,
+        Ok(Err(err)) => panic!("prepared_manifest rejected: {err:?}"),
+        Err(err) => panic!("decode prepared_manifest: {err}"),
+    }
+}
+
 /// Execute a registered prepared query as `caller` with an explicit parameter blob.
 pub fn prepared_execute_query_with_params_as(
     env: &FederationEnv,
