@@ -19,6 +19,7 @@ fn generate_ir(ir: &CodegenIr) -> String {
          use std::collections::BTreeMap;\n\
          use std::future::Future;\n\
          use std::pin::Pin;\n\
+         use gleaph_cdk::GqlParams;\n\
          use serde::de::DeserializeOwned;\n\
          use serde::{Deserialize, Serialize};\n\n",
     );
@@ -41,6 +42,14 @@ fn generate_ir(ir: &CodegenIr) -> String {
              type Error;\n\n\
              /// Encode a generated parameter value for the Router wire contract.\n\
              fn encode_params<T: Serialize>(&self, params: &T) -> Result<Vec<u8>, Self::Error>;\n\n\
+             /// Execute a prepared operation from logical GQL parameters.\n\
+             fn execute_gql<'a, Row>(\n\
+                 &'a self,\n\
+                 name: &'static str,\n\
+                 params: GqlParams,\n\
+             ) -> Pin<Box<dyn Future<Output = Result<PreparedCanisterResponse<Row>, Self::Error>> + 'a>>\n\
+             where\n\
+                 Row: DeserializeOwned + 'a;\n\n\
              /// Execute a read-only prepared operation.\n\
              fn execute_query<'a, Row>(\n\
                  &'a self,\n\
@@ -109,6 +118,19 @@ fn generate_ir(ir: &CodegenIr) -> String {
              pub fn new(executor: &'a E) -> Self {\n\
                  Self { executor }\n\
              }\n\n",
+    );
+    out.push_str(
+        "    /// Execute a prepared operation using the shared logical GQL value model.\n\
+         pub async fn execute_gql<Row>(\n\
+             &self,\n\
+             name: &'static str,\n\
+             params: GqlParams,\n\
+         ) -> Result<PreparedCanisterResponse<Row>, E::Error>\n\
+         where\n\
+             Row: DeserializeOwned,\n\
+         {\n\
+             self.executor.execute_gql::<Row>(name, params).await\n\
+         }\n\n",
     );
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;

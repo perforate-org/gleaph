@@ -536,6 +536,8 @@ mod tests {
         assert!(output.contains("pub trait PreparedCanisterExecutor"));
         assert!(output.contains("fn encode_params<T: Serialize>"));
         assert!(output.contains("pub struct PreparedCanisterQueries"));
+        assert!(output.contains("use gleaph_cdk::GqlParams"));
+        assert!(output.contains("fn execute_gql<'a, Row>"));
         assert!(output.contains("execute_query::<FindUsersRow>"));
         assert!(!output.contains("ic-agent"));
     }
