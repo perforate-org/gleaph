@@ -815,16 +815,61 @@ pub(crate) async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     }
 }
 
-/// Maximum Cartesian-product rows materialized for a multi-variable seed relation (ADR 0046
-/// Phase 1). Bounded to keep Router memory, wire size, and Graph instruction spend modest.
-const MAX_COMPLETE_ROW_SEED_ROWS: usize = 1024;
+/// Lazily materializable complete-row seed relation for one target shard.
+///
+/// The domains are retained, while Cartesian-product rows are generated only for the chunk
+/// currently being sent to Graph. This keeps the Router heap proportional to the request being
+/// built instead of proportional to the full candidate relation.
+pub(crate) struct CompleteRowSeedRelation {
+    variable_domains: Vec<(String, Vec<u32>)>,
+}
 
-/// Resolve a selective [`SeedAnchorSet`] into a complete-row seed relation for one target
-/// shard. Single-variable seeds produce one row per local vertex id; multi-variable seeds
-/// intersect each variable's anchors on the shard and multiply the per-variable candidate
-/// domains up to [`MAX_COMPLETE_ROW_SEED_ROWS`]. Empty domains are represented as a complete
-/// empty row set so Graph can skip the read prefix while preserving the item ordinal.
-pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
+impl CompleteRowSeedRelation {
+    fn row_count(&self) -> Result<usize, RouterError> {
+        self.variable_domains
+            .iter()
+            .try_fold(1usize, |total, (_, domain)| {
+                total.checked_mul(domain.len()).ok_or_else(|| {
+                    RouterError::InvalidArgument("multi-variable seed product size overflow".into())
+                })
+            })
+    }
+
+    pub(crate) fn rows(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<SeedRowWire>, RouterError> {
+        let total = self.row_count()?;
+        let end = offset.saturating_add(limit).min(total);
+        let mut rows = Vec::with_capacity(end.saturating_sub(offset));
+        for mut ordinal in offset..end {
+            let mut bindings = Vec::with_capacity(self.variable_domains.len());
+            for (variable, domain) in self.variable_domains.iter().rev() {
+                let index = ordinal % domain.len();
+                ordinal /= domain.len();
+                bindings.push(SeedVertexBinding {
+                    variable: variable.clone(),
+                    local_vertex_id: domain[index],
+                    required_vertex_label_ids: Vec::new(),
+                });
+            }
+            bindings.reverse();
+            rows.push(SeedRowWire {
+                vertex_bindings: bindings,
+                float64_bindings: Vec::new(),
+            });
+        }
+        Ok(rows)
+    }
+}
+
+/// Resolve a selective [`SeedAnchorSet`] into a lazily materializable complete-row seed relation.
+/// Single-variable seeds produce one row per local vertex id; multi-variable seeds intersect each
+/// variable's anchors on the shard and retain the domains for lazy Cartesian-product expansion.
+/// Empty domains are represented as a complete empty row set so Graph can skip the read prefix
+/// while preserving the item ordinal.
+pub(crate) async fn resolve_complete_row_seed_relation<I: IndexLookup + ?Sized>(
     index: &I,
     plans: &[PhysicalPlan],
     pmap: &BTreeMap<String, gleaph_gql::Value>,
@@ -833,7 +878,7 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
     shard_id: ShardId,
     preflight: Option<&PreflightContext>,
     metrics: &mut SeedResolutionMetrics,
-) -> Result<Option<SeedBindingsWire>, RouterError> {
+) -> Result<Option<CompleteRowSeedRelation>, RouterError> {
     #[cfg(feature = "batch-instr-log")]
     let anchor_set_start = crate::current_instruction_counter();
 
@@ -859,17 +904,7 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
         #[cfg(feature = "batch-instr-log")]
         let row_build_start = crate::current_instruction_counter();
 
-        let rows = hits_to_local_vertex_ids(hits)?
-            .into_iter()
-            .map(|local_vertex_id| SeedRowWire {
-                vertex_bindings: vec![SeedVertexBinding {
-                    variable: var.variable.clone(),
-                    local_vertex_id,
-                    required_vertex_label_ids: Vec::new(),
-                }],
-                float64_bindings: Vec::new(),
-            })
-            .collect();
+        let ids = hits_to_local_vertex_ids(hits)?;
 
         #[cfg(feature = "batch-instr-log")]
         {
@@ -877,10 +912,8 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
                 crate::current_instruction_counter().saturating_sub(row_build_start);
         }
 
-        return Ok(Some(SeedBindingsWire {
-            entries: Vec::new(),
-            rows,
-            complete_prefix_rows: true,
+        return Ok(Some(CompleteRowSeedRelation {
+            variable_domains: vec![(var.variable.clone(), ids)],
         }));
     }
 
@@ -892,10 +925,8 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
                 .map_err(RouterError::InvalidArgument)?;
         let ids = hits_to_local_vertex_ids(hits)?;
         if ids.is_empty() {
-            return Ok(Some(SeedBindingsWire {
-                entries: Vec::new(),
-                rows: Vec::new(),
-                complete_prefix_rows: true,
+            return Ok(Some(CompleteRowSeedRelation {
+                variable_domains: vec![(var.variable.clone(), Vec::new())],
             }));
         }
         variable_domains.push((var.variable.clone(), ids));
@@ -904,44 +935,13 @@ pub(crate) async fn resolve_complete_row_seed_rows<I: IndexLookup + ?Sized>(
     #[cfg(feature = "batch-instr-log")]
     let intersection_start = crate::current_instruction_counter();
 
-    let product = bounded_cartesian_product(variable_domains, MAX_COMPLETE_ROW_SEED_ROWS)
-        .map_err(RouterError::InvalidArgument)?;
-
     #[cfg(feature = "batch-instr-log")]
     {
         metrics.anchor_intersection +=
             crate::current_instruction_counter().saturating_sub(intersection_start);
     }
 
-    #[cfg(feature = "batch-instr-log")]
-    let row_build_start = crate::current_instruction_counter();
-
-    let rows = product
-        .into_iter()
-        .map(|row| SeedRowWire {
-            vertex_bindings: row
-                .into_iter()
-                .map(|(variable, local_vertex_id)| SeedVertexBinding {
-                    variable,
-                    local_vertex_id,
-                    required_vertex_label_ids: Vec::new(),
-                })
-                .collect(),
-            float64_bindings: Vec::new(),
-        })
-        .collect();
-
-    #[cfg(feature = "batch-instr-log")]
-    {
-        metrics.seed_row_build +=
-            crate::current_instruction_counter().saturating_sub(row_build_start);
-    }
-
-    Ok(Some(SeedBindingsWire {
-        entries: Vec::new(),
-        rows,
-        complete_prefix_rows: true,
-    }))
+    Ok(Some(CompleteRowSeedRelation { variable_domains }))
 }
 
 fn hits_to_local_vertex_ids(hits: SeedHits) -> Result<Vec<u32>, RouterError> {
@@ -951,45 +951,6 @@ fn hits_to_local_vertex_ids(hits: SeedHits) -> Result<Vec<u32>, RouterError> {
             "edge anchor not supported in multi-variable seed relation".into(),
         )),
     }
-}
-
-fn bounded_cartesian_product(
-    domains: Vec<(String, Vec<u32>)>,
-    max_rows: usize,
-) -> Result<Vec<Vec<(String, u32)>>, String> {
-    if domains.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut total: usize = 1;
-    for (_, domain) in &domains {
-        total = total
-            .checked_mul(domain.len())
-            .ok_or_else(|| "multi-variable seed product size overflow".to_string())?;
-        if total > max_rows {
-            return Err(format!(
-                "multi-variable seed product exceeds {} rows",
-                max_rows
-            ));
-        }
-    }
-    let mut product: Vec<Vec<(String, u32)>> = vec![Vec::new()];
-    for (var, domain) in domains {
-        let mut next = Vec::with_capacity(
-            product
-                .len()
-                .checked_mul(domain.len())
-                .ok_or_else(|| "multi-variable seed product size overflow".to_string())?,
-        );
-        for partial in &product {
-            for &id in &domain {
-                let mut row = partial.clone();
-                row.push((var.clone(), id));
-                next.push(row);
-            }
-        }
-        product = next;
-    }
-    Ok(product)
 }
 
 async fn resolve_anchor_hits_for_shards<I: IndexLookup + ?Sized>(
@@ -4527,83 +4488,12 @@ async fn execute_prepared_bulk_group(
         }
     };
 
-    // ADR 0046 Phase 1: detect complete-row seed prefixes (single- or multi-variable
-    // selective equality/index anchors) so each bulk item can resolve its own candidate domain.
-    // Unsupported prefixes reuse the first item's dispatch envelope and fall back to scalar
-    // execution upstream.
-    let stats = graph_stats_for(graph_id);
-    let complete_row_anchor_set = SeedAnchorSet::from_plans(&plans, &base.pmap, store, &stats)?
-        .filter(|set| set.is_selective_complete_row_seed());
-    let is_complete_row_seed = complete_row_anchor_set.is_some();
-    let complete_row_index = if is_complete_row_seed {
-        let shards = store.list_live_shards_for_graph_id(graph_id)?;
-        Some(
-            RouterIndexLookup::from_shards(graph_id, &shards)
-                .map_err(RouterError::InvalidArgument)?,
-        )
-    } else {
-        None
-    };
-
-    #[cfg(feature = "batch-instr-log")]
-    let seed_resolution_start = crate::current_instruction_counter();
-
-    // Pre-resolve complete-row seed blobs before spawning async blocks. The index lookup
-    // futures are not Send, so we cannot await them inside the BoxFuture dispatched below.
-    #[cfg_attr(
-        not(feature = "batch-instr-log"),
-        allow(clippy::default_constructed_unit_structs)
-    )]
-    let mut seed_resolution_acc = SeedResolutionMetrics::default();
-
-    let complete_row_seeds: Vec<Vec<Option<Vec<u8>>>> = if let Some(ref index) = complete_row_index
-    {
-        let mut seeds = vec![vec![None; base.dispatches.len()]; item_count];
-        for (item_index, (_, pmap)) in item_params.iter().enumerate() {
-            for (dispatch_index, dispatch) in base.dispatches.iter().enumerate() {
-                let resolved = resolve_complete_row_seed_rows(
-                    index,
-                    &plans,
-                    pmap,
-                    store,
-                    &stats,
-                    dispatch.shard_id,
-                    preflight,
-                    &mut seed_resolution_acc,
-                )
-                .await?;
-                #[cfg(feature = "batch-instr-log")]
-                let encode_start = crate::current_instruction_counter();
-                let wire = resolved.unwrap_or_else(|| SeedBindingsWire {
-                    entries: Vec::new(),
-                    rows: Vec::new(),
-                    complete_prefix_rows: true,
-                });
-                seeds[item_index][dispatch_index] =
-                    Some(Encode!(&wire).expect("encode complete-row seed bindings"));
-                #[cfg(feature = "batch-instr-log")]
-                {
-                    seed_resolution_acc.candid_encode +=
-                        crate::current_instruction_counter().saturating_sub(encode_start);
-                    seed_resolution_acc.dispatch_count += 1;
-                }
-            }
-        }
-        #[cfg(feature = "batch-instr-log")]
-        {
-            seed_resolution_acc.item_count = item_count as u64;
-        }
-        seeds
-    } else {
-        Vec::new()
-    };
-
-    #[cfg(feature = "batch-instr-log")]
-    {
-        let seed_resolution_total =
-            crate::current_instruction_counter().saturating_sub(seed_resolution_start);
-        log_router_seed_resolution_summary(seed_resolution_total, &seed_resolution_acc);
-    }
+    // The legacy multi-dispatch envelope has no durable logical-to-wire chunk map. Do not
+    // materialize a complete Cartesian product for it: unsupported/non-typed groups use their
+    // existing Graph-local seed path, while the typed path below performs request-sized chunking
+    // with a durable continuation map.
+    let is_complete_row_seed = false;
+    let complete_row_seeds: Vec<Vec<Option<Vec<u8>>>> = Vec::new();
 
     #[cfg(feature = "batch-instr-log")]
     let graph_request_build_start = crate::current_instruction_counter();
@@ -5006,7 +4896,20 @@ async fn execute_typed_bulk_replay(
         RouterError::InvalidArgument(format!("typed replay validation failed: {e}"))
     })?;
 
-    let item_count = typed_args.operations.len();
+    let wire_item_count = typed_args.operations.len();
+    let chunk_counts = replay
+        .logical_operation_chunk_counts
+        .clone()
+        .unwrap_or_else(|| vec![1; replay.total_ops as usize]);
+    let mapped_wire_count = chunk_counts.iter().try_fold(0usize, |sum, &count| {
+        sum.checked_add(count as usize)
+            .ok_or_else(|| RouterError::InvalidArgument("typed chunk count overflow".into()))
+    })?;
+    if mapped_wire_count != wire_item_count {
+        return Err(RouterError::InvalidArgument(
+            "typed replay chunk mapping does not cover wire operations".into(),
+        ));
+    }
     let mut results: Vec<Result<ExecutePlanResult, String>> = Vec::new();
     let mut attempts = 0usize;
     const MAX_TYPED_DISPATCH_ATTEMPTS: usize = 100;
@@ -5027,7 +4930,7 @@ async fn execute_typed_bulk_replay(
                 })?;
         let batch_ends_in_error = batch.results.last().is_some_and(Result::is_err);
         for result in batch.results {
-            if results.len() >= item_count {
+            if results.len() >= wire_item_count {
                 return Err(RouterError::InvalidArgument(
                     "typed batch V1 returned more results than operations".into(),
                 ));
@@ -5037,7 +4940,7 @@ async fn execute_typed_bulk_replay(
         match batch.next_index {
             Some(next) if batch_ends_in_error && next as usize + 1 == results.len() => break,
             None => break,
-            Some(next) if next as usize >= item_count => {
+            Some(next) if next as usize >= wire_item_count => {
                 return Err(RouterError::InvalidArgument(format!(
                     "typed batch V1 next_index {next} is out of range"
                 )));
@@ -5051,22 +4954,22 @@ async fn execute_typed_bulk_replay(
             }
         }
     }
-    if results.len() != item_count {
+    if results.len() != wire_item_count {
         return Err(RouterError::InvalidArgument(format!(
             "typed batch V1 final result count {} does not match operation count {}",
             results.len(),
-            item_count
+            wire_item_count
         )));
     }
 
     #[cfg(feature = "pocket-ic-e2e")]
     crate::test_fault::maybe_trap_after_typed_graph_commit();
 
-    let mut successful_results: Vec<ExecutePlanResult> = Vec::with_capacity(item_count);
+    let mut wire_successful_results: Vec<ExecutePlanResult> = Vec::with_capacity(wire_item_count);
     for result in results {
         match result {
             Ok(r) => {
-                successful_results.push(r);
+                wire_successful_results.push(r);
             }
             Err(error) => {
                 return Err(RouterError::InvalidArgument(error));
@@ -5087,7 +4990,21 @@ async fn execute_typed_bulk_replay(
             replay.target.shard_id, typed_args.shared.mutation_id
         ))
     })?;
-    validate_completed_typed_journal(&entry, item_count)?;
+    validate_completed_typed_journal(&entry, wire_item_count)?;
+
+    let graph_operation_row_counts = entry
+        .bulk_progress()
+        .as_ref()
+        .expect("validated typed journal has bulk progress")
+        .operation_row_counts();
+    let mut logical_operation_row_counts = Vec::with_capacity(chunk_counts.len());
+    let mut wire_offset = 0usize;
+    for &chunk_count in &chunk_counts {
+        let end = wire_offset + chunk_count as usize;
+        logical_operation_row_counts
+            .push(graph_operation_row_counts[wire_offset..end].iter().sum());
+        wire_offset = end;
+    }
 
     let mut hot_forward_vertices = entry.hot_forward_vertices().clone();
     hot_forward_vertices.sort_unstable();
@@ -5125,12 +5042,7 @@ async fn execute_typed_bulk_replay(
         client_key,
         replay.target.shard_id,
         entry.row_count(),
-        entry
-            .bulk_progress()
-            .as_ref()
-            .expect("validated typed journal has bulk progress")
-            .operation_row_counts()
-            .to_vec(),
+        logical_operation_row_counts.clone(),
     )?;
 
     advance_label_stats_projection_through(
@@ -5156,7 +5068,22 @@ async fn execute_typed_bulk_replay(
         replay.target.shard_id,
     )?;
 
-    Ok((successful_results, token))
+    let mut logical_results = Vec::with_capacity(chunk_counts.len());
+    let mut result_offset = 0usize;
+    for &chunk_count in &chunk_counts {
+        let end = result_offset + chunk_count as usize;
+        logical_results.push(ExecutePlanResult {
+            row_count: wire_successful_results[result_offset..end]
+                .iter()
+                .map(|result| result.row_count)
+                .sum(),
+            rows_blob: None,
+            hot_forward_vertices: Vec::new(),
+        });
+        result_offset = end;
+    }
+
+    Ok((logical_results, token))
 }
 
 fn validate_completed_typed_journal(
@@ -5282,9 +5209,10 @@ async fn execute_prepared_bulk_group_typed(
         allow(clippy::default_constructed_unit_structs)
     )]
     let mut seed_resolution_acc = SeedResolutionMetrics::default();
-    let mut seeds: Vec<SeedBindingsWire> = Vec::with_capacity(item_count);
-    for (_, pmap) in &item_params {
-        let resolved = resolve_complete_row_seed_rows(
+    let mut typed_operations = Vec::new();
+    let mut logical_operation_chunk_counts = Vec::with_capacity(item_count);
+    for (params_blob, pmap) in &item_params {
+        let relation = resolve_complete_row_seed_relation(
             &index,
             &base.plans,
             pmap,
@@ -5295,11 +5223,85 @@ async fn execute_prepared_bulk_group_typed(
             &mut seed_resolution_acc,
         )
         .await?;
-        seeds.push(resolved.unwrap_or_else(|| SeedBindingsWire {
-            entries: Vec::new(),
-            rows: Vec::new(),
-            complete_prefix_rows: true,
-        }));
+        let Some(relation) = relation else {
+            log_router_typed_batch_decision("rejected", "seed_relation_unavailable");
+            return Ok(None);
+        };
+        let total_rows = relation.row_count()?;
+        let mut offset = 0usize;
+        let mut chunk_count = 0u32;
+        loop {
+            let remaining = total_rows.saturating_sub(offset);
+            let upper = remaining.max(1);
+            let mut low = 1usize;
+            let mut high = upper;
+            let mut best = None;
+            while low <= high {
+                let mid = low + (high - low) / 2;
+                let rows = if remaining == 0 {
+                    Vec::new()
+                } else {
+                    relation.rows(offset, mid)?
+                };
+                let probe = TypedBatchCandidate {
+                    target_shard_id: dispatch.shard_id,
+                    element_id_encoding_key: base.element_id_encoding_key.0,
+                    mutation_id,
+                    plan_blob: base.plan_blob.clone(),
+                    operations: vec![TypedBatchCandidateOp {
+                        params_blob: params_blob.clone(),
+                        seed: SeedBindingsWire {
+                            entries: Vec::new(),
+                            rows,
+                            complete_prefix_rows: true,
+                        },
+                    }],
+                };
+                match gleaph_gql_integration::typed_batch::build_and_validate_typed_batch_args(
+                    &probe,
+                    Some(base.resolved_labels.clone()),
+                    Some(base.resolved_properties.clone()),
+                    Some(base.indexed_properties.clone()),
+                    &base.indexed_embeddings,
+                    gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
+                ) {
+                    Ok(_) => {
+                        best = Some(mid);
+                        low = mid.saturating_add(1);
+                    }
+                    Err(_) => high = mid.saturating_sub(1),
+                }
+            }
+            let chunk_rows = if remaining == 0 {
+                Vec::new()
+            } else {
+                relation.rows(
+                    offset,
+                    best.ok_or_else(|| {
+                        RouterError::InvalidArgument(
+                            "a single complete-row seed does not fit the dynamic typed envelope"
+                                .into(),
+                        )
+                    })?,
+                )?
+            };
+            typed_operations.push(TypedBatchCandidateOp {
+                params_blob: params_blob.clone(),
+                seed: SeedBindingsWire {
+                    entries: Vec::new(),
+                    rows: chunk_rows,
+                    complete_prefix_rows: true,
+                },
+            });
+            chunk_count = chunk_count
+                .checked_add(1)
+                .ok_or_else(|| RouterError::InvalidArgument("typed chunk count overflow".into()))?;
+            if remaining == 0 {
+                break;
+            }
+            offset += best.expect("non-empty relation has a fitting chunk");
+        }
+        logical_operation_chunk_counts.push(chunk_count);
     }
 
     let candidate = TypedBatchCandidate {
@@ -5307,14 +5309,7 @@ async fn execute_prepared_bulk_group_typed(
         element_id_encoding_key: base.element_id_encoding_key.0,
         mutation_id,
         plan_blob: base.plan_blob.clone(),
-        operations: seeds
-            .into_iter()
-            .zip(item_params.iter())
-            .map(|(seed, (params_blob, _))| TypedBatchCandidateOp {
-                params_blob: params_blob.clone(),
-                seed,
-            })
-            .collect(),
+        operations: typed_operations,
     };
     let validated_typed_args =
         match gleaph_gql_integration::typed_batch::build_and_validate_typed_batch_args(
@@ -5366,6 +5361,7 @@ async fn execute_prepared_bulk_group_typed(
                 seed_bindings: op.seed,
             })
             .collect(),
+        logical_operation_chunk_counts: Some(logical_operation_chunk_counts),
     };
     store.transition_to_typed_seed_bulk(
         caller,
@@ -8810,18 +8806,22 @@ mod tests {
     }
 
     #[test]
-    fn bounded_cartesian_product_computes_variable_bindings_and_enforces_limit() {
+    fn complete_row_relation_generates_cartesian_rows_lazily() {
         let domains = vec![
             ("a".to_string(), vec![1u32, 2, 3]),
             ("b".to_string(), vec![10u32, 20]),
         ];
-        let product = super::bounded_cartesian_product(domains, 1024).expect("product");
+        let relation = super::CompleteRowSeedRelation {
+            variable_domains: domains,
+        };
+        let product = relation.rows(0, 6).expect("product");
         assert_eq!(product.len(), 6);
         let mut keys: Vec<String> = product
             .iter()
             .map(|row| {
-                row.iter()
-                    .map(|(v, id)| format!("{}={}", v, id))
+                row.vertex_bindings
+                    .iter()
+                    .map(|binding| format!("{}={}", binding.variable, binding.local_vertex_id))
                     .collect::<Vec<_>>()
                     .join(",")
             })
@@ -8834,11 +8834,8 @@ mod tests {
             ]
         );
 
-        let big = vec![
-            ("a".to_string(), vec![1u32; 100]),
-            ("b".to_string(), vec![1u32; 100]),
-        ];
-        assert!(super::bounded_cartesian_product(big, 1024).is_err());
+        assert_eq!(relation.row_count().expect("count"), 6);
+        assert_eq!(relation.rows(2, 2).expect("chunk").len(), 2);
     }
 
     #[test]

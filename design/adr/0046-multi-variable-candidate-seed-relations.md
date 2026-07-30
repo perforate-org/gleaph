@@ -328,7 +328,8 @@ Phase 1 implementation (multi-variable):
 - Multi-variable prefixes require every anchored variable to have at least one non-label equality
   anchor; label-only multi-variable prefixes still fall back to Graph-local execution.
 - The bulk path detects multi-variable seeds and resolves per-item per-shard candidate domains,
-  materializing a bounded Cartesian product (≤1024 rows) into complete `SeedRowWire` rows.
+  retaining the domains and materializing only the request-sized complete `SeedRowWire` chunk
+  currently being dispatched.
 - `SeedBindingsWire.complete_prefix_rows: bool` signals that the rows are complete for the entire
   read prefix. When true, Graph skips the read phase entirely and feeds the seed rows directly to
   the canonical mutation segment.
@@ -350,7 +351,7 @@ Phase 1 extension (single-variable):
 Phase 1 deliberately does **not** implement:
 
 - the candidate-domain V2 envelope;
-- lazy or chunked product generation;
+- query-side continuation across multiple complete-row chunks;
 - cross-shard routing for multi-variable products;
 - bulk lookup deduplication across items;
 - declared-constraint fast paths; or
@@ -359,7 +360,7 @@ Phase 1 deliberately does **not** implement:
 Focused tests added:
 
 - multi-variable `SeedAnchorSet` extraction for the wave 4 `demo_id` shape;
-- bounded Cartesian-product generation and its row limit;
+- lazy Cartesian-product generation and request/response-sized chunking;
 - Graph execution with complete row seeds for the wave 4 plan shape; and
 - Graph canonical revalidation filtering out stale property values and removed labels.
 

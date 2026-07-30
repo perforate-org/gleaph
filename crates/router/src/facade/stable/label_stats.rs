@@ -608,7 +608,7 @@ impl RouterMutationPayloadV1 {
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TypedSeedBulkReplayV1 {
-    /// Total number of operations in the bulk group. Must equal `operations.len()`.
+    /// Total number of logical operations in the bulk group.
     pub total_ops: u32,
     /// The single graph shard that owns every operation in this group.
     pub target: TypedSeedBulkTargetV1,
@@ -617,6 +617,10 @@ pub struct TypedSeedBulkReplayV1 {
     pub shared: TypedSeedBulkSharedHeaderV1,
     /// Ordered per-operation parameters and typed seed bindings.
     pub operations: Vec<TypedSeedBulkOperationV1>,
+    /// Number of wire operations emitted for each logical operation. `None` is the legacy
+    /// representation where every logical operation occupies exactly one wire operation.
+    #[serde(default)]
+    pub logical_operation_chunk_counts: Option<Vec<u32>>,
 }
 
 /// Outcome and identity of the single graph shard that owns every operation in a typed bulk
@@ -674,7 +678,7 @@ impl TypedSeedBulkReplayV1 {
     ///
     /// - `mode == Update`
     /// - `total_ops` is non-zero
-    /// - `operations.len() == total_ops`
+    /// - the chunk mapping covers `total_ops` logical operations and all wire operations
     /// - every operation has empty grouped `entries` and `complete_prefix_rows == true`
     /// - every `params` blob is at most `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`
     pub(crate) fn validate(&self) -> Result<(), RouterError> {
@@ -688,10 +692,34 @@ impl TypedSeedBulkReplayV1 {
                 "typed bulk total_ops must be non-zero".into(),
             ));
         }
-        let expected = self.total_ops as usize;
-        if self.operations.len() != expected {
+        let chunk_counts = self
+            .logical_operation_chunk_counts
+            .as_deref()
+            .unwrap_or_else(|| &[]);
+        if self.logical_operation_chunk_counts.is_some()
+            && chunk_counts.len() != self.total_ops as usize
+        {
             return Err(RouterError::InvalidArgument(
-                "typed bulk operation count must equal total_ops".into(),
+                "typed bulk logical operation chunk mapping must equal total_ops".into(),
+            ));
+        }
+        if chunk_counts.iter().any(|&count| count == 0) {
+            return Err(RouterError::InvalidArgument(
+                "typed bulk logical operations must have at least one wire chunk".into(),
+            ));
+        }
+        let wire_operation_count = if self.logical_operation_chunk_counts.is_some() {
+            chunk_counts.iter().try_fold(0usize, |sum, &count| {
+                sum.checked_add(count as usize).ok_or_else(|| {
+                    RouterError::InvalidArgument("typed bulk chunk count overflow".into())
+                })
+            })?
+        } else {
+            self.total_ops as usize
+        };
+        if self.operations.len() != wire_operation_count {
+            return Err(RouterError::InvalidArgument(
+                "typed bulk wire operation count does not match chunk mapping".into(),
             ));
         }
         for (i, op) in self.operations.iter().enumerate() {
@@ -1350,6 +1378,7 @@ mod tests {
             target,
             shared,
             operations,
+            logical_operation_chunk_counts: None,
         }
     }
 
@@ -1554,7 +1583,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_seed_bulk_validation_rejects_too_many_rows() {
+    fn typed_seed_bulk_validation_accepts_rows_without_fixed_cardinality_cap() {
         let mut replay = typed_seed_replay(1);
         replay.operations[0].seed_bindings.rows = (0..1025)
             .map(|_| SeedRowWire {
@@ -1562,7 +1591,7 @@ mod tests {
                 float64_bindings: vec![],
             })
             .collect();
-        assert!(replay.validate().is_err());
+        assert!(replay.validate().is_ok());
     }
 
     #[test]
@@ -1574,6 +1603,17 @@ mod tests {
             RouterMutationRecord::new_typed_seed_bulk(1, 0, Vec::new(), None, None, replay)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn typed_seed_bulk_validation_accepts_logical_to_wire_chunk_mapping() {
+        let mut replay = typed_seed_replay(2);
+        replay.operations.push(replay.operations[1].clone());
+        replay.logical_operation_chunk_counts = Some(vec![2, 1]);
+        replay.validate().expect("chunked replay is valid");
+
+        replay.logical_operation_chunk_counts = Some(vec![2, 2]);
+        assert!(replay.validate().is_err());
     }
 
     #[test]

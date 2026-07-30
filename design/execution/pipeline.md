@@ -73,7 +73,8 @@ current canonical Graph state. Residual `PropertyFilter`s, joins, and Cartesian 
 the surviving rows are then fed into the no-await canonical mutation segment. This is currently used
 for multi-variable leading prefixes on the bulk path: Router resolves each variable's equality
 anchors on the target shard, multiplies the per-variable candidate domains with checked arithmetic
-(bounded to 1024 rows), and sends one complete row per Cartesian-product tuple. Empty domains are
+  (retaining the domains and materializing only the request-sized chunk needed for the current
+  dispatch), and sends one complete row per Cartesian-product tuple in that chunk. Empty domains are
 encoded as a zero-row complete-prefix relation and report zero matches without a separate Router
 short-circuit.
 

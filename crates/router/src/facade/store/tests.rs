@@ -1855,6 +1855,7 @@ fn typed_recovery_lifecycle_and_scan() {
                 },
             },
         ],
+        logical_operation_chunk_counts: None,
     };
 
     // Transition succeeds only with the matching fingerprint and active lease.

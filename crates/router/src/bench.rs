@@ -483,6 +483,25 @@ fn posted_seeds(count: usize) -> Vec<SeedBindingsWire> {
     out
 }
 
+/// One logical operation with `count` complete seed rows. This is intentionally different from
+/// `posted_seeds(count)`, which models `count` logical operations with one row each.
+fn posted_seed_rows(count: usize) -> SeedBindingsWire {
+    SeedBindingsWire {
+        entries: Vec::new(),
+        rows: (0..count)
+            .map(|local_vertex_id| SeedRowWire {
+                vertex_bindings: vec![SeedVertexBinding {
+                    variable: "poster".to_string(),
+                    local_vertex_id: local_vertex_id as u32,
+                    required_vertex_label_ids: Vec::new(),
+                }],
+                float64_bindings: Vec::new(),
+            })
+            .collect(),
+        complete_prefix_rows: true,
+    }
+}
+
 fn encode_nested(seeds: &[SeedBindingsWire]) -> Vec<u8> {
     let blobs: Vec<Option<Vec<u8>>> = seeds
         .iter()
@@ -624,6 +643,42 @@ fn bench_seed_encode_typed_512() -> canbench_rs::BenchResult {
 }
 
 #[bench(raw)]
+fn bench_seed_encode_typed_one_operation_128_rows() -> canbench_rs::BenchResult {
+    let seed = posted_seed_rows(128);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_typed_one_operation_128_rows");
+        black_box(candid::Encode!(&seed).expect("encode seed"));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_encode_typed_one_operation_512_rows() -> canbench_rs::BenchResult {
+    let seed = posted_seed_rows(512);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_typed_one_operation_512_rows");
+        black_box(candid::Encode!(&seed).expect("encode seed"));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_encode_typed_one_operation_1024_rows() -> canbench_rs::BenchResult {
+    let seed = posted_seed_rows(1024);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_typed_one_operation_1024_rows");
+        black_box(candid::Encode!(&seed).expect("encode seed"));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_encode_typed_one_operation_2048_rows() -> canbench_rs::BenchResult {
+    let seed = posted_seed_rows(2048);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("seed_encode_typed_one_operation_2048_rows");
+        black_box(candid::Encode!(&seed).expect("encode seed"));
+    })
+}
+
+#[bench(raw)]
 fn bench_seed_decode_nested_1() -> canbench_rs::BenchResult {
     let seeds = posted_seeds(1);
     let bytes = encode_nested(&seeds);
@@ -760,6 +815,12 @@ fn typed_admission_workload(n: usize) -> (TypedBatchCandidate, Vec<u8>) {
     (candidate, bytes)
 }
 
+fn typed_single_operation_rows_workload(row_count: usize) -> (TypedBatchCandidate, Vec<u8>) {
+    let candidate = typed_candidate_from_seeds(std::slice::from_ref(&posted_seed_rows(row_count)));
+    let bytes = candid::Encode!(&build_typed_args(&candidate)).expect("encode typed batch args");
+    (candidate, bytes)
+}
+
 #[bench(raw)]
 fn bench_seed_typed_production_admission_1() -> canbench_rs::BenchResult {
     let (candidate, _) = typed_admission_workload(1);
@@ -787,6 +848,36 @@ fn bench_seed_typed_production_admission_512() -> canbench_rs::BenchResult {
     })
 }
 
+#[bench(raw)]
+fn bench_seed_typed_production_admission_one_operation_128_rows() -> canbench_rs::BenchResult {
+    let (candidate, _) = typed_single_operation_rows_workload(128);
+    canbench_rs::bench_fn(|| {
+        let _scope =
+            canbench_rs::bench_scope("seed_typed_production_admission_one_operation_128_rows");
+        black_box(build_typed_args(&candidate));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_typed_production_admission_one_operation_512_rows() -> canbench_rs::BenchResult {
+    let (candidate, _) = typed_single_operation_rows_workload(512);
+    canbench_rs::bench_fn(|| {
+        let _scope =
+            canbench_rs::bench_scope("seed_typed_production_admission_one_operation_512_rows");
+        black_box(build_typed_args(&candidate));
+    })
+}
+
+#[bench(raw)]
+fn bench_seed_typed_production_admission_one_operation_1024_rows() -> canbench_rs::BenchResult {
+    let (candidate, _) = typed_single_operation_rows_workload(1024);
+    canbench_rs::bench_fn(|| {
+        let _scope =
+            canbench_rs::bench_scope("seed_typed_production_admission_one_operation_1024_rows");
+        black_box(build_typed_args(&candidate));
+    })
+}
+
 #[cfg(test)]
 mod typed_admission_tests {
     use super::*;
@@ -796,6 +887,17 @@ mod typed_admission_tests {
         for n in [1usize, 32, 512] {
             let (_, bytes) = typed_admission_workload(n);
             println!("typed_admission N={n} bytes={}", bytes.len());
+        }
+    }
+
+    #[test]
+    fn typed_admission_one_operation_row_sizes_for_record() {
+        for rows in [128usize, 512, 1024] {
+            let (_, bytes) = typed_single_operation_rows_workload(rows);
+            println!(
+                "typed_admission one_operation rows={rows} bytes={}",
+                bytes.len()
+            );
         }
     }
 }

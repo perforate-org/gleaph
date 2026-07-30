@@ -69,8 +69,11 @@ contracts must be distinguished.
   index/label scan operators; the skipped operators are re-validated against current canonical Graph
   state. Residual `PropertyFilter`s, joins, and Cartesian products run normally.
 - The bulk path detects a multi-variable leading prefix, resolves per-item per-shard candidate domains,
-  materializes a bounded Cartesian product (currently ≤1024 rows) into complete `SeedRowWire` rows,
+  retains the candidate domains and materializes only the request-sized Cartesian-product chunk into
+  complete `SeedRowWire` rows,
   and sets `complete_prefix_rows: true`.
+  Chunk size is selected from the actual encoded request and response bounds; there is no fixed
+  row-count ceiling.
 - Multi-variable seeding requires every anchored variable to have at least one non-label equality
   anchor; otherwise the prefix falls back to Graph-local execution.
 - Empty domains produce a zero-row complete-prefix relation, so the item reports zero matches without

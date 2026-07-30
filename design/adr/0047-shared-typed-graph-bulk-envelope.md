@@ -52,8 +52,8 @@ The existing boundaries are:
   `RouterMutationShard` as enums. The current `RouterMutationShardV1` stores one
   `seed_bindings_blob` per shard, which is sufficient only when every operation in the group has
   the same seed relation.
-- ADR 0046 Phase 1 resolves per-item complete-row seeds and materializes a bounded Cartesian
-  product into `SeedBindingsWire::rows` with `complete_prefix_rows: true`. The current durable
+- ADR 0046 Phase 1 resolves per-item complete-row seeds and materializes request-sized Cartesian
+  chunks into `SeedBindingsWire::rows` with `complete_prefix_rows: true`. The current durable
   record does not preserve distinct per-operation seeds for recovery; it relies on the seed blob
   being reconstructed during replay.
 
@@ -314,9 +314,11 @@ also exhaustive rather than a boolean plus an optional bulk record. The Router r
 `ExecutePlanBatchTypedArgs` directly from this payload, including the original execution mode in
 `shared.mode`.
 
-Typed V1 is single-shard, and `replay.operations.len() == total_ops`. The owning constructor and
-stable write boundary validate this invariant; general multi-shard typed replay is a later schema,
-not an implicit parallel-vector contract.
+Typed V1 is single-shard. `total_ops` counts logical client operations; `operations` contains the
+wire operations after request-sized row chunking. `logical_operation_chunk_counts` durably maps
+each logical operation to its consecutive wire chunks, with an omitted field decoding as the
+legacy one-wire-operation-per-logical-operation representation. General multi-shard typed replay
+is a later schema, not an implicit parallel-vector contract.
 
 The exact transient request and the prospective complete typed V1 stable record are both encoded
 and size-validated before the stable transition and first Graph `await`. Any validation or encoding
@@ -326,14 +328,17 @@ Graph call. If Graph commits but the Router callback fails, the durable typed pa
 cardinality, records canonical completion from the journal aggregate, advances the existing label
 projection cursor, and only then compacts the Router record.
 
-Typed V1 bounds are normative:
+Typed V1 is constrained by measured wire and durable-record limits, not a fixed row cardinality:
 
-- `1 <= total_ops <= 1024`;
-- each seed has at most 1,024 complete rows, preserving the existing complete-row bound;
 - each already-encoded `params_blob.len()` is at most 2 MiB;
 - Candid encoding of the reconstructed full `ExecutePlanBatchTypedArgs` is at most 2 MiB; and
-- Candid encoding of the complete `RouterMutationRecord::V1` typed payload is at
-  most 2 MiB.
+- Candid encoding of the complete `RouterMutationRecord::V1` typed payload is at most 2 MiB.
+
+For each logical operation, Router probes the actual plan, parameters, seed shape, request bound,
+and response bound and chooses the largest fitting consecutive row prefix. Additional chunks are
+durably recorded in `logical_operation_chunk_counts`; Graph journal continuation therefore resumes
+by wire operation ordinal while Router returns one result per logical operation. A single row that
+cannot satisfy the proof is rejected before the durable typed transition.
 
 The Router owning constructor checks every bound before the stable write. Graph independently checks
 operation count, seed row count, target shard, and full request bytes. The Router must not Candid-
