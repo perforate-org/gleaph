@@ -51,7 +51,10 @@ fn is_catalog_ddl_statement(stmt: &Statement) -> bool {
     )
 }
 
-pub(crate) fn apply_catalog_statement_block(block: &StatementBlock) -> Result<(), RouterError> {
+pub(crate) fn apply_catalog_statement_block(
+    block: &StatementBlock,
+    source: &str,
+) -> Result<(), RouterError> {
     for stmt in block.iter_statements() {
         if let Statement::CreateGraph(create) = stmt
             && let Some(gleaph_gql::ast::GraphTypeSpec::Inline(definition)) = &create.graph_type
@@ -63,7 +66,7 @@ pub(crate) fn apply_catalog_statement_block(block: &StatementBlock) -> Result<()
         ROUTER_GQL_GRAPH_CATALOG.with_borrow_mut(|catalog| {
             let mut type_lookup = RouterGraphTypeLookup::new(type_catalog);
             catalog
-                .apply_statement_block(block, &RouterGraphNameLookup, &mut type_lookup)
+                .apply_statement_block(block, source, &RouterGraphNameLookup, &mut type_lookup)
                 .map_err(catalog_error_to_router)?;
             for stmt in block.iter_statements() {
                 if let Statement::CreateGraph(create) = stmt {
@@ -112,6 +115,13 @@ pub(crate) fn try_property_schema_for_graph_id(
             .try_property_schema_for_graph_id(graph_id)
             .map_err(catalog_error_to_router)
     })
+}
+
+/// Rebuild parsed graph-type definitions into heap caches after upgrade.
+pub(crate) fn rebuild_caches_after_upgrade() {
+    ROUTER_GQL_GRAPH_CATALOG.with_borrow(|catalog| {
+        catalog.rebuild_caches_after_upgrade();
+    });
 }
 
 /// Resolve the [`PropertySchema`] passed to the planner for one logical graph.

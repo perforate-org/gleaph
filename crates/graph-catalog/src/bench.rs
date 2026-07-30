@@ -176,13 +176,14 @@ fn bench_catalog_parse_small_ddl() -> canbench_rs::BenchResult {
 /// Steady-state DDL apply: same maps, `OR REPLACE` updates definitions each sample.
 #[bench(raw)]
 fn bench_catalog_apply_or_replace_type_and_graph() -> canbench_rs::BenchResult {
-    let block = block_from(&ddl_or_replace_type_and_typed_graph());
+    let ddl = ddl_or_replace_type_and_typed_graph();
+    let block = block_from(&ddl);
     let mut lookups = BenchLookups::new();
     lookups.ensure_graphs_in_block(&block);
     let mut cat = catalog_new();
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("catalog_apply");
-        cat.apply_statement_block(black_box(&block), &lookups.graphs, &mut lookups.types)
+        cat.apply_statement_block(black_box(&block), &ddl, &lookups.graphs, &mut lookups.types)
             .expect("apply");
         black_box(
             cat.try_property_schema_for_graph_id(GraphId::from_raw(1))
@@ -195,11 +196,12 @@ fn bench_catalog_apply_or_replace_type_and_graph() -> canbench_rs::BenchResult {
 /// Hot path: schema resolution for `TYPED` (BTree get + rkyv + [`GraphTypePropertySchema`]).
 #[bench(raw)]
 fn bench_catalog_resolve_typed_schema() -> canbench_rs::BenchResult {
-    let block = block_from(&ddl_one_type_and_n_typed_graphs(1));
+    let ddl = ddl_one_type_and_n_typed_graphs(1);
+    let block = block_from(&ddl);
     let mut lookups = BenchLookups::new();
     lookups.ensure_graphs_in_block(&block);
     let mut cat = catalog_new();
-    cat.apply_statement_block(&block, &lookups.graphs, &mut lookups.types)
+    cat.apply_statement_block(&block, &ddl, &lookups.graphs, &mut lookups.types)
         .expect("setup");
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("catalog_resolve");
@@ -214,11 +216,12 @@ fn bench_catalog_resolve_typed_schema() -> canbench_rs::BenchResult {
 /// Resolution cost grows with binding map size (lookup + shared type decode).
 #[bench(raw)]
 fn bench_catalog_resolve_typed_schema_among_128_graphs() -> canbench_rs::BenchResult {
-    let block = block_from(&ddl_one_type_and_n_typed_graphs(128));
+    let ddl = ddl_one_type_and_n_typed_graphs(128);
+    let block = block_from(&ddl);
     let mut lookups = BenchLookups::new();
     lookups.ensure_graphs_in_block(&block);
     let mut cat = catalog_new();
-    cat.apply_statement_block(&block, &lookups.graphs, &mut lookups.types)
+    cat.apply_statement_block(&block, &ddl, &lookups.graphs, &mut lookups.types)
         .expect("setup");
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("catalog_resolve");
@@ -237,8 +240,13 @@ fn bench_catalog_resolve_inline_medium() -> canbench_rs::BenchResult {
     let mut lookups = BenchLookups::new();
     lookups.ensure_graphs_in_block(&block);
     let mut cat = catalog_new();
-    cat.apply_statement_block(&block, &lookups.graphs, &mut lookups.types)
-        .expect("setup");
+    cat.apply_statement_block(
+        &block,
+        DDL_INLINE_MEDIUM,
+        &lookups.graphs,
+        &mut lookups.types,
+    )
+    .expect("setup");
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("catalog_resolve");
         let schema = cat
@@ -252,12 +260,13 @@ fn bench_catalog_resolve_inline_medium() -> canbench_rs::BenchResult {
 /// Batch catalog DDL: many new graph types in one block (encode + BTree inserts).
 #[bench(raw)]
 fn bench_catalog_apply_32_new_graph_types() -> canbench_rs::BenchResult {
-    let block = block_from(&ddl_n_graph_types(32));
+    let ddl = ddl_n_graph_types(32);
+    let block = block_from(&ddl);
     canbench_rs::bench_fn(|| {
         let mut lookups = BenchLookups::new();
         let mut cat = catalog_new();
         let _scope = canbench_rs::bench_scope("catalog_apply");
-        cat.apply_statement_block(black_box(&block), &lookups.graphs, &mut lookups.types)
+        cat.apply_statement_block(black_box(&block), &ddl, &lookups.graphs, &mut lookups.types)
             .expect("apply");
         black_box(
             cat.try_property_schema_for_graph_id(GraphId::from_raw(1))
@@ -270,17 +279,24 @@ fn bench_catalog_apply_32_new_graph_types() -> canbench_rs::BenchResult {
 /// `DROP GRAPH TYPE` walks all bindings to remove `TypeRef` dependents (cascade).
 #[bench(raw)]
 fn bench_catalog_drop_graph_type_cascade_32_graphs() -> canbench_rs::BenchResult {
-    let setup = block_from(&ddl_one_type_and_n_typed_graphs(32));
-    let drop = block_from("DROP GRAPH TYPE gt");
+    let setup_ddl = ddl_one_type_and_n_typed_graphs(32);
+    let setup = block_from(&setup_ddl);
+    let drop_ddl = "DROP GRAPH TYPE gt";
+    let drop = block_from(drop_ddl);
     canbench_rs::bench_fn(|| {
         let mut lookups = BenchLookups::new();
         lookups.ensure_graphs_in_block(&setup);
         let mut cat = catalog_new();
-        cat.apply_statement_block(&setup, &lookups.graphs, &mut lookups.types)
+        cat.apply_statement_block(&setup, &setup_ddl, &lookups.graphs, &mut lookups.types)
             .expect("setup");
         let _scope = canbench_rs::bench_scope("catalog_drop_type");
-        cat.apply_statement_block(black_box(&drop), &lookups.graphs, &mut lookups.types)
-            .expect("drop");
+        cat.apply_statement_block(
+            black_box(&drop),
+            drop_ddl,
+            &lookups.graphs,
+            &mut lookups.types,
+        )
+        .expect("drop");
         black_box(
             cat.try_property_schema_for_graph_id(GraphId::from_raw(1))
                 .expect("post")

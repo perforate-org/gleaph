@@ -11,6 +11,7 @@ Anchor timestamp: 2026-06-13 14:04:54 UTC +0000
 |------|--------|
 | 2026-06-13 | Proposed: `BidirectionalCatalog` for GQL graph **type** names → `GraphTypeId`; migrate `type_map` keys and `TypeRef` bindings off string keys ([ADR 0013](0013-gql-graph-type-catalog-on-router.md) follow-up). |
 | 2026-06-17 | Removed pre-production legacy string `TypeRef` and dual binding envelopes; kept `::V1` version envelopes for post-production evolution. |
+| 2026-07-30 | Graph-type definition and inline binding payloads changed from rkyv AST values to source strings; parsed definitions are heap-cache data. |
 
 ## Context
 
@@ -18,7 +19,7 @@ Anchor timestamp: 2026-06-13 14:04:54 UTC +0000
 
 | Map | Stable region | Key (0013) | Payload |
 |-----|---------------|------------|---------|
-| `type_map` | 30 `ROUTER_GRAPH_TYPE_DEFINITIONS` | [`object_name_key`] (`String`) | [`StorableGraphTypeDefinition`] |
+| `type_map` | 30 `ROUTER_GRAPH_TYPE_DEFINITIONS` | [`object_name_key`] (`String`) | [`StorableGraphTypeDefinition::V1(String)`] |
 | `binding_map` | 31 `ROUTER_GRAPH_SCHEMA_BINDINGS` | **`GraphId`** | [`GraphSchemaBinding`] |
 
 Property graph bindings already use federation **`GraphId`** ([ADR 0011](0011-gql-graph-resolution-and-catalog-scoping.md)).
@@ -103,7 +104,7 @@ variants** change (§3).
 
 | Map | Region | Key (0014) | Payload |
 |-----|--------|------------|---------|
-| `type_map` | 21 | **`GraphTypeId`** | [`StorableGraphTypeDefinition::V1`] |
+| `type_map` | 21 | **`GraphTypeId`** | [`StorableGraphTypeDefinition::V1(String)`] |
 | `binding_map` | 22 | **`GraphId`** | [`GraphSchemaBinding::V1`] |
 
 #### 3.1 `GraphSchemaBinding` wire
@@ -112,7 +113,7 @@ Versioned rkyv envelope **`GraphSchemaBinding::V1`**:
 
 | Variant | Payload |
 |---------|---------|
-| Inline | `Inline(GraphTypeDefinition)` |
+| Inline | `Inline(String)` — graph-type definition source |
 | Typed reference | **`TypeRef(u32)`** — `GraphTypeId::raw()` |
 
 **Write path:** always emit **`GraphSchemaBinding::V1`** with the variants above.
@@ -152,8 +153,8 @@ DROP GRAPH TYPE gt
 
 ```text
 binding_map[graph_id]
-  → Inline(def)  → decode definition
-  → TypeRef(id)  → type_map[id]   // no string hop
+  → Inline(source)  → parse on heap-cache miss
+  → TypeRef(id)  → type_map[id] → parse on heap-cache miss   // no name hop
 ```
 
 ### 4. Crate and router boundaries
@@ -161,7 +162,7 @@ binding_map[graph_id]
 | Layer | Owns |
 |-------|------|
 | **`gleaph-graph-kernel`** | `GraphTypeId`, `CatalogId` impl, stable layout symbols 23–24 |
-| **`gleaph-graph-catalog`** | `type_map` keyed by `GraphTypeId`; V2 binding codec; DDL apply takes **`GraphTypeLookup`** trait (mirror [`GraphNameLookup`]) |
+| **`gleaph-graph-catalog`** | `type_map` keyed by `GraphTypeId`; source-string binding codec and heap cache; DDL apply takes **`GraphTypeLookup`** trait (mirror [`GraphNameLookup`]) |
 | **Router `facade/stable/`** | `ROUTER_GRAPH_TYPE_CATALOG` thread-local; **`RouterGraphTypeLookup`** for catalog DDL; intern at ingress |
 
 **Do not** merge `ROUTER_GRAPH_TYPE_CATALOG` into `ROUTER_GRAPH_CATALOG` — different namespaces

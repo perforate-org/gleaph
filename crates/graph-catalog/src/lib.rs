@@ -1,8 +1,9 @@
 //! Stable graph type catalog (CREATE GRAPH TYPE / CREATE GRAPH).
 //!
 //! This crate intentionally contains only pure catalog concerns: DDL application,
-//! schema resolution, and persistence codecs. Planner/executor bridge helpers stay
-//! in `gleaph-graph` for now.
+//! schema resolution, and persistence codecs. Stable storage keeps graph-type source
+//! strings; parsed [`GraphTypeDefinition`] values are heap caches rebuilt on demand.
+//! Planner/executor bridge helpers stay in `gleaph-graph` for now.
 //!
 //! **Graph type binding:** `CREATE GRAPH g { ... }` stores a binding at the resolved
 //! [`GraphId`] (see [`GraphNameLookup`]). [`GraphCatalog::try_property_schema_for_graph_id`]
@@ -23,6 +24,8 @@ use ic_stable_structures::{
     storable::{Bound, Storable},
 };
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 #[cfg(feature = "canbench")]
 mod bench;
@@ -67,6 +70,8 @@ pub fn object_name_key(name: &ObjectName) -> String {
 pub struct GraphCatalog<MT: Memory, MB: Memory> {
     type_map: StableBTreeMap<GraphTypeId, StorableGraphTypeDefinition, MT>,
     binding_map: StableBTreeMap<GraphId, GraphSchemaBinding, MB>,
+    type_cache: RefCell<BTreeMap<GraphTypeId, GraphTypeDefinition>>,
+    binding_cache: RefCell<BTreeMap<GraphId, GraphTypeDefinition>>,
 }
 
 impl<MT: Memory, MB: Memory> std::fmt::Debug for GraphCatalog<MT, MB> {
@@ -104,20 +109,26 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         Self {
             type_map: StableBTreeMap::init(type_memory),
             binding_map: StableBTreeMap::init(binding_memory),
+            type_cache: RefCell::new(BTreeMap::new()),
+            binding_cache: RefCell::new(BTreeMap::new()),
         }
     }
 
     /// Applies every catalog-related statement in `block` in order (the block’s first statement plus each `NEXT` statement).
     ///
+    /// `source` is the original GQL source corresponding to `block`. Definition spans are used
+    /// to persist source slices rather than AST values, so a cache can be rebuilt after upgrade.
+    ///
     /// Handles `CREATE` / `DROP` for graph types and property graphs. Other [`Statement`] variants are ignored.
     pub fn apply_statement_block(
         &mut self,
         block: &StatementBlock,
+        source: &str,
         graph_lookup: &impl GraphNameLookup,
         type_lookup: &mut impl GraphTypeLookup,
     ) -> Result<(), CatalogError> {
         for stmt in block.iter_statements() {
-            self.apply_statement(stmt, graph_lookup, type_lookup)?;
+            self.apply_statement(stmt, source, graph_lookup, type_lookup)?;
         }
         Ok(())
     }
@@ -125,12 +136,15 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
     fn apply_statement(
         &mut self,
         stmt: &Statement,
+        source: &str,
         graph_lookup: &impl GraphNameLookup,
         type_lookup: &mut impl GraphTypeLookup,
     ) -> Result<(), CatalogError> {
         match stmt {
-            Statement::CreateGraphType(c) => self.apply_create_graph_type(c, type_lookup),
-            Statement::CreateGraph(c) => self.apply_create_graph(c, graph_lookup, type_lookup),
+            Statement::CreateGraphType(c) => self.apply_create_graph_type(c, source, type_lookup),
+            Statement::CreateGraph(c) => {
+                self.apply_create_graph(c, source, graph_lookup, type_lookup)
+            }
             Statement::DropGraphType(d) => {
                 self.apply_drop_graph_type(d, type_lookup)?;
                 Ok(())
@@ -147,6 +161,7 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
     fn apply_create_graph_type(
         &mut self,
         c: &CreateGraphTypeStatement,
+        source: &str,
         type_lookup: &mut impl GraphTypeLookup,
     ) -> Result<(), CatalogError> {
         if c.copy_of.is_some() {
@@ -160,7 +175,13 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         }
         if let Some(type_id) = type_lookup.lookup_graph_type_id(&key) {
             if c.or_replace {
-                self.type_map.insert(type_id, c.definition.clone().into());
+                let definition = definition_source(source, c.definition.span)?;
+                self.type_map
+                    .insert(type_id, StorableGraphTypeDefinition::from(definition));
+                self.type_cache
+                    .borrow_mut()
+                    .insert(type_id, c.definition.clone());
+                self.binding_cache.borrow_mut().clear();
                 return Ok(());
             }
             return Err(CatalogError::GraphTypeExists(key));
@@ -169,7 +190,12 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
             return Ok(());
         }
         let type_id = type_lookup.intern_graph_type_id(&key)?;
-        self.type_map.insert(type_id, c.definition.clone().into());
+        let definition = definition_source(source, c.definition.span)?;
+        self.type_map
+            .insert(type_id, StorableGraphTypeDefinition::from(definition));
+        self.type_cache
+            .borrow_mut()
+            .insert(type_id, c.definition.clone());
         Ok(())
     }
 
@@ -177,6 +203,7 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
     fn apply_create_graph(
         &mut self,
         c: &CreateGraphStatement,
+        source: &str,
         graph_lookup: &impl GraphNameLookup,
         type_lookup: &impl GraphTypeLookup,
     ) -> Result<(), CatalogError> {
@@ -205,7 +232,9 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
                     .ok_or(CatalogError::GraphTypeNotFound(key))?;
                 Some(GraphSchemaBinding::type_ref(type_id))
             }
-            Some(GraphTypeSpec::Inline(def)) => Some(GraphSchemaBinding::inline(def.clone())),
+            Some(GraphTypeSpec::Inline(def)) => Some(GraphSchemaBinding::inline(
+                definition_source(source, def.span)?,
+            )),
         };
 
         if self.binding_map.contains_key(&graph_id) {
@@ -218,6 +247,7 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
                         self.binding_map.remove(&graph_id);
                     }
                 };
+                self.binding_cache.borrow_mut().remove(&graph_id);
                 return Ok(());
             }
             return Err(CatalogError::Unsupported(concat_string!(
@@ -229,6 +259,7 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
 
         if let Some(b) = binding {
             self.binding_map.insert(graph_id, b);
+            self.binding_cache.borrow_mut().remove(&graph_id);
         }
         Ok(())
     }
@@ -244,6 +275,8 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
             return Ok(());
         };
         self.type_map.remove(&type_id);
+        self.type_cache.borrow_mut().remove(&type_id);
+        self.binding_cache.borrow_mut().clear();
 
         let mut binding_keys_to_remove = Vec::new();
         for entry in self.binding_map.iter() {
@@ -260,6 +293,7 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
     fn apply_drop_graph(&mut self, d: &DropGraphStatement, lookup: &impl GraphNameLookup) {
         if let Ok(graph_id) = resolve_graph_id_for_name(&d.name, lookup) {
             self.binding_map.remove(&graph_id);
+            self.binding_cache.borrow_mut().remove(&graph_id);
         }
     }
 
@@ -279,7 +313,15 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         let Some(binding) = self.binding_map.get(&graph_id) else {
             return Ok(None);
         };
-        let def = self.definition_for_binding(&binding)?;
+        let def = if let Some(definition) = self.binding_cache.borrow().get(&graph_id) {
+            definition.clone()
+        } else {
+            let definition = self.definition_for_binding(&binding)?;
+            self.binding_cache
+                .borrow_mut()
+                .insert(graph_id, definition.clone());
+            definition
+        };
         GraphTypePropertySchema::try_from_definition(&def)
             .map(Some)
             .map_err(CatalogError::InvalidDefinition)
@@ -298,11 +340,42 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         let Some(binding) = self.binding_map.get(&graph_id) else {
             return Ok(None);
         };
-        self.definition_for_binding(&binding).map(Some)
+        if let Some(definition) = self.binding_cache.borrow().get(&graph_id) {
+            return Ok(Some(definition.clone()));
+        }
+        let definition = self.definition_for_binding(&binding)?;
+        self.binding_cache
+            .borrow_mut()
+            .insert(graph_id, definition.clone());
+        Ok(Some(definition))
     }
 
     pub fn remove_graph_binding(&mut self, graph_id: GraphId) {
         self.binding_map.remove(&graph_id);
+        self.binding_cache.borrow_mut().remove(&graph_id);
+    }
+
+    /// Best-effort warmup of parsed definitions after canister upgrade.
+    ///
+    /// Stable source strings remain authoritative. Invalid or unsupported source is left out of
+    /// the cache and will be reported by the normal schema lookup path when it is used.
+    pub fn rebuild_caches_after_upgrade(&self) {
+        self.type_cache.borrow_mut().clear();
+        self.binding_cache.borrow_mut().clear();
+        for entry in self.type_map.iter() {
+            if let Ok(definition) = parse_definition_source(entry.value().as_str()) {
+                self.type_cache
+                    .borrow_mut()
+                    .insert(*entry.key(), definition);
+            }
+        }
+        for entry in self.binding_map.iter() {
+            if let Ok(definition) = self.definition_for_binding(&entry.value()) {
+                self.binding_cache
+                    .borrow_mut()
+                    .insert(*entry.key(), definition);
+            }
+        }
     }
 
     fn definition_for_binding(
@@ -313,12 +386,19 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
             GraphSchemaBinding::V1(v1) => match v1 {
                 GraphSchemaBindingV1::TypeRef(raw) => {
                     let type_id = GraphTypeId::from_raw(*raw);
+                    if let Some(definition) = self.type_cache.borrow().get(&type_id) {
+                        return Ok(definition.clone());
+                    }
                     let Some(value) = self.type_map.get(&type_id) else {
                         return Err(CatalogError::GraphTypeNotFound(type_id.to_string()));
                     };
-                    Ok(value.into())
+                    let definition = parse_definition_source(value.as_str())?;
+                    self.type_cache
+                        .borrow_mut()
+                        .insert(type_id, definition.clone());
+                    Ok(definition)
                 }
-                GraphSchemaBindingV1::Inline(def) => Ok(def.clone()),
+                GraphSchemaBindingV1::Inline(source) => parse_definition_source(source),
             },
         }
     }
@@ -329,7 +409,7 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
 enum GraphSchemaBindingV1 {
     /// `CREATE GRAPH ... TYPED <name>` — resolved [`GraphTypeId`] (`raw()` in stable storage).
     TypeRef(u32),
-    Inline(GraphTypeDefinition),
+    Inline(String),
 }
 
 /// Versioned graph schema binding for stable storage and upgrade-safe evolution.
@@ -343,8 +423,8 @@ impl GraphSchemaBinding {
         Self::V1(GraphSchemaBindingV1::TypeRef(type_id.raw()))
     }
 
-    fn inline(def: GraphTypeDefinition) -> Self {
-        Self::V1(GraphSchemaBindingV1::Inline(def))
+    fn inline(source: String) -> Self {
+        Self::V1(GraphSchemaBindingV1::Inline(source))
     }
 }
 
@@ -357,27 +437,27 @@ fn binding_type_ref_id(binding: &GraphSchemaBinding) -> Option<GraphTypeId> {
     }
 }
 
-/// Versioned graph type definition stored in [`StableBTreeMap`] (rkyv [`Storable`] payload).
+/// Versioned graph type definition source stored in [`StableBTreeMap`].
 #[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 enum StorableGraphTypeDefinition {
-    V1(GraphTypeDefinition),
+    V1(String),
 }
 
-impl From<GraphTypeDefinition> for StorableGraphTypeDefinition {
-    fn from(def: GraphTypeDefinition) -> Self {
-        Self::V1(def)
+impl From<String> for StorableGraphTypeDefinition {
+    fn from(source: String) -> Self {
+        Self::V1(source)
     }
 }
 
-impl From<StorableGraphTypeDefinition> for GraphTypeDefinition {
-    fn from(value: StorableGraphTypeDefinition) -> Self {
-        match value {
-            StorableGraphTypeDefinition::V1(def) => def,
+impl StorableGraphTypeDefinition {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::V1(source) => source,
         }
     }
 }
 
-/// Encodes [`GraphTypeDefinition`] with rkyv (archived AST without spans).
+/// Encodes graph type definition source with rkyv.
 impl Storable for StorableGraphTypeDefinition {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(self)
@@ -423,6 +503,34 @@ impl Storable for GraphSchemaBinding {
     }
 
     const BOUND: Bound = Bound::Unbounded;
+}
+
+fn definition_source(source: &str, span: gleaph_gql::token::Span) -> Result<String, CatalogError> {
+    source
+        .get(span.start..span.end)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            CatalogError::InvalidDefinition(format!(
+                "graph type definition span {}..{} is outside the source",
+                span.start, span.end
+            ))
+        })
+}
+
+fn parse_definition_source(source: &str) -> Result<GraphTypeDefinition, CatalogError> {
+    let query = format!("CREATE GRAPH TYPE __gleaph_cached_type {source}");
+    let program = gleaph_gql::parser::parse(&query)
+        .map_err(|error| CatalogError::InvalidDefinition(error.to_string()))?;
+    let body = program
+        .transaction_activity
+        .and_then(|activity| activity.body)
+        .ok_or_else(|| CatalogError::InvalidDefinition("missing cached graph type body".into()))?;
+    let Some(Statement::CreateGraphType(statement)) = body.iter_statements().next() else {
+        return Err(CatalogError::InvalidDefinition(
+            "cached graph type source did not parse as CREATE GRAPH TYPE".into(),
+        ));
+    };
+    Ok(statement.definition.clone())
 }
 
 #[cfg(test)]
@@ -511,11 +619,12 @@ mod tests {
 
     fn apply_block(
         catalog: &mut GraphCatalog<VectorMemory, VectorMemory>,
-        block: &StatementBlock,
+        source: &str,
         lookups: &mut TestLookups,
     ) {
+        let block = block_from(source);
         catalog
-            .apply_statement_block(block, &lookups.graphs, &mut lookups.types)
+            .apply_statement_block(&block, source, &lookups.graphs, &mut lookups.types)
             .expect("apply");
     }
 
@@ -545,12 +654,12 @@ mod tests {
     #[test]
     fn create_graph_type_duplicate_errors() {
         let ddl = "CREATE GRAPH TYPE gt { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) }";
-        let block = block_from(ddl);
         let mut c = catalog();
         let mut lookups = TestLookups::default();
-        apply_block(&mut c, &block, &mut lookups);
+        apply_block(&mut c, ddl, &mut lookups);
+        let block = block_from(ddl);
         let err = c
-            .apply_statement_block(&block, &lookups.graphs, &mut lookups.types)
+            .apply_statement_block(&block, ddl, &lookups.graphs, &mut lookups.types)
             .expect_err("duplicate type");
         assert!(matches!(err, CatalogError::GraphTypeExists(ref k) if k == "gt"));
     }
@@ -563,12 +672,12 @@ mod tests {
         let mut lookups = TestLookups::default();
         apply_block(
             &mut c,
-            &block_from(&format!("CREATE GRAPH TYPE gt {{ {body} }}")),
+            &format!("CREATE GRAPH TYPE gt {{ {body} }}"),
             &mut lookups,
         );
         apply_block(
             &mut c,
-            &block_from(&format!("CREATE GRAPH TYPE IF NOT EXISTS gt {{ {body} }}")),
+            &format!("CREATE GRAPH TYPE IF NOT EXISTS gt {{ {body} }}"),
             &mut lookups,
         );
     }
@@ -580,16 +689,12 @@ mod tests {
         let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
         apply_block(
             &mut c,
-            &block_from(
-                "CREATE GRAPH TYPE gt { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) }",
-            ),
+            "CREATE GRAPH TYPE gt { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) }",
             &mut lookups,
         );
         apply_block(
             &mut c,
-            &block_from(
-                "CREATE OR REPLACE GRAPH TYPE gt { NODE Person LABEL Person, UNDIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person ~ Person) }",
-            ),
+            "CREATE OR REPLACE GRAPH TYPE gt { NODE Person LABEL Person, UNDIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person ~ Person) }",
             &mut lookups,
         );
         assert!(
@@ -597,7 +702,7 @@ mod tests {
                 .expect("resolve")
                 .is_none()
         );
-        apply_block(&mut c, &block_from("CREATE GRAPH g TYPED gt"), &mut lookups);
+        apply_block(&mut c, "CREATE GRAPH g TYPED gt", &mut lookups);
         let schema = c
             .try_property_schema_for_graph_id(G)
             .expect("schema")
@@ -613,6 +718,7 @@ mod tests {
         let err = c
             .apply_statement_block(
                 &block_from("CREATE GRAPH g TYPED missing"),
+                "CREATE GRAPH g TYPED missing",
                 &lookups.graphs,
                 &mut lookups.types,
             )
@@ -631,6 +737,7 @@ mod tests {
         let err = c
             .apply_statement_block(
                 &block_from("CREATE GRAPH g {}"),
+                "CREATE GRAPH g {}",
                 &lookups.graphs,
                 &mut lookups.types,
             )
@@ -643,7 +750,7 @@ mod tests {
     fn create_graph_any_has_no_property_schema() {
         let mut c = catalog();
         let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
-        apply_block(&mut c, &block_from("CREATE GRAPH g ANY"), &mut lookups);
+        apply_block(&mut c, "CREATE GRAPH g ANY", &mut lookups);
         assert!(c.try_property_schema_for_graph_id(G).expect("ok").is_none());
     }
 
@@ -652,7 +759,7 @@ mod tests {
     fn create_graph_empty_inline_body_still_binds() {
         let mut c = catalog();
         let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
-        apply_block(&mut c, &block_from("CREATE GRAPH g {}"), &mut lookups);
+        apply_block(&mut c, "CREATE GRAPH g {}", &mut lookups);
         assert!(c.try_property_schema_for_graph_id(G).expect("ok").is_some());
     }
 
@@ -662,7 +769,7 @@ mod tests {
         let mut c = catalog();
         let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
         let ddl = "CREATE GRAPH TYPE gt { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) } NEXT CREATE GRAPH g TYPED gt";
-        apply_block(&mut c, &block_from(ddl), &mut lookups);
+        apply_block(&mut c, ddl, &mut lookups);
         assert!(c.try_property_schema_for_graph_id(G).expect("ok").is_some());
     }
 
@@ -673,13 +780,11 @@ mod tests {
         let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
         apply_block(
             &mut c,
-            &block_from(
-                "CREATE GRAPH g { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) }",
-            ),
+            "CREATE GRAPH g { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) }",
             &mut lookups,
         );
         assert!(c.try_property_schema_for_graph_id(G).expect("ok").is_some());
-        apply_block(&mut c, &block_from("DROP GRAPH g"), &mut lookups);
+        apply_block(&mut c, "DROP GRAPH g", &mut lookups);
         assert!(c.try_property_schema_for_graph_id(G).expect("ok").is_none());
     }
 
@@ -690,13 +795,11 @@ mod tests {
         let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
         apply_block(
             &mut c,
-            &block_from(
-                "CREATE GRAPH TYPE gt { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) } NEXT CREATE GRAPH g TYPED gt",
-            ),
+            "CREATE GRAPH TYPE gt { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) } NEXT CREATE GRAPH g TYPED gt",
             &mut lookups,
         );
         assert!(c.try_property_schema_for_graph_id(G).expect("ok").is_some());
-        apply_block(&mut c, &block_from("DROP GRAPH TYPE gt"), &mut lookups);
+        apply_block(&mut c, "DROP GRAPH TYPE gt", &mut lookups);
         assert!(c.try_property_schema_for_graph_id(G).expect("ok").is_none());
     }
 
@@ -708,6 +811,7 @@ mod tests {
         let err = c
             .apply_statement_block(
                 &block_from("CREATE GRAPH TYPE gt COPY OF other { NODE Person LABEL Person }"),
+                "CREATE GRAPH TYPE gt COPY OF other { NODE Person LABEL Person }",
                 &lookups.graphs,
                 &mut lookups.types,
             )
@@ -723,6 +827,7 @@ mod tests {
         let err = c
             .apply_statement_block(
                 &block_from("CREATE GRAPH g LIKE other"),
+                "CREATE GRAPH g LIKE other",
                 &lookups.graphs,
                 &mut lookups.types,
             )
@@ -738,6 +843,7 @@ mod tests {
         let err = c
             .apply_statement_block(
                 &block_from("CREATE GRAPH g {} AS COPY OF other"),
+                "CREATE GRAPH g {} AS COPY OF other",
                 &lookups.graphs,
                 &mut lookups.types,
             )
@@ -751,9 +857,14 @@ mod tests {
         let mut c = catalog();
         let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
         let setup = "CREATE GRAPH g { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) }";
-        apply_block(&mut c, &block_from(setup), &mut lookups);
+        apply_block(&mut c, setup, &mut lookups);
         let err = c
-            .apply_statement_block(&block_from(setup), &lookups.graphs, &mut lookups.types)
+            .apply_statement_block(
+                &block_from(setup),
+                setup,
+                &lookups.graphs,
+                &mut lookups.types,
+            )
             .expect_err("dup");
         assert!(matches!(err, CatalogError::Unsupported(ref m) if m.contains("already exists")));
     }
@@ -765,7 +876,7 @@ mod tests {
         let mut lookups = TestLookups::default();
         apply_block(
             &mut c,
-            &block_from("CREATE GRAPH TYPE gt { NODE Person LABEL Person } NEXT CREATE SCHEMA /x"),
+            "CREATE GRAPH TYPE gt { NODE Person LABEL Person } NEXT CREATE SCHEMA /x",
             &mut lookups,
         );
     }
@@ -789,17 +900,11 @@ mod tests {
         let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
         apply_block(
             &mut c,
-            &block_from(
-                "CREATE GRAPH TYPE gt { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) } NEXT CREATE GRAPH g TYPED gt",
-            ),
+            "CREATE GRAPH TYPE gt { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) } NEXT CREATE GRAPH g TYPED gt",
             &mut lookups,
         );
         assert!(c.try_property_schema_for_graph_id(G).expect("ok").is_some());
-        apply_block(
-            &mut c,
-            &block_from("CREATE OR REPLACE GRAPH g ANY"),
-            &mut lookups,
-        );
+        apply_block(&mut c, "CREATE OR REPLACE GRAPH g ANY", &mut lookups);
         assert!(c.try_property_schema_for_graph_id(G).expect("ok").is_none());
     }
 
@@ -809,7 +914,7 @@ mod tests {
         let mut c = catalog();
         let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
         let ddl = "CREATE GRAPH g { NODE A LABEL A, NODE B LABEL B, DIRECTED EDGE E1 LABELS R CONNECTING (A -> B), UNDIRECTED EDGE E2 LABELS R CONNECTING (A ~ B) }";
-        apply_block(&mut c, &block_from(ddl), &mut lookups);
+        apply_block(&mut c, ddl, &mut lookups);
         let err = c
             .try_property_schema_for_graph_id(G)
             .expect_err("invalid schema");
@@ -818,24 +923,22 @@ mod tests {
 
     #[test]
     fn catalog_records_round_trip_through_storable() {
-        let block = block_from("CREATE GRAPH TYPE gt { NODE Person LABEL Person }");
-        let stmt = block.iter_statements().next().expect("stmt");
-        let Statement::CreateGraphType(c) = stmt else {
-            panic!("expected create graph type");
-        };
-        let def = c.definition.clone();
-
-        let type_record = StorableGraphTypeDefinition::from(def.clone());
-        let decoded_def: GraphTypeDefinition =
-            StorableGraphTypeDefinition::from_bytes(Cow::Owned(type_record.into_bytes())).into();
+        let source = "{ NODE Person LABEL Person }";
+        let type_record = StorableGraphTypeDefinition::from(source.to_owned());
+        let decoded_source =
+            StorableGraphTypeDefinition::from_bytes(Cow::Owned(type_record.into_bytes()));
+        assert_eq!(decoded_source.as_str(), source);
+        let def = parse_definition_source(source).expect("parse source");
+        let decoded_def = parse_definition_source(decoded_source.as_str()).expect("parse decoded");
         GraphTypePropertySchema::try_from_definition(&def).expect("original schema");
         GraphTypePropertySchema::try_from_definition(&decoded_def).expect("decoded schema");
 
-        let binding = GraphSchemaBinding::inline(def);
+        let binding = GraphSchemaBinding::inline(source.to_owned());
         let decoded_binding =
             GraphSchemaBinding::from_bytes(Cow::Owned(binding.clone().into_bytes()));
         match decoded_binding {
-            GraphSchemaBinding::V1(GraphSchemaBindingV1::Inline(decoded_def)) => {
+            GraphSchemaBinding::V1(GraphSchemaBindingV1::Inline(decoded_source)) => {
+                let decoded_def = parse_definition_source(&decoded_source).expect("parse binding");
                 GraphTypePropertySchema::try_from_definition(&decoded_def)
                     .expect("decoded binding schema");
             }
@@ -843,5 +946,35 @@ mod tests {
                 panic!("expected inline binding")
             }
         }
+    }
+
+    #[test]
+    fn graph_type_cache_rebuilds_from_stable_source() {
+        let type_memory = VectorMemory::default();
+        let binding_memory = VectorMemory::default();
+        let source =
+            "CREATE GRAPH TYPE gt { NODE Person LABEL Person } NEXT CREATE GRAPH g TYPED gt";
+        let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
+        {
+            let mut catalog = GraphCatalog::init(type_memory.clone(), binding_memory.clone());
+            let block = block_from(source);
+            catalog
+                .apply_statement_block(&block, source, &lookups.graphs, &mut lookups.types)
+                .expect("apply");
+            assert!(
+                catalog
+                    .try_property_schema_for_graph_id(G)
+                    .expect("schema")
+                    .is_some()
+            );
+        }
+
+        let catalog = GraphCatalog::init(type_memory, binding_memory);
+        assert!(
+            catalog
+                .try_property_schema_for_graph_id(G)
+                .expect("rebuild schema")
+                .is_some()
+        );
     }
 }

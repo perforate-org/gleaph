@@ -3322,7 +3322,7 @@ mod graph_type_catalog_vocabulary {
         let graph_id = lookup_graph_id("g").expect("graph id");
 
         let ddl = format!("CREATE GRAPH g {{ {PERSON_KNOWS} }}");
-        apply_catalog_statement_block(&catalog_block_from(&ddl)).expect("apply ddl");
+        apply_catalog_statement_block(&catalog_block_from(&ddl), &ddl).expect("apply ddl");
 
         assert!(store.lookup_vertex_label_id(graph_id, "Person").is_ok());
         assert!(store.lookup_edge_label_id(graph_id, "KNOWS").is_ok());
@@ -3339,7 +3339,7 @@ mod graph_type_catalog_vocabulary {
         let graph_id = lookup_graph_id("g").expect("graph id");
 
         let ddl = format!("CREATE GRAPH TYPE gt {{ {PERSON_KNOWS} }} NEXT CREATE GRAPH g TYPED gt");
-        apply_catalog_statement_block(&catalog_block_from(&ddl)).expect("apply ddl");
+        apply_catalog_statement_block(&catalog_block_from(&ddl), &ddl).expect("apply ddl");
 
         assert!(store.lookup_vertex_label_id(graph_id, "Person").is_ok());
         assert!(store.lookup_edge_label_id(graph_id, "KNOWS").is_ok());
@@ -3356,7 +3356,7 @@ mod graph_type_catalog_vocabulary {
         let graph_id = lookup_graph_id("g").expect("graph id");
 
         let ddl = "CREATE GRAPH TYPE gt { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance FLOAT32 INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH g TYPED gt";
-        apply_catalog_statement_block(&catalog_block_from(ddl)).expect("apply ddl");
+        apply_catalog_statement_block(&catalog_block_from(ddl), ddl).expect("apply ddl");
 
         let label_id = store.lookup_edge_label_id(graph_id, "ROAD").expect("label");
         let property_id = store
@@ -3380,7 +3380,7 @@ mod graph_type_catalog_vocabulary {
         register_test_graph(&store, admin, "g");
         let graph_id = lookup_graph_id("g").expect("graph id");
         let ddl = "CREATE GRAPH TYPE gt { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { stats RECORD { score FLOAT32, meta RECORD { source UINT16 } } INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH g TYPED gt";
-        apply_catalog_statement_block(&catalog_block_from(ddl)).expect("apply ddl");
+        apply_catalog_statement_block(&catalog_block_from(ddl), ddl).expect("apply ddl");
 
         let label_id = store.lookup_edge_label_id(graph_id, "ROAD").expect("label");
         let (_, schema) = ROUTER_EDGE_INLINE_PROPERTY_PROFILES
@@ -3406,8 +3406,11 @@ mod graph_type_catalog_vocabulary {
         register_test_graph(&store, admin, "g");
         let graph_id = lookup_graph_id("g").expect("graph id");
 
-        apply_catalog_statement_block(&catalog_block_from("CREATE GRAPH g ANY"))
-            .expect("apply ddl");
+        apply_catalog_statement_block(
+            &catalog_block_from("CREATE GRAPH g ANY"),
+            "CREATE GRAPH g ANY",
+        )
+        .expect("apply ddl");
 
         assert!(matches!(
             store.lookup_vertex_label_id(graph_id, "Person"),

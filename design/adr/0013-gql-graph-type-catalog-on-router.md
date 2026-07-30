@@ -2,7 +2,7 @@
 
 Date: 2026-06-13  
 Status: accepted  
-Last revised: 2026-06-13  
+Last revised: 2026-07-30
 Anchor timestamp: 2026-06-13 14:17:35 UTC +0000
 
 ## Revision history
@@ -15,6 +15,7 @@ Anchor timestamp: 2026-06-13 14:17:35 UTC +0000
 | 2026-06-13 | S0–S3 implemented; PocketIC e2e in `router_graph_type_catalog`. |
 | 2026-06-13 | **Accepted** (S0–S3). |
 | 2026-06-13 | Design sync: [`type_map` → `GraphTypeId`](0014-graph-type-id-catalog-on-router.md) landed; glossary, RBAC, layers docs updated. |
+| 2026-07-30 | Stable catalog payloads changed from rkyv AST values to source strings; parsed graph-type definitions are heap caches rebuilt after upgrade or cache loss. |
 
 ## Context
 
@@ -24,13 +25,18 @@ logic in the standalone crate **`gleaph-graph-catalog`** (`GraphCatalog`):
 
 | Map | DDL | Key (implemented) | Payload |
 |-----|-----|-------------------|---------|
-| `type_map` | `CREATE GRAPH TYPE` / `DROP GRAPH TYPE` | **`GraphTypeId`** ([ADR 0014](0014-graph-type-id-catalog-on-router.md)) | [`StorableGraphTypeDefinition::V1`] |
+| `type_map` | `CREATE GRAPH TYPE` / `DROP GRAPH TYPE` | **`GraphTypeId`** ([ADR 0014](0014-graph-type-id-catalog-on-router.md)) | [`StorableGraphTypeDefinition::V1(String)`] |
 | `binding_map` | `CREATE GRAPH` / `DROP GRAPH` | **`GraphId`** | [`GraphSchemaBinding::V1`] (`TypeRef(u32)` = `GraphTypeId` raw; `Inline`) |
 
 [`GraphCatalog::try_property_schema_for_graph_id`] resolves a federation **`GraphId`** to
 [`GraphTypePropertySchema`] for planning and validation. GQL and Candid still use property graph
 **names** at the API boundary; router interns once via `ROUTER_GRAPH_CATALOG` ([ADR 0011](0011-gql-graph-resolution-and-catalog-scoping.md)).
 Graph **type** names from catalog DDL intern via `ROUTER_GRAPH_TYPE_CATALOG` ([ADR 0014](0014-graph-type-id-catalog-on-router.md)).
+
+The catalog does not persist `GraphTypeDefinition` AST values. DDL ingress stores graph-type
+definition source text in the stable maps. `GraphCatalog` owns heap caches for parsed named and
+graph-bound definitions; a cache miss parses the stored source and repopulates the cache. Cache
+contents are derived state and are cleared or invalidated on replacement, drop, and binding changes.
 
 **Implemented (2026-06-13):** `GraphCatalog` is mounted on router regions **21–22**; catalog DDL
 runs on `gql_execute*`; schema is injected at plan + validate when a binding exists for the
@@ -58,7 +64,7 @@ already exist in `ROUTER_GRAPH_CATALOG` (see §2).
 - [ADR 0007](0007-stable-memory-layout.md) — repack gate for new router `MemoryId`s
 - [ADR 0011](0011-gql-graph-resolution-and-catalog-scoping.md) — program-based graph resolution;
   property graph **names** remain the GQL/session surface; `GraphId` is internal federation identity
-- `gleaph-graph-catalog` — DDL apply, schema resolve, **V1** type-definition + **V2** binding rkyv records; **`binding_map` keyed by `GraphId`**; **`type_map` keyed by `GraphTypeId`** ([ADR 0014](0014-graph-type-id-catalog-on-router.md))
+- `gleaph-graph-catalog` — DDL apply, schema resolve, versioned source-string records wrapped by rkyv; **`binding_map` keyed by `GraphId`**; **`type_map` keyed by `GraphTypeId`** ([ADR 0014](0014-graph-type-id-catalog-on-router.md))
 
 ### Non-goals (this ADR)
 
@@ -99,7 +105,7 @@ Mount [`GraphCatalog`] on the **router canister** in two new stable regions:
 Thread-local: one `GraphCatalog<Memory, Memory>` initialized from regions 21–22 (same pattern as
 index catalog maps).
 
-**Wire format:** `StorableGraphTypeDefinition::V1` for definitions;
+**Wire format:** `StorableGraphTypeDefinition::V1(String)` for definition source;
 [`GraphSchemaBinding::V1`] for bindings (`TypeRef(u32)` = `GraphTypeId` raw, or `Inline`).
 Version envelopes are retained for post-production evolution; pre-production legacy string `TypeRef` rows are not supported.
 
@@ -216,7 +222,7 @@ stats load per `GraphId` in ADR 0011 U2).
 
 ### 5. Crate boundary unchanged
 
-- **`gleaph-graph-catalog`** remains a pure library: DDL, maps, rkyv codecs, unit tests; **`GraphId`
+- **`gleaph-graph-catalog`** remains a pure library: DDL, maps, source-string codecs, heap-cache rebuild, unit tests; **`GraphId`
   binding keys** and `try_property_schema_for_graph_id` live here (no IC deps — `GraphId` from
   `gleaph-graph-kernel`).
 - **Router** owns thread-local stable memory, RBAC, and GQL ingress wiring (`facade/stable/`).

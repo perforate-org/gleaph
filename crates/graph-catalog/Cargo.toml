@@ -16,9 +16,9 @@ concat-string.workspace = true
 derive_more = { version = "2", features = ["as_ref", "from", "into"] }
 ic-stable-structures.workspace = true
 gleaph-gql = { workspace = true, features = [
-    "ast-rkyv-no-span",
     "f128",
     "f256",
+    "gleaph",
 ] }
 gleaph-graph-kernel.workspace = true
 rkyv.workspace = true

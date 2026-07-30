@@ -2339,7 +2339,7 @@ async fn run_gql_unchecked(
         .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
 
     if crate::facade::stable::graph_type_catalog::block_has_catalog_ddl(block) {
-        crate::facade::stable::graph_type_catalog::apply_catalog_statement_block(block)?;
+        crate::facade::stable::graph_type_catalog::apply_catalog_statement_block(block, query)?;
         if crate::facade::stable::graph_type_catalog::block_is_catalog_ddl_only(block) {
             return Ok(GqlQueryResult::row_count_only(0));
         }
