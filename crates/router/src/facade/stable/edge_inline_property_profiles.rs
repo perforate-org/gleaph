@@ -786,6 +786,14 @@ impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
             .collect()
     }
 
+    /// Returns whether a label owns the given property through a named inline schema.
+    pub fn has_inline_property(&self, graph_id: GraphId, property_id: PropertyId) -> bool {
+        self.inner.iter().any(|entry| {
+            entry.key().graph_id == graph_id
+                && entry.value().inline_property_id() == Some(property_id)
+        })
+    }
+
     pub fn remove_graph(&mut self, graph_id: GraphId) {
         if self
             .last_record

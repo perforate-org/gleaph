@@ -13,6 +13,7 @@ use gleaph_graph_kernel::index::IndexedPropertyKind;
 use crate::edge_index_direction::{
     EdgeIndexDirectionTag, index_applies_to_query, tag_to_direction,
 };
+use crate::facade::stable::ROUTER_EDGE_INLINE_PROPERTY_PROFILES;
 use crate::facade::stable::ROUTER_PROPERTY_CATALOG;
 use crate::facade::store::RouterStore;
 
@@ -146,6 +147,18 @@ impl RouterGraphStats {
         })
     }
 
+    fn is_inline_struct_property_for(&self, label: &str, property_id: PropertyId) -> bool {
+        ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|profiles| {
+            RouterStore::new()
+                .lookup_edge_label_id(self.graph_id, label)
+                .ok()
+                .and_then(|label_id| profiles.get_record(self.graph_id, label_id))
+                .is_some_and(|record| {
+                    record.inline_property_id() == Some(property_id) && record.is_inline_struct()
+                })
+        })
+    }
+
     #[cfg(test)]
     pub fn test_vertex_indexed(
         graph_id: GraphId,
@@ -181,13 +194,28 @@ impl GraphStats for RouterGraphStats {
         direction: EdgeDirection,
     ) -> bool {
         match label {
-            Some(label) => self.is_edge_indexed_for(label, property, direction),
-            None => {
-                let Some(_property_id) = ROUTER_PROPERTY_CATALOG
+            Some(label) => {
+                let Some(property_id) = ROUTER_PROPERTY_CATALOG
                     .with_borrow(|catalog| catalog.get_id(self.graph_id, property))
                 else {
                     return false;
                 };
+                if self.is_inline_struct_property_for(label, property_id) {
+                    return false;
+                }
+                self.is_edge_indexed_for(label, property, direction)
+            }
+            None => {
+                let Some(property_id) = ROUTER_PROPERTY_CATALOG
+                    .with_borrow(|catalog| catalog.get_id(self.graph_id, property))
+                else {
+                    return false;
+                };
+                if ROUTER_EDGE_INLINE_PROPERTY_PROFILES.with_borrow(|profiles| {
+                    profiles.has_inline_property(self.graph_id, property_id)
+                }) {
+                    return false;
+                }
                 self.is_edge_property_indexed(property)
             }
         }
