@@ -39,6 +39,25 @@ pub fn encode_gql_params(params: GqlParams) -> Result<Vec<u8>, GqlEncodingError>
     GqlValue::Record(params).to_binary_bytes()
 }
 
+/// Router query response envelope shared by dynamic GQL and prepared operations.
+///
+/// The materialized rows remain an opaque compact Candid blob until the public IC wire codec is
+/// selected. This keeps the CDK API independent from graph-kernel implementation types.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct GqlResponse {
+    /// Number of rows returned by the Router.
+    pub row_count: u64,
+    /// Optional compact Candid rows blob.
+    pub rows_blob: Option<Vec<u8>>,
+}
+
+impl GqlResponse {
+    /// Return the materialized rows blob, if the query produced one.
+    pub fn rows_blob(&self) -> Option<&[u8]> {
+        self.rows_blob.as_deref()
+    }
+}
+
 /// Error returned when a prepared-query inter-canister call fails before yielding a typed result.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PreparedCallError {
@@ -308,5 +327,17 @@ mod tests {
         let encoded = encode_gql_params(params.clone()).expect("encode GQL params");
         let decoded = GqlValue::from_binary_bytes(&encoded).expect("decode GQL params");
         assert_eq!(decoded, GqlValue::Record(params));
+    }
+
+    #[test]
+    fn gql_response_envelope_round_trips() {
+        let response = GqlResponse {
+            row_count: 2,
+            rows_blob: Some(vec![1, 2, 3]),
+        };
+        let bytes = candid::encode_one(&response).expect("encode response");
+        let decoded: GqlResponse = candid::decode_one(&bytes).expect("decode response");
+        assert_eq!(decoded, response);
+        assert_eq!(decoded.rows_blob(), Some(&[1, 2, 3][..]));
     }
 }
