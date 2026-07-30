@@ -105,13 +105,20 @@ impl<'a> Lexer<'a> {
             if self.pos >= self.bytes.len() {
                 return Ok(());
             }
-            // Line comment: // or --
+            // Line comment: // or --. Under the Gleaph feature, /// is a doc comment.
             if self.pos + 1 < self.bytes.len() {
                 let a = self.bytes[self.pos];
                 let b = self.bytes[self.pos + 1];
                 if (a == b'/' && b == b'/') || (a == b'-' && b == b'-') {
                     let comment_start = self.pos;
-                    self.pos += 2; // skip delimiter
+                    #[cfg(feature = "gleaph")]
+                    let is_doc = a == b'/'
+                        && b == b'/'
+                        && self.pos + 2 < self.bytes.len()
+                        && self.bytes[self.pos + 2] == b'/';
+                    #[cfg(not(feature = "gleaph"))]
+                    let is_doc = false;
+                    self.pos += if is_doc { 3 } else { 2 };
                     let text_start = self.pos;
                     while self.pos < self.bytes.len()
                         && self.bytes[self.pos] != b'\n'
@@ -124,7 +131,18 @@ impl<'a> Lexer<'a> {
                             start: comment_start,
                             end: self.pos,
                         },
-                        kind: CommentKind::Line,
+                        kind: if is_doc {
+                            #[cfg(feature = "gleaph")]
+                            {
+                                CommentKind::Doc
+                            }
+                            #[cfg(not(feature = "gleaph"))]
+                            {
+                                CommentKind::Line
+                            }
+                        } else {
+                            CommentKind::Line
+                        },
                         text: self.src[text_start..self.pos].to_string(),
                     });
                     continue;
@@ -1385,6 +1403,23 @@ mod tests {
             toks("a // comment\nb"),
             vec![Token::Ident("a".into()), Token::Ident("b".into())]
         );
+    }
+
+    #[cfg(feature = "gleaph")]
+    #[test]
+    fn doc_comment_is_preserved_as_doc_kind() {
+        let result = tokenize_with_comments("/// generated query\nMATCH (n) RETURN n").unwrap();
+        assert_eq!(result.comments.len(), 1);
+        assert_eq!(result.comments[0].kind, CommentKind::Doc);
+        assert_eq!(result.comments[0].text, " generated query");
+        assert_eq!(result.comments[0].span, Span { start: 0, end: 19 });
+    }
+
+    #[cfg(feature = "gleaph")]
+    #[test]
+    fn double_slash_comment_remains_line_comment_with_gleaph() {
+        let result = tokenize_with_comments("// ordinary comment\nMATCH (n) RETURN n").unwrap();
+        assert_eq!(result.comments[0].kind, CommentKind::Line);
     }
 
     #[test]

@@ -142,6 +142,7 @@ mod tests {
             query: "MATCH (n) RETURN n".into(),
             metadata: Some(PreparedOperation {
                 name: "find-users".into(),
+                description: None,
                 kind: OperationKind::Query,
                 parameters: Vec::new(),
                 result: ResultSchema {

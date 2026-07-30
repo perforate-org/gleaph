@@ -46,6 +46,9 @@ pub enum OperationKind {
 pub struct PreparedOperation {
     /// Operation name as exposed by the Router.
     pub name: String,
+    /// Optional documentation emitted by code generators.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Whether the operation is read-only or mutating.
     pub kind: OperationKind,
     /// Input parameters accepted by the operation.
@@ -69,6 +72,9 @@ pub struct PreparedOperation {
 pub struct Parameter {
     /// Parameter name used in the operation's wire representation.
     pub name: String,
+    /// Optional documentation emitted by code generators.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Whether callers must provide this parameter.
     pub required: bool,
     /// Whether the parameter may explicitly contain null.
@@ -215,9 +221,11 @@ mod tests {
             },
             operations: vec![PreparedOperation {
                 name: "find-users".into(),
+                description: None,
                 kind: OperationKind::Query,
                 parameters: vec![Parameter {
                     name: "term".into(),
+                    description: None,
                     required: true,
                     nullable: false,
                     semantic_type: SemanticType::Text,

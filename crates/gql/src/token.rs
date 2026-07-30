@@ -58,10 +58,28 @@ pub struct Comment {
 /// The kind of source comment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommentKind {
+    /// A Gleaph doc line comment introduced by `///`.
+    #[cfg(feature = "gleaph")]
+    Doc,
     /// A line comment introduced by `//` or `--`.
     Line,
     /// A block comment delimited by `/* ... */`.
     Block,
+}
+
+/// A Gleaph doc comment retained by the AST when the `gleaph` feature is enabled.
+#[cfg(feature = "gleaph")]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct DocComment {
+    /// Location of the comment in the source text.
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
+    pub span: Span,
+    /// Comment body with the `///` delimiter removed.
+    pub text: String,
 }
 
 /// A single lexical token produced by the GQL lexer.

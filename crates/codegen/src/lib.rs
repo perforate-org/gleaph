@@ -253,9 +253,11 @@ mod tests {
             },
             operations: vec![PreparedOperation {
                 name: "find-users".into(),
+                description: Some("Find users by their search term.".into()),
                 kind: OperationKind::Query,
                 parameters: vec![Parameter {
                     name: "term".into(),
+                    description: Some("Text to search for.".into()),
                     required: true,
                     nullable: false,
                     semantic_type: SemanticType::Text,
@@ -395,30 +397,35 @@ mod tests {
         value.operations[0].parameters = vec![
             Parameter {
                 name: "quad".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Float128,
             },
             Parameter {
                 name: "oct".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Float256,
             },
             Parameter {
                 name: "signed".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Int256,
             },
             Parameter {
                 name: "unsigned".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Uint256,
             },
             Parameter {
                 name: "price".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Decimal,
@@ -460,12 +467,14 @@ mod tests {
         value.operations[0].parameters = vec![
             Parameter {
                 name: "owner".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Principal,
             },
             Parameter {
                 name: "route".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Path,
@@ -484,30 +493,35 @@ mod tests {
         value.operations[0].parameters = vec![
             Parameter {
                 name: "created_at".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::DateTime,
             },
             Parameter {
                 name: "local_created_at".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::LocalDateTime,
             },
             Parameter {
                 name: "window".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::ZonedDateTime,
             },
             Parameter {
                 name: "duration".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Duration,
             },
             Parameter {
                 name: "ids".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::List {
@@ -583,12 +597,14 @@ mod tests {
         value.operations[0].parameters = vec![
             Parameter {
                 name: "small".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Int8,
             },
             Parameter {
                 name: "wide_float".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Float128,
@@ -617,18 +633,21 @@ mod tests {
         value.operations[0].parameters = vec![
             Parameter {
                 name: "local_time".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::LocalTime,
             },
             Parameter {
                 name: "when".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::ZonedDateTime,
             },
             Parameter {
                 name: "metadata".into(),
+                description: None,
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Record {
@@ -687,6 +706,25 @@ mod tests {
         assert!(rust.contains("pub duration: PreparedDuration"));
         assert!(rust.contains("pub zoned_time: PreparedZonedTime"));
         assert!(!rust.contains("\n+"));
+    }
+
+    #[test]
+    fn emits_operation_and_parameter_documentation_in_all_profiles() {
+        let value = manifest();
+        let typescript = generate_typescript(&value).unwrap();
+        assert!(typescript.contains("/**\n * Find users by their search term.\n */"));
+        assert!(typescript.contains("/**\n   * Text to search for.\n   */"));
+
+        let javascript = generate_javascript(&value).unwrap();
+        assert!(javascript.contains("/**\n     * Find users by their search term.\n     */"));
+
+        let rust = generate_rust(&value).unwrap();
+        assert!(rust.contains("/// Find users by their search term."));
+        assert!(rust.contains("/// Text to search for."));
+
+        let rust_canister = generate_rust_canister(&value).unwrap();
+        assert!(rust_canister.contains("/// Find users by their search term."));
+        assert!(rust_canister.contains("/// Text to search for."));
     }
 
     #[test]

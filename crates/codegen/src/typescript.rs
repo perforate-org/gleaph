@@ -3,7 +3,7 @@
 //! Generated code delegates transport and common error handling to the TypeScript SDK while
 //! emitting operation-specific parameter and result declarations.
 
-use crate::common::{encode_expression, json_string, ts_property};
+use crate::common::{append_jsdoc, encode_expression, json_string, ts_property};
 use crate::ir::normalize_manifest;
 use crate::{CodegenIr, ManifestError, OperationKind, PreparedManifest, SemanticType};
 
@@ -30,9 +30,15 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;
         let base = &operation_ir.type_name;
+        if let Some(description) = &operation.description {
+            append_jsdoc(&mut out, "", description);
+        }
         out.push_str(&format!("export interface {base}Params {{\n"));
         for parameter in &operation.parameters {
             let optional = if parameter.required { "" } else { "?" };
+            if let Some(description) = &parameter.description {
+                append_jsdoc(&mut out, "  ", description);
+            }
             out.push_str(&format!(
                 "  {}{}: {};\n",
                 ts_property(&parameter.name),
@@ -55,6 +61,9 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
     out.push_str("export interface PreparedQueries {\n");
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;
+        if let Some(description) = &operation.description {
+            append_jsdoc(&mut out, "  ", description);
+        }
         let params = &operation_ir.params_type_name;
         let row = &operation_ir.row_type_name;
         let optional = if operation.parameters.is_empty() {

@@ -3,6 +3,7 @@
 //! The generated facade is transport-neutral. A canister runtime supplies the executor that
 //! owns Candid encoding, Router calls, response decoding, and error conversion.
 
+use crate::common::append_line_doc;
 use crate::ir::CodegenIr;
 use crate::ir::normalize_manifest;
 use crate::rust::{rust_field, rust_type};
@@ -85,6 +86,9 @@ fn generate_ir(ir: &CodegenIr) -> String {
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;
         let type_name = &operation_ir.type_name;
+        if let Some(description) = &operation.description {
+            append_line_doc(&mut out, "", "///", description);
+        }
         out.push_str(&format!(
             "/// Parameters for the prepared operation {}.\n#[derive(Clone, Debug, Deserialize, Serialize)]\n#[serde(crate = \"gleaph_cdk::serde\")]\npub struct {}Params {{\n",
             operation.name, type_name
@@ -94,6 +98,9 @@ fn generate_ir(ir: &CodegenIr) -> String {
             let mut ty = canister_param_rust_type(&parameter.semantic_type);
             if !parameter.required || parameter.nullable {
                 ty = format!("Option<{ty}>");
+            }
+            if let Some(description) = &parameter.description {
+                append_line_doc(&mut out, "    ", "///", description);
             }
             out.push_str(&format!(
                 "    /// Wire parameter {}.\n    #[serde(rename = {:?})]\n    pub {field}: {ty},\n",

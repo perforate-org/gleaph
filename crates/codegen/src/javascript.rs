@@ -3,7 +3,7 @@
 //! Generated code delegates transport and common error handling to the JavaScript SDK and owns
 //! only profile-specific runtime wrappers and value projection.
 
-use crate::common::{encode_expression, json_string, ts_property};
+use crate::common::{append_jsdoc, encode_expression, json_string, ts_property};
 use crate::ir::normalize_manifest;
 use crate::{ManifestError, OperationKind, PreparedManifest};
 
@@ -34,6 +34,9 @@ pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, Manife
     out.push_str("export function withPreparedQueries(client) {\n  return {\n");
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;
+        if let Some(description) = &operation.description {
+            append_jsdoc(&mut out, "    ", description);
+        }
         let method = match operation.kind {
             OperationKind::Query => "executePrepared",
             OperationKind::Update => "executePreparedMutation",

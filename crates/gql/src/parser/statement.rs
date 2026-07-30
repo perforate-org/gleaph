@@ -66,6 +66,8 @@ impl Parser<'_> {
             span: self.span_since(start),
             session_activity,
             transaction_activity,
+            #[cfg(feature = "gleaph")]
+            doc_comments: Vec::new(),
         })
     }
 

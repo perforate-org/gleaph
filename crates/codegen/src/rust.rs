@@ -4,6 +4,7 @@
 //! executor trait. Transport, response decoding, and error policy remain owned by the Rust
 //! runtime that implements the trait.
 
+use crate::common::append_line_doc;
 use crate::ir::normalize_manifest;
 use crate::{CodegenIr, ManifestError, OperationKind, PreparedManifest, SemanticType};
 
@@ -146,6 +147,9 @@ fn generate_rust_ir(ir: &CodegenIr) -> String {
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;
         let type_name = &operation_ir.type_name;
+        if let Some(description) = &operation.description {
+            append_line_doc(&mut out, "", "///", description);
+        }
         out.push_str(&format!(
             "/// Parameters for the `{}` prepared operation.\n#[derive(Clone, Debug, Deserialize, Serialize)]\npub struct {}Params {{\n",
             operation.name, type_name
@@ -162,6 +166,9 @@ fn generate_rust_ir(ir: &CodegenIr) -> String {
             } else {
                 format!("Option<{ty}>")
             };
+            if let Some(description) = &parameter.description {
+                append_line_doc(&mut out, "    ", "///", description);
+            }
             out.push_str(&format!(
                 "    /// Wire parameter `{}`.\n    #[serde(rename = {:?})]\n    pub {field}: {ty},\n",
                 parameter.name, parameter.name
@@ -229,6 +236,9 @@ fn generate_rust_ir(ir: &CodegenIr) -> String {
                 operation.name
             )
         };
+        if let Some(description) = &operation.description {
+            append_line_doc(&mut out, "    ", "///", description);
+        }
         out.push_str(&format!(
             "    /// Execute the `{}` prepared operation.\n    pub async fn {method}(&self{}{}) -> Result<PreparedResponse<{row}>, E::Error> {{\n{params_body}        {call}\n    }}\n\n",
             operation.name,

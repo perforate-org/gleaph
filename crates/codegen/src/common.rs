@@ -95,3 +95,26 @@ pub(crate) fn ts_property(name: &str) -> String {
         format!("{name:?}")
     }
 }
+
+pub(crate) fn append_line_doc(out: &mut String, indent: &str, prefix: &str, text: &str) {
+    for line in text.lines() {
+        out.push_str(indent);
+        out.push_str(prefix);
+        out.push(' ');
+        out.push_str(line);
+        out.push('\n');
+    }
+}
+
+pub(crate) fn append_jsdoc(out: &mut String, indent: &str, text: &str) {
+    out.push_str(indent);
+    out.push_str("/**\n");
+    for line in text.lines() {
+        out.push_str(indent);
+        out.push_str(" * ");
+        out.push_str(&line.replace("*/", "* /"));
+        out.push('\n');
+    }
+    out.push_str(indent);
+    out.push_str(" */\n");
+}

@@ -1,3 +1,5 @@
+#[cfg(feature = "gleaph")]
+use crate::token::DocComment;
 use crate::token::Span;
 
 use super::catalog::{ObjectName, Statement};
@@ -20,6 +22,9 @@ pub struct GqlProgram {
     pub span: Span,
     pub session_activity: Vec<SessionCommand>,
     pub transaction_activity: Option<TransactionActivity>,
+    /// Gleaph `///` comments retained for source-to-generated-code mapping.
+    #[cfg(feature = "gleaph")]
+    pub doc_comments: Vec<DocComment>,
 }
 
 /// A transaction activity contains an optional start-transaction command, a
