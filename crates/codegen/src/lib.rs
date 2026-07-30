@@ -9,10 +9,12 @@
 mod common;
 mod ir;
 mod javascript;
+mod rust;
 mod typescript;
 
 pub use ir::{CodegenIr, OperationIr};
 pub use javascript::generate_javascript;
+pub use rust::generate_rust;
 pub use typescript::generate_typescript;
 
 use serde::{Deserialize, Serialize};
@@ -390,6 +392,26 @@ mod tests {
         assert!(output.contains("client.executePrepared(\"find-users\""));
         assert!(!output.contains("interface FindUsersParams"));
         assert!(!output.contains(" as const"));
+    }
+
+    #[test]
+    fn generates_rust_facade_with_explicit_operation_kind() {
+        let mut value = manifest();
+        value.operations[0].parameters.clear();
+        value.operations[0].allowed_sorts.push(SortKey {
+            key: "user_name".into(),
+            label: None,
+        });
+        let output = generate_rust(&value).unwrap();
+        assert!(output.contains("pub struct FindUsersParams"));
+        assert!(output.contains("pub struct FindUsersRow"));
+        assert!(output.contains("self.executor.execute_query::<FindUsersRow>"));
+        assert!(
+            output.contains("pub async fn find_users(&self, sort: Option<Vec<PreparedSortSpec>>)")
+        );
+        assert!(!output.contains("&self, ,"));
+        assert!(output.contains("pub trait PreparedExecutor"));
+        assert!(!output.contains("ic-agent"));
     }
 
     #[test]

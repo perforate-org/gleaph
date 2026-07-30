@@ -2,8 +2,8 @@
 
 Date: 2026-07-29
 Status: proposed
-Last revised: 2026-07-29
-Anchor timestamp: 2026-07-30 00:03:12 UTC +0000
+Last revised: 2026-07-30
+Anchor timestamp: 2026-07-30 00:22:02 UTC +0000
 
 ## Context
 
@@ -258,8 +258,10 @@ The first implementation is intentionally partial and does not accept the Router
   operation uniqueness, parameter/result names, sort keys, and query/update semantics;
 - a normalized `CodegenIr` shared by the language profiles;
 - TypeScript and JavaScript output profiles exposed by `generate_typescript` and
-  `generate_javascript`; and
-- a standalone `gleaph-codegen --manifest <path> --target <typescript|javascript>` entrypoint that
+  `generate_javascript`;
+- a Rust application-client profile exposed by `generate_rust`, emitting operation-specific
+  parameter/result declarations and a `PreparedExecutor` facade; and
+- a standalone `gleaph-codegen --manifest <path> --target <typescript|javascript|rust>` entrypoint that
   writes to stdout or an explicit output path.
 
 The generated TypeScript composes with the current `@gleaph/sdk` `GraphClient`, emits
@@ -267,10 +269,13 @@ operation-specific parameter and row types, encodes semantic parameter values, a
 `executePrepared` versus `executePreparedMutation`. Transport, Candid, authorization, and
 common errors remain SDK-owned. The local manifest shape is an implementation scaffold, not yet
 the accepted Router endpoint ABI. Consistency options and idempotent updates fail closed in this
-profile until the corresponding runtime methods are part of the stable SDK boundary.
+profile until the corresponding runtime methods are part of the stable SDK boundary. The Rust
+profile similarly delegates transport, response decoding, and error handling to a generated
+`PreparedExecutor` implementation; its `serde_json` parameter map is a provisional runtime
+boundary and is not the Router wire ABI.
 
-The Rust application-client, Rust canister, and Motoko profiles, Router manifest endpoint, and
-accepted result-wire compatibility policy remain planned work.
+The Rust canister and Motoko profiles, Router manifest endpoint, and accepted result-wire
+compatibility policy remain planned work.
 
 ## Design documentation impact
 
