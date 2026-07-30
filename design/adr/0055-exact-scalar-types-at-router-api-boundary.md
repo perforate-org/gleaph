@@ -1,9 +1,9 @@
 # 0055. Exact scalar types at the Router/API boundary
 
 Date: 2026-07-30
-Status: accepted
+Status: implemented
 Last revised: 2026-07-30
-Anchor timestamp: 2026-07-30 03:36:22 UTC +0000
+Anchor timestamp: 2026-07-30 03:58:09 UTC +0000
 
 ## Context
 
