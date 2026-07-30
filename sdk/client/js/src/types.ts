@@ -158,3 +158,92 @@ export interface ApiQueryResponse {
 export interface ApiListPreparedResponse {
   statements: ApiPreparedQueryInfo[];
 }
+
+export interface PreparedManifest {
+  manifest_version: number;
+  graph: PreparedManifestGraph;
+  operations: PreparedManifestOperation[];
+}
+
+export interface PreparedManifestGraph {
+  id: string;
+  name?: string | null;
+}
+
+export type PreparedManifestOperationKind = "Query" | "Update";
+
+export interface PreparedManifestOperation {
+  name: string;
+  description?: string | null;
+  kind: PreparedManifestOperationKind;
+  parameters: PreparedManifestParameter[];
+  result: PreparedManifestResultSchema;
+  supports_consistency: boolean;
+  supports_idempotency: boolean;
+  allowed_sorts: PreparedManifestSortKey[];
+}
+
+export interface PreparedManifestParameter {
+  name: string;
+  description?: string | null;
+  required: boolean;
+  nullable: boolean;
+  type: PreparedSemanticType;
+}
+
+export interface PreparedManifestResultSchema {
+  columns: PreparedManifestColumn[];
+}
+
+export interface PreparedManifestColumn {
+  name: string;
+  type: PreparedSemanticType;
+  nullable: boolean;
+}
+
+export interface PreparedManifestSortKey {
+  key: string;
+  label?: string | null;
+}
+
+export interface PreparedManifestRecordField {
+  name: string;
+  type: PreparedSemanticType;
+  nullable: boolean;
+}
+
+export type PreparedSemanticType =
+  | { Null: null }
+  | { Bool: null }
+  | { Int8: null }
+  | { Int16: null }
+  | { Int32: null }
+  | { Int64: null }
+  | { Uint8: null }
+  | { Uint16: null }
+  | { Uint32: null }
+  | { Uint64: null }
+  | { Int128: null }
+  | { Uint128: null }
+  | { Int256: null }
+  | { Uint256: null }
+  | { Float16: null }
+  | { Float32: null }
+  | { Float64: null }
+  | { Float128: null }
+  | { Float256: null }
+  | { Decimal: null }
+  | { Text: null }
+  | { Bytes: null }
+  | { Date: null }
+  | { Time: null }
+  | { Principal: null }
+  | { LocalTime: null }
+  | { DateTime: null }
+  | { LocalDateTime: null }
+  | { ZonedDateTime: null }
+  | { ZonedTime: null }
+  | { Duration: null }
+  | { List: { element: PreparedSemanticType } }
+  | { Record: { fields: PreparedManifestRecordField[] } }
+  | { Path: null };

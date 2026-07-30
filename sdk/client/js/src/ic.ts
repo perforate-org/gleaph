@@ -11,6 +11,7 @@ import type {
   ApiPrepareResponse,
   ApiQueryRequest,
   ApiQueryResponse,
+  PreparedManifest,
 } from "./types";
 import { toApiParams } from "./values";
 
@@ -29,6 +30,7 @@ interface GraphActorMethods {
     options: [] | [ApiPrepareRequest["options"]],
   ): Promise<Result<ApiPrepareResponse>>;
   list_prepared_api(): Promise<Result<ApiListPreparedResponse>>;
+  prepared_manifest(graphName: string): Promise<Result<PreparedManifest>>;
   execute_prepared_query(
     name: string,
     params: [string, ReturnType<typeof toApiParams>[string]][],
@@ -92,6 +94,10 @@ class IcGraphTransport implements GraphTransport {
 
   async listPrepared(): Promise<ApiListPreparedResponse> {
     return unwrapResult<ApiListPreparedResponse>(await this.actor.list_prepared_api());
+  }
+
+  async getPreparedManifest(graphName: string): Promise<PreparedManifest> {
+    return unwrapResult<PreparedManifest>(await this.actor.prepared_manifest(graphName));
   }
 
   async executePreparedQuery(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse> {

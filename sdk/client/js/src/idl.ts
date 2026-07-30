@@ -170,6 +170,93 @@ const ApiListPreparedResponse = IDL.Record({
   statements: IDL.Vec(ApiPreparedQueryInfo),
 });
 
+const PreparedSemanticType: IDL.Type = IDL.Rec();
+const PreparedManifestRecordField = IDL.Record({
+  name: IDL.Text,
+  type: PreparedSemanticType,
+  nullable: IDL.Bool,
+});
+const PreparedSemanticTypeVariant = IDL.Variant({
+  Null: IDL.Null,
+  Bool: IDL.Null,
+  Int8: IDL.Null,
+  Int16: IDL.Null,
+  Int32: IDL.Null,
+  Int64: IDL.Null,
+  Uint8: IDL.Null,
+  Uint16: IDL.Null,
+  Uint32: IDL.Null,
+  Uint64: IDL.Null,
+  Int128: IDL.Null,
+  Uint128: IDL.Null,
+  Int256: IDL.Null,
+  Uint256: IDL.Null,
+  Float16: IDL.Null,
+  Float32: IDL.Null,
+  Float64: IDL.Null,
+  Float128: IDL.Null,
+  Float256: IDL.Null,
+  Decimal: IDL.Null,
+  Text: IDL.Null,
+  Bytes: IDL.Null,
+  Date: IDL.Null,
+  Time: IDL.Null,
+  Principal: IDL.Null,
+  LocalTime: IDL.Null,
+  DateTime: IDL.Null,
+  LocalDateTime: IDL.Null,
+  ZonedDateTime: IDL.Null,
+  ZonedTime: IDL.Null,
+  Duration: IDL.Null,
+  List: IDL.Record({ element: PreparedSemanticType }),
+  Record: IDL.Record({ fields: IDL.Vec(PreparedManifestRecordField) }),
+  Path: IDL.Null,
+});
+(PreparedSemanticType as unknown as { fill: (value: IDL.Type) => void }).fill(
+  PreparedSemanticTypeVariant,
+);
+
+const PreparedManifest = IDL.Record({
+  manifest_version: IDL.Nat32,
+  graph: IDL.Record({
+    id: IDL.Text,
+    name: IDL.Opt(IDL.Text),
+  }),
+  operations: IDL.Vec(
+    IDL.Record({
+      name: IDL.Text,
+      description: IDL.Opt(IDL.Text),
+      kind: IDL.Variant({ Query: IDL.Null, Update: IDL.Null }),
+      parameters: IDL.Vec(
+        IDL.Record({
+          name: IDL.Text,
+          description: IDL.Opt(IDL.Text),
+          required: IDL.Bool,
+          nullable: IDL.Bool,
+          type: PreparedSemanticType,
+        }),
+      ),
+      result: IDL.Record({
+        columns: IDL.Vec(
+          IDL.Record({
+            name: IDL.Text,
+            type: PreparedSemanticType,
+            nullable: IDL.Bool,
+          }),
+        ),
+      }),
+      supports_consistency: IDL.Bool,
+      supports_idempotency: IDL.Bool,
+      allowed_sorts: IDL.Vec(
+        IDL.Record({
+          key: IDL.Text,
+          label: IDL.Opt(IDL.Text),
+        }),
+      ),
+    }),
+  ),
+});
+
 export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
   LocalIDL.Service({
     query: LocalIDL.Func(
@@ -195,6 +282,11 @@ export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
     list_prepared_api: LocalIDL.Func(
       [],
       [LocalIDL.Variant({ Ok: ApiListPreparedResponse, Err: LocalIDL.Text })],
+      ["query"],
+    ),
+    prepared_manifest: LocalIDL.Func(
+      [LocalIDL.Text],
+      [LocalIDL.Variant({ Ok: PreparedManifest, Err: LocalIDL.Text })],
       ["query"],
     ),
     execute_prepared_query: LocalIDL.Func(

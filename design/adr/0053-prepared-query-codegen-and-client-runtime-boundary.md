@@ -7,7 +7,7 @@ ADR 0055.
 Date: 2026-07-29
 Status: proposed
 Last revised: 2026-07-30
-Anchor timestamp: 2026-07-30 09:14:41 UTC +0000
+Anchor timestamp: 2026-07-30 19:14:57 UTC +0000
 
 ## Context
 
@@ -40,10 +40,12 @@ The code generator must produce useful typed APIs without duplicating transport,
 parameter encoding, error handling, or Router execution semantics in every generated language.
 It must also avoid exposing Router stable storage or planner internals as a client contract.
 
-The current SDK-side prepared DTOs are insufficient as the long-term cross-language contract:
+The older SDK-side prepared DTOs are insufficient as the long-term cross-language contract:
 they contain client-facing parameter hints and query metadata, but do not yet define a stable,
-language-neutral result type schema or a Router-owned manifest API. The current Router ingress
-surface also does not yet provide the complete manifest API required for live generation.
+language-neutral result type schema used by code generation. The Router now exposes the
+graph-scoped `prepared_manifest` endpoint backed by `gleaph-prepared-api`, and the JS SDK exposes
+it as `GraphClient.getPreparedManifest`; the generator still consumes an explicit local manifest
+snapshot and does not fetch Router metadata itself.
 
 ## Existing architecture assessment
 
@@ -103,9 +105,10 @@ Dynamic sort specifications, caller requirements, consistency capabilities, idem
 support, and diagnostic/source fields are optional contract fields and must not be silently
 reconstructed by a renderer.
 
-The exact Candid field layout and Router endpoint name remain open until the Router metadata
-contract is designed. The manifest contract, not the current `ApiPreparedQueryInfo` DTO, is the
-intended cross-language source of truth.
+The `prepared_manifest` Candid field layout and endpoint are owned by `gleaph-prepared-api` and
+the Router. The manifest contract, not the older `ApiPreparedQueryInfo` DTO, is the
+cross-language source of truth. Live manifest retrieval by the codegen CLI remains a follow-up
+tooling feature.
 
 ### 3. Generated code does not own runtime behavior
 

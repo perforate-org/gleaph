@@ -7,6 +7,7 @@ import type {
   ApiQueryResponse,
   ApiExecutePreparedRequest,
   ApiValue,
+  PreparedManifest,
   PreparedSortSpec,
 } from "./types";
 import { makeExecutePreparedRequest } from "./values";
@@ -16,6 +17,7 @@ export interface GraphTransport {
   execute(request: ApiQueryRequest): Promise<ApiQueryResponse>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
   listPrepared(): Promise<ApiListPreparedResponse>;
+  getPreparedManifest(graphName: string): Promise<PreparedManifest>;
   executePreparedQuery(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse>;
   executePreparedUpdate(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse>;
   dropPrepared(name: string): Promise<boolean>;
@@ -26,6 +28,7 @@ export interface GraphClient {
   execute(request: ApiQueryRequest): Promise<ApiQueryResponse>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
   listPrepared(): Promise<ApiListPreparedResponse>;
+  getPreparedManifest(graphName: string): Promise<PreparedManifest>;
   executePrepared(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse>;
   executePrepared(
     name: string,
@@ -58,6 +61,10 @@ class TransportBackedGraphClient implements GraphClient {
 
   listPrepared(): Promise<ApiListPreparedResponse> {
     return this.transport.listPrepared();
+  }
+
+  getPreparedManifest(graphName: string): Promise<PreparedManifest> {
+    return this.transport.getPreparedManifest(graphName);
   }
 
   executePrepared(

@@ -14,6 +14,7 @@ Current scope:
 - canonical GQL value encoding for independently encoded mutation boundaries
 - Rust/JavaScript conformance vectors for the canonical value codec
 - prepared-query codegen runtime surface (`executePrepared` / `executePreparedMutation`)
+- prepared-query manifest retrieval (`getPreparedManifest`)
 - codegen integration with `gleaph-codegen`
 
 Planned scope:
@@ -48,4 +49,12 @@ const graph = await createIcGraphClient({
 
 const prepared = createPreparedClient(graph);
 await prepared.find_user({ name: "alice" });
+```
+
+The Router-owned typed manifest can be retrieved separately when a tool or client needs the
+language-neutral prepared-operation schema:
+
+```ts
+const manifest = await graph.getPreparedManifest("default");
+console.log(manifest.operations);
 ```
