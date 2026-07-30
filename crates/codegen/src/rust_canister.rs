@@ -3,7 +3,7 @@
 //! The generated facade is transport-neutral. A canister runtime supplies the executor that
 //! owns Candid encoding, Router calls, response decoding, and error conversion.
 
-use crate::common::{append_line_doc, format_rust_source};
+use crate::common::append_line_doc;
 use crate::ir::CodegenIr;
 use crate::ir::normalize_manifest;
 use crate::rust::{rust_field, rust_type};
@@ -12,7 +12,7 @@ use crate::{ManifestError, OperationKind, PreparedManifest};
 /// Generate Rust canister declarations and a runtime executor facade.
 pub fn generate_rust_canister(manifest: &PreparedManifest) -> Result<String, ManifestError> {
     let ir = normalize_manifest(manifest)?;
-    format_rust_source(generate_ir(&ir))
+    Ok(generate_ir(&ir))
 }
 
 fn generate_ir(ir: &CodegenIr) -> String {
@@ -128,19 +128,27 @@ pub type PreparedCanisterFuture<'a, Row, Error> =
             .iter()
             .all(|parameter| gql_value_expression("value", &parameter.semantic_type).is_some())
         {
+            let entries = operation
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    let field = rust_field(&parameter.name);
+                    let value = parameter_value_expression(&format!("self.{field}"), parameter);
+                    format!("({:?}.to_string(), {value})", parameter.name)
+                })
+                .collect::<Vec<_>>();
+            let params_body = if entries.len() == 1 {
+                format!("        vec![{}]\n", entries[0])
+            } else {
+                format!(
+                    "        vec![\n            {},\n        ]\n",
+                    entries.join(",\n            ")
+                )
+            };
             out.push_str(&format!(
-                "impl {}Params {{\n    /// Convert typed parameters to ordered logical GQL parameters.\n    pub fn into_gql_params(self) -> GqlParams {{\n        vec![\n",
+                "impl {}Params {{\n    /// Convert typed parameters to ordered logical GQL parameters.\n    pub fn into_gql_params(self) -> GqlParams {{\n{params_body}    }}\n}}\n\n",
                 type_name
             ));
-            for parameter in &operation.parameters {
-                let field = rust_field(&parameter.name);
-                let value = parameter_value_expression(&format!("self.{field}"), parameter);
-                out.push_str(&format!(
-                    "            ({:?}.to_string(), {value}),\n",
-                    parameter.name
-                ));
-            }
-            out.push_str("        ]\n    }\n}\n\n");
         }
         out.push_str(&format!(
             "/// One result row from the prepared operation {}.\n#[derive(Clone, Debug, Deserialize, Serialize)]\n#[serde(crate = \"gleaph_cdk::serde\")]\npub struct {}Row {{\n",
@@ -184,40 +192,54 @@ pub type PreparedCanisterFuture<'a, Row, Error> =
                         column.name
                     )
                 };
-                out.push_str(&format!("        let {field} = {value};\n"));
+                if !column.nullable && matches!(column.semantic_type, crate::SemanticType::Text) {
+                    out.push_str(&format!(
+                        "        let {field} = {{\n            let value = gleaph_cdk::take_gql_row_field(&mut row, {:?})?;\n            match value {{\n                GqlValue::Text(value) => value,\n                _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Text\")),\n            }}\n        }};\n",
+                        column.name
+                    ));
+                } else {
+                    out.push_str(&format!("        let {field} = {value};\n"));
+                }
             }
-            out.push_str("        Ok(Self {\n");
-            for column in &operation.result.columns {
-                let field = rust_field(&column.name);
-                out.push_str(&format!("            {field},\n"));
+            if operation.result.columns.len() == 1 {
+                let field = rust_field(&operation.result.columns[0].name);
+                out.push_str(&format!("        Ok(Self {{ {field} }})\n    }}\n}}\n\n"));
+            } else {
+                out.push_str("        Ok(Self {\n");
+                for column in &operation.result.columns {
+                    let field = rust_field(&column.name);
+                    out.push_str(&format!("            {field},\n"));
+                }
+                out.push_str("        })\n    }\n}\n\n");
             }
-            out.push_str("        })\n    }\n}\n\n");
         }
     }
 
     out.push_str(
-        "/// Typed facade over a canister-side prepared-query executor.\n\
-         pub struct PreparedCanisterQueries<'a, E: PreparedCanisterExecutor> {\n\
-             executor: &'a E,\n\
-         }\n\n\
-         impl<'a, E: PreparedCanisterExecutor> PreparedCanisterQueries<'a, E> {\n\
-             /// Bind generated operations to a runtime executor.\n\
-             pub fn new(executor: &'a E) -> Self {\n\
-                 Self { executor }\n\
-             }\n\n",
-    );
-    out.push_str(
-        "    /// Execute a prepared operation using the shared logical GQL value model.\n\
-         pub async fn execute_gql<Row>(\n\
-             &self,\n\
-             name: &'static str,\n\
-             params: GqlParams,\n\
-         ) -> Result<PreparedCanisterResponse<Row>, E::Error>\n\
-         where\n\
-             Row: DeserializeOwned,\n\
-         {\n\
-             self.executor.execute_gql::<Row>(name, params).await\n\
-         }\n\n",
+        r#"/// Typed facade over a canister-side prepared-query executor.
+pub struct PreparedCanisterQueries<'a, E: PreparedCanisterExecutor> {
+    executor: &'a E,
+}
+
+impl<'a, E: PreparedCanisterExecutor> PreparedCanisterQueries<'a, E> {
+    /// Bind generated operations to a runtime executor.
+    pub fn new(executor: &'a E) -> Self {
+        Self { executor }
+    }
+
+    /// Execute a prepared operation using the shared logical GQL value model.
+    pub async fn execute_gql<Row>(
+        &self,
+        name: &'static str,
+        params: GqlParams,
+    ) -> Result<PreparedCanisterResponse<Row>, E::Error>
+    where
+        Row: DeserializeOwned,
+    {
+        self.executor.execute_gql::<Row>(name, params).await
+    }
+
+"#,
     );
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;
@@ -234,15 +256,18 @@ pub type PreparedCanisterFuture<'a, Row, Error> =
             .all(|parameter| gql_value_expression("value", &parameter.semantic_type).is_some())
         {
             out.push_str(&format!(
-                "    /// Execute the prepared operation {}.\n    pub async fn {method}(&self, params: {params}) -> Result<PreparedCanisterResponse<{row}>, E::Error> {{\n        self.executor.execute_gql::<{row}>({:?}, params.into_gql_params()).await\n    }}\n\n",
+                "    /// Execute the prepared operation {}.\n    pub async fn {method}(\n        &self,\n        params: {params},\n    ) -> Result<PreparedCanisterResponse<{row}>, E::Error> {{\n        self.executor\n            .execute_gql::<{row}>({:?}, params.into_gql_params())\n            .await\n    }}\n\n",
                 operation.name, operation.name
             ));
         } else {
             out.push_str(&format!(
-                "    /// Execute the prepared operation {}.\n    pub async fn {method}(&self, params: {params}) -> Result<PreparedCanisterResponse<{row}>, E::Error> {{\n        let params = self.executor.encode_params(&params)?;\n        self.executor.{execute}::<{row}>({:?}, params).await\n    }}\n\n",
+                "    /// Execute the prepared operation {}.\n    pub async fn {method}(\n        &self,\n        params: {params},\n    ) -> Result<PreparedCanisterResponse<{row}>, E::Error> {{\n        let params = self.executor.encode_params(&params)?;\n        self.executor.{execute}::<{row}>({:?}, params).await\n    }}\n\n",
                 operation.name, operation.name
             ));
         }
+    }
+    if out.ends_with("\n\n") {
+        out.pop();
     }
     out.push_str("}\n");
     out
@@ -434,26 +459,48 @@ fn row_value_expression(semantic_type: &crate::SemanticType) -> Option<String> {
 }
 
 fn runtime_types() -> &'static str {
-    "/// Date-time representation used by generated declarations.\n\
-     #[derive(Clone, Debug, Deserialize, Serialize)]\n\
-     #[serde(crate = \"gleaph_cdk::serde\")]\n\
-     pub struct PreparedDateTime { pub seconds: i64, pub nanos: u32 }\n\n\
-     /// Zoned date-time representation used by generated declarations.\n\
-     #[derive(Clone, Debug, Deserialize, Serialize)]\n\
-     #[serde(crate = \"gleaph_cdk::serde\")]\n\
-     pub struct PreparedZonedDateTime { pub seconds: i64, pub nanos: u32, pub offset_seconds: i32 }\n\n\
-     /// Zoned time representation used by generated declarations.\n\
-     #[derive(Clone, Debug, Deserialize, Serialize)]\n\
-     #[serde(crate = \"gleaph_cdk::serde\")]\n\
-     pub struct PreparedZonedTime { pub nanos: u64, pub offset_seconds: i32 }\n\n\
-     /// Duration representation used by generated declarations.\n\
-     #[derive(Clone, Debug, Deserialize, Serialize)]\n\
-     #[serde(crate = \"gleaph_cdk::serde\")]\n\
-     pub struct PreparedDuration { pub months: i32, pub nanos: i64 }\n\n\
-     /// Path element representation used by generated declarations.\n\
-     #[derive(Clone, Debug, Deserialize, Serialize)]\n\
-     #[serde(crate = \"gleaph_cdk::serde\")]\n\
-     pub enum PreparedPathElement { Vertex(Vec<u8>), Edge(Vec<u8>) }\n\n"
+    r#"/// Date-time representation used by generated declarations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(crate = "gleaph_cdk::serde")]
+pub struct PreparedDateTime {
+    pub seconds: i64,
+    pub nanos: u32,
+}
+
+/// Zoned date-time representation used by generated declarations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(crate = "gleaph_cdk::serde")]
+pub struct PreparedZonedDateTime {
+    pub seconds: i64,
+    pub nanos: u32,
+    pub offset_seconds: i32,
+}
+
+/// Zoned time representation used by generated declarations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(crate = "gleaph_cdk::serde")]
+pub struct PreparedZonedTime {
+    pub nanos: u64,
+    pub offset_seconds: i32,
+}
+
+/// Duration representation used by generated declarations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(crate = "gleaph_cdk::serde")]
+pub struct PreparedDuration {
+    pub months: i32,
+    pub nanos: i64,
+}
+
+/// Path element representation used by generated declarations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(crate = "gleaph_cdk::serde")]
+pub enum PreparedPathElement {
+    Vertex(Vec<u8>),
+    Edge(Vec<u8>),
+}
+
+"#
 }
 
 fn canister_rust_type(semantic_type: &crate::SemanticType) -> String {

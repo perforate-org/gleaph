@@ -1217,10 +1217,8 @@ name = "gleaph-codegen"
 version = "0.1.0"
 dependencies = [
  "gleaph-prepared-api",
- "prettyplease",
  "serde",
  "serde_json",
- "syn 2.0.117",
  "thiserror 2.0.18",
 ]
 

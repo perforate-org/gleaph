@@ -12,6 +12,7 @@
     "sdk:test": "pnpm --filter @gleaph/sdk run test",
     "sdk:build": "pnpm --filter @gleaph/sdk run build",
     "sdk:pack": "pnpm --filter @gleaph/sdk run pack",
+    "codegen:check-fixtures": "sh scripts/check-codegen-fixtures.sh",
     "dashboard:dev": "pnpm --filter @gleaph/dashboard dev",
     "dashboard:check": "pnpm --filter @gleaph/dashboard run check",
     "dashboard:build": "pnpm --filter @gleaph/dashboard run build",

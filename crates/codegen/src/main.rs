@@ -93,14 +93,21 @@ mod tests {
     use super::run;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_TEMPORARY_OUTPUT_ID: AtomicU64 = AtomicU64::new(0);
 
     fn temporary_output_path() -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("gleaph-codegen-cli-{nonce}.ts"))
+        let id = NEXT_TEMPORARY_OUTPUT_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "gleaph-codegen-cli-{}-{nonce}-{id}.ts",
+            std::process::id()
+        ))
     }
 
     #[test]

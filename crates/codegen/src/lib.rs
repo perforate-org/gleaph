@@ -101,9 +101,6 @@ pub enum ManifestError {
         /// Duplicate field name.
         field: String,
     },
-    /// Generated Rust source could not be parsed for formatting.
-    #[error("generated Rust source is invalid: {0}")]
-    RustSource(String),
     /// Idempotency metadata was declared for a query operation.
     #[error("idempotency is only supported for update operation {0:?}")]
     IdempotencyOnQuery(String),
@@ -370,7 +367,7 @@ mod tests {
         assert!(output.contains("self.executor.execute_query::<FindUsersRow>"));
         assert!(contains_compact(
             &output,
-            "pub async fn find_users(&self, sort: Option<Vec<PreparedSortSpec>> ,)",
+            "pub async fn find_users(&self, sort: Option<Vec<PreparedSortSpec>>)",
         ));
         assert!(!output.contains("&self, ,"));
         assert!(output.contains("pub trait PreparedExecutor"));

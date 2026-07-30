@@ -3,14 +3,7 @@
 //! This module contains syntax-neutral mechanics used by multiple language profiles; profile
 //! policy and output structure remain in the language-specific modules.
 
-use crate::ManifestError;
 use crate::SemanticType;
-
-pub(crate) fn format_rust_source(source: String) -> Result<String, ManifestError> {
-    let file =
-        syn::parse_file(&source).map_err(|error| ManifestError::RustSource(error.to_string()))?;
-    Ok(prettyplease::unparse(&file))
-}
 
 pub(crate) fn encode_expression(access: &str, semantic_type: &SemanticType) -> String {
     match semantic_type {
