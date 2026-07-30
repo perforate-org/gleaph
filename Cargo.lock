@@ -1203,6 +1203,7 @@ name = "gleaph-cdk"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "gleaph-gql",
  "ic-cdk",
  "serde",
 ]

@@ -8,6 +8,23 @@
 
 use candid::{CandidType, Deserialize, Principal};
 
+/// Logical GQL value shared by dynamic GQL, prepared operations, and procedures.
+pub use gleaph_gql::Value as GqlValue;
+
+/// Ordered GQL record representation.
+///
+/// GQL record order is retained because the compact wire representation preserves field order.
+pub type GqlRecord = Vec<(String, GqlValue)>;
+
+/// Named GQL parameters, usable by dynamic GQL and prepared operations.
+pub type GqlParams = GqlRecord;
+
+/// One GQL result row.
+pub type GqlRow = GqlRecord;
+
+/// Path element in a logical GQL value.
+pub use gleaph_gql::types::PathElement as GqlPathElement;
+
 /// Error returned when a prepared-query inter-canister call fails before yielding a typed result.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PreparedCallError {
