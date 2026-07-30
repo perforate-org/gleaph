@@ -5,7 +5,8 @@ use gleaph_gql::parser;
 use gleaph_gql::type_check::schema::PropertySchema;
 use gleaph_gql::type_check::{
     DML002_TARGET_VALUE, DML005_INSERT_EDGE_DIRECTION, DML006_MATCH_EDGE_DIRECTION,
-    DiagnosticSeverity, NoSchema, TypeWarning, WarningKind, type_check, type_check_phase_b,
+    DiagnosticSeverity, NoSchema, TypeWarning, WarningKind,
+    infer_statement_block_output_types_with_schema, type_check, type_check_phase_b,
     type_check_strict, type_check_with_schema, type_diagnostic_from_warning,
 };
 use gleaph_gql::validate::validate;
@@ -127,6 +128,22 @@ fn no_warnings_with_literal_comparison() {
         warnings.is_empty(),
         "expected no warnings, got: {warnings:?}"
     );
+}
+
+#[test]
+fn infers_final_statement_output_columns() {
+    let program = parser::parse("MATCH (n) RETURN 1 AS count, 'ok' AS status").expect("parse");
+    validate(&program).expect("validate");
+    let block = program
+        .transaction_activity
+        .as_ref()
+        .and_then(|activity| activity.body.as_ref())
+        .expect("statement block");
+
+    let columns = infer_statement_block_output_types_with_schema(block, &NoSchema);
+    assert_eq!(columns.len(), 2);
+    assert_eq!(columns[0].0, "count");
+    assert_eq!(columns[1].0, "status");
 }
 
 // ── Arithmetic type mismatch ──

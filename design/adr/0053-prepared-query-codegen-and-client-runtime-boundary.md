@@ -7,7 +7,7 @@ ADR 0055.
 Date: 2026-07-29
 Status: proposed
 Last revised: 2026-07-30
-Anchor timestamp: 2026-07-30 09:04:34 UTC +0000
+Anchor timestamp: 2026-07-30 09:14:41 UTC +0000
 
 ## Context
 
@@ -267,6 +267,8 @@ The first implementation is intentionally partial and does not accept the Router
   operation uniqueness, parameter/result names, sort keys, and query/update semantics;
 - a `gleaph-prepared-api` contract crate containing the Candid/Serde manifest types shared by
   future Router metadata endpoints and the generator;
+- a GQL-generic output-type inference API used as the substrate for Router-owned manifest
+  materialization, without coupling `gleaph-gql` to Gleaph runtime or codegen types;
 - a normalized `CodegenIr` shared by the language profiles;
 - TypeScript and JavaScript output profiles exposed by `generate_typescript` and
   `generate_javascript`;

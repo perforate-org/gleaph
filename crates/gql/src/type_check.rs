@@ -95,6 +95,26 @@ pub fn type_check_statement_block_with_schema(
     env.warnings
 }
 
+/// Infer the columns exposed after the final statement in a statement block.
+///
+/// The returned names and [`Type`] values are the same values used internally for `NEXT` scope
+/// propagation. This API is intentionally GQL-generic: hosts can map the result into their own
+/// wire contracts without making this crate depend on a particular runtime or client generator.
+pub fn infer_statement_block_output_types_with_schema(
+    block: &StatementBlock,
+    schema: &dyn PropertySchema,
+) -> Vec<(String, Type)> {
+    let mut env = TypeEnv::new(schema);
+    check_statement_block(&mut env, block);
+    infer_statement_output_types(
+        &env,
+        block
+            .next
+            .last()
+            .map_or(&block.first, |next| &next.statement),
+    )
+}
+
 pub fn type_check_linear_query(query: &LinearQueryStatement) -> Vec<TypeWarning> {
     type_check_linear_query_with_schema(query, &NoSchema)
 }
