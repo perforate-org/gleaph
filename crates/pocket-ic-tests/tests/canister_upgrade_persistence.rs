@@ -18,7 +18,8 @@ use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_execute_idempotent_as_admin,
     gql_query_as_admin, install_single_shard_federation, knowledge_map_live_query,
-    seed_knowledge_map_graph, wasm_bytes,
+    prepared_execute_query_with_params_as, prepared_register_as_admin, seed_knowledge_map_graph,
+    wasm_bytes,
 };
 use gleaph_router::types::{
     AdminVertexPropertyBackfillStepArgs, VertexPropertyBackfillShardStatus,
@@ -104,6 +105,25 @@ fn canister_upgrade_preserves_seeded_graph_without_corruption() {
         before_ids,
         "edge-id set changed after post-upgrade idempotent re-seed"
     );
+}
+
+#[test]
+fn prepared_query_survives_router_upgrade_cache_rebuild() {
+    let env = install_single_shard_federation();
+    seed_knowledge_map_graph(&env);
+
+    let query_name = "upgrade-prepared-cache-rebuild";
+    prepared_register_as_admin(&env, query_name, knowledge_map_live_query());
+    let before = prepared_execute_query_with_params_as(&env, env.admin, query_name, Vec::new());
+
+    upgrade_all(&env);
+
+    // The Router stable record contains source, while the parsed AST and plan are rebuilt by
+    // post_upgrade. Successful execution after upgrade proves the cache was reconstructed and
+    // the Graph still received the prepared plan through the normal dispatch boundary.
+    let after = prepared_execute_query_with_params_as(&env, env.admin, query_name, Vec::new());
+    assert_eq!(after.row_count, before.row_count);
+    assert_eq!(edge_ids(&after), edge_ids(&before));
 }
 
 #[test]

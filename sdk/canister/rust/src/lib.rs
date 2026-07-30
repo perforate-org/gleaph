@@ -368,6 +368,12 @@ pub fn take_gql_row_field(row: &mut GqlRow, name: &str) -> Result<GqlValue, GqlW
 }
 
 /// Project a logical GQL value into the JSON representation used by generated open records.
+// The workspace can unify `gleaph-gql/f128` through another dependent crate even when this SDK's
+// `nightly-f128` feature is disabled, while a standalone SDK build has no Float128 variant.
+#[allow(
+    unreachable_patterns,
+    reason = "Float128 depends on the SDK nightly-f128 feature"
+)]
 pub fn gql_value_to_json(value: GqlValue) -> Result<serde_json::Value, GqlWireDecodeError> {
     let json = match value {
         GqlValue::Null => serde_json::Value::Null,
@@ -454,6 +460,8 @@ pub fn gql_value_to_json(value: GqlValue) -> Result<serde_json::Value, GqlWireDe
             .downcast_ref::<GqlPrincipal>()
             .map(|principal| serde_json::Value::String(principal.to_string()))
             .ok_or(GqlWireDecodeError::UnsupportedValue("extension"))?,
+        #[cfg(not(feature = "nightly-f128"))]
+        _ => return Err(GqlWireDecodeError::UnsupportedValue("Float128")),
     };
     Ok(json)
 }
