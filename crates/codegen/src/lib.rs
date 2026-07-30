@@ -701,6 +701,40 @@ mod tests {
     }
 
     #[test]
+    fn generates_typed_row_adapter_for_temporal_and_constructed_values() {
+        let mut value = manifest();
+        value.operations[0].result.columns = vec![
+            Column {
+                name: "created_at".into(),
+                semantic_type: SemanticType::DateTime,
+                nullable: false,
+            },
+            Column {
+                name: "owner".into(),
+                semantic_type: SemanticType::Principal,
+                nullable: false,
+            },
+            Column {
+                name: "route".into(),
+                semantic_type: SemanticType::Path,
+                nullable: false,
+            },
+            Column {
+                name: "ids".into(),
+                semantic_type: SemanticType::List {
+                    element: Box::new(SemanticType::Int32),
+                },
+                nullable: false,
+            },
+        ];
+        let output = generate_rust_canister(&value).unwrap();
+        assert!(output.contains("impl gleaph_cdk::FromGqlRow for FindUsersRow"));
+        assert!(output.contains("PreparedDateTime { seconds, nanos }"));
+        assert!(output.contains("gleaph_cdk::gql_principal_from_value(value)?"));
+        assert!(output.contains("GqlValue::List(value) => value.into_iter()"));
+    }
+
+    #[test]
     fn normalizes_operation_names_once_for_all_profiles() {
         let ir = manifest().normalize().unwrap();
         let operation = &ir.operations[0];

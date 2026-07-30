@@ -353,6 +353,9 @@ fn row_value_expression(semantic_type: &crate::SemanticType) -> Option<String> {
         crate::SemanticType::Float64 => {
             "match value { GqlValue::Float64(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Float64\")) }"
         }
+        crate::SemanticType::Float128 => {
+            "match value { GqlValue::Float128(value) => gleaph_cdk::GqlFloat128::from_inner(value), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Float128\")) }"
+        }
         crate::SemanticType::Float256 => {
             "match value { GqlValue::Float256(value) => gleaph_cdk::GqlFloat256::from_inner(value), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Float256\")) }"
         }
@@ -364,6 +367,40 @@ fn row_value_expression(semantic_type: &crate::SemanticType) -> Option<String> {
         }
         crate::SemanticType::Bytes => {
             "match value { GqlValue::Bytes(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Bytes\")) }"
+        }
+        crate::SemanticType::Date => {
+            "match value { GqlValue::Date(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Date\")) }"
+        }
+        crate::SemanticType::Time => {
+            "match value { GqlValue::Time(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Time\")) }"
+        }
+        crate::SemanticType::LocalTime => {
+            "match value { GqlValue::LocalTime(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"LocalTime\")) }"
+        }
+        crate::SemanticType::DateTime => {
+            "match value { GqlValue::DateTime(seconds, nanos) => PreparedDateTime { seconds, nanos }, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"DateTime\")) }"
+        }
+        crate::SemanticType::LocalDateTime => {
+            "match value { GqlValue::LocalDateTime(seconds, nanos) => PreparedDateTime { seconds, nanos }, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"LocalDateTime\")) }"
+        }
+        crate::SemanticType::ZonedDateTime => {
+            "match value { GqlValue::ZonedDateTime(seconds, nanos, offset_seconds) => PreparedZonedDateTime { seconds, nanos, offset_seconds }, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"ZonedDateTime\")) }"
+        }
+        crate::SemanticType::ZonedTime => {
+            "match value { GqlValue::ZonedTime(nanos, offset_seconds) => PreparedZonedTime { nanos, offset_seconds }, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"ZonedTime\")) }"
+        }
+        crate::SemanticType::Duration => {
+            "match value { GqlValue::Duration(months, nanos) => PreparedDuration { months, nanos }, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Duration\")) }"
+        }
+        crate::SemanticType::Principal => "gleaph_cdk::gql_principal_from_value(value)?",
+        crate::SemanticType::Path => {
+            "match value { GqlValue::Path(value) => value.into_iter().map(|value| match value { gleaph_cdk::GqlPathElement::Vertex(value) => PreparedPathElement::Vertex(value.as_ref().to_vec()), gleaph_cdk::GqlPathElement::Edge(value) => PreparedPathElement::Edge(value.as_ref().to_vec()) }).collect(), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Path\")) }"
+        }
+        crate::SemanticType::List { element } => {
+            let element = row_value_expression(element)?;
+            return Some(format!(
+                "match value {{ GqlValue::List(value) => value.into_iter().map(|value| {{ {element} }}).collect::<Result<Vec<_>, _>>()?, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"List\")) }}"
+            ));
         }
         _ => return None,
     };
