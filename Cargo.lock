@@ -1239,8 +1239,10 @@ name = "gleaph-gql-ic"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "f256",
  "gleaph-gql",
  "gleaph-graph-kernel",
+ "half 2.7.1",
  "ic-stable-structures",
  "rkyv 0.8.17",
  "serde",

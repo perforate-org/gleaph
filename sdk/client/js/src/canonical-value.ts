@@ -48,6 +48,13 @@ function appendF64(out: number[], value: number): void {
   appendBytes(out, bytes);
 }
 
+function appendF32(out: number[], value: number): void {
+  if (!Number.isFinite(value)) throw new Error("Float32 must be finite");
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setFloat32(0, value, true);
+  appendBytes(out, bytes);
+}
+
 function appendBigIntFixed(out: number[], value: bigint, width: number, signed: boolean): void {
   const bits = BigInt(width * 8);
   const modulus = 1n << bits;
@@ -121,6 +128,15 @@ function appendValue(out: number[], value: ApiValue): void {
   } else if ("Bool" in value) {
     appendU8(out, 1);
     appendU8(out, value.Bool ? 1 : 0);
+  } else if ("Int8" in value) {
+    appendU8(out, 2);
+    appendBigIntFixed(out, BigInt(value.Int8), 1, true);
+  } else if ("Int16" in value) {
+    appendU8(out, 3);
+    appendBigIntFixed(out, BigInt(value.Int16), 2, true);
+  } else if ("Int32" in value) {
+    appendU8(out, 4);
+    appendBigIntFixed(out, BigInt(value.Int32), 4, true);
   } else if ("Int64" in value) {
     appendU8(out, 5);
     appendBigIntFixed(out, toSafeBigInt(value.Int64, "Int64"), 8, true);
@@ -139,9 +155,32 @@ function appendValue(out: number[], value: ApiValue): void {
   } else if ("Uint256" in value) {
     appendU8(out, 13);
     appendBigIntFixed(out, BigInt(value.Uint256), 32, false);
+  } else if ("Uint8" in value) {
+    appendU8(out, 8);
+    appendBigIntFixed(out, BigInt(value.Uint8), 1, false);
+  } else if ("Uint16" in value) {
+    appendU8(out, 9);
+    appendBigIntFixed(out, BigInt(value.Uint16), 2, false);
+  } else if ("Uint32" in value) {
+    appendU8(out, 10);
+    appendBigIntFixed(out, BigInt(value.Uint32), 4, false);
+  } else if ("Float16" in value) {
+    appendU8(out, 14);
+    appendBigIntFixed(out, BigInt(value.Float16), 2, false);
+  } else if ("Float32" in value) {
+    appendU8(out, 15);
+    appendF32(out, value.Float32);
   } else if ("Float64" in value) {
     appendU8(out, 16);
     appendF64(out, value.Float64);
+  } else if ("Float128" in value) {
+    if (value.Float128.byteLength !== 16) throw new Error("Float128 must contain 16 canonical bytes");
+    appendU8(out, 31);
+    appendBytes(out, value.Float128);
+  } else if ("Float256" in value) {
+    if (value.Float256.byteLength !== 32) throw new Error("Float256 must contain 32 canonical bytes");
+    appendU8(out, 32);
+    appendBytes(out, value.Float256);
   } else if ("Decimal" in value) {
     appendU8(out, 17);
     appendDecimal(out, value.Decimal);

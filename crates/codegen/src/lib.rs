@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// The manifest format understood by this crate.
-pub const MANIFEST_VERSION: u32 = 1;
+pub const MANIFEST_VERSION: u32 = 2;
 
 /// A graph-scoped prepared-query metadata snapshot.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -130,8 +130,20 @@ pub enum SemanticType {
     Null,
     /// A boolean value.
     Bool,
+    /// A signed 8-bit integer.
+    Int8,
+    /// A signed 16-bit integer.
+    Int16,
+    /// A signed 32-bit integer.
+    Int32,
     /// A signed 64-bit integer.
     Int64,
+    /// An unsigned 8-bit integer.
+    Uint8,
+    /// An unsigned 16-bit integer.
+    Uint16,
+    /// An unsigned 32-bit integer.
+    Uint32,
     /// An unsigned 64-bit integer.
     Uint64,
     /// A signed 128-bit integer.
@@ -142,8 +154,16 @@ pub enum SemanticType {
     Int256,
     /// An unsigned 256-bit integer.
     Uint256,
+    /// An IEEE 754 binary16 bit pattern.
+    Float16,
+    /// An IEEE 754 32-bit floating-point value.
+    Float32,
     /// An IEEE 754 64-bit floating-point value.
     Float64,
+    /// Canonical IEEE 754 binary128 bytes.
+    Float128,
+    /// Canonical IEEE 754 binary256 bytes.
+    Float256,
     /// A decimal value represented by the runtime.
     Decimal,
     /// A UTF-8 text value.
@@ -422,5 +442,39 @@ mod tests {
         assert_eq!(operation.type_name, "FindUsers");
         assert_eq!(operation.params_type_name, "FindUsersParams");
         assert_eq!(operation.row_type_name, "FindUsersRow");
+    }
+
+    #[test]
+    fn preserves_exact_scalar_variants_in_all_profiles() {
+        let mut value = manifest();
+        value.operations[0].parameters = vec![
+            Parameter {
+                name: "small".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Int8,
+            },
+            Parameter {
+                name: "wide_float".into(),
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Float128,
+            },
+        ];
+        value.operations[0].result.columns[0].semantic_type = SemanticType::Uint32;
+
+        let typescript = generate_typescript(&value).unwrap();
+        assert!(typescript.contains("small: number"));
+        assert!(typescript.contains("wide_float: Uint8Array"));
+        assert!(typescript.contains("user_name: number"));
+
+        let javascript = generate_javascript(&value).unwrap();
+        assert!(javascript.contains("{ Int8: params[\"small\"] }"));
+        assert!(javascript.contains("{ Float128: params[\"wide_float\"] }"));
+
+        let rust = generate_rust(&value).unwrap();
+        assert!(rust.contains("pub small: i8"));
+        assert!(rust.contains("pub wide_float: Vec<u8>"));
+        assert!(rust.contains("pub user_name: u32"));
     }
 }

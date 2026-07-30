@@ -3,7 +3,7 @@
 //! Unlike ad-hoc conversion that maps unknown [`Value::Extension`] to text, this module
 //! preserves extension payloads using the same compact binary leaf encoding the graph
 //! runtime uses (tags **33** / **34**), and falls back to a full compact value blob when
-//! no structured Candid projection exists (e.g. `Float128`).
+//! no native Candid primitive exists (e.g. `Float128`).
 //!
 //! ## Canister GQL parameters (preferred)
 //!
@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use candid::{CandidType, Principal};
+use f256::f256;
 use gleaph_gql::value::ValueBinaryError;
 use gleaph_gql::{ExtensionValue, Value};
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,8 @@ pub enum IcWirePathElement {
 ///
 /// # Design
 ///
-/// - Scalars follow the historical widening rules (`Int8`…`Int32` → `Int64`, etc.) for stable Candid.
+/// - Scalar variants preserve the exact GQL width. Non-native floats use their canonical bit
+///   representation (`Float16` as `u16`, `Float128`/`Float256` as little-endian bytes).
 /// - [`Principal`] uses a dedicated variant backed by [`PrincipalValue`] on the GQL side
 ///   ([`ExtensionValue::type_name`](gleaph_gql::value::ExtensionValue::type_name) is `IC.PRINCIPAL`).
 /// - Other extensions use [`Self::ExtensionLeaf`], wrapping the **compact binary leaf** for
@@ -42,13 +44,23 @@ pub enum IcWirePathElement {
 pub enum IcWireValue {
     Null,
     Bool(bool),
+    Int8(i8),
+    Int16(i16),
+    Int32(i32),
     Int64(i64),
+    Uint8(u8),
+    Uint16(u16),
+    Uint32(u32),
     Uint64(u64),
     Int128(i128),
     Uint128(u128),
     Int256(String),
     Uint256(String),
+    Float16(u16),
+    Float32(f32),
     Float64(f64),
+    Float128(Vec<u8>),
+    Float256(Vec<u8>),
     Decimal(String),
     Text(String),
     Bytes(Vec<u8>),
@@ -107,6 +119,8 @@ pub enum WireError {
     },
     #[error("invalid numeric string for wire conversion: {kind}")]
     InvalidNumericString { kind: &'static str },
+    #[error("invalid canonical float representation for wire conversion: {kind}")]
+    InvalidFloatRepresentation { kind: &'static str },
     #[error("GQL params blob must decode to a Record at top level")]
     ParamsTopLevelNotRecord,
     #[error("candid wire error: {0}")]
@@ -163,23 +177,23 @@ impl IcWireValue {
         Ok(match value {
             Value::Null => Self::Null,
             Value::Bool(v) => Self::Bool(*v),
-            Value::Int8(v) => Self::Int64((*v).into()),
-            Value::Int16(v) => Self::Int64((*v).into()),
-            Value::Int32(v) => Self::Int64((*v).into()),
+            Value::Int8(v) => Self::Int8(*v),
+            Value::Int16(v) => Self::Int16(*v),
+            Value::Int32(v) => Self::Int32(*v),
             Value::Int64(v) => Self::Int64(*v),
             Value::Int128(v) => Self::Int128(*v),
             Value::Int256(v) => Self::Int256(v.to_string()),
-            Value::Uint8(v) => Self::Uint64((*v).into()),
-            Value::Uint16(v) => Self::Uint64((*v).into()),
-            Value::Uint32(v) => Self::Uint64((*v).into()),
+            Value::Uint8(v) => Self::Uint8(*v),
+            Value::Uint16(v) => Self::Uint16(*v),
+            Value::Uint32(v) => Self::Uint32(*v),
             Value::Uint64(v) => Self::Uint64(*v),
             Value::Uint128(v) => Self::Uint128(*v),
             Value::Uint256(v) => Self::Uint256(v.to_string()),
-            Value::Float16(v) => Self::Float64(f32::from(*v).into()),
-            Value::Float32(v) => Self::Float64((*v).into()),
+            Value::Float16(v) => Self::Float16(v.to_bits()),
+            Value::Float32(v) => Self::Float32(*v),
             Value::Float64(v) => Self::Float64(*v),
-            Value::Float128(_) => Self::ValueBinary(value.to_binary_bytes()?),
-            Value::Float256(_) => Self::ValueBinary(value.to_binary_bytes()?),
+            Value::Float128(_) => Self::Float128(canonical_float128_bytes(value)?),
+            Value::Float256(v) => Self::Float256(v.to_le_bytes().to_vec()),
             Value::Decimal(v) => Self::Decimal(v.to_string()),
             Value::Text(v) => Self::Text(v.clone()),
             Value::Bytes(v) => Self::Bytes(v.clone()),
@@ -246,7 +260,13 @@ impl IcWireValue {
         Ok(match self {
             Self::Null => Value::Null,
             Self::Bool(v) => Value::Bool(*v),
+            Self::Int8(v) => Value::Int8(*v),
+            Self::Int16(v) => Value::Int16(*v),
+            Self::Int32(v) => Value::Int32(*v),
             Self::Int64(v) => Value::Int64(*v),
+            Self::Uint8(v) => Value::Uint8(*v),
+            Self::Uint16(v) => Value::Uint16(*v),
+            Self::Uint32(v) => Value::Uint32(*v),
             Self::Uint64(v) => Value::Uint64(*v),
             Self::Int128(v) => Value::Int128(*v),
             Self::Uint128(v) => Value::Uint128(*v),
@@ -256,7 +276,22 @@ impl IcWireValue {
             Self::Uint256(s) => gleaph_gql::types::Uint256::parse(s)
                 .map(Value::Uint256)
                 .ok_or(WireError::InvalidNumericString { kind: "Uint256" })?,
+            Self::Float16(bits) => Value::Float16(half::f16::from_bits(*bits)),
+            Self::Float32(v) => Value::Float32(*v),
             Self::Float64(v) => Value::Float64(*v),
+            Self::Float128(bytes) => {
+                let bits = <[u8; 16]>::try_from(bytes.as_slice())
+                    .map_err(|_| WireError::InvalidFloatRepresentation { kind: "Float128" })?;
+                let mut encoded = Vec::with_capacity(17);
+                encoded.push(31);
+                encoded.extend_from_slice(&bits);
+                Value::from_binary_bytes_with_extensions(&encoded, ic_extension_decode())?
+            }
+            Self::Float256(bytes) => {
+                let bytes = <[u8; 32]>::try_from(bytes.as_slice())
+                    .map_err(|_| WireError::InvalidFloatRepresentation { kind: "Float256" })?;
+                Value::Float256(f256::from_le_bytes(bytes))
+            }
             Self::Decimal(s) => gleaph_gql::types::Decimal::parse(s)
                 .map(Value::Decimal)
                 .ok_or(WireError::InvalidNumericString { kind: "Decimal" })?,
@@ -310,6 +345,14 @@ impl IcWireValue {
             ),
         })
     }
+}
+
+fn canonical_float128_bytes(value: &Value) -> Result<Vec<u8>, WireError> {
+    let encoded = value.to_binary_bytes()?;
+    if encoded.len() != 17 || encoded[0] != 31 {
+        return Err(WireError::InvalidFloatRepresentation { kind: "Float128" });
+    }
+    Ok(encoded[1..].to_vec())
 }
 
 impl TryFrom<&Value> for IcWireValue {
@@ -398,13 +441,18 @@ mod tests {
     }
 
     #[test]
-    fn value_binary_carrier_round_trips_for_f128() {
+    fn non_native_float_variants_round_trip_exactly() {
+        let f16 = Value::Float16(half::f16::from_bits(0x8001));
+        let w16 = IcWireValue::try_from_value(&f16).expect("to wire");
+        assert_eq!(w16, IcWireValue::Float16(0x8001));
+        assert_eq!(w16.try_into_value().expect("from wire"), f16);
+
         let v = Value::Float128(1.25f128);
         let w = IcWireValue::try_from_value(&v).expect("to wire");
-        let IcWireValue::ValueBinary(blob) = &w else {
-            panic!("expected ValueBinary");
+        let IcWireValue::Float128(blob) = &w else {
+            panic!("expected Float128");
         };
-        assert!(!blob.is_empty());
+        assert_eq!(blob.len(), 16);
         let back = w.try_into_value().expect("from wire");
         assert_eq!(back, v);
     }

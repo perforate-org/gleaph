@@ -12,13 +12,23 @@ import type {
 const API_VALUE_TAGS = new Set([
   "Null",
   "Bool",
+  "Int8",
+  "Int16",
+  "Int32",
   "Int64",
+  "Uint8",
+  "Uint16",
+  "Uint32",
   "Uint64",
   "Int128",
   "Uint128",
   "Int256",
   "Uint256",
+  "Float16",
+  "Float32",
   "Float64",
+  "Float128",
+  "Float256",
   "Decimal",
   "Text",
   "Bytes",
@@ -118,9 +128,15 @@ export function fromApiValue(value: ApiValue): unknown {
   if ("Bool" in value) {
     return value.Bool;
   }
+  if ("Int8" in value) return value.Int8;
+  if ("Int16" in value) return value.Int16;
+  if ("Int32" in value) return value.Int32;
   if ("Int64" in value) {
     return value.Int64;
   }
+  if ("Uint8" in value) return value.Uint8;
+  if ("Uint16" in value) return value.Uint16;
+  if ("Uint32" in value) return value.Uint32;
   if ("Uint64" in value) {
     return value.Uint64;
   }
@@ -139,6 +155,10 @@ export function fromApiValue(value: ApiValue): unknown {
   if ("Float64" in value) {
     return value.Float64;
   }
+  if ("Float16" in value) return value.Float16;
+  if ("Float32" in value) return value.Float32;
+  if ("Float128" in value) return value.Float128;
+  if ("Float256" in value) return value.Float256;
   if ("Decimal" in value) {
     return value.Decimal;
   }

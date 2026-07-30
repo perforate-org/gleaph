@@ -1,7 +1,7 @@
 # 0055. Exact scalar types at the Router/API boundary
 
 Date: 2026-07-30
-Status: proposed
+Status: accepted
 Last revised: 2026-07-30
 Anchor timestamp: 2026-07-30 00:31:16 UTC +0000
 
@@ -200,3 +200,11 @@ The ADR can move from proposed only when:
 - canonical float representations have round-trip tests;
 - manifest validation and every generator profile preserve scalar width; and
 - Router, SDK/CDK, and generated-code fixtures pass against the same Candid contract.
+
+## Implementation status
+
+Implemented in the pre-release wire contract. `IcWireValue`, the GQL compact codec, the JS SDK
+IDL/types, and codegen manifest version 2 preserve exact integer and floating-point scalar
+variants. `Float16` uses its raw `u16` bits; `Float128` and `Float256` use canonical 16-byte and
+32-byte little-endian representations. Runtime-specific wrapper ergonomics remain owned by the
+SDK/CDK profiles and can be extended without changing this wire contract.

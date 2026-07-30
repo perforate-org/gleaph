@@ -161,6 +161,12 @@ fn ts_type(semantic_type: &SemanticType, nullable: bool) -> String {
     let base = match semantic_type {
         SemanticType::Null => "null".to_string(),
         SemanticType::Bool => "boolean".to_string(),
+        SemanticType::Int8
+        | SemanticType::Int16
+        | SemanticType::Int32
+        | SemanticType::Uint8
+        | SemanticType::Uint16
+        | SemanticType::Uint32 => "number".to_string(),
         SemanticType::Int64
         | SemanticType::Uint64
         | SemanticType::Int128
@@ -168,7 +174,11 @@ fn ts_type(semantic_type: &SemanticType, nullable: bool) -> String {
         SemanticType::Int256 | SemanticType::Uint256 | SemanticType::Decimal => {
             "string".to_string()
         }
-        SemanticType::Float64 | SemanticType::Date => "number".to_string(),
+        SemanticType::Float16
+        | SemanticType::Float32
+        | SemanticType::Float64
+        | SemanticType::Date => "number".to_string(),
+        SemanticType::Float128 | SemanticType::Float256 => "Uint8Array".to_string(),
         SemanticType::Time => "bigint | number".to_string(),
         SemanticType::Text => "string".to_string(),
         SemanticType::Principal => "PrincipalLike".to_string(),

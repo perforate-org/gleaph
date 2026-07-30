@@ -223,14 +223,23 @@ fn rust_type(semantic_type: &SemanticType) -> String {
     match semantic_type {
         SemanticType::Null => "()".to_string(),
         SemanticType::Bool => "bool".to_string(),
+        SemanticType::Int8 => "i8".to_string(),
+        SemanticType::Int16 => "i16".to_string(),
+        SemanticType::Int32 => "i32".to_string(),
         SemanticType::Int64 => "i64".to_string(),
+        SemanticType::Uint8 => "u8".to_string(),
+        SemanticType::Uint16 => "u16".to_string(),
+        SemanticType::Uint32 => "u32".to_string(),
         SemanticType::Uint64 => "u64".to_string(),
         SemanticType::Int128 => "i128".to_string(),
         SemanticType::Uint128 => "u128".to_string(),
         SemanticType::Int256 | SemanticType::Uint256 | SemanticType::Decimal => {
             "String".to_string()
         }
+        SemanticType::Float16 => "u16".to_string(),
+        SemanticType::Float32 => "f32".to_string(),
         SemanticType::Float64 => "f64".to_string(),
+        SemanticType::Float128 | SemanticType::Float256 => "Vec<u8>".to_string(),
         SemanticType::Text => "String".to_string(),
         SemanticType::Bytes => "Vec<u8>".to_string(),
         SemanticType::Date | SemanticType::Time => "i64".to_string(),

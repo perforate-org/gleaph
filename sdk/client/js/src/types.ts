@@ -3,13 +3,23 @@ import type { Principal } from "@icp-sdk/core/principal";
 export type ApiValue =
   | { Null: null }
   | { Bool: boolean }
+  | { Int8: number }
+  | { Int16: number }
+  | { Int32: number }
   | { Int64: bigint | number }
+  | { Uint8: number }
+  | { Uint16: number }
+  | { Uint32: number }
   | { Uint64: bigint | number }
   | { Int128: bigint | number }
   | { Uint128: bigint | number }
   | { Int256: string }
   | { Uint256: string }
+  | { Float16: number }
+  | { Float32: number }
   | { Float64: number }
+  | { Float128: Uint8Array }
+  | { Float256: Uint8Array }
   | { Decimal: string }
   | { Text: string }
   | { Bytes: Uint8Array }

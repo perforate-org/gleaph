@@ -7,6 +7,8 @@ description = "Internet Computer types as gleaph-gql Value::Extension (Candid Pr
 
 [dependencies]
 candid.workspace = true
+f256.workspace = true
+half.workspace = true
 gleaph-gql = { path = "../gql", features = [
     "ast-rkyv-no-span",
     "f128",

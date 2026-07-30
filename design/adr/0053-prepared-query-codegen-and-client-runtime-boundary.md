@@ -1,5 +1,9 @@
 # 0053. Prepared-query code generation and client-runtime boundary
 
+The manifest scalar vocabulary and result-wire scalar identity are defined by ADR 0055. This
+ADR owns the prepared-query/runtime boundary, while exact scalar representation remains owned by
+ADR 0055.
+
 Date: 2026-07-29
 Status: proposed
 Last revised: 2026-07-30

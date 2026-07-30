@@ -640,7 +640,7 @@ impl Value {
             #[cfg(feature = "f128")]
             Self::Float128(v) => {
                 out.push(31);
-                out.extend_from_slice(&v.to_bits().to_ne_bytes());
+                out.extend_from_slice(&v.to_bits().to_le_bytes());
             }
             #[cfg(feature = "f256")]
             Self::Float256(v) => {
@@ -775,7 +775,7 @@ impl Value {
             #[cfg(feature = "f128")]
             31 => {
                 let bytes = cursor.read_array::<16>()?;
-                let bits = u128::from_ne_bytes(bytes);
+                let bits = u128::from_le_bytes(bytes);
                 Ok(Self::Float128(f128::from_bits(bits)))
             }
             #[cfg(feature = "f256")]
