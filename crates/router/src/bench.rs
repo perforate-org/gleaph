@@ -90,15 +90,13 @@ fn bench_router_property_catalog_growth_1024() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_router_prepared_plan_growth_32x256k() -> canbench_rs::BenchResult {
     let graph_id = GraphId::from_raw(970_002);
-    let plan_blob = vec![0x5a; 256 * 1024];
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("router_prepared_plan_growth_32x256k");
         for i in 0..32u32 {
             insert_prepared_plan(
                 PreparedPlanKey::new(graph_id, format!("capacity-plan-{i:02}")),
                 PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
-                    plan_blob: black_box(plan_blob.clone()),
-                    requires_write_path: false,
+                    query: black_box("MATCH (n) RETURN n".to_string()),
                     metadata: None,
                 }),
             );

@@ -2,6 +2,8 @@
 
 use candid::Principal;
 use ic_cdk::api::msg_caller;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use crate::gql::build_router_block_plan;
 use gleaph_gql::parser;
@@ -18,6 +20,7 @@ use gleaph_prepared_api::{
 
 use crate::execution_path::check_prepared_execution_path;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
+use crate::facade::stable::graph_catalog;
 use crate::facade::stable::prepared_catalog::{
     PreparedPlanKey, PreparedPlanRecord, PreparedPlanRecordV1, contains_prepared_plan,
     get_prepared_plan, insert_prepared_plan, remove_prepared_plan,
@@ -30,19 +33,55 @@ use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute}
 use crate::state::RouterError;
 use crate::vector_sync;
 
+const POST_UPGRADE_PREPARED_CACHE_LIMIT: usize = 32;
+
+#[derive(Clone)]
+struct PreparedQueryCache {
+    _program: gleaph_gql::ast::GqlProgram,
+    _comments: Vec<gleaph_gql::token::Comment>,
+    plan: PhysicalPlan,
+    plan_blob: Vec<u8>,
+    requires_write_path: bool,
+}
+
+enum PreparedCacheEntry {
+    Ready(Box<PreparedQueryCache>),
+    Failed(String),
+}
+
+thread_local! {
+    static PREPARED_QUERY_CACHE: RefCell<BTreeMap<PreparedPlanKey, PreparedCacheEntry>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
 /// Plan a prepared query through the production Router ingress planning seam.
 ///
 /// This is the exact planning path used by `prepared_register` after authorization,
 /// exposed without `msg_caller` so unit tests can drive it with an explicit principal.
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "retained as the explicit test planning seam")
+)]
 pub(crate) fn plan_prepared_query(
     query: &str,
     caller: Principal,
 ) -> Result<(PhysicalPlan, GraphId, bool), RouterError> {
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    plan_prepared_program(&program, caller, None)
+}
+
+fn plan_prepared_program(
+    program: &gleaph_gql::ast::GqlProgram,
+    caller: Principal,
+    forced_graph_id: Option<GraphId>,
+) -> Result<(PhysicalPlan, GraphId, bool), RouterError> {
     let store = RouterStore::new();
-    let resolved = graph_context::resolve_graph_context(&store, &program, caller)?;
+    let resolved = match forced_graph_id {
+        Some(graph_id) => graph_context::ResolvedGraphContext { graph_id },
+        None => graph_context::resolve_graph_context(&store, program, caller)?,
+    };
     let seed = graph_context::session_graph_seed(&store, resolved, caller);
-    gleaph_gql::validate::validate_with_seed(&program, Some(&seed))
+    gleaph_gql::validate::validate_with_seed(program, Some(&seed))
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let tx = program
         .transaction_activity
@@ -54,7 +93,7 @@ pub(crate) fn plan_prepared_query(
         .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
     let dispatch = crate::use_graph::resolve_ingress_dispatch(
         &store,
-        &program,
+        program,
         block,
         caller,
         resolved.graph_id,
@@ -74,7 +113,7 @@ pub(crate) fn plan_prepared_query(
     )?;
     let plan = build_router_block_plan(&dispatch.plan_block, schema, &stats)?;
     let requires_write_path = plan.has_dml();
-    let classified = classify_program(&program).requires_write_path();
+    let classified = classify_program(program).requires_write_path();
     if requires_write_path != classified {
         return Err(RouterError::InvalidArgument(
             "planner DML content does not match program classification".into(),
@@ -83,7 +122,7 @@ pub(crate) fn plan_prepared_query(
     if requires_write_path && !plan.is_pure_insert() {
         crate::gql::enforce_multi_dml_bundle_gate(&store, dispatch.dispatch_graph_id, block)?;
     }
-    let session_current = graph_context::session_current_after_activity(&store, &program, caller)?;
+    let session_current = graph_context::session_current_after_activity(&store, program, caller)?;
     let (graph_id, plan) = match crate::use_graph::analyze_use_graph_v2_dispatch(
         plan,
         &store,
@@ -158,7 +197,8 @@ fn prepared_register_core(
     caller: Principal,
     metadata: Option<PreparedOperation>,
 ) -> Result<(), RouterError> {
-    let (plan, graph_id, requires_write_path) = plan_prepared_query(query, caller)?;
+    let (cache, graph_id) = build_prepared_cache(query, caller, None)?;
+    let requires_write_path = cache.requires_write_path;
     if let Some(metadata) = &metadata {
         let expected_kind = if requires_write_path {
             OperationKind::Update
@@ -178,18 +218,124 @@ fn prepared_register_core(
             )));
         }
     }
-    let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let key = prepared_key(graph_id, name);
     insert_prepared_plan(
         key,
         PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
-            plan_blob,
-            requires_write_path,
+            query: query.to_owned(),
             metadata,
         }),
     );
+    insert_prepared_cache(
+        prepared_key(graph_id, name),
+        PreparedCacheEntry::Ready(Box::new(cache)),
+    );
     Ok(())
+}
+
+fn build_prepared_cache(
+    query: &str,
+    caller: Principal,
+    forced_graph_id: Option<GraphId>,
+) -> Result<(PreparedQueryCache, GraphId), RouterError> {
+    let parsed = parser::parse_with_comments(query)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let (plan, graph_id, requires_write_path) =
+        plan_prepared_program(&parsed.program, caller, forced_graph_id)?;
+    let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    Ok((
+        PreparedQueryCache {
+            _program: parsed.program,
+            _comments: parsed.comments,
+            plan,
+            plan_blob,
+            requires_write_path,
+        },
+        graph_id,
+    ))
+}
+
+fn insert_prepared_cache(key: PreparedPlanKey, entry: PreparedCacheEntry) {
+    PREPARED_QUERY_CACHE.with_borrow_mut(|cache| {
+        cache.insert(key, entry);
+    });
+}
+
+fn cached_prepared_cache(key: &PreparedPlanKey) -> Option<PreparedQueryCache> {
+    PREPARED_QUERY_CACHE.with_borrow(|cache| match cache.get(key) {
+        Some(PreparedCacheEntry::Ready(entry)) => Some((**entry).clone()),
+        Some(PreparedCacheEntry::Failed(reason)) => {
+            let _ = reason;
+            None
+        }
+        None => None,
+    })
+}
+
+fn prepare_cache_for_execution(
+    key: &PreparedPlanKey,
+    graph_id: GraphId,
+    record: &PreparedPlanRecordV1,
+    caller: Principal,
+) -> Result<PreparedQueryCache, RouterError> {
+    if let Some(cache) = cached_prepared_cache(key) {
+        return Ok(cache);
+    }
+    match build_prepared_cache(&record.query, caller, Some(graph_id)) {
+        Ok((cache, planned_graph_id)) if planned_graph_id == graph_id => {
+            insert_prepared_cache(
+                key.clone(),
+                PreparedCacheEntry::Ready(Box::new(cache.clone())),
+            );
+            Ok(cache)
+        }
+        Ok((_, planned_graph_id)) => Err(RouterError::InvalidArgument(format!(
+            "prepared query resolved to graph {planned_graph_id:?}, expected {graph_id:?}"
+        ))),
+        Err(error) => {
+            insert_prepared_cache(key.clone(), PreparedCacheEntry::Failed(error.to_string()));
+            Err(error)
+        }
+    }
+}
+
+/// Best-effort prepared cache warmup after canister upgrade.
+///
+/// Stable query records remain authoritative. A failed parse or plan is recorded in heap state and
+/// does not abort the upgrade; the next execution retries the failed entry lazily. The bounded
+/// pass prevents a large catalog from exhausting the post-upgrade instruction budget.
+pub(crate) fn rebuild_prepared_caches_after_upgrade() {
+    PREPARED_QUERY_CACHE.with_borrow_mut(|cache| cache.clear());
+    let records = ROUTER_PREPARED_PLANS.with_borrow(|plans| {
+        plans
+            .iter()
+            .take(POST_UPGRADE_PREPARED_CACHE_LIMIT)
+            .filter_map(|entry| Some((entry.key().clone(), entry.value().as_v1().ok()?.clone())))
+            .collect::<Vec<_>>()
+    });
+
+    for (key, record) in records {
+        let caller = graph_catalog::graph_entry(key.graph_id)
+            .map(|entry| entry.owner)
+            .unwrap_or_else(Principal::anonymous);
+        match build_prepared_cache(&record.query, caller, Some(key.graph_id)) {
+            Ok((cache, graph_id)) if graph_id == key.graph_id => {
+                insert_prepared_cache(key, PreparedCacheEntry::Ready(Box::new(cache)));
+            }
+            Ok((_, graph_id)) => {
+                insert_prepared_cache(
+                    key,
+                    PreparedCacheEntry::Failed(format!(
+                        "prepared query resolved to graph {graph_id:?} during upgrade"
+                    )),
+                );
+            }
+            Err(error) => {
+                insert_prepared_cache(key, PreparedCacheEntry::Failed(error.to_string()));
+            }
+        }
+    }
 }
 
 /// Return the metadata snapshot for one authorized logical graph.
@@ -358,12 +504,12 @@ async fn prepared_execute_unchecked(
     let record = get_prepared_plan(&key)
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
     let v1 = record.as_v1()?;
-    check_prepared_execution_path(entrypoint, mode, v1.requires_write_path, force)?;
+    let cache = prepare_cache_for_execution(&key, graph_id, v1, caller)?;
+    check_prepared_execution_path(entrypoint, mode, cache.requires_write_path, force)?;
     crate::gql::enforce_read_consistency(&store, graph_id, &read_mode).await?;
     let pmap =
         decode_gql_params_blob(&params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let (_, plans) = gleaph_gql_planner::wire::decode_plan_bundle(&v1.plan_blob)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let plans = vec![cache.plan.clone()];
     let stats = graph_stats_for(graph_id);
     // ADR 0034: prepared queries that contain a supported `SEARCH` shape are lowered through the
     // same Router vector-index path as ad-hoc `gql_query`. The plan is single-graph by the
@@ -403,7 +549,7 @@ async fn prepared_execute_unchecked(
     // registration, where the runtime shard count is not yet known.
     dispatch_plan_blob(
         graph_id,
-        &v1.plan_blob,
+        &cache.plan_blob,
         &plans,
         &pmap,
         &params,

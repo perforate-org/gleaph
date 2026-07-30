@@ -90,6 +90,7 @@ fn init(args: RouterInitArgs) {
 #[post_upgrade]
 fn post_upgrade(args: Option<RouterUpgradeArgs>) {
     canister::post_upgrade(args.unwrap_or_default());
+    prepared::rebuild_prepared_caches_after_upgrade();
 }
 
 #[query]

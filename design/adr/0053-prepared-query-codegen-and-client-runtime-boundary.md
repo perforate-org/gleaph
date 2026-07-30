@@ -26,8 +26,9 @@ The repository already has two runtime boundaries:
 
 `crates/cli` contains an older, incomplete code-generation attempt and is not the source of
 truth for this decision. `crates/codegen` is the intended home for the new generator. The
-current Router stable prepared-plan record contains execution data (`plan_blob` and
-`requires_write_path`), not a complete public schema for generated parameters and results.
+current Router stable prepared-query record stores the query source and registration metadata, not
+a compiled AST or plan. Parsed ASTs, preserved doc comments, and compiled plans are heap cache data
+that can be rebuilt after an upgrade.
 
 This ADR intentionally excludes Graph Procedures, arbitrary canister extensions, ORM/query
 builders, and general canister-method generation. Those capabilities require separate execution,
@@ -277,6 +278,10 @@ as a release-stable contract.
 - a provisional Router `prepared_manifest` query and metadata-aware registration path backed by
   the prepared stable record; the manifest contract remains version `1` and is allowed to change
   destructively before release;
+- a source-first prepared runtime record: registration builds the parsed query and physical plan
+  before committing the stable query, execution lazily rebuilds a missing cache entry, and
+  post-upgrade performs a bounded best-effort cache warmup without trapping on an individual
+  parse or planning failure;
 - a normalized `CodegenIr` shared by the language profiles;
 - TypeScript and JavaScript output profiles exposed by `generate_typescript` and
   `generate_javascript`;

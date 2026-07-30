@@ -754,7 +754,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             8,
             StableMemoryClass::Canonical,
             "prepared queries",
-            "PreparedPlanKey → versioned plan wire blob",
+            "PreparedPlanKey → source-first prepared query record; AST and plan are heap cache",
             RebuildPath::None,
         ),
         region(

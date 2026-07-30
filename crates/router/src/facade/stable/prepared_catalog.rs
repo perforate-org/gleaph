@@ -45,11 +45,13 @@ impl Storable for PreparedPlanKey {
     }
 }
 
-/// Version 1 prepared plan payload (wire plan blob + execution classification).
+/// Version 1 prepared query payload.
+///
+/// The query source is the durable source of truth. Parsed ASTs and compiled plans are rebuilt in
+/// the Router heap after an upgrade and are intentionally not part of this stable record.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PreparedPlanRecordV1 {
-    pub plan_blob: Vec<u8>,
-    pub requires_write_path: bool,
+    pub query: String,
     /// Optional operation metadata exposed by the prepared catalog.
     pub metadata: Option<PreparedOperation>,
 }
@@ -125,21 +127,19 @@ mod tests {
     #[test]
     fn prepared_plan_record_v1_round_trips_through_storable() {
         let record = PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
-            plan_blob: vec![1, 2, 3],
-            requires_write_path: true,
+            query: "MATCH (n) RETURN n".into(),
             metadata: None,
         });
         let bytes = record.clone().into_bytes();
         let decoded = PreparedPlanRecord::from_bytes(Cow::Owned(bytes));
         assert_eq!(decoded, record);
-        assert!(decoded.as_v1().expect("v1").requires_write_path);
+        assert_eq!(decoded.as_v1().expect("v1").query, "MATCH (n) RETURN n");
     }
 
     #[test]
     fn prepared_plan_record_v1_round_trips_metadata() {
         let record = PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
-            plan_blob: vec![4, 5, 6],
-            requires_write_path: false,
+            query: "MATCH (n) RETURN n".into(),
             metadata: Some(PreparedOperation {
                 name: "find-users".into(),
                 kind: OperationKind::Query,
