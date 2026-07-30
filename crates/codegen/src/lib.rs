@@ -9,12 +9,14 @@
 mod common;
 mod ir;
 mod javascript;
+mod motoko;
 mod rust;
 mod rust_canister;
 mod typescript;
 
 pub use ir::{CodegenIr, OperationIr};
 pub use javascript::generate_javascript;
+pub use motoko::generate_motoko;
 pub use rust::generate_rust;
 pub use rust_canister::generate_rust_canister;
 pub use typescript::generate_typescript;
@@ -364,6 +366,19 @@ mod tests {
         assert!(output.contains("gleaph_cdk::serde_json::Value"));
         assert!(!output.contains("use serde_json"));
         assert!(!output.contains("ic-agent"));
+    }
+
+    #[test]
+    fn generates_motoko_canister_facade_with_typed_operation_boundary() {
+        let output = generate_motoko(&manifest()).unwrap();
+        assert!(output.contains("public type FindUsersParams ="));
+        assert!(output.contains("term : Text;"));
+        assert!(output.contains("public type FindUsersExecutor ="));
+        assert!(output.contains("executeQuery : (Text, FindUsersParams)"));
+        assert!(output.contains("public class FindUsersQueries"));
+        assert!(output.contains("/// Find users by their search term."));
+        assert!(output.contains("/// Text to search for."));
+        assert!(output.contains("import Principal \"mo:core/Principal\";"));
     }
 
     #[test]

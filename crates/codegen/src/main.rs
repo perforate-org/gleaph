@@ -1,7 +1,8 @@
-//! Command-line entrypoint for generating prepared-query client adapters.
+//! Command-line entrypoint for generating prepared-query client and canister adapters.
 
 use gleaph_codegen::{
-    generate_javascript, generate_rust, generate_rust_canister, generate_typescript, parse_manifest,
+    generate_javascript, generate_motoko, generate_rust, generate_rust_canister,
+    generate_typescript, parse_manifest,
 };
 use std::env;
 use std::fs;
@@ -14,7 +15,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("gleaph-codegen: {message}");
             eprintln!(
-                "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister> [--output <path>]"
+                "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>]"
             );
             ExitCode::FAILURE
         }
@@ -39,7 +40,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "--output" => output = Some(PathBuf::from(value()?.clone())),
             "-h" | "--help" => {
                 println!(
-                    "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister> [--output <path>]"
+                    "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>]"
                 );
                 return Ok(());
             }
@@ -52,10 +53,18 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let target = target.ok_or("--target is required")?;
     if !matches!(
         target.as_str(),
-        "typescript" | "ts" | "javascript" | "js" | "rust" | "rs" | "rust-canister"
+        "typescript"
+            | "ts"
+            | "javascript"
+            | "js"
+            | "rust"
+            | "rs"
+            | "rust-canister"
+            | "motoko"
+            | "mo"
     ) {
         return Err(format!(
-            "unsupported target {target:?}; expected typescript, javascript, rust, or rust-canister"
+            "unsupported target {target:?}; expected typescript, javascript, rust, rust-canister, or motoko"
         ));
     }
     let input = fs::read_to_string(&manifest_path)
@@ -66,6 +75,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "javascript" | "js" => generate_javascript(&manifest),
         "rust" | "rs" => generate_rust(&manifest),
         "rust-canister" => generate_rust_canister(&manifest),
+        "motoko" | "mo" => generate_motoko(&manifest),
         _ => unreachable!("target was validated above"),
     }
     .map_err(|error| error.to_string())?;

@@ -291,7 +291,9 @@ as a release-stable contract.
   parameter/result declarations and a `PreparedExecutor` facade; and
 - a Rust canister profile exposed by `generate_rust_canister`, emitting operation-specific
   parameter/result declarations and a transport-neutral `PreparedCanisterExecutor` facade; and
-- a standalone `gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister>` entrypoint that
+- a Motoko canister profile exposed by `generate_motoko`, emitting operation-specific
+  parameter/result declarations and a transport-neutral typed executor boundary; and
+- a standalone `gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister|motoko>` entrypoint that
   writes to stdout or an explicit output path.
 
 The generated TypeScript composes with the current `@gleaph/sdk` `GraphClient`, emits
@@ -304,10 +306,10 @@ profile similarly delegates transport, response decoding, and error handling to 
 `PreparedExecutor` implementation; its `serde_json` parameter map is a provisional runtime
 boundary and is not the Router wire ABI.
 
-The Rust canister profile is intentionally a runtime boundary scaffold: a future `gleaph-cdk`
-adapter must implement Candid encoding, Router calls, response decoding, and error conversion.
-The Motoko profile, Router manifest endpoint, and accepted result-wire compatibility policy remain
-planned work.
+The Rust and Motoko canister profiles are intentionally runtime boundary scaffolds: a future
+`gleaph-cdk` adapter (or Motoko CDK equivalent) must implement Candid encoding, Router calls,
+response decoding, and error conversion. The Router manifest endpoint and accepted result-wire
+compatibility policy remain planned work.
 
 ## Design documentation impact
 
