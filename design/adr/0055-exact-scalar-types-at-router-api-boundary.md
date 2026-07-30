@@ -3,7 +3,7 @@
 Date: 2026-07-30
 Status: accepted
 Last revised: 2026-07-30
-Anchor timestamp: 2026-07-30 00:31:16 UTC +0000
+Anchor timestamp: 2026-07-30 03:36:22 UTC +0000
 
 ## Context
 
@@ -74,7 +74,7 @@ primitive, but the variant and its representation contract must remain explicit.
 
 ### 2. Use explicit representations for non-Candid-native floating-point widths
 
-The planned Candid projection is:
+The implemented Candid projection is:
 
 ```rust
 Float16(u16)      // canonical IEEE 754 binary16 bit pattern
@@ -100,7 +100,7 @@ The prepared-query manifest and `crates/codegen` IR must describe the exact scal
 The current `SemanticType::Int64`/`Float64`-only model is replaced by a complete scalar model,
 including all supported integer and floating-point widths.
 
-The manifest version is incremented when this schema is implemented. A manifest containing an
+The manifest version is 2 for this schema. A manifest containing an
 unknown scalar variant or unsupported floating-point representation fails closed during
 validation and generation.
 
@@ -162,24 +162,24 @@ Accepted costs and risks:
 
 - `IcWireValue`, Candid IDLs, SDK types, and generated fixtures change together.
 - Dedicated runtime wrappers are required for `Float16`, `Float128`, and `Float256`.
-- Canonical binary encoding for `Float128` and `Float256` must be specified and tested before
-  the Router API is accepted.
+- Canonical binary encoding for `Float128` and `Float256` is specified and covered by round-trip
+  tests; future representation changes require an intentional pre-release wire change.
 - Native language mappings cannot always be one-to-one; codegen must expose those limitations
   rather than hiding them through widening.
 
-## Migration and implementation order
+## Implemented change set
 
-This is a clean pre-release replacement, not a compatibility migration. Implement it in this
-order:
+This is a clean pre-release replacement, not a compatibility migration. The change was applied
+in this order:
 
-1. specify canonical representations for `Float16`, `Float128`, and `Float256` in the GQL value
-   codec;
-2. replace `IcWireValue` scalar variants and conversion tests;
-3. update Router prepared result types and Candid declarations;
-4. update JS/TS SDK `ApiValue`, IDL, and runtime conversion;
-5. expand `crates/codegen` `SemanticType`, bump the manifest version, and update all profiles;
-6. update Rust SDK/CDK and Motoko runtime helpers; and
-7. add round-trip and boundary-value tests across every scalar family, including nested records
+1. canonical representations for `Float16`, `Float128`, and `Float256` were specified in the GQL
+   value codec;
+2. `IcWireValue` scalar variants and conversion tests were replaced;
+3. Router prepared result types and Candid declarations were updated;
+4. JS/TS SDK `ApiValue`, IDL, and runtime conversion were updated;
+5. `crates/codegen` `SemanticType` and manifest version 2 were expanded across all profiles;
+6. Rust SDK/CDK and Motoko runtime helpers were updated; and
+7. round-trip and boundary-value tests were added across scalar families, including nested records
    and lists.
 
 ## Design documentation impact
@@ -189,11 +189,11 @@ order:
 - `design/architecture/overview.md` need not duplicate the scalar table; API wire details remain
   owned by this ADR and the relevant crate documentation.
 - `crates/gql-ic/src/wire.rs`, SDK IDL/type documentation, and codegen manifest documentation
-  must be updated in the implementation change.
+  are updated as part of this implementation.
 
-## Required acceptance criteria
+## Acceptance criteria
 
-The ADR can move from proposed only when:
+The accepted implementation satisfies:
 
 - every supported GQL scalar has a distinct structured API variant;
 - no supported scalar conversion widens or falls back to `ValueBinary`;
