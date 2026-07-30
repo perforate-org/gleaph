@@ -214,7 +214,9 @@ Positive consequences:
 
 Accepted costs and risks:
 
-- Router needs a new public, graph-scoped prepared metadata contract.
+- Router needs a public, graph-scoped prepared metadata contract. The initial provisional
+  endpoint and stable-record storage now exist; the registration payload and authorization policy
+  remain subject to this ADR's open decisions.
 - The semantic type system and result schema require explicit design and compatibility rules.
 - Runtime packages need coordinated version compatibility with generated output.
 - Existing `GraphClient` APIs cannot be silently replaced by this ADR.
@@ -262,7 +264,8 @@ When implementation begins, the bounded order should be:
 
 ### Initial implementation slice
 
-The first implementation is intentionally partial and does not accept the Router metadata ABI.
+The first implementation is intentionally partial and does not yet accept the Router metadata ABI
+as a release-stable contract.
 `gleaph-codegen` now provides:
 
 - a versioned local `PreparedManifest` model and fail-closed validation for graph identity,
@@ -271,6 +274,9 @@ The first implementation is intentionally partial and does not accept the Router
   future Router metadata endpoints and the generator;
 - a GQL-generic output-type inference API used as the substrate for Router-owned manifest
   materialization, without coupling `gleaph-gql` to Gleaph runtime or codegen types;
+- a provisional Router `prepared_manifest` query and metadata-aware registration path backed by
+  the prepared stable record; the manifest contract remains version `1` and is allowed to change
+  destructively before release;
 - a normalized `CodegenIr` shared by the language profiles;
 - TypeScript and JavaScript output profiles exposed by `generate_typescript` and
   `generate_javascript`;

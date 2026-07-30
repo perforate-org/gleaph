@@ -99,6 +99,7 @@ fn bench_router_prepared_plan_growth_32x256k() -> canbench_rs::BenchResult {
                 PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
                     plan_blob: black_box(plan_blob.clone()),
                     requires_write_path: false,
+                    metadata: None,
                 }),
             );
         }

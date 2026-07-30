@@ -1476,6 +1476,7 @@ dependencies = [
  "gleaph-gql-planner",
  "gleaph-graph-catalog",
  "gleaph-graph-kernel",
+ "gleaph-prepared-api",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-cdk-management-canister",

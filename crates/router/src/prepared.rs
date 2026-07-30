@@ -12,8 +12,12 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult, ReadMode};
+use gleaph_prepared_api::{
+    GraphIdentity, MANIFEST_VERSION, OperationKind, PreparedManifest, PreparedOperation,
+};
 
 use crate::execution_path::check_prepared_execution_path;
+use crate::facade::stable::ROUTER_PREPARED_PLANS;
 use crate::facade::stable::prepared_catalog::{
     PreparedPlanKey, PreparedPlanRecord, PreparedPlanRecordV1, contains_prepared_plan,
     get_prepared_plan, insert_prepared_plan, remove_prepared_plan,
@@ -104,7 +108,18 @@ pub(crate) fn plan_prepared_query(
 pub fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let caller = msg_caller();
-    prepared_register_core(&name, &query, caller)
+    prepared_register_core(&name, &query, caller, None)
+}
+
+/// Register a prepared operation together with its graph-scoped metadata.
+pub fn prepared_register_with_metadata(
+    name: String,
+    query: String,
+    metadata: PreparedOperation,
+) -> Result<(), RouterError> {
+    authorize_prepared_catalog_change(&msg_caller())?;
+    let caller = msg_caller();
+    prepared_register_core(&name, &query, caller, Some(metadata))
 }
 
 /// Batch variant of [`prepared_register`]. All items are authorized by the same caller and
@@ -117,12 +132,52 @@ pub fn prepared_register_batch(queries: Vec<(String, String)>) -> Vec<Result<(),
     }
     queries
         .into_iter()
-        .map(|(name, query)| prepared_register_core(&name, &query, caller))
+        .map(|(name, query)| prepared_register_core(&name, &query, caller, None))
         .collect()
 }
 
-fn prepared_register_core(name: &str, query: &str, caller: Principal) -> Result<(), RouterError> {
+/// Batch registration variant carrying one metadata record per prepared operation.
+pub fn prepared_register_with_metadata_batch(
+    queries: Vec<(String, String, PreparedOperation)>,
+) -> Vec<Result<(), RouterError>> {
+    let caller = msg_caller();
+    if let Err(e) = authorize_prepared_catalog_change(&caller) {
+        return queries.into_iter().map(|_| Err(e.clone())).collect();
+    }
+    queries
+        .into_iter()
+        .map(|(name, query, metadata)| {
+            prepared_register_core(&name, &query, caller, Some(metadata))
+        })
+        .collect()
+}
+
+fn prepared_register_core(
+    name: &str,
+    query: &str,
+    caller: Principal,
+    metadata: Option<PreparedOperation>,
+) -> Result<(), RouterError> {
     let (plan, graph_id, requires_write_path) = plan_prepared_query(query, caller)?;
+    if let Some(metadata) = &metadata {
+        let expected_kind = if requires_write_path {
+            OperationKind::Update
+        } else {
+            OperationKind::Query
+        };
+        if metadata.name != name {
+            return Err(RouterError::InvalidArgument(format!(
+                "prepared metadata name {:?} does not match registration name {:?}",
+                metadata.name, name
+            )));
+        }
+        if metadata.kind != expected_kind {
+            return Err(RouterError::InvalidArgument(format!(
+                "prepared metadata kind for {:?} does not match the planned execution path",
+                name
+            )));
+        }
+    }
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let key = prepared_key(graph_id, name);
@@ -131,9 +186,39 @@ fn prepared_register_core(name: &str, query: &str, caller: Principal) -> Result<
         PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
             plan_blob,
             requires_write_path,
+            metadata,
         }),
     );
     Ok(())
+}
+
+/// Return the metadata snapshot for one authorized logical graph.
+pub fn prepared_manifest(graph_name: String) -> Result<PreparedManifest, RouterError> {
+    authorize_prepared_execute(&msg_caller())?;
+    let caller = msg_caller();
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&graph_name, caller)?;
+    let mut operations = ROUTER_PREPARED_PLANS.with_borrow(|plans| {
+        plans
+            .iter()
+            .filter(|entry| entry.key().graph_id == graph_id)
+            .filter_map(|entry| entry.value().as_v1().ok()?.metadata.clone())
+            .collect::<Vec<_>>()
+    });
+    operations.sort_by(|left, right| left.name.cmp(&right.name));
+    if operations.is_empty() {
+        return Err(RouterError::NotFound(format!(
+            "prepared metadata for graph {graph_name:?}"
+        )));
+    }
+    Ok(PreparedManifest {
+        manifest_version: MANIFEST_VERSION,
+        graph: GraphIdentity {
+            id: graph_name,
+            name: None,
+        },
+        operations,
+    })
 }
 
 pub fn prepared_drop(name: &str) -> Result<(), RouterError> {

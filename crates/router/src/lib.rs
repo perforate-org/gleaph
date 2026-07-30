@@ -590,13 +590,36 @@ fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
 }
 
 #[update]
+fn prepared_register_with_metadata(
+    name: String,
+    query: String,
+    metadata: gleaph_prepared_api::PreparedOperation,
+) -> Result<(), RouterError> {
+    prepared::prepared_register_with_metadata(name, query, metadata)
+}
+
+#[update]
 fn prepared_register_batch(queries: Vec<(String, String)>) -> Vec<Result<(), RouterError>> {
     prepared::prepared_register_batch(queries)
 }
 
 #[update]
+fn prepared_register_with_metadata_batch(
+    queries: Vec<(String, String, gleaph_prepared_api::PreparedOperation)>,
+) -> Vec<Result<(), RouterError>> {
+    prepared::prepared_register_with_metadata_batch(queries)
+}
+
+#[update]
 fn prepared_drop(name: String) -> Result<(), RouterError> {
     prepared::prepared_drop(&name)
+}
+
+#[query]
+fn prepared_manifest(
+    graph_name: String,
+) -> Result<gleaph_prepared_api::PreparedManifest, RouterError> {
+    prepared::prepared_manifest(graph_name)
 }
 
 #[query(composite = true)]

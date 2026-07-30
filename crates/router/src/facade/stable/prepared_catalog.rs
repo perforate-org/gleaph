@@ -2,6 +2,7 @@
 
 use candid::{CandidType, Decode, Encode};
 use gleaph_graph_kernel::entry::GraphId;
+use gleaph_prepared_api::PreparedOperation;
 use ic_stable_structures::Storable;
 use ic_stable_structures::storable::Bound;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,8 @@ impl Storable for PreparedPlanKey {
 pub struct PreparedPlanRecordV1 {
     pub plan_blob: Vec<u8>,
     pub requires_write_path: bool,
+    /// Optional operation metadata exposed by the prepared catalog.
+    pub metadata: Option<PreparedOperation>,
 }
 
 /// Versioned prepared plan record for stable storage and upgrade-safe evolution.
@@ -108,6 +111,7 @@ pub(crate) fn contains_prepared_plan(key: &PreparedPlanKey) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_prepared_api::{OperationKind, ResultSchema};
 
     #[test]
     fn prepared_plan_key_orders_by_graph_then_name() {
@@ -123,10 +127,37 @@ mod tests {
         let record = PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
             plan_blob: vec![1, 2, 3],
             requires_write_path: true,
+            metadata: None,
         });
         let bytes = record.clone().into_bytes();
         let decoded = PreparedPlanRecord::from_bytes(Cow::Owned(bytes));
         assert_eq!(decoded, record);
         assert!(decoded.as_v1().expect("v1").requires_write_path);
+    }
+
+    #[test]
+    fn prepared_plan_record_v1_round_trips_metadata() {
+        let record = PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+            plan_blob: vec![4, 5, 6],
+            requires_write_path: false,
+            metadata: Some(PreparedOperation {
+                name: "find-users".into(),
+                kind: OperationKind::Query,
+                parameters: Vec::new(),
+                result: ResultSchema {
+                    columns: Vec::new(),
+                },
+                supports_consistency: true,
+                supports_idempotency: false,
+                allowed_sorts: Vec::new(),
+            }),
+        });
+        let bytes = record.clone().into_bytes();
+        let decoded = PreparedPlanRecord::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded, record);
+        assert_eq!(
+            decoded.as_v1().expect("v1").metadata.as_ref().unwrap().name,
+            "find-users"
+        );
     }
 }
