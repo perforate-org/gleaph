@@ -3,6 +3,8 @@
 //! This crate intentionally contains no graph-kernel or planner dependency. It is suitable for
 //! SDK and canister runtimes that need to decode Router response blobs.
 
+#![cfg_attr(feature = "nightly-f128", feature(f128))]
+
 use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
@@ -183,8 +185,24 @@ impl GqlWireValue {
             Self::Float16(bits) => Value::Float16(half::f16::from_bits(bits)),
             Self::Float32(value) => Value::Float32(value),
             Self::Float64(value) => Value::Float64(value),
-            Self::Float128(_) => return Err(GqlWireDecodeError::UnsupportedValue("Float128")),
-            Self::Float256(_) => return Err(GqlWireDecodeError::UnsupportedValue("Float256")),
+            Self::Float128(bytes) => {
+                #[cfg(feature = "nightly-f128")]
+                {
+                    let bytes = <[u8; 16]>::try_from(bytes.as_slice())
+                        .map_err(|_| GqlWireDecodeError::InvalidNumeric("Float128"))?;
+                    Value::Float128(f128::from_bits(u128::from_le_bytes(bytes)))
+                }
+                #[cfg(not(feature = "nightly-f128"))]
+                {
+                    let _ = bytes;
+                    return Err(GqlWireDecodeError::UnsupportedValue("Float128"));
+                }
+            }
+            Self::Float256(bytes) => {
+                let bytes = <[u8; 32]>::try_from(bytes.as_slice())
+                    .map_err(|_| GqlWireDecodeError::InvalidNumeric("Float256"))?;
+                Value::Float256(f256::f256::from_le_bytes(bytes))
+            }
             Self::Decimal(value) => Value::Decimal(gleaph_gql::types::Decimal(
                 value
                     .parse::<rust_decimal::Decimal>()
@@ -305,9 +323,26 @@ mod tests {
 
     #[test]
     fn rejects_unimplemented_wide_float_projection() {
+        #[cfg(not(feature = "nightly-f128"))]
         assert_eq!(
             GqlWireValue::Float128(vec![0; 16]).try_into_gql_value(),
             Err(GqlWireDecodeError::UnsupportedValue("Float128"))
         );
+    }
+
+    #[test]
+    fn projects_float256_from_canonical_bytes() {
+        let value = GqlWireValue::Float256(f256::f256::from(1.25_f64).to_le_bytes().to_vec())
+            .try_into_gql_value()
+            .unwrap();
+        assert!(matches!(value, Value::Float256(_)));
+    }
+
+    #[cfg(feature = "nightly-f128")]
+    #[test]
+    fn projects_float128_when_nightly_feature_is_enabled() {
+        let bits = 1.25_f128.to_bits().to_le_bytes().to_vec();
+        let value = GqlWireValue::Float128(bits).try_into_gql_value().unwrap();
+        assert!(matches!(value, Value::Float128(_)));
     }
 }

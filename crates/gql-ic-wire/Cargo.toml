@@ -9,8 +9,12 @@ description = "Lightweight Candid wire types for GQL query rows"
 candid.workspace = true
 ethnum.workspace = true
 f256.workspace = true
-gleaph-gql = { workspace = true, features = ["f128", "f256"] }
+gleaph-gql = { path = "../gql", default-features = false, features = ["f256"] }
 half.workspace = true
 rust_decimal.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+
+[features]
+default = []
+nightly-f128 = ["gleaph-gql/f128"]
