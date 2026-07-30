@@ -273,6 +273,9 @@ as a release-stable contract.
   operation uniqueness, parameter/result names, sort keys, and query/update semantics;
 - optional operation and parameter documentation in the manifest, emitted as target-language line
   documentation by every current generator profile;
+- source documentation convention for metadata-aware registration: ordinary /// lines describe
+  the operation and /// @param <name> <text> describes an input parameter; explicit metadata
+  descriptions take precedence;
 - a `gleaph-prepared-api` contract crate containing the Candid/Serde manifest types shared by
   future Router metadata endpoints and the generator;
 - a GQL-generic output-type inference API used as the substrate for Router-owned manifest

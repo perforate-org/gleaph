@@ -48,6 +48,7 @@ mod label_stats_projection;
 mod peer_sync;
 mod planner_stats;
 mod prepared;
+mod prepared_documentation;
 mod provisioning;
 mod rbac;
 mod reclaim;

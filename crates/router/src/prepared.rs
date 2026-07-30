@@ -199,6 +199,10 @@ fn prepared_register_core(
 ) -> Result<(), RouterError> {
     let (cache, graph_id) = build_prepared_cache(query, caller, None)?;
     let requires_write_path = cache.requires_write_path;
+    let mut metadata = metadata;
+    if let Some(metadata) = &mut metadata {
+        crate::prepared_documentation::apply_to_operation(&cache._program.doc_comments, metadata);
+    }
     if let Some(metadata) = &metadata {
         let expected_kind = if requires_write_path {
             OperationKind::Update
