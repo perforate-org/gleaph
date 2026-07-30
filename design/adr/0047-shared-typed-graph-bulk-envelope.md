@@ -341,7 +341,7 @@ by wire operation ordinal while Router returns one result per logical operation.
 cannot satisfy the proof is rejected before the durable typed transition.
 
 The Router owning constructor checks every bound before the stable write. Graph independently checks
-operation count, seed row count, target shard, and full request bytes. The Router must not Candid-
+operation shape, target shard, full request bytes, and response bound. The Router must not Candid-
 encode each seed to enforce an individual byte bound: that would recreate the per-item encoding cost
 this ADR exists to remove. Seed admission uses structural row/count bounds, and the one full typed
 request encoding is the sole encoded seed-size proof. If any typed bound fails, the Router selects a
@@ -468,6 +468,12 @@ and rejecting row-returning or unbounded shapes; capability refresh refusing a t
 during its `await`; typed rejection/unknown-outcome recovery retaining the same durable request and
 mutation id; response-bound failure selecting scalar before typed persistence or any Graph call; and
 a canbench/Router instruction check proving admission does not perform one seed encode per item.
+
+Measured memory/payload probe (2026-07-30 03:10 UTC +0000) for a complete-row query seed with one
+vertex binding per row: 128, 512, 1,024, 4,096, and 16,384 rows completed with unchanged Graph wasm
+memory (14,155,776 bytes). At 65,536 rows the request was 591,272 bytes and Graph rejected the
+response at the 2 MiB safe payload limit; no heap exhaustion was observed. This is evidence that
+the dynamic request/response proof should control chunk size, not a fixed row-count constant.
 
 ## Related documents
 
