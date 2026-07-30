@@ -1,0 +1,9 @@
+[package]
+name = "gleaph-prepared-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gleaph-gql = { workspace = true, features = ["f128", "f256"] }
+thiserror.workspace = true

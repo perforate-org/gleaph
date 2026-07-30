@@ -25,7 +25,7 @@ use gleaph_graph_kernel::plan_exec::{
     GqlExecutionMode as KernelGqlExecutionMode, LabelStatsDelta, MutationId, SeedBindingsWire,
     ShardEventSeq, UniqueClaimDispatch,
 };
-use gleaph_graph_prepared::PreparedQueryRecord;
+use gleaph_prepared_runtime::PreparedQueryRecord;
 use ic_stable_lara::VertexId;
 
 #[cfg(feature = "canbench")]
@@ -1677,15 +1677,10 @@ mod tests {
     use gleaph_gql::Value;
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
     use gleaph_gql_planner::wire::encode_block_plans;
-    use gleaph_graph_prepared::{PreparedQueryRecord, compile_prepared_source};
+    use gleaph_prepared_runtime::{PreparedQueryRecord, prepare};
 
     fn compile_prepared(source: &str) -> PreparedQueryRecord {
-        let program = compile_prepared_source(source).expect("compile");
-        let requires_write_path = classify_program(&program).requires_write_path();
-        PreparedQueryRecord {
-            program,
-            requires_write_path,
-        }
+        prepare(source).expect("compile")
     }
 
     fn insert_vertex_plan(label: &str) -> PhysicalPlan {

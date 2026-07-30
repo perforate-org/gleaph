@@ -1323,7 +1323,7 @@ dependencies = [
  "gleaph-gql-integration",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
- "gleaph-graph-prepared",
+ "gleaph-prepared-runtime",
  "half 2.7.1",
  "ic-cdk",
  "ic-cdk-macros",
@@ -1393,17 +1393,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gleaph-graph-prepared"
-version = "0.1.0"
-dependencies = [
- "derive_more",
- "gleaph-gql",
- "ic-stable-structures",
- "rkyv 0.8.17",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "gleaph-graph-vector-index"
 version = "0.1.0"
 dependencies = [
@@ -1443,6 +1432,14 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "serde",
+]
+
+[[package]]
+name = "gleaph-prepared-runtime"
+version = "0.1.0"
+dependencies = [
+ "gleaph-gql",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

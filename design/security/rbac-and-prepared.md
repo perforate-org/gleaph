@@ -116,7 +116,8 @@ Benefits:
 **Implementation touchpoints:**
 
 - `crates/router/src/prepared.rs`
-- `crates/graph-prepared` (if present in workspace)
+- `crates/prepared-runtime`: heap-only parsing and runtime records; it does not
+  own prepared-query persistence or persist an AST
 - Plan blob storage on router stable memory (`ROUTER_PREPARED_PLANS`, MemoryId 8); records are versioned (`PreparedPlanRecord::V1`)
 
 ## IC caller identity
