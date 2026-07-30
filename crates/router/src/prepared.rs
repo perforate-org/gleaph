@@ -6,7 +6,6 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use crate::gql::build_router_block_plan;
-use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_ic::decode_gql_params_blob;
@@ -17,6 +16,7 @@ use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult, ReadMode}
 use gleaph_prepared_api::{
     GraphIdentity, MANIFEST_VERSION, OperationKind, PreparedManifest, PreparedOperation,
 };
+use gleaph_prepared_runtime::parse_prepared_source;
 
 use crate::execution_path::check_prepared_execution_path;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
@@ -66,8 +66,9 @@ pub(crate) fn plan_prepared_query(
     query: &str,
     caller: Principal,
 ) -> Result<(PhysicalPlan, GraphId, bool), RouterError> {
-    let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    plan_prepared_program(&program, caller, None)
+    let parsed =
+        parse_prepared_source(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    plan_prepared_program(&parsed.program, caller, None)
 }
 
 fn plan_prepared_program(
@@ -253,8 +254,8 @@ fn build_prepared_cache(
     caller: Principal,
     forced_graph_id: Option<GraphId>,
 ) -> Result<(PreparedQueryCache, GraphId), RouterError> {
-    let parsed = parser::parse_with_comments(query)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let parsed =
+        parse_prepared_source(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let (plan, graph_id, requires_write_path) =
         plan_prepared_program(&parsed.program, caller, forced_graph_id)?;
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)

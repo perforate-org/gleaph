@@ -78,7 +78,9 @@ pub struct DocComment {
     /// Location of the comment in the source text.
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
-    /// Comment body with the `///` delimiter removed.
+    /// Normalized comment body with the `///` delimiter removed.
+    ///
+    /// Unlike [`Comment::text`], leading and trailing whitespace is removed.
     pub text: String,
 }
 

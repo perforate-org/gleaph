@@ -1474,6 +1474,7 @@ dependencies = [
  "gleaph-graph-catalog",
  "gleaph-graph-kernel",
  "gleaph-prepared-api",
+ "gleaph-prepared-runtime",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-cdk-management-canister",

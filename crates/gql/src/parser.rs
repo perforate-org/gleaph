@@ -14,6 +14,11 @@ use crate::token::Comment;
 #[cfg(feature = "gleaph")]
 use crate::token::CommentKind;
 
+#[cfg(feature = "gleaph")]
+fn normalize_doc_comment_text(text: &str) -> String {
+    text.trim().to_owned()
+}
+
 mod clause;
 mod ddl;
 mod expr;
@@ -56,7 +61,7 @@ pub fn parse(input: &str) -> Result<GqlProgram, GqlError> {
             .filter_map(|comment| (comment.kind == CommentKind::Doc).then_some(comment))
             .map(|comment| crate::token::DocComment {
                 span: comment.span,
-                text: comment.text,
+                text: normalize_doc_comment_text(&comment.text),
             })
             .collect();
         Ok(program)
@@ -96,7 +101,7 @@ pub fn parse_with_comments(input: &str) -> Result<ParseResult, GqlError> {
             .filter(|comment| comment.kind == CommentKind::Doc)
             .map(|comment| crate::token::DocComment {
                 span: comment.span,
-                text: comment.text.clone(),
+                text: normalize_doc_comment_text(&comment.text),
             })
             .collect();
     }
@@ -154,10 +159,10 @@ mod tests {
     #[cfg(feature = "gleaph")]
     #[test]
     fn parse_retains_doc_comments_in_program_ast() {
-        let program = parse("/// generated query\nMATCH (n) RETURN n").unwrap();
+        let program = parse("///   generated query   \nMATCH (n) RETURN n").unwrap();
         assert_eq!(program.doc_comments.len(), 1);
-        assert_eq!(program.doc_comments[0].text, " generated query");
-        assert_eq!(program.doc_comments[0].span, Span { start: 0, end: 19 });
+        assert_eq!(program.doc_comments[0].text, "generated query");
+        assert_eq!(program.doc_comments[0].span, Span { start: 0, end: 24 });
     }
 
     #[cfg(feature = "gleaph")]

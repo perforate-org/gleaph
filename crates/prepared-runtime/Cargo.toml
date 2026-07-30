@@ -5,5 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-gleaph-gql = { workspace = true, features = ["f128", "f256"] }
+gleaph-gql = { workspace = true, features = ["f128", "f256", "gleaph"] }
 thiserror.workspace = true

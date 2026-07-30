@@ -23,6 +23,7 @@ gleaph-graph-catalog.workspace = true
 gleaph-graph-kernel.workspace = true
 gleaph-gql-integration.workspace = true
 gleaph-prepared-api.workspace = true
+gleaph-prepared-runtime.workspace = true
 ic-cdk.workspace = true
 ic-cdk-management-canister.workspace = true
 ic-cdk-macros.workspace = true
