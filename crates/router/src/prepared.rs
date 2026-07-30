@@ -605,7 +605,7 @@ pub(crate) fn prepared_key(graph_id: GraphId, name: &str) -> PreparedPlanKey {
 mod tests {
     use super::{
         PreparedPlanRecord, PreparedPlanRecordV1, cached_prepared_cache, insert_prepared_plan,
-        prepared_key, rebuild_prepared_caches_after_upgrade,
+        prepared_key, rebuild_prepared_caches_after_upgrade, remove_prepared_plan,
     };
     use gleaph_graph_kernel::entry::GraphId;
 
@@ -704,5 +704,55 @@ mod tests {
         assert_eq!(cache._program.doc_comments[0].text, "generated docs");
         assert_eq!(cache._comments[0].text, " generated docs");
         assert!(!cache.requires_write_path);
+    }
+
+    #[test]
+    fn upgrade_rebuild_skips_invalid_source_without_blocking_valid_cache() {
+        let store = crate::facade::store::RouterStore::new();
+        let owner = Principal::from_slice(&[3; 29]);
+        let graph_id = GraphId::from_raw(10);
+        crate::facade::auth::grant_admins(&[owner]);
+        store
+            .admin_register_graph(
+                owner,
+                GraphRegistryEntry {
+                    graph_id,
+                    graph_name: "prepared-runtime-invalid-source".to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: false,
+                },
+            )
+            .expect("register graph");
+
+        let valid_key = prepared_key(graph_id, "valid-query");
+        let invalid_key = prepared_key(graph_id, "invalid-query");
+        insert_prepared_plan(
+            valid_key.clone(),
+            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                query: "MATCH (n:PreparedRuntimeValid) RETURN n".into(),
+                metadata: None,
+            }),
+        );
+        insert_prepared_plan(
+            invalid_key.clone(),
+            PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+                query: "this is not a prepared query".into(),
+                metadata: None,
+            }),
+        );
+
+        rebuild_prepared_caches_after_upgrade();
+
+        assert!(cached_prepared_cache(&valid_key).is_some());
+        assert!(cached_prepared_cache(&invalid_key).is_none());
+
+        remove_prepared_plan(&valid_key);
+        remove_prepared_plan(&invalid_key);
     }
 }
