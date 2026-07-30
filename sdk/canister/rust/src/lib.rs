@@ -25,6 +25,14 @@ pub type GqlRow = GqlRecord;
 /// Path element in a logical GQL value.
 pub use gleaph_gql::types::PathElement as GqlPathElement;
 
+/// Error returned when logical GQL parameters cannot be compact-binary encoded.
+pub type GqlEncodingError = gleaph_gql::ValueBinaryError;
+
+/// Encode ordered named GQL parameters for a dynamic GQL or prepared-query call.
+pub fn encode_gql_params(params: GqlParams) -> Result<Vec<u8>, GqlEncodingError> {
+    GqlValue::Record(params).to_binary_bytes()
+}
+
 /// Error returned when a prepared-query inter-canister call fails before yielding a typed result.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PreparedCallError {
@@ -81,6 +89,23 @@ where
 {
     let args = encode_prepared_query_args(name, params);
     call_prepared_method(canister_id, "prepared_execute_query", args).await
+}
+
+/// Make a bounded-wait call to the Router's dynamic `gql_query` endpoint.
+pub async fn call_gql_query<R>(
+    canister_id: Principal,
+    query: impl Into<String>,
+    params: GqlParams,
+) -> Result<R, PreparedCallError>
+where
+    R: CandidType + for<'de> Deserialize<'de>,
+{
+    let params = encode_gql_params(params).map_err(|error| PreparedCallError::Decode {
+        message: format!("failed to encode GQL params: {error:?}"),
+    })?;
+    let args = candid::utils::encode_args((query.into(), params))
+        .expect("Candid encode GQL query arguments");
+    call_prepared_method(canister_id, "gql_query", args).await
 }
 
 /// Make a bounded-wait call to `prepared_execute_update` on `canister_id`.
@@ -171,6 +196,18 @@ impl PreparedQueryClient {
         call_prepared_query(self.canister_id, name, params).await
     }
 
+    /// Execute dynamic GQL through the configured Router canister.
+    pub async fn gql_query<R>(
+        &self,
+        query: impl Into<String>,
+        params: GqlParams,
+    ) -> Result<R, PreparedCallError>
+    where
+        R: CandidType + for<'de> Deserialize<'de>,
+    {
+        call_gql_query(self.canister_id, query, params).await
+    }
+
     /// Execute a named prepared update through the configured Router canister.
     pub async fn execute_update<R>(
         &self,
@@ -239,5 +276,16 @@ mod tests {
             decoded,
             ("increment".into(), vec![1, 2, 3], "request-1".into())
         );
+    }
+
+    #[test]
+    fn logical_gql_params_round_trip_preserves_order() {
+        let params = vec![
+            ("first".to_string(), GqlValue::Int8(1)),
+            ("second".to_string(), GqlValue::Text("two".to_string())),
+        ];
+        let encoded = encode_gql_params(params.clone()).expect("encode GQL params");
+        let decoded = GqlValue::from_binary_bytes(&encoded).expect("decode GQL params");
+        assert_eq!(decoded, GqlValue::Record(params));
     }
 }
