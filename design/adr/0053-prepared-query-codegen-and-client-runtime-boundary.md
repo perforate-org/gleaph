@@ -306,8 +306,11 @@ as a release-stable contract.
   parameter/result declarations and a transport-neutral `PreparedCanisterExecutor` facade; and
 - a Motoko canister profile exposed by `generate_motoko`, emitting operation-specific
   parameter/result declarations and a transport-neutral typed executor boundary; and
-- a standalone `gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister|motoko>` entrypoint that
-  writes to stdout or an explicit output path.
+- a standalone `gleaph-codegen` entrypoint that accepts either a local `--manifest <path>` or a
+  Router query source (`--canister <principal> --graph <name>`), and writes to stdout or an
+  explicit output path. Remote retrieval uses the Router's `prepared_manifest` query and
+  supports icp-cli-compatible `-n/--network` selection: `ic` is the default mainnet endpoint,
+  `local` selects `http://localhost:8000`, and custom URLs require `--fetch-root-key`.
 
 The generated TypeScript composes with the current `@gleaph/sdk` `GraphClient`, emits
 operation-specific parameter and row types, encodes semantic parameter values, and selects
@@ -321,8 +324,9 @@ boundary and is not the Router wire ABI.
 
 The Rust and Motoko canister profiles are intentionally runtime boundary scaffolds: a future
 `gleaph-cdk` adapter (or Motoko CDK equivalent) must implement Candid encoding, Router calls,
-response decoding, and error conversion. The Router manifest endpoint and accepted result-wire
-compatibility policy remain planned work.
+response decoding, and error conversion. The `prepared_manifest` query is implemented; accepted
+result-wire compatibility policy and authenticated identity selection for CLI retrieval remain
+outside this slice.
 
 ## Design documentation impact
 

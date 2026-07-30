@@ -1,5 +1,6 @@
 //! Command-line entrypoint for generating prepared-query client and canister adapters.
 
+use candid::{Decode, Encode, IDLValue, Principal};
 use gleaph_codegen::{
     generate_javascript, generate_motoko, generate_rust, generate_rust_canister,
     generate_typescript, parse_manifest,
@@ -9,13 +10,16 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+const DEFAULT_IC_URL: &str = "https://icp-api.io";
+const DEFAULT_LOCAL_URL: &str = "http://localhost:8000";
+
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("gleaph-codegen: {message}");
             eprintln!(
-                "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>]"
+                "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [-n <ic|local|url>] [--fetch-root-key]"
             );
             ExitCode::FAILURE
         }
@@ -24,6 +28,10 @@ fn main() -> ExitCode {
 
 fn run(args: Vec<String>) -> Result<(), String> {
     let mut manifest_path = None;
+    let mut canister = None;
+    let mut graph = None;
+    let mut network = "ic".to_string();
+    let mut fetch_root_key = false;
     let mut target = None;
     let mut output = None;
     let mut index = 0;
@@ -36,11 +44,19 @@ fn run(args: Vec<String>) -> Result<(), String> {
         };
         match flag.as_str() {
             "--manifest" => manifest_path = Some(PathBuf::from(value()?.clone())),
+            "--canister" => canister = Some(value()?.clone()),
+            "--graph" => graph = Some(value()?.clone()),
+            "-n" | "--network" => network = value()?.clone(),
+            "--fetch-root-key" => {
+                fetch_root_key = true;
+                index += 1;
+                continue;
+            }
             "--target" => target = Some(value()?.clone()),
             "--output" => output = Some(PathBuf::from(value()?.clone())),
             "-h" | "--help" => {
                 println!(
-                    "usage: gleaph-codegen --manifest <path> --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>]"
+                    "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [-n <ic|local|url>] [--fetch-root-key]"
                 );
                 return Ok(());
             }
@@ -49,7 +65,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
         index += 2;
     }
 
-    let manifest_path = manifest_path.ok_or("--manifest is required")?;
+    if manifest_path.is_some() && canister.is_some() {
+        return Err("--manifest and --canister are mutually exclusive".into());
+    }
+    if canister.is_some() != graph.is_some() {
+        return Err("--canister and --graph must be provided together".into());
+    }
     let target = target.ok_or("--target is required")?;
     if !matches!(
         target.as_str(),
@@ -67,8 +88,21 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "unsupported target {target:?}; expected typescript, javascript, rust, rust-canister, or motoko"
         ));
     }
-    let input = fs::read_to_string(&manifest_path)
-        .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
+    let input = if let Some(manifest_path) = manifest_path {
+        fs::read_to_string(&manifest_path)
+            .map_err(|error| format!("read {}: {error}", manifest_path.display()))?
+    } else if let Some(canister) = canister {
+        tokio::runtime::Runtime::new()
+            .map_err(|error| format!("create async runtime: {error}"))?
+            .block_on(fetch_manifest(
+                &canister,
+                &graph.expect("graph was validated"),
+                &network,
+                fetch_root_key,
+            ))?
+    } else {
+        return Err("one manifest source is required: --manifest or --canister/--graph".into());
+    };
     let manifest = parse_manifest(&input).map_err(|error| error.to_string())?;
     let generated = match target.as_str() {
         "typescript" | "ts" => generate_typescript(&manifest),
@@ -88,9 +122,71 @@ fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+async fn fetch_manifest(
+    canister: &str,
+    graph: &str,
+    network: &str,
+    fetch_root_key_flag: bool,
+) -> Result<String, String> {
+    let (url, fetch_root_key) = resolve_network(network, fetch_root_key_flag)?;
+    let canister_id = Principal::from_text(canister)
+        .map_err(|error| format!("invalid canister principal {canister:?}: {error}"))?;
+    let agent = ic_agent::Agent::builder()
+        .with_url(url)
+        .build()
+        .map_err(|error| format!("create IC agent: {error}"))?;
+    if fetch_root_key {
+        agent
+            .fetch_root_key()
+            .await
+            .map_err(|error| format!("fetch IC root key: {error}"))?;
+    }
+    let args =
+        Encode!(&graph.to_string()).map_err(|error| format!("encode graph name: {error}"))?;
+    let response = agent
+        .query(&canister_id, "prepared_manifest")
+        .with_arg(args)
+        .call()
+        .await
+        .map_err(|error| format!("query prepared_manifest: {error}"))?;
+    decode_manifest_response(&response)
+}
+
+fn resolve_network(network: &str, fetch_root_key_flag: bool) -> Result<(&str, bool), String> {
+    match network {
+        "ic" => Ok((DEFAULT_IC_URL, false)),
+        "local" => Ok((DEFAULT_LOCAL_URL, true)),
+        url if url.starts_with("http://") || url.starts_with("https://") => {
+            if !fetch_root_key_flag {
+                return Err(
+                    "a custom network URL requires --fetch-root-key (icp-cli --root-key fetch equivalent)"
+                        .into(),
+                );
+            }
+            Ok((url, true))
+        }
+        other => Err(format!(
+            "unknown network {other:?}; expected \"ic\", \"local\", or an http(s) URL"
+        )),
+    }
+}
+
+fn decode_manifest_response(response: &[u8]) -> Result<String, String> {
+    let result: Result<gleaph_prepared_api::PreparedManifest, IDLValue> =
+        Decode!(response, Result<gleaph_prepared_api::PreparedManifest, IDLValue>)
+            .map_err(|error| format!("decode prepared_manifest response: {error}"))?;
+    match result {
+        Ok(manifest) => serde_json::to_string(&manifest)
+            .map_err(|error| format!("serialize prepared manifest: {error}")),
+        Err(error) => Err(format!("Router rejected prepared_manifest: {error:?}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::run;
+    use candid::Encode;
+    use gleaph_prepared_api::{GraphIdentity, MANIFEST_VERSION, PreparedManifest};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -225,5 +321,72 @@ mod tests {
         .expect_err("unknown targets must fail before reading the manifest");
 
         assert!(error.contains("unsupported target \"swift\""));
+    }
+
+    #[test]
+    fn rejects_incomplete_remote_source() {
+        let error = run(vec![
+            "--canister".into(),
+            "aaaaa-aa".into(),
+            "--target".into(),
+            "typescript".into(),
+        ])
+        .expect_err("remote source requires a graph name");
+
+        assert_eq!(error, "--canister and --graph must be provided together");
+    }
+
+    #[test]
+    fn rejects_multiple_manifest_sources() {
+        let error = run(vec![
+            "--manifest".into(),
+            "manifest.json".into(),
+            "--canister".into(),
+            "aaaaa-aa".into(),
+            "--graph".into(),
+            "default".into(),
+            "--target".into(),
+            "typescript".into(),
+        ])
+        .expect_err("manifest sources must be mutually exclusive");
+
+        assert_eq!(error, "--manifest and --canister are mutually exclusive");
+    }
+
+    #[test]
+    fn decodes_router_manifest_response() {
+        let manifest = PreparedManifest {
+            manifest_version: MANIFEST_VERSION,
+            graph: GraphIdentity {
+                id: "default".into(),
+                name: None,
+            },
+            operations: Vec::new(),
+        };
+        let response = Encode!(&Result::<PreparedManifest, String>::Ok(manifest))
+            .expect("manifest response should encode");
+
+        let json = super::decode_manifest_response(&response).expect("manifest should decode");
+        assert!(json.contains("\"manifest_version\":1"));
+        assert!(json.contains("\"id\":\"default\""));
+    }
+
+    #[test]
+    fn resolves_icp_cli_network_names() {
+        assert_eq!(
+            super::resolve_network("ic", false).unwrap(),
+            (super::DEFAULT_IC_URL, false)
+        );
+        assert_eq!(
+            super::resolve_network("local", false).unwrap(),
+            (super::DEFAULT_LOCAL_URL, true)
+        );
+    }
+
+    #[test]
+    fn custom_network_url_requires_root_key_fetch() {
+        let error = super::resolve_network("http://127.0.0.1:8000", false)
+            .expect_err("custom networks must opt into fetched root keys");
+        assert!(error.contains("requires --fetch-root-key"));
     }
 }
