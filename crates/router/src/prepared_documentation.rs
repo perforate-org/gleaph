@@ -28,64 +28,47 @@ pub(crate) fn apply_to_operation(comments: &[DocComment], operation: &mut Prepar
     }
 }
 
-/// Validate typed GQL value bindings against the manifest parameter contract.
-pub(crate) fn validate_typed_parameters(
-    program: &GqlProgram,
-    operation: &PreparedOperation,
-) -> Result<(), String> {
-    let declarations = collect_typed_parameters(program)?;
-    for (name, (semantic_type, not_null)) in declarations {
-        let parameter = operation
-            .parameters
-            .iter()
-            .find(|parameter| parameter.name == name)
-            .ok_or_else(|| format!("typed GQL parameter {name:?} is missing from metadata"))?;
-        if parameter.semantic_type != semantic_type {
-            return Err(format!(
-                "typed GQL parameter {name:?} has type {:?}, metadata declares {:?}",
-                semantic_type, parameter.semantic_type
-            ));
-        }
-        if not_null && parameter.nullable {
-            return Err(format!(
-                "typed GQL parameter {name:?} is NOT NULL but metadata permits null"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Validate parameter types inferred from the active Graph Type/property schema.
-pub(crate) fn validate_inferred_parameters(
+/// Complete and validate parameter metadata declared or inferred by the GQL program.
+pub(crate) fn complete_parameter_metadata(
     program: &GqlProgram,
     schema: &dyn PropertySchema,
-    operation: &PreparedOperation,
+    operation: &mut PreparedOperation,
 ) -> Result<(), String> {
+    let declarations = collect_typed_parameters(program)?;
     let inferred = gleaph_gql::type_check::infer_parameter_types_with_schema(program, schema);
+    let mut parameters = declarations;
     for (name, ty) in inferred {
-        let Some(parameter) = operation
-            .parameters
-            .iter()
-            .find(|parameter| parameter.name == name)
-        else {
-            return Err(format!(
-                "schema-inferred GQL parameter {name:?} is missing from metadata"
-            ));
-        };
-        let Some((semantic_type, not_null)) = semantic_type_from_type(&ty) else {
+        let Some(inferred) = semantic_type_from_type(&ty) else {
             return Err(format!(
                 "schema-inferred GQL parameter {name:?} has unsupported type {ty:?}"
             ));
         };
+        parameters.entry(name).or_insert(inferred);
+    }
+    for (name, (semantic_type, not_null)) in parameters {
+        let Some(parameter) = operation
+            .parameters
+            .iter_mut()
+            .find(|parameter| parameter.name == name)
+        else {
+            operation.parameters.push(gleaph_prepared_api::Parameter {
+                name,
+                description: None,
+                required: true,
+                nullable: !not_null,
+                semantic_type,
+            });
+            continue;
+        };
         if parameter.semantic_type != semantic_type {
             return Err(format!(
-                "schema-inferred GQL parameter {name:?} has type {:?}, metadata declares {:?}",
+                "GQL parameter {name:?} has type {:?}, metadata declares {:?}",
                 semantic_type, parameter.semantic_type
             ));
         }
         if not_null && parameter.nullable {
             return Err(format!(
-                "schema-inferred GQL parameter {name:?} is non-null but metadata permits null"
+                "GQL parameter {name:?} is non-null but metadata permits null"
             ));
         }
     }
@@ -285,6 +268,7 @@ fn parse_comments(comments: &[DocComment]) -> Documentation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_gql::type_check::NoSchema;
     use gleaph_prepared_api::{OperationKind, Parameter, ResultSchema, SemanticType};
 
     fn operation() -> PreparedOperation {
@@ -380,9 +364,47 @@ mod tests {
                 .expect("typed value binding should parse");
         let mut operation = operation();
         operation.parameters[0].semantic_type = SemanticType::Text;
-        validate_typed_parameters(&program, &operation).expect("matching type should pass");
+        complete_parameter_metadata(&program, &NoSchema, &mut operation)
+            .expect("matching type should pass");
         operation.parameters[0].semantic_type = SemanticType::Int32;
-        let error = validate_typed_parameters(&program, &operation).expect_err("type mismatch");
-        assert!(error.contains("typed GQL parameter"));
+        let error = complete_parameter_metadata(&program, &NoSchema, &mut operation)
+            .expect_err("type mismatch");
+        assert!(error.contains("GQL parameter"));
+    }
+
+    #[test]
+    fn adds_schema_inferred_parameter_to_metadata() {
+        struct UserSchema;
+
+        impl PropertySchema for UserSchema {
+            fn node_property_types(&self, labels: &[String]) -> Vec<(String, ValueType, bool)> {
+                if labels.iter().any(|label| label == "User") {
+                    vec![(
+                        "age".into(),
+                        ValueType::Int32 {
+                            keyword: gleaph_gql::ast::Keyword::new("INT32"),
+                        },
+                        true,
+                    )]
+                } else {
+                    vec![]
+                }
+            }
+
+            fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
+                vec![]
+            }
+        }
+
+        let program = gleaph_gql::parser::parse("MATCH (u:User) WHERE u.age = $age RETURN u.age")
+            .expect("query should parse");
+        let mut operation = operation();
+        operation.parameters.clear();
+        complete_parameter_metadata(&program, &UserSchema, &mut operation)
+            .expect("schema inference should complete metadata");
+        assert_eq!(operation.parameters[0].name, "age");
+        assert_eq!(operation.parameters[0].semantic_type, SemanticType::Int32);
+        assert!(operation.parameters[0].required);
+        assert!(!operation.parameters[0].nullable);
     }
 }
