@@ -5251,11 +5251,7 @@ async fn execute_prepared_bulk_group_typed(
         loop {
             let remaining = total_rows.saturating_sub(offset);
             let upper = remaining.max(1);
-            let mut low = 1usize;
-            let mut high = upper;
-            let mut best = None;
-            while low <= high {
-                let mid = low + (high - low) / 2;
+            let best = largest_fitting_prefix(upper, |mid| {
                 let rows = if remaining == 0 {
                     Vec::new()
                 } else {
@@ -5275,33 +5271,27 @@ async fn execute_prepared_bulk_group_typed(
                         },
                     }],
                 };
-                match gleaph_gql_integration::typed_batch::build_and_validate_typed_batch_args(
-                    &probe,
-                    Some(base.resolved_labels.clone()),
-                    Some(base.resolved_properties.clone()),
-                    Some(base.indexed_properties.clone()),
-                    &base.indexed_embeddings,
-                    gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
-                ) {
-                    Ok(_) => {
-                        best = Some(mid);
-                        low = mid.saturating_add(1);
-                    }
-                    Err(_) => high = mid.saturating_sub(1),
-                }
-            }
+                Ok(
+                    gleaph_gql_integration::typed_batch::build_and_validate_typed_batch_args(
+                        &probe,
+                        Some(base.resolved_labels.clone()),
+                        Some(base.resolved_properties.clone()),
+                        Some(base.indexed_properties.clone()),
+                        &base.indexed_embeddings,
+                        gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
+                    )
+                    .is_ok(),
+                )
+            })?
+            .ok_or_else(|| {
+                RouterError::InvalidArgument(
+                    "a single complete-row seed does not fit the dynamic typed envelope".into(),
+                )
+            })?;
             let chunk_rows = if remaining == 0 {
                 Vec::new()
             } else {
-                relation.rows(
-                    offset,
-                    best.ok_or_else(|| {
-                        RouterError::InvalidArgument(
-                            "a single complete-row seed does not fit the dynamic typed envelope"
-                                .into(),
-                        )
-                    })?,
-                )?
+                relation.rows(offset, best)?
             };
             typed_operations.push(TypedBatchCandidateOp {
                 params_blob: params_blob.clone(),
@@ -5317,7 +5307,7 @@ async fn execute_prepared_bulk_group_typed(
             if remaining == 0 {
                 break;
             }
-            offset += best.expect("non-empty relation has a fitting chunk");
+            offset += best;
         }
         logical_operation_chunk_counts.push(chunk_count);
     }
@@ -5442,6 +5432,28 @@ async fn execute_prepared_bulk_group_typed(
 /// Chunk a bulk batch by the safe inter-canister payload size. All operations share the same
 /// plan blob; the dominant variable is the params blob per item. We keep full canister groups
 /// together when possible and split only when the encoded batch would exceed the safe limit.
+fn largest_fitting_prefix<E>(
+    length: usize,
+    mut fits: impl FnMut(usize) -> Result<bool, E>,
+) -> Result<Option<usize>, E> {
+    if length == 0 {
+        return Ok(None);
+    }
+    let mut low = 1;
+    let mut high = length;
+    let mut best = None;
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        if fits(mid)? {
+            best = Some(mid);
+            low = mid.saturating_add(1);
+        } else {
+            high = mid.saturating_sub(1);
+        }
+    }
+    Ok(best)
+}
+
 fn graph_batch_chunk_len_for_bulk(
     operations: &[ExecutePlanArgs],
     _group_len: usize,
@@ -5449,11 +5461,7 @@ fn graph_batch_chunk_len_for_bulk(
     if operations.is_empty() {
         return Ok(0);
     }
-    let mut low = 1;
-    let mut high = operations.len();
-    let mut best = 0;
-    while low <= high {
-        let count = low + (high - low) / 2;
+    let best = largest_fitting_prefix(operations.len(), |count| {
         let candidate = ExecutePlanBatchArgs {
             operations: operations[..count].to_vec(),
             mode: ExecutePlanBatchMode::Dynamic,
@@ -5461,18 +5469,13 @@ fn graph_batch_chunk_len_for_bulk(
         let encoded = Encode!(&candidate).map_err(|e| {
             RouterError::InvalidArgument(format!("bulk batch encode probe failed: {e}"))
         })?;
-        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            best = count;
-            low = count + 1;
-        } else {
-            high = count - 1;
-        }
-    }
-    if best == 0 {
+        Ok(encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES)
+    })?;
+    let Some(best) = best else {
         return Err(RouterError::InvalidArgument(
             "a single bulk operation exceeds the safe inter-canister payload limit".into(),
         ));
-    }
+    };
     Ok(best)
 }
 fn graph_batch_chunk_len_for_dispatches(
@@ -5482,32 +5485,22 @@ fn graph_batch_chunk_len_for_dispatches(
     if dispatches.is_empty() {
         return Ok(0);
     }
-    let mut low = 1;
-    let mut high = dispatches.len();
-    let mut best = 0;
-    while low <= high {
-        let count = low + (high - low) / 2;
+    let best = largest_fitting_prefix(dispatches.len(), |count| {
         let candidate = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
             operations: dispatches[..count].iter().map(build_execute_args).collect(),
             mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
         };
-        let Ok(encoded) = Encode!(&candidate) else {
-            high = count.saturating_sub(1);
-            continue;
-        };
-        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            best = count;
-            low = count + 1;
-        } else {
-            high = count.saturating_sub(1);
-        }
-    }
-    if best == 0 {
+        let encoded = Encode!(&candidate).map_err(|e| {
+            RouterError::InvalidArgument(format!("dispatch batch encode probe failed: {e}"))
+        })?;
+        Ok(encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES)
+    })?;
+    let Some(best) = best else {
         return Err(RouterError::InvalidArgument(format!(
             "single Graph batch operation exceeds the safe inter-canister request payload limit of {}",
             gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         )));
-    }
+    };
     let instr_limited = (gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS
         / gleaph_graph_kernel::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION)
         .try_into()
@@ -8933,5 +8926,26 @@ mod tests {
             result.rows_blob.is_none() && result.hot_forward_vertices.is_empty()
         }));
         assert!(super::aggregate_typed_wire_results(&wire_results, &[2, 2]).is_err());
+    }
+
+    #[test]
+    fn largest_fitting_prefix_is_shared_by_batch_bound_probes() {
+        assert_eq!(
+            super::largest_fitting_prefix(16, |count| Ok::<bool, ()>(count <= 5)),
+            Ok(Some(5))
+        );
+        assert_eq!(
+            super::largest_fitting_prefix(16, |_| Ok::<bool, ()>(false)),
+            Ok(None)
+        );
+        let error = super::largest_fitting_prefix(4, |count| {
+            if count == 2 {
+                Err("probe failed")
+            } else {
+                Ok(count == 1)
+            }
+        })
+        .expect_err("probe errors must be propagated");
+        assert_eq!(error, "probe failed");
     }
 }
