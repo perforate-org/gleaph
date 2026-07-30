@@ -546,7 +546,8 @@ mod tests {
         assert!(output.contains("pub struct PreparedCanisterQueries"));
         assert!(output.contains("use gleaph_cdk::GqlParams"));
         assert!(output.contains("fn execute_gql<'a, Row>"));
-        assert!(output.contains("execute_query::<FindUsersRow>"));
+        assert!(output.contains("pub fn into_gql_params(self) -> GqlParams"));
+        assert!(output.contains("execute_gql::<FindUsersRow>"));
         assert!(!output.contains("use serde::"));
         assert!(output.contains("gleaph_cdk::serde_json::Value"));
         assert!(!output.contains("use serde_json"));
@@ -574,6 +575,22 @@ mod tests {
         assert!(output.contains("pub quad: gleaph_cdk::GqlFloat128"));
         assert!(output.contains("pub oct: gleaph_cdk::GqlFloat256"));
         assert!(output.contains("#[serde(crate = \"gleaph_cdk::serde\")]"));
+    }
+
+    #[test]
+    fn keeps_unsupported_typed_params_on_raw_executor_boundary() {
+        let mut value = manifest();
+        value.operations[0].parameters[0].semantic_type = SemanticType::Record {
+            fields: vec![RecordField {
+                name: "term".into(),
+                semantic_type: SemanticType::Text,
+                nullable: false,
+            }],
+        };
+        let output = generate_rust_canister(&value).unwrap();
+        assert!(!output.contains("pub fn into_gql_params(self) -> GqlParams"));
+        assert!(output.contains("self.executor.execute_query::<FindUsersRow>"));
+        assert!(!output.contains("use gleaph_cdk::GqlValue;"));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use gleaph_cdk::GqlParams;
+use gleaph_cdk::GqlValue;
 use gleaph_cdk::serde::de::DeserializeOwned;
 use gleaph_cdk::serde::{Deserialize, Serialize};
 
@@ -23,6 +24,14 @@ pub trait PreparedCanisterExecutor {
 
     fn encode_params<T: Serialize>(&self, params: &T) -> Result<Vec<u8>, Self::Error>;
 
+    fn execute_gql<'a, Row>(
+        &'a self,
+        name: &'static str,
+        params: GqlParams,
+    ) -> Pin<Box<dyn Future<Output = Result<PreparedCanisterResponse<Row>, Self::Error>> + 'a>>
+    where
+        Row: DeserializeOwned + 'a;
+
     fn execute_query<'a, Row>(
         &'a self,
         name: &'static str,
@@ -37,6 +46,12 @@ pub trait PreparedCanisterExecutor {
 pub struct FindUsersParams {
     #[serde(rename = "limit")]
     pub limit: u64,
+}
+
+impl FindUsersParams {
+    pub fn into_gql_params(self) -> GqlParams {
+        vec![("limit".to_string(), GqlValue::Uint64(self.limit))]
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,8 +76,9 @@ impl<'a, E: PreparedCanisterExecutor> PreparedCanisterQueries<'a, E> {
         &self,
         params: FindUsersParams,
     ) -> Result<PreparedCanisterResponse<FindUsersRow>, E::Error> {
-        let params = self.executor.encode_params(&params)?;
-        self.executor.execute_query::<FindUsersRow>("find-users", params).await
+        self.executor
+            .execute_gql::<FindUsersRow>("find-users", params.into_gql_params())
+            .await
     }
 }
 
