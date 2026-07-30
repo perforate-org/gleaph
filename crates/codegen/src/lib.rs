@@ -323,6 +323,8 @@ mod tests {
         assert!(output.contains("export interface FindUsersParams"));
         assert!(output.contains("client.executePrepared(\"find-users\""));
         assert!(output.contains("fromApiValue(row[\"user_name\"])"));
+        assert!(!output.contains("PreparedSortSpec"));
+        assert!(!output.contains("ApiPathElement"));
         assert!(!output.contains("ic-agent"));
     }
 
@@ -333,6 +335,25 @@ mod tests {
         assert!(output.contains("client.executePrepared(\"find-users\""));
         assert!(!output.contains("interface FindUsersParams"));
         assert!(!output.contains(" as const"));
+    }
+
+    #[test]
+    fn typescript_imports_follow_manifest_usage() {
+        let mut value = manifest();
+        let plain = generate_typescript(&value).unwrap();
+        assert!(!plain.contains("PreparedSortSpec"));
+        assert!(!plain.contains("ApiPathElement"));
+
+        value.operations[0].allowed_sorts.push(SortKey {
+            key: "user_name".into(),
+            label: None,
+        });
+        value.operations[0].parameters[0].semantic_type = SemanticType::List {
+            element: Box::new(SemanticType::Path),
+        };
+        let used = generate_typescript(&value).unwrap();
+        assert!(used.contains("PreparedSortSpec"));
+        assert!(used.contains("ApiPathElement"));
     }
 
     #[test]

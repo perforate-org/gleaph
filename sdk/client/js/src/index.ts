@@ -15,6 +15,7 @@ export type {
   ApiTypeDiagnostic,
   ApiUseGraphPushdownInfo,
   ApiValue,
+  ApiPathElement,
   PreparedOptions,
   PreparedSortKey,
   PreparedSortSpec,

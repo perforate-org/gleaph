@@ -1,0 +1,28 @@
+{
+  "manifest_version": 1,
+  "graph": { "id": "fixture-graph", "name": null },
+  "operations": [
+    {
+      "name": "find-users",
+      "description": "Find users by their search term.",
+      "kind": "Query",
+      "parameters": [
+        {
+          "name": "term",
+          "description": "Text to search for.",
+          "required": true,
+          "nullable": false,
+          "type": "Text"
+        }
+      ],
+      "result": {
+        "columns": [
+          { "name": "user_name", "type": "Text", "nullable": false }
+        ]
+      },
+      "supports_consistency": false,
+      "supports_idempotency": false,
+      "allowed_sorts": []
+    }
+  ]
+}
