@@ -156,6 +156,32 @@ mod tests {
     }
 
     #[test]
+    fn generates_rust_client_fixture() {
+        let fixture_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/rust-client-basic");
+        let output = temporary_output_path();
+
+        run(vec![
+            "--manifest".into(),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("fixtures/typescript-basic/manifest.json")
+                .to_string_lossy()
+                .into_owned(),
+            "--target".into(),
+            "rust".into(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+        ])
+        .expect("CLI should generate the Rust client fixture");
+
+        let generated = fs::read_to_string(&output).expect("CLI should write the output file");
+        let expected = fs::read_to_string(fixture_dir.join("src/lib.rs"))
+            .expect("Rust client fixture should exist");
+        assert_eq!(generated, expected);
+        fs::remove_file(output).expect("temporary output should be removable");
+    }
+
+    #[test]
     fn rejects_unknown_target() {
         let error = run(vec![
             "--manifest".into(),
