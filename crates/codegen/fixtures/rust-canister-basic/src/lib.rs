@@ -108,6 +108,32 @@ pub struct FindUsersRow {
     pub score: gleaph_cdk::GqlFloat256,
 }
 
+impl gleaph_cdk::FromGqlRow for FindUsersRow {
+    fn from_gql_row(
+        mut row: gleaph_cdk::GqlRow,
+    ) -> Result<Self, gleaph_cdk::GqlWireDecodeError> {
+        let user_name = {
+            let value = gleaph_cdk::take_gql_row_field(&mut row, "user_name")?;
+            match value {
+                GqlValue::Text(value) => value,
+                _ => {
+                    return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch("Text"));
+                }
+            }
+        };
+        let score = {
+            let value = gleaph_cdk::take_gql_row_field(&mut row, "score")?;
+            match value {
+                GqlValue::Float256(value) => gleaph_cdk::GqlFloat256::from_inner(value),
+                _ => {
+                    return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch("Float256"));
+                }
+            }
+        };
+        Ok(Self { user_name, score })
+    }
+}
+
 pub struct PreparedCanisterQueries<'a, E: PreparedCanisterExecutor> {
     executor: &'a E,
 }

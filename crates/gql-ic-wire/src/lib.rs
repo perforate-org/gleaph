@@ -176,6 +176,15 @@ pub enum GqlWireDecodeError {
     /// A wire value contains an invalid textual numeric representation.
     #[error("invalid GQL wire numeric value: {0}")]
     InvalidNumeric(&'static str),
+    /// A typed row did not contain a requested column.
+    #[error("missing GQL row field: {0}")]
+    MissingField(String),
+    /// A typed row contained the same column more than once.
+    #[error("duplicate GQL row field: {0}")]
+    DuplicateField(String),
+    /// A typed row field contained a different logical GQL value variant.
+    #[error("GQL row field has the wrong type; expected {0}")]
+    TypeMismatch(&'static str),
 }
 
 /// Decode the opaque `rows_blob` carried by a Router response.

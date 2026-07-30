@@ -555,6 +555,14 @@ mod tests {
     }
 
     #[test]
+    fn generates_typed_row_adapter_for_scalar_results() {
+        let output = generate_rust_canister(&manifest()).unwrap();
+        assert!(output.contains("impl gleaph_cdk::FromGqlRow for FindUsersRow"));
+        assert!(output.contains("take_gql_row_field(&mut row, \"user_name\")"));
+        assert!(output.contains("GqlValue::Text(value) => value"));
+    }
+
+    #[test]
     fn generates_cdk_float_types_for_rust_canister_profile() {
         let mut value = manifest();
         value.operations[0].parameters = vec![

@@ -136,6 +136,40 @@ fn generate_ir(ir: &CodegenIr) -> String {
             ));
         }
         out.push_str("}\n\n");
+        if operation
+            .result
+            .columns
+            .iter()
+            .all(|column| row_value_expression(&column.semantic_type).is_some())
+        {
+            out.push_str(&format!(
+                "impl gleaph_cdk::FromGqlRow for {}Row {{\n    fn from_gql_row(mut row: gleaph_cdk::GqlRow) -> Result<Self, gleaph_cdk::GqlWireDecodeError> {{\n",
+                type_name
+            ));
+            for column in &operation.result.columns {
+                let field = rust_field(&column.name);
+                let value = row_value_expression(&column.semantic_type)
+                    .expect("row conversion was checked before rendering");
+                let value = if column.nullable {
+                    format!(
+                        "match gleaph_cdk::take_gql_row_field(&mut row, {:?})? {{ gleaph_cdk::GqlValue::Null => None, value => Some({value}) }}",
+                        column.name
+                    )
+                } else {
+                    format!(
+                        "{{ let value = gleaph_cdk::take_gql_row_field(&mut row, {:?})?; {value} }}",
+                        column.name
+                    )
+                };
+                out.push_str(&format!("        let {field} = {value};\n"));
+            }
+            out.push_str("        Ok(Self {\n");
+            for column in &operation.result.columns {
+                let field = rust_field(&column.name);
+                out.push_str(&format!("            {field},\n"));
+            }
+            out.push_str("        })\n    }\n}\n\n");
+        }
     }
 
     out.push_str(
@@ -267,6 +301,73 @@ fn gql_value_expression(access: &str, semantic_type: &crate::SemanticType) -> Op
         }
     };
     Some(value)
+}
+
+fn row_value_expression(semantic_type: &crate::SemanticType) -> Option<String> {
+    let value = match semantic_type {
+        crate::SemanticType::Bool => {
+            "match value { GqlValue::Bool(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Bool\")) }"
+        }
+        crate::SemanticType::Int8 => {
+            "match value { GqlValue::Int8(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Int8\")) }"
+        }
+        crate::SemanticType::Int16 => {
+            "match value { GqlValue::Int16(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Int16\")) }"
+        }
+        crate::SemanticType::Int32 => {
+            "match value { GqlValue::Int32(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Int32\")) }"
+        }
+        crate::SemanticType::Int64 => {
+            "match value { GqlValue::Int64(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Int64\")) }"
+        }
+        crate::SemanticType::Uint8 => {
+            "match value { GqlValue::Uint8(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Uint8\")) }"
+        }
+        crate::SemanticType::Uint16 => {
+            "match value { GqlValue::Uint16(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Uint16\")) }"
+        }
+        crate::SemanticType::Uint32 => {
+            "match value { GqlValue::Uint32(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Uint32\")) }"
+        }
+        crate::SemanticType::Uint64 => {
+            "match value { GqlValue::Uint64(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Uint64\")) }"
+        }
+        crate::SemanticType::Int128 => {
+            "match value { GqlValue::Int128(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Int128\")) }"
+        }
+        crate::SemanticType::Uint128 => {
+            "match value { GqlValue::Uint128(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Uint128\")) }"
+        }
+        crate::SemanticType::Int256 => {
+            "match value { GqlValue::Int256(value) => gleaph_cdk::GqlInt256::from_inner(value), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Int256\")) }"
+        }
+        crate::SemanticType::Uint256 => {
+            "match value { GqlValue::Uint256(value) => gleaph_cdk::GqlUint256::from_inner(value), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Uint256\")) }"
+        }
+        crate::SemanticType::Float16 => {
+            "match value { GqlValue::Float16(value) => gleaph_cdk::GqlFloat16::from_bits(value.to_bits()), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Float16\")) }"
+        }
+        crate::SemanticType::Float32 => {
+            "match value { GqlValue::Float32(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Float32\")) }"
+        }
+        crate::SemanticType::Float64 => {
+            "match value { GqlValue::Float64(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Float64\")) }"
+        }
+        crate::SemanticType::Float256 => {
+            "match value { GqlValue::Float256(value) => gleaph_cdk::GqlFloat256::from_inner(value), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Float256\")) }"
+        }
+        crate::SemanticType::Decimal => {
+            "match value { GqlValue::Decimal(value) => gleaph_cdk::GqlDecimal::from_inner(value), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Decimal\")) }"
+        }
+        crate::SemanticType::Text => {
+            "match value { GqlValue::Text(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Text\")) }"
+        }
+        crate::SemanticType::Bytes => {
+            "match value { GqlValue::Bytes(value) => value, _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Bytes\")) }"
+        }
+        _ => return None,
+    };
+    Some(value.to_string())
 }
 
 fn runtime_types() -> &'static str {

@@ -25,6 +25,18 @@ pub fn gql_principal_value(principal: GqlPrincipal) -> GqlValue {
     GqlValue::Extension(Box::new(principal))
 }
 
+/// Extract an IC Principal extension from a logical GQL value.
+pub fn gql_principal_from_value(value: GqlValue) -> Result<GqlPrincipal, GqlWireDecodeError> {
+    match value {
+        GqlValue::Extension(value) => value
+            .as_any()
+            .downcast_ref::<GqlPrincipal>()
+            .copied()
+            .ok_or(GqlWireDecodeError::TypeMismatch("Principal")),
+        _ => Err(GqlWireDecodeError::TypeMismatch("Principal")),
+    }
+}
+
 /// Rust signed binary256 integer used by generated canister bindings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GqlInt256(gleaph_gql::types::Int256);
@@ -333,6 +345,28 @@ pub type GqlParams = GqlRecord;
 /// One GQL result row.
 pub type GqlRow = GqlRecord;
 
+/// Convert one logical GQL result row into a generated Rust row type.
+pub trait FromGqlRow: Sized {
+    /// Convert an ordered logical GQL record into this typed row.
+    fn from_gql_row(row: GqlRow) -> Result<Self, GqlWireDecodeError>;
+}
+
+/// Remove one named field from an ordered logical GQL row.
+pub fn take_gql_row_field(row: &mut GqlRow, name: &str) -> Result<GqlValue, GqlWireDecodeError> {
+    let mut found = None;
+    for (index, (field_name, _)) in row.iter().enumerate() {
+        if field_name == name {
+            if found.is_some() {
+                return Err(GqlWireDecodeError::DuplicateField(name.to_string()));
+            }
+            found = Some(index);
+        }
+    }
+    found
+        .map(|index| row.remove(index).1)
+        .ok_or_else(|| GqlWireDecodeError::MissingField(name.to_string()))
+}
+
 /// Path element in a logical GQL value.
 pub use gleaph_gql::types::PathElement as GqlPathElement;
 pub use gleaph_gql_ic_wire::{
@@ -368,6 +402,20 @@ impl GqlResponse {
     /// Decode materialized rows using the lightweight public IC wire codec.
     pub fn decode_rows(&self) -> Result<Option<GqlWireRows>, GqlWireDecodeError> {
         self.rows_blob.as_deref().map(decode_rows_blob).transpose()
+    }
+
+    /// Decode materialized rows directly into generated Rust row types.
+    pub fn decode_typed_rows<Row: FromGqlRow>(
+        &self,
+    ) -> Result<Option<Vec<Row>>, GqlWireDecodeError> {
+        self.decode_rows()?
+            .map(|rows| {
+                rows.rows
+                    .into_iter()
+                    .map(|row| Row::from_gql_row(row.try_into_gql_row()?))
+                    .collect()
+            })
+            .transpose()
     }
 }
 
@@ -666,6 +714,50 @@ mod tests {
             rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
         };
         assert_eq!(response.decode_rows().unwrap(), Some(rows));
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct TypedRow {
+        name: String,
+    }
+
+    impl FromGqlRow for TypedRow {
+        fn from_gql_row(mut row: GqlRow) -> Result<Self, GqlWireDecodeError> {
+            let value = take_gql_row_field(&mut row, "name")?;
+            match value {
+                GqlValue::Text(name) => Ok(Self { name }),
+                _ => Err(GqlWireDecodeError::TypeMismatch("Text")),
+            }
+        }
+    }
+
+    #[test]
+    fn gql_response_decodes_typed_rows() {
+        let rows = GqlWireRows {
+            rows: vec![GqlWireRow {
+                columns: vec![("name".into(), GqlWireValue::Text("Ada".into()))],
+            }],
+        };
+        let response = GqlResponse {
+            row_count: 1,
+            rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
+        };
+        assert_eq!(
+            response.decode_typed_rows::<TypedRow>().unwrap(),
+            Some(vec![TypedRow { name: "Ada".into() }])
+        );
+    }
+
+    #[test]
+    fn duplicate_typed_row_fields_are_rejected() {
+        let mut row = vec![
+            ("name".into(), GqlValue::Text("Ada".into())),
+            ("name".into(), GqlValue::Text("Grace".into())),
+        ];
+        assert_eq!(
+            take_gql_row_field(&mut row, "name"),
+            Err(GqlWireDecodeError::DuplicateField("name".into()))
+        );
     }
 
     #[derive(serde::Deserialize, serde::Serialize)]
