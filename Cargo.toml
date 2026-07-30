@@ -5,6 +5,7 @@ members = [
     "crates/gql",
     "crates/gql-integration",
     "crates/gql-ic",
+    "crates/gql-ic-wire",
     "crates/gql-keywords",
     "crates/gql-macros",
     "crates/gql-planner",
@@ -39,6 +40,7 @@ gleaph-gql = { path = "crates/gql" }
 gleaph-gql-integration = { path = "crates/gql-integration" }
 gleaph-gql-keywords = { path = "crates/gql-keywords" }
 gleaph-gql-ic = { path = "crates/gql-ic" }
+gleaph-gql-ic-wire = { path = "crates/gql-ic-wire" }
 gleaph-gql-planner = { path = "crates/gql-planner" }
 gleaph-graph-catalog = { path = "crates/graph-catalog" }
 gleaph-graph-index = { path = "crates/graph-index" }

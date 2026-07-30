@@ -1,0 +1,11 @@
+[package]
+name = "gleaph-gql-ic-wire"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Lightweight Candid wire types for GQL query rows"
+
+[dependencies]
+candid.workspace = true
+serde.workspace = true
+thiserror.workspace = true

@@ -30,6 +30,9 @@ pub type GqlRow = GqlRecord;
 
 /// Path element in a logical GQL value.
 pub use gleaph_gql::types::PathElement as GqlPathElement;
+pub use gleaph_gql_ic_wire::{
+    GqlWireDecodeError, GqlWirePathElement, GqlWireRow, GqlWireRows, GqlWireValue, decode_rows_blob,
+};
 
 /// Error returned when logical GQL parameters cannot be compact-binary encoded.
 pub type GqlEncodingError = gleaph_gql::ValueBinaryError;
@@ -55,6 +58,11 @@ impl GqlResponse {
     /// Return the materialized rows blob, if the query produced one.
     pub fn rows_blob(&self) -> Option<&[u8]> {
         self.rows_blob.as_deref()
+    }
+
+    /// Decode materialized rows using the lightweight public IC wire codec.
+    pub fn decode_rows(&self) -> Result<Option<GqlWireRows>, GqlWireDecodeError> {
+        self.rows_blob.as_deref().map(decode_rows_blob).transpose()
     }
 }
 
@@ -339,5 +347,19 @@ mod tests {
         let decoded: GqlResponse = candid::decode_one(&bytes).expect("decode response");
         assert_eq!(decoded, response);
         assert_eq!(decoded.rows_blob(), Some(&[1, 2, 3][..]));
+    }
+
+    #[test]
+    fn gql_response_decodes_wire_rows() {
+        let rows = GqlWireRows {
+            rows: vec![GqlWireRow {
+                columns: vec![("name".into(), GqlWireValue::Text("Ada".into()))],
+            }],
+        };
+        let response = GqlResponse {
+            row_count: 1,
+            rows_blob: Some(candid::encode_one(&rows).expect("encode rows")),
+        };
+        assert_eq!(response.decode_rows().unwrap(), Some(rows));
     }
 }
