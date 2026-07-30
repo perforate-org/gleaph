@@ -695,7 +695,7 @@ impl TypedSeedBulkReplayV1 {
         let chunk_counts = self
             .logical_operation_chunk_counts
             .as_deref()
-            .unwrap_or_else(|| &[]);
+            .unwrap_or(&[]);
         if self.logical_operation_chunk_counts.is_some()
             && chunk_counts.len() != self.total_ops as usize
         {
@@ -703,7 +703,7 @@ impl TypedSeedBulkReplayV1 {
                 "typed bulk logical operation chunk mapping must equal total_ops".into(),
             ));
         }
-        if chunk_counts.iter().any(|&count| count == 0) {
+        if chunk_counts.contains(&0) {
             return Err(RouterError::InvalidArgument(
                 "typed bulk logical operations must have at least one wire chunk".into(),
             ));
