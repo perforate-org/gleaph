@@ -239,8 +239,10 @@ The following points are intentionally not resolved by this proposed ADR:
    generated code or expose a concrete `ic-agent` implementation first?
 6. **Generated composition:** Is the primary generated API `withPreparedQueries(client)`, a
    manifest-specific Rust trait/facade, or another composition mechanism?
-7. **Compatibility policy:** Which runtime and manifest versions may be combined, and does
-   generation fail closed when the versions are unsupported?
+7. **Compatibility policy:** Once the API is released, which runtime and manifest versions may
+   be combined, and does generation fail closed when the versions are unsupported? Until then,
+   manifest version `1` remains the development contract and may receive destructive changes
+   without a compatibility layer or a version-number increment.
 
 These decisions are required before changing the Router public API or declaring the manifest ABI
 accepted. They do not block recording the boundary and scope decisions in this proposed ADR.

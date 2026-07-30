@@ -281,14 +281,14 @@ mod tests {
     }
 
     #[test]
-    fn exact_manifest_schema_uses_version_two() {
-        assert_eq!(MANIFEST_VERSION, 2);
+    fn exact_manifest_schema_uses_version_one() {
+        assert_eq!(MANIFEST_VERSION, 1);
 
         let mut value = manifest();
-        value.manifest_version = 1;
+        value.manifest_version = 2;
         assert_eq!(
             validate_manifest(&value),
-            Err(ManifestError::UnsupportedVersion(1))
+            Err(ManifestError::UnsupportedVersion(2))
         );
     }
 

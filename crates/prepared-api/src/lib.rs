@@ -9,7 +9,7 @@ use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
 /// Version of the prepared-query metadata contract.
-pub const MANIFEST_VERSION: u32 = 2;
+pub const MANIFEST_VERSION: u32 = 1;
 
 /// A graph-scoped prepared-query metadata snapshot.
 #[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq)]
