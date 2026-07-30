@@ -4,11 +4,12 @@
 //! only profile-specific runtime wrappers and value projection.
 
 use crate::common::{encode_expression, json_string, ts_property};
+use crate::ir::normalize_manifest;
 use crate::{ManifestError, OperationKind, PreparedManifest};
 
 /// Generate a JavaScript prepared adapter over the existing SDK GraphClient.
 pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, ManifestError> {
-    let ir = manifest.normalize()?;
+    let ir = normalize_manifest(manifest)?;
     for operation_ir in &ir.operations {
         let operation = &operation_ir.operation;
         if operation.supports_consistency {

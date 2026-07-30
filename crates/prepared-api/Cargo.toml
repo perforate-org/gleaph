@@ -1,0 +1,10 @@
+[package]
+name = "gleaph-prepared-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared wire contract for Gleaph prepared-query metadata"
+
+[dependencies]
+candid.workspace = true
+serde.workspace = true

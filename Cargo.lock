@@ -1216,6 +1216,7 @@ dependencies = [
 name = "gleaph-codegen"
 version = "0.1.0"
 dependencies = [
+ "gleaph-prepared-api",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1434,6 +1435,14 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "gleaph-prepared-api"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "serde",
 ]
 
 [[package]]

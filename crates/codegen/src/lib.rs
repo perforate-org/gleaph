@@ -19,203 +19,12 @@ pub use rust::generate_rust;
 pub use rust_canister::generate_rust_canister;
 pub use typescript::generate_typescript;
 
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-/// The manifest format understood by this crate.
-pub const MANIFEST_VERSION: u32 = 2;
-
-/// A graph-scoped prepared-query metadata snapshot.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct PreparedManifest {
-    /// Version of the manifest wire shape.
-    pub manifest_version: u32,
-    /// Identity metadata for the logical graph described by this snapshot.
-    pub graph: GraphIdentity,
-    /// Prepared operations available in the snapshot.
-    pub operations: Vec<PreparedOperation>,
-}
-
-/// Stable identity metadata for a logical graph.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct GraphIdentity {
-    /// Stable graph identifier used by the Router.
-    pub id: String,
-    /// Optional human-readable graph name.
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
-/// Execution mode of a prepared operation.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum OperationKind {
-    /// Read-only prepared operation.
-    Query,
-    /// Mutating prepared operation.
-    Update,
-}
-
-/// Metadata for one generated prepared operation.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct PreparedOperation {
-    /// Operation name as exposed by the Router.
-    pub name: String,
-    /// Whether the operation is read-only or mutating.
-    pub kind: OperationKind,
-    /// Input parameters accepted by the operation.
-    #[serde(default)]
-    pub parameters: Vec<Parameter>,
-    /// Row schema returned by the operation.
-    pub result: ResultSchema,
-    /// Whether the operation accepts a consistency option.
-    #[serde(default)]
-    pub supports_consistency: bool,
-    /// Whether the operation accepts an idempotency option.
-    #[serde(default)]
-    pub supports_idempotency: bool,
-    /// Sort keys accepted by the operation.
-    #[serde(default)]
-    pub allowed_sorts: Vec<SortKey>,
-}
-
-/// Input parameter metadata for a prepared operation.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Parameter {
-    /// Parameter name used in the operation's wire representation.
-    pub name: String,
-    /// Whether callers must provide this parameter.
-    pub required: bool,
-    /// Whether the parameter may explicitly contain null.
-    #[serde(default)]
-    pub nullable: bool,
-    /// Language-neutral semantic type of the parameter.
-    #[serde(rename = "type")]
-    pub semantic_type: SemanticType,
-}
-
-/// Row schema returned by a prepared operation.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct ResultSchema {
-    /// Columns in their returned order.
-    pub columns: Vec<Column>,
-}
-
-/// One column in a prepared operation's result row.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Column {
-    /// Column name in the operation's wire representation.
-    pub name: String,
-    /// Language-neutral semantic type of the column.
-    #[serde(rename = "type")]
-    pub semantic_type: SemanticType,
-    /// Whether the column may contain null.
-    #[serde(default)]
-    pub nullable: bool,
-}
-
-/// A caller-selectable sort key for a prepared operation.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct SortKey {
-    /// Stable sort-key identifier sent to the Router.
-    pub key: String,
-    /// Optional human-readable label for the generated client.
-    #[serde(default)]
-    pub label: Option<String>,
-}
-
-/// Language-neutral type supported by the manifest profiles.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum SemanticType {
-    /// The null type.
-    Null,
-    /// A boolean value.
-    Bool,
-    /// A signed 8-bit integer.
-    Int8,
-    /// A signed 16-bit integer.
-    Int16,
-    /// A signed 32-bit integer.
-    Int32,
-    /// A signed 64-bit integer.
-    Int64,
-    /// An unsigned 8-bit integer.
-    Uint8,
-    /// An unsigned 16-bit integer.
-    Uint16,
-    /// An unsigned 32-bit integer.
-    Uint32,
-    /// An unsigned 64-bit integer.
-    Uint64,
-    /// A signed 128-bit integer.
-    Int128,
-    /// An unsigned 128-bit integer.
-    Uint128,
-    /// A signed 256-bit integer.
-    Int256,
-    /// An unsigned 256-bit integer.
-    Uint256,
-    /// An IEEE 754 binary16 bit pattern.
-    Float16,
-    /// An IEEE 754 32-bit floating-point value.
-    Float32,
-    /// An IEEE 754 64-bit floating-point value.
-    Float64,
-    /// Canonical IEEE 754 binary128 bytes.
-    Float128,
-    /// Canonical IEEE 754 binary256 bytes.
-    Float256,
-    /// A decimal value represented by the runtime.
-    Decimal,
-    /// A UTF-8 text value.
-    Text,
-    /// An arbitrary byte sequence.
-    Bytes,
-    /// A calendar date.
-    Date,
-    /// A time value.
-    Time,
-    /// An Internet Computer principal.
-    Principal,
-    /// Nanoseconds since midnight in UTC.
-    LocalTime,
-    /// UTC date-time represented as seconds and nanoseconds.
-    DateTime,
-    /// Time-zone-free local date-time represented as seconds and nanoseconds.
-    LocalDateTime,
-    /// Date-time with an explicit UTC offset.
-    ZonedDateTime,
-    /// Time with an explicit UTC offset.
-    ZonedTime,
-    /// ISO-8601 duration represented as months and nanoseconds.
-    Duration,
-    /// A homogeneous list of values.
-    List {
-        /// Type of each list element.
-        element: Box<SemanticType>,
-    },
-    /// A named-field record.
-    Record {
-        /// Fields in their wire order.
-        fields: Vec<RecordField>,
-    },
-    /// A path consisting of vertex and edge identifiers.
-    Path,
-}
-
-/// A field in a semantic record.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct RecordField {
-    /// Field name in the wire representation.
-    pub name: String,
-    /// Field semantic type.
-    #[serde(rename = "type")]
-    pub semantic_type: SemanticType,
-    /// Whether the field may contain null.
-    #[serde(default)]
-    pub nullable: bool,
-}
+pub use gleaph_prepared_api::{
+    Column, GraphIdentity, MANIFEST_VERSION, OperationKind, Parameter, PreparedManifest,
+    PreparedOperation, RecordField, ResultSchema, SemanticType, SortKey,
+};
 
 /// Validation or profile error encountered while loading a manifest.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -303,108 +112,106 @@ pub enum ManifestError {
     },
 }
 
-impl PreparedManifest {
-    /// Parse and validate a local manifest snapshot.
-    pub fn from_json(input: &str) -> Result<Self, ManifestError> {
-        let manifest: Self =
-            serde_json::from_str(input).map_err(|e| ManifestError::Json(e.to_string()))?;
-        manifest.validate()?;
-        Ok(manifest)
+/// Parse and validate a local manifest snapshot.
+pub fn parse_manifest(input: &str) -> Result<PreparedManifest, ManifestError> {
+    let manifest: PreparedManifest =
+        serde_json::from_str(input).map_err(|e| ManifestError::Json(e.to_string()))?;
+    validate_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+/// Validate the manifest before it reaches a renderer.
+pub fn validate_manifest(manifest: &PreparedManifest) -> Result<(), ManifestError> {
+    if manifest.manifest_version != MANIFEST_VERSION {
+        return Err(ManifestError::UnsupportedVersion(manifest.manifest_version));
+    }
+    if manifest.graph.id.trim().is_empty() {
+        return Err(ManifestError::EmptyGraphId);
+    }
+    if manifest.operations.is_empty() {
+        return Err(ManifestError::EmptyOperations);
     }
 
-    /// Validate the manifest before it reaches a renderer.
-    pub fn validate(&self) -> Result<(), ManifestError> {
-        if self.manifest_version != MANIFEST_VERSION {
-            return Err(ManifestError::UnsupportedVersion(self.manifest_version));
+    let mut operation_names = BTreeSet::new();
+    let mut generated_names: Vec<(String, String)> = Vec::new();
+    for operation in &manifest.operations {
+        if operation.name.trim().is_empty() {
+            return Err(ManifestError::EmptyOperationName);
         }
-        if self.graph.id.trim().is_empty() {
-            return Err(ManifestError::EmptyGraphId);
+        if !operation_names.insert(&operation.name) {
+            return Err(ManifestError::DuplicateOperation(operation.name.clone()));
         }
-        if self.operations.is_empty() {
-            return Err(ManifestError::EmptyOperations);
+        let generated_name = common::pascal_case(&operation.name);
+        if let Some(first) = generated_names
+            .iter()
+            .find(|(name, _)| *name == generated_name)
+        {
+            return Err(ManifestError::DuplicateGeneratedIdentifier {
+                first: first.1.clone(),
+                second: operation.name.clone(),
+            });
+        }
+        generated_names.push((generated_name, operation.name.clone()));
+        if operation.supports_idempotency && operation.kind != OperationKind::Update {
+            return Err(ManifestError::IdempotencyOnQuery(operation.name.clone()));
         }
 
-        let mut operation_names = BTreeSet::new();
-        let mut generated_names: Vec<(String, String)> = Vec::new();
-        for operation in &self.operations {
-            if operation.name.trim().is_empty() {
-                return Err(ManifestError::EmptyOperationName);
+        let mut parameter_names = BTreeSet::new();
+        for parameter in &operation.parameters {
+            if parameter.name.trim().is_empty() {
+                return Err(ManifestError::EmptyParameterName(operation.name.clone()));
             }
-            if !operation_names.insert(&operation.name) {
-                return Err(ManifestError::DuplicateOperation(operation.name.clone()));
-            }
-            let generated_name = common::pascal_case(&operation.name);
-            if let Some(first) = generated_names
-                .iter()
-                .find(|(name, _)| *name == generated_name)
-            {
-                return Err(ManifestError::DuplicateGeneratedIdentifier {
-                    first: first.1.clone(),
-                    second: operation.name.clone(),
+            if !parameter_names.insert(&parameter.name) {
+                return Err(ManifestError::DuplicateParameter {
+                    operation: operation.name.clone(),
+                    parameter: parameter.name.clone(),
                 });
             }
-            generated_names.push((generated_name, operation.name.clone()));
-            if operation.supports_idempotency && operation.kind != OperationKind::Update {
-                return Err(ManifestError::IdempotencyOnQuery(operation.name.clone()));
-            }
+        }
 
-            let mut parameter_names = BTreeSet::new();
-            for parameter in &operation.parameters {
-                if parameter.name.trim().is_empty() {
-                    return Err(ManifestError::EmptyParameterName(operation.name.clone()));
-                }
-                if !parameter_names.insert(&parameter.name) {
-                    return Err(ManifestError::DuplicateParameter {
-                        operation: operation.name.clone(),
-                        parameter: parameter.name.clone(),
-                    });
-                }
+        let mut column_names = BTreeSet::new();
+        for column in &operation.result.columns {
+            if column.name.trim().is_empty() {
+                return Err(ManifestError::EmptyColumnName(operation.name.clone()));
             }
-
-            let mut column_names = BTreeSet::new();
-            for column in &operation.result.columns {
-                if column.name.trim().is_empty() {
-                    return Err(ManifestError::EmptyColumnName(operation.name.clone()));
-                }
-                if !column_names.insert(&column.name) {
-                    return Err(ManifestError::DuplicateColumn {
-                        operation: operation.name.clone(),
-                        column: column.name.clone(),
-                    });
-                }
-            }
-
-            for parameter in &operation.parameters {
-                validate_semantic_type(
-                    &parameter.semantic_type,
-                    &format!(
-                        "operation {:?} parameter {:?}",
-                        operation.name, parameter.name
-                    ),
-                )?;
-            }
-            for column in &operation.result.columns {
-                validate_semantic_type(
-                    &column.semantic_type,
-                    &format!("operation {:?} column {:?}", operation.name, column.name),
-                )?;
-            }
-
-            let mut sort_keys = BTreeSet::new();
-            for sort in &operation.allowed_sorts {
-                if sort.key.trim().is_empty() {
-                    return Err(ManifestError::EmptySortKey(operation.name.clone()));
-                }
-                if !sort_keys.insert(&sort.key) {
-                    return Err(ManifestError::DuplicateSortKey {
-                        operation: operation.name.clone(),
-                        key: sort.key.clone(),
-                    });
-                }
+            if !column_names.insert(&column.name) {
+                return Err(ManifestError::DuplicateColumn {
+                    operation: operation.name.clone(),
+                    column: column.name.clone(),
+                });
             }
         }
-        Ok(())
+
+        for parameter in &operation.parameters {
+            validate_semantic_type(
+                &parameter.semantic_type,
+                &format!(
+                    "operation {:?} parameter {:?}",
+                    operation.name, parameter.name
+                ),
+            )?;
+        }
+        for column in &operation.result.columns {
+            validate_semantic_type(
+                &column.semantic_type,
+                &format!("operation {:?} column {:?}", operation.name, column.name),
+            )?;
+        }
+
+        let mut sort_keys = BTreeSet::new();
+        for sort in &operation.allowed_sorts {
+            if sort.key.trim().is_empty() {
+                return Err(ManifestError::EmptySortKey(operation.name.clone()));
+            }
+            if !sort_keys.insert(&sort.key) {
+                return Err(ManifestError::DuplicateSortKey {
+                    operation: operation.name.clone(),
+                    key: sort.key.clone(),
+                });
+            }
+        }
     }
+    Ok(())
 }
 
 fn validate_semantic_type(semantic_type: &SemanticType, path: &str) -> Result<(), ManifestError> {
@@ -470,7 +277,7 @@ mod tests {
     #[test]
     fn parses_and_validates_manifest() {
         let input = serde_json::to_string(&manifest()).unwrap();
-        assert_eq!(PreparedManifest::from_json(&input).unwrap(), manifest());
+        assert_eq!(parse_manifest(&input).unwrap(), manifest());
     }
 
     #[test]
@@ -479,7 +286,10 @@ mod tests {
 
         let mut value = manifest();
         value.manifest_version = 1;
-        assert_eq!(value.validate(), Err(ManifestError::UnsupportedVersion(1)));
+        assert_eq!(
+            validate_manifest(&value),
+            Err(ManifestError::UnsupportedVersion(1))
+        );
     }
 
     #[test]
@@ -487,7 +297,7 @@ mod tests {
         let mut value = manifest();
         value.operations.push(value.operations[0].clone());
         assert_eq!(
-            value.validate(),
+            validate_manifest(&value),
             Err(ManifestError::DuplicateOperation("find-users".into()))
         );
     }
@@ -759,7 +569,7 @@ mod tests {
 
     #[test]
     fn normalizes_operation_names_once_for_all_profiles() {
-        let ir = manifest().normalize().unwrap();
+        let ir = crate::ir::normalize_manifest(&manifest()).unwrap();
         let operation = &ir.operations[0];
         assert_eq!(operation.wire_name, "find-users");
         assert_eq!(operation.type_name, "FindUsers");
@@ -897,7 +707,7 @@ mod tests {
             ],
         };
         assert!(matches!(
-            value.validate(),
+            validate_manifest(&value),
             Err(ManifestError::DuplicateRecordField { field, .. }) if field == "value"
         ));
     }

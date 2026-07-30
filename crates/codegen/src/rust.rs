@@ -4,11 +4,12 @@
 //! executor trait. Transport, response decoding, and error policy remain owned by the Rust
 //! runtime that implements the trait.
 
+use crate::ir::normalize_manifest;
 use crate::{CodegenIr, ManifestError, OperationKind, PreparedManifest, SemanticType};
 
 /// Generate Rust declarations and an executor facade for a prepared-query manifest.
 pub fn generate_rust(manifest: &PreparedManifest) -> Result<String, ManifestError> {
-    let ir = manifest.normalize()?;
+    let ir = normalize_manifest(manifest)?;
     validate_runtime_features(&ir)?;
     Ok(generate_rust_ir(&ir))
 }

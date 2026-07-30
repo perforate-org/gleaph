@@ -20,6 +20,7 @@ members = [
     "crates/ic-stable-variable-memory-manager",
     "crates/ic-stable-vec-deque",
     "crates/pocket-ic-tests",
+    "crates/prepared-api",
     "crates/provision",
     "crates/router",
     "crates/social-demo-gateway",
@@ -36,6 +37,7 @@ license = "MIT or Apache-2.0"
 gleaph-auth = { path = "crates/auth" }
 gleaph-cdk = { path = "sdk/canister/rust" }
 gleaph-codegen = { path = "crates/codegen" }
+gleaph-prepared-api = { path = "crates/prepared-api" }
 gleaph-gql = { path = "crates/gql" }
 gleaph-gql-integration = { path = "crates/gql-integration" }
 gleaph-gql-keywords = { path = "crates/gql-keywords" }

@@ -5,7 +5,7 @@
 //! interpreting the input manifest independently.
 
 use crate::common::pascal_case;
-use crate::{ManifestError, PreparedManifest, PreparedOperation};
+use crate::{ManifestError, PreparedManifest, PreparedOperation, validate_manifest};
 
 /// Normalized, renderer-independent representation of a prepared manifest.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,26 +31,24 @@ pub struct OperationIr {
     pub operation: PreparedOperation,
 }
 
-impl PreparedManifest {
-    /// Validate and normalize a manifest before handing it to a language renderer.
-    pub fn normalize(&self) -> Result<CodegenIr, ManifestError> {
-        self.validate()?;
-        Ok(CodegenIr {
-            graph_id: self.graph.id.clone(),
-            operations: self
-                .operations
-                .iter()
-                .map(|operation| {
-                    let type_name = pascal_case(&operation.name);
-                    OperationIr {
-                        wire_name: operation.name.clone(),
-                        params_type_name: format!("{type_name}Params"),
-                        row_type_name: format!("{type_name}Row"),
-                        type_name,
-                        operation: operation.clone(),
-                    }
-                })
-                .collect(),
-        })
-    }
+/// Validate and normalize a manifest before handing it to a language renderer.
+pub(crate) fn normalize_manifest(manifest: &PreparedManifest) -> Result<CodegenIr, ManifestError> {
+    validate_manifest(manifest)?;
+    Ok(CodegenIr {
+        graph_id: manifest.graph.id.clone(),
+        operations: manifest
+            .operations
+            .iter()
+            .map(|operation| {
+                let type_name = pascal_case(&operation.name);
+                OperationIr {
+                    wire_name: operation.name.clone(),
+                    params_type_name: format!("{type_name}Params"),
+                    row_type_name: format!("{type_name}Row"),
+                    type_name,
+                    operation: operation.clone(),
+                }
+            })
+            .collect(),
+    })
 }

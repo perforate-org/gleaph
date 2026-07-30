@@ -4,11 +4,12 @@
 //! emitting operation-specific parameter and result declarations.
 
 use crate::common::{encode_expression, json_string, ts_property};
+use crate::ir::normalize_manifest;
 use crate::{CodegenIr, ManifestError, OperationKind, PreparedManifest, SemanticType};
 
 /// Generate a TypeScript prepared adapter over the existing SDK GraphClient.
 pub fn generate_typescript(manifest: &PreparedManifest) -> Result<String, ManifestError> {
-    let ir = manifest.normalize()?;
+    let ir = normalize_manifest(manifest)?;
     validate_runtime_features(&ir)?;
     generate_typescript_ir(&ir)
 }

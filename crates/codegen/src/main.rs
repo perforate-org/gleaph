@@ -1,8 +1,7 @@
 //! Command-line entrypoint for generating prepared-query client adapters.
 
 use gleaph_codegen::{
-    PreparedManifest, generate_javascript, generate_rust, generate_rust_canister,
-    generate_typescript,
+    generate_javascript, generate_rust, generate_rust_canister, generate_typescript, parse_manifest,
 };
 use std::env;
 use std::fs;
@@ -61,7 +60,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
     let input = fs::read_to_string(&manifest_path)
         .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
-    let manifest = PreparedManifest::from_json(&input).map_err(|error| error.to_string())?;
+    let manifest = parse_manifest(&input).map_err(|error| error.to_string())?;
     let generated = match target.as_str() {
         "typescript" | "ts" => generate_typescript(&manifest),
         "javascript" | "js" => generate_javascript(&manifest),

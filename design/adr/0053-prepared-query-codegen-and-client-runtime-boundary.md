@@ -7,7 +7,7 @@ ADR 0055.
 Date: 2026-07-29
 Status: proposed
 Last revised: 2026-07-30
-Anchor timestamp: 2026-07-30 04:21:33 UTC +0000
+Anchor timestamp: 2026-07-30 09:04:34 UTC +0000
 
 ## Context
 
@@ -84,6 +84,10 @@ generator's architecture or API source of truth.
 The generator consumes a versioned prepared-query manifest, either from a local snapshot or from
 a Router metadata endpoint. It does not inspect Router stable memory, plan blobs, or planner
 internals, and it does not re-parse GQL as part of normal generation.
+
+The language-neutral manifest types are owned by the `gleaph-prepared-api` crate. Router metadata
+endpoints and `gleaph-codegen` must depend on this contract crate; the contract crate must not
+depend on Router internals or a renderer implementation.
 
 The manifest is graph-scoped and represents one coherent metadata snapshot. It must identify at
 least:
@@ -261,6 +265,8 @@ The first implementation is intentionally partial and does not accept the Router
 
 - a versioned local `PreparedManifest` model and fail-closed validation for graph identity,
   operation uniqueness, parameter/result names, sort keys, and query/update semantics;
+- a `gleaph-prepared-api` contract crate containing the Candid/Serde manifest types shared by
+  future Router metadata endpoints and the generator;
 - a normalized `CodegenIr` shared by the language profiles;
 - TypeScript and JavaScript output profiles exposed by `generate_typescript` and
   `generate_javascript`;
@@ -274,7 +280,7 @@ The first implementation is intentionally partial and does not accept the Router
 The generated TypeScript composes with the current `@gleaph/sdk` `GraphClient`, emits
 operation-specific parameter and row types, encodes semantic parameter values, and selects
 `executePrepared` versus `executePreparedMutation`. Transport, Candid, authorization, and
-common errors remain SDK-owned. The local manifest shape is an implementation scaffold, not yet
+common errors remain SDK-owned. The shared manifest shape is an implementation scaffold, not yet
 the accepted Router endpoint ABI. Consistency options and idempotent updates fail closed in this
 profile until the corresponding runtime methods are part of the stable SDK boundary. The Rust
 profile similarly delegates transport, response decoding, and error handling to a generated

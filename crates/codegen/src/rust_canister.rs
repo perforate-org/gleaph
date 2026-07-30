@@ -4,12 +4,13 @@
 //! owns Candid encoding, Router calls, response decoding, and error conversion.
 
 use crate::ir::CodegenIr;
+use crate::ir::normalize_manifest;
 use crate::rust::{rust_field, rust_type};
 use crate::{ManifestError, OperationKind, PreparedManifest};
 
 /// Generate Rust canister declarations and a runtime executor facade.
 pub fn generate_rust_canister(manifest: &PreparedManifest) -> Result<String, ManifestError> {
-    let ir = manifest.normalize()?;
+    let ir = normalize_manifest(manifest)?;
     Ok(generate_ir(&ir))
 }
 
