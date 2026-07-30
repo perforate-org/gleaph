@@ -1,3 +1,8 @@
+//! TypeScript output profile for prepared-query adapters.
+//!
+//! Generated code delegates transport and common error handling to the TypeScript SDK while
+//! emitting operation-specific parameter and result declarations.
+
 use crate::common::{encode_expression, json_string, ts_property};
 use crate::{CodegenIr, ManifestError, OperationKind, PreparedManifest, SemanticType};
 

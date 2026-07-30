@@ -10,16 +10,24 @@ use crate::{ManifestError, PreparedManifest, PreparedOperation};
 /// Normalized, renderer-independent representation of a prepared manifest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodegenIr {
+    /// Stable identifier of the logical graph targeted by the generated client.
     pub graph_id: String,
+    /// Normalized operations available to renderers.
     pub operations: Vec<OperationIr>,
 }
 
+/// Normalized metadata and generated identifiers for one operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperationIr {
+    /// Original operation name used on the wire.
     pub wire_name: String,
+    /// Generated type name for the operation's client API.
     pub type_name: String,
+    /// Generated type name for the operation's parameters.
     pub params_type_name: String,
+    /// Generated type name for one result row.
     pub row_type_name: String,
+    /// Validated manifest metadata for the operation.
     pub operation: PreparedOperation,
 }
 

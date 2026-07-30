@@ -1,3 +1,8 @@
+//! Shared renderer helpers for semantic-value encoding, naming, and literal emission.
+//!
+//! This module contains syntax-neutral mechanics used by multiple language profiles; profile
+//! policy and output structure remain in the language-specific modules.
+
 use crate::SemanticType;
 
 pub(crate) fn encode_expression(access: &str, semantic_type: &SemanticType) -> String {

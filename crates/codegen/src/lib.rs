@@ -4,6 +4,8 @@
 //! independent from Router stable storage and planner internals; a future Router metadata
 //! endpoint can use the same wire shape as local generation snapshots.
 
+#![warn(missing_docs)]
+
 mod common;
 mod ir;
 mod javascript;
@@ -22,129 +24,214 @@ pub const MANIFEST_VERSION: u32 = 1;
 /// A graph-scoped prepared-query metadata snapshot.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PreparedManifest {
+    /// Version of the manifest wire shape.
     pub manifest_version: u32,
+    /// Identity metadata for the logical graph described by this snapshot.
     pub graph: GraphIdentity,
+    /// Prepared operations available in the snapshot.
     pub operations: Vec<PreparedOperation>,
 }
 
+/// Stable identity metadata for a logical graph.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct GraphIdentity {
+    /// Stable graph identifier used by the Router.
     pub id: String,
+    /// Optional human-readable graph name.
     #[serde(default)]
     pub name: Option<String>,
 }
 
+/// Execution mode of a prepared operation.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum OperationKind {
+    /// Read-only prepared operation.
     Query,
+    /// Mutating prepared operation.
     Update,
 }
 
+/// Metadata for one generated prepared operation.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PreparedOperation {
+    /// Operation name as exposed by the Router.
     pub name: String,
+    /// Whether the operation is read-only or mutating.
     pub kind: OperationKind,
+    /// Input parameters accepted by the operation.
     #[serde(default)]
     pub parameters: Vec<Parameter>,
+    /// Row schema returned by the operation.
     pub result: ResultSchema,
+    /// Whether the operation accepts a consistency option.
     #[serde(default)]
     pub supports_consistency: bool,
+    /// Whether the operation accepts an idempotency option.
     #[serde(default)]
     pub supports_idempotency: bool,
+    /// Sort keys accepted by the operation.
     #[serde(default)]
     pub allowed_sorts: Vec<SortKey>,
 }
 
+/// Input parameter metadata for a prepared operation.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Parameter {
+    /// Parameter name used in the operation's wire representation.
     pub name: String,
+    /// Whether callers must provide this parameter.
     pub required: bool,
+    /// Whether the parameter may explicitly contain null.
     #[serde(default)]
     pub nullable: bool,
+    /// Language-neutral semantic type of the parameter.
     #[serde(rename = "type")]
     pub semantic_type: SemanticType,
 }
 
+/// Row schema returned by a prepared operation.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ResultSchema {
+    /// Columns in their returned order.
     pub columns: Vec<Column>,
 }
 
+/// One column in a prepared operation's result row.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Column {
+    /// Column name in the operation's wire representation.
     pub name: String,
+    /// Language-neutral semantic type of the column.
     #[serde(rename = "type")]
     pub semantic_type: SemanticType,
+    /// Whether the column may contain null.
     #[serde(default)]
     pub nullable: bool,
 }
 
+/// A caller-selectable sort key for a prepared operation.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct SortKey {
+    /// Stable sort-key identifier sent to the Router.
     pub key: String,
+    /// Optional human-readable label for the generated client.
     #[serde(default)]
     pub label: Option<String>,
 }
 
-/// Language-neutral types supported by the initial manifest profiles.
+/// Language-neutral type supported by the manifest profiles.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum SemanticType {
+    /// The null type.
     Null,
+    /// A boolean value.
     Bool,
+    /// A signed 64-bit integer.
     Int64,
+    /// An unsigned 64-bit integer.
     Uint64,
+    /// A signed 128-bit integer.
     Int128,
+    /// An unsigned 128-bit integer.
     Uint128,
+    /// A signed 256-bit integer.
     Int256,
+    /// An unsigned 256-bit integer.
     Uint256,
+    /// An IEEE 754 64-bit floating-point value.
     Float64,
+    /// A decimal value represented by the runtime.
     Decimal,
+    /// A UTF-8 text value.
     Text,
+    /// An arbitrary byte sequence.
     Bytes,
+    /// A calendar date.
     Date,
+    /// A time value.
     Time,
+    /// An Internet Computer principal.
     Principal,
-    List { element: Box<SemanticType> },
+    /// A homogeneous list of values.
+    List {
+        /// Type of each list element.
+        element: Box<SemanticType>,
+    },
 }
 
+/// Validation or profile error encountered while loading a manifest.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ManifestError {
+    /// The manifest was not valid JSON.
     #[error("manifest JSON is invalid: {0}")]
     Json(String),
+    /// The manifest version is not supported by this crate.
     #[error("unsupported manifest version {0}; expected {MANIFEST_VERSION}")]
     UnsupportedVersion(u32),
+    /// The graph identifier is empty or whitespace-only.
     #[error("graph id must not be empty")]
     EmptyGraphId,
+    /// The manifest does not contain any operations.
     #[error("manifest must contain at least one operation")]
     EmptyOperations,
+    /// An operation name is empty or whitespace-only.
     #[error("operation name must not be empty")]
     EmptyOperationName,
+    /// Two operations use the same wire name.
     #[error("duplicate operation name {0:?}")]
     DuplicateOperation(String),
+    /// Two operation names map to the same generated TypeScript identifier.
     #[error("operation names {first:?} and {second:?} produce the same TypeScript identifier")]
-    DuplicateGeneratedIdentifier { first: String, second: String },
+    DuplicateGeneratedIdentifier {
+        /// First operation name that produced the generated identifier.
+        first: String,
+        /// Later operation name that produced the same generated identifier.
+        second: String,
+    },
+    /// A parameter name is empty or whitespace-only.
     #[error("parameter name must not be empty in operation {0:?}")]
     EmptyParameterName(String),
+    /// Two parameters in one operation use the same name.
     #[error("duplicate parameter {parameter:?} in operation {operation:?}")]
     DuplicateParameter {
+        /// Operation containing the duplicate parameter.
         operation: String,
+        /// Duplicate parameter name.
         parameter: String,
     },
+    /// A result column name is empty or whitespace-only.
     #[error("column name must not be empty in operation {0:?}")]
     EmptyColumnName(String),
+    /// Two result columns in one operation use the same name.
     #[error("duplicate result column {column:?} in operation {operation:?}")]
-    DuplicateColumn { operation: String, column: String },
+    DuplicateColumn {
+        /// Operation containing the duplicate result column.
+        operation: String,
+        /// Duplicate result column name.
+        column: String,
+    },
+    /// A sort key is empty or whitespace-only.
     #[error("sort key must not be empty in operation {0:?}")]
     EmptySortKey(String),
+    /// Two sort keys in one operation use the same key.
     #[error("duplicate sort key {key:?} in operation {operation:?}")]
-    DuplicateSortKey { operation: String, key: String },
+    DuplicateSortKey {
+        /// Operation containing the duplicate sort key.
+        operation: String,
+        /// Duplicate sort-key identifier.
+        key: String,
+    },
+    /// Idempotency metadata was declared for a query operation.
     #[error("idempotency is only supported for update operation {0:?}")]
     IdempotencyOnQuery(String),
+    /// The selected runtime profile does not implement a requested feature.
     #[error("selected runtime profile does not yet support {feature} for operation {operation:?}")]
     UnsupportedRuntimeFeature {
+        /// Operation requesting the unsupported feature.
         operation: String,
+        /// Name of the unsupported feature.
         feature: &'static str,
     },
 }

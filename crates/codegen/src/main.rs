@@ -1,3 +1,5 @@
+//! Command-line entrypoint for generating prepared-query client adapters.
+
 use gleaph_codegen::{PreparedManifest, generate_javascript, generate_typescript};
 use std::env;
 use std::fs;

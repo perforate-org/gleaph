@@ -1,3 +1,8 @@
+//! JavaScript output profile for prepared-query adapters.
+//!
+//! Generated code delegates transport and common error handling to the JavaScript SDK and owns
+//! only profile-specific runtime wrappers and value projection.
+
 use crate::common::{encode_expression, json_string, ts_property};
 use crate::{ManifestError, OperationKind, PreparedManifest};
 
