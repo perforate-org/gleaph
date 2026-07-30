@@ -3,10 +3,10 @@
 //! The generated facade is transport-neutral. A canister runtime supplies the executor that
 //! owns Candid encoding, Router calls, response decoding, and error conversion.
 
+use super::client::{rust_field, rust_type};
 use crate::common::append_line_doc;
 use crate::ir::CodegenIr;
 use crate::ir::normalize_manifest;
-use crate::rust::{rust_field, rust_type};
 use crate::{ManifestError, OperationKind, PreparedManifest};
 
 /// Generate Rust canister declarations and a runtime executor facade.
@@ -139,7 +139,7 @@ pub type PreparedCanisterFuture<'a, Row, Error> =
                 .collect::<Vec<_>>();
             let one_line = format!("vec![{}]", entries.join(", "));
             let params_body =
-                if !crate::rust_format::exceeds_width(&one_line, crate::rust_format::ARRAY_WIDTH) {
+                if !super::format::exceeds_width(&one_line, super::format::ARRAY_WIDTH) {
                     format!("        {one_line}\n")
                 } else {
                     format!(
@@ -206,8 +206,7 @@ pub type PreparedCanisterFuture<'a, Row, Error> =
             if operation.result.columns.len() == 1 {
                 let field = rust_field(&operation.result.columns[0].name);
                 let literal = format!("Self {{ {field} }}");
-                if crate::rust_format::exceeds_width(&literal, crate::rust_format::STRUCT_LIT_WIDTH)
-                {
+                if super::format::exceeds_width(&literal, super::format::STRUCT_LIT_WIDTH) {
                     out.push_str(&format!(
                         "        Ok(Self {{\n            {field},\n        }})\n    }}\n}}\n\n"
                     ));

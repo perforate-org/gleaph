@@ -11,16 +11,14 @@ mod ir;
 mod javascript;
 mod motoko;
 mod rust;
-mod rust_canister;
-mod rust_format;
 mod typescript;
 
 pub use ir::{CodegenIr, OperationIr};
 pub use javascript::generate_javascript;
 pub use motoko::generate_motoko;
-pub use rust::generate_rust;
-pub use rust_canister::generate_rust_canister;
-pub use rust_format::{RustFormatMode, format_rust};
+pub use rust::canister::generate_rust_canister;
+pub use rust::client::generate_rust;
+pub use rust::format::{RustFormatMode, format_rust};
 pub use typescript::generate_typescript;
 
 use std::collections::BTreeSet;
