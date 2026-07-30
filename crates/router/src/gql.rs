@@ -4929,16 +4929,32 @@ async fn execute_typed_bulk_replay(
                     ))
                 })?;
         let batch_ends_in_error = batch.results.last().is_some_and(Result::is_err);
-        for result in batch.results {
-            if results.len() >= wire_item_count {
-                return Err(RouterError::InvalidArgument(
-                    "typed batch V1 returned more results than operations".into(),
-                ));
+        let returned_results = batch.results;
+        let prior_result_count = results.len();
+        let returned_count = returned_results.len();
+        let new_results = if prior_result_count > 0 && returned_count == wire_item_count {
+            // Graph replays an existing bulk journal from operation zero and includes synthetic
+            // successes for the completed prefix. Router already owns that prefix locally, so
+            // retain only the continuation suffix.
+            returned_results
+                .into_iter()
+                .skip(prior_result_count)
+                .collect::<Vec<_>>()
+        } else if returned_count <= wire_item_count.saturating_sub(prior_result_count) {
+            returned_results
+        } else {
+            return Err(RouterError::InvalidArgument(
+                "typed batch V1 returned more results than operations".into(),
+            ));
+        };
+        results.extend(new_results);
+        if batch_ends_in_error {
+            if let Some(error) = results.iter().find_map(|result| result.as_ref().err()) {
+                return Err(RouterError::InvalidArgument(error.clone()));
             }
-            results.push(result);
+            break;
         }
         match batch.next_index {
-            Some(next) if batch_ends_in_error && next as usize + 1 == results.len() => break,
             None => break,
             Some(next) if next as usize >= wire_item_count => {
                 return Err(RouterError::InvalidArgument(format!(
@@ -4956,9 +4972,10 @@ async fn execute_typed_bulk_replay(
     }
     if results.len() != wire_item_count {
         return Err(RouterError::InvalidArgument(format!(
-            "typed batch V1 final result count {} does not match operation count {}",
+            "typed batch V1 final result count {} does not match operation count {} (attempts={})",
             results.len(),
-            wire_item_count
+            wire_item_count,
+            attempts
         )));
     }
 
@@ -5248,15 +5265,23 @@ async fn execute_prepared_bulk_group_typed(
         let total_rows = relation.row_count()?;
         let mut offset = 0usize;
         let mut chunk_count = 0u32;
-        loop {
+        if total_rows == 0 {
+            typed_operations.push(TypedBatchCandidateOp {
+                params_blob: params_blob.clone(),
+                seed: SeedBindingsWire {
+                    entries: Vec::new(),
+                    rows: Vec::new(),
+                    complete_prefix_rows: true,
+                },
+            });
+            logical_operation_chunk_counts.push(1);
+            continue;
+        }
+        while offset < total_rows {
             let remaining = total_rows.saturating_sub(offset);
-            let upper = remaining.max(1);
+            let upper = remaining;
             let best = largest_fitting_prefix(upper, |mid| {
-                let rows = if remaining == 0 {
-                    Vec::new()
-                } else {
-                    relation.rows(offset, mid)?
-                };
+                let rows = relation.rows(offset, mid)?;
                 let probe = TypedBatchCandidate {
                     target_shard_id: dispatch.shard_id,
                     element_id_encoding_key: base.element_id_encoding_key.0,
@@ -5288,11 +5313,7 @@ async fn execute_prepared_bulk_group_typed(
                     "a single complete-row seed does not fit the dynamic typed envelope".into(),
                 )
             })?;
-            let chunk_rows = if remaining == 0 {
-                Vec::new()
-            } else {
-                relation.rows(offset, best)?
-            };
+            let chunk_rows = relation.rows(offset, best)?;
             typed_operations.push(TypedBatchCandidateOp {
                 params_blob: params_blob.clone(),
                 seed: SeedBindingsWire {
@@ -5304,9 +5325,6 @@ async fn execute_prepared_bulk_group_typed(
             chunk_count = chunk_count
                 .checked_add(1)
                 .ok_or_else(|| RouterError::InvalidArgument("typed chunk count overflow".into()))?;
-            if remaining == 0 {
-                break;
-            }
             offset += best;
         }
         logical_operation_chunk_counts.push(chunk_count);
