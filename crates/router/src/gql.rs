@@ -5068,12 +5068,31 @@ async fn execute_typed_bulk_replay(
         replay.target.shard_id,
     )?;
 
+    let logical_results = aggregate_typed_wire_results(&wire_successful_results, &chunk_counts)?;
+
+    Ok((logical_results, token))
+}
+
+fn aggregate_typed_wire_results(
+    wire_results: &[ExecutePlanResult],
+    chunk_counts: &[u32],
+) -> Result<Vec<ExecutePlanResult>, RouterError> {
+    let expected_wire_results = chunk_counts.iter().try_fold(0usize, |sum, &count| {
+        sum.checked_add(count as usize)
+            .ok_or_else(|| RouterError::InvalidArgument("typed chunk count overflow".into()))
+    })?;
+    if expected_wire_results != wire_results.len() || chunk_counts.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "typed wire result cardinality does not match logical chunk mapping".into(),
+        ));
+    }
+
     let mut logical_results = Vec::with_capacity(chunk_counts.len());
     let mut result_offset = 0usize;
-    for &chunk_count in &chunk_counts {
+    for &chunk_count in chunk_counts {
         let end = result_offset + chunk_count as usize;
         logical_results.push(ExecutePlanResult {
-            row_count: wire_successful_results[result_offset..end]
+            row_count: wire_results[result_offset..end]
                 .iter()
                 .map(|result| result.row_count)
                 .sum(),
@@ -5082,8 +5101,7 @@ async fn execute_typed_bulk_replay(
         });
         result_offset = end;
     }
-
-    Ok((logical_results, token))
+    Ok(logical_results)
 }
 
 fn validate_completed_typed_journal(
@@ -6521,6 +6539,7 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
+    use gleaph_graph_kernel::federation::LocalVertexId;
     use gleaph_graph_kernel::index::{
         EdgePostingHit, IndexLabelIntersectionRequest, LabelLookupPageResult, PostingHit,
         ValuePostingCount,
@@ -8854,5 +8873,39 @@ mod tests {
                 && result.token.is_none()
         }));
         assert!(super::completed_typed_bulk_results(&[3, 4], 3).is_err());
+    }
+
+    #[test]
+    fn typed_wire_results_aggregate_into_logical_operation_order() {
+        let wire_results = vec![
+            ExecutePlanResult {
+                row_count: 2,
+                rows_blob: Some(vec![1]),
+                hot_forward_vertices: vec![10 as LocalVertexId],
+            },
+            ExecutePlanResult {
+                row_count: 3,
+                rows_blob: Some(vec![2]),
+                hot_forward_vertices: vec![11 as LocalVertexId],
+            },
+            ExecutePlanResult {
+                row_count: 7,
+                rows_blob: Some(vec![3]),
+                hot_forward_vertices: vec![],
+            },
+        ];
+        let logical = super::aggregate_typed_wire_results(&wire_results, &[2, 1])
+            .expect("wire chunks aggregate");
+        assert_eq!(
+            logical
+                .iter()
+                .map(|result| result.row_count)
+                .collect::<Vec<_>>(),
+            vec![5, 7]
+        );
+        assert!(logical.iter().all(|result| {
+            result.rows_blob.is_none() && result.hot_forward_vertices.is_empty()
+        }));
+        assert!(super::aggregate_typed_wire_results(&wire_results, &[2, 2]).is_err());
     }
 }
