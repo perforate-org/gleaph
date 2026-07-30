@@ -178,13 +178,13 @@ where
     }
 }
 
-/// Thin canister-id-bound wrapper around [`call_prepared_query`].
+/// Canister-id-bound client for dynamic GQL and prepared operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PreparedQueryClient {
+pub struct GleaphClient {
     canister_id: Principal,
 }
 
-impl PreparedQueryClient {
+impl GleaphClient {
     /// Bind the client to a Router canister.
     pub const fn new(canister_id: Principal) -> Self {
         Self { canister_id }
