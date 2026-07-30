@@ -30,6 +30,69 @@ pub fn type_check_phase_b(
     env.warnings
 }
 
+/// Infer value-parameter types from schema-aware expression constraints.
+///
+/// A parameter used with a typed graph property can inherit that property's type, for example
+/// u.age = $age. Unconstrained parameters are omitted. Conflicting constraints are represented
+/// as a union and remain the host's responsibility to accept or reject.
+pub fn infer_parameter_types_with_schema(
+    program: &GqlProgram,
+    schema: &dyn PropertySchema,
+) -> BTreeMap<String, Type> {
+    let mut env = TypeEnv::new(schema);
+    check_program(&mut env, program);
+    let Some(transaction) = &program.transaction_activity else {
+        return BTreeMap::new();
+    };
+    let Some(body) = &transaction.body else {
+        return BTreeMap::new();
+    };
+    let mut constraints = constraint::ConstraintSet::new();
+    collect_constraints_from_block(&mut constraints, &env, body);
+    constraints.parameter_types().clone()
+}
+
+#[cfg(test)]
+mod parameter_inference_tests {
+    use super::*;
+    use crate::ast::{Keyword, ValueType};
+
+    struct UserSchema;
+
+    impl PropertySchema for UserSchema {
+        fn node_property_types(&self, labels: &[String]) -> Vec<(String, ValueType, bool)> {
+            if labels.iter().any(|label| label == "User") {
+                vec![(
+                    "age".into(),
+                    ValueType::Int32 {
+                        keyword: Keyword::new("INT32"),
+                    },
+                    true,
+                )]
+            } else {
+                vec![]
+            }
+        }
+
+        fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn infers_parameter_type_from_typed_node_property() {
+        let program = crate::parser::parse("MATCH (u:User) WHERE u.age = $age RETURN u.age")
+            .expect("query should parse");
+        let inferred = infer_parameter_types_with_schema(&program, &UserSchema);
+        assert_eq!(
+            inferred.get("age"),
+            Some(&Type::NonNull(Box::new(Type::Scalar(ValueType::Int32 {
+                keyword: Keyword::new("INT32"),
+            }))))
+        );
+    }
+}
+
 pub fn infer_linear_query_binding_kinds(
     query: &LinearQueryStatement,
 ) -> BTreeMap<String, BindingKind> {

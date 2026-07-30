@@ -279,6 +279,9 @@ as a release-stable contract.
 - typed GQL value bindings may declare prepared input parameters, for example
   VALUE term TYPED STRING = $term. Metadata-aware registration validates the declared GQL
   semantic type and nullability against the manifest parameter contract before catalog mutation;
+- when a parameter is used with a schema-typed graph property, the GQL Phase B constraint API
+  may infer its type from the active Graph Type schema. Metadata-aware registration validates this
+  inferred type as well; unconstrained or conflicting inference remains fail-closed;
 - a `gleaph-prepared-api` contract crate containing the Candid/Serde manifest types shared by
   future Router metadata endpoints and the generator;
 - a GQL-generic output-type inference API used as the substrate for Router-owned manifest

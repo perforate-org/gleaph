@@ -37,8 +37,8 @@ pub use phase_b::{
     infer_linear_query_binding_kinds_and_warnings_with_schema,
     infer_linear_query_binding_kinds_and_warnings_with_seed,
     infer_linear_query_binding_kinds_with_schema, infer_linear_query_binding_kinds_with_seed,
-    infer_statement_block_binding_kinds, infer_statement_block_binding_kinds_with_schema,
-    type_check_phase_b,
+    infer_parameter_types_with_schema, infer_statement_block_binding_kinds,
+    infer_statement_block_binding_kinds_with_schema, type_check_phase_b,
 };
 pub use schema::{NoSchema, ProcedureSignature, PropertySchema};
 pub use types::{EdgeTypeInfo, NodeTypeInfo, PathTypeInfo, Type};

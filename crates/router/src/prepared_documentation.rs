@@ -12,6 +12,7 @@ use gleaph_gql::ast::{
     Statement,
 };
 use gleaph_gql::token::DocComment;
+use gleaph_gql::type_check::{PropertySchema, Type};
 use gleaph_prepared_api::{PreparedOperation, SemanticType};
 
 /// Apply GQL source documentation to metadata fields that were not explicitly supplied.
@@ -48,6 +49,43 @@ pub(crate) fn validate_typed_parameters(
         if not_null && parameter.nullable {
             return Err(format!(
                 "typed GQL parameter {name:?} is NOT NULL but metadata permits null"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate parameter types inferred from the active Graph Type/property schema.
+pub(crate) fn validate_inferred_parameters(
+    program: &GqlProgram,
+    schema: &dyn PropertySchema,
+    operation: &PreparedOperation,
+) -> Result<(), String> {
+    let inferred = gleaph_gql::type_check::infer_parameter_types_with_schema(program, schema);
+    for (name, ty) in inferred {
+        let Some(parameter) = operation
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == name)
+        else {
+            return Err(format!(
+                "schema-inferred GQL parameter {name:?} is missing from metadata"
+            ));
+        };
+        let Some((semantic_type, not_null)) = semantic_type_from_type(&ty) else {
+            return Err(format!(
+                "schema-inferred GQL parameter {name:?} has unsupported type {ty:?}"
+            ));
+        };
+        if parameter.semantic_type != semantic_type {
+            return Err(format!(
+                "schema-inferred GQL parameter {name:?} has type {:?}, metadata declares {:?}",
+                semantic_type, parameter.semantic_type
+            ));
+        }
+        if not_null && parameter.nullable {
+            return Err(format!(
+                "schema-inferred GQL parameter {name:?} is non-null but metadata permits null"
             ));
         }
     }
@@ -172,6 +210,43 @@ fn semantic_type_from_value_type(value_type: &ValueType) -> Option<(SemanticType
         _ => return None,
     };
     Some((semantic_type, not_null))
+}
+
+fn semantic_type_from_type(ty: &Type) -> Option<(SemanticType, bool)> {
+    match ty {
+        Type::NonNull(inner) => {
+            let (semantic_type, _) = semantic_type_from_type(inner)?;
+            Some((semantic_type, true))
+        }
+        Type::Scalar(value_type) => semantic_type_from_value_type(value_type),
+        Type::TypedList(element) => {
+            let (element, _) = semantic_type_from_type(element)?;
+            Some((
+                SemanticType::List {
+                    element: Box::new(element),
+                },
+                false,
+            ))
+        }
+        Type::Record(fields) => Some((
+            SemanticType::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, field_type)| {
+                        let (semantic_type, not_null) = semantic_type_from_type(field_type)?;
+                        Some(gleaph_prepared_api::RecordField {
+                            name: name.clone(),
+                            semantic_type,
+                            nullable: !not_null,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?,
+            },
+            false,
+        )),
+        Type::Path(_) => Some((SemanticType::Path, false)),
+        Type::Union(_) | Type::Unknown | Type::Never | Type::Node(_) | Type::Edge(_) => None,
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]

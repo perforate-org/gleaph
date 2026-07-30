@@ -204,6 +204,17 @@ fn prepared_register_core(
         crate::prepared_documentation::apply_to_operation(&cache._program.doc_comments, metadata);
         crate::prepared_documentation::validate_typed_parameters(&cache._program, metadata)
             .map_err(RouterError::InvalidArgument)?;
+        let open = NoSchema;
+        let mut typed = None;
+        let schema = crate::facade::stable::graph_type_catalog::property_schema_for_planning(
+            graph_id, &open, &mut typed,
+        )?;
+        crate::prepared_documentation::validate_inferred_parameters(
+            &cache._program,
+            schema,
+            metadata,
+        )
+        .map_err(RouterError::InvalidArgument)?;
     }
     if let Some(metadata) = &metadata {
         let expected_kind = if requires_write_path {

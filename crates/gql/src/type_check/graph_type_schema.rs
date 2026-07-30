@@ -54,6 +54,7 @@ fn node_runtime_labels(node: &NodeTypeDef) -> Vec<String> {
 /// Property and endpoint metadata derived from `CREATE GRAPH` / `CREATE GRAPH TYPE` inline types.
 #[derive(Clone, Debug, Default)]
 pub struct GraphTypePropertySchema {
+    node_properties: BTreeMap<String, Vec<PropertyTypeSpec>>,
     edge_undirected: BTreeMap<String, bool>,
     edge_endpoints: BTreeMap<String, Vec<EndpointLabelsPair>>,
     edge_properties: BTreeMap<String, Vec<PropertyTypeSpec>>,
@@ -66,6 +67,22 @@ impl GraphTypePropertySchema {
         let mut s = Self::default();
 
         for element in &def.elements {
+            if let GraphTypeElement::Node(node) = element {
+                let labels = node_runtime_labels(node);
+                for label in labels {
+                    let entry = s.node_properties.entry(label).or_default();
+                    for property in &node.properties {
+                        if !entry.iter().any(|(name, _, _)| name == &property.name) {
+                            entry.push((
+                                property.name.clone(),
+                                property.value_type.clone(),
+                                property.not_null,
+                            ));
+                        }
+                    }
+                }
+                continue;
+            }
             let GraphTypeElement::Edge(edge) = element else {
                 continue;
             };
@@ -174,8 +191,18 @@ fn endpoint_constraint_labels(
 }
 
 impl PropertySchema for GraphTypePropertySchema {
-    fn node_property_types(&self, _labels: &[String]) -> Vec<PropertyTypeSpec> {
-        vec![]
+    fn node_property_types(&self, labels: &[String]) -> Vec<PropertyTypeSpec> {
+        let mut properties = Vec::new();
+        for label in labels {
+            if let Some(label_properties) = self.node_properties.get(label) {
+                for property in label_properties {
+                    if !properties.iter().any(|(name, _, _)| name == &property.0) {
+                        properties.push(property.clone());
+                    }
+                }
+            }
+        }
+        properties
     }
 
     fn edge_property_types(&self, label: &str) -> Vec<PropertyTypeSpec> {

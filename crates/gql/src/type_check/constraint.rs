@@ -7,6 +7,7 @@
 
 use crate::ast::*;
 use crate::token::Span;
+use std::collections::BTreeMap;
 
 use super::env::{TypeEnv, WarningKind};
 use super::infer::infer_expr;
@@ -57,6 +58,7 @@ pub struct ConstraintSet {
     types: Vec<Type>,
     /// Accumulated constraints.
     constraints: Vec<TypedConstraint>,
+    parameter_types: BTreeMap<String, Type>,
 }
 
 impl Default for ConstraintSet {
@@ -70,6 +72,7 @@ impl ConstraintSet {
         Self {
             types: Vec::new(),
             constraints: Vec::new(),
+            parameter_types: BTreeMap::new(),
         }
     }
 
@@ -88,6 +91,36 @@ impl ConstraintSet {
     /// Add a constraint.
     pub fn add(&mut self, constraint: TypedConstraint) {
         self.constraints.push(constraint);
+    }
+
+    /// Types inferred for value parameters from schema-aware expression constraints.
+    pub fn parameter_types(&self) -> &BTreeMap<String, Type> {
+        &self.parameter_types
+    }
+
+    fn record_parameter_constraint(&mut self, env: &TypeEnv<'_>, left: &Expr, right: &Expr) {
+        let Some((name, other)) =
+            parameter_and_other(left, right).or_else(|| parameter_and_other(right, left))
+        else {
+            return;
+        };
+        let ty = infer_expr(env, other);
+        if is_unknown(&ty) || is_null(&ty) || is_never(&ty) {
+            return;
+        }
+        self.parameter_types
+            .entry(name.to_owned())
+            .and_modify(|existing| {
+                if existing != &ty {
+                    let mut types = flatten_union(existing)
+                        .into_iter()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    types.extend(flatten_union(&ty).into_iter().cloned());
+                    *existing = Type::Union(types);
+                }
+            })
+            .or_insert(ty);
     }
 
     /// Collect constraints from a composite query expression.
@@ -211,6 +244,7 @@ impl ConstraintSet {
             ExprKind::Compare { left, right, .. } => {
                 self.collect_from_expr_constraints(env, left);
                 self.collect_from_expr_constraints(env, right);
+                self.record_parameter_constraint(env, left, right);
                 let lt = self.alloc(infer_expr(env, left));
                 let rt = self.alloc(infer_expr(env, right));
                 self.add(TypedConstraint::Comparison {
@@ -323,6 +357,8 @@ impl ConstraintSet {
             } => {
                 self.collect_from_expr_constraints(env, target);
                 self.collect_from_expr_constraints(env, pattern);
+                self.record_parameter_constraint(env, target, pattern);
+                self.record_parameter_constraint(env, pattern, target);
             }
             ExprKind::Concat(l, r) | ExprKind::NullIf(l, r) => {
                 self.collect_from_expr_constraints(env, l);
@@ -529,5 +565,13 @@ impl ConstraintSet {
                 }
             }
         }
+    }
+}
+
+fn parameter_and_other<'a>(parameter: &'a Expr, other: &'a Expr) -> Option<(&'a str, &'a Expr)> {
+    match &parameter.kind {
+        ExprKind::Parameter(name) => Some((name.trim_start_matches('$'), other)),
+        ExprKind::Paren(inner) => parameter_and_other(inner, other),
+        _ => None,
     }
 }
