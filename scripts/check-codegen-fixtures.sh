@@ -18,9 +18,15 @@ check_generated() {
   expected=$3
   output="$OUTPUT_ROOT/$(basename -- "$expected")"
 
+  format_args=
+  case "$target" in
+    rust|rust-canister) format_args="--format rust=never" ;;
+  esac
+
   cargo run -p gleaph-codegen -- \
     --manifest "$FIXTURE_ROOT/$manifest" \
     --target "$target" \
+    $format_args \
     --output "$output"
 
   comparison_expected="$FIXTURE_ROOT/$expected"

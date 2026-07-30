@@ -137,14 +137,16 @@ pub type PreparedCanisterFuture<'a, Row, Error> =
                     format!("({:?}.to_string(), {value})", parameter.name)
                 })
                 .collect::<Vec<_>>();
-            let params_body = if entries.len() == 1 {
-                format!("        vec![{}]\n", entries[0])
-            } else {
-                format!(
-                    "        vec![\n            {},\n        ]\n",
-                    entries.join(",\n            ")
-                )
-            };
+            let one_line = format!("vec![{}]", entries.join(", "));
+            let params_body =
+                if !crate::rust_format::exceeds_width(&one_line, crate::rust_format::ARRAY_WIDTH) {
+                    format!("        {one_line}\n")
+                } else {
+                    format!(
+                        "        vec![\n            {},\n        ]\n",
+                        entries.join(",\n            ")
+                    )
+                };
             out.push_str(&format!(
                 "impl {}Params {{\n    /// Convert typed parameters to ordered logical GQL parameters.\n    pub fn into_gql_params(self) -> GqlParams {{\n{params_body}    }}\n}}\n\n",
                 type_name
@@ -203,7 +205,15 @@ pub type PreparedCanisterFuture<'a, Row, Error> =
             }
             if operation.result.columns.len() == 1 {
                 let field = rust_field(&operation.result.columns[0].name);
-                out.push_str(&format!("        Ok(Self {{ {field} }})\n    }}\n}}\n\n"));
+                let literal = format!("Self {{ {field} }}");
+                if crate::rust_format::exceeds_width(&literal, crate::rust_format::STRUCT_LIT_WIDTH)
+                {
+                    out.push_str(&format!(
+                        "        Ok(Self {{\n            {field},\n        }})\n    }}\n}}\n\n"
+                    ));
+                } else {
+                    out.push_str(&format!("        Ok({literal})\n    }}\n}}\n\n"));
+                }
             } else {
                 out.push_str("        Ok(Self {\n");
                 for column in &operation.result.columns {

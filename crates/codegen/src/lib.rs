@@ -12,6 +12,7 @@ mod javascript;
 mod motoko;
 mod rust;
 mod rust_canister;
+mod rust_format;
 mod typescript;
 
 pub use ir::{CodegenIr, OperationIr};
@@ -19,6 +20,7 @@ pub use javascript::generate_javascript;
 pub use motoko::generate_motoko;
 pub use rust::generate_rust;
 pub use rust_canister::generate_rust_canister;
+pub use rust_format::{RustFormatMode, format_rust};
 pub use typescript::generate_typescript;
 
 use std::collections::BTreeSet;
@@ -364,10 +366,9 @@ mod tests {
         let output = generate_rust(&value).unwrap();
         assert!(output.contains("pub struct FindUsersParams"));
         assert!(output.contains("pub struct FindUsersRow"));
-        assert!(output.contains("self.executor.execute_query::<FindUsersRow>"));
-        assert!(contains_compact(
-            &output,
-            "pub async fn find_users(&self, sort: Option<Vec<PreparedSortSpec>>)",
+        assert!(output.contains(".execute_query::<FindUsersRow>"));
+        assert!(output.contains(
+            "pub async fn find_users(\n        &self,\n        sort: Option<Vec<PreparedSortSpec>>,"
         ));
         assert!(!output.contains("&self, ,"));
         assert!(output.contains("pub trait PreparedExecutor"));

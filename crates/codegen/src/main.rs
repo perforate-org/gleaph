@@ -2,8 +2,8 @@
 
 use candid::{Decode, Encode, IDLValue, Principal};
 use gleaph_codegen::{
-    generate_javascript, generate_motoko, generate_rust, generate_rust_canister,
-    generate_typescript, parse_manifest,
+    RustFormatMode, format_rust, generate_javascript, generate_motoko, generate_rust,
+    generate_rust_canister, generate_typescript, parse_manifest,
 };
 use std::env;
 use std::fs;
@@ -19,7 +19,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("gleaph-codegen: {message}");
             eprintln!(
-                "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [-n <ic|local|url>] [--fetch-root-key]"
+                "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [--format rust=<auto|rustfmt|never>] [-n <ic|local|url>] [--fetch-root-key]"
             );
             ExitCode::FAILURE
         }
@@ -34,6 +34,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let mut fetch_root_key = false;
     let mut target = None;
     let mut output = None;
+    let mut rust_format = RustFormatMode::Auto;
+    let mut format_targets = std::collections::BTreeSet::new();
     let mut index = 0;
     while index < args.len() {
         let flag = &args[index];
@@ -54,9 +56,24 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             "--target" => target = Some(value()?.clone()),
             "--output" => output = Some(PathBuf::from(value()?.clone())),
+            "--format" => {
+                let format = value()?;
+                let (language, mode) = format.split_once('=').ok_or_else(|| {
+                    format!("invalid format {format:?}; expected rust=<auto|rustfmt|never>")
+                })?;
+                if language != "rust" {
+                    return Err(format!(
+                        "unsupported format language {language:?}; expected rust"
+                    ));
+                }
+                if !format_targets.insert(language.to_string()) {
+                    return Err("duplicate format target \"rust\"".into());
+                }
+                rust_format = RustFormatMode::parse(mode)?;
+            }
             "-h" | "--help" => {
                 println!(
-                    "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [-n <ic|local|url>] [--fetch-root-key]"
+                    "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [--format rust=<auto|rustfmt|never>] [-n <ic|local|url>] [--fetch-root-key]"
                 );
                 return Ok(());
             }
@@ -113,6 +130,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
         _ => unreachable!("target was validated above"),
     }
     .map_err(|error| error.to_string())?;
+    let generated = if matches!(target.as_str(), "rust" | "rs" | "rust-canister") {
+        format_rust(generated, rust_format, output.as_deref())?
+    } else {
+        generated
+    };
     if let Some(output) = output {
         fs::write(&output, generated)
             .map_err(|error| format!("write {}: {error}", output.display()))?;
@@ -272,6 +294,8 @@ mod tests {
                 .into_owned(),
             "--target".into(),
             "rust".into(),
+            "--format".into(),
+            "rust=never".into(),
             "--output".into(),
             output.to_string_lossy().into_owned(),
         ])
@@ -308,6 +332,38 @@ mod tests {
         assert_eq!(generated, expected);
         assert!(generated.contains("module {"));
         fs::remove_file(output).expect("temporary output should be removable");
+    }
+
+    #[test]
+    fn rejects_duplicate_format_targets() {
+        let error = run(vec![
+            "--manifest".into(),
+            "manifest.json".into(),
+            "--target".into(),
+            "rust".into(),
+            "--format".into(),
+            "rust=never".into(),
+            "--format".into(),
+            "rust=auto".into(),
+        ])
+        .expect_err("duplicate format targets must fail");
+
+        assert_eq!(error, "duplicate format target \"rust\"");
+    }
+
+    #[test]
+    fn rejects_unknown_rust_format_mode() {
+        let error = run(vec![
+            "--manifest".into(),
+            "manifest.json".into(),
+            "--target".into(),
+            "rust".into(),
+            "--format".into(),
+            "rust=prettyplease".into(),
+        ])
+        .expect_err("unknown Rust format modes must fail");
+
+        assert!(error.contains("expected auto, rustfmt, or never"));
     }
 
     #[test]
