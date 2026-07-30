@@ -8855,6 +8855,32 @@ mod tests {
 
         assert_eq!(relation.row_count().expect("count"), 6);
         assert_eq!(relation.rows(2, 2).expect("chunk").len(), 2);
+
+        let large = super::CompleteRowSeedRelation {
+            variable_domains: vec![
+                ("left".to_string(), (0..256).collect()),
+                ("right".to_string(), (0..256).collect()),
+            ],
+        };
+        assert_eq!(large.row_count().expect("large count"), 65_536);
+        let mut visited = 0usize;
+        while visited < 65_536 {
+            let chunk = large.rows(visited, 1_024).expect("large chunk");
+            assert!(!chunk.is_empty());
+            for (index, row) in chunk.iter().enumerate() {
+                let ordinal = visited + index;
+                assert_eq!(
+                    row.vertex_bindings[0].local_vertex_id,
+                    (ordinal / 256) as u32
+                );
+                assert_eq!(
+                    row.vertex_bindings[1].local_vertex_id,
+                    (ordinal % 256) as u32
+                );
+            }
+            visited += chunk.len();
+        }
+        assert_eq!(visited, 65_536);
     }
 
     #[test]
