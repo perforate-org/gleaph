@@ -1,0 +1,31 @@
+{
+  "manifest_version": 1,
+  "graph": { "id": "fixture-graph", "name": null },
+  "operations": [
+    {
+      "name": "find-related",
+      "description": "Find related records from a graph path.",
+      "kind": "Query",
+      "parameters": [
+        {
+          "name": "route",
+          "description": "Path to start the traversal from.",
+          "required": true,
+          "nullable": false,
+          "type": "Path"
+        }
+      ],
+      "result": {
+        "columns": [
+          { "name": "display_name", "type": "Text", "nullable": false },
+          { "name": "next_route", "type": "Path", "nullable": true }
+        ]
+      },
+      "supports_consistency": false,
+      "supports_idempotency": false,
+      "allowed_sorts": [
+        { "key": "display_name", "label": "Display name" }
+      ]
+    }
+  ]
+}

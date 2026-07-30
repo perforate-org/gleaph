@@ -128,6 +128,34 @@ mod tests {
     }
 
     #[test]
+    fn generates_typescript_imports_required_by_advanced_fixture() {
+        let fixture_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/typescript-advanced");
+        let output = temporary_output_path();
+
+        run(vec![
+            "--manifest".into(),
+            fixture_dir
+                .join("manifest.json")
+                .to_string_lossy()
+                .into_owned(),
+            "--target".into(),
+            "typescript".into(),
+            "--output".into(),
+            output.to_string_lossy().into_owned(),
+        ])
+        .expect("CLI should generate the advanced TypeScript fixture");
+
+        let generated = fs::read_to_string(&output).expect("CLI should write the output file");
+        let expected = fs::read_to_string(fixture_dir.join("generated.ts"))
+            .expect("advanced TypeScript fixture should exist");
+        assert_eq!(generated, expected);
+        assert!(generated.contains("PreparedSortSpec"));
+        assert!(generated.contains("ApiPathElement"));
+        fs::remove_file(output).expect("temporary output should be removable");
+    }
+
+    #[test]
     fn rejects_unknown_target() {
         let error = run(vec![
             "--manifest".into(),
