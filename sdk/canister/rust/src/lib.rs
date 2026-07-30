@@ -367,6 +367,116 @@ pub fn take_gql_row_field(row: &mut GqlRow, name: &str) -> Result<GqlValue, GqlW
         .ok_or_else(|| GqlWireDecodeError::MissingField(name.to_string()))
 }
 
+/// Project a logical GQL value into the JSON representation used by generated open records.
+pub fn gql_value_to_json(value: GqlValue) -> Result<serde_json::Value, GqlWireDecodeError> {
+    let json = match value {
+        GqlValue::Null => serde_json::Value::Null,
+        GqlValue::Bool(value) => serde_json::Value::Bool(value),
+        GqlValue::Int8(value) => serde_json::json!(value),
+        GqlValue::Int16(value) => serde_json::json!(value),
+        GqlValue::Int32(value) => serde_json::json!(value),
+        GqlValue::Int64(value) => serde_json::json!(value),
+        GqlValue::Int128(value) => serde_json::Value::String(value.to_string()),
+        GqlValue::Int256(value) => serde_json::Value::String(value.to_string()),
+        GqlValue::Uint8(value) => serde_json::json!(value),
+        GqlValue::Uint16(value) => serde_json::json!(value),
+        GqlValue::Uint32(value) => serde_json::json!(value),
+        GqlValue::Uint64(value) => serde_json::json!(value),
+        GqlValue::Uint128(value) => serde_json::Value::String(value.to_string()),
+        GqlValue::Uint256(value) => serde_json::Value::String(value.to_string()),
+        GqlValue::Float16(value) => serde_json::json!(value.to_f32()),
+        GqlValue::Float32(value) => serde_json::to_value(value)
+            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
+        GqlValue::Float64(value) => serde_json::to_value(value)
+            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
+        #[cfg(feature = "nightly-f128")]
+        GqlValue::Float128(value) => serde_json::to_value(GqlFloat128::from_inner(value))
+            .map_err(|error| GqlWireDecodeError::Json(error.to_string()))?,
+        GqlValue::Float256(value) => serde_json::Value::String(value.to_string()),
+        GqlValue::Decimal(value) => serde_json::Value::String(value.to_string()),
+        GqlValue::Text(value) => serde_json::Value::String(value),
+        GqlValue::Bytes(value) => serde_json::Value::Array(
+            value
+                .into_iter()
+                .map(|value| serde_json::json!(value))
+                .collect(),
+        ),
+        GqlValue::Date(value) => serde_json::json!(value),
+        GqlValue::Time(value) => serde_json::json!(value),
+        GqlValue::LocalTime(value) => serde_json::json!(value),
+        GqlValue::DateTime(seconds, nanos) | GqlValue::LocalDateTime(seconds, nanos) => {
+            serde_json::json!({ "seconds": seconds, "nanos": nanos })
+        }
+        GqlValue::ZonedDateTime(seconds, nanos, offset_seconds) => {
+            serde_json::json!({
+                "seconds": seconds,
+                "nanos": nanos,
+                "offset_seconds": offset_seconds
+            })
+        }
+        GqlValue::ZonedTime(nanos, offset_seconds) => {
+            serde_json::json!({ "nanos": nanos, "offset_seconds": offset_seconds })
+        }
+        GqlValue::Duration(months, nanos) => {
+            serde_json::json!({ "months": months, "nanos": nanos })
+        }
+        GqlValue::List(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(gql_value_to_json)
+                .collect::<Result<_, _>>()?,
+        ),
+        GqlValue::Path(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(|value| match value {
+                    GqlPathElement::Vertex(value) => {
+                        serde_json::json!({ "Vertex": value.as_ref().to_vec() })
+                    }
+                    GqlPathElement::Edge(value) => {
+                        serde_json::json!({ "Edge": value.as_ref().to_vec() })
+                    }
+                })
+                .collect(),
+        ),
+        GqlValue::Record(values) => {
+            let mut object = serde_json::Map::new();
+            for (name, value) in values {
+                if object.contains_key(&name) {
+                    return Err(GqlWireDecodeError::DuplicateField(name));
+                }
+                object.insert(name, gql_value_to_json(value)?);
+            }
+            serde_json::Value::Object(object)
+        }
+        GqlValue::Extension(value) => value
+            .as_any()
+            .downcast_ref::<GqlPrincipal>()
+            .map(|principal| serde_json::Value::String(principal.to_string()))
+            .ok_or(GqlWireDecodeError::UnsupportedValue("extension"))?,
+    };
+    Ok(json)
+}
+
+/// Project a logical GQL record into the generated open-record map shape.
+pub fn gql_record_to_json_map(
+    value: GqlValue,
+) -> Result<std::collections::BTreeMap<String, serde_json::Value>, GqlWireDecodeError> {
+    match value {
+        GqlValue::Record(values) => {
+            let mut record = std::collections::BTreeMap::new();
+            for (name, value) in values {
+                if record.contains_key(&name) {
+                    return Err(GqlWireDecodeError::DuplicateField(name));
+                }
+                record.insert(name, gql_value_to_json(value)?);
+            }
+            Ok(record)
+        }
+        _ => Err(GqlWireDecodeError::TypeMismatch("Record")),
+    }
+}
+
 /// Path element in a logical GQL value.
 pub use gleaph_gql::types::PathElement as GqlPathElement;
 pub use gleaph_gql_ic_wire::{
@@ -756,6 +866,38 @@ mod tests {
         ];
         assert_eq!(
             take_gql_row_field(&mut row, "name"),
+            Err(GqlWireDecodeError::DuplicateField("name".into()))
+        );
+    }
+
+    #[test]
+    fn logical_gql_records_project_to_open_json_maps() {
+        let value = GqlValue::Record(vec![
+            ("name".into(), GqlValue::Text("Ada".into())),
+            ("active".into(), GqlValue::Bool(true)),
+            (
+                "nested".into(),
+                GqlValue::List(vec![GqlValue::Int8(1), GqlValue::Int8(2)]),
+            ),
+            ("bytes".into(), GqlValue::Bytes(vec![1, 2, 3])),
+        ]);
+
+        let projected = gql_record_to_json_map(value).expect("project record");
+        assert_eq!(projected["name"], serde_json::json!("Ada"));
+        assert_eq!(projected["active"], serde_json::json!(true));
+        assert_eq!(projected["nested"], serde_json::json!([1, 2]));
+        assert_eq!(projected["bytes"], serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn logical_gql_records_reject_duplicate_fields() {
+        let value = GqlValue::Record(vec![
+            ("name".into(), GqlValue::Text("Ada".into())),
+            ("name".into(), GqlValue::Text("Grace".into())),
+        ]);
+
+        assert_eq!(
+            gql_record_to_json_map(value),
             Err(GqlWireDecodeError::DuplicateField("name".into()))
         );
     }

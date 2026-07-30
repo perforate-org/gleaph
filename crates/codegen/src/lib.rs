@@ -563,6 +563,23 @@ mod tests {
     }
 
     #[test]
+    fn generates_typed_row_adapter_for_record_results() {
+        let mut value = manifest();
+        value.operations[0].result.columns[0].semantic_type = SemanticType::Record {
+            fields: vec![RecordField {
+                name: "display".into(),
+                semantic_type: SemanticType::Text,
+                nullable: false,
+            }],
+        };
+
+        let output = generate_rust_canister(&value).unwrap();
+        assert!(output.contains("impl gleaph_cdk::FromGqlRow for FindUsersRow"));
+        assert!(output.contains("gleaph_cdk::gql_record_to_json_map(value)?"));
+        assert!(output.contains("gleaph_cdk::serde_json::Value"));
+    }
+
+    #[test]
     fn generates_cdk_float_types_for_rust_canister_profile() {
         let mut value = manifest();
         value.operations[0].parameters = vec![

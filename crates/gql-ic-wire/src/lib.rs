@@ -185,6 +185,9 @@ pub enum GqlWireDecodeError {
     /// A typed row field contained a different logical GQL value variant.
     #[error("GQL row field has the wrong type; expected {0}")]
     TypeMismatch(&'static str),
+    /// A logical GQL value could not be represented as JSON.
+    #[error("GQL value cannot be represented as JSON: {0}")]
+    Json(String),
 }
 
 /// Decode the opaque `rows_blob` carried by a Router response.

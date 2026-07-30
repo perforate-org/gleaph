@@ -396,6 +396,7 @@ fn row_value_expression(semantic_type: &crate::SemanticType) -> Option<String> {
         crate::SemanticType::Path => {
             "match value { GqlValue::Path(value) => value.into_iter().map(|value| match value { gleaph_cdk::GqlPathElement::Vertex(value) => PreparedPathElement::Vertex(value.as_ref().to_vec()), gleaph_cdk::GqlPathElement::Edge(value) => PreparedPathElement::Edge(value.as_ref().to_vec()) }).collect(), _ => return Err(gleaph_cdk::GqlWireDecodeError::TypeMismatch(\"Path\")) }"
         }
+        crate::SemanticType::Record { .. } => "gleaph_cdk::gql_record_to_json_map(value)?",
         crate::SemanticType::List { element } => {
             let element = row_value_expression(element)?;
             return Some(format!(
