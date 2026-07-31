@@ -15,7 +15,7 @@ import {
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(SCRIPT_DIR, "..");
 const CONFIG_DIR = join(APP_ROOT, "config");
-const KM_SEEDS_DIR = resolve(APP_ROOT, "..", "knowledge-map", "seeds");
+const SEEDS_DIR = resolve(APP_ROOT, "seeds");
 const DATA_DIR = join(APP_ROOT, "src", "data");
 
 const DEMO_GRAPH = "social";
@@ -480,7 +480,7 @@ for (const post of posts) {
 const graph = { nodes, edges };
 
 // ---------------------------------------------------------------------------
-// Seed GQL generation (mirrors frontend/apps/knowledge-map/scripts/generate-seeds.mjs)
+// Seed GQL generation
 // ---------------------------------------------------------------------------
 
 const escapeGqlString = (value) => String(value).replace(/'/g, "''");
@@ -731,12 +731,12 @@ ${entries}
 // ---------------------------------------------------------------------------
 
 writeFileSync(
-  join(KM_SEEDS_DIR, "social-graph.json"),
+  join(SEEDS_DIR, "social-graph.json"),
   `${JSON.stringify(graph, null, 2)}\n`,
 );
 
 writeFileSync(
-  join(KM_SEEDS_DIR, "social-seeds.json"),
+  join(SEEDS_DIR, "social-seeds.json"),
   `${JSON.stringify({ seeds, embeddings }, null, 2)}\n`,
 );
 
@@ -777,7 +777,7 @@ if (nullVectors.length !== expectedNullVectorCount) {
 }
 
 // Validate emitted seeds.
-const seedsText = readFileSync(join(KM_SEEDS_DIR, "social-seeds.json"), "utf8");
+const seedsText = readFileSync(join(SEEDS_DIR, "social-seeds.json"), "utf8");
 const parsedSeeds = JSON.parse(seedsText);
 const expectedSeedCount =
   graph.nodes.filter((node) => node.layer === 0).length + graph.edges.length;

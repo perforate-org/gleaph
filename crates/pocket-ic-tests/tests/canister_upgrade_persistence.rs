@@ -18,9 +18,9 @@ use gleaph_graph_kernel::index::{IndexPostingBatchProgress, IndexPostingMutation
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_execute_idempotent_as_admin,
-    gql_query_as_admin, install_single_shard_federation, knowledge_map_live_query,
-    prepared_manifest_as_admin, prepared_query_with_params_as, prepared_upsert_as_admin,
-    seed_knowledge_map_graph, wasm_bytes,
+    gql_query_as_admin, install_single_shard_federation, prepared_manifest_as_admin,
+    prepared_query_with_params_as, prepared_upsert_as_admin, seed_upgrade_fixture_graph,
+    upgrade_fixture_query, wasm_bytes,
 };
 use gleaph_prepared_api::{OperationKind, PreparedOperation, ResultSchema};
 use gleaph_router::types::{
@@ -28,7 +28,7 @@ use gleaph_router::types::{
 };
 use std::collections::BTreeSet;
 
-/// Distinct `edge_id` values returned by the knowledge-map live query.
+/// Distinct `edge_id` values returned by the upgrade fixture query.
 fn edge_ids(result: &GqlQueryResult) -> BTreeSet<String> {
     let rows_blob = result
         .rows_blob
@@ -66,13 +66,13 @@ fn upgrade_all(env: &FederationEnv) {
 #[test]
 fn canister_upgrade_preserves_seeded_graph_without_corruption() {
     let env = install_single_shard_federation();
-    seed_knowledge_map_graph(&env);
+    seed_upgrade_fixture_graph(&env);
 
-    let before = gql_query_as_admin(&env, knowledge_map_live_query());
+    let before = gql_query_as_admin(&env, upgrade_fixture_query());
     let before_ids = edge_ids(&before);
     assert_eq!(
         before.row_count, 26,
-        "baseline knowledge-map query should return one row per seeded demo edge"
+        "baseline upgrade fixture query should return one row per seeded edge"
     );
     assert_eq!(before_ids.len(), 26, "baseline edge ids must be distinct");
 
@@ -81,7 +81,7 @@ fn canister_upgrade_preserves_seeded_graph_without_corruption() {
     // Post-upgrade the same query must observe the exact same graph: identical
     // row count and identical edge-id set. Any stable-layout, Storable, router
     // catalog, shard adjacency, or index posting corruption would diverge here.
-    let after = gql_query_as_admin(&env, knowledge_map_live_query());
+    let after = gql_query_as_admin(&env, upgrade_fixture_query());
     let after_ids = edge_ids(&after);
     assert_eq!(
         after.row_count, before.row_count,
@@ -96,8 +96,8 @@ fn canister_upgrade_preserves_seeded_graph_without_corruption() {
     // re-seed (same client mutation keys) must be a no-op that still reads back
     // the unchanged graph, proving the router idempotency journal and shard
     // state survived intact.
-    seed_knowledge_map_graph(&env);
-    let after_reseed = gql_query_as_admin(&env, knowledge_map_live_query());
+    seed_upgrade_fixture_graph(&env);
+    let after_reseed = gql_query_as_admin(&env, upgrade_fixture_query());
     assert_eq!(
         after_reseed.row_count, before.row_count,
         "idempotent re-seed after upgrade must not change the graph"
@@ -112,10 +112,10 @@ fn canister_upgrade_preserves_seeded_graph_without_corruption() {
 #[test]
 fn prepared_query_survives_router_upgrade_cache_rebuild() {
     let env = install_single_shard_federation();
-    seed_knowledge_map_graph(&env);
+    seed_upgrade_fixture_graph(&env);
 
     let query_name = "upgrade-prepared-cache-rebuild";
-    prepared_upsert_as_admin(&env, query_name, knowledge_map_live_query());
+    prepared_upsert_as_admin(&env, query_name, upgrade_fixture_query());
     let before = prepared_query_with_params_as(&env, env.admin, query_name, Vec::new());
 
     upgrade_all(&env);
@@ -193,29 +193,28 @@ fn prepared_manifest_exposes_doc_and_parameter_metadata() {
 #[test]
 fn canister_upgrade_repeated_is_stable() {
     let env = install_single_shard_federation();
-    seed_knowledge_map_graph(&env);
-    let baseline = edge_ids(&gql_query_as_admin(&env, knowledge_map_live_query()));
+    seed_upgrade_fixture_graph(&env);
+    let baseline = edge_ids(&gql_query_as_admin(&env, upgrade_fixture_query()));
 
     // Two successive upgrades must each preserve the data (guards against an
     // upgrade that silently consumes/relocates stable regions on every cycle).
     for _ in 0..2 {
         upgrade_all(&env);
-        let ids = edge_ids(&gql_query_as_admin(&env, knowledge_map_live_query()));
+        let ids = edge_ids(&gql_query_as_admin(&env, upgrade_fixture_query()));
         assert_eq!(
             ids, baseline,
             "edge-id set drifted across repeated upgrades"
         );
     }
 
-    // A new write after repeated upgrades must still land and be queryable
-    // (mirrors the knowledge-map seed edge pattern / schema).
-    let new_edge_ddl = "MATCH (a:Person {demo_id: 'alice', demo_graph: 'knowledge-map'}) RETURN a \
-NEXT INSERT (a)-[:WROTE {demo_edge_id: 'alice-post-upgrade', demo_kind: 'verify'}]\
-->(b:Post {demo_id: 'post-upgrade-check', demo_graph: 'knowledge-map', title: 'Upgrade check'})";
+    // A new write after repeated upgrades must still land and be queryable.
+    let new_edge_ddl = "MATCH (a:UpgradeSource {fixture_id: 'source'}) RETURN a \
+NEXT INSERT (a)-[:UPGRADE_EDGE {fixture_edge_id: 'edge-post-upgrade', fixture_kind: 'verify'}]\
+->(:UpgradeTarget {fixture_id: 'target-post-upgrade', fixture_kind: 'upgrade'})";
     let _ = gql_execute_idempotent_as_admin(&env, new_edge_ddl, "post_upgrade_new_edge");
-    let after_write = edge_ids(&gql_query_as_admin(&env, knowledge_map_live_query()));
+    let after_write = edge_ids(&gql_query_as_admin(&env, upgrade_fixture_query()));
     assert!(
-        after_write.contains("alice-post-upgrade"),
+        after_write.contains("edge-post-upgrade"),
         "new edge written after repeated upgrades must be queryable, got {after_write:?}"
     );
     assert_eq!(

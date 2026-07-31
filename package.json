@@ -17,9 +17,6 @@
     "dashboard:dev": "pnpm --filter @gleaph/dashboard dev",
     "dashboard:check": "pnpm --filter @gleaph/dashboard run check",
     "dashboard:build": "pnpm --filter @gleaph/dashboard run build",
-    "knowledge-map:dev": "pnpm --filter @gleaph/knowledge-map dev",
-    "knowledge-map:check": "pnpm --filter @gleaph/knowledge-map check",
-    "knowledge-map:build": "pnpm --filter @gleaph/knowledge-map build",
     "social-demo:dev": "pnpm --filter @gleaph/social-demo dev",
     "social-demo:check": "pnpm --filter @gleaph/social-demo check",
     "social-demo:build": "pnpm --filter @gleaph/social-demo build"

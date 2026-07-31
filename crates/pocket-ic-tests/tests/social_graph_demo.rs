@@ -59,7 +59,7 @@ const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post)<-[:POSTED]-(author:User) 
 const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.user_id = 'alice' AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC LIMIT 20 OFFSET $offset";
 
 const SOCIAL_SEEDS_JSON: &str =
-    include_str!("../../../frontend/apps/knowledge-map/seeds/social-seeds.json");
+    include_str!("../../../frontend/apps/social-demo/seeds/social-seeds.json");
 
 #[test]
 fn social_graph_demo_gateway_contract() {

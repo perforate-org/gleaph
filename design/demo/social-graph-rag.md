@@ -13,25 +13,24 @@ readable as `<author>/<post-stem>` paths.
 
 ## Phase 1 implementation note
 
-As of 2026-07-11 10:51:54 UTC +0000:
+As of 2026-07-31 05:00:26 UTC +0000:
 
-- Canonical manifest: `frontend/apps/knowledge-map/seeds/social-graph.json`.
-- Generated seed artifact: `frontend/apps/knowledge-map/seeds/social-seeds.json`.
+- Canonical manifest: `frontend/apps/social-demo/seeds/social-graph.json`.
+- Generated seed artifact: `frontend/apps/social-demo/seeds/social-seeds.json`.
 - Config-driven build: `frontend/apps/social-demo/scripts/build-config.mjs`.
 - The seed graph now includes a `public-feed` Feed vertex and materialized `IN_PUBLIC_FEED` /
   `IN_HOME_FEED` edges so the public timeline and home feed read paths need no runtime sort key.
-- Seed generator: `frontend/apps/knowledge-map/scripts/generate-seeds.mjs` now accepts arbitrary
-  manifest/output paths while preserving the existing knowledge-map output by default.
-- Seed applier: `frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs` now accepts
-  optional seeds path, canister name, and method name arguments while preserving its original
-  knowledge-map defaults.
+- Seed generator: `frontend/apps/social-demo/scripts/build-config.mjs` emits the canonical graph
+  manifest and seed artifact from the social-demo configuration.
+- Seed applier: `frontend/apps/social-demo/scripts/apply-social-seeds.mjs` accepts optional seeds
+  path, canister name, and method name arguments.
 - Gateway canister: `crates/social-demo-gateway`.
 - Committed Gateway Candid: `crates/social-demo-gateway/social_demo_gateway.did`.
 - Candid drift check: `scripts/check-social-demo-gateway-candid.sh` verifies the committed
   interface matches the Rust-exported WASM `candid:service` metadata.
 - Gateway PocketIC test target: `crates/pocket-ic-tests/tests/social_graph_demo.rs`.
 - Public comparison frontend: `frontend/apps/social-demo`.
-  - Dedicated Solid application, not an extension of knowledge-map.
+  - Dedicated Solid application.
   - Browser calls only the Gateway actor; no Router `gql_query`, arbitrary GQL, prepared-query
     names, graph names, or client-controlled parameters are exposed.
   - Three fixed scenario selectors matching the Gateway enum.
@@ -401,10 +400,9 @@ strategy, and time-bucketed public feeds to address the hot-vertex concern.
 ## Frontend and reuse strategy
 
 The public comparison is implemented as a dedicated `frontend/apps/social-demo` Solid application.
-It shares the workspace's pnpm/Vite/Tailwind/Solid tooling and the `safeGetCanisterEnv` canister
-environment pattern with knowledge-map, but it does not reuse knowledge-map-specific fixtures,
-Router-row adapters, SVG graph components, or playback machinery. The Gateway owns the scenario
-contract and row shape; the frontend owns presentation, fail-closed decoding, and comparison copy.
+It uses the workspace's pnpm/Vite/Tailwind/Solid tooling and the `safeGetCanisterEnv` canister
+environment pattern. The Gateway owns the scenario contract and row shape; the frontend owns
+presentation, fail-closed decoding, and comparison copy.
 
 In `pnpm --filter @gleaph/social-demo dev`, `scripts/deploy-social-demo-local.sh` writes `frontend/apps/social-demo/.env.local` with the deployed Gateway id and the local replica URL; the file is gitignored. The write is gated on a `/api/v2/status` listen check, so a half-up replica never poisons the env. Set `GLEAPH_DEMO_SKIP_VITE_ENV=1` to opt out entirely, or `GLEAPH_DEMO_FORCE_VITE_IC_HOST=1` to also overwrite the cached `VITE_IC_HOST` (default keeps a hand-pinned host stable for CI).
 
@@ -434,7 +432,7 @@ adding arbitrary query controls or Router GQL entrypoints to the public UI.
   timeline and Alice's home feed are single fixed-label expansions with no runtime sort key.
 - Add public timeline, home/discovery, and propagation scenarios.
 - Execute every query through Router.
-- Reuse the existing knowledge-map visualization and deployment path where practical.
+- Build the comparison in the dedicated social-demo application.
 - Keep the experience public and read-only.
 
 ### Phase 2: vector comparison
@@ -497,20 +495,17 @@ Internet Identity application integration by itself does not require a Gleaph AD
 
 ## Open decisions
 
-1. Which existing knowledge-map components can support a timeline-plus-graph layout without creating
-   a second frontend application?
-2. Which deterministic posts and relationships best make each retrieval model visibly different? (resolved: the manifest uses 8-dimensional `post_vec` embeddings; Dave's retrieval post is nearest in vector-only search, while Alice's graph-constrained feed excludes it because she does not follow Dave.)
-3. Should Phase 1 call registered prepared queries directly, or use a narrow Router-owned demo read
+1. Which deterministic posts and relationships best make each retrieval model visibly different? (resolved: the manifest uses 8-dimensional `post_vec` embeddings; Dave's retrieval post is nearest in vector-only search, while Alice's graph-constrained feed excludes it because she does not follow Dave.)
+2. Should Phase 1 call registered prepared queries directly, or use a narrow Router-owned demo read
    endpoint before the prepared-query frontend wrapper exists?
-4. Which embedding provider should the application demo adapter support first, and which `ic-llm`
+3. Which embedding provider should the application demo adapter support first, and which `ic-llm`
    model should be the bounded default?
-5. What evidence-subgraph row format is sufficient without becoming a new public Router API?
-6. Which application SDK helpers are actually needed once Internet Identity is integrated in Phase
+4. What evidence-subgraph row format is sufficient without becoming a new public Router API?
+5. Which application SDK helpers are actually needed once Internet Identity is integrated in Phase
    4?
 
 ## Related documents
 
-- [knowledge-map.md](knowledge-map.md)
 - [../architecture/overview.md](../architecture/overview.md)
 - [../security/rbac-and-prepared.md](../security/rbac-and-prepared.md)
 - [../gql/extension-syntax.md](../gql/extension-syntax.md)

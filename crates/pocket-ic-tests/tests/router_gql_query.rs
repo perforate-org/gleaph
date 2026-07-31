@@ -17,8 +17,7 @@ use gleaph_pocket_ic_tests::{
     gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_result_as_admin,
     gql_query_as_admin, gql_query_as_admin_expect_err, gql_query_with_consistency_as_admin,
     graph_index_pending_min_mutation_id, install_federation, install_single_shard_federation,
-    knowledge_map_live_query, mutation_status_as_admin, run_router_recovery_timer,
-    seed_knowledge_map_graph, start_graph_shard, stop_graph_shard,
+    mutation_status_as_admin, run_router_recovery_timer, start_graph_shard, stop_graph_shard,
     test_inject_projection_pending_saga,
 };
 
@@ -265,13 +264,11 @@ fn assert_missing_index_drop_error(env: &gleaph_pocket_ic_tests::FederationEnv) 
     );
 }
 
-/// Former `standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter`.
-///
 /// Helper-seeded `KNOWS {weight: 5}` edge: exact source, edge, target, and property columns.
 /// Kept in a fresh fixture because its exact row membership (`row_count == 1`) is incompatible
-/// with the GQL-insert path and with the broader demo fan-out graph.
+/// with the GQL-insert path.
 #[test]
-fn single_shard_knowledge_map_relationship_rows() {
+fn single_shard_relationship_rows() {
     let env = install_single_shard_federation();
     let weight = admin_intern_property(&env, "weight");
     let edge_label = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
@@ -320,48 +317,6 @@ fn single_shard_knowledge_map_relationship_rows() {
         row.get("edge_weight"),
         Some(&Value::Int64(5)),
         "edge property should be projected for adapter row metadata"
-    );
-}
-
-/// Former `router_gql_insert_seeds_knowledge_map_fan_out_graph`.
-///
-/// Seeds the full knowledge-map demo graph (26 unique demo edges) through idempotent Router
-/// inserts and asserts the live query returns 26 unique edge ids, including the required
-/// representative ids `alice-storage` and `project-lara`.
-#[test]
-fn single_shard_knowledge_map_fan_out() {
-    let env = install_single_shard_federation();
-    seed_knowledge_map_graph(&env);
-
-    let result = gql_query_as_admin(&env, knowledge_map_live_query());
-    assert_eq!(
-        result.row_count, 26,
-        "knowledge-map live query should return one row per seeded demo edge"
-    );
-
-    let rows_blob = result
-        .rows_blob
-        .as_ref()
-        .expect("router gql_query should return rows_blob");
-    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
-    assert_eq!(wire.rows.len(), 26);
-
-    let mut edge_ids = std::collections::BTreeSet::new();
-    for row in wire.rows {
-        let value_row = row.try_into_value_row().expect("wire row to value row");
-        let Value::Text(edge_id) = value_row.get("edge_id").expect("edge_id column") else {
-            panic!("expected edge_id text, got {:?}", value_row.get("edge_id"));
-        };
-        edge_ids.insert(edge_id.clone());
-    }
-
-    assert!(
-        edge_ids.contains("alice-storage"),
-        "expected alice-storage edge, got {edge_ids:?}"
-    );
-    assert!(
-        edge_ids.contains("project-lara"),
-        "expected project-lara edge, got {edge_ids:?}"
     );
 }
 
@@ -911,20 +866,18 @@ fn router_recovery_timer_converges_projection_pending_saga_autonomously() {
     assert_eq!(completed.next_action, "none");
 }
 
-/// Former `router_gql_insert_seeds_relationship_rows_for_knowledge_map_adapter`.
-///
 /// A GQL `INSERT` creates a single `KNOWS {weight: 5}` relationship, then a second query
 /// proves the GQL-created row is observable through the relationship-row adapter projection.
 /// Kept separate from the helper-seeded relationship test to preserve independent creation-path
 /// diagnosability: both paths must produce valid source/edge/target bytes and the projected weight.
 #[test]
-fn single_shard_knowledge_map_relationship_rows_from_insert() {
+fn single_shard_relationship_rows_from_insert() {
     let env = install_single_shard_federation();
 
     let row_count = gql_execute_idempotent_as_admin(
         &env,
         "INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)",
-        "single_shard_knowledge_map_relationship_rows_from_insert",
+        "single_shard_relationship_rows_from_insert",
     );
     assert_eq!(row_count, 0);
 

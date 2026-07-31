@@ -45,13 +45,6 @@ canisters:
         shrink: true
         dir: frontend/apps/social-demo/dist
 
-  - name: knowledge-map
-    recipe:
-      type: "@dfinity/asset-canister@v2.2.1"
-      configuration:
-        shrink: true
-        dir: frontend/apps/knowledge-map/dist
-
 networks:
   # Override the local network with a docker network
   - name: local

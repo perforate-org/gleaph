@@ -260,11 +260,11 @@ build_social_config() {
   node "$ROOT/frontend/apps/social-demo/scripts/build-config.mjs"
 }
 
-# apply-knowledge-map-seeds.mjs pages dynamically by Candid payload size and item cap;
+# apply-social-seeds.mjs pages dynamically by Candid payload size and item cap;
 # no fixed per-call page size is needed here.
 seed_social_graph() {
   log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
-  # apply-knowledge-map-seeds.mjs groups the manifest into dependency waves
+  # apply-social-seeds.mjs groups the manifest into dependency waves
   # (vertices, user edges, posts, replies, topic/feed assignments) and runs each wave as a
   # separate gql_execute_idempotent_batch call, preserving parent-before-child order.
   env \
@@ -276,8 +276,8 @@ seed_social_graph() {
     CARGO_HOME="$CARGO_HOME" \
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     ICP_IDENTITY_NAME="$deployer_id" \
-    node "$ROOT/frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs" \
-      "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json" \
+    node "$ROOT/frontend/apps/social-demo/scripts/apply-social-seeds.mjs" \
+      "$ROOT/frontend/apps/social-demo/seeds/social-seeds.json" \
       gleaph-router \
       gql_execute_idempotent_batch
 }
@@ -317,7 +317,7 @@ ingest_social_embeddings() {
       ICP_IDENTITY_NAME="$deployer_id" \
       DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
       node "$ROOT/frontend/apps/social-demo/scripts/ingest-social-embeddings.mjs" \
-        "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
+        "$ROOT/frontend/apps/social-demo/seeds/social-seeds.json"
   then
     log "Embeddings ingest complete"
   else

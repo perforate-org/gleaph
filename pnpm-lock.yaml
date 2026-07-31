@@ -61,37 +61,6 @@ importers:
         specifier: ^2.11.6
         version: 2.11.12(solid-js@1.9.13)(vite@6.4.2(@types/node@22.19.19)(jiti@1.21.7)(lightningcss@1.32.0)(yaml@2.9.0))
 
-  frontend/apps/knowledge-map:
-    dependencies:
-      '@icp-sdk/core':
-        specifier: ^5.2.0
-        version: 5.2.0
-      solid-js:
-        specifier: ^1.9.5
-        version: 1.9.13
-    devDependencies:
-      '@types/node':
-        specifier: ^22.15.0
-        version: 22.19.19
-      autoprefixer:
-        specifier: ^10.4.21
-        version: 10.5.0(postcss@8.5.8)
-      postcss:
-        specifier: ^8.5.3
-        version: 8.5.8
-      tailwindcss:
-        specifier: ^3.4.17
-        version: 3.4.19(yaml@2.9.0)
-      typescript:
-        specifier: ^5.8.3
-        version: 5.9.3
-      vite:
-        specifier: ^6.3.5
-        version: 6.4.2(@types/node@22.19.19)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0)
-      vite-plugin-solid:
-        specifier: ^2.11.6
-        version: 2.11.12(solid-js@1.9.13)(vite@6.4.2(@types/node@22.19.19)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))
-
   frontend/apps/social-demo:
     dependencies:
       '@icp-sdk/core':

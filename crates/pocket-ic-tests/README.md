@@ -50,9 +50,8 @@ children.
 | `router_gql_query::single_shard_identity_lifecycle` | Single-shard identity lifecycle: NodeScan, `GlobalVertexId`, and `ELEMENT_ID` round-trip |
 | `router_gql_query::single_shard_vertex_index_lifecycle` | Single-shard vertex-index lifecycle: CREATE INDEX, indexed equality, two-index intersection, DROP INDEX, scan fallback, idempotent IF EXISTS drop, missing DROP NotFound |
 | `router_gql_query::single_shard_generic_edge_index_lifecycle` | Single-shard generic edge-index lifecycle: CREATE INDEX, indexed property equality, DROP INDEX, scan fallback |
-| `router_gql_query::single_shard_knowledge_map_relationship_rows` | Helper-seeded `KNOWS` relationship row material (source/edge/target ids + weight) |
-| `router_gql_query::single_shard_knowledge_map_relationship_rows_from_insert` | GQL `INSERT`-created `KNOWS` relationship row material (source/edge/target ids + weight) |
-| `router_gql_query::single_shard_knowledge_map_fan_out` | Full knowledge-map demo graph fan-out (26 seeded demo edges) |
+| `router_gql_query::single_shard_relationship_rows` | Helper-seeded `KNOWS` relationship row material (source/edge/target ids + weight) |
+| `router_gql_query::single_shard_relationship_rows_from_insert` | GQL `INSERT`-created `KNOWS` relationship row material (source/edge/target ids + weight) |
 | `router_gql_query::single_shard_pointing_right_edge_index_lifecycle` | Single-shard pointing-right edge-index lifecycle: directed CREATE INDEX DDL, indexed property equality, DROP INDEX, scan fallback |
 | `router_gql_query::single_shard_undirected_edge_index_lifecycle` | Single-shard undirected edge-index lifecycle: anonymous symmetric expansion without index, undirected CREATE INDEX DDL, indexed equality, directed insert does not seed undirected index, DROP INDEX, scan fallback |
 | `router_gql_query::federated_vertex_index_lifecycle` | Federated vertex-index lifecycle: hit-shard-only routing, cross-shard merge, two-property intersection with partial-match sieve, and `DROP INDEX` removing the federated anchor |

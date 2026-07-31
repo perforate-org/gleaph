@@ -12,8 +12,8 @@ The social-demo sample graph is authored as per-file YAML under
 file and inline shell literals. A single build script emits the four artifacts
 that the rest of the pipeline already consumes:
 
-1. `frontend/apps/knowledge-map/seeds/social-graph.json` — graph topology.
-2. `frontend/apps/knowledge-map/seeds/social-seeds.json` — seed GQL strings.
+1. `frontend/apps/social-demo/seeds/social-graph.json` — graph topology.
+2. `frontend/apps/social-demo/seeds/social-seeds.json` — seed GQL strings.
 3. `frontend/apps/social-demo/src/data/scenarios.generated.ts` — TypeScript
    scenario definitions for the React app.
 4. `frontend/apps/social-demo/src/data/scenarios.generated.json` — scenario
@@ -134,7 +134,7 @@ truth for the emitted artifacts:
 6. Emit ordinary edge `INSERT` mutations. Graph-owned deferred storage prepares a
    dense leaf before the next write, so source fan-out is not a seed-writer concern.
 7. Emit `social-graph.json` and `social-seeds.json` in the exact shape consumed
-   by the existing apply-knowledge-map-seeds path.
+   by the social-demo seed application path.
 8. Emit `scenarios.generated.ts` and `scenarios.generated.json` from the
    scenario YAMLs.
 

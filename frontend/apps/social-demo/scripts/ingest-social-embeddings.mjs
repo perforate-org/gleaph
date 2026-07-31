@@ -8,7 +8,7 @@ import { createRouterActor } from "./actor.mjs";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = process.cwd();
 const MANIFEST_PATH =
-  process.argv[2] || `${ROOT}/frontend/apps/knowledge-map/seeds/social-seeds.json`;
+  process.argv[2] || `${ROOT}/frontend/apps/social-demo/seeds/social-seeds.json`;
 const GRAPH_NAME = process.env.GLEAPH_DEMO_GRAPH_NAME || "gleaph.pocket_ic";
 const ROUTER_CANISTER = process.env.GLEAPH_DEMO_ROUTER_CANISTER || "gleaph-router";
 const EMBEDDING_NAME = process.env.GLEAPH_DEMO_EMBEDDING_NAME || "post_vec";

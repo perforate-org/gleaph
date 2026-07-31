@@ -8,7 +8,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const seedsPath = process.argv[2]
   ? resolve(process.argv[2])
-  : join(root, "seeds/knowledge-map-seeds.json");
+  : join(root, "seeds/social-seeds.json");
 const canisterName = process.argv[3] ?? "gleaph-router";
 const methodName = process.argv[4] ?? "gql_execute_idempotent_batch";
 const pageSizeInput = process.env.SEED_PAGE_SIZE ?? process.argv[5];

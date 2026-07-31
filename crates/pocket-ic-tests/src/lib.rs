@@ -2751,37 +2751,37 @@ pub fn gql_execute_idempotent_pair_concurrent_as_admin(
     (result_a, result_b)
 }
 
-const KNOWLEDGE_MAP_SEEDS_JSON: &str =
-    include_str!("../../../frontend/apps/knowledge-map/seeds/knowledge-map-seeds.json");
-
 const SOCIAL_SEEDS_JSON: &str =
-    include_str!("../../../frontend/apps/knowledge-map/seeds/social-seeds.json");
+    include_str!("../../../frontend/apps/social-demo/seeds/social-seeds.json");
 
-const KNOWLEDGE_MAP_LIVE_QUERY: &str = "\
-MATCH ()-[e]->() WHERE e.demo_edge_id IS NOT NULL \
-RETURN e.demo_edge_id AS edge_id, e.demo_kind AS edge_kind \
+const UPGRADE_FIXTURE_QUERY: &str = "\
+MATCH ()-[e:UPGRADE_EDGE]->() WHERE e.fixture_edge_id IS NOT NULL \
+RETURN e.fixture_edge_id AS edge_id, e.fixture_kind AS edge_kind \
 ORDER BY edge_id";
 
-/// Seed the knowledge-map demo graph through Router `gql_execute_idempotent`.
-pub fn seed_knowledge_map_graph(env: &FederationEnv) {
-    let parsed: serde_json::Value =
-        serde_json::from_str(KNOWLEDGE_MAP_SEEDS_JSON).expect("parse knowledge-map seeds");
-    for seed in parsed["seeds"]
-        .as_array()
-        .expect("knowledge-map seed array")
-    {
-        let gql = seed["gql"].as_str().expect("knowledge-map seed gql");
-        let key = seed["key"].as_str().expect("knowledge-map seed key");
-        let row_count = gql_execute_idempotent_as_admin(env, gql, key);
+/// Seed a 26-edge fan-out fixture through Router `gql_execute_idempotent`.
+pub fn seed_upgrade_fixture_graph(env: &FederationEnv) {
+    let source_query = "INSERT (:UpgradeSource {fixture_id: 'source', fixture_kind: 'upgrade'})";
+    let row_count = gql_execute_idempotent_as_admin(env, source_query, "upgrade-fixture-source");
+    assert_eq!(row_count, 0, "source seed should not return rows");
+    drain_maintenance_via_timer(env, env.graph_source);
+
+    for index in 0..26 {
+        let edge_id = format!("edge-{index:02}");
+        let gql = format!(
+            "MATCH (a:UpgradeSource {{fixture_id: 'source'}}) RETURN a NEXT \
+             INSERT (a)-[:UPGRADE_EDGE {{fixture_edge_id: '{edge_id}', fixture_kind: 'upgrade'}}]\
+             ->(:UpgradeTarget {{fixture_id: 'target-{index:02}', fixture_kind: 'upgrade'}})"
+        );
+        let key = format!("upgrade-fixture-{edge_id}");
+        let row_count = gql_execute_idempotent_as_admin(env, &gql, &key);
         assert_eq!(row_count, 0, "seed {key} should not return rows");
-        // The seeds are intentionally dependent (later MATCH clauses resolve earlier writes
-        // through the Router's index). Wait for the Graph outbox before issuing the next message.
         drain_maintenance_via_timer(env, env.graph_source);
     }
 }
 
-pub fn knowledge_map_live_query() -> &'static str {
-    KNOWLEDGE_MAP_LIVE_QUERY
+pub fn upgrade_fixture_query() -> &'static str {
+    UPGRADE_FIXTURE_QUERY
 }
 /// Seed the social demo graph through Router `gql_execute_idempotent`, then assert
 /// that the materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges were inserted
