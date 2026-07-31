@@ -61,6 +61,7 @@ gleaph-gql-ic.workspace = true
 gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
 gleaph-prepared-runtime.workspace = true
 gleaph-graph-kernel.workspace = true
+gleaph-message-sizing.workspace = true
 gleaph-gql-integration.workspace = true
 half.workspace = true
 ic-cdk.workspace = true

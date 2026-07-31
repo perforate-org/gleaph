@@ -1,6 +1,5 @@
 //! Stable label stats delta log and graph mutation journal (ADR 0015).
 
-use gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use gleaph_graph_kernel::entry::{EdgeLabelId, VertexLabelId};
 use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
@@ -9,6 +8,7 @@ use gleaph_graph_kernel::plan_exec::{
     LabelStatsDeltaEventWire, MutationId, MutationJournalState, ShardEventSeq,
     validate_graph_mutation_journal_fields,
 };
+use gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
 use std::ops::Bound as StdBound;

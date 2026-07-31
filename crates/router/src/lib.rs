@@ -362,10 +362,10 @@ async fn gql_execute_idempotent_batch(
             "gql_execute_idempotent_batch request encode failed: {error}"
         ))
     })?;
-    if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    if request_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(RouterError::InvalidArgument(format!(
             "gql_execute_idempotent_batch request exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         )));
     }
     let total = args.mutations.len() as u32;
@@ -490,10 +490,10 @@ async fn gql_execute_idempotent_batch(
             "gql_execute_idempotent_batch response encode failed: {error}"
         ))
     })?;
-    if response_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    if response_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(RouterError::InvalidArgument(format!(
             "gql_execute_idempotent_batch response exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         )));
     }
     Ok(result)

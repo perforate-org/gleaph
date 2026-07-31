@@ -226,10 +226,10 @@ fn ensure_execute_plan_result_payload(
 ) -> Result<(), String> {
     let encoded =
         Encode!(result).map_err(|error| format!("{entrypoint} response encode failed: {error}"))?;
-    if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(format!(
             "{entrypoint} response exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
     Ok(())
@@ -859,10 +859,10 @@ async fn execute_plan_batch(
     }
     let request_bytes =
         Encode!(&args).map_err(|err| format!("{entrypoint} request encode failed: {err}"))?;
-    if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    if request_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(format!(
             "{entrypoint} request exceeds the safe payload limit of {}",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
     let mode = args.mode;
@@ -1217,10 +1217,10 @@ async fn execute_plan_batch_internal(
     };
     let response_bytes =
         Encode!(&result).map_err(|err| format!("{entrypoint} response encode failed: {err}"))?;
-    if response_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    if response_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(format!(
             "{entrypoint} response exceeds the safe payload limit of {}",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
     Ok(result)
@@ -2593,7 +2593,7 @@ mod tests {
 
     #[test]
     fn execute_plan_result_payload_guard_accepts_boundary_and_rejects_next_byte() {
-        let limit = gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
+        let limit = gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
         let result = |payload_len| ExecutePlanResult {
             row_count: 0,
             rows_blob: Some(vec![0; payload_len]),

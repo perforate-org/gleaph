@@ -9,6 +9,7 @@ candid.workspace = true
 gleaph-gql = { workspace = true, features = ["f128", "f256"] }
 gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
 gleaph-graph-kernel.workspace = true
+gleaph-message-sizing.workspace = true
 
 [features]
 cypher = ["gleaph-gql/cypher", "gleaph-gql-planner/cypher"]

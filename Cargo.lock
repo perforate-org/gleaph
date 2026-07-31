@@ -1680,6 +1680,7 @@ dependencies = [
  "gleaph-gql",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
+ "gleaph-message-sizing",
 ]
 
 [[package]]
@@ -1724,6 +1725,7 @@ dependencies = [
  "gleaph-gql-integration",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
+ "gleaph-message-sizing",
  "gleaph-prepared-runtime",
  "half 2.7.1",
  "ic-cdk",
@@ -1767,6 +1769,7 @@ dependencies = [
  "gleaph-gql",
  "gleaph-gql-ic",
  "gleaph-graph-kernel",
+ "gleaph-message-sizing",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-stable-structures",
@@ -1784,6 +1787,7 @@ dependencies = [
  "canbench-rs",
  "candid",
  "ethnum",
+ "gleaph-message-sizing",
  "half 2.7.1",
  "ic-cdk",
  "ic-stable-lara",
@@ -1800,12 +1804,17 @@ dependencies = [
  "canbench-rs",
  "candid",
  "gleaph-graph-kernel",
+ "gleaph-message-sizing",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-stable-structures",
  "rapidhash",
  "serde",
 ]
+
+[[package]]
+name = "gleaph-message-sizing"
+version = "0.1.0"
 
 [[package]]
 name = "gleaph-pocket-ic-tests"
@@ -1876,6 +1885,7 @@ dependencies = [
  "gleaph-gql-planner",
  "gleaph-graph-catalog",
  "gleaph-graph-kernel",
+ "gleaph-message-sizing",
  "gleaph-prepared-api",
  "gleaph-prepared-runtime",
  "ic-cdk",

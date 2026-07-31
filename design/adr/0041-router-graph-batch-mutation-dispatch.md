@@ -58,10 +58,14 @@ Router consumes as many remaining items as the instruction and encoded-payload
 budgets allow. Router chunks each target Graph canister's operations by encoded
 request size, not by a fixed item count. Each Graph batch also has bounded
 encoded request and response sizes and rejects an over-sized request before the
-first item in that transport batch is executed. The shared conservative request
-ceiling is 2 MiB, matching ICP's ingress and cross-subnet request limit; this
-keeps the transport valid if canisters move between subnets even though same-
-subnet requests permit a larger payload.
+first item in that transport batch is executed. The shared current portable
+request ceiling is `gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`,
+matching the smallest ingress/cross-subnet limit known to the implementation.
+The sizing policy targets that ceiling minus the fixed 500 KiB
+`INTER_CANISTER_MESSAGE_HEADROOM_BYTES`, then verifies the complete encoded
+payload against the hard ceiling. This keeps the transport valid if canisters
+move between subnets and allows a future platform-limit increase to be adopted
+by changing one constant.
 
 The Router does not impose a fixed wave or ingress mutation-count cap. It
 selects each Graph transport chunk from the encoded payload ceiling and the
@@ -69,7 +73,7 @@ shared instruction-budget cutoff; the continuation cursor is the safety
 boundary when the current ingress can no longer admit another mutation.
 
 The public `gql_execute_idempotent_batch` ingress and its response use the same
-2 MiB conservative payload check. This prevents a caller from bypassing the
+current portable payload check. This prevents a caller from bypassing the
 transport chunking rule at the Router boundary; Graph also validates direct
 `execute_plan_update_batch` calls independently.
 

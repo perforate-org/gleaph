@@ -2,7 +2,6 @@
 
 use crate::state::RouterError;
 use candid::{CandidType, Decode, Encode, Principal};
-use gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
@@ -14,6 +13,7 @@ use gleaph_graph_kernel::plan_exec::{
     ordered_edge_batch_graph_request_fingerprint, ordered_mixed_batch_graph_request_fingerprint,
     ordered_vertex_batch_graph_request_fingerprint,
 };
+use gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;

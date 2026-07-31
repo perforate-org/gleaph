@@ -27,6 +27,7 @@ use gleaph_graph_kernel::plan_exec::{
     UniqueClaimDispatch,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
+use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
 use ic_cdk::api::msg_caller;
 
 #[cfg(feature = "batch-instr-log")]
@@ -433,8 +434,11 @@ impl PreflightContext {
             HashMap::new();
         for (canister, mutation_ids) in by_canister {
             let mut cursor = 0usize;
+            let mut size_hint = None;
             while cursor < mutation_ids.len() {
-                let chunk_end = journal_batch_chunk_end(&mutation_ids, cursor);
+                let (chunk_end, next_hint) =
+                    journal_batch_chunk_end(&mutation_ids, cursor, size_hint)?;
+                size_hint = Some(next_hint);
                 let result = get_mutation_journal_entries(
                     canister,
                     GetMutationJournalEntriesArgs {
@@ -515,29 +519,43 @@ impl PreflightContext {
     }
 }
 
-/// Binary-search the largest sub-slice of `mutation_ids` starting at `offset` that still fits inside
+/// Find the largest measured sub-slice of `mutation_ids` starting at `offset` that still fits inside
 /// the safe inter-canister request payload limit when encoded as `GetMutationJournalEntriesArgs`.
-fn journal_batch_chunk_end(mutation_ids: &[MutationId], offset: usize) -> usize {
-    let mut low = offset + 1;
-    let mut high = mutation_ids.len();
-    let mut best = mutation_ids.len();
-    while low <= high {
-        let end = low + (high - low) / 2;
-        let candidate = gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesArgs {
-            mutation_ids: mutation_ids[offset..end].to_vec(),
-        };
-        let Ok(encoded) = Encode!(&candidate) else {
-            high = end.saturating_sub(1);
-            continue;
-        };
-        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            best = end;
-            low = end + 1;
-        } else {
-            high = end.saturating_sub(1);
+fn journal_batch_chunk_end(
+    mutation_ids: &[MutationId],
+    offset: usize,
+    hint: Option<SizeHint>,
+) -> Result<(usize, SizeHint), RouterError> {
+    let remaining = mutation_ids.len().saturating_sub(offset);
+    let fitted = adaptive_fitting_prefix(
+        remaining,
+        hint,
+        SizingPolicy::inter_canister(),
+        |count| {
+            let candidate = gleaph_graph_kernel::plan_exec::GetMutationJournalEntriesArgs {
+                mutation_ids: mutation_ids[offset..offset + count].to_vec(),
+            };
+            Encode!(&candidate)
+                .map(|encoded| encoded.len())
+                .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(|error| match error {
+        FitError::Measure(detail) => {
+            RouterError::InvalidArgument(format!("journal batch encode probe failed: {detail}"))
         }
-    }
-    best.max(offset + 1)
+        FitError::NoEntryFits {
+            encoded_bytes,
+            hard_limit_bytes,
+        } => RouterError::InvalidArgument(format!(
+            "single mutation journal request is {encoded_bytes} bytes, above the safe limit of {hard_limit_bytes}"
+        )),
+    })?
+    .ok_or_else(|| RouterError::InvalidArgument("empty mutation journal batch".into()))?;
+    Ok((
+        offset + fitted.entry_count,
+        SizeHint::new(fitted.entry_count),
+    ))
 }
 
 pub(crate) fn build_router_block_plan(
@@ -2127,10 +2145,10 @@ pub(crate) fn ensure_gql_query_result_payload(
     let encoded = Encode!(result).map_err(|error| {
         RouterError::InvalidArgument(format!("{entrypoint} response encode failed: {error}"))
     })?;
-    if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(RouterError::InvalidArgument(format!(
             "{entrypoint} response exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         )));
     }
     Ok(())
@@ -4049,9 +4067,14 @@ async fn execute_prepared_mutation(
                 }
             } else {
                 let mut remaining = group;
+                let mut size_hint = None;
                 while !remaining.is_empty() {
-                    let chunk_len =
-                        graph_batch_chunk_len_for_dispatches(&remaining, &build_execute_args)?;
+                    let (chunk_len, next_hint) = graph_batch_chunk_len_for_dispatches(
+                        &remaining,
+                        &build_execute_args,
+                        size_hint,
+                    )?;
+                    size_hint = Some(next_hint);
                     let chunk: Vec<ShardDispatch> = remaining.drain(..chunk_len).collect();
                     let args = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
                         operations: chunk.iter().map(&build_execute_args).collect(),
@@ -5472,32 +5495,44 @@ fn largest_fitting_prefix<E>(
 fn graph_batch_chunk_len_for_dispatches(
     dispatches: &[ShardDispatch],
     build_execute_args: &impl Fn(&ShardDispatch) -> gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
-) -> Result<usize, RouterError> {
+    hint: Option<SizeHint>,
+) -> Result<(usize, SizeHint), RouterError> {
     if dispatches.is_empty() {
-        return Ok(0);
+        return Ok((0, SizeHint::new(0)));
     }
-    let best = largest_fitting_prefix(dispatches.len(), |count| {
-        let candidate = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
-            operations: dispatches[..count].iter().map(build_execute_args).collect(),
-            mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
-        };
-        let encoded = Encode!(&candidate).map_err(|e| {
-            RouterError::InvalidArgument(format!("dispatch batch encode probe failed: {e}"))
-        })?;
-        Ok(encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES)
-    })?;
-    let Some(best) = best else {
-        return Err(RouterError::InvalidArgument(format!(
-            "single Graph batch operation exceeds the safe inter-canister request payload limit of {}",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-        )));
-    };
+    let best = adaptive_fitting_prefix(
+        dispatches.len(),
+        hint,
+        SizingPolicy::inter_canister(),
+        |count| {
+            let candidate = gleaph_graph_kernel::plan_exec::ExecutePlanBatchArgs {
+                operations: dispatches[..count].iter().map(build_execute_args).collect(),
+                mode: gleaph_graph_kernel::plan_exec::ExecutePlanBatchMode::Dynamic,
+            };
+            Encode!(&candidate)
+                .map(|encoded| encoded.len())
+                .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(|error| match error {
+        FitError::Measure(detail) => {
+            RouterError::InvalidArgument(format!("dispatch batch encode probe failed: {detail}"))
+        }
+        FitError::NoEntryFits {
+            encoded_bytes,
+            hard_limit_bytes,
+        } => RouterError::InvalidArgument(format!(
+            "single Graph batch operation is {encoded_bytes} bytes, above the safe limit of {hard_limit_bytes}"
+        )),
+    })?
+    .ok_or_else(|| RouterError::InvalidArgument("empty Graph batch dispatch".into()))?;
     let instr_limited = (gleaph_graph_kernel::MAX_DYNAMIC_UPDATE_INSTRUCTIONS
         / gleaph_graph_kernel::GRAPH_BATCH_INSTRUCTION_ESTIMATE_PER_OPERATION)
         .try_into()
         .unwrap_or(usize::MAX)
         .max(1);
-    Ok(best.min(instr_limited))
+    let chunk_len = best.entry_count.min(instr_limited);
+    Ok((chunk_len, SizeHint::new(chunk_len)))
 }
 
 async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
@@ -6561,7 +6596,7 @@ mod tests {
             row_count: 0,
             rows_blob: Some(vec![
                 0;
-                gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+                gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
             ]),
             phase: None,
             token: None,
@@ -6630,7 +6665,7 @@ mod tests {
         let repeated_len = Encode!(&repeated).expect("encode repeated request").len();
         let shared_len = Encode!(&shared).expect("encode shared request").len();
         assert!(
-            repeated_len > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
+            repeated_len > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
             "test fixture must exceed the safe bound with repeated common context"
         );
         shared.validate().expect("shared request must fit");

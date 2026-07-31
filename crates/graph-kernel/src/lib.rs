@@ -16,13 +16,6 @@ pub mod vector_index;
 
 pub mod provisioning;
 
-/// Conservative payload ceiling for inter-canister request arguments.
-///
-/// ICP permits 2 MiB for ingress and cross-subnet request payloads, while same-subnet
-/// requests may be larger. Using the smallest request limit keeps a call portable when
-/// canisters are moved across subnets; callers must measure the actual Candid argument bytes.
-pub const MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
-
 /// ICP's per-message instruction ceiling for update calls, heartbeats, and timers.
 pub const MAX_UPDATE_CALL_INSTRUCTIONS: u64 = 40_000_000_000;
 

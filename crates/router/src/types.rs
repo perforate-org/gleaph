@@ -255,7 +255,7 @@ impl BatchRequest {
             }
         }
         let encoded = Encode!(self).map_err(|error| format!("batch request encode: {error}"))?;
-        if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             return Err("batch request exceeds the safe payload bound".into());
         }
         Ok(())
@@ -413,7 +413,8 @@ fn validate_batch_properties(ordinal: usize, properties: &[BatchPropertyV1]) -> 
                 property.property_name
             ));
         }
-        if property.value.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        if property.value.len()
+            > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         {
             return Err(format!(
                 "batch operation {ordinal} property value exceeds the payload bound"
@@ -486,7 +487,7 @@ impl OrderedEdgeBatchRequest {
                     ));
                 }
                 if property.value.len()
-                    > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+                    > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
                 {
                     return Err(format!(
                         "ordered edge item {ordinal} property value exceeds the payload bound"
@@ -505,7 +506,7 @@ impl OrderedEdgeBatchRequest {
         }
         let encoded =
             Encode!(self).map_err(|error| format!("ordered edge batch encode: {error}"))?;
-        if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             return Err("ordered edge batch exceeds the safe payload bound".into());
         }
         Ok(())
@@ -692,7 +693,7 @@ impl OrderedVertexBatchRequest {
                     ));
                 }
                 if property.value.len()
-                    > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+                    > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
                 {
                     return Err(format!(
                         "ordered vertex item {ordinal} property value exceeds the payload bound"
@@ -702,7 +703,7 @@ impl OrderedVertexBatchRequest {
         }
         let encoded =
             Encode!(self).map_err(|error| format!("ordered vertex batch encode: {error}"))?;
-        if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             return Err("ordered vertex batch exceeds the safe payload bound".into());
         }
         Ok(())
@@ -858,7 +859,7 @@ impl OrderedMixedBatchRequest {
         }
         let encoded =
             Encode!(self).map_err(|error| format!("ordered mixed batch encode: {error}"))?;
-        if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
             return Err("ordered mixed batch exceeds the safe payload bound".into());
         }
         Ok(())
@@ -1120,7 +1121,8 @@ fn validate_classified_properties(
                 property.property_name
             ));
         }
-        if property.value.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        if property.value.len()
+            > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         {
             return Err(format!(
                 "mixed operation {ordinal} property value exceeds the payload bound"

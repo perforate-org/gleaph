@@ -74,7 +74,7 @@ fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
 #[update]
 fn vector_sync_batch(operations: Vec<VectorEmbeddingSyncOp>) -> VectorSyncBatchProgress {
     let request_bytes = Encode!(&(&operations,)).expect("vector_sync_batch request encoding");
-    if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    if request_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         ic_cdk::trap("vector_sync_batch request exceeds the safe payload limit");
     }
     match canister::vector_sync_batch(operations) {

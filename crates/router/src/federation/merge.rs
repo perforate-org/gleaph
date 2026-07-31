@@ -11,10 +11,10 @@ use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
 fn ensure_execute_plan_result_payload(result: &ExecutePlanResult) -> Result<(), String> {
     let encoded =
         Encode!(result).map_err(|error| format!("graph result encode failed: {error}"))?;
-    if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         return Err(format!(
             "graph result exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
     Ok(())
@@ -125,7 +125,7 @@ mod tests {
             row_count: 0,
             rows_blob: Some(vec![
                 0;
-                gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+                gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
             ]),
             hot_forward_vertices: Vec::new(),
         };

@@ -3,10 +3,11 @@
 use candid::Encode;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::IndexPostingMutation;
+use gleaph_message_sizing::{FitError, SizingPolicy, adaptive_fitting_prefix};
 
-/// Binary-search the largest sub-slice of `operations[start..]` whose encoded
-/// `(ShardId, sub_slice)` payload still fits inside the safe inter-canister
-/// request payload limit.
+/// Find the largest sub-slice of `operations[start..]` whose encoded `(ShardId, sub_slice)`
+/// payload still fits inside the safe inter-canister request payload limit. The shared sizing
+/// helper uses a target-sized probe and retries below the hard limit when the estimate is high.
 ///
 /// Returns at least `start + 1` so the caller always makes progress, even if a
 /// single operation somehow exceeds the limit (the target canister will reject
@@ -16,24 +17,23 @@ pub(crate) fn posting_batch_chunk_end(
     operations: &[IndexPostingMutation],
     start: usize,
 ) -> usize {
-    let mut low = start.saturating_add(1);
-    let mut high = operations.len();
-    let mut best = operations.len();
-    while low <= high {
-        let end = low + (high - low) / 2;
-        let candidate = operations[start..end].to_vec();
-        let Ok(encoded) = Encode!(&(shard_id, &candidate)) else {
-            high = end.saturating_sub(1);
-            continue;
-        };
-        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            best = end;
-            low = end.saturating_add(1);
-        } else {
-            high = end.saturating_sub(1);
+    let remaining = operations.len().saturating_sub(start);
+    let result =
+        adaptive_fitting_prefix(remaining, None, SizingPolicy::inter_canister(), |count| {
+            let candidate = operations[start..start + count].to_vec();
+            Encode!(&(shard_id, &candidate))
+                .map(|encoded| encoded.len())
+                .map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(Some(fitted)) => start + fitted.entry_count,
+        Ok(None) | Err(FitError::Measure(_)) | Err(FitError::NoEntryFits { .. }) => {
+            // Preserve the queue's forward-progress contract. The downstream canister remains
+            // authoritative for a pathological single-entry rejection, and the caller journals
+            // that suffix on the normal call error path.
+            start.saturating_add(1).min(operations.len())
         }
     }
-    best.max(start.saturating_add(1))
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-07-31
-Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
+Anchor timestamp: 2026-07-31 10:45:43 UTC +0000
 
 ## Purpose
 
@@ -16,19 +16,20 @@ Describe how `gleaph-graph` runs a physical plan: row representation, operator d
 
 Graph materializes the last read rows into `IcWirePlanQueryResult` only for the composite query
 mode. The Graph canister validates the Candid-encoded `ExecutePlanResult` against the shared
-conservative 2 MiB cross-subnet-safe payload ceiling before returning it. Router validates each
+current portable cross-subnet-safe payload ceiling before returning it. Router validates each
 shard result again while merging and validates the final `GqlQueryResult` before returning it to
 the caller. These checks reject oversized results explicitly; they never truncate rows. Vector
 `SEARCH` remains bounded by `MAX_VECTOR_SEARCH_TOP_K`, but that bound applies only to search hits,
 not to later graph expansion or join cardinality.
 
-The shared transport and execution ceilings are defined in
-`gleaph-graph-kernel`: `MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES` for the
-portable 2 MiB payload ceiling, `MAX_QUERY_CALL_INSTRUCTIONS` for bounded query
-execution, and `MAX_UPDATE_CALL_INSTRUCTIONS` with its derived dynamic budget
-and cutoff headrooms for update execution. Router and Graph use these constants
-directly so platform-limit changes do not require synchronized numeric edits in
-each canister crate.
+The shared encoded-message sizing policy is defined in
+`gleaph-message-sizing`. Its current portable ceiling is
+`MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`; the preferred target is derived
+by subtracting the fixed 500 KiB `INTER_CANISTER_MESSAGE_HEADROOM_BYTES`, and
+callers still perform an authoritative final Candid encode check. Router and
+Graph use this policy for request/response boundaries. Instruction ceilings
+remain in `gleaph-graph-kernel` (`MAX_QUERY_CALL_INSTRUCTIONS`,
+`MAX_UPDATE_CALL_INSTRUCTIONS`, and the derived dynamic update budget).
 
 ## Entry points
 

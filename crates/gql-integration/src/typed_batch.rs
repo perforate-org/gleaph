@@ -1,8 +1,9 @@
 //! Conservative classifier for the typed V1 bulk execution path (ADR 0047).
 //!
 //! This module lives in `gleaph-gql-integration` because it depends on both the generic GQL
-//! planner (for physical-plan shape) and `gleaph-graph-kernel` (for wire types and payload
-//! constants). It is pure: it does not call canisters or read durable state.
+//! planner (for physical-plan shape) and `gleaph-graph-kernel` (for wire types). Encoded-message
+//! limits are owned by `gleaph-message-sizing`. It is pure: it does not call canisters or read
+//! durable state.
 //!
 //! The classifier is intentionally fail-closed. A group is eligible for the typed V1 path only when
 //! every operation in the group meets all of the following:
@@ -21,13 +22,13 @@
 
 use candid::{Decode, Encode};
 use gleaph_gql_planner::wire::decode_plan_bundle;
-use gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchMode, ExecutePlanBatchResult, ExecutePlanBatchTypedArgs,
     ExecutePlanBatchTypedShared, ExecutePlanResult, ExecutePlanTypedOp, GqlExecutionMode,
     MAX_TYPED_BATCH_ERROR_BYTES, ResolvedLabelTable, ResolvedPropertyTable, SeedBindingsWire,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
+use gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 
 /// A homogeneous group of operations that may use the typed V1 bulk envelope.
 #[derive(Clone, Debug, PartialEq)]
@@ -503,7 +504,8 @@ pub fn validate_typed_batch_eligibility_for_graph(
         if !op.seed.complete_prefix_rows {
             return Err("typed V1 requires complete_prefix_rows=true");
         }
-        if op.params_blob.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        if op.params_blob.len()
+            > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         {
             return Err("typed V1 params_blob exceeds the safe payload limit");
         }

@@ -30,6 +30,7 @@ use gleaph_graph_kernel::entry::EmbeddingNameId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::IndexPostingMutation;
 use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
+use gleaph_message_sizing::{FitError, SizingPolicy, adaptive_fitting_prefix};
 use ic_stable_lara::VertexId;
 
 /// `embedding_version` stamped on a reconcile-driven remove when the canonical
@@ -107,29 +108,30 @@ fn property_batch_prefix(
     shard_id: ShardId,
     entries: &[(u64, RepairPostingOp)],
 ) -> Result<Vec<IndexPostingMutation>, PlanQueryError> {
-    let mut low = 1usize;
-    let mut high = entries.len();
-    let mut best = 0usize;
-    while low <= high {
-        let middle = low + (high - low) / 2;
-        let candidate: Vec<_> = entries[..middle]
-            .iter()
-            .map(|(_, op)| to_index_mutation(op))
-            .collect();
-        let encoded = Encode!(&(shard_id, &candidate))
-            .map_err(|_| PlanQueryError::UnsupportedOp("failed to encode index posting batch"))?;
-        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            best = middle;
-            low = middle + 1;
-        } else {
-            high = middle.saturating_sub(1);
+    let fitted = adaptive_fitting_prefix(
+        entries.len(),
+        None,
+        SizingPolicy::inter_canister(),
+        |count| {
+            let candidate: Vec<_> = entries[..count]
+                .iter()
+                .map(|(_, op)| to_index_mutation(op))
+                .collect();
+            Encode!(&(shard_id, &candidate))
+                .map(|encoded| encoded.len())
+                .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(|error| match error {
+        FitError::Measure(_) => {
+            PlanQueryError::UnsupportedOp("failed to encode index posting batch")
         }
-    }
-    if best == 0 {
-        return Err(PlanQueryError::UnsupportedOp(
+        FitError::NoEntryFits { .. } => PlanQueryError::UnsupportedOp(
             "single index posting exceeds the safe inter-canister request payload limit",
-        ));
-    }
+        ),
+    })?
+    .ok_or(PlanQueryError::UnsupportedOp("empty index posting batch"))?;
+    let best = fitted.entry_count;
     Ok(entries[..best]
         .iter()
         .map(|(_, op)| to_index_mutation(op))
@@ -137,27 +139,25 @@ fn property_batch_prefix(
 }
 
 fn vector_batch_prefix(entries: &[VectorEmbeddingSyncOp]) -> Result<usize, PlanQueryError> {
-    let mut low = 1usize;
-    let mut high = entries.len();
-    let mut best = 0usize;
-    while low <= high {
-        let middle = low + (high - low) / 2;
-        let candidate = entries[..middle].to_vec();
-        let encoded = Encode!(&(&candidate,))
-            .map_err(|_| PlanQueryError::UnsupportedOp("failed to encode vector sync batch"))?;
-        if encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
-            best = middle;
-            low = middle + 1;
-        } else {
-            high = middle.saturating_sub(1);
-        }
-    }
-    if best == 0 {
-        return Err(PlanQueryError::UnsupportedOp(
+    let fitted = adaptive_fitting_prefix(
+        entries.len(),
+        None,
+        SizingPolicy::inter_canister(),
+        |count| {
+            let candidate = entries[..count].to_vec();
+            Encode!(&(&candidate,))
+                .map(|encoded| encoded.len())
+                .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(|error| match error {
+        FitError::Measure(_) => PlanQueryError::UnsupportedOp("failed to encode vector sync batch"),
+        FitError::NoEntryFits { .. } => PlanQueryError::UnsupportedOp(
             "single vector operation exceeds the safe inter-canister request payload limit",
-        ));
-    }
-    Ok(best)
+        ),
+    })?
+    .ok_or(PlanQueryError::UnsupportedOp("empty vector sync batch"))?;
+    Ok(fitted.entry_count)
 }
 
 async fn drain_queue(

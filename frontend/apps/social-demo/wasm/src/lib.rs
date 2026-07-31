@@ -1,4 +1,5 @@
 use gleaph_gql::{ClauseBreakPolicy, FormatOptions, ItemBreakPolicy, KeywordCase, format_query};
+use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
 use js_sys::{Object, Reflect};
 use wasm_bindgen::prelude::*;
 
@@ -6,6 +7,69 @@ use wasm_bindgen::prelude::*;
 pub fn format_gql_query(query: &str, options: JsValue) -> Result<String, JsValue> {
     let options = options_from_js(options)?;
     format_query(query, &options).map_err(format_error)
+}
+
+/// Find the largest prefix that fits the shared inter-canister encoded-message policy.
+///
+/// The caller supplies the actual Candid encoder as a JavaScript callback. The sizing algorithm,
+/// current platform ceiling, and fixed headroom remain owned by `gleaph-message-sizing`, so the
+/// Node seeding path cannot drift from the canister-side policy.
+#[wasm_bindgen]
+pub fn adaptive_inter_canister_prefix(
+    length: usize,
+    hint: Option<usize>,
+    measure: &js_sys::Function,
+) -> Result<JsValue, JsValue> {
+    let result = adaptive_fitting_prefix(
+        length,
+        hint.map(SizeHint::new),
+        SizingPolicy::inter_canister(),
+        |count| {
+            let value = measure
+                .call1(&JsValue::UNDEFINED, &JsValue::from_f64(count as f64))
+                .map_err(|_| adapter_error("measure", "message-size callback failed"))?;
+            let bytes = value.as_f64().ok_or_else(|| {
+                adapter_error("measure", "message-size callback must return a number")
+            })?;
+            if !bytes.is_finite() || bytes < 0.0 || bytes > usize::MAX as f64 {
+                return Err(adapter_error(
+                    "measure",
+                    "message-size callback returned an invalid byte length",
+                ));
+            }
+            Ok(bytes as usize)
+        },
+    );
+
+    match result {
+        Ok(Some(fitted)) => {
+            let value = Object::new();
+            Reflect::set(
+                &value,
+                &JsValue::from_str("count"),
+                &JsValue::from_f64(fitted.entry_count as f64),
+            )
+            .expect("plain JS object accepts count");
+            Reflect::set(
+                &value,
+                &JsValue::from_str("encodedBytes"),
+                &JsValue::from_f64(fitted.encoded_bytes as f64),
+            )
+            .expect("plain JS object accepts encodedBytes");
+            Ok(value.into())
+        }
+        Ok(None) => Ok(JsValue::NULL),
+        Err(FitError::Measure(error)) => Err(error),
+        Err(FitError::NoEntryFits {
+            encoded_bytes,
+            hard_limit_bytes,
+        }) => Err(adapter_error(
+            "no-entry-fits",
+            &format!(
+                "single entry payload is {encoded_bytes} bytes; hard limit is {hard_limit_bytes}"
+            ),
+        )),
+    }
 }
 
 fn options_from_js(value: JsValue) -> Result<FormatOptions, JsValue> {

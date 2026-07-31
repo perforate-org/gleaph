@@ -210,10 +210,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-message-sizing"
+version = "0.1.0"
+
+[[package]]
 name = "gleaph-social-demo-gql-formatter"
 version = "0.1.0"
 dependencies = [
  "gleaph-gql",
+ "gleaph-message-sizing",
  "js-sys",
  "wasm-bindgen",
 ]

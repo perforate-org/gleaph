@@ -462,8 +462,9 @@ V2 only when the complete ordered operation domain fits one request.
   stops at the first failure. Graph retains its final actual-response encode guard as defense in
   depth, not as the admission mechanism after mutations may already have committed. A plan without
   this proof uses the existing scalar path.
-> Ownership note: `gleaph-graph-kernel` continues to own portable wire types and payload
-> constants, but it cannot own physical-plan classification because it sits below
+> Ownership note: `gleaph-graph-kernel` continues to own portable wire types, while
+> `gleaph-message-sizing` owns encoded-message limits and adaptive prefix sizing. Neither crate
+> owns physical-plan classification because the kernel sits below
 > `gleaph-gql-planner` in the dependency graph (a cycle would be required). The renamed
 > `gleaph-gql-integration` crate already depends on both planner and graph-kernel, so it owns the
 > `typed_batch` admission classifier. The Graph `execute_plan_update_batch_typed_v1` endpoint,

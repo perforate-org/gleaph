@@ -177,10 +177,10 @@ fn posting_batch(
     let request_bytes = Encode!(&(shard_id, &operations)).unwrap_or_else(|error| {
         ic_cdk::trap(format!("posting_batch request encode failed: {error}"));
     });
-    if request_bytes.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    if request_bytes.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
         ic_cdk::trap(format!(
             "posting_batch request exceeds the safe payload limit of {} bytes",
-            gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
         ));
     }
     match canister::posting_batch(shard_id, operations) {

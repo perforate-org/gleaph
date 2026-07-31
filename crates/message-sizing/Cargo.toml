@@ -1,0 +1,14 @@
+[package]
+name = "gleaph-message-sizing"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Adaptive prefix sizing for encoded inter-canister and batch messages"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+
+[dependencies]

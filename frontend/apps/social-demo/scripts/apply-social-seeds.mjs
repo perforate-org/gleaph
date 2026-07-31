@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { IDL } from "@icp-sdk/core/candid";
 import { encodeGqlParamsBlob, candidVecBytes } from "./encode-gql-params.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,6 +15,17 @@ const canisterName = process.argv[3] ?? "gleaph-router";
 const methodName = process.argv[4] ?? "gql_execute_idempotent_batch";
 const pageSizeInput = process.env.SEED_PAGE_SIZE ?? process.argv[5];
 const pageSize = pageSizeInput === undefined ? undefined : Number(pageSizeInput);
+
+let adaptiveInterCanisterPrefix;
+if (methodName === "gql_execute_idempotent_batch") {
+  const formatter = await import("../src/generated/gql_formatter/gql_formatter.js");
+  formatter.initSync({
+    module: readFileSync(
+      join(root, "src/generated/gql_formatter/gql_formatter_bg.wasm"),
+    ),
+  });
+  adaptiveInterCanisterPrefix = formatter.adaptive_inter_canister_prefix;
+}
 
 if (pageSize !== undefined && (!Number.isInteger(pageSize) || pageSize <= 0)) {
   throw new Error("SEED_PAGE_SIZE/page size must be a positive integer when specified");
@@ -53,30 +66,49 @@ const icpEnv = () => ({
 const escapeCandidText = (s) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
 const callRouter = (method, candid) => {
-  const result = spawnSync(
-    "icp",
-    [
-      "canister",
-      "call",
-      "-e",
-      "local",
-      ...(process.env.ICP_IDENTITY_NAME
-        ? ["--identity", process.env.ICP_IDENTITY_NAME]
-        : []),
-      canisterName,
-      method,
-      candid,
-    ],
-    {
-      env: icpEnv(),
-      encoding: "utf8",
-    },
-  );
+  // The binary Candid payload can fit under the IC limit while its textual Candid form exceeds
+  // the replica HTTP body limit. Use an args-file for both formats, and preserve the binary form
+  // for batch calls so the request body matches the size measured by the adaptive sizer.
+  const argsFormat = candid instanceof Uint8Array ? "bin" : "candid";
+  const tempDir = mkdtempSync(join(tmpdir(), "gleaph-social-call-"));
+  const argsPath = join(tempDir, "args.did");
+  writeFileSync(argsPath, candid);
+  let result;
+  try {
+    result = spawnSync(
+      "icp",
+      [
+        "canister",
+        "call",
+        "-e",
+        "local",
+        ...(process.env.ICP_IDENTITY_NAME
+          ? ["--identity", process.env.ICP_IDENTITY_NAME]
+          : []),
+        "--args-format",
+        argsFormat,
+        "--args-file",
+        argsPath,
+        canisterName,
+        method,
+      ],
+      {
+        env: icpEnv(),
+        encoding: "utf8",
+      },
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 
   if (result.status !== 0) {
-    process.stderr.write(result.stdout ?? "");
-    process.stderr.write(result.stderr ?? "");
-    throw new Error(`Router call ${method} failed`);
+    const failureOutput = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    process.stderr.write(failureOutput);
+    if (result.error) process.stderr.write(`${result.error.message}\n`);
+    const detail = result.signal ? ` (signal ${result.signal})` : "";
+    throw new Error(
+      `Router call ${method} failed${detail}: ${failureOutput.trim() || result.error?.message || "unknown error"}`,
+    );
   }
 
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
@@ -106,55 +138,49 @@ const renderProgress = (wave, completed, total) => {
 
 const finishProgress = () => process.stderr.write("\n");
 
-// Dynamic Candid payload page sizing: each Router ingress call must stay well below the
-// 2 MiB inter-canister request limit.  We use the Candid text length as a conservative proxy
-// (it is close to the encoded binary size for ASCII-heavy social-demo queries) and target
-// 500 KiB so that even waves with longer queries or escaping leave a large safety margin.
-const MAX_CANDID_TEXT_BYTES = 500_000;
+// Keep the probe shape identical to the Router ingress argument and measure the binary Candid
+// envelope, including fixed fields and per-item vectors.
+const batchItemType = IDL.Record({
+  gql_query: IDL.Text,
+  mutation_key: IDL.Text,
+  params: IDL.Vec(IDL.Nat8),
+});
+const batchArgsType = IDL.Record({
+  instruction_budget: IDL.Opt(IDL.Nat64),
+  mutations: IDL.Vec(batchItemType),
+  start_index: IDL.Nat32,
+});
 
-const requestShellBytes = () => {
-  const prefix = '(record { mutations = vec { ';
-  const suffix = ' }; start_index = 0; instruction_budget = null })';
-  return Buffer.byteLength(prefix, 'utf8') + Buffer.byteLength(suffix, 'utf8');
-};
+const encodeBatchArgs = (seeds, startIndex = 0) =>
+  IDL.encode(
+    [batchArgsType],
+    [
+      {
+        instruction_budget: [],
+        mutations: seeds.map((seed) => ({
+          gql_query: seed.gql,
+          mutation_key: seed.key,
+          params: encodeGqlParamsBlob(seed.params),
+        })),
+        start_index: startIndex,
+      },
+    ],
+  );
 
-const seedItemTextBytes = (seed) => {
-  const params = encodeGqlParamsBlob(seed.params);
-  const paramsText = candidVecBytes(params);
-  const text = `record { gql_query = "${escapeCandidText(seed.gql)}"; params = ${paramsText}; mutation_key = "${escapeCandidText(seed.key)}" }`;
-  return Buffer.byteLength(text, 'utf8');
-};
+const encodeBatchBytes = (seeds) => encodeBatchArgs(seeds).byteLength;
 
-const payloadPageSize = (waveSeeds, offset, maxTextBytes) => {
-  const shell = requestShellBytes();
-  let used = shell;
-  let count = 0;
-  for (let i = offset; i < waveSeeds.length; i++) {
-    const itemBytes = seedItemTextBytes(waveSeeds[i]);
-    const separator = i === offset ? 0 : 2; // "; " between items
-    if (used + separator + itemBytes > maxTextBytes && count > 0) {
-      break;
-    }
-    used += separator + itemBytes;
-    count += 1;
-  }
-  return count;
+const adaptivePayloadPageSize = (waveSeeds, offset, hint) => {
+  const remaining = waveSeeds.length - offset;
+  const measure = (count) => encodeBatchBytes(waveSeeds.slice(offset, offset + count));
+  return adaptiveInterCanisterPrefix(remaining, hint, measure);
 };
 
 const runBatchPage = (page, onProgress) => {
-  const items = page
-    .map(
-      (seed) => {
-        const params = encodeGqlParamsBlob(seed.params);
-        return `record { gql_query = "${escapeCandidText(seed.gql)}"; params = ${candidVecBytes(params)}; mutation_key = "${escapeCandidText(seed.key)}" }`;
-      },
-    )
-    .join("; ");
   let startIndex = 0;
   while (startIndex < page.length) {
     const output = callRouter(
       methodName,
-      `(record { mutations = vec { ${items} }; start_index = ${startIndex}; instruction_budget = null })`,
+      encodeBatchArgs(page, startIndex),
     );
     const nextIndex = nextIndexFrom(output);
     if (nextIndex === undefined) {
@@ -172,14 +198,17 @@ const runBatchPage = (page, onProgress) => {
   return startIndex;
 };
 
-const RETRYABLE_BUDGET_ERRORS = [
+const RETRYABLE_PAGE_ERRORS = [
   'insufficient liquid cycles balance',
   'instruction budget was exhausted before the next mutation could start',
   'call perform failed',
+  'payload_too_large',
+  'payload is too large',
+  'status 413',
 ];
 
-const isRetryableBudgetError = (error) =>
-  RETRYABLE_BUDGET_ERRORS.some((marker) => error.message.includes(marker));
+const isRetryablePageError = (error) =>
+  RETRYABLE_PAGE_ERRORS.some((marker) => error.message.toLowerCase().includes(marker));
 
 const runBatchPageRetryable = (page, onProgress) => {
   let attempt = page;
@@ -187,10 +216,10 @@ const runBatchPageRetryable = (page, onProgress) => {
     try {
       return runBatchPage(attempt, onProgress);
     } catch (error) {
-      // Router-side per-call instruction/cycle budgets can be exceeded when the page is
-      // too large for a single ingress call. Halve the page and retry from the same
+      // Router-side instruction/cycle budgets or the transport body limit can be exceeded when
+      // the page is too large for a single ingress call. Halve the page and retry from the same
       // offset so the dynamic paging keeps making forward progress.
-      if (attempt.length === 1 || !isRetryableBudgetError(error)) {
+      if (attempt.length === 1 || !isRetryablePageError(error)) {
         throw error;
       }
       const nextSize = Math.max(1, Math.floor(attempt.length / 2));
@@ -232,10 +261,17 @@ if (methodName !== "gql_execute_idempotent_batch") {
     renderProgress(wave, 0, waveSeeds.length);
     let seededCount = 0;
     let offset = 0;
+    const pageSizeHints = new Map();
     while (offset < waveSeeds.length) {
-      const dynamicPageSize = payloadPageSize(waveSeeds, offset, MAX_CANDID_TEXT_BYTES);
+      const hintKey = waveSeeds[offset]?.gql;
+      const dynamicPageSize = adaptivePayloadPageSize(
+        waveSeeds,
+        offset,
+        pageSizeHints.get(hintKey),
+      );
+      pageSizeHints.set(hintKey, dynamicPageSize.count);
       const pageSize = Math.min(
-        dynamicPageSize,
+        dynamicPageSize.count,
         explicitPageSize,
         waveSeeds.length - offset,
       );

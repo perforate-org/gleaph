@@ -293,6 +293,8 @@ icp_call_expect_ok() {
 build_social_config() {
   log "Building social-demo configuration artifacts"
   node "$ROOT/frontend/apps/social-demo/scripts/build-config.mjs"
+  log "Building social-demo shared message-sizing WASM adapter"
+  node "$ROOT/frontend/apps/social-demo/scripts/build-gql-formatter.mjs"
 }
 
 # apply-social-seeds.mjs pages dynamically by Candid payload size and item cap;

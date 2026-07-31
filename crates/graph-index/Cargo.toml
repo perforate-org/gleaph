@@ -17,6 +17,7 @@ canbench = ["dep:canbench-rs", "dep:gleaph-gql"]
 [dependencies]
 candid.workspace = true
 gleaph-graph-kernel.workspace = true
+gleaph-message-sizing.workspace = true
 gleaph-gql = { workspace = true, optional = true }
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
