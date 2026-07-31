@@ -520,12 +520,18 @@ pub(crate) fn init_derived_index_outbox() -> StableDerivedIndexOutbox {
 #[cfg(test)]
 mod tests {
     use super::stable_memory_stats;
+    use crate::facade::stable::layout::GRAPH_STABLE_LAYOUT;
 
     #[test]
     fn stable_memory_stats_covers_every_graph_region() {
         let stats = stable_memory_stats();
 
-        assert_eq!(stats.regions.len(), 51);
+        let allocated_region_count = GRAPH_STABLE_LAYOUT
+            .regions
+            .iter()
+            .filter(|region| region.owner_domain != "reserved")
+            .count();
+        assert_eq!(stats.regions.len(), allocated_region_count);
         assert_eq!(
             stats.logical_total_pages,
             stats
@@ -584,7 +590,12 @@ mod tests {
         );
         assert_eq!(
             stats.regions.last().map(|region| region.memory_id),
-            Some(50)
+            GRAPH_STABLE_LAYOUT
+                .regions
+                .iter()
+                .filter(|region| region.owner_domain != "reserved")
+                .map(|region| region.memory_id)
+                .max()
         );
     }
 }

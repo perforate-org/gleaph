@@ -221,7 +221,7 @@ pub enum RouterMutationRecord {
 
 /// Request identity owned by the Router mutation record.
 ///
-/// The existing scalar, legacy-bulk, and typed-seed paths use `PlanExecution`.
+/// The existing scalar, shared-seed bulk, and typed-seed paths use `PlanExecution`.
 /// Ordered-edge identity will be added as a sibling variant when its public
 /// replay envelope is installed; keeping the identity here prevents a future
 /// ordered payload from reusing the untyped fingerprint field.
@@ -549,10 +549,10 @@ pub struct RouterMutationRecordV1 {
 /// no parallel `shards`/`is_bulk`/`bulk_state` combination exists.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum RouterMutationPayloadV1 {
-    /// Single-operation or multi-shard DML with one legacy seed blob per shard.
+    /// Single-operation or multi-shard DML with one encoded seed relation per shard.
     Scalar { shards: Vec<RouterMutationShardV1> },
-    /// Homogeneous bulk group replay where one legacy seed blob per shard is sufficient.
-    LegacyBulk {
+    /// Homogeneous bulk group replay where one shared encoded seed relation per shard is sufficient.
+    SharedSeedBulk {
         total_ops: u32,
         shards: Vec<RouterMutationShardV1>,
     },
@@ -572,9 +572,9 @@ pub enum RouterMutationPayloadV1 {
     OrderedMixedBatchRouting,
     /// Ordered mixed batch with one durable Graph target and explicit progress.
     OrderedMixedBatch(Box<RouterOrderedMixedBatchReplayV1>),
-    /// Terminal compacted form for both legacy and typed bulk. Typed completion retains the
-    /// ordered per-operation row counts required to reproduce the original batch result; legacy
-    /// completion uses an empty vector because that path only owns the aggregate row count.
+    /// Terminal compacted form for both shared-seed and typed bulk. Typed completion retains the
+    /// ordered per-operation row counts required to reproduce the original batch result;
+    /// shared-seed completion uses an empty vector because that path only owns the aggregate.
     CompletedBulk {
         total_ops: u32,
         operation_row_counts: Vec<u64>,
@@ -823,11 +823,11 @@ impl RouterMutationRecord {
         &mut self.as_v1_mut().payload
     }
 
-    /// Return the scalar/legacy shard slice, or an empty slice for non-shard payloads.
+    /// Return the scalar/shared-seed shard slice, or an empty slice for non-shard payloads.
     pub fn shards(&self) -> &[RouterMutationShardV1] {
         match &self.as_v1().payload {
             RouterMutationPayloadV1::Scalar { shards }
-            | RouterMutationPayloadV1::LegacyBulk { shards, .. } => shards,
+            | RouterMutationPayloadV1::SharedSeedBulk { shards, .. } => shards,
             _ => &[],
         }
     }
@@ -835,17 +835,17 @@ impl RouterMutationRecord {
     pub(crate) fn shards_mut(&mut self) -> Option<&mut Vec<RouterMutationShardV1>> {
         match self.payload_mut() {
             RouterMutationPayloadV1::Scalar { shards }
-            | RouterMutationPayloadV1::LegacyBulk { shards, .. } => Some(shards),
+            | RouterMutationPayloadV1::SharedSeedBulk { shards, .. } => Some(shards),
             _ => None,
         }
     }
 
-    /// `true` if the record is a bulk group (legacy, typed, or completed), as distinct from a
+    /// `true` if the record is a bulk group (shared-seed, typed, or completed), as distinct from a
     /// scalar saga.
     pub fn is_bulk(&self) -> bool {
         matches!(
             self.payload(),
-            RouterMutationPayloadV1::LegacyBulk { .. }
+            RouterMutationPayloadV1::SharedSeedBulk { .. }
                 | RouterMutationPayloadV1::TypedSeedBulk(_)
                 | RouterMutationPayloadV1::OrderedEdgeBatchRouting
                 | RouterMutationPayloadV1::OrderedEdgeBatch(_)
@@ -863,7 +863,7 @@ impl RouterMutationRecord {
     /// Total operation count for bulk payloads; `None` for scalar.
     pub fn bulk_total_ops(&self) -> Option<u32> {
         match self.payload() {
-            RouterMutationPayloadV1::LegacyBulk { total_ops, .. } => Some(*total_ops),
+            RouterMutationPayloadV1::SharedSeedBulk { total_ops, .. } => Some(*total_ops),
             RouterMutationPayloadV1::TypedSeedBulk(replay) => Some(replay.total_ops),
             RouterMutationPayloadV1::OrderedEdgeBatch(replay) => Some(
                 replay
@@ -952,7 +952,7 @@ impl RouterMutationRecord {
             && !self.as_v1().routing_in_progress
             && match &self.as_v1().payload {
                 RouterMutationPayloadV1::Scalar { shards }
-                | RouterMutationPayloadV1::LegacyBulk { shards, .. } => {
+                | RouterMutationPayloadV1::SharedSeedBulk { shards, .. } => {
                     !shards.is_empty() && shards.iter().all(|shard| !shard.completed)
                 }
                 _ => false,
@@ -1414,9 +1414,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_bulk_payload_round_trips() {
+    fn shared_seed_bulk_payload_round_trips() {
         let mut record = RouterMutationRecord::new(1, 0, Vec::new());
-        record.as_v1_mut().payload = RouterMutationPayloadV1::LegacyBulk {
+        record.as_v1_mut().payload = RouterMutationPayloadV1::SharedSeedBulk {
             total_ops: 2,
             shards: vec![RouterMutationShardV1::new(
                 ShardId(0),

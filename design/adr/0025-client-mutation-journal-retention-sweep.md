@@ -2,8 +2,8 @@
 
 Date: 2026-06-20
 Status: implemented (eviction predicate and timer stance revised by ADR 0029 Phase 4; ordered retirement specialization planned by ADR 0049)
-Last revised: 2026-07-24
-Anchor timestamp: 2026-07-24 00:28:53 UTC +0000
+Last revised: 2026-07-31
+Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
 
 ## Context
 
@@ -38,7 +38,7 @@ fan-out are never read again: replay short-circuits on `completed_row_count`
 the heavy fields). At that point `record_router_mutation_shard_projection_advanced` pins
 the final `completed_row_count` and drops `resolved_labels`, `resolved_properties`, and any
 shard/plan/seed replay. Scalar terminal records stay `Scalar { shards: [] }`; active bulk payloads
-(both `LegacyBulk` and `TypedSeedBulk`) compact to `CompletedBulk`. Legacy completion retains only
+(both `SharedSeedBulk` and `TypedSeedBulk`) compact to `CompletedBulk`. Shared-seed completion retains only
 `total_ops`; typed completion additionally retains exactly `total_ops` ordered row counts so a
 same-key retry reproduces each operation's original result rather than repeating the aggregate.
 The bounded row-count vector is the only typed result state retained for replay and TTL eviction.

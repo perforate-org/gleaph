@@ -414,21 +414,41 @@ async fn gql_execute_idempotent_batch(
         while group_end < end && args.mutations[group_end].gql_query == mutation.gql_query {
             group_end += 1;
         }
-        if group_end - cursor >= 2 {
-            let group_key = format!("{}#bulk-{}", mutation.mutation_key, cursor);
-            if let Some(bulk_results) = gql::execute_bulk_group(
+        let mut bulk_group_end = group_end;
+        let mut bulk_applied = false;
+        let mut stop_after_bulk = false;
+        while bulk_group_end - cursor >= 2 {
+            let group_key = format!(
+                "{}#bulk-{}-{}",
+                mutation.mutation_key, cursor, bulk_group_end
+            );
+            match gql::execute_bulk_group(
                 caller,
                 &group_key,
-                &args.mutations[cursor..group_end],
+                &args.mutations[cursor..bulk_group_end],
                 gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update,
                 Some(&preflight),
             )
             .await?
             {
-                results.extend(bulk_results);
-                cursor = group_end;
-                continue;
+                gql::BulkGroupExecution::Applied(bulk_results) => {
+                    results.extend(bulk_results);
+                    cursor = bulk_group_end;
+                    bulk_applied = true;
+                    stop_after_bulk = bulk_group_end < group_end;
+                    break;
+                }
+                gql::BulkGroupExecution::Unsupported => break,
+                gql::BulkGroupExecution::SharedRequestTooLarge => {
+                    bulk_group_end = cursor + (bulk_group_end - cursor).div_ceil(2);
+                }
             }
+        }
+        if bulk_applied {
+            if stop_after_bulk {
+                break;
+            }
+            continue;
         }
 
         let result = gql::gql_execute_idempotent_with_batch_outcome(

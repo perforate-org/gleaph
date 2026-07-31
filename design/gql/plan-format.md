@@ -1,7 +1,7 @@
 # Physical plan format
 
-Last updated: 2026-07-22
-Anchor timestamp: 2026-07-22 04:28:03 UTC +0000
+Last updated: 2026-07-31
+Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
 
 ## Purpose
 
@@ -102,19 +102,24 @@ contracts must be distinguished.
 - V1 also rejects plans outside an exhaustive row-preserving DML allowlist or without a statically
   bounded row-free response shape; request admission uses structural seed bounds, one full-request
   encode, and a conservative complete-response proof, never one Candid encode per seed;
-- the scalar `ExecutePlanArgs.seed_bindings_blob` path and the legacy blob batch method remain
-  unchanged; scalar is the fallback for distinct-seed groups, while legacy batch is used only when
-  its existing replay representation is sufficient;
+- the scalar `ExecutePlanArgs.seed_bindings_blob` path and independent-operation batch method remain
+  available; scalar is the fallback for unsupported distinct-seed groups, while seed-invariant
+  homogeneous bulk uses `execute_plan_update_batch_shared_v2`, which encodes the shared
+  plan/catalog/seed/search context once and carries only params per operation;
 - the new method reuses `ExecutePlanBatchResult` (ordered per-item results and `next_index`), while
   Graph journal bulk progress persists committed-prefix row counts so replay preserves those results;
 - typed update admission may retain plan output metadata because the update executor always returns
   `rows_blob=None`; response admission instead bounds result cardinality, errors, and hot vertices;
-- `RouterMutationRecord::V1` is redefined incompatibly with exhaustive scalar, legacy-bulk,
+- `RouterMutationRecord::V1` is redefined incompatibly with exhaustive scalar, shared-seed-bulk,
   typed-bulk, and terminal completed-bulk payload variants; the typed payload persists the exact
   ordered replay relation without a parallel blob representation, and completed records discard the
   heavy replay envelope while retaining bounded ordered row counts for exact typed-batch retry per
   ADR 0025 mechanism E;
-- Router activation is implemented: the typed path is selected only when the durable shard-registry V2 entry records `typed_seed_batch: V1` from an admin-refreshed, post-await target-revalidated capability; ambiguous typed-call outcomes retain typed durable replay under the same mutation id and operation order;
+- Router activation is implemented: typed V1 is selected when the durable shard-registry V2 entry
+  records `typed_seed_batch: V1` or `V2`; shared seed-invariant execution additionally requires
+  `V2`. Both values come from an admin-refreshed, post-await target-revalidated capability;
+  ambiguous typed-call outcomes retain typed durable replay under the same mutation id and
+  operation order;
 - initial Router installation or rollback to older Router Wasm requires fresh install/reset because
   there is no deployed stable state to migrate;
 - Plan 0113 observed a 71-item POSTED typed batch and measured approximately 115.5M fewer Router
@@ -122,9 +127,9 @@ contracts must be distinguished.
   rejections (308 non-threaded plans, 2 non-selective seeds, and all indexed-embedding groups) and
   decided not to expand the Typed V1 boundary. Plan 0116 added an early capability short-circuit for
   single-shard selective complete-row seeds on incapable targets, removing the typed-attempt group
-  prepare overhead on the legacy fallback path (0 instr/item on a fresh deploy versus the Plan 0115
-  82,129,243 instr/item fallback tax). Groups with non-selective seeds, indexed-embedding dispatch,
-  or non-threaded plans continue to use the legacy fallback.
+  prepare overhead on the former repeated fallback path (0 instr/item on a fresh deploy versus the
+  Plan 0115 82,129,243 instr/item fallback tax). As of 2026-07-31, seed-invariant groups outside
+  typed V1 use shared V2 when supported; otherwise they fall back to scalar execution.
 
 The physical plan remains the single source of predicate/join semantics. Gleaph-specific seed
 lowering must not add shard, canister, constraint, or Property Index concepts to the generic planner.

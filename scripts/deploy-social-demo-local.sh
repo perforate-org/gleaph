@@ -16,6 +16,12 @@ VECTOR_INDEX_ID="${GLEAPH_DEMO_VECTOR_INDEX_ID:-1}"
 EMBEDDING_NAME="${GLEAPH_DEMO_EMBEDDING_NAME:-post_vec}"
 EMBEDDING_DIMS="${GLEAPH_DEMO_EMBEDDING_DIMS:-8}"
 
+# Six canisters are created and each is topped up with 100T below. Keep the
+# local deployer funded for the whole bootstrap rather than relying on the
+# currently selected icp identity's balance.
+LOCAL_DEPLOYER_CYCLES=1000000000000000
+LOCAL_DEPLOYER_CYCLES_LABEL=1_000t
+
 ICP_CLI_HOME="${ICP_CLI_HOME:-$ROOT/.icp/home}"
 ICP_COREPACK_HOME="${ICP_COREPACK_HOME:-$ROOT/.icp/corepack-home}"
 ICP_XDG_CACHE_HOME="${ICP_XDG_CACHE_HOME:-$ROOT/.icp/xdg-cache}"
@@ -78,23 +84,52 @@ ensure_local_network() {
 ensure_canister() {
   local name="$1"
   local id
+  local identity="${ICP_DEPLOYER_IDENTITY:-}"
+
+  if [[ -z "$identity" ]]; then
+    log "ERROR: ICP_DEPLOYER_IDENTITY is required before creating canisters"
+    exit 1
+  fi
 
   log "Resolving canister id for $name"
   if id="$(icp_cmd canister status -e local -i "$name" 2>/dev/null | head -n 1)" && [[ -n "$id" ]]; then
     log "Using existing $name canister $id"
   else
     log "Creating $name canister"
-    icp_cmd canister create -e local --quiet --reserved-cycles-limit 100t "$name" >/dev/null
+    icp_cmd canister create -e local --identity "$identity" --quiet \
+      --reserved-cycles-limit 100t "$name" >/dev/null
     id="$(icp_cmd canister status -e local -i "$name" 2>/dev/null | head -n 1)"
     log "Created $name canister $id"
   fi
 
-  # Local replica canisters can drain their free cycle pool across repeated deploys.
+  # Local replica canisters can drain their cycle pool across repeated deploys.
   # Ensure each canister can afford inter-canister update-call reservations (~42B per call).
-  # On the local network cycles are minted for free, so this is a safe no-op cost-wise.
-  icp_cmd canister top-up -e local --amount 100t "$name" >/dev/null || log "WARN: could not top-up $name"
+  icp_cmd canister top-up -e local --identity "$identity" --amount 100t "$name" >/dev/null \
+    || log "WARN: could not top-up $name"
 
   printf '%s\n' "$id"
+}
+
+ensure_deployer_cycles() {
+  local identity="$1"
+  local principal="$2"
+  local balance_text balance
+
+  balance_text="$(icp_cmd cycles balance -e local --identity "$identity" --quiet)"
+  balance="${balance_text%% *}"
+  balance="${balance//_/}"
+  if [[ "$balance" =~ ^[0-9]+$ ]] && (( balance >= LOCAL_DEPLOYER_CYCLES )); then
+    log "Deployer identity '$identity' has sufficient cycles ($balance_text)"
+    return
+  fi
+
+  log "Funding deployer identity '$identity' with $LOCAL_DEPLOYER_CYCLES_LABEL local cycles"
+  if ! icp_cmd cycles transfer "$LOCAL_DEPLOYER_CYCLES_LABEL" "$principal" \
+      -e local --identity anonymous >/dev/null; then
+    log "ERROR: could not transfer local fabricated cycles from anonymous to '$identity'"
+    log "       Check that the local network is running and that the anonymous identity is funded"
+    exit 1
+  fi
 }
 
 local_gateway_url() {
@@ -385,6 +420,7 @@ main() {
   # same identity that was registered as the issuing principal, otherwise Router
   # rejects them as NotAuthorized.
   ICP_DEPLOYER_IDENTITY="$deployer_id"
+  ensure_deployer_cycles "$deployer_id" "$admin"
 
   log "Building all canisters"
   # The managed recipe's progress renderer can terminate early in non-interactive shells;

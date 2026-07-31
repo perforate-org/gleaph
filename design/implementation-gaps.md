@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-07-31
-Anchor timestamp: 2026-07-31 02:42:46 UTC +0000
+Anchor timestamp: 2026-07-31 09:47:59 UTC +0000
 
 ## Status
 
@@ -46,6 +46,38 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-07-31-002 — Typed V1 multi-anchor bulk remains selective-prefix-only
+
+- **Status:** Open
+- **Severity:** P2 bulk-throughput and capability-coverage gap
+- **Owner:** Router typed-batch admission and `gleaph-gql-integration::typed_batch` plan classifier
+- **Observed behavior:** The existing typed V1 envelope now accepts complete seed rows for multiple
+  contiguous leading anchors, but Router admission creates that relation only when every anchored
+  variable has a selective equality/index anchor. Label-only multi-variable prefixes, edge anchors
+  in a multi-variable relation, multi-shard dispatch, indexed-embedding or resolved-search
+  dispatch, uniqueness/constrained-property effects, and plans with a later graph-read or
+  row-cardinality-changing operator remain outside typed V1. Equivalent operations also stop
+  coalescing when their exact query/plan/catalog fields differ.
+- **Expected or needed behavior:** If broader multi-anchor bulk coverage is required, each newly
+  admitted shape needs an explicit seed-row construction, shard-routing, Graph revalidation,
+  response-bound, durable replay, and instruction-budget contract. The current implementation
+  intentionally falls back to scalar or another semantics-safe path rather than guessing these
+  invariants.
+- **Evidence:** `crates/router/src/seed.rs` (`SeedAnchorSet::is_selective_complete_row_seed` and
+  `hits_to_local_vertex_ids`), `crates/router/src/gql.rs`
+  (`plan_requires_per_item_seed_bindings` and `execute_prepared_bulk_group_typed`),
+  `crates/gql-integration/src/typed_batch.rs` (`is_typed_seeded_bundle` and the exhaustive
+  row-preserving operator classifier), and [ADR 0047](adr/0047-shared-typed-graph-bulk-envelope.md)
+  multi-anchor V1 contract.
+- **Impact:** Valid mutations outside the selective, single-shard, row-preserving subset may use
+  more Router ingresses or scalar execution. This is a performance/coverage limitation, not a
+  correctness failure; widening the envelope without a separate contract could make seed rows,
+  cross-shard effects, or replay state unsound.
+- **Next decision:** Choose one bounded follow-up slice—label-only anchor reduction, edge-endpoint
+  seed rows, or multi-shard typed replay—and define its owner boundary and acceptance benchmarks
+  before changing typed V1 again. Do not add another envelope version solely to bypass this gap.
+- **Related contracts:** [ADR 0046](adr/0046-complete-prefix-seed-rows.md), [ADR 0047](adr/0047-shared-typed-graph-bulk-envelope.md)
 
 ### GAP-2026-07-25-002 — Tombstone-heavy OFFSET scans lack a persistent skip structure
 

@@ -122,6 +122,14 @@ async fn execute_plan_update_batch_typed_v1(
     canister::handlers::execute_plan_update_batch_typed_v1(args).await
 }
 
+/// Router → graph: shared seed-invariant bulk envelope (ADR 0047 V2).
+#[update(guard = "guard_router_canister")]
+async fn execute_plan_update_batch_shared_v2(
+    args: gleaph_graph_kernel::plan_exec::ExecutePlanBatchSharedV2Args,
+) -> Result<gleaph_graph_kernel::plan_exec::ExecutePlanBatchResult, String> {
+    canister::handlers::execute_plan_update_batch_shared_v2(args).await
+}
+
 /// Router → graph: capability advertisement (ADR 0047).
 #[query(guard = "guard_router_canister")]
 fn execution_capabilities() -> gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {

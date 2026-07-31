@@ -1041,9 +1041,7 @@ impl RouterStore {
                 RouterError::Internal(format!("capability refresh failed: {error}"))
             })?;
         self.commit_shard_execution_capabilities(capture, capabilities.typed_seed_batch)
-            .map(|capability| {
-                capability == gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
-            })
+            .map(|capability| capability.supports_typed_v1())
     }
 
     /// Capture stage: validate admin/graph/shard and snapshot the current entry identity.

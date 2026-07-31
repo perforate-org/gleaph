@@ -218,7 +218,16 @@ if (methodName !== "gql_execute_idempotent_batch") {
     waves.get(wave).push(seed);
   }
   const sortedWaves = Array.from(waves.entries()).sort((a, b) => a[0] - b[0]);
-  for (const [wave, waveSeeds] of sortedWaves) {
+  for (const [wave, rawWaveSeeds] of sortedWaves) {
+    // Router coalesces only consecutive identical plans. Keep dependency waves intact, but make
+    // each plan contiguous so all rows for a multi-anchor relation share one typed V1 bulk group.
+    // The first-seen plan order is preserved; seeds within a plan retain their source order.
+    const planGroups = new Map();
+    for (const seed of rawWaveSeeds) {
+      if (!planGroups.has(seed.gql)) planGroups.set(seed.gql, []);
+      planGroups.get(seed.gql).push(seed);
+    }
+    const waveSeeds = Array.from(planGroups.values()).flat();
     if (waveSeeds.length === 0) continue;
     renderProgress(wave, 0, waveSeeds.length);
     let seededCount = 0;

@@ -1,7 +1,7 @@
 # Execution pipeline
 
-Last updated: 2026-07-29
-Anchor timestamp: 2026-07-29 05:40:47 UTC +0000
+Last updated: 2026-07-31
+Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
 
 ## Purpose
 
@@ -40,9 +40,11 @@ each canister crate.
 The canister handlers separate the intermediate incomplete journal write from the
 final completed journal write. Scalar single-message updates (`execute_plan_update`)
 keep only the completed journal entry because the whole message is atomic and there
-is no resumable boundary before completion. Batch updates (`execute_plan_update_batch`)
-and non-bulk operations inside a batch still write the incomplete journal so the
-Router can resume or replay per-operation progress across calls.
+is no resumable boundary before completion. Batch updates (`execute_plan_update_batch`, typed V1,
+and shared V2) and non-bulk operations inside a batch still write the incomplete journal so the
+Router can resume or replay per-operation progress across calls. Typed V1 carries per-operation
+decoded seeds; shared V2 encodes one seed-invariant plan/catalog/seed/search header plus
+per-operation params.
 
 Flow:
 

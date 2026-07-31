@@ -5,12 +5,12 @@ use gleaph_graph_kernel::federation::{
     BulkIngestFinalizeArgs, BulkIngestFinalizeResult, PostingBackfillArgs, PostingBackfillResult,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchResult, ExecutePlanResult,
-    GetMutationJournalEntriesArgs, GetMutationJournalEntriesResult, GraphMutationJournalEntryWire,
-    GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult, GraphOrderedVertexBatchResult,
-    LabelStatsDeltaEventWire, MutationId, OrderedEdgeBatchGraphArgs, OrderedMixedBatchGraphArgs,
-    OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck, OrderedMutationRetirementArgs,
-    OrderedVertexBatchGraphArgs, OrderedVertexMutationRetirementAck,
+    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchResult, ExecutePlanBatchSharedV2Args,
+    ExecutePlanResult, GetMutationJournalEntriesArgs, GetMutationJournalEntriesResult,
+    GraphMutationJournalEntryWire, GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult,
+    GraphOrderedVertexBatchResult, LabelStatsDeltaEventWire, MutationId, OrderedEdgeBatchGraphArgs,
+    OrderedMixedBatchGraphArgs, OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck,
+    OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, OrderedVertexMutationRetirementAck,
     OrderedVertexMutationRetirementArgs, ShardEventSeq,
 };
 
@@ -134,6 +134,16 @@ pub async fn execute_plan_batch_typed_v1_on_graph(
     args.validate()
         .map_err(|e| format!("typed batch V1 validation: {e}"))?;
     call_graph_result(graph, "execute_plan_update_batch_typed_v1", args).await
+}
+
+/// Router → Graph: shared seed-invariant bulk envelope (ADR 0047 V2).
+pub async fn execute_plan_batch_shared_v2_on_graph(
+    graph: Principal,
+    args: ExecutePlanBatchSharedV2Args,
+) -> Result<ExecutePlanBatchResult, String> {
+    args.validate()
+        .map_err(|e| format!("shared batch V2 validation: {e}"))?;
+    call_graph_result(graph, "execute_plan_update_batch_shared_v2", args).await
 }
 
 /// Router → Graph: journal-first ordered edge batch execution (ADR 0049).

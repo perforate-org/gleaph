@@ -27,14 +27,15 @@ use gleaph_gql_planner::PhysicalPlan;
 
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchResult,
-    ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode, GraphMutationRequestIdentityV1,
-    GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult, GraphOrderedVertexBatchResult,
-    GraphOrderedVertexBatchResultV1, MutationId, OrderedEdgeBatchGraphArgs,
-    OrderedEdgeBatchGraphRequest, OrderedMixedBatchGraphArgs, OrderedMixedBatchGraphRequest,
-    OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck, OrderedMutationRetirementAck,
-    OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs, OrderedVertexBatchGraphRequest,
-    OrderedVertexMutationRetirementAck, OrderedVertexMutationRetirementArgs, ResolvedSearchWire,
-    SeedBindingsWire, ShardEventSeq, bound_typed_batch_error,
+    ExecutePlanBatchSharedV2Args, ExecutePlanBatchTypedArgs, ExecutePlanResult, GqlExecutionMode,
+    GraphMutationRequestIdentityV1, GraphOrderedEdgeBatchResult, GraphOrderedMixedBatchResult,
+    GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1, MutationId,
+    OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphRequest, OrderedMixedBatchGraphArgs,
+    OrderedMixedBatchGraphRequest, OrderedMixedGraphOperationV1, OrderedMixedMutationRetirementAck,
+    OrderedMutationRetirementAck, OrderedMutationRetirementArgs, OrderedVertexBatchGraphArgs,
+    OrderedVertexBatchGraphRequest, OrderedVertexMutationRetirementAck,
+    OrderedVertexMutationRetirementArgs, ResolvedSearchWire, SeedBindingsWire, ShardEventSeq,
+    bound_typed_batch_error,
 };
 
 use super::types::GraphInitArgs;
@@ -114,12 +115,10 @@ pub fn admin_stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stable
 }
 /// Router → graph: capability advertisement (ADR 0047).
 ///
-/// The result is state-free and derived from the canister binary: the typed V1 endpoint is
-/// implemented in this build, so the capability is always `true`. Future capabilities may depend
-/// on stable feature flags when their semantics require it.
+/// The result is state-free and derived from the canister binary.
 pub fn execution_capabilities() -> gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {
     gleaph_graph_kernel::plan_exec::GraphExecutionCapabilities {
-        typed_seed_batch: gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1,
+        typed_seed_batch: gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V2,
     }
 }
 
@@ -643,6 +642,59 @@ pub async fn execute_plan_update_batch_typed_v1(
         .map_err(bound_typed_batch_error)
 }
 
+pub async fn execute_plan_update_batch_shared_v2(
+    args: ExecutePlanBatchSharedV2Args,
+) -> Result<ExecutePlanBatchResult, String> {
+    args.validate()
+        .map_err(|e| format!("execute_plan_update_batch_shared_v2 validation: {e}"))?;
+    let ExecutePlanBatchSharedV2Args {
+        shared,
+        operations,
+        batch_mode,
+    } = args;
+    ensure_target_shard(shared.target_shard_id)?;
+    let seed = match shared.seed_bindings_blob {
+        Some(blob) => Some(
+            Decode!(&blob, SeedBindingsWire)
+                .map_err(|e| format!("shared batch V2 seed_bindings decode: {e}"))?,
+        ),
+        None => None,
+    };
+    let operations = operations
+        .into_iter()
+        .map(|op| {
+            PlanExecutionInput::decoded(
+                ExecutePlanArgs {
+                    target_shard_id: shared.target_shard_id,
+                    element_id_encoding_key: shared.element_id_encoding_key,
+                    mutation_id: Some(shared.mutation_id),
+                    plan_blob: shared.plan_blob.clone(),
+                    params_blob: op.params_blob,
+                    mode: GqlExecutionMode::Update,
+                    seed_bindings_blob: None,
+                    resolved_labels: shared.resolved_labels.clone(),
+                    resolved_properties: shared.resolved_properties.clone(),
+                    indexed_properties: shared.indexed_properties.clone(),
+                    unique_claims: None,
+                    constrained_properties: None,
+                    local_unique_claims: None,
+                    local_constrained_properties: None,
+                    indexed_embeddings: shared.indexed_embeddings.clone(),
+                    resolved_search_blob: shared.resolved_search_blob.clone(),
+                },
+                seed.clone(),
+            )
+        })
+        .collect();
+    execute_plan_batch_internal(
+        operations,
+        batch_mode,
+        BatchResponseContract::TypedV1,
+        "execute_plan_update_batch_shared_v2",
+    )
+    .await
+}
+
 async fn execute_plan_update_batch_typed_v1_impl(
     args: ExecutePlanBatchTypedArgs,
 ) -> Result<ExecutePlanBatchResult, String> {
@@ -850,6 +902,16 @@ impl PlanExecutionInput {
         Self {
             args,
             seed_bindings: SeedBindingsInput::Typed(seed),
+        }
+    }
+
+    fn decoded(args: ExecutePlanArgs, seed: Option<SeedBindingsWire>) -> Self {
+        debug_assert!(args.seed_bindings_blob.is_none());
+        Self {
+            args,
+            seed_bindings: seed
+                .map(SeedBindingsInput::Typed)
+                .unwrap_or(SeedBindingsInput::Absent),
         }
     }
 }
@@ -2415,6 +2477,8 @@ pub async fn backfill_vertex_embeddings(
         .await
 }
 
+const MAX_BULK_INGEST_FINALIZE_VERTICES: usize = 256;
+
 pub fn finalize_bulk_ingest(
     args: gleaph_graph_kernel::federation::BulkIngestFinalizeArgs,
 ) -> Result<gleaph_graph_kernel::federation::BulkIngestFinalizeResult, String> {
@@ -2429,6 +2493,16 @@ pub fn finalize_bulk_ingest(
         return Err(format!(
             "target_shard_id {} does not match this graph shard {}",
             args.target_shard_id, routing.shard_id
+        ));
+    }
+    let total_vertices = args
+        .forward_vertices
+        .len()
+        .checked_add(args.reverse_vertices.len())
+        .ok_or("vertex list length overflow")?;
+    if total_vertices > MAX_BULK_INGEST_FINALIZE_VERTICES {
+        return Err(format!(
+            "vertex list too long: {total_vertices} > {MAX_BULK_INGEST_FINALIZE_VERTICES}"
         ));
     }
     let spec = BulkIngestFinalizeSpec {
@@ -2487,7 +2561,8 @@ mod tests {
     };
     use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ElementIdEncodingKey, ShardId};
     use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanBatchMode, ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared,
+        ExecutePlanBatchMode, ExecutePlanBatchSharedV2, ExecutePlanBatchSharedV2Args,
+        ExecutePlanBatchTypedArgs, ExecutePlanBatchTypedShared, ExecutePlanSharedV2Op,
         ExecutePlanTypedOp, GraphOrderedEdgeBatchResultV1, GraphOrderedVertexBatchResultV1,
         OrderedEdgeBatchGraphArgs, OrderedEdgeBatchGraphArgsV1, OrderedEdgeBatchGraphItemV1,
         OrderedEdgeBatchGraphRequest, OrderedEdgeBatchGraphRequestV1, OrderedMixedBatchGraphArgs,
@@ -2826,6 +2901,65 @@ mod tests {
             "completed-journal replay must not re-execute the mutation"
         );
     }
+
+    #[test]
+    fn shared_v2_batch_keeps_one_operation_domain_across_replay() {
+        attach_test_federation(TEST_SHARD_ID);
+        let mutation_id = 56;
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec!["HandlerSharedV2Vertex".into()],
+            properties: vec![],
+        }]);
+        let shared_seed = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: Vec::new(),
+            complete_prefix_rows: false,
+        };
+        let args = ExecutePlanBatchSharedV2Args {
+            shared: ExecutePlanBatchSharedV2 {
+                target_shard_id: TEST_SHARD_ID,
+                element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
+                mutation_id,
+                plan_blob: encode_block_plans(&[plan], true).expect("encode mutation plan"),
+                seed_bindings_blob: Some(Encode!(&shared_seed).expect("encode shared seed")),
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+                indexed_embeddings: None,
+                resolved_search_blob: None,
+            },
+            operations: vec![
+                ExecutePlanSharedV2Op {
+                    params_blob: encode_gql_params_blob(vec![]).expect("encode params 0"),
+                },
+                ExecutePlanSharedV2Op {
+                    params_blob: encode_gql_params_blob(vec![]).expect("encode params 1"),
+                },
+            ],
+            batch_mode: ExecutePlanBatchMode::Dynamic,
+        };
+
+        let first = pollster::block_on(execute_plan_update_batch_shared_v2(args.clone()))
+            .expect("first shared V2 batch");
+        assert_eq!(first.results.len(), 2);
+        assert!(first.next_index.is_none());
+
+        let journal = GraphStore::new()
+            .mutation_journal_entry(mutation_id)
+            .expect("shared V2 journal");
+        assert!(journal.is_completed());
+        let progress = journal.bulk_progress().as_ref().expect("bulk progress");
+        assert_eq!(progress.operation_count(), 2);
+        assert_eq!(progress.completed_count(), 2);
+        assert_eq!(progress.operation_row_counts().len(), 2);
+
+        let replay = pollster::block_on(execute_plan_update_batch_shared_v2(args))
+            .expect("shared V2 replay");
+        assert_eq!(replay.results.len(), 2);
+        assert!(replay.next_index.is_none());
+    }
+
     #[test]
     fn execute_plan_query_seed_bindings_skip_label_intersection() {
         attach_test_federation(TEST_SHARD_ID);
@@ -3047,7 +3181,7 @@ mod tests {
         let caps = execution_capabilities();
         assert_eq!(
             caps.typed_seed_batch,
-            gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+            gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V2
         );
     }
 
@@ -3077,7 +3211,10 @@ mod tests {
         });
         let fresh_error =
             execute_ordered_edge_batch(args.clone()).expect_err("fresh path is deferred");
-        assert!(fresh_error.contains("planner admission failed"));
+        assert!(
+            fresh_error.contains("batch classification failed") && fresh_error.contains("not live"),
+            "unexpected fresh-path error: {fresh_error}"
+        );
 
         GraphStore::new().commit_record_completed_ordered_edge_batch_journal_at(
             0,

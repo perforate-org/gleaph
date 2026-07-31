@@ -2,7 +2,8 @@
 
 Date: 2026-06-21
 Status: accepted
-Last revised: 2026-07-24
+Last revised: 2026-07-31
+Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
 
 ## Context
 
@@ -220,7 +221,7 @@ Recovery is split by risk:
   next action. Read-your-writes convergence is observed through `AtLeast(token)` reads (§5) and this
   query; the timer never returns results to a client.
 
-Schema: `RouterMutationRecord` is now `RouterMutationRecord::V1` with an exhaustive `RouterMutationPayloadV1` (`Scalar`, `LegacyBulk`, `TypedSeedBulk`, `CompletedBulk`). Gleaph has no deployed Router mutation state, so the incompatible V1 replacement requires a fresh install/reset; no migration decoder is retained for the never-deployed prior `shards`/`is_bulk`/`bulk_state` shape. The `routing_lease_ns: Option<u64>` and `last_error: Option<String>` additions remain Candid `opt`, so any still-existing pre-Phase-4 records decode as `None` with no migration.
+Schema: `RouterMutationRecord` is now `RouterMutationRecord::V1` with an exhaustive `RouterMutationPayloadV1` (`Scalar`, `SharedSeedBulk`, `TypedSeedBulk`, `CompletedBulk`). Gleaph has no deployed Router mutation state, so the incompatible V1 replacement requires a fresh install/reset; no migration decoder is retained for the never-deployed prior `shards`/`is_bulk`/`bulk_state` shape. The `routing_lease_ns: Option<u64>` and `last_error: Option<String>` additions remain Candid `opt`, so any still-existing pre-Phase-4 records decode as `None` with no migration.
 
 ### 5. Make read consistency explicit
 

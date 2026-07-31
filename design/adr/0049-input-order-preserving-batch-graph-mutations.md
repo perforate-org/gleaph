@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Status: Implemented
 Last revised: 2026-07-31
-Anchor timestamp: 2026-07-31 03:53:01 UTC +0000
+Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
 
 The 2026-07-31 public-surface correction replaces the three specialized Router
 updates with two mutation APIs: `batch(BatchRequest)` submits work and
@@ -1101,7 +1101,7 @@ request-kind accessors all reject these combinations fail-closed.
 `Incomplete`, `next_index`, and `bulk_progress` combinations.
 
 `GraphMutationRequestIdentityV1::PlanExecution` preserves the existing scalar,
-legacy-bulk, and typed-bulk journal semantics. This ADR does not silently
+shared-seed-bulk, and typed-bulk journal semantics. This ADR does not silently
 strengthen their current content-fingerprint behavior. The ordered Graph owner
 persists `GraphMutationRequestIdentityV1::OrderedEdgeBatch` in the same atomic
 message as the receipt and canonical mutation, initially with retirement
@@ -1267,7 +1267,7 @@ RouterMutationPayloadV1 =
     Scalar {
         shards: [RouterMutationShardV1],
     }
-  | LegacyBulk {
+  | SharedSeedBulk {
         total_ops,
         shards: [RouterMutationShardV1],
     }

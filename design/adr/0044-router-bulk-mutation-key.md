@@ -2,8 +2,8 @@
 
 Status: Implemented
 Date: 2026-07-19 15:12:46 UTC
-Last revised: 2026-07-23
-Anchor timestamp: 2026-07-22 02:53:05 UTC +0000
+Last revised: 2026-07-31
+Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
 
 ## Context
 
@@ -89,7 +89,7 @@ coalescing happened.
 This ADR originally defined V1 stable records sufficient for homogeneous bulk groups where every
 operation shares the same seed relation. Because Gleaph has no deployed Router stable state to
 preserve, ADR 0047 redefines `RouterMutationRecord::V1` incompatibly with exhaustive `Scalar`,
-`LegacyBulk`, `TypedSeedBulk`, and terminal `CompletedBulk` payload variants. The typed payload persists the exact ordered per-operation relation before
+`SharedSeedBulk`, `TypedSeedBulk`, and terminal `CompletedBulk` payload variants. The typed payload persists the exact ordered per-operation relation before
 the first Graph await and cannot coexist with a legacy seed blob. `CompletedBulk` compacts away the
 plan, params, seeds, target, and resolved tables once every shard outcome and projection converges,
 while typed completion retains only its bounded ordered operation row counts for exact retry,
@@ -126,14 +126,14 @@ pub enum RouterMutationPayloadV1 {
     Scalar {
         shards: Vec<RouterMutationShardV1>,
     },
-    LegacyBulk {
+    SharedSeedBulk {
         total_ops: u32,
         shards: Vec<RouterMutationShardV1>,
     },
     TypedSeedBulk(Box<TypedSeedBulkReplayV1>),
     CompletedBulk {
         total_ops: u32,
-        // Empty for legacy bulk; exactly total_ops entries for typed bulk.
+        // Empty for shared-seed bulk; exactly total_ops entries for typed bulk.
         operation_row_counts: Vec<u64>,
     },
 }
@@ -209,13 +209,14 @@ Inside one `gql_execute_idempotent_batch` call:
    Graph journal cursor ensures that a retry of the same group resumes from
    the correct operation.
 
-The implemented bulk path admits homogeneous groups whose dispatch envelope can be shared
-safely. Parameterized index anchors that resolve to selective equality or index predicates are now
-handled through the ADR 0046 complete-row seed path: the Router resolves per-item candidate domains
-and attaches the exact item-specific `SeedBindingsWire` relation to each `ExecutePlanArgs`. The
-first item's seed is never copied to later parameter sets. Unsupported shapes (label-only anchors,
-edge anchors, correlated/optional seeds, and constrained mutations) fall back to the existing
-sequential path.
+The implemented bulk path admits homogeneous groups whose dispatch envelope can be shared safely.
+Parameterized index anchors that resolve to selective equality or index predicates use the ADR
+0046 typed V1 path: the Router resolves per-item candidate domains and attaches the exact
+item-specific `SeedBindingsWire` relation to each `ExecutePlanTypedOp`. Seed-invariant groups use
+the ADR 0047 shared V2 path, which encodes the common plan, catalogs, seed relation, and resolved
+search relation once and carries only `params_blob` per operation. Unsupported shapes (label-only
+anchors, edge anchors, correlated/optional seeds, constrained mutations, or shards that do not
+advertise the required capability) fall back to the existing sequential path.
 
 Because one bulk `MutationId` may then contain different seed relations for each operation, the
 current one-blob-per-shard `RouterMutationShard` representation is insufficient. The ADR 0046 path
@@ -237,6 +238,21 @@ persisted row counts in ordinal order. Router accepts a typed terminal outcome o
 state is `Completed`, `next_index` is absent, and all three progress cardinalities equal the durable
 typed operation count. The journal aggregate row count, not callback-local synthetic results, is the
 source of truth for Router completion.
+
+The shared V2 envelope has no separate durable chunk identifier or global
+chunk-to-operation map. Router therefore admits it only when the complete ordered params list plus
+its one shared header fits one encoded Graph request. Instruction-budget continuation resends that
+same complete request, allowing Graph's `next_index` to address a stable operation domain. Router
+must not send a remaining suffix under the same `MutationId`: Graph could not distinguish that
+suffix from an idempotent replay of the original list. If the complete V2 request exceeds the
+payload ceiling, Router leaves the provisional group reservation pristine and bisects the
+homogeneous group. Each admitted subgroup receives its own bulk key and `MutationId`. After one
+bisected subgroup completes, the batch ingress returns a continuation cursor instead of issuing
+further subgroup Graph calls in the same ingress; the next call resumes at the first unprocessed
+item. Only a two-item subgroup that still cannot fit falls back to scalar idempotency records. The
+typed V1 path remains the owner of request-sized complete-row seed chunking because its durable
+replay record stores the logical-to-wire chunk map.
+
 Each operation still executes through the existing single-operation core, so
 shard-local atomicity and idempotency per operation are preserved.
 

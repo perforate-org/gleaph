@@ -42,7 +42,10 @@ As of 2026-07-31 05:00:26 UTC +0000:
 - Asset canister: `social-demo` in `icp.yaml`, receiving
   `PUBLIC_CANISTER_ID:gleaph-social-demo-gateway` from deployment.
 - Local deployment script: `scripts/deploy-social-demo-local.sh` creates/deploys the asset
-  canister after backend setup and prints the frontend URL.
+  canister after backend setup and prints the frontend URL. Before canister creation it ensures
+  the named local deployer has the bootstrap cycle budget by transferring fabricated cycles from
+  the local `anonymous` identity; this is a local-network convenience and is not a mainnet funding
+  contract.
 - Verified contracts:
   - public posts in exact reverse chronological order, excluding the private adversary post,
     executed by an anonymous caller through the Gateway;

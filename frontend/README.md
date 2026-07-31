@@ -64,6 +64,12 @@ The repository root `icp.yaml` builds the social-demo asset canister and the Gle
 Router/Index/Graph canisters. `scripts/deploy-social-demo-local.sh` deploys that stack and seeds the
 social graph through Router GQL.
 
+The local deploy script uses the named `gleaph-demo-deployer` identity for canister creation and
+calls. Before creating the stack it transfers `1_000T` of fabricated local cycles from the seeded
+`anonymous` identity when the deployer balance is below the bootstrap budget; no mainnet ICP or
+manual `icp cycles mint` step is required. The amount covers the six canister creates and the
+script's per-canister `100T` top-ups.
+
 If the local network is already managed outside the script, set `GLEAPH_DEMO_SKIP_NETWORK_START=1`; the script will require the `local` environment to be running before it proceeds.
 
 ## Phases

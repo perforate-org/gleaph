@@ -145,6 +145,40 @@ pub struct ExecutePlanBatchTypedArgs {
     pub batch_mode: ExecutePlanBatchMode,
 }
 
+/// Router → Graph: shared execution envelope for seed-invariant homogeneous bulk groups.
+///
+/// Unlike [`ExecutePlanBatchArgs`], immutable plan/catalog context and the common seed/search
+/// relation are encoded once. Per-operation data is only the parameter blob. The entire ordered
+/// operation domain belongs to one `mutation_id`; callers must resend this same domain when
+/// continuing from Graph journal progress.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ExecutePlanBatchSharedV2Args {
+    pub shared: ExecutePlanBatchSharedV2,
+    pub operations: Vec<ExecutePlanSharedV2Op>,
+    pub batch_mode: ExecutePlanBatchMode,
+}
+
+/// Immutable context shared by every operation in a shared V2 bulk group.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ExecutePlanBatchSharedV2 {
+    pub target_shard_id: ShardId,
+    pub element_id_encoding_key: [u8; 16],
+    pub mutation_id: MutationId,
+    pub plan_blob: Vec<u8>,
+    pub seed_bindings_blob: Option<Vec<u8>>,
+    pub resolved_labels: Option<ResolvedLabelTable>,
+    pub resolved_properties: Option<ResolvedPropertyTable>,
+    pub indexed_properties: Option<crate::index::IndexedPropertyCatalog>,
+    pub indexed_embeddings: Option<crate::vector_index::IndexedEmbeddingCatalog>,
+    pub resolved_search_blob: Option<Vec<u8>>,
+}
+
+/// Per-operation data for a shared V2 bulk group.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ExecutePlanSharedV2Op {
+    pub params_blob: Vec<u8>,
+}
+
 /// Immutable context shared by every operation in a typed bulk group.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanBatchTypedShared {
@@ -918,6 +952,31 @@ impl ExecutePlanBatchTypedArgs {
     }
 }
 
+impl ExecutePlanBatchSharedV2Args {
+    /// Structural and encoded-size validation shared by Router and Graph.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.operations.is_empty() {
+            return Err("shared batch V2 requires at least one operation".into());
+        }
+        for (i, op) in self.operations.iter().enumerate() {
+            if op.params_blob.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+                return Err(format!(
+                    "shared batch V2 op {i} params exceed safe payload bound"
+                ));
+            }
+        }
+        let encoded =
+            Encode!(self).map_err(|e| format!("shared batch V2 request encode failed: {e}"))?;
+        if encoded.len() > MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err(format!(
+                "shared batch V2 request exceeds the safe payload limit of {}",
+                MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Graph canister execution capabilities advertised to the Router (ADR 0047).
 ///
 /// This response is intentionally explicit: each capability is a named, versioned value
@@ -932,6 +991,18 @@ pub enum TypedSeedBatchCapability {
     #[default]
     Unsupported,
     V1,
+    /// Supports typed V1 plus the shared seed-invariant V2 bulk envelope.
+    V2,
+}
+
+impl TypedSeedBatchCapability {
+    pub fn supports_typed_v1(self) -> bool {
+        matches!(self, Self::V1 | Self::V2)
+    }
+
+    pub fn supports_shared_v2(self) -> bool {
+        matches!(self, Self::V2)
+    }
 }
 
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
@@ -2966,12 +3037,18 @@ mod graph_execution_capabilities_tests {
     #[test]
     fn roundtrip_encodes_typed_seed_batch_capability() {
         let caps = GraphExecutionCapabilities {
-            typed_seed_batch: TypedSeedBatchCapability::V1,
+            typed_seed_batch: TypedSeedBatchCapability::V2,
         };
         let bytes = Encode!(&caps).expect("encode capabilities");
         let decoded: GraphExecutionCapabilities =
             Decode!(&bytes, GraphExecutionCapabilities).expect("decode capabilities");
-        assert_eq!(decoded.typed_seed_batch, TypedSeedBatchCapability::V1);
+        assert_eq!(decoded.typed_seed_batch, TypedSeedBatchCapability::V2);
+        assert!(decoded.typed_seed_batch.supports_typed_v1());
+        assert!(decoded.typed_seed_batch.supports_shared_v2());
+        assert!(
+            !TypedSeedBatchCapability::V1.supports_shared_v2(),
+            "V1 Graph binaries do not expose the shared V2 endpoint"
+        );
     }
 
     #[test]

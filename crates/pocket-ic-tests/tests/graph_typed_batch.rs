@@ -51,6 +51,30 @@ fn posted_plan_bundle() -> Vec<u8> {
     encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan")
 }
 
+fn follows_multi_anchor_plan_bundle() -> Vec<u8> {
+    let plan = PhysicalPlan::from_ops(vec![
+        PlanOp::NodeScan {
+            variable: Rc::from("a"),
+            label: Some("User".into()),
+            property_projection: None,
+        },
+        PlanOp::NodeScan {
+            variable: Rc::from("b"),
+            label: Some("User".into()),
+            property_projection: None,
+        },
+        PlanOp::InsertEdge {
+            variable: None,
+            src: Rc::from("a"),
+            dst: Rc::from("b"),
+            direction: gleaph_gql::types::EdgeDirection::PointingRight,
+            labels: vec!["FOLLOWS".into()],
+            properties: vec![],
+        },
+    ]);
+    encode_block_plans(std::slice::from_ref(&plan), true).expect("encode multi-anchor plan")
+}
+
 fn make_typed_batch_args(
     env: &FederationEnv,
     user_label_id: u16,
@@ -310,5 +334,77 @@ fn graph_typed_batch_enforces_boundary_executes_and_replays_once() {
     assert!(
         err.contains("eligibility") && err.contains("write-path"),
         "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn graph_typed_v1_executes_complete_rows_for_multiple_leading_anchors() {
+    let env = install_single_shard_federation();
+    let user_label = admin_intern_vertex_label(&env, "User");
+    let follows_edge_label = admin_intern_edge_label(&env, "FOLLOWS");
+    let source = e2e_insert_vertex_with_label(&env, env.graph_source, user_label.raw());
+    let target = e2e_insert_vertex_with_label(&env, env.graph_source, user_label.raw());
+
+    let args = ExecutePlanBatchTypedArgs {
+        shared: ExecutePlanBatchTypedShared {
+            target_shard_id: SOURCE_SHARD,
+            element_id_encoding_key: federation_graph_element_id_encoding_key_bytes(&env),
+            mutation_id: 2001,
+            plan_blob: follows_multi_anchor_plan_bundle(),
+            resolved_labels: Some(ResolvedLabelTable {
+                vertex: vec![ResolvedVertexLabel {
+                    name: "User".into(),
+                    id: gleaph_graph_kernel::entry::VertexLabelId::from_raw(user_label.raw()),
+                }],
+                edge: vec![ResolvedEdgeLabel {
+                    name: "FOLLOWS".into(),
+                    id: gleaph_graph_kernel::entry::EdgeLabelId::from_raw(follows_edge_label.raw()),
+                    inline_property_profile: EdgeInlinePropertyProfile::no_inline_property(),
+                    inline_schema: None,
+                }],
+            }),
+            resolved_properties: None,
+            indexed_properties: None,
+        },
+        operations: vec![ExecutePlanTypedOp {
+            params_blob: vec![],
+            seed: SeedBindingsWire {
+                entries: vec![],
+                rows: vec![SeedRowWire {
+                    vertex_bindings: vec![
+                        SeedVertexBinding {
+                            variable: "a".into(),
+                            local_vertex_id: source.local_vertex_id,
+                            required_vertex_label_ids: vec![user_label.raw()],
+                        },
+                        SeedVertexBinding {
+                            variable: "b".into(),
+                            local_vertex_id: target.local_vertex_id,
+                            required_vertex_label_ids: vec![user_label.raw()],
+                        },
+                    ],
+                    float64_bindings: vec![],
+                }],
+                complete_prefix_rows: true,
+            },
+        }],
+        batch_mode: ExecutePlanBatchMode::Dynamic,
+    };
+
+    let result: ExecutePlanBatchResult = update_as_router(
+        &env,
+        env.graph_source,
+        "execute_plan_update_batch_typed_v1",
+        args,
+    );
+    assert_eq!(result.results.len(), 1);
+    assert!(
+        result.results[0].is_ok(),
+        "multi-anchor typed result: {result:?}"
+    );
+    assert_eq!(
+        gql_query_as_admin(&env, "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN b").row_count,
+        1,
+        "complete-row seed must bind both edge endpoints"
     );
 }

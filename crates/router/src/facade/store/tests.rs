@@ -90,20 +90,22 @@ fn shard_capability_refresh_capture_and_commit_preserves_identity_and_other_fiel
     let committed = store
         .commit_shard_execution_capabilities(
             capture.clone(),
-            gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1,
+            gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V2,
         )
         .expect("commit");
     assert_eq!(
         committed,
-        gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+        gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V2
     );
     let entry = store
         .resolve_shard(graph_id, ShardId::new(0))
         .expect("lookup");
     assert_eq!(
         entry.typed_seed_batch,
-        gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1
+        gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V2
     );
+    assert!(entry.typed_seed_batch.supports_typed_v1());
+    assert!(entry.typed_seed_batch.supports_shared_v2());
     assert_eq!(entry.graph_canister, graph);
     assert_eq!(entry.index_canister, index);
 

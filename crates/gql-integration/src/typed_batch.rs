@@ -12,11 +12,12 @@
 //! - a required complete-row seed relation with no legacy grouped `entries`;
 //! - no resolved-search relation;
 //! - no uniqueness, constrained, local-unique, or indexed-embedding dispatch state;
-//! - a physical plan that requires the write path and is a single-anchor threaded bundle so the
-//!   number of hot-forward vertices is bounded by the plan structure. Graph update execution never
+//! - a physical plan that requires the write path and has a contiguous complete-row seedable
+//!   anchor prefix followed only by row-preserving operations, so the number of hot-forward vertices
+//!   is bounded by the plan structure. Graph update execution never
 //!   materializes `rows_blob`, even when a plan carries output metadata.
 //!
-//! Anything else keeps the existing scalar or legacy-batch path.
+//! Anything else keeps the scalar or shared seed-invariant V2 path.
 
 use candid::{Decode, Encode};
 use gleaph_gql_planner::wire::decode_plan_bundle;
@@ -55,7 +56,7 @@ pub struct TypedBatchCandidateOp {
 pub enum TypedBatchEligibility {
     /// Group is eligible. The inner candidate contains the normalized shared/per-op data.
     Eligible(TypedBatchCandidate),
-    /// Group must use the existing scalar or legacy batch path.
+    /// Group must use the existing scalar or shared seed-invariant V2 path.
     Ineligible { reason: &'static str },
 }
 
@@ -70,7 +71,8 @@ pub(crate) struct TypedBatchPlanBounds {
 /// - the blob is a decodable plan bundle;
 /// - the bundle requires the write path;
 /// - update execution produces no `rows_blob`; output metadata therefore does not affect the wire;
-/// - the plan is a single-anchor threaded bundle, so all graph reads come from the seeded anchor;
+/// - the plan has one or more contiguous seedable anchors at its beginning, so every graph read
+///   in the prefix comes from the complete row seed;
 /// - the number of `InsertEdge` operators is counted for the response-bound proof.
 ///
 /// This function is exported so the Graph canister can re-validate the plan before executing
@@ -86,8 +88,8 @@ fn validate_typed_batch_plan(plan_blob: &[u8]) -> Result<TypedBatchPlanBounds, &
     }
     let mut insert_edges_per_input_row = 0usize;
     for plan in &plans {
-        if !plan.is_single_anchor_threaded_bundle() {
-            return Err("typed V1 requires a single-anchor threaded bundle");
+        if !is_typed_seeded_bundle(plan) {
+            return Err("typed V1 requires a complete-row seeded bundle");
         }
         let plan_insert_edges = count_row_preserving_insert_edges(&plan.ops)?;
         insert_edges_per_input_row = insert_edges_per_input_row
@@ -99,6 +101,41 @@ fn validate_typed_batch_plan(plan_blob: &[u8]) -> Result<TypedBatchPlanBounds, &
     })
 }
 
+/// Typed V1 accepts a complete row for every leading anchor in the read prefix. This is an
+/// intentional in-place contract change: the existing typed V1 envelope now carries rows such as
+/// `(a, b)` for `MATCH (a:User), (b:User)`, rather than forcing a new wire version for a second
+/// anchor. The prefix must be contiguous because Graph skips and revalidates exactly this prefix;
+/// an anchor after a residual operator would otherwise be read independently from canonical state.
+fn is_typed_seeded_bundle(plan: &gleaph_gql_planner::PhysicalPlan) -> bool {
+    if !plan.has_dml() {
+        return false;
+    }
+    let mut in_anchor_prefix = true;
+    let mut anchor_count = 0usize;
+    for op in &plan.ops {
+        if in_anchor_prefix && is_typed_seedable_anchor(op) {
+            anchor_count += 1;
+            continue;
+        }
+        in_anchor_prefix = false;
+        if is_typed_seedable_anchor(op) {
+            return false;
+        }
+    }
+    anchor_count > 0
+}
+
+fn is_typed_seedable_anchor(op: &gleaph_gql_planner::plan::PlanOp) -> bool {
+    use gleaph_gql_planner::plan::PlanOp;
+    matches!(
+        op,
+        PlanOp::NodeScan { label: Some(_), .. }
+            | PlanOp::IndexScan { .. }
+            | PlanOp::EdgeIndexScan { .. }
+            | PlanOp::IndexIntersection { .. }
+    )
+}
+
 /// Count edge inserts while rejecting every operator that can expand or independently source rows.
 ///
 /// This match is deliberately exhaustive: adding a planner operator forces an explicit typed V1
@@ -108,13 +145,13 @@ fn count_row_preserving_insert_edges(
 ) -> Result<usize, &'static str> {
     use gleaph_gql_planner::plan::PlanOp;
     let mut count = 0usize;
-    for (index, op) in ops.iter().enumerate() {
+    let mut in_anchor_prefix = true;
+    for op in ops {
+        if in_anchor_prefix && is_typed_seedable_anchor(op) {
+            continue;
+        }
+        in_anchor_prefix = false;
         match op {
-            PlanOp::NodeScan { .. }
-            | PlanOp::IndexScan { .. }
-            | PlanOp::EdgeIndexScan { .. }
-            | PlanOp::IndexIntersection { .. }
-                if index == 0 => {}
             PlanOp::PropertyFilter { .. }
             | PlanOp::Filter { .. }
             | PlanOp::Let { .. }
@@ -155,6 +192,9 @@ fn count_row_preserving_insert_edges(
             | PlanOp::SetOperation { .. }
             | PlanOp::OptionalMatch { .. }
             | PlanOp::WorstCaseOptimalJoin { .. } => {
+                if is_typed_seedable_anchor(op) {
+                    return Err("typed V1 seedable anchors must be a contiguous leading prefix");
+                }
                 return Err("typed V1 plan contains an unsupported operator");
             }
         }
@@ -490,7 +530,8 @@ mod tests {
     use gleaph_graph_kernel::entry::ConstraintNameId;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanArgs, SeedBindingEntry, SeedBindingsWire, SeedRowWire, UniqueClaimDispatch,
+        ExecutePlanArgs, SeedBindingEntry, SeedBindingsWire, SeedRowWire, SeedVertexBinding,
+        UniqueClaimDispatch,
     };
     use std::rc::Rc;
 
@@ -830,8 +871,9 @@ mod tests {
     }
 
     #[test]
-    fn non_single_anchor_threaded_bundle_is_ineligible() {
-        // Two existing-state reads after the anchor break the single-anchor-threaded contract.
+    fn multi_anchor_complete_row_bundle_is_eligible() {
+        // Both leading anchors are represented in every complete seed row. This is the intentional
+        // breaking expansion of the existing typed V1 contract; no second wire version is needed.
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {
                 variable: Rc::from("u"),
@@ -855,9 +897,63 @@ mod tests {
         let blob = encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan");
         let mut op = base_op();
         op.plan_blob = blob;
+        with_seed_blob(
+            &mut op,
+            vec![SeedRowWire {
+                vertex_bindings: vec![
+                    SeedVertexBinding {
+                        variable: "u".into(),
+                        local_vertex_id: 1,
+                        required_vertex_label_ids: vec![],
+                    },
+                    SeedVertexBinding {
+                        variable: "x".into(),
+                        local_vertex_id: 2,
+                        required_vertex_label_ids: vec![],
+                    },
+                ],
+                float64_bindings: vec![],
+            }],
+        );
         let result = classify_typed_batch_eligibility(&[op]);
         assert!(
-            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("single-anchor threaded bundle"))
+            matches!(result, TypedBatchEligibility::Eligible(_)),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn anchor_after_residual_operator_remains_ineligible() {
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("u"),
+                label: Some("User".into()),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![],
+                stage: 0,
+            },
+            PlanOp::NodeScan {
+                variable: Rc::from("x"),
+                label: Some("Group".into()),
+                property_projection: None,
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: Rc::from("u"),
+                dst: Rc::from("x"),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                labels: vec!["MEMBER".into()],
+                properties: vec![],
+            },
+        ]);
+        let blob = encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan");
+        let mut op = base_op();
+        op.plan_blob = blob;
+        let result = classify_typed_batch_eligibility(&[op]);
+        assert!(
+            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("complete-row seeded bundle"))
         );
     }
 

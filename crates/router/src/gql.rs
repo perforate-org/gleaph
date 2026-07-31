@@ -18,12 +18,13 @@ use gleaph_graph_kernel::index::{
     ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanResult,
-    GetMutationJournalEntriesArgs, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire,
-    GraphOrderedVertexBatchResult, GraphOrderedVertexBatchResultV1, MutationId,
-    MutationJournalState, MutationLifecyclePhase, MutationToken, MutationTokenShard, ReadMode,
-    ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire, SeedBindingsWire, SeedRowWire,
-    SeedVertexBinding, ShardEventSeq, UniqueClaimDispatch,
+    ExecutePlanBatchMode, ExecutePlanBatchSharedV2, ExecutePlanBatchSharedV2Args,
+    ExecutePlanResult, ExecutePlanSharedV2Op, GetMutationJournalEntriesArgs, GqlExecutionMode,
+    GqlQueryResult, GraphMutationJournalEntryWire, GraphOrderedVertexBatchResult,
+    GraphOrderedVertexBatchResultV1, MutationId, MutationJournalState, MutationLifecyclePhase,
+    MutationToken, MutationTokenShard, ReadMode, ResolvedLabelTable, ResolvedPropertyTable,
+    ResolvedSearchWire, SeedBindingsWire, SeedRowWire, SeedVertexBinding, ShardEventSeq,
+    UniqueClaimDispatch,
 };
 use gleaph_graph_kernel::vector_index::IndexedEmbeddingCatalog;
 use ic_cdk::api::msg_caller;
@@ -41,20 +42,14 @@ fn log_router_dispatch_phase(phase: &str, cost: u64) {
 #[inline]
 fn log_router_dispatch_phase(_phase: &str, _cost: u64) {}
 
-// Per-phase summaries are emitted once per bulk group by log_router_seed_resolution_summary.
-
 #[cfg(feature = "batch-instr-log")]
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct SeedResolutionMetrics {
-    admission_setup: u64,
     per_item_anchor_set: u64,
     cache_lookup_clone: u64,
     remote_index_await: u64,
     anchor_intersection: u64,
     seed_row_build: u64,
-    candid_encode: u64,
-    item_count: u64,
-    dispatch_count: u64,
     cache_hits: u64,
     cache_misses: u64,
 }
@@ -62,40 +57,6 @@ pub(crate) struct SeedResolutionMetrics {
 #[cfg(not(feature = "batch-instr-log"))]
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct SeedResolutionMetrics;
-
-#[cfg(feature = "batch-instr-log")]
-fn log_router_seed_resolution_summary(total: u64, metrics: &SeedResolutionMetrics) {
-    let explicit = metrics
-        .admission_setup
-        .wrapping_add(metrics.per_item_anchor_set)
-        .wrapping_add(metrics.cache_lookup_clone)
-        .wrapping_add(metrics.remote_index_await)
-        .wrapping_add(metrics.anchor_intersection)
-        .wrapping_add(metrics.seed_row_build)
-        .wrapping_add(metrics.candid_encode);
-    let (loop_bookkeeping, measurement_valid) = if explicit > total {
-        (total, false)
-    } else {
-        (total - explicit, true)
-    };
-    crate::instr_log::push(format!(
-        "GLEAPH_ROUTER_SEED_RESOLUTION phase=seed_resolution total={} admission_setup={} per_item_anchor_set={} cache_lookup_clone={} remote_index_await={} anchor_intersection={} seed_row_build={} candid_encode={} loop_bookkeeping={} items={} dispatches={} cache_hits={} cache_misses={} measurement_valid={}",
-        total,
-        metrics.admission_setup,
-        metrics.per_item_anchor_set,
-        metrics.cache_lookup_clone,
-        metrics.remote_index_await,
-        metrics.anchor_intersection,
-        metrics.seed_row_build,
-        metrics.candid_encode,
-        loop_bookkeeping,
-        metrics.item_count,
-        metrics.dispatch_count,
-        metrics.cache_hits,
-        metrics.cache_misses,
-        measurement_valid,
-    ));
-}
 
 #[cfg(feature = "batch-instr-log")]
 fn log_router_preflight(kind: &str, cost: u64) {
@@ -212,11 +173,11 @@ use crate::federation::{
 use crate::graph_client::{
     ack_label_stats_deltas_through, ack_unique_effects, execute_ordered_edge_batch_on_graph,
     execute_ordered_mixed_batch_on_graph, execute_ordered_vertex_batch_on_graph,
-    execute_plan_batch_on_graph, execute_plan_batch_typed_v1_on_graph, execute_plan_on_graph,
-    get_mutation_journal_entries, get_mutation_journal_entry, index_pending_min_mutation_id,
-    list_pending_label_stats_deltas, read_unique_effect_proof, read_unique_release_effects,
-    retire_ordered_mixed_mutation_on_graph, retire_ordered_mutation_on_graph,
-    retire_ordered_vertex_mutation_on_graph,
+    execute_plan_batch_on_graph, execute_plan_batch_shared_v2_on_graph,
+    execute_plan_batch_typed_v1_on_graph, execute_plan_on_graph, get_mutation_journal_entries,
+    get_mutation_journal_entry, index_pending_min_mutation_id, list_pending_label_stats_deltas,
+    read_unique_effect_proof, read_unique_release_effects, retire_ordered_mixed_mutation_on_graph,
+    retire_ordered_mutation_on_graph, retire_ordered_vertex_mutation_on_graph,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -2370,8 +2331,8 @@ async fn run_gql_unchecked(
     // undefined. This pre-dispatch gate (the AST is the SSOT for "how many DML statements the user
     // wrote") is the single admission point and exempts the two structurally-safe shapes:
     //   * a completely-new INSERT-only bundle (contract 1) — placed on the graph's latest shard; and
-    //   * a single-anchor threaded bundle (contract 1/2) — one leading index/label anchor, no other
-    //     existing-state read. When its anchor resolves to one shard it runs there atomically
+    //   * a seeded threaded bundle (contract 1/2) — one or more leading index/label anchors, no
+    //     other existing-state read. When its complete row seed resolves to one shard it runs there atomically
     //     (contract 1); when it fans out to many shards it is dispatched per shard as a roll-forward
     //     saga (contract 2): each shard is atomic shard-locally, cross-shard convergence is
     //     roll-forward (no global rollback), resumed by idempotent retry / the recovery timer.
@@ -3336,8 +3297,8 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
 
     // ADR 0029 Phase 5 (contract 2, roll-forward bundle): a multi-DML bundle reaching dispatch on a
     // federated graph is already structurally safe (the pre-dispatch gate admits only pure-insert or
-    // single-anchor threaded bundles, neither of which performs a cross-shard read). A pure-insert is
-    // placed on one shard; a single-anchor threaded bundle whose anchor fans out to many shards is
+    // seeded threaded bundles, neither of which performs a cross-shard read). A pure-insert is
+    // placed on one shard; a complete-row seeded bundle whose anchors fan out to many shards is
     // dispatched per shard below as a roll-forward saga — each shard atomic shard-locally, cross-shard
     // convergence roll-forward (no global rollback), resumed by idempotent retry / the recovery timer.
     if persist_dispatch_envelope && let (Some(key), Some(_)) = (client_mutation_key, mutation_id) {
@@ -3575,9 +3536,15 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
 }
 
 /// ADR 0044 bulk group path. Plans the first item, prepares one shared mutation, and dispatches
-/// all items under a single `mutation_id`. Returns one `GqlQueryResult` per input item. Falls back
-/// to `None` when the query is not eligible for bulk grouping (caller should execute items
-/// sequentially instead).
+/// all items under a single `mutation_id`. Returns one `GqlQueryResult` per input item, an
+/// unsupported result when the caller should execute items sequentially, or an oversized-shared
+/// result when the caller should retry a smaller homogeneous subgroup.
+pub(crate) enum BulkGroupExecution {
+    Applied(Vec<GqlQueryResult>),
+    Unsupported,
+    SharedRequestTooLarge,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_bulk_group(
     caller: Principal,
@@ -3585,9 +3552,9 @@ pub(crate) async fn execute_bulk_group(
     items: &[crate::types::GqlExecuteIdempotentBatchItem],
     mode: GqlExecutionMode,
     preflight: Option<&PreflightContext>,
-) -> Result<Option<Vec<GqlQueryResult>>, RouterError> {
+) -> Result<BulkGroupExecution, RouterError> {
     if items.len() < 2 {
-        return Ok(None);
+        return Ok(BulkGroupExecution::Unsupported);
     }
 
     let first = &items[0];
@@ -3596,7 +3563,7 @@ pub(crate) async fn execute_bulk_group(
             .await?;
     let (graph_id, plan_blob, plans, base_pmap) = match plan_result {
         Some(r) => r,
-        None => return Ok(None),
+        None => return Ok(BulkGroupExecution::Unsupported),
     };
 
     let store = RouterStore::new();
@@ -3625,13 +3592,13 @@ pub(crate) async fn execute_bulk_group(
     // Early-known target shard: for graphs with exactly one live shard, the target is knowable
     // before routing or seed resolution. If that shard does not advertise the typed V1 capability,
     // we avoid the typed attempt entirely. Selective complete-row seeds already short-circuited
-    // above, so this path only affects seed-invariant groups that will use the legacy batch path.
+    // above, so this path only affects seed-invariant groups that may use the shared V2 path.
     let early_target_shard =
         bulk_group_early_target_shard(graph_id, &plan_blob, &plans, &base_pmap, &store)?;
     let mut early_typed_not_advertised = false;
     if let Some(shard_id) = early_target_shard {
         let shard = store.resolve_shard(graph_id, shard_id)?;
-        if shard.typed_seed_batch != gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1 {
+        if !shard.typed_seed_batch.supports_typed_v1() {
             log_router_typed_batch_decision("rejected", "capability_not_advertised");
             #[cfg(feature = "pocket-ic-e2e")]
             crate::test_fault::record_typed_batch_trace("capability-not-advertised");
@@ -3644,7 +3611,8 @@ pub(crate) async fn execute_bulk_group(
     if let Some(existing_record) = store.router_mutation_record(caller, graph_id, group_key)
         && let Some(operation_row_counts) = existing_record.completed_bulk_operation_row_counts()
     {
-        return completed_typed_bulk_results(operation_row_counts, items.len()).map(Some);
+        return completed_typed_bulk_results(operation_row_counts, items.len())
+            .map(BulkGroupExecution::Applied);
     }
 
     // ADR 0047: if a durable typed seed bulk record already exists for this exact ordered group,
@@ -3673,10 +3641,10 @@ pub(crate) async fn execute_bulk_group(
             };
             out.push(attach_mutation_token(gql_result, token.clone()));
         }
-        return Ok(Some(out));
+        return Ok(BulkGroupExecution::Applied(out));
     }
 
-    // Selective complete-row seeds require per-item routing and cannot use the legacy batch
+    // Selective complete-row seeds require per-item routing and cannot use the shared-seed
     // envelope. For a single-shard graph whose only target does not advertise the typed V1
     // capability, skip the expensive shared group prepare and let the caller execute each item
     // sequentially through its own scalar idempotency record. This check runs after durable
@@ -3686,12 +3654,12 @@ pub(crate) async fn execute_bulk_group(
             bulk_group_early_target_shard(graph_id, &plan_blob, &plans, &base_pmap, &store)?
     {
         let shard = store.resolve_shard(graph_id, shard_id)?;
-        if shard.typed_seed_batch != gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1 {
+        if !shard.typed_seed_batch.supports_typed_v1() {
             log_router_typed_batch_decision("rejected", "capability_not_advertised");
             store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
             #[cfg(feature = "pocket-ic-e2e")]
             crate::test_fault::record_typed_batch_trace("sequential-scalar-fallback");
-            return Ok(None);
+            return Ok(BulkGroupExecution::Unsupported);
         }
     }
 
@@ -3716,7 +3684,7 @@ pub(crate) async fn execute_bulk_group(
         PrepareOutcome::Early(result) => {
             // The whole group is already durable (or requires no Graph dispatch).
             // Return the same result for every input item, preserving order.
-            return Ok(Some(vec![result; items.len()]));
+            return Ok(BulkGroupExecution::Applied(vec![result; items.len()]));
         }
         PrepareOutcome::Prepared(p) => *p,
     };
@@ -3758,7 +3726,7 @@ pub(crate) async fn execute_bulk_group(
                     routing_owner: true,
                 }),
         )?;
-        return Ok(None);
+        return Ok(BulkGroupExecution::Unsupported);
     }
 
     // Try the typed V1 path first; it returns None if capability or eligibility is not met.
@@ -3776,10 +3744,10 @@ pub(crate) async fn execute_bulk_group(
         )
         .await?
     {
-        return Ok(Some(typed_results));
+        return Ok(BulkGroupExecution::Applied(typed_results));
     }
 
-    // Distinct complete-row seeds cannot be represented by the legacy one-seed-per-shard replay
+    // Distinct complete-row seeds cannot be represented by the shared one-seed-per-shard replay
     // envelope. Release the provisional group reservation and let the caller execute each item
     // through its own scalar idempotency record.
     if SeedAnchorSet::from_plans(&group.base.plans, &group.base.pmap, &store, &stats)?
@@ -3788,37 +3756,25 @@ pub(crate) async fn execute_bulk_group(
         #[cfg(feature = "pocket-ic-e2e")]
         crate::test_fault::record_typed_batch_trace("sequential-scalar-fallback");
         store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
-        return Ok(None);
+        return Ok(BulkGroupExecution::Unsupported);
     }
 
-    // Seed-invariant groups may use the legacy batch envelope. Preparation deliberately left the
-    // reservation pristine so typed admission could win first; persist the legacy envelope now,
-    // still before the first Graph dispatch await.
-    let envelope_shards = group
-        .base
-        .dispatches
-        .iter()
-        .map(|dispatch| {
-            crate::facade::stable::label_stats::RouterMutationShardV1::new(
-                dispatch.shard_id,
-                dispatch.graph_canister,
-                dispatch.seed_bindings_blob.clone(),
-            )
-        })
-        .collect();
-    store.record_router_mutation_shards(
-        caller,
-        graph_id,
-        group_key,
-        group.base.resolved_labels.clone(),
-        group.base.resolved_properties.clone(),
-        envelope_shards,
-    )?;
-
-    // Fall back to the legacy batch path.
-    execute_prepared_bulk_group(group, &store, caller, graph_id, Some(group_key), preflight)
-        .await
-        .map(Some)
+    // Seed-invariant groups may use the shared V2 envelope. Preparation deliberately left the
+    // reservation pristine so the complete-row typed path could win first. Persist the shared
+    // replay envelope only after the whole ordered operation domain is known to fit one request.
+    match execute_prepared_bulk_group(group, &store, caller, graph_id, Some(group_key), preflight)
+        .await?
+    {
+        PreparedSharedBulkExecution::Applied(results) => Ok(BulkGroupExecution::Applied(results)),
+        PreparedSharedBulkExecution::Unsupported => {
+            store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
+            Ok(BulkGroupExecution::Unsupported)
+        }
+        PreparedSharedBulkExecution::RequestTooLarge => {
+            store.abandon_router_mutation_routing_reservation(caller, graph_id, group_key)?;
+            Ok(BulkGroupExecution::SharedRequestTooLarge)
+        }
+    }
 }
 
 fn completed_typed_bulk_results(
@@ -4428,9 +4384,15 @@ async fn execute_prepared_mutation(
     Ok(result)
 }
 
-/// Execute a prepared bulk group (ADR 0044). All items share `base.plan_blob`, labels, properties,
-/// and a single `mutation_id`; only `params` differ per item. Returns one `GqlQueryResult` per input
-/// item, preserving item order.
+enum PreparedSharedBulkExecution {
+    Applied(Vec<GqlQueryResult>),
+    Unsupported,
+    RequestTooLarge,
+}
+
+/// Execute a prepared seed-invariant bulk group through the shared V2 envelope (ADR 0047).
+/// All items share the plan, catalogs, shard seed, and a single `mutation_id`; only `params`
+/// differ per item.
 async fn execute_prepared_bulk_group(
     group: crate::batch_wave::PreparedBulkGroup,
     store: &RouterStore,
@@ -4438,9 +4400,12 @@ async fn execute_prepared_bulk_group(
     graph_id: GraphId,
     client_mutation_key: Option<&str>,
     preflight: Option<&PreflightContext>,
-) -> Result<Vec<GqlQueryResult>, RouterError> {
+) -> Result<PreparedSharedBulkExecution, RouterError> {
     let base = group.base;
     let mode = base.mode;
+    if mode != GqlExecutionMode::Update {
+        return Ok(PreparedSharedBulkExecution::Unsupported);
+    }
     let mutation_id = base
         .mutation_id
         .ok_or_else(|| RouterError::Internal("bulk group requires a mutation id".into()))?;
@@ -4457,121 +4422,127 @@ async fn execute_prepared_bulk_group(
         item_params.push((extra.params.clone(), extra.pmap.clone()));
     }
 
-    let build_execute_args = |dispatch: &crate::federation::ShardDispatch,
-                              params_blob: &[u8],
-                              seed_bindings_blob: Option<Vec<u8>>| {
-        gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
-            target_shard_id: dispatch.shard_id,
-            element_id_encoding_key,
-            mutation_id: Some(mutation_id),
-            plan_blob: base.plan_blob.clone(),
-            params_blob: params_blob.to_vec(),
-            mode,
-            seed_bindings_blob,
-            resolved_labels: Some(base.resolved_labels.clone()),
-            resolved_properties: Some(base.resolved_properties.clone()),
-            indexed_properties: Some(base.indexed_properties.clone()),
-            unique_claims: base.unique_claims.clone(),
-            constrained_properties: base.constrained_properties.clone(),
-            local_unique_claims: base.local_unique_claims.clone(),
-            local_constrained_properties: base.local_constrained_properties.clone(),
-            indexed_embeddings: Some(base.indexed_embeddings.clone()),
-            resolved_search_blob: dispatch.resolved_search_blob.clone(),
-        }
-    };
-
-    // The legacy multi-dispatch envelope has no durable logical-to-wire chunk map. Do not
-    // materialize a complete Cartesian product for it: unsupported/non-typed groups use their
-    // existing Graph-local seed path, while the typed path below performs request-sized chunking
-    // with a durable continuation map.
-    let is_complete_row_seed = false;
-    let complete_row_seeds: Vec<Vec<Option<Vec<u8>>>> = Vec::new();
-
     #[cfg(feature = "batch-instr-log")]
     let graph_request_build_start = crate::current_instruction_counter();
 
-    // Map each dispatch to its index in `base.dispatches` so per-item pre-resolved seeds can be
-    // looked up inside the Send futures.
-    let dispatch_global_index: std::collections::BTreeMap<(Principal, ShardId), usize> = base
-        .dispatches
-        .iter()
-        .enumerate()
-        .map(|(i, d)| ((d.graph_canister, d.shard_id), i))
-        .collect();
-
     let dispatch_groups = group_dispatches_by_graph(base.dispatches.clone());
 
-    // Per-canister results stored as (dispatch_index_in_group, item_index, result).
-    // We preserve group order so item results can be reconstructed deterministically.
+    // A Graph canister owns one shard execution domain. Fail closed if routing ever coalesces
+    // multiple shard dispatches under one canister: the V2 shared target/seed would be ambiguous.
     let mut canister_results: Vec<(Principal, Vec<ItemDispatchResult>)> = Vec::new();
+    let mut dispatch_batches = Vec::with_capacity(dispatch_groups.len());
+
+    for group in dispatch_groups {
+        if group.len() != 1 {
+            return Ok(PreparedSharedBulkExecution::Unsupported);
+        }
+        let group_graph = group[0].graph_canister;
+        let dispatch = &group[0];
+        let shard = store.resolve_shard(graph_id, dispatch.shard_id)?;
+        if !shard.typed_seed_batch.supports_shared_v2() {
+            log_router_typed_batch_decision("rejected", "shared_v2_not_advertised");
+            return Ok(PreparedSharedBulkExecution::Unsupported);
+        }
+
+        let args = ExecutePlanBatchSharedV2Args {
+            shared: ExecutePlanBatchSharedV2 {
+                target_shard_id: dispatch.shard_id,
+                element_id_encoding_key,
+                mutation_id,
+                plan_blob: base.plan_blob.clone(),
+                seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
+                resolved_labels: Some(base.resolved_labels.clone()),
+                resolved_properties: Some(base.resolved_properties.clone()),
+                indexed_properties: Some(base.indexed_properties.clone()),
+                indexed_embeddings: Some(base.indexed_embeddings.clone()),
+                resolved_search_blob: dispatch.resolved_search_blob.clone(),
+            },
+            operations: item_params
+                .iter()
+                .map(|(params_blob, _)| ExecutePlanSharedV2Op {
+                    params_blob: params_blob.clone(),
+                })
+                .collect(),
+            batch_mode: ExecutePlanBatchMode::Dynamic,
+        };
+        if let Err(error) = args.validate() {
+            if error.contains("exceeds the safe payload") {
+                return Ok(PreparedSharedBulkExecution::RequestTooLarge);
+            }
+            return Err(RouterError::InvalidArgument(format!(
+                "shared batch V2 validation failed: {error}"
+            )));
+        }
+        let index_map: Vec<(usize, usize)> =
+            (0..item_count).map(|item_index| (item_index, 0)).collect();
+        dispatch_batches.push((group_graph, args, index_map));
+    }
+
+    if let Some(key) = client_mutation_key {
+        let envelope_shards = base
+            .dispatches
+            .iter()
+            .map(|dispatch| {
+                crate::facade::stable::label_stats::RouterMutationShardV1::new(
+                    dispatch.shard_id,
+                    dispatch.graph_canister,
+                    dispatch.seed_bindings_blob.clone(),
+                )
+            })
+            .collect();
+        store.record_router_mutation_shards(
+            caller,
+            graph_id,
+            key,
+            base.resolved_labels.clone(),
+            base.resolved_properties.clone(),
+            envelope_shards,
+        )?;
+    }
 
     let mut group_futures: Vec<
         futures::future::BoxFuture<Result<(Principal, Vec<ItemDispatchResult>), RouterError>>,
     > = Vec::new();
 
-    for group in dispatch_groups {
-        let item_params = item_params.clone();
-        let complete_row_seeds = complete_row_seeds.clone();
-        let dispatch_global_index = dispatch_global_index.clone();
+    for (group_graph, args, index_map) in dispatch_batches {
         group_futures.push(Box::pin(async move {
-            let group_graph = group[0].graph_canister;
             let mut results: Vec<ItemDispatchResult> = Vec::new();
-            let group_len = group.len();
-            let mut operations: Vec<gleaph_graph_kernel::plan_exec::ExecutePlanArgs> =
-                Vec::with_capacity(item_count * group_len);
-            let mut index_map: Vec<(usize, usize)> = Vec::with_capacity(item_count * group_len);
-
-            for (item_index, (params_blob, _)) in item_params.iter().enumerate() {
-                for (dispatch_index, dispatch) in group.iter().enumerate() {
-                    let seed_blob = if is_complete_row_seed {
-                        let global_index = dispatch_global_index
-                            .get(&(group_graph, dispatch.shard_id))
-                            .copied()
-                            .expect("dispatch must exist in base.dispatches");
-                        complete_row_seeds[item_index][global_index].clone()
-                    } else {
-                        dispatch.seed_bindings_blob.clone()
-                    };
-                    operations.push(build_execute_args(dispatch, params_blob, seed_blob));
-                    index_map.push((item_index, dispatch_index));
-                }
-            }
-
-            // Chunk dynamically by payload size / instruction budget.
-            let mut start = 0usize;
-            while start < operations.len() {
-                let chunk_len = graph_batch_chunk_len_for_bulk(&operations[start..], group_len)?;
-                let chunk_end = start + chunk_len;
-                let chunk_ops = operations[start..chunk_end].to_vec();
-                let chunk_map = index_map[start..chunk_end].to_vec();
-                let args = ExecutePlanBatchArgs {
-                    operations: chunk_ops,
-                    mode: ExecutePlanBatchMode::Dynamic,
-                };
-                let batch = match execute_plan_batch_on_graph(group_graph, args).await {
-                    Ok(batch) => batch,
-                    Err(err) => {
-                        for (item_index, dispatch_index) in chunk_map {
-                            results.push((dispatch_index, item_index, Err(err.clone())));
+            loop {
+                let batch =
+                    match execute_plan_batch_shared_v2_on_graph(group_graph, args.clone()).await {
+                        Ok(batch) => batch,
+                        Err(err) => {
+                            for (item_index, dispatch_index) in
+                                index_map.iter().copied().skip(results.len())
+                            {
+                                results.push((dispatch_index, item_index, Err(err.clone())));
+                            }
+                            break;
                         }
-                        break;
-                    }
-                };
-                let attempted = batch.results.len();
-                if attempted > chunk_map.len() {
+                    };
+                let prior_result_count = results.len();
+                let returned_count = batch.results.len();
+                if returned_count < prior_result_count || returned_count > index_map.len() {
                     let err = format!(
-                        "graph bulk batch returned {} results for {} operations",
-                        attempted,
-                        chunk_map.len()
+                        "graph bulk batch returned {returned_count} results after \
+                         {prior_result_count} completed operations out of {}",
+                        index_map.len()
                     );
-                    for (item_index, dispatch_index) in chunk_map {
+                    for (item_index, dispatch_index) in
+                        index_map.iter().copied().skip(prior_result_count)
+                    {
                         results.push((dispatch_index, item_index, Err(err.clone())));
                     }
                     break;
                 }
+
+                let batch_ends_in_error = batch.results.last().is_some_and(Result::is_err);
                 let mut failed = false;
-                for ((item_index, dispatch_index), result) in
-                    chunk_map.iter().copied().zip(batch.results)
+                for ((item_index, dispatch_index), result) in index_map
+                    [prior_result_count..returned_count]
+                    .iter()
+                    .copied()
+                    .zip(batch.results.into_iter().skip(prior_result_count))
                 {
                     failed = result.is_err();
                     results.push((dispatch_index, item_index, result));
@@ -4579,12 +4550,39 @@ async fn execute_prepared_bulk_group(
                         break;
                     }
                 }
-                if failed {
+                if failed || batch_ends_in_error {
                     break;
                 }
-                // If Graph cut off before the end of the chunk, continue with the remaining
-                // operations in the same ingress call.
-                start += attempted;
+                match batch.next_index {
+                    None if results.len() == index_map.len() => break,
+                    None => {
+                        let err = format!(
+                            "graph bulk batch completed with {} results for {} operations",
+                            results.len(),
+                            index_map.len()
+                        );
+                        for (item_index, dispatch_index) in
+                            index_map.iter().copied().skip(results.len())
+                        {
+                            results.push((dispatch_index, item_index, Err(err.clone())));
+                        }
+                        break;
+                    }
+                    Some(next) if next as usize == results.len() => {}
+                    Some(next) => {
+                        let err = format!(
+                            "graph bulk batch next_index {next} does not match returned result \
+                             count {}",
+                            results.len()
+                        );
+                        for (item_index, dispatch_index) in
+                            index_map.iter().copied().skip(results.len())
+                        {
+                            results.push((dispatch_index, item_index, Err(err.clone())));
+                        }
+                        break;
+                    }
+                }
             }
 
             Ok((group_graph, results))
@@ -4820,14 +4818,14 @@ async fn execute_prepared_bulk_group(
         crate::current_instruction_counter().saturating_sub(graph_request_build_start),
     );
 
-    Ok(results)
+    Ok(PreparedSharedBulkExecution::Applied(results))
 }
 
 /// Typed V1 bulk dispatch path (ADR 0047).
 ///
 /// Returns `Ok(Some(results))` when the group is eligible, capability is advertised, and the
 /// typed Graph call succeeds. Returns `Ok(None)` when typed eligibility or capability is not
-/// met, so the caller can fall back to the legacy bulk path. Errors are propagated for structural
+/// met, so the caller can try the shared seed-invariant V2 path. Errors are propagated for structural
 /// rejections, response inconsistencies, or ambiguous outcomes after durable persistence.
 /// Execute a durable typed seed bulk replay payload against the Graph shard it names.
 ///
@@ -5178,7 +5176,7 @@ async fn execute_prepared_bulk_group_typed(
     }
     let dispatch = &base.dispatches[0];
     let shard = store.resolve_shard(graph_id, dispatch.shard_id)?;
-    if shard.typed_seed_batch != gleaph_graph_kernel::plan_exec::TypedSeedBatchCapability::V1 {
+    if !shard.typed_seed_batch.supports_typed_v1() {
         log_router_typed_batch_decision("rejected", "capability_not_advertised");
         #[cfg(feature = "pocket-ic-e2e")]
         crate::test_fault::record_typed_batch_trace("capability-not-advertised");
@@ -5300,11 +5298,18 @@ async fn execute_prepared_bulk_group_typed(
                     .is_ok(),
                 )
             })?
-            .ok_or_else(|| {
-                RouterError::InvalidArgument(
-                    "a single complete-row seed does not fit the dynamic typed envelope".into(),
-                )
-            })?;
+            .or_else(|| {
+                // A complete-row relation can still belong to a plan shape that typed V1
+                // deliberately rejects (for example, a residual graph read after the anchor
+                // prefix). Typed V1 is an optimization, so treat that rejection as ineligibility and let the caller
+                // use the existing sequential scalar path below.  Propagating it here would
+                // turn a valid seed into a user-visible batch error.
+                log_router_typed_batch_decision("rejected", "single_row_does_not_fit");
+                None
+            });
+            let Some(best) = best else {
+                return Ok(None);
+            };
             let chunk_rows = relation.rows(offset, best)?;
             typed_operations.push(TypedBatchCandidateOp {
                 params_blob: params_blob.clone(),
@@ -5464,30 +5469,6 @@ fn largest_fitting_prefix<E>(
     Ok(best)
 }
 
-fn graph_batch_chunk_len_for_bulk(
-    operations: &[ExecutePlanArgs],
-    _group_len: usize,
-) -> Result<usize, RouterError> {
-    if operations.is_empty() {
-        return Ok(0);
-    }
-    let best = largest_fitting_prefix(operations.len(), |count| {
-        let candidate = ExecutePlanBatchArgs {
-            operations: operations[..count].to_vec(),
-            mode: ExecutePlanBatchMode::Dynamic,
-        };
-        let encoded = Encode!(&candidate).map_err(|e| {
-            RouterError::InvalidArgument(format!("bulk batch encode probe failed: {e}"))
-        })?;
-        Ok(encoded.len() <= gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES)
-    })?;
-    let Some(best) = best else {
-        return Err(RouterError::InvalidArgument(
-            "a single bulk operation exceeds the safe inter-canister payload limit".into(),
-        ));
-    };
-    Ok(best)
-}
 fn graph_batch_chunk_len_for_dispatches(
     dispatches: &[ShardDispatch],
     build_execute_args: &impl Fn(&ShardDispatch) -> gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
@@ -6590,6 +6571,72 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("test response exceeds the safe payload limit")
+        );
+    }
+
+    #[test]
+    fn shared_v2_bulk_encodes_invariant_context_once() {
+        use candid::Encode;
+        use gleaph_graph_kernel::plan_exec::{
+            ExecutePlanArgs, ExecutePlanBatchArgs, ExecutePlanBatchMode, ExecutePlanBatchSharedV2,
+            ExecutePlanBatchSharedV2Args, ExecutePlanSharedV2Op,
+        };
+
+        let seed_bindings_blob = vec![3; 20_000];
+        let operation = |params_blob| ExecutePlanArgs {
+            target_shard_id: ShardId::new(0),
+            element_id_encoding_key: [0; 16],
+            mutation_id: Some(7),
+            plan_blob: vec![1],
+            params_blob,
+            mode: GqlExecutionMode::Update,
+            seed_bindings_blob: Some(seed_bindings_blob.clone()),
+            resolved_labels: None,
+            resolved_properties: None,
+            indexed_properties: None,
+            unique_claims: None,
+            constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
+            indexed_embeddings: None,
+            resolved_search_blob: None,
+        };
+
+        let params = (0..300).map(|i| vec![i as u8; 32]).collect::<Vec<_>>();
+        let repeated = ExecutePlanBatchArgs {
+            operations: params.iter().cloned().map(operation).collect(),
+            mode: ExecutePlanBatchMode::Dynamic,
+        };
+        let shared = ExecutePlanBatchSharedV2Args {
+            shared: ExecutePlanBatchSharedV2 {
+                target_shard_id: ShardId::new(0),
+                element_id_encoding_key: [0; 16],
+                mutation_id: 7,
+                plan_blob: vec![1],
+                seed_bindings_blob: Some(seed_bindings_blob),
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+                indexed_embeddings: None,
+                resolved_search_blob: None,
+            },
+            operations: params
+                .into_iter()
+                .map(|params_blob| ExecutePlanSharedV2Op { params_blob })
+                .collect(),
+            batch_mode: ExecutePlanBatchMode::Dynamic,
+        };
+
+        let repeated_len = Encode!(&repeated).expect("encode repeated request").len();
+        let shared_len = Encode!(&shared).expect("encode shared request").len();
+        assert!(
+            repeated_len > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES,
+            "test fixture must exceed the safe bound with repeated common context"
+        );
+        shared.validate().expect("shared request must fit");
+        assert!(
+            shared_len < repeated_len / 10,
+            "shared request should remove the repeated invariant context"
         );
     }
 

@@ -152,7 +152,7 @@ pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
         RouterMutationPayloadV1::Scalar { .. } => {
             record.payload_mut().scalar_clear_shards();
         }
-        RouterMutationPayloadV1::LegacyBulk { total_ops, .. } => {
+        RouterMutationPayloadV1::SharedSeedBulk { total_ops, .. } => {
             *record.payload_mut() = RouterMutationPayloadV1::CompletedBulk {
                 total_ops,
                 operation_row_counts: Vec::new(),
@@ -1946,7 +1946,7 @@ impl RouterStore {
                 .get(&key)
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
             // Only a pristine Scalar reservation may be replaced by the scalar shard envelope.
-            // TypedSeedBulk and CompletedBulk must never be overwritten by a legacy writer.
+            // TypedSeedBulk and CompletedBulk must never be overwritten by a shard-envelope writer.
             let existing = match &record.as_v1().payload {
                 RouterMutationPayloadV1::Scalar { shards }
                     if record.as_v1().completed_row_count.is_none() =>
