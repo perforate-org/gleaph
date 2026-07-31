@@ -4456,6 +4456,33 @@ fn compat_index_scan_for_selective_property() {
 }
 
 #[test]
+fn path_level_literal_property_anchor_keeps_literal_scan_value() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 50_000);
+    stats
+        .indexed_vertex_properties
+        .insert("user_id".to_string());
+
+    let plan = plan_query_with_stats(
+        "MATCH (u:User)-[:FOLLOWS]->(author:User) WHERE u.user_id = 'alice' RETURN author",
+        &stats,
+    );
+
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::IndexScan {
+                property,
+                value: ScanValue::Literal(Value::Text(value)),
+                ..
+            }) if &**property == "user_id" && value == "alice"
+        ),
+        "path-level equality must lower to a literal index scan: {:?}",
+        plan.ops.first()
+    );
+}
+
+#[test]
 fn compat_label_scan_without_selectivity() {
     let mut stats = TableStats::default();
     stats.label_cardinality.insert("User".to_string(), 50_000);

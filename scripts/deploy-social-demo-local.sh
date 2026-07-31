@@ -297,13 +297,15 @@ build_social_config() {
   node "$ROOT/frontend/apps/social-demo/scripts/build-gql-formatter.mjs"
 }
 
-# apply-social-seeds.mjs pages dynamically by Candid payload size and item cap;
-# no fixed per-call page size is needed here.
+# apply-social-seeds.mjs still sizes pages from the Candid payload, while the default item cap
+# keeps typed Graph batches within the observed instruction envelope.
 seed_social_graph() {
   log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
   # apply-social-seeds.mjs groups the manifest into dependency waves
   # (vertices, user edges, posts, replies, topic/feed assignments) and runs each wave as a
   # separate gql_execute_idempotent_batch call, preserving parent-before-child order.
+  # Keep typed seed batches below the Graph instruction envelope; callers can override this
+  # for smaller fixtures or a deployment with a different batch budget.
   env \
     HOME="$ICP_CLI_HOME" \
     COREPACK_HOME="$ICP_COREPACK_HOME" \
@@ -311,6 +313,8 @@ seed_social_graph() {
     XDG_DATA_HOME="$ICP_XDG_DATA_HOME" \
     RUSTUP_HOME="$RUSTUP_HOME" \
     CARGO_HOME="$CARGO_HOME" \
+    GLEAPH_DEMO_GRAPH_NAME="$GRAPH_NAME" \
+    SEED_PAGE_SIZE="${SEED_PAGE_SIZE:-100}" \
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     ICP_IDENTITY_NAME="$deployer_id" \
     node "$ROOT/frontend/apps/social-demo/scripts/apply-social-seeds.mjs" \
@@ -348,7 +352,6 @@ ingest_social_embeddings() {
       XDG_DATA_HOME="$ICP_XDG_DATA_HOME" \
       RUSTUP_HOME="$RUSTUP_HOME" \
       CARGO_HOME="$CARGO_HOME" \
-      GLEAPH_DEMO_GRAPH_NAME="$GRAPH_NAME" \
       GLEAPH_DEMO_ROUTER_CANISTER=gleaph-router \
       GLEAPH_DEMO_EMBEDDING_NAME="$EMBEDDING_NAME" \
       ICP_IDENTITY_NAME="$deployer_id" \
@@ -388,7 +391,7 @@ verify_social_demo_scenarios() {
   log "Verifying all six Gateway scenarios"
   for scenario in PublicTimeline AliceHomeFeed YuiHomeFeed TopicPath SemanticDiscovery AliceSemanticFeed; do
     icp_call_expect_ok "Verify $scenario scenario" "" -e local gleaph-social-demo-gateway execute_social_demo_scenario \
-      "(variant { $scenario })" --query
+      "(variant { $scenario = record { offset = 0 : nat32 } })" --query
   done
 }
 

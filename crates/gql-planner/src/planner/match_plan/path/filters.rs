@@ -442,10 +442,15 @@ pub(super) fn emit_edge_inline_filters(
     }
 }
 
+pub(super) struct NodeScanInput<'a> {
+    pub(super) node: &'a NodePattern,
+    pub(super) where_conjuncts: &'a [Expr],
+}
+
 pub(super) fn emit_scan_for_node(
     var: &str,
     label: &Option<String>,
-    node: &NodePattern,
+    input: NodeScanInput<'_>,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
     ops: &mut Vec<PlanOp>,
@@ -453,7 +458,7 @@ pub(super) fn emit_scan_for_node(
 ) {
     // Collect all equality predicates from inline properties and the inline WHERE clause.
     let mut equality_preds: Vec<(String, Expr)> = Vec::new();
-    for p in &node.properties {
+    for p in &input.node.properties {
         equality_preds.push((
             p.name.clone(),
             Expr::new(ExprKind::Compare {
@@ -466,13 +471,24 @@ pub(super) fn emit_scan_for_node(
             }),
         ));
     }
-    if let Some(where_expr) = &node.where_clause {
+    if let Some(where_expr) = &input.node.where_clause {
         for c in flatten_conjunction(where_expr) {
             if let Some((v, prop)) = anchor::extract_equality_predicate(&c)
                 && v == var
             {
                 equality_preds.push((prop, c.clone()));
             }
+        }
+    }
+    // A path-level WHERE clause is not attached to the individual NodePattern by the
+    // parser. Keep its equality predicates available when an optimizer-selected node
+    // anchor is lowered to an IndexScan; otherwise a literal such as
+    // `WHERE u.user_id = 'alice'` is incorrectly replaced by `$user_id`.
+    for c in input.where_conjuncts {
+        if let Some((v, prop)) = anchor::extract_equality_predicate(c)
+            && v == var
+        {
+            equality_preds.push((prop, c.clone()));
         }
     }
 
@@ -523,13 +539,16 @@ pub(super) fn emit_scan_for_node(
         match &anchor.source {
             AnchorSource::PropertyEquality { property }
             | AnchorSource::InlinePropertyEquality { property } => {
-                let scan_value = node
+                let scan_value = input
+                    .node
                     .properties
                     .iter()
                     .find(|p| p.name == **property)
                     .map(|p| expr_to_scan_value(&p.value))
                     .or_else(|| {
-                        node.where_clause
+                        input
+                            .node
+                            .where_clause
                             .as_ref()
                             .and_then(|w| find_equality_value_in_where(var, property, w))
                     })

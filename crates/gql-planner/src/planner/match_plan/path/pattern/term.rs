@@ -142,7 +142,10 @@ pub(super) fn plan_path_term(
                         super::super::filters::emit_scan_for_node(
                             var,
                             &label,
-                            node,
+                            super::super::filters::NodeScanInput {
+                                node,
+                                where_conjuncts: where_conjuncts.as_slice(),
+                            },
                             stats,
                             conditional_candidates,
                             ops,
@@ -281,7 +284,10 @@ pub(super) fn plan_path_term(
                             super::super::filters::emit_scan_for_node(
                                 &v,
                                 &lbl,
-                                &n,
+                                super::super::filters::NodeScanInput {
+                                    node: &n,
+                                    where_conjuncts: where_conjuncts.as_slice(),
+                                },
                                 stats,
                                 conditional_candidates,
                                 ops,
@@ -319,7 +325,10 @@ pub(super) fn plan_path_term(
                                     super::super::filters::emit_scan_for_node(
                                         &dst_var,
                                         &dst_label,
-                                        dst_node,
+                                        super::super::filters::NodeScanInput {
+                                            node: dst_node,
+                                            where_conjuncts: where_conjuncts.as_slice(),
+                                        },
                                         stats,
                                         conditional_candidates,
                                         ops,

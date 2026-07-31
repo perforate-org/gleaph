@@ -138,6 +138,17 @@ const renderProgress = (wave, completed, total) => {
 
 const finishProgress = () => process.stderr.write("\n");
 
+const backfillVertexPropertyPostings = async () => {
+  const graphName = process.env.GLEAPH_DEMO_GRAPH_NAME ?? "gleaph.pocket_ic";
+  while (true) {
+    const output = callRouter(
+      "admin_vertex_property_backfill_step",
+      `(record { logical_graph_name = "${escapeCandidText(graphName)}"; shard_id = 0 : nat32; max_vertices = 1000 : nat32 })`,
+    );
+    if (output.includes("done = true")) return;
+  }
+};
+
 // Keep the probe shape identical to the Router ingress argument and measure the binary Candid
 // envelope, including fixed fields and per-item vectors.
 const batchItemType = IDL.Record({
@@ -294,5 +305,9 @@ if (methodName !== "gql_execute_idempotent_batch") {
     process.stderr.write(
       `[seeds] Seeded wave ${wave} (${seededCount} seeds): ${waveSeeds[0].key} .. ${waveSeeds.at(-1).key}\n`,
     );
+    if (wave === 3) {
+      process.stderr.write("[seeds] Backfilling vertex property postings before dependent edge waves\n");
+      await backfillVertexPropertyPostings();
+    }
   }
 }
