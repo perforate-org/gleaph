@@ -3,6 +3,7 @@ name = "gleaph-codegen"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Generate typed clients and canister adapters for Gleaph prepared queries"
 
 [dependencies]
 candid = { workspace = true, features = ["value"] }
