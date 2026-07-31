@@ -1759,6 +1759,14 @@ pub fn index_pending_min_mutation_id() -> Option<gleaph_graph_kernel::plan_exec:
     GraphStore::new().index_pending_min_mutation_id()
 }
 
+/// Graph-side index convergence snapshot: durable derived-index work (first-delivery
+/// outbox + failed-flush repair journal) not yet applied to graph-index. Seeding and
+/// backfill orchestration polls this until `converged` before dispatching index-dependent
+/// waves.
+pub fn index_sync_status() -> gleaph_graph_kernel::federation::IndexSyncStatus {
+    GraphStore::new().index_sync_status()
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_insert_vertex() -> Result<super::types::E2eInsertVertexResult, String> {
     use crate::index::federation_routing;

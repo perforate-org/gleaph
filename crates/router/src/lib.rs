@@ -1083,6 +1083,16 @@ fn admin_list_vertex_property_backfill_status(
     canister::admin_list_vertex_property_backfill_status(logical_graph_name)
 }
 
+/// Graph-index convergence snapshot for one graph shard (`Role::Admin`). Poll
+/// `converged` before dispatching index-dependent waves; the backfill steps repair
+/// convergence when it stalls.
+#[update]
+async fn admin_index_sync_status(
+    args: types::AdminIndexSyncStatusArgs,
+) -> Result<gleaph_graph_kernel::federation::IndexSyncStatus, RouterError> {
+    canister::admin_index_sync_status(args).await
+}
+
 /// Advance edge property posting backfill for one graph shard (`Role::Admin`; call in a loop).
 #[update]
 async fn admin_edge_backfill_step(

@@ -181,6 +181,14 @@ fn index_pending_min_mutation_id() -> Option<gleaph_graph_kernel::plan_exec::Mut
     canister::handlers::index_pending_min_mutation_id()
 }
 
+/// Router → graph: index convergence snapshot (durable first-delivery outbox +
+/// failed-flush repair journal). Seeding orchestration polls `converged` before
+/// dispatching index-dependent edge waves.
+#[query(guard = "guard_router_canister")]
+fn index_sync_status() -> gleaph_graph_kernel::federation::IndexSyncStatus {
+    canister::handlers::index_sync_status()
+}
+
 #[update(guard = "guard_router_canister")]
 fn ack_label_stats_deltas_through(through_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq) {
     canister::handlers::ack_label_stats_deltas_through(through_seq);

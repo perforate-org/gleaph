@@ -119,8 +119,12 @@ const callRouter = (method, candid) => {
   return output;
 };
 
+// The icp CLI renders a `Some` cursor as `next_index = opt (140 : nat32)` (candid Display
+// annotates the inner type), while `None` renders as `next_index = null`. Accept both the
+// parenthesized and bare forms so a mid-page Router cut-off is resumed instead of being
+// mistaken for a fully-applied page.
 const nextIndexFrom = (output) => {
-  const match = output.match(/next_index\s*=\s*opt\s+(\d+)/);
+  const match = output.match(/next_index\s*=\s*opt\s*\(?\s*(\d+)/);
   return match ? Number(match[1]) : undefined;
 };
 
@@ -137,6 +141,33 @@ const renderProgress = (wave, completed, total) => {
 };
 
 const finishProgress = () => process.stderr.write("\n");
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Edge seeds MATCH previously-inserted vertices through graph-index property postings.
+// The synchronous batch drain can defer to the maintenance timer (ADR 0023/0024), so wait
+// until the shard reports every durable index projection converged before dispatching a
+// dependent wave. The Router admin query is the orchestrator's convergence signal; the
+// cursor-driven backfill steps are the repair path when convergence stalls.
+const INDEX_CONVERGENCE_POLL_INTERVAL_MS = 1_000;
+const INDEX_CONVERGENCE_TIMEOUT_MS = 120_000;
+
+const waitForIndexConvergence = async () => {
+  const graphName = process.env.GLEAPH_DEMO_GRAPH_NAME ?? "gleaph.pocket_ic";
+  const deadline = Date.now() + INDEX_CONVERGENCE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const output = callRouter(
+      "admin_index_sync_status",
+      `(record { logical_graph_name = "${escapeCandidText(graphName)}"; shard_id = 0 : nat32 })`,
+    );
+    if (output.includes("converged = true")) return;
+    await sleep(INDEX_CONVERGENCE_POLL_INTERVAL_MS);
+  }
+  throw new Error(
+    `graph-index did not converge within ${INDEX_CONVERGENCE_TIMEOUT_MS}ms for ${graphName}; ` +
+      "run admin_vertex_property_backfill_step / admin_label_backfill_step and check the index canister",
+  );
+};
 
 const backfillVertexPropertyPostings = async () => {
   const graphName = process.env.GLEAPH_DEMO_GRAPH_NAME ?? "gleaph.pocket_ic";
@@ -269,6 +300,10 @@ if (methodName !== "gql_execute_idempotent_batch") {
     }
     const waveSeeds = Array.from(planGroups.values()).flat();
     if (waveSeeds.length === 0) continue;
+    if (wave > 1) {
+      process.stderr.write(`[seeds] Waiting for graph-index convergence before wave ${wave}\n`);
+      await waitForIndexConvergence();
+    }
     renderProgress(wave, 0, waveSeeds.length);
     let seededCount = 0;
     let offset = 0;
@@ -305,7 +340,9 @@ if (methodName !== "gql_execute_idempotent_batch") {
     process.stderr.write(
       `[seeds] Seeded wave ${wave} (${seededCount} seeds): ${waveSeeds[0].key} .. ${waveSeeds.at(-1).key}\n`,
     );
-    if (wave === 3) {
+    if (wave === 1) {
+      // Replay canonical vertex properties into graph-index so every later MATCH anchor
+      // resolves, independent of the batch drain's synchronous flush.
       process.stderr.write("[seeds] Backfilling vertex property postings before dependent edge waves\n");
       await backfillVertexPropertyPostings();
     }

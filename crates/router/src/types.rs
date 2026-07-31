@@ -1305,6 +1305,13 @@ pub struct VertexPropertyBackfillShardStatus {
     pub done: bool,
 }
 
+/// One graph shard whose graph-index convergence is queried through the Router.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminIndexSyncStatusArgs {
+    pub logical_graph_name: String,
+    pub shard_id: ShardId,
+}
+
 /// One router-orchestrated batch of edge property posting backfill on a graph shard.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AdminEdgeBackfillStepArgs {

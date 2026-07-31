@@ -260,6 +260,29 @@ pub async fn index_pending_min_mutation_id(
     Err("graph index_pending_min_mutation_id unavailable in native builds".to_string())
 }
 
+/// Graph-side index convergence snapshot (durable first-delivery outbox + failed-flush
+/// repair journal). Seeding orchestration polls `converged` before dispatching
+/// index-dependent waves.
+#[cfg(target_family = "wasm")]
+pub async fn index_sync_status(
+    graph: Principal,
+) -> Result<gleaph_graph_kernel::federation::IndexSyncStatus, String> {
+    use ic_cdk::call::Call;
+
+    Call::bounded_wait(graph, "index_sync_status")
+        .await
+        .map_err(|e| format!("graph index_sync_status call failed: {e}"))?
+        .candid()
+        .map_err(|e| format!("graph index_sync_status decode failed: {e}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn index_sync_status(
+    _graph: Principal,
+) -> Result<gleaph_graph_kernel::federation::IndexSyncStatus, String> {
+    Err("graph index_sync_status unavailable in native builds".to_string())
+}
+
 pub async fn list_pending_label_stats_deltas(
     graph: Principal,
     from_seq: ShardEventSeq,

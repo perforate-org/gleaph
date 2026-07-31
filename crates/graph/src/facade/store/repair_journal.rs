@@ -3,8 +3,17 @@
 use super::super::stable::INDEX_REPAIR_JOURNAL;
 use super::super::stable::repair_journal::RepairPostingOp;
 use super::GraphStore;
+use gleaph_graph_kernel::federation::IndexSyncStatus;
 
 impl GraphStore {
+    /// Snapshot of durable derived-index work awaiting delivery to graph-index: the
+    /// first-delivery outbox plus the failed-flush repair journal. `converged` is true
+    /// only when both queues are empty. Seeding/backfill orchestration polls this to
+    /// know when index-backed `MATCH` anchors reflect canonical vertex state.
+    pub(crate) fn index_sync_status(&self) -> IndexSyncStatus {
+        IndexSyncStatus::new(self.derived_index_outbox_len(), self.repair_journal_len())
+    }
+
     /// Persists failed-flush postings to stable memory so the store-ahead delta
     /// survives upgrade / trap until the maintenance driver re-applies it. `mutation_id`
     /// links the batch to its originating federated mutation (`0` = untracked; ADR 0029

@@ -1,7 +1,7 @@
 # Derived-state query semantics
 
 Last updated: 2026-07-31
-Anchor timestamp: 2026-07-31 05:45:18 UTC +0000
+Anchor timestamp: 2026-07-31 21:57:29 UTC +0000
 
 ## Status
 
@@ -115,6 +115,15 @@ graph-index. Router `admin_*_backfill_step` advances per-shard cursors (`Backfil
 still flows through pending flush independently. Run backfill loops until `done` before relying on
 historical completeness.
 
+**Convergence signal:** `admin_index_sync_status(logical_graph_name, shard_id)` (Router, `Role::Admin`)
+returns the graph shard's durable derived-index backlog — the first-delivery outbox
+(`derived_index_outbox_len`) plus the failed-flush repair journal (`repair_journal_len`) — with a
+derived `converged` flag (`true` only when both are empty). Unlike the `index_pending_min_mutation_id`
+watermark, which covers the repair journal alone, this snapshot also covers the batch-path outbox, so
+a caller can wait until `converged` before dispatching operations whose index anchors must see prior
+canonical writes (for example, the social-demo seed waves). The cursor-driven backfill steps remain the
+repair path when convergence stalls.
+
 ### Label stats projection lag
 
 Router label stats are an event-sourced projection ([ADR 0015](../adr/0015-label-stats-projection-log.md)).
@@ -181,6 +190,7 @@ count completeness is required.
 | Symptom | Likely cause | Remediation |
 |---------|--------------|-------------|
 | Index miss for known property value | Unindexable value, oversized encoded key (>4096 B), pending not flushed, or backfill incomplete | Check `property_indexability` and key size; flush pending; run property backfill |
+| Index-backed seed/`MATCH` misses a live vertex after a large batch | Batch drain deferred to the durable outbox or repair journal (ADR 0023/0024) | Poll `admin_index_sync_status` until `converged`; run vertex-property/label backfill if it stalls |
 | Extra index hit for deleted vertex | Remove posting not synced | Flush/retry pending; verify DML index path |
 | `COUNT(*)` under-counts for label after router restart | Projection lag on read path (DML would have failed instead) | Drain `admin_label_stats_projection_step` per shard until `done`; verify cursor vs log head |
 | DML fails with `label stats projection lag` | Inline advance could not reach journal `emitted_delta_last_seq` | Drain projection for that shard; retry mutation |

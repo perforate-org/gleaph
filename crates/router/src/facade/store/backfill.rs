@@ -7,7 +7,8 @@ use std::future::Future;
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
     BackfillShardState, EdgeBackfillShardState, EdgePostingBackfillArgs, EdgePostingBackfillResult,
-    GraphShardKey, PostingBackfillArgs, PostingBackfillResult, ShardId, ShardRegistryEntry,
+    GraphShardKey, IndexSyncStatus, PostingBackfillArgs, PostingBackfillResult, ShardId,
+    ShardRegistryEntry,
 };
 
 use super::super::stable::graph_catalog::lookup_graph_id;
@@ -19,10 +20,10 @@ use super::RouterStore;
 use crate::facade::auth;
 use crate::state::RouterError;
 use crate::types::{
-    AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult, AdminLabelBackfillStepArgs,
-    AdminLabelBackfillStepResult, AdminResetBackfillClaimArgs, AdminVertexPropertyBackfillStepArgs,
-    AdminVertexPropertyBackfillStepResult, BackfillKind, EdgeBackfillShardStatus,
-    LabelBackfillShardStatus, VertexPropertyBackfillShardStatus,
+    AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult, AdminIndexSyncStatusArgs,
+    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminResetBackfillClaimArgs,
+    AdminVertexPropertyBackfillStepArgs, AdminVertexPropertyBackfillStepResult, BackfillKind,
+    EdgeBackfillShardStatus, LabelBackfillShardStatus, VertexPropertyBackfillShardStatus,
 };
 
 thread_local! {
@@ -369,6 +370,28 @@ impl RouterStore {
         Ok(())
     }
 
+    /// Graph-index convergence snapshot for one shard: the graph shard's durable
+    /// derived-index work (first-delivery outbox + failed-flush repair journal) not yet
+    /// applied to graph-index. Seeding orchestration polls `converged` before dispatching
+    /// index-dependent waves; the cursor-driven backfill steps are the repair path when
+    /// convergence stalls.
+    pub(crate) async fn admin_index_sync_status<F, Fut>(
+        &self,
+        caller: Principal,
+        args: AdminIndexSyncStatusArgs,
+        call_status: F,
+    ) -> Result<IndexSyncStatus, RouterError>
+    where
+        F: FnOnce(Principal) -> Fut,
+        Fut: Future<Output = Result<IndexSyncStatus, String>>,
+    {
+        auth::require_admin(&caller)?;
+        let shard = self.resolve_shard_for_backfill(&args.logical_graph_name, args.shard_id)?;
+        call_status(shard.graph_canister)
+            .await
+            .map_err(RouterError::Internal)
+    }
+
     fn resolve_shard_for_backfill(
         &self,
         logical_graph_name: &str,
@@ -646,6 +669,78 @@ mod tests {
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].next_vertex_id, 32);
         assert!(!status[0].done);
+    }
+
+    #[test]
+    fn admin_index_sync_status_returns_graph_snapshot() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
+
+        let graph = graph_principal(1);
+        let index = graph_principal(2);
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(0),
+                graph_canister: graph,
+                index_canister: index,
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register shard");
+
+        let status = futures::executor::block_on(store.admin_index_sync_status(
+            admin,
+            AdminIndexSyncStatusArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+            },
+            |caller| async move {
+                assert_eq!(
+                    caller, graph,
+                    "status must be fetched from the registered shard"
+                );
+                Ok(IndexSyncStatus::new(3, 0))
+            },
+        ))
+        .expect("status");
+
+        assert_eq!(status.derived_index_outbox_len, 3);
+        assert_eq!(status.repair_journal_len, 0);
+        assert!(!status.converged);
+    }
+
+    #[test]
+    fn admin_index_sync_status_requires_admin() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(0),
+                graph_canister: graph_principal(1),
+                index_canister: graph_principal(2),
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register shard");
+
+        let err = futures::executor::block_on(store.admin_index_sync_status(
+            Principal::from_slice(&[9; 29]),
+            AdminIndexSyncStatusArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+            },
+            |_graph| async move { unreachable!() },
+        ))
+        .expect_err("non-admin rejected");
+        assert!(matches!(err, RouterError::NotAuthorized));
     }
 
     #[test]

@@ -7,13 +7,14 @@ use crate::init::{RouterInitArgs, RouterUpgradeArgs};
 use crate::state::RouterError;
 use crate::types::{
     AdminAttachVectorIndexShardArgs, AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult,
-    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepArgs,
-    AdminLabelStatsProjectionStepResult, AdminRegisterShardArgs, AdminSweepMutationKeysStepArgs,
-    AdminSweepMutationKeysStepResult, AdminVectorIndexBackfillStepArgs,
-    AdminVectorIndexBackfillStepResult, AdminVertexPropertyBackfillStepArgs,
-    AdminVertexPropertyBackfillStepResult, EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs,
-    GraphBatchInstrLogPage, GraphRegistryEntry, GraphStableMemoryStats, LabelBackfillShardStatus,
-    PropertyId, RegisterVectorIndexArgs, RouterVectorSearchRequest, SetVectorIndexTargetArgs,
+    AdminIndexSyncStatusArgs, AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult,
+    AdminLabelStatsProjectionStepArgs, AdminLabelStatsProjectionStepResult, AdminRegisterShardArgs,
+    AdminSweepMutationKeysStepArgs, AdminSweepMutationKeysStepResult,
+    AdminVectorIndexBackfillStepArgs, AdminVectorIndexBackfillStepResult,
+    AdminVertexPropertyBackfillStepArgs, AdminVertexPropertyBackfillStepResult,
+    EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs, GraphBatchInstrLogPage,
+    GraphRegistryEntry, GraphStableMemoryStats, LabelBackfillShardStatus, PropertyId,
+    RegisterVectorIndexArgs, RouterVectorSearchRequest, SetVectorIndexTargetArgs,
     SetVectorMaintenancePolicyArgs, ShardId, ShardRegistryEntry, VectorIndexActivationStateView,
     VectorIndexActivationStatus, VectorIndexInfo, VectorMaintenancePolicyView,
     VectorMaintenanceStatusView, VectorMaintenanceStepOutcome, VertexLabelId,
@@ -23,6 +24,7 @@ use crate::types::{
 use candid::Decode;
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
+use gleaph_graph_kernel::federation::IndexSyncStatus;
 use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
     VectorMaintenanceState, VectorPartitionHealthStep, VectorPartitionHealthSummary,
@@ -492,6 +494,14 @@ pub(crate) fn admin_list_vertex_property_backfill_status(
         msg_caller(),
         &logical_graph_name,
     )
+}
+
+pub(crate) async fn admin_index_sync_status(
+    args: AdminIndexSyncStatusArgs,
+) -> Result<IndexSyncStatus, RouterError> {
+    RouterStore::new()
+        .admin_index_sync_status(msg_caller(), args, crate::graph_client::index_sync_status)
+        .await
 }
 
 pub(crate) async fn admin_edge_backfill_step(

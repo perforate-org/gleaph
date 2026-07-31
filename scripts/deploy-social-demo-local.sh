@@ -297,15 +297,16 @@ build_social_config() {
   node "$ROOT/frontend/apps/social-demo/scripts/build-gql-formatter.mjs"
 }
 
-# apply-social-seeds.mjs still sizes pages from the Candid payload, while the default item cap
-# keeps typed Graph batches within the observed instruction envelope.
+# apply-social-seeds.mjs sizes pages dynamically by Candid payload and waits for
+# graph-index convergence between dependency waves, so no fixed item cap is needed.
 seed_social_graph() {
   log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
   # apply-social-seeds.mjs groups the manifest into dependency waves
   # (vertices, user edges, posts, replies, topic/feed assignments) and runs each wave as a
   # separate gql_execute_idempotent_batch call, preserving parent-before-child order.
-  # Keep typed seed batches below the Graph instruction envelope; callers can override this
-  # for smaller fixtures or a deployment with a different batch budget.
+  # After the vertex wave it backfills vertex property postings, then waits for the shard's
+  # durable index projections (outbox + repair journal) to converge before each edge wave,
+  # so MATCH anchors resolve against a current graph-index even with large dynamic pages.
   env \
     HOME="$ICP_CLI_HOME" \
     COREPACK_HOME="$ICP_COREPACK_HOME" \
@@ -314,7 +315,6 @@ seed_social_graph() {
     RUSTUP_HOME="$RUSTUP_HOME" \
     CARGO_HOME="$CARGO_HOME" \
     GLEAPH_DEMO_GRAPH_NAME="$GRAPH_NAME" \
-    SEED_PAGE_SIZE="${SEED_PAGE_SIZE:-100}" \
     DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
     ICP_IDENTITY_NAME="$deployer_id" \
     node "$ROOT/frontend/apps/social-demo/scripts/apply-social-seeds.mjs" \

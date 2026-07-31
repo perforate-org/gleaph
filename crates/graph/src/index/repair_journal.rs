@@ -683,6 +683,36 @@ mod tests {
     }
 
     #[test]
+    fn index_sync_status_reflects_outbox_and_repair_journal() {
+        with_routing(|graph| {
+            assert!(graph.index_sync_status().converged);
+
+            // The first-delivery outbox alone must pin convergence: batch-path postings
+            // can sit there when a dynamic batch cut off before the synchronous drain.
+            graph.derived_index_outbox_append(17, [vertex_insert(1)]);
+            let status = graph.index_sync_status();
+            assert_eq!(status.derived_index_outbox_len, 1);
+            assert_eq!(status.repair_journal_len, 0);
+            assert!(!status.converged);
+
+            // A failed-flush repair batch must pin convergence independently.
+            graph.repair_journal_append(9, [vertex_insert(2)]);
+            let status = graph.index_sync_status();
+            assert_eq!(status.derived_index_outbox_len, 1);
+            assert_eq!(status.repair_journal_len, 1);
+            assert!(!status.converged);
+
+            for (seq, _) in graph.derived_index_outbox_peek(usize::MAX) {
+                graph.derived_index_outbox_remove(seq);
+            }
+            for (seq, _) in graph.repair_journal_peek(usize::MAX) {
+                graph.repair_journal_remove(seq);
+            }
+            assert!(graph.index_sync_status().converged);
+        });
+    }
+
+    #[test]
     fn drain_batch_has_no_fixed_item_count_cap() {
         with_routing(|graph| {
             graph.derived_index_outbox_append(17, (0..129).map(vertex_insert));
