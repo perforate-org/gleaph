@@ -239,8 +239,8 @@ Count-only Router projections and graph-index-backed membership/property reads m
 claim read-your-writes unless their respective cursor or watermark has reached the token.
 
 **Implementation (Phase 3).** Callers select a mode via the router composite-query entrypoints
-`gql_query_with_consistency` / `prepared_execute_query_with_consistency`; the legacy `gql_query` /
-`prepared_execute_query` stay `Eventual`. The barrier is enforced once before any read shape is
+`gql_query_with_consistency` / `prepared_query_with_consistency`; the legacy `gql_query` /
+`prepared_query` stay `Eventual`. The barrier is enforced once before any read shape is
 dispatched (label-count fast path, graph-index seed, and graph-shard scan are gated uniformly).
 For `AtLeast(token)`, each token shard must satisfy its label-stats projection cursor
 (`label_stats_projection_cursor`) and its graph-index watermark (`index_pending_min_mutation_id`,
@@ -265,7 +265,7 @@ of truth for how many DML statements the program contains). Single-shard multi-D
 shard-local atomic (decision 1) and a single federated DML statement converges via the federated
 saga (decision 4), so both pass. The gate is enforced at both AST-owning ingress points: ad-hoc
 `gql_query*`/`gql_update*` (`router::gql::run_gql`) and prepared-plan registration
-(`router::prepared::prepared_register`), so a federated multi-DML prepared plan is never persisted.
+(`router::prepared::prepared_upsert`), so a federated multi-DML prepared plan is never persisted.
 A prepared plan registered against a single-shard graph that is later re-sharded is an orthogonal
 prepared-plan staleness concern, not covered by this gate.
 

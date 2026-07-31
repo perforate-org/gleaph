@@ -1315,7 +1315,7 @@ service : (RouterInitArgs) -> {
     );
   // Read-only GQL on the update path only (no composite-query savings; bypasses path check).
   force_gql_execute : (text, blob) -> (Result_24);
-  force_prepared_execute_update : (text, blob) -> (Result_24);
+  prepared_query_as_update : (text, blob) -> (Result_24);
   // Update-path GQL entrypoint for non-DML escape hatches; DML requires `gql_execute_idempotent`.
   gql_execute : (text, blob) -> (Result_24);
   // Idempotent GQL update. Reuse `client_mutation_key` only for retries of the same mutation.
@@ -1353,19 +1353,19 @@ service : (RouterInitArgs) -> {
   // ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
   mutation_status : (text, text) -> (Result_33) query;
   my_role : () -> (Result_34) query;
-  prepared_drop : (text) -> (Result);
-  prepared_execute_query : (text, blob) -> (Result_25) composite_query;
+  prepared_delete : (text) -> (Result);
+  prepared_query : (text, blob) -> (Result_25) composite_query;
   // Prepared read with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
-  prepared_execute_query_with_consistency : (text, blob, ReadMode) -> (
+  prepared_query_with_consistency : (text, blob, ReadMode) -> (
       Result_25,
     ) composite_query;
-  prepared_execute_update : (text, blob) -> (Result_24);
+  prepared_update : (text, blob) -> (Result_24);
   // Idempotent prepared update. Returns the richer
   // [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
   // federated mutation lifecycle `phase`.
-  prepared_execute_update_idempotent : (text, blob, text) -> (Result_25);
-  prepared_register : (text, text) -> (Result);
-  prepared_register_batch : (vec record { text; text }) -> (vec Result);
+  prepared_update_idempotent : (text, blob, text) -> (Result_25);
+  prepared_upsert : (text, text) -> (Result);
+  prepared_upsert_batch : (vec record { text; text }) -> (vec Result);
   // Admin-only: send a resolved provisioning envelope to the configured Provision canister.
   provision_graph : (ProvisionGraphArgs) -> (Result_35);
   resolve_graph : (text) -> (Result_36) query;

@@ -9,9 +9,9 @@ pub(crate) const REMEDY_WRITE_ON_QUERY: &str =
     "use gql_execute_idempotent (update call with client_mutation_key)";
 const REMEDY_READ_ON_UPDATE: &str = "use gql_query (composite query call) or force_gql_execute";
 const REMEDY_PREPARED_WRITE_ON_QUERY: &str =
-    "use prepared_execute_update_idempotent (update call with client_mutation_key)";
+    "use prepared_update_idempotent (update call with client_mutation_key)";
 const REMEDY_PREPARED_READ_ON_UPDATE: &str =
-    "use prepared_execute_query (composite query call) or force_prepared_execute_update";
+    "use prepared_query (composite query call) or prepared_query_as_update";
 
 /// Returns whether the program requires the update (write) canister path.
 pub fn program_requires_write_path(flags: ProgramModificationFlags) -> bool {
@@ -138,13 +138,9 @@ mod tests {
 
     #[test]
     fn prepared_rejects_write_plan_on_query_call() {
-        let err = check_prepared_execution_path(
-            "prepared_execute_query",
-            GqlExecutionMode::Query,
-            true,
-            false,
-        )
-        .expect_err("write on query");
+        let err =
+            check_prepared_execution_path("prepared_query", GqlExecutionMode::Query, true, false)
+                .expect_err("write on query");
         assert!(matches!(
             err,
             RouterError::ExecutionPathMismatch {
@@ -152,7 +148,7 @@ mod tests {
                 program_kind,
                 call_kind,
                 ..
-            } if entrypoint == "prepared_execute_query"
+            } if entrypoint == "prepared_query"
                 && program_kind == "write"
                 && call_kind == "query"
         ));
@@ -161,7 +157,7 @@ mod tests {
     #[test]
     fn prepared_force_bypasses_read_on_update_mismatch() {
         check_prepared_execution_path(
-            "force_prepared_execute_update",
+            "prepared_query_as_update",
             GqlExecutionMode::Update,
             false,
             true,

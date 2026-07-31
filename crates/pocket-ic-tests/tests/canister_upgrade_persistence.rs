@@ -19,7 +19,7 @@ use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_execute_idempotent_as_admin,
     gql_query_as_admin, install_single_shard_federation, knowledge_map_live_query,
-    prepared_execute_query_with_params_as, prepared_manifest_as_admin, prepared_register_as_admin,
+    prepared_manifest_as_admin, prepared_query_with_params_as, prepared_upsert_as_admin,
     seed_knowledge_map_graph, wasm_bytes,
 };
 use gleaph_prepared_api::{OperationKind, PreparedOperation, ResultSchema};
@@ -115,15 +115,15 @@ fn prepared_query_survives_router_upgrade_cache_rebuild() {
     seed_knowledge_map_graph(&env);
 
     let query_name = "upgrade-prepared-cache-rebuild";
-    prepared_register_as_admin(&env, query_name, knowledge_map_live_query());
-    let before = prepared_execute_query_with_params_as(&env, env.admin, query_name, Vec::new());
+    prepared_upsert_as_admin(&env, query_name, knowledge_map_live_query());
+    let before = prepared_query_with_params_as(&env, env.admin, query_name, Vec::new());
 
     upgrade_all(&env);
 
     // The Router stable record contains source, while the parsed AST and plan are rebuilt by
     // post_upgrade. Successful execution after upgrade proves the cache was reconstructed and
     // the Graph still received the prepared plan through the normal dispatch boundary.
-    let after = prepared_execute_query_with_params_as(&env, env.admin, query_name, Vec::new());
+    let after = prepared_query_with_params_as(&env, env.admin, query_name, Vec::new());
     assert_eq!(after.row_count, before.row_count);
     assert_eq!(edge_ids(&after), edge_ids(&before));
 }
@@ -152,13 +152,13 @@ fn prepared_manifest_exposes_doc_and_parameter_metadata() {
         .update_call(
             env.router,
             env.admin,
-            "prepared_register_with_metadata",
+            "prepared_upsert_with_metadata",
             Encode!(&name.to_owned(), &query.to_owned(), &metadata)
-                .expect("encode prepared_register_with_metadata"),
+                .expect("encode prepared_upsert_with_metadata"),
         )
-        .expect("prepared_register_with_metadata call");
+        .expect("prepared_upsert_with_metadata call");
     let result = candid::Decode!(&bytes, Result<(), gleaph_graph_kernel::federation::RouterError>)
-        .expect("decode prepared_register_with_metadata");
+        .expect("decode prepared_upsert_with_metadata");
     assert!(
         result.is_ok(),
         "prepared metadata registration failed: {result:?}"

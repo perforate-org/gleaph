@@ -153,7 +153,7 @@ main() {
 
   local prepared_query_literal
   prepared_query_literal="\"$(sed 's/\\/\\\\/g; s/"/\\"/g' "$E2E_ROOT/manifest/empty-query.gql" | tr -d '\n')\""
-  call_ok "$router" prepared_register_with_metadata "(
+  call_ok "$router" prepared_upsert_with_metadata "(
     \"list-vertices\",
     $prepared_query_literal,
     record {

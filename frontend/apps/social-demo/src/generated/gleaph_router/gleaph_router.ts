@@ -1700,7 +1700,7 @@ export interface gleaph_routerInterface {
     admin_vector_slab_stats_step(arg0: string, arg1: Uint8Array | null, arg2: number, arg3: number | null): Promise<Result_23>;
     admin_vertex_property_backfill_step(arg0: AdminLabelBackfillStepArgs): Promise<Result_9>;
     force_gql_execute(arg0: string, arg1: Uint8Array): Promise<Result_24>;
-    force_prepared_execute_update(arg0: string, arg1: Uint8Array): Promise<Result_24>;
+    prepared_query_as_update(arg0: string, arg1: Uint8Array): Promise<Result_24>;
     gql_execute(arg0: string, arg1: Uint8Array): Promise<Result_24>;
     gql_execute_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_25>;
     gql_execute_idempotent_batch(arg0: GqlExecuteIdempotentBatchArgs): Promise<Result_26>;
@@ -1717,13 +1717,13 @@ export interface gleaph_routerInterface {
     lookup_vertex_label_id(arg0: string, arg1: string): Promise<Result_7>;
     mutation_status(arg0: string, arg1: string): Promise<Result_33>;
     my_role(): Promise<Result_34>;
-    prepared_drop(arg0: string): Promise<Result>;
-    prepared_execute_query(arg0: string, arg1: Uint8Array): Promise<Result_25>;
-    prepared_execute_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_25>;
-    prepared_execute_update(arg0: string, arg1: Uint8Array): Promise<Result_24>;
-    prepared_execute_update_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_25>;
-    prepared_register(arg0: string, arg1: string): Promise<Result>;
-    prepared_register_batch(arg0: Array<[string, string]>): Promise<Array<Result>>;
+    prepared_delete(arg0: string): Promise<Result>;
+    prepared_query(arg0: string, arg1: Uint8Array): Promise<Result_25>;
+    prepared_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_25>;
+    prepared_update(arg0: string, arg1: Uint8Array): Promise<Result_24>;
+    prepared_update_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_25>;
+    prepared_upsert(arg0: string, arg1: string): Promise<Result>;
+    prepared_upsert_batch(arg0: Array<[string, string]>): Promise<Array<Result>>;
     provision_graph(arg0: ProvisionGraphArgs): Promise<Result_35>;
     resolve_graph(arg0: string): Promise<Result_36>;
     resolve_shard(arg0: string, arg1: number): Promise<Result_37>;
@@ -1954,8 +1954,8 @@ export class Gleaph_router implements gleaph_routerInterface {
         const result = await this.actor.force_gql_execute(arg0, arg1);
         return from_candid_Result_24_n113(result);
     }
-    async force_prepared_execute_update(arg0: string, arg1: Uint8Array): Promise<Result_24> {
-        const result = await this.actor.force_prepared_execute_update(arg0, arg1);
+    async prepared_query_as_update(arg0: string, arg1: Uint8Array): Promise<Result_24> {
+        const result = await this.actor.prepared_query_as_update(arg0, arg1);
         return from_candid_Result_24_n113(result);
     }
     async gql_execute(arg0: string, arg1: Uint8Array): Promise<Result_24> {
@@ -2022,32 +2022,32 @@ export class Gleaph_router implements gleaph_routerInterface {
         const result = await this.actor.my_role();
         return from_candid_Result_34_n175(result);
     }
-    async prepared_drop(arg0: string): Promise<Result> {
-        const result = await this.actor.prepared_drop(arg0);
+    async prepared_delete(arg0: string): Promise<Result> {
+        const result = await this.actor.prepared_delete(arg0);
         return from_candid_Result_n1(result);
     }
-    async prepared_execute_query(arg0: string, arg1: Uint8Array): Promise<Result_25> {
-        const result = await this.actor.prepared_execute_query(arg0, arg1);
+    async prepared_query(arg0: string, arg1: Uint8Array): Promise<Result_25> {
+        const result = await this.actor.prepared_query(arg0, arg1);
         return from_candid_Result_25_n115(result);
     }
-    async prepared_execute_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_25> {
-        const result = await this.actor.prepared_execute_query_with_consistency(arg0, arg1, to_candid_ReadMode_n136(arg2));
+    async prepared_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_25> {
+        const result = await this.actor.prepared_query_with_consistency(arg0, arg1, to_candid_ReadMode_n136(arg2));
         return from_candid_Result_25_n115(result);
     }
-    async prepared_execute_update(arg0: string, arg1: Uint8Array): Promise<Result_24> {
-        const result = await this.actor.prepared_execute_update(arg0, arg1);
+    async prepared_update(arg0: string, arg1: Uint8Array): Promise<Result_24> {
+        const result = await this.actor.prepared_update(arg0, arg1);
         return from_candid_Result_24_n113(result);
     }
-    async prepared_execute_update_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_25> {
-        const result = await this.actor.prepared_execute_update_idempotent(arg0, arg1, arg2);
+    async prepared_update_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_25> {
+        const result = await this.actor.prepared_update_idempotent(arg0, arg1, arg2);
         return from_candid_Result_25_n115(result);
     }
-    async prepared_register(arg0: string, arg1: string): Promise<Result> {
-        const result = await this.actor.prepared_register(arg0, arg1);
+    async prepared_upsert(arg0: string, arg1: string): Promise<Result> {
+        const result = await this.actor.prepared_upsert(arg0, arg1);
         return from_candid_Result_n1(result);
     }
-    async prepared_register_batch(arg0: Array<[string, string]>): Promise<Array<Result>> {
-        const result = await this.actor.prepared_register_batch(arg0);
+    async prepared_upsert_batch(arg0: Array<[string, string]>): Promise<Array<Result>> {
+        const result = await this.actor.prepared_upsert_batch(arg0);
         return from_candid_vec_n177(result);
     }
     async provision_graph(arg0: ProvisionGraphArgs): Promise<Result_35> {

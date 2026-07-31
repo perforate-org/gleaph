@@ -56,7 +56,7 @@ thread_local! {
 
 /// Plan a prepared query through the production Router ingress planning seam.
 ///
-/// This is the exact planning path used by `prepared_register` after authorization,
+/// This is the exact planning path used by `prepared_upsert` after authorization,
 /// exposed without `msg_caller` so unit tests can drive it with an explicit principal.
 #[cfg_attr(
     not(test),
@@ -145,39 +145,39 @@ fn plan_prepared_program(
     Ok((plan, graph_id, requires_write_path))
 }
 
-pub fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
+pub fn prepared_upsert(name: String, query: String) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let caller = msg_caller();
-    prepared_register_core(&name, &query, caller, None)
+    prepared_upsert_core(&name, &query, caller, None)
 }
 
-/// Register a prepared operation together with its graph-scoped metadata.
-pub fn prepared_register_with_metadata(
+/// Upsert a prepared operation together with its graph-scoped metadata.
+pub fn prepared_upsert_with_metadata(
     name: String,
     query: String,
     metadata: PreparedOperation,
 ) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let caller = msg_caller();
-    prepared_register_core(&name, &query, caller, Some(metadata))
+    prepared_upsert_core(&name, &query, caller, Some(metadata))
 }
 
-/// Batch variant of [`prepared_register`]. All items are authorized by the same caller and
+/// Batch variant of [`prepared_upsert`]. All items are authorized by the same caller and
 /// registered independently; failures are reported per item so one duplicate does not abort the
 /// whole social-demo scenario catalog.
-pub fn prepared_register_batch(queries: Vec<(String, String)>) -> Vec<Result<(), RouterError>> {
+pub fn prepared_upsert_batch(queries: Vec<(String, String)>) -> Vec<Result<(), RouterError>> {
     let caller = msg_caller();
     if let Err(e) = authorize_prepared_catalog_change(&caller) {
         return queries.into_iter().map(|_| Err(e.clone())).collect();
     }
     queries
         .into_iter()
-        .map(|(name, query)| prepared_register_core(&name, &query, caller, None))
+        .map(|(name, query)| prepared_upsert_core(&name, &query, caller, None))
         .collect()
 }
 
-/// Batch registration variant carrying one metadata record per prepared operation.
-pub fn prepared_register_with_metadata_batch(
+/// Batch upsert variant carrying one metadata record per prepared operation.
+pub fn prepared_upsert_batch_with_metadata(
     queries: Vec<(String, String, PreparedOperation)>,
 ) -> Vec<Result<(), RouterError>> {
     let caller = msg_caller();
@@ -186,13 +186,11 @@ pub fn prepared_register_with_metadata_batch(
     }
     queries
         .into_iter()
-        .map(|(name, query, metadata)| {
-            prepared_register_core(&name, &query, caller, Some(metadata))
-        })
+        .map(|(name, query, metadata)| prepared_upsert_core(&name, &query, caller, Some(metadata)))
         .collect()
 }
 
-fn prepared_register_core(
+fn prepared_upsert_core(
     name: &str,
     query: &str,
     caller: Principal,
@@ -223,7 +221,7 @@ fn prepared_register_core(
         };
         if metadata.name != name {
             return Err(RouterError::InvalidArgument(format!(
-                "prepared metadata name {:?} does not match registration name {:?}",
+                "prepared metadata name {:?} does not match upsert name {:?}",
                 metadata.name, name
             )));
         }
@@ -383,7 +381,7 @@ pub fn prepared_manifest(graph_name: String) -> Result<PreparedManifest, RouterE
     })
 }
 
-pub fn prepared_drop(name: &str) -> Result<(), RouterError> {
+pub fn prepared_delete(name: &str) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let store = RouterStore::new();
     let graph_id = resolve_prepared_graph_id(&store, msg_caller(), name)?;
@@ -391,15 +389,12 @@ pub fn prepared_drop(name: &str) -> Result<(), RouterError> {
     Ok(())
 }
 
-pub async fn prepared_execute_query(
-    name: String,
-    params: Vec<u8>,
-) -> Result<GqlQueryResult, RouterError> {
-    prepared_execute(
+pub async fn prepared_query(name: String, params: Vec<u8>) -> Result<GqlQueryResult, RouterError> {
+    prepared_run(
         name,
         params,
         GqlExecutionMode::Query,
-        "prepared_execute_query",
+        "prepared_query",
         false,
         None,
         ReadMode::Eventual,
@@ -408,16 +403,16 @@ pub async fn prepared_execute_query(
 }
 
 /// Run a prepared read with an explicit ADR 0029 §5 consistency contract (Phase 3).
-pub async fn prepared_execute_query_with_consistency(
+pub async fn prepared_query_with_consistency(
     name: String,
     params: Vec<u8>,
     read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
-    prepared_execute(
+    prepared_run(
         name,
         params,
         GqlExecutionMode::Query,
-        "prepared_execute_query_with_consistency",
+        "prepared_query_with_consistency",
         false,
         None,
         read_mode,
@@ -425,12 +420,12 @@ pub async fn prepared_execute_query_with_consistency(
     .await
 }
 
-pub async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    Ok(prepared_execute(
+pub async fn prepared_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
+    Ok(prepared_run(
         name,
         params,
         GqlExecutionMode::Update,
-        "prepared_execute_update",
+        "prepared_update",
         false,
         None,
         ReadMode::Eventual,
@@ -439,16 +434,16 @@ pub async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u6
     .row_count)
 }
 
-pub async fn prepared_execute_update_idempotent(
+pub async fn prepared_update_idempotent(
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<GqlQueryResult, RouterError> {
-    let result = prepared_execute(
+    let result = prepared_run(
         name,
         params,
         GqlExecutionMode::Update,
-        "prepared_execute_update_idempotent",
+        "prepared_update_idempotent",
         false,
         Some(&client_mutation_key),
         ReadMode::Eventual,
@@ -461,15 +456,12 @@ pub async fn prepared_execute_update_idempotent(
 }
 
 /// Run a read-only prepared plan on the **update** path (escape hatch only).
-pub async fn force_prepared_execute_update(
-    name: String,
-    params: Vec<u8>,
-) -> Result<u64, RouterError> {
-    Ok(prepared_execute(
+pub async fn prepared_query_as_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
+    Ok(prepared_run(
         name,
         params,
         GqlExecutionMode::Update,
-        "force_prepared_execute_update",
+        "prepared_query_as_update",
         true,
         None,
         ReadMode::Eventual,
@@ -479,7 +471,7 @@ pub async fn force_prepared_execute_update(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn prepared_execute(
+async fn prepared_run(
     name: String,
     params: Vec<u8>,
     mode: GqlExecutionMode,
@@ -488,7 +480,7 @@ async fn prepared_execute(
     client_mutation_key: Option<&str>,
     read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
-    let result = prepared_execute_unchecked(
+    let result = prepared_run_unchecked(
         name,
         params,
         mode,
@@ -503,7 +495,7 @@ async fn prepared_execute(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn prepared_execute_unchecked(
+async fn prepared_run_unchecked(
     name: String,
     params: Vec<u8>,
     mode: GqlExecutionMode,
@@ -529,7 +521,7 @@ async fn prepared_execute_unchecked(
     let stats = graph_stats_for(graph_id);
     // ADR 0034: prepared queries that contain a supported `SEARCH` shape are lowered through the
     // same Router vector-index path as ad-hoc `gql_query`. The plan is single-graph by the
-    // prepared registration contract.
+    // prepared upsert contract.
     //
     // Limitation: the SEARCH lowering currently executes at `ReadMode::Eventual`. Passing the
     // caller-supplied `read_mode` through to `try_execute_gql_search` would require extending the
@@ -558,11 +550,11 @@ async fn prepared_execute_unchecked(
         return Ok(result);
     }
 
-    // ADR 0029 Phase 5: federated multi-DML bundles are rejected at registration (the AST is
+    // ADR 0029 Phase 5: federated multi-DML bundles are rejected at upsert (the AST is
     // available there), so a prepared plan that reaches dispatch is never a federated multi-DML
     // bundle. The contract 1/2 multi-DML admission (anchored single-shard and roll-forward fan-out)
     // applies to ad-hoc execution only; prepared multi-DML on a federated graph stays rejected at
-    // registration, where the runtime shard count is not yet known.
+    // upsert, where the runtime shard count is not yet known.
     dispatch_plan_blob(
         graph_id,
         &cache.plan_blob,

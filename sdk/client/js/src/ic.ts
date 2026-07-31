@@ -31,8 +31,8 @@ interface GraphActorMethods {
   ): Promise<Result<ApiPrepareResponse>>;
   list_prepared_api(): Promise<Result<ApiListPreparedResponse>>;
   prepared_manifest(graphName: string): Promise<Result<PreparedManifest>>;
-  prepared_execute_query(name: string, params: Uint8Array): Promise<Result<GqlQueryWireResult>>;
-  prepared_execute_update(name: string, params: Uint8Array): Promise<Result<bigint>>;
+  prepared_query(name: string, params: Uint8Array): Promise<Result<GqlQueryWireResult>>;
+  prepared_update(name: string, params: Uint8Array): Promise<Result<bigint>>;
   drop_prepared(name: string): Promise<Result<{ dropped: boolean }>>;
 }
 
@@ -162,14 +162,14 @@ class IcGraphTransport implements GraphTransport {
     }
     return toGqlQueryResult(
       unwrapResult<GqlQueryWireResult>(
-        await this.actor.prepared_execute_query(request.name, encodeParams(request.params)),
+        await this.actor.prepared_query(request.name, encodeParams(request.params)),
       ),
     );
   }
 
   async executePreparedUpdate(request: ApiExecutePreparedRequest): Promise<GqlMutationResult> {
     const rowCount = unwrapResult<bigint>(
-      await this.actor.prepared_execute_update(request.name, encodeParams(request.params)),
+      await this.actor.prepared_update(request.name, encodeParams(request.params)),
     );
     return { row_count: rowCount };
   }

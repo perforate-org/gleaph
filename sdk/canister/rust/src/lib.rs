@@ -1,7 +1,7 @@
 //! Gleaph canister SDK.
 //!
 //! Small, opinionated helpers for application canisters that delegate fixed read scenarios to the
-//! Gleaph Router via its `prepared_execute_query` interface. The API is intentionally generic: it
+//! Gleaph Router via its `prepared_query` interface. The API is intentionally generic: it
 //! knows the Candid shape of a prepared query call `(String name, Vec<u8> params)` and how to make
 //! a bounded-wait inter-canister call, but it does not know application-specific scenario names or
 //! semantics.
@@ -578,7 +578,7 @@ pub fn encode_prepared_query_args(name: impl Into<String>, params: Vec<u8>) -> V
     candid::utils::encode_args((name.into(), params)).expect("Candid encode (String, Vec<u8>)")
 }
 
-/// Make a bounded-wait call to `prepared_execute_query` on `canister_id`.
+/// Make a bounded-wait call to `prepared_query` on `canister_id`.
 ///
 /// `name` is the registered prepared-query name; `params` is the compact-binary GQL parameter blob
 /// produced by the caller (often via `gleaph-gql-ic`). On success the Router's return value is
@@ -592,7 +592,7 @@ where
     R: CandidType + for<'de> Deserialize<'de>,
 {
     let args = encode_prepared_query_args(name, params);
-    call_prepared_method(canister_id, "prepared_execute_query", args).await
+    call_prepared_method(canister_id, "prepared_query", args).await
 }
 
 /// Make a bounded-wait call to the Router's dynamic `gql_query` endpoint.
@@ -612,7 +612,7 @@ where
     call_prepared_method(canister_id, "gql_query", args).await
 }
 
-/// Make a bounded-wait call to `prepared_execute_update` on `canister_id`.
+/// Make a bounded-wait call to `prepared_update` on `canister_id`.
 ///
 /// The returned type is normally `u64` for the current Router endpoint. The generic form keeps
 /// the helper usable with a future result-wire contract without duplicating call error handling.
@@ -625,10 +625,10 @@ where
     R: CandidType + for<'de> Deserialize<'de>,
 {
     let args = encode_prepared_query_args(name, params);
-    call_prepared_method(canister_id, "prepared_execute_update", args).await
+    call_prepared_method(canister_id, "prepared_update", args).await
 }
 
-/// Make a bounded-wait call to `prepared_execute_update_idempotent` on `canister_id`.
+/// Make a bounded-wait call to `prepared_update_idempotent` on `canister_id`.
 pub async fn call_prepared_update_idempotent<R>(
     canister_id: Principal,
     name: impl Into<String>,
@@ -640,7 +640,7 @@ where
 {
     let args = candid::utils::encode_args((name.into(), params, client_mutation_key.into()))
         .expect("Candid encode prepared idempotent update arguments");
-    call_prepared_method(canister_id, "prepared_execute_update_idempotent", args).await
+    call_prepared_method(canister_id, "prepared_update_idempotent", args).await
 }
 
 async fn call_prepared_method<R>(

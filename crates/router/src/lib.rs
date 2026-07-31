@@ -588,34 +588,34 @@ async fn force_gql_execute(query: String, params: Vec<u8>) -> Result<u64, Router
 }
 
 #[update]
-fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
-    prepared::prepared_register(name, query)
+fn prepared_upsert(name: String, query: String) -> Result<(), RouterError> {
+    prepared::prepared_upsert(name, query)
 }
 
 #[update]
-fn prepared_register_with_metadata(
+fn prepared_upsert_with_metadata(
     name: String,
     query: String,
     metadata: gleaph_prepared_api::PreparedOperation,
 ) -> Result<(), RouterError> {
-    prepared::prepared_register_with_metadata(name, query, metadata)
+    prepared::prepared_upsert_with_metadata(name, query, metadata)
 }
 
 #[update]
-fn prepared_register_batch(queries: Vec<(String, String)>) -> Vec<Result<(), RouterError>> {
-    prepared::prepared_register_batch(queries)
+fn prepared_upsert_batch(queries: Vec<(String, String)>) -> Vec<Result<(), RouterError>> {
+    prepared::prepared_upsert_batch(queries)
 }
 
 #[update]
-fn prepared_register_with_metadata_batch(
+fn prepared_upsert_batch_with_metadata(
     queries: Vec<(String, String, gleaph_prepared_api::PreparedOperation)>,
 ) -> Vec<Result<(), RouterError>> {
-    prepared::prepared_register_with_metadata_batch(queries)
+    prepared::prepared_upsert_batch_with_metadata(queries)
 }
 
 #[update]
-fn prepared_drop(name: String) -> Result<(), RouterError> {
-    prepared::prepared_drop(&name)
+fn prepared_delete(name: String) -> Result<(), RouterError> {
+    prepared::prepared_delete(&name)
 }
 
 #[query]
@@ -626,43 +626,43 @@ fn prepared_manifest(
 }
 
 #[query(composite = true)]
-async fn prepared_execute_query(
+async fn prepared_query(
     name: String,
     params: Vec<u8>,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::prepared_execute_query(name, params).await
+    prepared::prepared_query(name, params).await
 }
 
 /// Prepared read with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
 #[query(composite = true)]
-async fn prepared_execute_query_with_consistency(
+async fn prepared_query_with_consistency(
     name: String,
     params: Vec<u8>,
     read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::prepared_execute_query_with_consistency(name, params, read_mode).await
+    prepared::prepared_query_with_consistency(name, params, read_mode).await
 }
 
 #[update]
-async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    prepared::prepared_execute_update(name, params).await
+async fn prepared_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
+    prepared::prepared_update(name, params).await
 }
 
 /// Idempotent prepared update. Returns the richer
 /// [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
 /// federated mutation lifecycle `phase`.
 #[update]
-async fn prepared_execute_update_idempotent(
+async fn prepared_update_idempotent(
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::prepared_execute_update_idempotent(name, params, client_mutation_key).await
+    prepared::prepared_update_idempotent(name, params, client_mutation_key).await
 }
 
 #[update]
-async fn force_prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
-    prepared::force_prepared_execute_update(name, params).await
+async fn prepared_query_as_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
+    prepared::prepared_query_as_update(name, params).await
 }
 
 #[update]

@@ -969,7 +969,7 @@ export const idlFactory = ({ IDL }) => {
         [Result_24],
         [],
       ),
-    'force_prepared_execute_update' : IDL.Func(
+    'prepared_query_as_update' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8)],
         [Result_24],
         [],
@@ -1026,29 +1026,29 @@ export const idlFactory = ({ IDL }) => {
       ),
     'mutation_status' : IDL.Func([IDL.Text, IDL.Text], [Result_33], ['query']),
     'my_role' : IDL.Func([], [Result_34], ['query']),
-    'prepared_drop' : IDL.Func([IDL.Text], [Result], []),
-    'prepared_execute_query' : IDL.Func(
+    'prepared_delete' : IDL.Func([IDL.Text], [Result], []),
+    'prepared_query' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8)],
         [Result_25],
         ['composite_query'],
       ),
-    'prepared_execute_query_with_consistency' : IDL.Func(
+    'prepared_query_with_consistency' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8), ReadMode],
         [Result_25],
         ['composite_query'],
       ),
-    'prepared_execute_update' : IDL.Func(
+    'prepared_update' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8)],
         [Result_24],
         [],
       ),
-    'prepared_execute_update_idempotent' : IDL.Func(
+    'prepared_update_idempotent' : IDL.Func(
         [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Text],
         [Result_25],
         [],
       ),
-    'prepared_register' : IDL.Func([IDL.Text, IDL.Text], [Result], []),
-    'prepared_register_batch' : IDL.Func(
+    'prepared_upsert' : IDL.Func([IDL.Text, IDL.Text], [Result], []),
+    'prepared_upsert_batch' : IDL.Func(
         [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Text))],
         [IDL.Vec(Result)],
         [],

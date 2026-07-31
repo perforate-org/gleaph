@@ -107,13 +107,13 @@ An explicit post `id` is rejected. The generator owns opaque Post identity, reso
 | Field              | Type                     | Use                                               |
 | ------------------ | ------------------------ | ------------------------------------------------- |
 | `id`               | string                   | PascalCase `SocialDemoScenario` variant name.     |
-| `preparedQueryId`  | string                   | snake_case name sent to `prepared_register`.      |
+| `preparedQueryId`  | string                   | snake_case name sent to `prepared_upsert`.      |
 | `label`            | string                   | Display label.                                    |
 | `shortLabel`       | string                   | Short display label.                              |
 | `feedTitle`        | string                   | Feed panel title.                                 |
 | `rdbSummary`       | string                   | Relational summary text.                          |
 | `graphSummary`     | string                   | Graph summary text.                               |
-| `preparedQuery`    | string                   | GQL string for `prepared_register`. Must include a `LIMIT ... OFFSET $offset` clause so the frontend can page. |
+| `preparedQuery`    | string                   | GQL string for `prepared_upsert`. Must include a `LIMIT ... OFFSET $offset` clause so the frontend can page. |
 | `semanticVector`   | list of floats or `null` | Optional reference vector for semantic scenarios. |
 
 ## Build pipeline

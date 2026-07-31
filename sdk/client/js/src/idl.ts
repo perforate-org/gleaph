@@ -1,5 +1,10 @@
 import { IDL } from "@icp-sdk/core/candid";
 
+const IcWirePathElement = IDL.Variant({
+  Vertex: IDL.Vec(IDL.Nat8),
+  Edge: IDL.Vec(IDL.Nat8),
+});
+
 const IcWireValue: IDL.Type = IDL.Rec();
 const IcWireValueVariant = IDL.Variant({
   Null: IDL.Null,
@@ -329,12 +334,12 @@ export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
       [LocalIDL.Variant({ Ok: PreparedManifest, Err: RouterError })],
       ["query"],
     ),
-    prepared_execute_query: LocalIDL.Func(
+    prepared_query: LocalIDL.Func(
       [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
       [LocalIDL.Variant({ Ok: GqlQueryResult, Err: RouterError })],
       ["query"],
     ),
-    prepared_execute_update: LocalIDL.Func(
+    prepared_update: LocalIDL.Func(
       [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
       [LocalIDL.Variant({ Ok: LocalIDL.Nat64, Err: RouterError })],
       [],

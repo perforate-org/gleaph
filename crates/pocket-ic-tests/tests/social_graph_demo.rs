@@ -22,7 +22,7 @@ use gleaph_pocket_ic_tests::{
     admin_fully_activate_social_vector_index, admin_ingest_social_embeddings,
     admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
     execute_social_demo_scenario_as, gql_query_as, install_single_shard_federation_with_gateway,
-    install_vector_canister, prepared_register_as_admin,
+    install_vector_canister, prepared_upsert_as_admin,
     seed_social_graph_and_assert_feed_edge_order, social_feed_post_ids,
 };
 use gleaph_social_demo_gateway::SocialDemoScenario;
@@ -71,9 +71,9 @@ fn social_graph_demo_gateway_contract() {
     intern_social_schema(&env);
     seed_social_graph_and_assert_feed_edge_order(&env);
 
-    prepared_register_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
-    prepared_register_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
-    prepared_register_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
+    prepared_upsert_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
+    prepared_upsert_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
+    prepared_upsert_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
 
     assert_public_timeline_through_gateway(&env, gateway);
     assert_alice_home_feed_through_gateway(&env, gateway);
@@ -85,8 +85,8 @@ fn social_graph_demo_gateway_contract() {
         SEMANTIC_EMBEDDING_NAME,
         SEMANTIC_DIMS,
     );
-    prepared_register_as_admin(&env, "semantic_discovery", SEMANTIC_DISCOVERY_QUERY);
-    prepared_register_as_admin(&env, "alice_semantic_feed", ALICE_SEMANTIC_FEED_QUERY);
+    prepared_upsert_as_admin(&env, "semantic_discovery", SEMANTIC_DISCOVERY_QUERY);
+    prepared_upsert_as_admin(&env, "alice_semantic_feed", ALICE_SEMANTIC_FEED_QUERY);
 
     assert_semantic_discovery_through_gateway(&env, gateway);
     assert_alice_semantic_feed_through_gateway(&env, gateway);
@@ -549,9 +549,9 @@ fn alice_semantic_feed_body_regression() {
     intern_social_schema(&env);
     seed_social_graph_and_assert_feed_edge_order(&env);
 
-    prepared_register_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
-    prepared_register_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
-    prepared_register_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
+    prepared_upsert_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
+    prepared_upsert_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
+    prepared_upsert_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
 
     ingest_social_embeddings_through_router(
         &env,
@@ -559,8 +559,8 @@ fn alice_semantic_feed_body_regression() {
         SEMANTIC_EMBEDDING_NAME,
         SEMANTIC_DIMS,
     );
-    prepared_register_as_admin(&env, "semantic_discovery", SEMANTIC_DISCOVERY_QUERY);
-    prepared_register_as_admin(&env, "alice_semantic_feed", ALICE_SEMANTIC_FEED_QUERY);
+    prepared_upsert_as_admin(&env, "semantic_discovery", SEMANTIC_DISCOVERY_QUERY);
+    prepared_upsert_as_admin(&env, "alice_semantic_feed", ALICE_SEMANTIC_FEED_QUERY);
 
     let result = execute_social_demo_scenario_as(
         &env,

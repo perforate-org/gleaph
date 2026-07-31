@@ -88,7 +88,7 @@ Enforcement:
 
 - **Name→id metadata endpoints** (`resolve_shard`, `lookup_graph_id`, `list_shards_for_graph`, `indexed_property_catalog`, `lookup_{vertex,edge}_label_id`, `lookup_property_id`, `reverse_{vertex,edge}_label_name`, `reverse_property_name`) resolve via `resolve_graph_id_authorized`. Previously these used a bare name lookup with no ACL (cross-tenant disclosure).
 - **Non-disclosure:** a non-tenant gets `NotFound`, not `Forbidden`, so it cannot confirm a graph exists. `resolve_graph` follows the same rule and gains the Admin bypass.
-- **Default/HOME selection is excluded:** `list_visible_graph_ids` / `resolve_home_graph_id` keep membership-only checks (no Admin bypass) so an Admin's HOME does not become ambiguous. The intentionally-public `prepared_execute_*` path already scopes through `list_visible_graph_ids` and is unchanged.
+- **Default/HOME selection is excluded:** `list_visible_graph_ids` / `resolve_home_graph_id` keep membership-only checks (no Admin bypass) so an Admin's HOME does not become ambiguous. The intentionally-public prepared prepared-query endpoints path already scopes through `list_visible_graph_ids` and is unchanged.
 - **Registration validation:** `validate_registration_principals` rejects the anonymous principal as `owner` or in `admins` (before any state mutation); an anonymous owner/admin would make the ACL match every unauthenticated caller. This complements the [anonymous-principal invariant](#anonymous-principal-invariant).
 
 ## Graph shard exposure

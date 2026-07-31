@@ -1798,7 +1798,7 @@ pub fn gql_query_on_router(
 }
 
 /// Register a named prepared query as the bootstrap admin principal.
-pub fn prepared_register_as_admin(env: &FederationEnv, name: &str, query: &str) {
+pub fn prepared_upsert_as_admin(env: &FederationEnv, name: &str, query: &str) {
     use gleaph_graph_kernel::federation::RouterError;
 
     let bytes = env
@@ -1806,14 +1806,14 @@ pub fn prepared_register_as_admin(env: &FederationEnv, name: &str, query: &str) 
         .update_call(
             env.router,
             env.admin,
-            "prepared_register",
-            Encode!(&name.to_string(), &query.to_string()).expect("encode prepared_register"),
+            "prepared_upsert",
+            Encode!(&name.to_string(), &query.to_string()).expect("encode prepared_upsert"),
         )
-        .unwrap_or_else(|e| panic!("prepared_register on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("prepared_upsert on router: {e:?}"));
     match Decode!(&bytes, Result<(), RouterError>) {
         Ok(Ok(())) => {}
-        Ok(Err(err)) => panic!("prepared_register rejected: {err:?}"),
-        Err(err) => panic!("decode prepared_register: {err}"),
+        Ok(Err(err)) => panic!("prepared_upsert rejected: {err:?}"),
+        Err(err) => panic!("decode prepared_upsert: {err}"),
     }
 }
 
@@ -1841,7 +1841,7 @@ pub fn prepared_manifest_as_admin(
 }
 
 /// Execute a registered prepared query as `caller` with an explicit parameter blob.
-pub fn prepared_execute_query_with_params_as(
+pub fn prepared_query_with_params_as(
     env: &FederationEnv,
     caller: Principal,
     name: &str,
@@ -1854,14 +1854,14 @@ pub fn prepared_execute_query_with_params_as(
         .query_call(
             env.router,
             caller,
-            "prepared_execute_query",
-            Encode!(&name.to_string(), &params_blob).expect("encode prepared_execute_query"),
+            "prepared_query",
+            Encode!(&name.to_string(), &params_blob).expect("encode prepared_query"),
         )
-        .unwrap_or_else(|e| panic!("prepared_execute_query on router: {e:?}"));
+        .unwrap_or_else(|e| panic!("prepared_query on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Ok(result)) => result,
-        Ok(Err(err)) => panic!("prepared_execute_query rejected: {err:?}"),
-        Err(err) => panic!("decode prepared_execute_query: {err}"),
+        Ok(Err(err)) => panic!("prepared_query rejected: {err:?}"),
+        Err(err) => panic!("decode prepared_query: {err}"),
     }
 }
 

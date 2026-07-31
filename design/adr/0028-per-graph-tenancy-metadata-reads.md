@@ -62,7 +62,7 @@ authorizing resolver.
 - **Default/HOME selection is intentionally NOT changed.** `list_visible_graph_ids` and
   `resolve_home_graph_id` keep their membership-only check (no Admin bypass) because they answer
   "which graph is *mine* / the default", and a superuser bypass there would make an Admin's HOME
-  resolution ambiguous across all graphs. The intentionally-public `prepared_execute_*` path is
+  resolution ambiguous across all graphs. The intentionally-public prepared prepared-query endpoints path is
   unchanged; it already scopes via `list_visible_graph_ids`.
 
 - **Registration hardening:** `validate_registration_principals` rejects the anonymous principal

@@ -108,7 +108,7 @@ Deliverables:
   `gleaph_graph_kernel::plan_exec::MutationJournalState`.
 - **Done.** Decide whether public mutation APIs return a richer result or add a
   status/token endpoint. Decision: richer result. The idempotent update entrypoints
-  (`gql_execute_idempotent`, `prepared_execute_update_idempotent`) now return
+  (`gql_execute_idempotent`, `prepared_update_idempotent`) now return
   `GqlQueryResult` with an optional `phase`. The mutation token with per-shard watermarks
   is deferred to Phase 2; only the lifecycle phase ships in Phase 0.
 - **Done.** Reconcile ADR 0023's completion invariant with ADR 0024's deferred-index
@@ -292,8 +292,8 @@ Deliverables:
   `gleaph_graph_kernel::plan_exec::ReadMode { Eventual, AtLeast(MutationToken), Canonical }`
   (`Eventual` is the `Default`). New router composite-query entrypoints
   `gql_query_with_consistency(query, params, ReadMode)` and
-  `prepared_execute_query_with_consistency(name, params, ReadMode)` carry it; the existing
-  `gql_query` / `prepared_execute_query` keep `Eventual` semantics (back-compatible).
+  `prepared_query_with_consistency(name, params, ReadMode)` carry it; the existing
+  `gql_query` / `prepared_query` keep `Eventual` semantics (back-compatible).
 - **Done.** Unmet watermarks return a retryable `RouterError::ProjectionLag { shard_id, watermark,
   required, current }` **without serving stale state**; the caller retries after the projection
   drains.
@@ -432,7 +432,7 @@ Immediate decision (implemented):
   (Phase 1); a single federated DML statement converges via the Phase 4 roll-forward saga;
   completely-new INSERT-only bundles are accepted under contract 1 below. The gate is enforced at
   both ingress points that own the AST: ad-hoc `gql_query*`/`gql_update*` (`run_gql`) and
-  prepared-plan registration (`prepared_register`). A prepared plan registered against a
+  prepared-plan registration (`prepared_upsert`). A prepared plan registered against a
   single-shard graph that is later re-sharded is an orthogonal prepared-plan staleness concern,
   not covered by this gate.
 

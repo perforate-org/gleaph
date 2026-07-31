@@ -74,7 +74,7 @@ async function main() {
 
   const records = scenarios.map((s) => [s.preparedQueryId, s.query]);
   const router = await createRouterActor(ROUTER_CANISTER);
-  const parsed = await router.prepared_register_batch(records);
+  const parsed = await router.prepared_upsert_batch(records);
 
   if (parsed.length !== scenarios.length) {
     throw new Error(
@@ -94,7 +94,7 @@ async function main() {
         continue;
       }
       throw new Error(
-        `prepared_register_batch failed for ${scenario.id}: ${errText}`
+        `prepared_upsert_batch failed for ${scenario.id}: ${errText}`
       );
     }
     registeredCount += 1;

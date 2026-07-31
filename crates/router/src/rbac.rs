@@ -68,7 +68,7 @@ pub fn authorize_stable_memory_diagnostics(caller: &Principal) -> Result<(), Rou
     }
 }
 
-/// `prepared_register` / `prepared_drop`: Admin or Manager with `PREPARE_REGISTER`.
+/// `prepared_upsert` / `prepared_delete`: Admin or Manager with `PREPARE_REGISTER`.
 pub fn authorize_prepared_catalog_change(caller: &Principal) -> Result<(), RouterError> {
     if auth::can_prepare_register(caller) {
         Ok(())

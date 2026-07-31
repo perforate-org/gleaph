@@ -21,7 +21,7 @@ The repository already has two runtime boundaries:
   `createGraphClient` or `createIcGraphClient`. It exposes dynamic GQL and low-level prepared
   execution methods such as `executePrepared` and `executePreparedMutation`.
 - `gleaph-cdk` in `sdk/canister/rust`, which is an `ic-cdk` helper for canisters calling the
-  Router's `prepared_execute_query` endpoint. It owns Candid argument encoding and
+  Router's `prepared_query` endpoint. It owns Candid argument encoding and
   inter-canister call/decode errors.
 
 `crates/cli` contains an older, incomplete code-generation attempt and is not the source of

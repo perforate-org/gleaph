@@ -406,7 +406,7 @@ Router dispatch and multi-graph call sites were audited for missing `GraphId` sc
 - `dispatch_multi_graph_use_segments` dispatches each segment with that segment's `graph_id`.
 - `dispatch_use_graph_join` dispatches left/right branches with distinct `graph_id` values and only
   merges wire rows at the router boundary.
-- `prepared_register` / `prepared_execute` key and execute prepared plans by `GraphId`.
+- `prepared_upsert` / `prepared_query` key and execute prepared plans by `GraphId`.
 
 S2 confirms graph context ownership at router dispatch boundaries; no element wire layout change.
 

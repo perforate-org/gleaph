@@ -49,7 +49,7 @@ flowchart LR
     I --> J[Row count]
 ```
 
-1. **Ingress** — `router::gql_query` / `prepared_execute` (see `crates/router/src/gql.rs`, `prepared.rs`).
+1. **Ingress** — `router::gql_query` / `prepared_query` (see `crates/router/src/gql.rs`, `prepared.rs`).
 2. **Parse & classify** — `gleaph_gql::parser`, `program_modification::classify_program`.
 3. **Resolve graph** — effective graph from `session_activity` + HOME (`is_home` or sole visible) / default; index catalog and shard list keyed by resolved `GraphId` ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)).
 4. **Validate & ingress dispatch** — `validate_with_seed(SessionGraphSeed)`; defocus remote top-level `USE GRAPH` when applicable (`resolve_ingress_dispatch`).

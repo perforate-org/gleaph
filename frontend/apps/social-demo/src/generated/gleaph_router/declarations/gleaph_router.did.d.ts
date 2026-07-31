@@ -2112,7 +2112,7 @@ export interface _SERVICE {
    * Read-only GQL on the update path only (no composite-query savings; bypasses path check).
    */
   'force_gql_execute' : ActorMethod<[string, Uint8Array], Result_24>,
-  'force_prepared_execute_update' : ActorMethod<
+  'prepared_query_as_update' : ActorMethod<
     [string, Uint8Array],
     Result_24
   >,
@@ -2176,27 +2176,27 @@ export interface _SERVICE {
    */
   'mutation_status' : ActorMethod<[string, string], Result_33>,
   'my_role' : ActorMethod<[], Result_34>,
-  'prepared_drop' : ActorMethod<[string], Result>,
-  'prepared_execute_query' : ActorMethod<[string, Uint8Array], Result_25>,
+  'prepared_delete' : ActorMethod<[string], Result>,
+  'prepared_query' : ActorMethod<[string, Uint8Array], Result_25>,
   /**
    * Prepared read with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
    */
-  'prepared_execute_query_with_consistency' : ActorMethod<
+  'prepared_query_with_consistency' : ActorMethod<
     [string, Uint8Array, ReadMode],
     Result_25
   >,
-  'prepared_execute_update' : ActorMethod<[string, Uint8Array], Result_24>,
+  'prepared_update' : ActorMethod<[string, Uint8Array], Result_24>,
   /**
    * Idempotent prepared update. Returns the richer
    * [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
    * federated mutation lifecycle `phase`.
    */
-  'prepared_execute_update_idempotent' : ActorMethod<
+  'prepared_update_idempotent' : ActorMethod<
     [string, Uint8Array, string],
     Result_25
   >,
-  'prepared_register' : ActorMethod<[string, string], Result>,
-  'prepared_register_batch' : ActorMethod<
+  'prepared_upsert' : ActorMethod<[string, string], Result>,
+  'prepared_upsert_batch' : ActorMethod<
     [Array<[string, string]>],
     Array<Result>
   >,

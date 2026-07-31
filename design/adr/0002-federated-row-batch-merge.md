@@ -22,13 +22,13 @@ when fragments are independent (union semantics).
    `row_count` via `merge_execute_plan_result`.
 4. Cross-shard aggregate merge is covered by [ADR 0003](0003-federated-aggregate-merge.md).
    Cross-shard join merge and dedup policy remain future work.
-5. `gql_query` and `prepared_execute_query` return `GqlQueryResult` (`row_count` + merged
+5. `gql_query` and `prepared_query` return `GqlQueryResult` (`row_count` + merged
    `rows_blob`; defined in `crates/graph-kernel/src/plan_exec.rs`).
 
 ## Consequences
 
 - Query wire execution materializes rows on graph (more CPU/memory than count-only).
-- Router returns merged `rows_blob` on read-path entrypoints (`gql_query`, `prepared_execute_query`).
+- Router returns merged `rows_blob` on read-path entrypoints (`gql_query`, `prepared_query`).
 - `IcWirePlanQueryResult` wire types live in `gleaph-gql-ic` for shared router/graph use.
 
 ## Alternatives considered
