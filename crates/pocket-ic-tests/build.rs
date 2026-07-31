@@ -229,6 +229,10 @@ fn build_wasm(manifest_dir: &Path) {
     );
     println!(
         "cargo:rerun-if-changed={}",
+        manifest_dir.join("../graph-catalog/src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
         manifest_dir.join("../router/src").display()
     );
     println!(

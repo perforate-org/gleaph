@@ -186,9 +186,6 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
             }
             return Err(CatalogError::GraphTypeExists(key));
         }
-        if c.if_not_exists {
-            return Ok(());
-        }
         let type_id = type_lookup.intern_graph_type_id(&key)?;
         let definition = definition_source(source, c.definition.span)?;
         self.type_map
@@ -679,6 +676,24 @@ mod tests {
             &mut c,
             &format!("CREATE GRAPH TYPE IF NOT EXISTS gt {{ {body} }}"),
             &mut lookups,
+        );
+    }
+
+    /// `IF NOT EXISTS` suppresses only an existing-name conflict; a missing type is created and is
+    /// immediately available to a following `CREATE GRAPH ... TYPED` statement in the same block.
+    #[test]
+    fn create_graph_type_if_not_exists_creates_when_missing() {
+        let ddl = "CREATE GRAPH TYPE IF NOT EXISTS gt { NODE Person LABEL Person, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person) } NEXT CREATE GRAPH IF NOT EXISTS g TYPED gt";
+        let mut c = catalog();
+        let mut lookups = TestLookups::with_graphs(&[("g", 1)]);
+
+        apply_block(&mut c, ddl, &mut lookups);
+
+        assert!(lookups.types.lookup_graph_type_id("gt").is_some());
+        assert!(
+            c.try_property_schema_for_graph_id(G)
+                .expect("resolve graph schema")
+                .is_some()
         );
     }
 
