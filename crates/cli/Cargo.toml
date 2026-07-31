@@ -1,0 +1,13 @@
+[package]
+name = "gleaph-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Gleaph command-line interface"
+
+[[bin]]
+name = "gleaph"
+path = "src/main.rs"
+
+[dependencies]
+gleaph-codegen.workspace = true

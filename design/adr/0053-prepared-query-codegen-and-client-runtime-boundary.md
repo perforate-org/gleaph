@@ -6,8 +6,8 @@ ADR 0055.
 
 Date: 2026-07-29
 Status: proposed
-Last revised: 2026-07-30
-Anchor timestamp: 2026-07-30 19:14:57 UTC +0000
+Last revised: 2026-07-31
+Anchor timestamp: 2026-07-31 03:17:22 UTC +0000
 
 ## Context
 
@@ -24,8 +24,9 @@ The repository already has two runtime boundaries:
   Router's prepared_query endpoint, including caller-selected sort specifications. It owns Candid argument encoding and
   inter-canister call/decode errors.
 
-`crates/cli` contains an older, incomplete code-generation attempt and is not the source of
-truth for this decision. `crates/codegen` is the intended home for the new generator. The
+`crates/cli` owns the thin top-level `gleaph` command and delegates `gleaph codegen` to the
+shared CLI implementation in `crates/codegen`; it is not the generator's source of truth.
+`crates/codegen` owns the generator and its CLI contract. The
 current Router stable prepared-query record stores the query source and registration metadata, not
 a compiled AST or plan. Parsed ASTs, preserved doc comments, and compiled plans are heap cache data
 that can be rebuilt after an upgrade.
@@ -44,8 +45,8 @@ The older SDK-side prepared DTOs are insufficient as the long-term cross-languag
 they contain client-facing parameter hints and query metadata, but do not yet define a stable,
 language-neutral result type schema used by code generation. The Router now exposes the
 graph-scoped `prepared_manifest` endpoint backed by `gleaph-prepared-api`, and the JS SDK exposes
-it as `GraphClient.getPreparedManifest`; the generator still consumes an explicit local manifest
-snapshot and does not fetch Router metadata itself.
+it as `GraphClient.getPreparedManifest`. The generator library consumes an explicit local manifest
+snapshot; the `gleaph-codegen` CLI can also fetch the same manifest from Router.
 
 ## Existing architecture assessment
 
@@ -79,8 +80,9 @@ The generator is named `gleaph-codegen` and lives in `crates/codegen`.
 also generates prepared-query-specific parameter types, result types, encoding calls, and typed
 operation wrappers for several runtimes and languages.
 
-`crates/cli` may eventually provide a `gleaph codegen` wrapper, but that wrapper is not the
-generator's architecture or API source of truth.
+`crates/cli` provides a thin `gleaph codegen` wrapper. It delegates to the same CLI implementation
+used by the standalone `gleaph-codegen` binary, so the generator remains the architecture and API
+source of truth.
 
 ### 2. Manifest is the generator input contract
 
@@ -105,8 +107,8 @@ Dynamic sort specifications are declared by allowed_sorts and passed to prepared
 
 The `prepared_manifest` Candid field layout and endpoint are owned by `gleaph-prepared-api` and
 the Router. The manifest contract, not the older `ApiPreparedQueryInfo` DTO, is the
-cross-language source of truth. Live manifest retrieval by the codegen CLI remains a follow-up
-tooling feature.
+cross-language source of truth. Live manifest retrieval by the codegen CLI is implemented through
+the Router's `prepared_manifest` query.
 
 ### 3. Generated code does not own runtime behavior
 
@@ -262,7 +264,8 @@ When implementation begins, the bounded order should be:
 3. align SDK/CDK low-level prepared runtime interfaces;
 4. implement one normalized codegen IR and one initial output profile;
 5. add the remaining profiles after the wire contract is exercised; and
-6. replace or remove the old `crates/cli` codegen residue only in its planned CLI rewrite.
+6. expose the standalone codegen command through a thin `crates/cli` wrapper without moving
+   generator ownership out of `crates/codegen`.
 
 ### Initial implementation slice
 
@@ -309,6 +312,8 @@ as a release-stable contract.
   explicit output path. Remote retrieval uses the Router's `prepared_manifest` query and
   supports icp-cli-compatible `-n/--network` selection: `ic` is the default mainnet endpoint,
   `local` selects `http://localhost:8000`, and custom URLs require `--fetch-root-key`.
+- a `gleaph` top-level entrypoint in `crates/cli` whose `codegen` subcommand delegates to that
+  same CLI implementation and accepts the same codegen options.
 
 The generated TypeScript composes with the current `@gleaph/sdk` `GraphClient`, emits
 operation-specific parameter and row types, encodes semantic parameter values, and selects

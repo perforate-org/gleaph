@@ -32,6 +32,15 @@ cargo run -p gleaph-codegen -- \
   --output src/generated.ts
 ```
 
+The same codegen command is available under the top-level `gleaph` CLI:
+
+```sh
+cargo run -p gleaph-cli -- codegen \
+  --manifest path/to/manifest.json \
+  --target typescript \
+  --output src/generated.ts
+```
+
 The default output is stdout. Use `--output` to write a file instead.
 
 The manifest can also be fetched from a Router using its graph-scoped

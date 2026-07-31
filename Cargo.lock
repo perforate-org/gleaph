@@ -1604,6 +1604,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-cli"
+version = "0.1.0"
+dependencies = [
+ "gleaph-codegen",
+]
+
+[[package]]
 name = "gleaph-codegen"
 version = "0.1.0"
 dependencies = [

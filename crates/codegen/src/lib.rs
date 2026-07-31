@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+mod cli;
 mod common;
 mod ir;
 mod javascript;
@@ -20,6 +21,8 @@ pub use rust::canister::generate_rust_canister;
 pub use rust::client::generate_rust;
 pub use rust::format::{RustFormatMode, format_rust};
 pub use typescript::generate_typescript;
+
+pub use cli::run as run_cli;
 
 use std::collections::BTreeSet;
 

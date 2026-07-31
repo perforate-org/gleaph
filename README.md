@@ -132,6 +132,18 @@ The router canister enforces a role hierarchy:
 Graph shards do not expose arbitrary user GQL. They execute planned work from the router
 or trusted peer shards.
 
+## Command-line interface
+
+The top-level `gleaph` command currently exposes code generation through the same options as
+`gleaph-codegen`:
+
+```sh
+cargo run -p gleaph-cli -- codegen \
+  --manifest path/to/manifest.json \
+  --target typescript \
+  --output src/generated.ts
+```
+
 ## Design Documentation
 
 Architecture, GQL layers, federation, execution, storage, and security notes live in
