@@ -629,8 +629,9 @@ fn prepared_manifest(
 async fn prepared_query(
     name: String,
     params: Vec<u8>,
+    sort: Option<Vec<gleaph_prepared_api::PreparedSortSpec>>,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::prepared_query(name, params).await
+    prepared::prepared_query(name, params, sort).await
 }
 
 /// Prepared read with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
@@ -638,9 +639,10 @@ async fn prepared_query(
 async fn prepared_query_with_consistency(
     name: String,
     params: Vec<u8>,
+    sort: Option<Vec<gleaph_prepared_api::PreparedSortSpec>>,
     read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::prepared_query_with_consistency(name, params, read_mode).await
+    prepared::prepared_query_with_consistency(name, params, sort, read_mode).await
 }
 
 #[update]

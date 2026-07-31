@@ -164,7 +164,7 @@ main() {
       result = record { columns = vec {} };
       supports_consistency = false;
       supports_idempotency = false;
-      allowed_sorts = vec {};
+      allowed_sorts = vec { record { key = \"name\"; label = opt \"Name\" } };
     }
   )"
 

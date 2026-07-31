@@ -10,6 +10,11 @@ import type { ActorMethod } from '@icp-sdk/core/agent';
 import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
+export interface PreparedSortSpec {
+  'key' : string,
+  'direction' : string,
+}
+
 /**
  * Admin: wire (or retrofit) a derived vector-index target onto an already-registered shard and
  * drive the attach handshake (ADR 0031 Slice 4). The Router records the target in the shard

@@ -31,9 +31,13 @@ interface GraphActorMethods {
   ): Promise<Result<ApiPrepareResponse>>;
   list_prepared_api(): Promise<Result<ApiListPreparedResponse>>;
   prepared_manifest(graphName: string): Promise<Result<PreparedManifest>>;
-  prepared_query(name: string, params: Uint8Array): Promise<Result<GqlQueryWireResult>>;
+  prepared_query(
+    name: string,
+    params: Uint8Array,
+    sort: [] | [{ key: string; direction: string }[]],
+  ): Promise<Result<GqlQueryWireResult>>;
   prepared_update(name: string, params: Uint8Array): Promise<Result<bigint>>;
-  drop_prepared(name: string): Promise<Result<{ dropped: boolean }>>;
+  prepared_delete(name: string): Promise<Result<null>>;
 }
 
 type GqlQueryWireResult = {
@@ -157,12 +161,13 @@ class IcGraphTransport implements GraphTransport {
   }
 
   async executePreparedQuery(request: ApiExecutePreparedRequest): Promise<GqlQueryResult> {
-    if (request.sort !== undefined && request.sort.length > 0) {
-      throw new Error("prepared sort is not supported by the current Router wire API");
-    }
+    const sort: [] | [{ key: string; direction: string }[]] =
+      request.sort && request.sort.length > 0
+        ? [request.sort.map(({ key, direction }) => ({ key, direction }))]
+        : [];
     return toGqlQueryResult(
       unwrapResult<GqlQueryWireResult>(
-        await this.actor.prepared_query(request.name, encodeParams(request.params)),
+        await this.actor.prepared_query(request.name, encodeParams(request.params), sort),
       ),
     );
   }
@@ -175,8 +180,8 @@ class IcGraphTransport implements GraphTransport {
   }
 
   async dropPrepared(name: string): Promise<boolean> {
-    const result = unwrapResult<{ dropped: boolean }>(await this.actor.drop_prepared(name));
-    return result.dropped;
+    unwrapResult<null>(await this.actor.prepared_delete(name));
+    return true;
   }
 }
 

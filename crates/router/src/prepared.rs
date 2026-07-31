@@ -15,6 +15,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult, ReadMode};
 use gleaph_prepared_api::{
     GraphIdentity, MANIFEST_VERSION, OperationKind, PreparedManifest, PreparedOperation,
+    PreparedSortSpec,
 };
 use gleaph_prepared_runtime::parse_prepared_source;
 
@@ -389,7 +390,11 @@ pub fn prepared_delete(name: &str) -> Result<(), RouterError> {
     Ok(())
 }
 
-pub async fn prepared_query(name: String, params: Vec<u8>) -> Result<GqlQueryResult, RouterError> {
+pub async fn prepared_query(
+    name: String,
+    params: Vec<u8>,
+    sort: Option<Vec<PreparedSortSpec>>,
+) -> Result<GqlQueryResult, RouterError> {
     prepared_run(
         name,
         params,
@@ -397,6 +402,7 @@ pub async fn prepared_query(name: String, params: Vec<u8>) -> Result<GqlQueryRes
         "prepared_query",
         false,
         None,
+        sort.as_deref(),
         ReadMode::Eventual,
     )
     .await
@@ -406,6 +412,7 @@ pub async fn prepared_query(name: String, params: Vec<u8>) -> Result<GqlQueryRes
 pub async fn prepared_query_with_consistency(
     name: String,
     params: Vec<u8>,
+    sort: Option<Vec<PreparedSortSpec>>,
     read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
     prepared_run(
@@ -415,6 +422,7 @@ pub async fn prepared_query_with_consistency(
         "prepared_query_with_consistency",
         false,
         None,
+        sort.as_deref(),
         read_mode,
     )
     .await
@@ -427,6 +435,7 @@ pub async fn prepared_update(name: String, params: Vec<u8>) -> Result<u64, Route
         GqlExecutionMode::Update,
         "prepared_update",
         false,
+        None,
         None,
         ReadMode::Eventual,
     )
@@ -446,6 +455,7 @@ pub async fn prepared_update_idempotent(
         "prepared_update_idempotent",
         false,
         Some(&client_mutation_key),
+        None,
         ReadMode::Eventual,
     )
     .await;
@@ -464,6 +474,7 @@ pub async fn prepared_query_as_update(name: String, params: Vec<u8>) -> Result<u
         "prepared_query_as_update",
         true,
         None,
+        None,
         ReadMode::Eventual,
     )
     .await?
@@ -478,6 +489,7 @@ async fn prepared_run(
     entrypoint: &str,
     force: bool,
     client_mutation_key: Option<&str>,
+    sort: Option<&[PreparedSortSpec]>,
     read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
     let result = prepared_run_unchecked(
@@ -487,6 +499,7 @@ async fn prepared_run(
         entrypoint,
         force,
         client_mutation_key,
+        sort,
         read_mode,
     )
     .await?;
@@ -502,6 +515,7 @@ async fn prepared_run_unchecked(
     entrypoint: &str,
     force: bool,
     client_mutation_key: Option<&str>,
+    sort: Option<&[PreparedSortSpec]>,
     read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
     authorize_prepared_execute(&msg_caller())?;
@@ -513,6 +527,12 @@ async fn prepared_run_unchecked(
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
     let v1 = record.as_v1()?;
     let cache = prepare_cache_for_execution(&key, graph_id, v1, caller)?;
+    let cache = match sort {
+        Some(sort) if !sort.is_empty() => {
+            prepare_sorted_cache(&cache, v1.metadata.as_ref(), sort, caller, graph_id)?
+        }
+        _ => cache,
+    };
     check_prepared_execution_path(entrypoint, mode, cache.requires_write_path, force)?;
     crate::gql::enforce_read_consistency(&store, graph_id, &read_mode).await?;
     let pmap =
@@ -566,6 +586,123 @@ async fn prepared_run_unchecked(
         &stats,
     )
     .await
+}
+
+fn prepare_sorted_cache(
+    base: &PreparedQueryCache,
+    metadata: Option<&PreparedOperation>,
+    sort: &[PreparedSortSpec],
+    caller: Principal,
+    graph_id: GraphId,
+) -> Result<PreparedQueryCache, RouterError> {
+    let metadata = metadata.ok_or_else(|| {
+        RouterError::InvalidArgument("prepared sort requires operation metadata".into())
+    })?;
+    if metadata.kind != OperationKind::Query {
+        return Err(RouterError::InvalidArgument(
+            "prepared sort is only supported for query operations".into(),
+        ));
+    }
+    let allowed: std::collections::BTreeSet<&str> = metadata
+        .allowed_sorts
+        .iter()
+        .map(|key| key.key.as_str())
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut items = Vec::with_capacity(sort.len());
+    for spec in sort {
+        if !allowed.contains(spec.key.as_str()) {
+            return Err(RouterError::InvalidArgument(format!(
+                "sort key {:?} is not allowed for prepared query {:?}",
+                spec.key, metadata.name
+            )));
+        }
+        if !seen.insert(spec.key.as_str()) {
+            return Err(RouterError::InvalidArgument(format!(
+                "duplicate prepared sort key {:?}",
+                spec.key
+            )));
+        }
+        let direction = match spec.direction.to_ascii_lowercase().as_str() {
+            "asc" | "ascending" => gleaph_gql::ast::SortDirection::Asc,
+            "desc" | "descending" => gleaph_gql::ast::SortDirection::Desc,
+            _ => {
+                return Err(RouterError::InvalidArgument(format!(
+                    "invalid prepared sort direction {:?}",
+                    spec.direction
+                )));
+            }
+        };
+        items.push(gleaph_gql::ast::SortItem {
+            span: gleaph_gql::token::Span::DUMMY,
+            expr: gleaph_gql::ast::Expr::var(&spec.key),
+            direction: Some(direction),
+            null_order: None,
+        });
+    }
+
+    let mut program = base._program.clone();
+    let tx = program
+        .transaction_activity
+        .as_mut()
+        .ok_or_else(|| RouterError::InvalidArgument("prepared query has no transaction".into()))?;
+    let body = tx.body.as_mut().ok_or_else(|| {
+        RouterError::InvalidArgument("prepared query has no statement body".into())
+    })?;
+    let gleaph_gql::ast::Statement::Query(query) = &mut body.first else {
+        return Err(RouterError::InvalidArgument(
+            "prepared sort requires a query statement".into(),
+        ));
+    };
+    let result = query.left.result.as_mut().ok_or_else(|| {
+        RouterError::InvalidArgument("prepared sort requires a result statement".into())
+    })?;
+    let order_by = gleaph_gql::ast::OrderByClause {
+        span: gleaph_gql::token::Span::DUMMY,
+        items,
+    };
+    match result {
+        gleaph_gql::ast::ResultStatement::Return(return_statement) => {
+            let gleaph_gql::ast::ReturnBody::Items {
+                order_by: existing, ..
+            } = &mut return_statement.body
+            else {
+                return Err(RouterError::InvalidArgument(
+                    "prepared sort requires named result columns".into(),
+                ));
+            };
+            *existing = Some(order_by);
+        }
+        gleaph_gql::ast::ResultStatement::Select(select_statement) => {
+            let existing = match &mut select_statement.body {
+                gleaph_gql::ast::SelectBody::Items { order_by, .. }
+                | gleaph_gql::ast::SelectBody::Star { order_by, .. } => order_by,
+            };
+            *existing = Some(order_by);
+        }
+        gleaph_gql::ast::ResultStatement::Finish => {
+            return Err(RouterError::InvalidArgument(
+                "prepared sort requires a result statement".into(),
+            ));
+        }
+    }
+
+    let (plan, planned_graph_id, requires_write_path) =
+        plan_prepared_program(&program, caller, Some(graph_id))?;
+    if planned_graph_id != graph_id {
+        return Err(RouterError::InvalidArgument(
+            "prepared sort changed the resolved graph".into(),
+        ));
+    }
+    let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    Ok(PreparedQueryCache {
+        _program: program,
+        _comments: base._comments.clone(),
+        plan,
+        plan_blob,
+        requires_write_path,
+    })
 }
 
 fn resolve_prepared_graph_id(

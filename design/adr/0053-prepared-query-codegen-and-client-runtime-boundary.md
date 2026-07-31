@@ -21,7 +21,7 @@ The repository already has two runtime boundaries:
   `createGraphClient` or `createIcGraphClient`. It exposes dynamic GQL and low-level prepared
   execution methods such as `executePrepared` and `executePreparedMutation`.
 - `gleaph-cdk` in `sdk/canister/rust`, which is an `ic-cdk` helper for canisters calling the
-  Router's `prepared_query` endpoint. It owns Candid argument encoding and
+  Router's prepared_query endpoint, including caller-selected sort specifications. It owns Candid argument encoding and
   inter-canister call/decode errors.
 
 `crates/cli` contains an older, incomplete code-generation attempt and is not the source of
@@ -101,9 +101,7 @@ least:
 - parameter names, requiredness, nullability, and language-neutral semantic types; and
 - result column names and language-neutral semantic types.
 
-Dynamic sort specifications, caller requirements, consistency capabilities, idempotent-update
-support, and diagnostic/source fields are optional contract fields and must not be silently
-reconstructed by a renderer.
+Dynamic sort specifications are declared by allowed_sorts and passed to prepared_query; the Router validates them and applies the selected ordering before execution. Caller requirements, consistency capabilities, idempotent-update support, and diagnostic/source fields are optional contract fields and must not be silently reconstructed by a renderer.
 
 The `prepared_manifest` Candid field layout and endpoint are owned by `gleaph-prepared-api` and
 the Router. The manifest contract, not the older `ApiPreparedQueryInfo` DTO, is the

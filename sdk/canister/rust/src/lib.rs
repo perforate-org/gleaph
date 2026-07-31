@@ -574,8 +574,27 @@ impl core::fmt::Display for PreparedCallError {
 ///
 /// Panics only if the inputs somehow fail to encode, which cannot happen for the `(String, Vec<u8>)`
 /// tuple under normal Candid operation.
+/// A caller-selected ordering for a prepared query.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct PreparedSortSpec {
+    /// Stable sort-key identifier.
+    pub key: String,
+    /// Sort direction (asc, ascending, desc, or descending).
+    pub direction: String,
+}
+
 pub fn encode_prepared_query_args(name: impl Into<String>, params: Vec<u8>) -> Vec<u8> {
-    candid::utils::encode_args((name.into(), params)).expect("Candid encode (String, Vec<u8>)")
+    encode_prepared_query_args_with_sort(name, params, None)
+}
+
+/// Candid-encode prepared-query arguments with an optional caller-selected sort.
+pub fn encode_prepared_query_args_with_sort(
+    name: impl Into<String>,
+    params: Vec<u8>,
+    sort: Option<Vec<PreparedSortSpec>>,
+) -> Vec<u8> {
+    candid::utils::encode_args((name.into(), params, sort))
+        .expect("Candid encode prepared query arguments")
 }
 
 /// Make a bounded-wait call to `prepared_query` on `canister_id`.
@@ -591,7 +610,20 @@ pub async fn call_prepared_query<R>(
 where
     R: CandidType + for<'de> Deserialize<'de>,
 {
-    let args = encode_prepared_query_args(name, params);
+    call_prepared_query_with_sort(canister_id, name, params, None).await
+}
+
+/// Make a bounded-wait prepared query call with an optional caller-selected sort.
+pub async fn call_prepared_query_with_sort<R>(
+    canister_id: Principal,
+    name: impl Into<String>,
+    params: Vec<u8>,
+    sort: Option<Vec<PreparedSortSpec>>,
+) -> Result<R, PreparedCallError>
+where
+    R: CandidType + for<'de> Deserialize<'de>,
+{
+    let args = encode_prepared_query_args_with_sort(name, params, sort);
     call_prepared_method(canister_id, "prepared_query", args).await
 }
 
@@ -700,6 +732,19 @@ impl GleaphClient {
         call_prepared_query(self.canister_id, name, params).await
     }
 
+    /// Execute a named prepared query with an optional caller-selected sort.
+    pub async fn execute_with_sort<R>(
+        &self,
+        name: impl Into<String>,
+        params: Vec<u8>,
+        sort: Option<Vec<PreparedSortSpec>>,
+    ) -> Result<R, PreparedCallError>
+    where
+        R: CandidType + for<'de> Deserialize<'de>,
+    {
+        call_prepared_query_with_sort(self.canister_id, name, params, sort).await
+    }
+
     /// Execute a named prepared query from logical GQL parameters.
     pub async fn execute_gql_params<R>(
         &self,
@@ -763,11 +808,15 @@ mod tests {
         let params: Vec<u8> = vec![0, 1, 2, 255];
         let encoded = encode_prepared_query_args(name, params.clone());
 
-        let (decoded_name, decoded_params): (String, Vec<u8>) =
-            candid::utils::decode_args(&encoded).expect("decode args");
+        let (decoded_name, decoded_params, decoded_sort): (
+            String,
+            Vec<u8>,
+            Option<Vec<PreparedSortSpec>>,
+        ) = candid::utils::decode_args(&encoded).expect("decode args");
 
         assert_eq!(decoded_name, name);
         assert_eq!(decoded_params, params);
+        assert_eq!(decoded_sort, None);
     }
 
     #[test]

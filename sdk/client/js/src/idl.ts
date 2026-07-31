@@ -335,7 +335,7 @@ export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
       ["query"],
     ),
     prepared_query: LocalIDL.Func(
-      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
+      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8), LocalIDL.Opt(LocalIDL.Vec(PreparedSortSpec))],
       [LocalIDL.Variant({ Ok: GqlQueryResult, Err: RouterError })],
       ["query"],
     ),
@@ -344,14 +344,9 @@ export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
       [LocalIDL.Variant({ Ok: LocalIDL.Nat64, Err: RouterError })],
       [],
     ),
-    drop_prepared: LocalIDL.Func(
+    prepared_delete: LocalIDL.Func(
       [LocalIDL.Text],
-      [
-        LocalIDL.Variant({
-          Ok: LocalIDL.Record({ dropped: LocalIDL.Bool }),
-          Err: RouterError,
-        }),
-      ],
+      [LocalIDL.Variant({ Ok: LocalIDL.Null, Err: RouterError })],
       [],
     ),
   });

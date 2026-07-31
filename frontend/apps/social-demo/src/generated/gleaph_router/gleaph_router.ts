@@ -9,6 +9,7 @@
 import { Actor, HttpAgent, type HttpAgentOptions, type ActorConfig, type Agent, type ActorSubclass } from "@icp-sdk/core/agent";
 import type { Principal } from "@icp-sdk/core/principal";
 import { idlFactory, type _SERVICE } from "./gleaph_router.did";
+export interface PreparedSortSpec { key: string; direction: string; }
 export interface Some<T> {
     __kind__: "Some";
     value: T;
@@ -1718,8 +1719,8 @@ export interface gleaph_routerInterface {
     mutation_status(arg0: string, arg1: string): Promise<Result_33>;
     my_role(): Promise<Result_34>;
     prepared_delete(arg0: string): Promise<Result>;
-    prepared_query(arg0: string, arg1: Uint8Array): Promise<Result_25>;
-    prepared_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_25>;
+    prepared_query(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null): Promise<Result_25>;
+    prepared_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null, arg3: ReadMode): Promise<Result_25>;
     prepared_update(arg0: string, arg1: Uint8Array): Promise<Result_24>;
     prepared_update_idempotent(arg0: string, arg1: Uint8Array, arg2: string): Promise<Result_25>;
     prepared_upsert(arg0: string, arg1: string): Promise<Result>;
@@ -2026,12 +2027,12 @@ export class Gleaph_router implements gleaph_routerInterface {
         const result = await this.actor.prepared_delete(arg0);
         return from_candid_Result_n1(result);
     }
-    async prepared_query(arg0: string, arg1: Uint8Array): Promise<Result_25> {
-        const result = await this.actor.prepared_query(arg0, arg1);
+    async prepared_query(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null): Promise<Result_25> {
+        const result = await this.actor.prepared_query(arg0, arg1, arg2);
         return from_candid_Result_25_n115(result);
     }
-    async prepared_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: ReadMode): Promise<Result_25> {
-        const result = await this.actor.prepared_query_with_consistency(arg0, arg1, to_candid_ReadMode_n136(arg2));
+    async prepared_query_with_consistency(arg0: string, arg1: Uint8Array, arg2: Array<PreparedSortSpec> | null, arg3: ReadMode): Promise<Result_25> {
+        const result = await this.actor.prepared_query_with_consistency(arg0, arg1, arg2, to_candid_ReadMode_n136(arg3));
         return from_candid_Result_25_n115(result);
     }
     async prepared_update(arg0: string, arg1: Uint8Array): Promise<Result_24> {

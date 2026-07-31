@@ -115,6 +115,15 @@ pub struct SortKey {
     pub label: Option<String>,
 }
 
+/// A caller-selected ordering for a prepared query execution.
+#[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PreparedSortSpec {
+    /// Stable sort-key identifier declared in [`PreparedOperation::allowed_sorts`].
+    pub key: String,
+    /// Direction, accepted as `asc`, `ascending`, `desc`, or `descending`.
+    pub direction: String,
+}
+
 /// Language-neutral type supported by the manifest profiles.
 #[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq)]
 pub enum SemanticType {

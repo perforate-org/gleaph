@@ -8,6 +8,8 @@
 
 import { IDL } from '@icp-sdk/core/candid';
 
+const PreparedSortSpec = IDL.Record({ key: IDL.Text, direction: IDL.Text });
+
 export const idlFactory = ({ IDL }) => {
   const RouterInitArgs = IDL.Record({
     'initial_admins' : IDL.Vec(IDL.Principal),
@@ -986,12 +988,12 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'gql_query' : IDL.Func(
-        [IDL.Text, IDL.Vec(IDL.Nat8)],
+        [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Opt(IDL.Vec(PreparedSortSpec))],
         [Result_25],
         ['composite_query'],
       ),
     'gql_query_with_consistency' : IDL.Func(
-        [IDL.Text, IDL.Vec(IDL.Nat8), ReadMode],
+        [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Opt(IDL.Vec(PreparedSortSpec)), ReadMode],
         [Result_25],
         ['composite_query'],
       ),
@@ -1028,12 +1030,12 @@ export const idlFactory = ({ IDL }) => {
     'my_role' : IDL.Func([], [Result_34], ['query']),
     'prepared_delete' : IDL.Func([IDL.Text], [Result], []),
     'prepared_query' : IDL.Func(
-        [IDL.Text, IDL.Vec(IDL.Nat8)],
+        [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Opt(IDL.Vec(PreparedSortSpec))],
         [Result_25],
         ['composite_query'],
       ),
     'prepared_query_with_consistency' : IDL.Func(
-        [IDL.Text, IDL.Vec(IDL.Nat8), ReadMode],
+        [IDL.Text, IDL.Vec(IDL.Nat8), IDL.Opt(IDL.Vec(PreparedSortSpec)), ReadMode],
         [Result_25],
         ['composite_query'],
       ),

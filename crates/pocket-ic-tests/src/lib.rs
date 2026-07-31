@@ -1855,7 +1855,12 @@ pub fn prepared_query_with_params_as(
             env.router,
             caller,
             "prepared_query",
-            Encode!(&name.to_string(), &params_blob).expect("encode prepared_query"),
+            Encode!(
+                &name.to_string(),
+                &params_blob,
+                &Option::<Vec<gleaph_prepared_api::PreparedSortSpec>>::None
+            )
+            .expect("encode prepared_query"),
         )
         .unwrap_or_else(|e| panic!("prepared_query on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {

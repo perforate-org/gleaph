@@ -24,7 +24,7 @@ const graph = await createIcGraphClient({
   fetchRootKey: true,
 });
 const prepared = generated.withPreparedQueries(graph);
-const response = await prepared["list-vertices"]({});
+const response = await prepared["list-vertices"]({}, [{ key: "name", direction: "desc" }]);
 
 assert.equal(response.rows.length, 0);
 console.log("codegen local E2E passed");

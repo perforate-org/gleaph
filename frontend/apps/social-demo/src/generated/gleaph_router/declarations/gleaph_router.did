@@ -1,3 +1,4 @@
+type PreparedSortSpec = record { key : text; direction : text; };
 // Admin: wire (or retrofit) a derived vector-index target onto an already-registered shard and
 // drive the attach handshake (ADR 0031 Slice 4). The Router records the target in the shard
 // registry, calls the graph shard's router-guarded `admin_set_vector_index_canister` so its
@@ -1354,9 +1355,9 @@ service : (RouterInitArgs) -> {
   mutation_status : (text, text) -> (Result_33) query;
   my_role : () -> (Result_34) query;
   prepared_delete : (text) -> (Result);
-  prepared_query : (text, blob) -> (Result_25) composite_query;
+  prepared_query : (text, blob, opt vec PreparedSortSpec) -> (Result_25) composite_query;
   // Prepared read with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
-  prepared_query_with_consistency : (text, blob, ReadMode) -> (
+  prepared_query_with_consistency : (text, blob, opt vec PreparedSortSpec, ReadMode) -> (
       Result_25,
     ) composite_query;
   prepared_update : (text, blob) -> (Result_24);
