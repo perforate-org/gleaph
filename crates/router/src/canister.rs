@@ -162,24 +162,11 @@ pub(crate) fn mutation_status(
     Ok(crate::types::MutationStatus::from_record(&record))
 }
 
-pub(crate) async fn execute_ordered_edge_batch(
-    request: crate::types::OrderedEdgeBatchPublicRequest,
-) -> Result<crate::types::OrderedEdgeBatchResponse, RouterError> {
-    crate::gql::execute_ordered_edge_batch_public(request).await
-}
-
-/// ADR 0049: execute one order-preserving public vertex batch.
-pub(crate) async fn execute_ordered_vertex_batch(
-    request: crate::types::OrderedVertexBatchPublicRequest,
-) -> Result<crate::types::OrderedVertexBatchResponse, RouterError> {
-    crate::gql::execute_ordered_vertex_batch_public(request).await
-}
-
-/// ADR 0049: execute one order-preserving public mixed vertex/edge batch.
-pub(crate) async fn execute_ordered_mixed_batch(
-    request: crate::types::OrderedMixedBatchPublicRequest,
-) -> Result<crate::types::OrderedMixedBatchResponse, RouterError> {
-    crate::gql::execute_ordered_mixed_batch_public(request).await
+/// ADR 0049: classify and execute one order-preserving public batch.
+pub(crate) async fn batch(
+    request: crate::types::BatchRequest,
+) -> Result<crate::types::BatchResponse, RouterError> {
+    crate::gql::batch_public(request).await
 }
 
 /// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga so the autonomous

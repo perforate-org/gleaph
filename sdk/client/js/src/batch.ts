@@ -1,67 +1,70 @@
 import { encodeCanonicalGqlValue } from "./canonical-value.ts";
 import type { ApiValue } from "./types";
-import type { CandidOption, OrderedEdgePropertyPublic } from "./ordered-edge-batch";
 
-const MAX_ITEMS = 1024;
+const ENCODED_VERTEX_ID_BYTES = 8;
+const MAX_BATCH_OPERATIONS = 1024;
 const MAX_CLIENT_MUTATION_KEY_BYTES = 256;
 const MAX_INLINE_PROPERTY_BYTES = 0xffff;
 const utf8 = new TextEncoder();
 
-export type OrderedMixedBatchPublicRequest = {
-  V1: OrderedMixedBatchPublicRequestV1;
-};
+export type CandidOption<T> = [] | [T];
 
-export interface OrderedMixedBatchPublicRequestV1 {
+export type BatchRequest = { V1: BatchRequestV1 };
+
+export interface BatchRequestV1 {
   client_mutation_key: string;
   logical_graph_name: string;
-  operations: OrderedMixedBatchOperation[];
+  operations: BatchOperation[];
 }
 
-export type OrderedMixedBatchOperation =
-  | { Vertex: OrderedVertexInsertPublicItem }
-  | { Edge: OrderedMixedEdgeInsertPublicItem };
+export type BatchOperation = { Vertex: BatchVertexInsert } | { Edge: BatchEdgeInsert };
 
-export interface OrderedVertexInsertPublicItem {
+export interface BatchVertexInsert {
   vertex_labels: string[];
-  initial_properties: OrderedEdgePropertyPublic[];
+  initial_properties: BatchProperty[];
 }
 
-export interface OrderedMixedEdgeInsertPublicItem {
-  source: OrderedMixedEndpoint;
-  target: OrderedMixedEndpoint;
+export interface BatchEdgeInsert {
+  source: BatchEndpoint;
+  target: BatchEndpoint;
   directed: boolean;
   edge_label_name: CandidOption<string>;
   inline_property: CandidOption<Uint8Array>;
-  initial_edge_properties: OrderedEdgePropertyPublic[];
+  initial_edge_properties: BatchProperty[];
 }
 
-export type OrderedMixedEndpoint = { Existing: Uint8Array } | { NewVertexOrdinal: number };
+export type BatchEndpoint = { Existing: Uint8Array } | { NewVertexOrdinal: number };
 
-export interface OrderedMixedBatchPublicRequestInput {
+export interface BatchProperty {
+  property_name: string;
+  value: Uint8Array;
+}
+
+export interface BatchRequestInput {
   client_mutation_key: string;
   logical_graph_name: string;
-  operations: OrderedMixedBatchOperationInput[];
+  operations: BatchOperationInput[];
 }
 
-export type OrderedMixedBatchOperationInput =
-  | { vertex: OrderedVertexInsertPublicItemInput }
-  | { edge: OrderedMixedEdgeInsertPublicItemInput };
+export type BatchOperationInput =
+  | { vertex: BatchVertexInsertInput }
+  | { edge: BatchEdgeInsertInput };
 
-export interface OrderedVertexInsertPublicItemInput {
+export interface BatchVertexInsertInput {
   vertex_labels?: string[];
   initial_properties?: Record<string, ApiValue>;
 }
 
-export interface OrderedMixedEdgeInsertPublicItemInput {
-  source: OrderedMixedEndpointInput;
-  target: OrderedMixedEndpointInput;
+export interface BatchEdgeInsertInput {
+  source: BatchEndpointInput;
+  target: BatchEndpointInput;
   directed: boolean;
   edge_label_name?: string;
   inline_property?: ApiValue;
   initial_edge_properties?: Record<string, ApiValue>;
 }
 
-export type OrderedMixedEndpointInput = { existing: Uint8Array } | { new_vertex_ordinal: number };
+export type BatchEndpointInput = { existing: Uint8Array } | { new_vertex_ordinal: number };
 
 function sortUtf8(left: string, right: string): number {
   const leftBytes = utf8.encode(left);
@@ -77,10 +80,10 @@ function option<T>(value: T | undefined): CandidOption<T> {
   return value === undefined ? [] : [value];
 }
 
-function properties(values: Record<string, ApiValue> | undefined): OrderedEdgePropertyPublic[] {
+function properties(values: Record<string, ApiValue> | undefined): BatchProperty[] {
   const entries = Object.entries(values ?? {});
-  for (const [name] of entries) {
-    if (name.length === 0) throw new Error("property_name must not be empty");
+  if (entries.some(([name]) => name.length === 0)) {
+    throw new Error("property_name must not be empty");
   }
   entries.sort(([left], [right]) => sortUtf8(left, right));
   return entries.map(([property_name, value]) => ({
@@ -89,30 +92,27 @@ function properties(values: Record<string, ApiValue> | undefined): OrderedEdgePr
   }));
 }
 
-function endpoint(
-  value: OrderedMixedEndpointInput,
-  ordinal: number,
-  vertexCount: number,
-): OrderedMixedEndpoint {
+function endpoint(value: BatchEndpointInput, ordinal: number, vertexCount: number): BatchEndpoint {
   if ("existing" in value) {
-    if (value.existing.byteLength !== 8) {
-      throw new Error(`operations[${ordinal}] endpoint must be exactly 8 bytes`);
+    if (value.existing.byteLength !== ENCODED_VERTEX_ID_BYTES) {
+      throw new Error(
+        `operations[${ordinal}] endpoint must be exactly ${ENCODED_VERTEX_ID_BYTES} bytes`,
+      );
     }
     return { Existing: value.existing };
   }
-  if (!Number.isInteger(value.new_vertex_ordinal) || value.new_vertex_ordinal < 0) {
-    throw new Error(`operations[${ordinal}] new_vertex_ordinal must be a non-negative integer`);
-  }
-  if (value.new_vertex_ordinal >= vertexCount) {
+  if (
+    !Number.isInteger(value.new_vertex_ordinal) ||
+    value.new_vertex_ordinal < 0 ||
+    value.new_vertex_ordinal >= vertexCount
+  ) {
     throw new Error(`operations[${ordinal}] new_vertex_ordinal is out of range`);
   }
   return { NewVertexOrdinal: value.new_vertex_ordinal };
 }
 
-/** Build the Candid-shaped Router request for the ADR 0049 mixed public batch. */
-export function makeOrderedMixedBatchPublicRequest(
-  input: OrderedMixedBatchPublicRequestInput,
-): OrderedMixedBatchPublicRequest {
+/** Build the Candid-shaped request accepted by the Router `batch` update method. */
+export function makeBatchRequest(input: BatchRequestInput): BatchRequest {
   const keyBytes = utf8.encode(input.client_mutation_key);
   if (keyBytes.byteLength === 0 || keyBytes.byteLength > MAX_CLIENT_MUTATION_KEY_BYTES) {
     throw new Error("client_mutation_key must be 1..=256 bytes");
@@ -120,17 +120,11 @@ export function makeOrderedMixedBatchPublicRequest(
   if (input.logical_graph_name.length === 0) {
     throw new Error("logical_graph_name must not be empty");
   }
-  if (input.operations.length === 0 || input.operations.length > MAX_ITEMS) {
+  if (input.operations.length === 0 || input.operations.length > MAX_BATCH_OPERATIONS) {
     throw new Error("operations must contain 1..=1024 entries");
   }
-  if (!input.operations.some((operation) => "vertex" in operation)) {
-    throw new Error("operations must contain at least one vertex");
-  }
-  if (!input.operations.some((operation) => "edge" in operation)) {
-    throw new Error("operations must contain at least one edge");
-  }
-  const vertexCount = input.operations.filter((operation) => "vertex" in operation).length;
 
+  const vertexCount = input.operations.filter((operation) => "vertex" in operation).length;
   return {
     V1: {
       client_mutation_key: input.client_mutation_key,
@@ -149,6 +143,7 @@ export function makeOrderedMixedBatchPublicRequest(
             },
           };
         }
+
         const item = operation.edge;
         if (item.edge_label_name === "") {
           throw new Error(`operations[${ordinal}].edge_label_name must not be empty`);

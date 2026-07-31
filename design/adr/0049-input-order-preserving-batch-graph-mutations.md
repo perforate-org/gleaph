@@ -1,15 +1,30 @@
-# 0049. Input-order-preserving batch edge insertions
+# 0049. Input-order-preserving batch graph mutations
 
 Date: 2026-07-23
 Status: Implemented
-Last revised: 2026-07-29
-Anchor timestamp: 2026-07-29 09:55:36 UTC +0000
+Last revised: 2026-07-31
+Anchor timestamp: 2026-07-31 03:53:01 UTC +0000
 
-The 2026-07-29 public-surface correction removes physical `target_shard_id`
-from the vertex and mixed V1 requests. Earlier implementation-slice notes
-below that mention explicit target-shard selection describe the superseded
-intermediate shape; the active contract follows ADR 0029's Router-owned
-latest-shard placement rule.
+The 2026-07-31 public-surface correction replaces the three specialized Router
+updates with two mutation APIs: `batch(BatchRequest)` submits work and
+`mutation_status(logical_graph_name, client_mutation_key)` observes recovery.
+This is an intentional pre-release breaking change. The removed
+`execute_ordered_edge_batch`, `execute_ordered_vertex_batch`, and
+`execute_ordered_mixed_batch` methods and their public request/response types
+have no compatibility wrappers.
+
+`BatchRequest::V1` owns one ordered operation list containing `Vertex` and
+`Edge` variants. Router validates and fingerprints that public envelope, then
+classifies it into the existing edge-only, vertex-only, or mixed durable
+execution path. This preserves the Graph wire protocols, mutation journals,
+placement ownership, and recovery state machines as internal implementation
+details rather than duplicating them in the public API.
+
+The earlier 2026-07-29 correction also removed physical `target_shard_id` from
+the vertex and mixed V1 requests. Earlier implementation-slice notes below that
+mention the removed specialized public types or explicit target-shard selection
+describe superseded intermediate shapes; the active contract follows ADR
+0029's Router-owned latest-shard placement rule.
 
 ### Scope amendment by ADR 0052
 
@@ -72,8 +87,8 @@ it at the adjacency boundary that owns scan order.
 
 ## Problem
 
-Provide one standard high-throughput batch edge-insertion API that preserves
-caller input order while retaining the counterpartrial benefits of ADR 0045:
+Provide one standard high-throughput batch graph-mutation API that preserves
+caller input order while retaining the counterpart benefits of ADR 0045:
 
 1. one read-only projection over the complete bounded pending set;
 2. capacity planning by orientation, PMA leaf, vertex, and label bucket;
@@ -184,33 +199,64 @@ Clients submit each logical edge once in the intended order. They do not submit
 forward/reverse rows, undirected counterpart records, LARA bucket keys, physical
 locations, or placement instructions.
 
-The v1 operation set is deliberately exhaustive and narrow. The public item is
-unresolved and contains no Router-interned catalog id, LARA storage label,
-inline-property width, or local vertex id:
+The v1 operation set is deliberately exhaustive and narrow. Public operations
+are unresolved and contain no Router-interned catalog id, LARA storage label,
+inline-property width, local vertex id, target shard, or Graph canister:
 
 ```text
-OrderedEdgeBatchPublicRequest =
-    V1(OrderedEdgeBatchPublicRequestV1)
+BatchRequest =
+    V1(BatchRequestV1)
 
-OrderedEdgeBatchPublicRequestV1 {
+BatchRequestV1 {
+    client_mutation_key: String,
     logical_graph_name: String,
-    items: [OrderedEdgeInsertPublicItemV1],
+    operations: [BatchOperationV1],
 }
 
-OrderedEdgeInsertPublicItemV1 {
-    source: EncodedVertexId,
-    target: EncodedVertexId,
+BatchOperationV1 =
+    Vertex(BatchVertexInsertV1)
+  | Edge(BatchEdgeInsertV1)
+
+BatchVertexInsertV1 {
+    vertex_labels: [String],
+    initial_properties: [BatchPropertyV1],
+}
+
+BatchEdgeInsertV1 {
+    source: BatchEndpointV1,
+    target: BatchEndpointV1,
     directed,
     edge_label_name: Option<String>,
     inline_property: Option<CanonicalGqlValueBytesV1>,
-    initial_edge_properties: [
-        OrderedEdgePropertyPublicV1 {
-            property_name: String,
-            value: CanonicalGqlValueBytesV1,
-        },
-    ],
+    initial_edge_properties: [BatchPropertyV1],
+}
+
+BatchEndpointV1 =
+    Existing(EncodedVertexId)
+  | NewVertexOrdinal(u32)
+
+BatchPropertyV1 {
+    property_name: String,
+    value: CanonicalGqlValueBytesV1,
+}
+
+BatchResponse {
+    status: MutationStatus,
+    receipt: Option<BatchReceiptV1>,
+}
+
+BatchReceiptV1 {
+    logical_operation_count: u64,
+    logical_vertex_count: u64,
+    logical_edge_count: u64,
 }
 ```
+
+`NewVertexOrdinal` is the zero-based ordinal among `Vertex` operations in the
+same request, not an index into the complete operation array. Edge-only requests
+must use `Existing` endpoints. A request contains 1 through 1024 operations.
+The public fingerprint excludes `client_mutation_key`, canonicalizes labels and
+property-name order, and preserves operation order.
 
 `CanonicalGqlValueBytesV1` is the existing canonical compact binary encoding of
 one GQL `Value`, with an explicit byte bound. `gleaph-gql-ic` provides the Rust
@@ -345,8 +391,8 @@ OrderedEdgeBatchGraphRequestV1 {
 ```
 
 Version envelopes exist only at independently encoded persistence or wire
-boundaries. `OrderedEdgeBatchPublicRequest` and
-`OrderedEdgeBatchGraphRequest` therefore carry outer `V1(...)` variants.
+boundaries. `BatchRequest` and `OrderedEdgeBatchGraphRequest` therefore carry
+outer `V1(...)` variants.
 Stable Router/Graph records and independently returned Graph results use the
 same rule. Types that exist only inside a parent V1 schema—request identity,
 payload, progress, diagnostics, receipt payloads, and physical intents—use
@@ -358,7 +404,7 @@ boundary with a separately supported compatibility lifecycle.
 
 | Independent boundary          | Sole outer envelope                 | Directly nested V1 schema                                               |
 | ----------------------------- | ----------------------------------- | ----------------------------------------------------------------------- |
-| Public ingress                | `OrderedEdgeBatchPublicRequest::V1` | public request, items, and properties                                   |
+| Public ingress                | `BatchRequest::V1`                  | public request, operations, endpoints, and properties                    |
 | Router → Graph canonical call | `OrderedEdgeBatchGraphRequest::V1`  | resolved request, items, and properties                                 |
 | Graph canonical response      | `GraphOrderedEdgeBatchResult::V1`   | result and receipt payloads                                             |
 | Graph retirement response     | `OrderedMutationRetirementAck::V1`  | acknowledgement and receipt payload                                     |
@@ -1726,8 +1772,8 @@ not rewritten as though unfinished unordered product behavior shipped.
     tests. Keep `RouterMutationRecord::V1` as the sole durable version envelope;
     do not add nested version enums around its identity, payload, progress,
     diagnostic, failure, or stored receipt types.
-12. **Partially implemented (2026-07-28 13:55:41 UTC +0000):** Router now owns
-    the versioned `OrderedEdgeBatchPublicRequest::V1` wire with bounded item,
+12. **Partially implemented (2026-07-28 13:55:41 UTC +0000):** Router then owned
+    a specialized versioned public edge-request wire with bounded item,
     endpoint, inline-property, property-value, and encoded-request validation,
     plus Candid round-trip and invalid-property tests. Single-request admission,
     logical-graph/shard/catalog resolution, independently versioned Graph result
@@ -2558,7 +2604,10 @@ artifact updates use unfiltered `canbench --persist` in each affected crate.
 
 Positive:
 
-- One standard edge-insertion batch API has deterministic, useful semantics.
+- One standard `batch` API covers vertex-only, edge-only, and mixed graph
+  mutations with deterministic semantics.
+- Router exposes only submission and `mutation_status`; Graph-specific receipts,
+  placement, journals, and recovery paths remain behind the Router boundary.
 - Callers can precompute application order without paying scalar mutation cost.
 - ADR 0045's placement and atomicity work is reused rather than duplicated.
 - ADR 0048 pair rank and counterpart ownership become the direct basis of batch
@@ -2580,8 +2629,8 @@ Costs and trade-offs:
 - Optimized coverage remains incremental while ADR 0045 geometry is incomplete.
 - Parallel inserts require stronger ordinal, sidecar, retry, and counterpart tests
   before the current duplicate rejection can be removed.
-- Globally unique/constrained initial properties and non-edge batch operations
-  remain outside the v1 public surface.
+- Globally unique/constrained initial properties remain outside the v1 public
+  surface.
 - Global order across labels is deliberately not provided.
 - The v1 public endpoint rejects a batch when its items resolve to multiple
   shards or its single-shard projection needs more than one Graph request;
@@ -2590,10 +2639,10 @@ Costs and trade-offs:
   single-shard v1 release set. The remaining scalar count difference is an
   accepted whole-module Wasm code-generation effect; assembly-level optimization
   is optional follow-up work.
-- Vertex bulk placement and mixed vertex/edge batches are implemented public
-  capabilities. Their vertex-first ordering, request-local id mapping,
-  aggregate receipt, retry, retirement, and recovery semantics are covered by
-  Rust, SDK, and PocketIC tests.
+- Vertex bulk placement and mixed vertex/edge batches are implemented through
+  the same public operation list. Their vertex-first execution, request-local
+  id mapping, aggregate receipt, retry, retirement, and recovery semantics are
+  covered by Rust, SDK, and PocketIC tests.
 - Unretired ordered journal entries may outlive the nine-day plan-execution
   window. Bounded autonomous journal reconciliation and retirement recovery are
   therefore part of the liveness contract; safety takes precedence over

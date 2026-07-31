@@ -1207,29 +1207,43 @@ pub async fn gql_execute_idempotent(
     gql_execute_idempotent_with_batch(query, params, client_mutation_key).await
 }
 
-/// Admit and execute one public ordered edge batch (ADR 0049).
+/// Classify and execute one public Router batch through the existing durable ordered paths.
+pub(crate) async fn batch_public(
+    request: crate::types::BatchRequest,
+) -> Result<crate::types::BatchResponse, RouterError> {
+    let (request, public_fingerprint) = request
+        .into_classified()
+        .map_err(RouterError::InvalidArgument)?;
+    match request {
+        crate::types::ClassifiedBatchRequest::Edge(request) => {
+            execute_ordered_edge_batch_classified(request, public_fingerprint).await
+        }
+        crate::types::ClassifiedBatchRequest::Vertex(request) => {
+            execute_ordered_vertex_batch_classified(request, public_fingerprint).await
+        }
+        crate::types::ClassifiedBatchRequest::Mixed(request) => {
+            execute_ordered_mixed_batch_classified(request, public_fingerprint).await
+        }
+    }
+}
+
+/// Admit and execute one classified ordered edge batch (ADR 0049).
 ///
 /// V1 requires one existing catalog vocabulary. Router derives the target Graph shard from the
 /// encoded endpoints; the public request does not expose physical routing state.
-pub(crate) async fn execute_ordered_edge_batch_public(
-    request: crate::types::OrderedEdgeBatchPublicRequest,
-) -> Result<crate::types::OrderedEdgeBatchResponse, RouterError> {
+async fn execute_ordered_edge_batch_classified(
+    request: crate::types::OrderedEdgeBatchRequest,
+    public_fingerprint: [u8; 32],
+) -> Result<crate::types::BatchResponse, RouterError> {
     let caller = msg_caller();
-    let public_fingerprint = request
-        .public_fingerprint()
-        .map_err(RouterError::InvalidArgument)?;
     let public_item_count = match &request {
-        crate::types::OrderedEdgeBatchPublicRequest::V1(request) => request.items.len() as u32,
+        crate::types::OrderedEdgeBatchRequest::V1(request) => request.items.len() as u32,
     };
     let client_key = match &request {
-        crate::types::OrderedEdgeBatchPublicRequest::V1(request) => {
-            request.client_mutation_key.clone()
-        }
+        crate::types::OrderedEdgeBatchRequest::V1(request) => request.client_mutation_key.clone(),
     };
     let logical_graph_name = match &request {
-        crate::types::OrderedEdgeBatchPublicRequest::V1(request) => {
-            request.logical_graph_name.clone()
-        }
+        crate::types::OrderedEdgeBatchRequest::V1(request) => request.logical_graph_name.clone(),
     };
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
@@ -1245,19 +1259,18 @@ pub(crate) async fn execute_ordered_edge_batch_public(
         })?;
 
     let catalog_result = match &request {
-        crate::types::OrderedEdgeBatchPublicRequest::V1(request) => store
-            .resolve_ordered_edge_catalogs(
-                graph_id,
-                request
-                    .items
+        crate::types::OrderedEdgeBatchRequest::V1(request) => store.resolve_ordered_edge_catalogs(
+            graph_id,
+            request
+                .items
+                .iter()
+                .map(|item| item.edge_label_name.clone()),
+            request.items.iter().flat_map(|item| {
+                item.initial_edge_properties
                     .iter()
-                    .map(|item| item.edge_label_name.clone()),
-                request.items.iter().flat_map(|item| {
-                    item.initial_edge_properties
-                        .iter()
-                        .map(|property| property.property_name.clone())
-                }),
-            ),
+                    .map(|property| property.property_name.clone())
+            }),
+        ),
     };
     let (resolved_labels, resolved_properties) = match catalog_result {
         Ok(catalogs) => catalogs,
@@ -1267,7 +1280,7 @@ pub(crate) async fn execute_ordered_edge_batch_public(
         Ok(shard) => shard,
         Err(error) => return Err(error),
     };
-    let graph_request = match request.into_graph_request(
+    let graph_request = match request.to_graph_request(
         graph_id,
         target_shard_id,
         target_shard.graph_canister,
@@ -1305,7 +1318,7 @@ pub(crate) async fn execute_ordered_edge_batch_public(
                 "client_mutation_key belongs to a different mutation kind".into(),
             ));
         }
-        return Ok(crate::types::OrderedEdgeBatchResponse::from_record(&record));
+        return Ok(crate::types::BatchResponse::from_record(&record));
     }
 
     let mutation_id = reservation.mutation_id;
@@ -1453,22 +1466,20 @@ pub(crate) async fn execute_ordered_edge_batch_public(
     let record = store
         .router_mutation_record(caller, graph_id, &client_key)
         .ok_or_else(|| RouterError::Internal("ordered mutation record disappeared".into()))?;
-    Ok(crate::types::OrderedEdgeBatchResponse::from_record(&record))
+    Ok(crate::types::BatchResponse::from_record(&record))
 }
 
 /// Admit and execute one public ordered vertex batch (ADR 0049).
 ///
 /// V1 selects the graph's latest live shard, following ADR 0029's placement authority. The public
 /// request does not expose the physical shard id; Router resolves it before the Graph call.
-pub(crate) async fn execute_ordered_vertex_batch_public(
-    request: crate::types::OrderedVertexBatchPublicRequest,
-) -> Result<crate::types::OrderedVertexBatchResponse, RouterError> {
+async fn execute_ordered_vertex_batch_classified(
+    request: crate::types::OrderedVertexBatchRequest,
+    public_fingerprint: [u8; 32],
+) -> Result<crate::types::BatchResponse, RouterError> {
     let caller = msg_caller();
-    let public_fingerprint = request
-        .public_fingerprint()
-        .map_err(RouterError::InvalidArgument)?;
     let (client_key, logical_graph_name, label_names, property_names) = match &request {
-        crate::types::OrderedVertexBatchPublicRequest::V1(request) => (
+        crate::types::OrderedVertexBatchRequest::V1(request) => (
             request.client_mutation_key.clone(),
             request.logical_graph_name.clone(),
             request
@@ -1488,7 +1499,7 @@ pub(crate) async fn execute_ordered_vertex_batch_public(
         ),
     };
     let public_item_count = match &request {
-        crate::types::OrderedVertexBatchPublicRequest::V1(request) => request.items.len() as u32,
+        crate::types::OrderedVertexBatchRequest::V1(request) => request.items.len() as u32,
     };
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
@@ -1502,7 +1513,7 @@ pub(crate) async fn execute_ordered_vertex_batch_public(
     let (resolved_labels, resolved_properties) =
         store.resolve_ordered_vertex_catalogs(graph_id, label_names, property_names)?;
     let graph_request = request
-        .into_graph_request(
+        .to_graph_request(
             graph_id,
             target_shard_id,
             target_shard.graph_canister,
@@ -1537,9 +1548,7 @@ pub(crate) async fn execute_ordered_vertex_batch_public(
                 "client_mutation_key belongs to a different mutation kind".into(),
             ));
         }
-        return Ok(crate::types::OrderedVertexBatchResponse::from_record(
-            &record,
-        ));
+        return Ok(crate::types::BatchResponse::from_record(&record));
     }
 
     let mutation_id = reservation.mutation_id;
@@ -1688,21 +1697,17 @@ pub(crate) async fn execute_ordered_vertex_batch_public(
         .ok_or_else(|| {
             RouterError::Internal("ordered vertex mutation record disappeared".into())
         })?;
-    Ok(crate::types::OrderedVertexBatchResponse::from_record(
-        &record,
-    ))
+    Ok(crate::types::BatchResponse::from_record(&record))
 }
 
 /// Admit one mixed ordered batch and persist its Graph canonical receipt. This entry point stops
 /// at `CanonicalCommitted`; projection and retirement are intentionally represented as
 /// non-terminal durable progress for the following lifecycle slice.
-pub(crate) async fn execute_ordered_mixed_batch_public(
-    request: crate::types::OrderedMixedBatchPublicRequest,
-) -> Result<crate::types::OrderedMixedBatchResponse, RouterError> {
+async fn execute_ordered_mixed_batch_classified(
+    request: crate::types::OrderedMixedBatchRequest,
+    public_fingerprint: [u8; 32],
+) -> Result<crate::types::BatchResponse, RouterError> {
     let caller = msg_caller();
-    let public_fingerprint = request
-        .public_fingerprint()
-        .map_err(RouterError::InvalidArgument)?;
     let (
         client_key,
         logical_graph_name,
@@ -1713,16 +1718,11 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
         edge_label_names,
         property_names,
     ) = match &request {
-        crate::types::OrderedMixedBatchPublicRequest::V1(request) => {
+        crate::types::OrderedMixedBatchRequest::V1(request) => {
             let public_vertex_count = request
                 .operations
                 .iter()
-                .filter(|operation| {
-                    matches!(
-                        operation,
-                        crate::types::OrderedMixedBatchOperationV1::Vertex(_)
-                    )
-                })
+                .filter(|operation| matches!(operation, crate::types::BatchOperationV1::Vertex(_)))
                 .count() as u32;
             let public_operation_count = request.operations.len() as u32;
             (
@@ -1735,32 +1735,28 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
                     .operations
                     .iter()
                     .flat_map(|operation| match operation {
-                        crate::types::OrderedMixedBatchOperationV1::Vertex(item) => {
-                            item.vertex_labels.clone()
-                        }
-                        crate::types::OrderedMixedBatchOperationV1::Edge(_) => Vec::new(),
+                        crate::types::BatchOperationV1::Vertex(item) => item.vertex_labels.clone(),
+                        crate::types::BatchOperationV1::Edge(_) => Vec::new(),
                     })
                     .collect::<Vec<_>>(),
                 request
                     .operations
                     .iter()
                     .filter_map(|operation| match operation {
-                        crate::types::OrderedMixedBatchOperationV1::Vertex(_) => None,
-                        crate::types::OrderedMixedBatchOperationV1::Edge(item) => {
-                            item.edge_label_name.clone()
-                        }
+                        crate::types::BatchOperationV1::Vertex(_) => None,
+                        crate::types::BatchOperationV1::Edge(item) => item.edge_label_name.clone(),
                     })
                     .collect::<Vec<_>>(),
                 request
                     .operations
                     .iter()
                     .flat_map(|operation| match operation {
-                        crate::types::OrderedMixedBatchOperationV1::Vertex(item) => item
+                        crate::types::BatchOperationV1::Vertex(item) => item
                             .initial_properties
                             .iter()
                             .map(|property| property.property_name.clone())
                             .collect::<Vec<_>>(),
-                        crate::types::OrderedMixedBatchOperationV1::Edge(item) => item
+                        crate::types::BatchOperationV1::Edge(item) => item
                             .initial_edge_properties
                             .iter()
                             .map(|property| property.property_name.clone())
@@ -1796,7 +1792,7 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
         property_names,
     )?;
     let graph_request = request
-        .into_graph_request(
+        .to_graph_request(
             graph_id,
             target_shard_id,
             target_shard.graph_canister,
@@ -1831,9 +1827,7 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
                 "client_mutation_key belongs to a different mutation kind".into(),
             ));
         }
-        return Ok(crate::types::OrderedMixedBatchResponse::from_record(
-            &record,
-        ));
+        return Ok(crate::types::BatchResponse::from_record(&record));
     }
     let mutation_id = reservation.mutation_id;
     let target = RouterOrderedMixedBatchTargetV1 {
@@ -1980,9 +1974,7 @@ pub(crate) async fn execute_ordered_mixed_batch_public(
     let record = store
         .router_mutation_record(caller, graph_id, &client_key)
         .ok_or_else(|| RouterError::Internal("ordered mixed mutation record disappeared".into()))?;
-    Ok(crate::types::OrderedMixedBatchResponse::from_record(
-        &record,
-    ))
+    Ok(crate::types::BatchResponse::from_record(&record))
 }
 
 pub(crate) async fn gql_execute_idempotent_with_batch(

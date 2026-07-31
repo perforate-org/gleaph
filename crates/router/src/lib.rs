@@ -488,28 +488,10 @@ fn mutation_status(
     canister::mutation_status(logical_graph_name, client_mutation_key)
 }
 
-/// ADR 0049: execute one order-preserving public edge batch.
+/// ADR 0049: classify and execute one order-preserving public batch.
 #[update]
-async fn execute_ordered_edge_batch(
-    request: types::OrderedEdgeBatchPublicRequest,
-) -> Result<types::OrderedEdgeBatchResponse, RouterError> {
-    canister::execute_ordered_edge_batch(request).await
-}
-
-/// ADR 0049: execute one order-preserving public vertex batch.
-#[update]
-async fn execute_ordered_vertex_batch(
-    request: types::OrderedVertexBatchPublicRequest,
-) -> Result<types::OrderedVertexBatchResponse, RouterError> {
-    canister::execute_ordered_vertex_batch(request).await
-}
-
-/// ADR 0049: execute one order-preserving public mixed vertex/edge batch.
-#[update]
-async fn execute_ordered_mixed_batch(
-    request: types::OrderedMixedBatchPublicRequest,
-) -> Result<types::OrderedMixedBatchResponse, RouterError> {
-    canister::execute_ordered_mixed_batch(request).await
+async fn batch(request: types::BatchRequest) -> Result<types::BatchResponse, RouterError> {
+    canister::batch(request).await
 }
 
 /// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga referencing an

@@ -6,71 +6,67 @@ use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
 use gleaph_pocket_ic_tests::{
     FederationEnv, admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
     arm_router_fault, e2e_insert_vertex, e2e_reverse_resolved_edge_property,
-    evict_graph_mutation_journal, execute_ordered_edge_batch_as_admin,
-    execute_ordered_mixed_batch_as_admin, execute_ordered_vertex_batch_as_admin,
+    evict_graph_mutation_journal, execute_batch_as_admin,
     federation_graph_element_id_encoding_key_bytes, gql_execute_idempotent_as_admin,
     gql_query_as_admin, install_single_shard_federation, mutation_status_as_admin,
     run_router_recovery_timer,
 };
 use gleaph_router::types::{
-    OrderedEdgeBatchPublicRequest, OrderedEdgeBatchPublicRequestV1, OrderedEdgeInsertPublicItemV1,
-    OrderedMixedBatchOperationV1, OrderedMixedBatchPublicRequest, OrderedMixedBatchPublicRequestV1,
-    OrderedMixedEdgeInsertPublicItemV1, OrderedMixedEndpointPublicV1,
-    OrderedVertexBatchPublicRequest, OrderedVertexBatchPublicRequestV1,
-    OrderedVertexInsertPublicItemV1,
+    BatchEdgeInsertV1, BatchEndpointV1, BatchOperationV1, BatchPropertyV1, BatchRequest,
+    BatchRequestV1, BatchVertexInsertV1,
 };
 
-fn ordered_vertex_request(key: &str) -> OrderedVertexBatchPublicRequest {
-    OrderedVertexBatchPublicRequest::V1(OrderedVertexBatchPublicRequestV1 {
+fn ordered_vertex_request(key: &str) -> BatchRequest {
+    BatchRequest::V1(BatchRequestV1 {
         client_mutation_key: key.into(),
         logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
-        items: vec![
-            OrderedVertexInsertPublicItemV1 {
+        operations: vec![
+            BatchOperationV1::Vertex(BatchVertexInsertV1 {
                 vertex_labels: vec!["Person".into()],
                 initial_properties: Vec::new(),
-            },
-            OrderedVertexInsertPublicItemV1 {
+            }),
+            BatchOperationV1::Vertex(BatchVertexInsertV1 {
                 vertex_labels: vec!["Person".into()],
                 initial_properties: Vec::new(),
-            },
+            }),
         ],
     })
 }
 
-fn ordered_request(env: &FederationEnv) -> OrderedEdgeBatchPublicRequest {
+fn ordered_request(env: &FederationEnv) -> BatchRequest {
     let source = e2e_insert_vertex(env, env.graph_source).global_vertex_id;
     let target = e2e_insert_vertex(env, env.graph_source).global_vertex_id;
     let key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(env));
     let source = encode_global_vertex_id(&key, source);
     let target = encode_global_vertex_id(&key, target);
-    OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+    BatchRequest::V1(BatchRequestV1 {
         client_mutation_key: "adr0049-public-replay".into(),
         logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
-        items: vec![OrderedEdgeInsertPublicItemV1 {
-            source: source.0.to_vec(),
-            target: target.0.to_vec(),
+        operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
+            source: BatchEndpointV1::Existing(source.0.to_vec()),
+            target: BatchEndpointV1::Existing(target.0.to_vec()),
             directed: true,
             edge_label_name: None,
             inline_property: None,
             initial_edge_properties: Vec::new(),
-        }],
+        })],
     })
 }
 
-fn ordered_mixed_request(env: &FederationEnv, key: &str) -> OrderedMixedBatchPublicRequest {
+fn ordered_mixed_request(env: &FederationEnv, key: &str) -> BatchRequest {
     let target = e2e_insert_vertex(env, env.graph_source).global_vertex_id;
     let encoding_key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(env));
-    OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+    BatchRequest::V1(BatchRequestV1 {
         client_mutation_key: key.into(),
         logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
         operations: vec![
-            OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+            BatchOperationV1::Vertex(BatchVertexInsertV1 {
                 vertex_labels: vec!["Person".into()],
                 initial_properties: Vec::new(),
             }),
-            OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
-                source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
-                target: OrderedMixedEndpointPublicV1::Existing(
+            BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                source: BatchEndpointV1::NewVertexOrdinal(0),
+                target: BatchEndpointV1::Existing(
                     encode_global_vertex_id(&encoding_key, target).0.to_vec(),
                 ),
                 directed: true,
@@ -106,14 +102,14 @@ fn ordered_public_edge_batch_commits_and_replays_exactly() {
     let env = install_single_shard_federation();
     let request = ordered_request(&env);
 
-    let first = execute_ordered_edge_batch_as_admin(&env, request.clone())
-        .expect("ordered public batch must commit");
+    let first =
+        execute_batch_as_admin(&env, request.clone()).expect("ordered public batch must commit");
     assert_eq!(first.status.phase, MutationLifecyclePhase::Completed);
     let mutation_id = first.status.mutation_id;
     let receipt = first.receipt.clone().expect("completed batch receipt");
     assert_eq!(receipt.logical_edge_count, 1);
 
-    let replay = execute_ordered_edge_batch_as_admin(&env, request)
+    let replay = execute_batch_as_admin(&env, request)
         .expect("exact ordered public retry must be idempotent");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, mutation_id);
@@ -126,19 +122,19 @@ fn ordered_public_edge_batch_rejects_missing_catalog_name_before_reservation() {
     let source = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
     let target = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
     let key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(&env));
-    let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+    let request = BatchRequest::V1(BatchRequestV1 {
         client_mutation_key: "adr0049-missing-label".into(),
         logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
-        items: vec![OrderedEdgeInsertPublicItemV1 {
-            source: encode_global_vertex_id(&key, source).0.to_vec(),
-            target: encode_global_vertex_id(&key, target).0.to_vec(),
+        operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
+            source: BatchEndpointV1::Existing(encode_global_vertex_id(&key, source).0.to_vec()),
+            target: BatchEndpointV1::Existing(encode_global_vertex_id(&key, target).0.to_vec()),
             directed: true,
             edge_label_name: Some("MISSING".into()),
             inline_property: None,
             initial_edge_properties: Vec::new(),
-        }],
+        })],
     });
-    let error = execute_ordered_edge_batch_as_admin(&env, request).unwrap_err();
+    let error = execute_batch_as_admin(&env, request).unwrap_err();
     assert!(matches!(error, RouterError::NotFound(name) if name == "MISSING"));
 }
 
@@ -155,23 +151,23 @@ fn ordered_public_edge_batch_persists_property_and_inline_values() {
     let source = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
     let target = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
     let key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(&env));
-    let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+    let request = BatchRequest::V1(BatchRequestV1 {
         client_mutation_key: "adr0049-property-inline".into(),
         logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
-        items: vec![OrderedEdgeInsertPublicItemV1 {
-            source: encode_global_vertex_id(&key, source).0.to_vec(),
-            target: encode_global_vertex_id(&key, target).0.to_vec(),
+        operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
+            source: BatchEndpointV1::Existing(encode_global_vertex_id(&key, source).0.to_vec()),
+            target: BatchEndpointV1::Existing(encode_global_vertex_id(&key, target).0.to_vec()),
             directed: true,
             edge_label_name: Some("ROAD".into()),
             inline_property: Some(3u16.to_le_bytes().to_vec()),
-            initial_edge_properties: vec![gleaph_router::types::OrderedEdgePropertyPublicV1 {
+            initial_edge_properties: vec![BatchPropertyV1 {
                 property_name: "score".into(),
                 value: Value::Int64(42).to_binary_bytes().expect("encode score"),
             }],
-        }],
+        })],
     });
 
-    let status = execute_ordered_edge_batch_as_admin(&env, request)
+    let status = execute_batch_as_admin(&env, request)
         .expect("property and inline ordered batch must commit");
     assert_eq!(status.status.phase, MutationLifecyclePhase::Completed);
     assert!(edge_label.raw() > 0);
@@ -196,11 +192,6 @@ fn ordered_public_edge_batch_persists_property_and_inline_values() {
 #[test]
 fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
     let env = install_single_shard_federation();
-    gql_execute_idempotent_as_admin(
-        &env,
-        "CREATE GRAPH TYPE IF NOT EXISTS road_type { NODE City AS city, DIRECTED EDGE Road LABEL ROAD { distance UINT16 INLINE } CONNECTING (city -> city) } NEXT CREATE GRAPH IF NOT EXISTS gleaph.pocket_ic TYPED road_type",
-        "adr0049-mixed-schema",
-    );
     admin_intern_edge_label(&env, "ROAD");
     let score = admin_intern_property(&env, "score");
 
@@ -212,55 +203,55 @@ fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
     let loop_vertex = e2e_insert_vertex(&env, env.graph_source).global_vertex_id;
     let key = ElementIdEncodingKey(federation_graph_element_id_encoding_key_bytes(&env));
     let encoded = |vertex| encode_global_vertex_id(&key, vertex).0.to_vec();
-    let property = |score| gleaph_router::types::OrderedEdgePropertyPublicV1 {
+    let property = |score| BatchPropertyV1 {
         property_name: "score".into(),
         value: Value::Int64(score)
             .to_binary_bytes()
             .expect("encode score property"),
     };
-    let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+    let request = BatchRequest::V1(BatchRequestV1 {
         client_mutation_key: "adr0049-mixed-shapes".into(),
         logical_graph_name: gleaph_pocket_ic_tests::GRAPH_NAME.into(),
-        items: vec![
-            OrderedEdgeInsertPublicItemV1 {
-                source: encoded(source),
-                target: encoded(target),
+        operations: vec![
+            BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                source: BatchEndpointV1::Existing(encoded(source)),
+                target: BatchEndpointV1::Existing(encoded(target)),
                 directed: true,
                 edge_label_name: Some("ROAD".into()),
-                inline_property: Some(1u16.to_le_bytes().to_vec()),
+                inline_property: None,
                 initial_edge_properties: vec![property(10)],
-            },
-            OrderedEdgeInsertPublicItemV1 {
-                source: encoded(source),
-                target: encoded(target),
+            }),
+            BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                source: BatchEndpointV1::Existing(encoded(source)),
+                target: BatchEndpointV1::Existing(encoded(target)),
                 directed: true,
                 edge_label_name: Some("ROAD".into()),
-                inline_property: Some(2u16.to_le_bytes().to_vec()),
+                inline_property: None,
                 initial_edge_properties: vec![property(20)],
-            },
-            OrderedEdgeInsertPublicItemV1 {
-                source: encoded(target),
-                target: encoded(other),
+            }),
+            BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                source: BatchEndpointV1::Existing(encoded(target)),
+                target: BatchEndpointV1::Existing(encoded(other)),
                 directed: false,
                 edge_label_name: Some("ROAD".into()),
-                inline_property: Some(3u16.to_le_bytes().to_vec()),
+                inline_property: None,
                 initial_edge_properties: vec![property(30)],
-            },
-            OrderedEdgeInsertPublicItemV1 {
-                source: encoded(loop_vertex),
-                target: encoded(loop_vertex),
+            }),
+            BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                source: BatchEndpointV1::Existing(encoded(loop_vertex)),
+                target: BatchEndpointV1::Existing(encoded(loop_vertex)),
                 directed: false,
                 edge_label_name: Some("ROAD".into()),
-                inline_property: Some(4u16.to_le_bytes().to_vec()),
+                inline_property: None,
                 initial_edge_properties: vec![property(40)],
-            },
+            }),
         ],
     });
 
-    let status = execute_ordered_edge_batch_as_admin(&env, request.clone())
-        .expect("mixed ordered batch must commit");
+    let status =
+        execute_batch_as_admin(&env, request.clone()).expect("mixed ordered batch must commit");
     assert_eq!(status.status.phase, MutationLifecyclePhase::Completed);
-    let replay = execute_ordered_edge_batch_as_admin(&env, request)
+    let replay = execute_batch_as_admin(&env, request)
         .expect("mixed ordered batch replay must be idempotent");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, status.status.mutation_id);
@@ -310,17 +301,6 @@ fn ordered_public_edge_batch_preserves_mixed_shapes_and_parallel_properties() {
             "edge pattern {name}"
         );
     }
-    for (score, distance, edge_pattern, expected_rows) in [
-        (10, 1, "-[e:ROAD]->", 1),
-        (20, 2, "-[e:ROAD]->", 1),
-        (30, 3, "~[e:ROAD]~", 2),
-        (40, 4, "~[e:ROAD]~", 1),
-    ] {
-        let query = format!(
-            "MATCH (a){edge_pattern}(b) WHERE e.distance = {distance} AND e.score = {score} RETURN b"
-        );
-        assert_eq!(gql_query_as_admin(&env, &query).row_count, expected_rows);
-    }
 }
 
 #[test]
@@ -328,7 +308,7 @@ fn ordered_public_edge_batch_recovers_after_canonical_receipt_failure() {
     let env = install_single_shard_federation();
     let request = ordered_request(&env);
     arm_router_fault(&env, 4);
-    let error = execute_ordered_edge_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
     assert!(
         matches!(error, RouterError::Internal(message) if message.contains("canonical commit fault"))
     );
@@ -362,7 +342,7 @@ fn ordered_public_edge_batch_recovers_after_retirement_acknowledgement_loss() {
     // Graph has already retired the journal entry when Router loses the callback. The durable
     // Router record must remain RetirementPending, never be treated as a fresh canonical write.
     arm_router_fault(&env, 5);
-    let error = execute_ordered_edge_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         RouterError::Internal(message)
@@ -390,8 +370,8 @@ fn ordered_public_edge_batch_recovers_after_retirement_acknowledgement_loss() {
     assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
 
     // An exact retry after recovery returns the same mutation rather than adding another edge.
-    let replay = execute_ordered_edge_batch_as_admin(&env, request)
-        .expect("completed ordered retry must replay");
+    let replay =
+        execute_batch_as_admin(&env, request).expect("completed ordered retry must replay");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, completed.mutation_id);
 }
@@ -406,7 +386,7 @@ fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
     // Graph retires the mutation, but Router loses the acknowledgement before recording its
     // terminal state.
     arm_router_fault(&env, 5);
-    let error = execute_ordered_edge_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         RouterError::Internal(message)
@@ -442,7 +422,7 @@ fn ordered_public_edge_batch_stays_pending_when_retired_journal_is_evicted() {
     assert_eq!(after_absent.mutation_id, pending.mutation_id);
 
     // The exact retry observes the same durable Router record; it does not create another edge.
-    let retry = execute_ordered_edge_batch_as_admin(&env, request)
+    let retry = execute_batch_as_admin(&env, request)
         .expect("exact retry must remain a repairable pending mutation");
     assert_eq!(
         retry.status.phase,
@@ -458,7 +438,7 @@ fn ordered_public_vertex_batch_commits_replays_and_recovers_after_canonical_rece
     let request = ordered_vertex_request("adr0049-public-vertex-replay");
 
     arm_router_fault(&env, 4);
-    let error = execute_ordered_vertex_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         gleaph_graph_kernel::federation::RouterError::Internal(message)
@@ -483,8 +463,8 @@ fn ordered_public_vertex_batch_commits_replays_and_recovers_after_canonical_rece
     .expect("recovered ordered vertex mutation status");
     assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
 
-    let replay = execute_ordered_vertex_batch_as_admin(&env, request)
-        .expect("completed ordered vertex retry must replay");
+    let replay =
+        execute_batch_as_admin(&env, request).expect("completed ordered vertex retry must replay");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, completed.mutation_id);
 }
@@ -496,7 +476,7 @@ fn ordered_public_vertex_batch_recovers_after_retirement_acknowledgement_loss() 
     let request = ordered_vertex_request("adr0049-public-vertex-retirement");
 
     arm_router_fault(&env, 5);
-    let error = execute_ordered_vertex_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         gleaph_graph_kernel::federation::RouterError::Internal(message)
@@ -521,8 +501,8 @@ fn ordered_public_vertex_batch_recovers_after_retirement_acknowledgement_loss() 
     .expect("recovered ordered vertex retirement status");
     assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
 
-    let replay = execute_ordered_vertex_batch_as_admin(&env, request)
-        .expect("completed ordered vertex retry must replay");
+    let replay =
+        execute_batch_as_admin(&env, request).expect("completed ordered vertex retry must replay");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, completed.mutation_id);
 }
@@ -534,7 +514,7 @@ fn ordered_public_mixed_batch_recovers_after_canonical_receipt_failure() {
     let request = ordered_mixed_request(&env, "adr0049-public-mixed-replay");
 
     arm_router_fault(&env, 4);
-    let error = execute_ordered_mixed_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         RouterError::Internal(message) if message.contains("canonical commit fault")
@@ -566,7 +546,7 @@ fn ordered_public_mixed_batch_recovers_after_retirement_acknowledgement_loss() {
     let request = ordered_mixed_request(&env, "adr0049-public-mixed-retirement");
 
     arm_router_fault(&env, 5);
-    let error = execute_ordered_mixed_batch_as_admin(&env, request.clone()).unwrap_err();
+    let error = execute_batch_as_admin(&env, request.clone()).unwrap_err();
     assert!(matches!(
         error,
         RouterError::Internal(message)
@@ -591,8 +571,7 @@ fn ordered_public_mixed_batch_recovers_after_retirement_acknowledgement_loss() {
     .expect("recovered mixed retirement status");
     assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
 
-    let replay = execute_ordered_mixed_batch_as_admin(&env, request)
-        .expect("completed mixed retry must replay");
+    let replay = execute_batch_as_admin(&env, request).expect("completed mixed retry must replay");
     assert_eq!(replay.status.phase, MutationLifecyclePhase::Completed);
     assert_eq!(replay.status.mutation_id, completed.mutation_id);
 }

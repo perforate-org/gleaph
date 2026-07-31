@@ -32,7 +32,7 @@ use crate::facade::stable::vector_maintenance_policy::VectorMaintenancePolicyRec
 /// whether a saga converged, which shard is outstanding, and what (if any) explicit action
 /// is required. It deliberately carries no read-your-writes token — the token is issued with
 /// the original DML result; this query reports lifecycle, not freshness watermarks.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct MutationStatus {
     pub mutation_id: MutationId,
     pub phase: MutationLifecyclePhase,
@@ -45,96 +45,77 @@ pub struct MutationStatus {
     pub next_action: String,
 }
 
-/// Public result for one ordered edge batch. `status` describes lifecycle convergence;
-/// `receipt` is present once Graph has committed the canonical batch result.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct OrderedEdgeBatchResponse {
+/// Maximum number of logical operations admitted by one public batch.
+pub const MAX_BATCH_OPERATIONS: usize = 1024;
+
+/// Public result for one Router batch.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BatchResponse {
     pub status: MutationStatus,
-    pub receipt: Option<gleaph_graph_kernel::plan_exec::GraphOrderedEdgeBatchReceiptV1>,
+    /// Present after Graph commits the canonical vertex and/or edge operations.
+    pub receipt: Option<BatchReceiptV1>,
 }
 
-/// Public result for one ordered vertex batch. The receipt is available once Graph commits the
-/// canonical rows; later projection and retirement states retain the same aggregate receipt.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct OrderedVertexBatchResponse {
-    pub status: MutationStatus,
-    pub receipt: Option<gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1>,
+/// Router-owned projection of the Graph-specific durable receipts.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BatchReceiptV1 {
+    pub logical_operation_count: u64,
+    pub logical_vertex_count: u64,
+    pub logical_edge_count: u64,
 }
 
-/// Public result for one mixed ordered batch. The receipt is present after Graph commits the
-/// canonical vertex and edge phases; projection and retirement may still be pending.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct OrderedMixedBatchResponse {
-    pub status: MutationStatus,
-    pub receipt: Option<gleaph_graph_kernel::plan_exec::GraphOrderedMixedBatchReceiptV1>,
-}
-
-impl OrderedMixedBatchResponse {
-    pub fn from_record(record: &RouterMutationRecord) -> Self {
-        let receipt = match record.payload() {
-            crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedMixedBatch(
-                replay,
-            ) => match &replay.target.progress {
-                crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt)
-                | crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt)
-                | crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt)
-                | crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::RetirementPending(receipt) => Some(receipt.clone()),
-                crate::facade::stable::label_stats::OrderedMixedBatchTargetProgressV1::CanonicalPending => None,
-            },
-            crate::facade::stable::label_stats::RouterMutationPayloadV1::CompletedOrderedMixedBatch {
-                receipt,
-                ..
-            } => Some(receipt.clone()),
-            _ => None,
+impl BatchResponse {
+    pub(crate) fn from_record(record: &RouterMutationRecord) -> Self {
+        use crate::facade::stable::label_stats::{
+            OrderedEdgeBatchTargetProgressV1, OrderedMixedBatchTargetProgressV1,
+            OrderedVertexBatchTargetProgressV1, RouterMutationPayloadV1,
         };
-        Self {
-            status: MutationStatus::from_record(record),
-            receipt,
-        }
-    }
-}
 
-impl OrderedVertexBatchResponse {
-    pub fn from_record(record: &RouterMutationRecord) -> Self {
         let receipt = match record.payload() {
-            crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedVertexBatch(
-                replay,
-            ) => match &replay.target.progress {
-                crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt)
-                | crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt)
-                | crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt)
-                | crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::RetirementPending(receipt) => Some(receipt.clone()),
-                crate::facade::stable::label_stats::OrderedVertexBatchTargetProgressV1::CanonicalPending => None,
-            },
-            crate::facade::stable::label_stats::RouterMutationPayloadV1::CompletedOrderedVertexBatch {
-                receipt,
-                ..
-            } => Some(receipt.clone()),
-            _ => None,
-        };
-        Self {
-            status: MutationStatus::from_record(record),
-            receipt,
-        }
-    }
-}
-
-impl OrderedEdgeBatchResponse {
-    pub fn from_record(record: &RouterMutationRecord) -> Self {
-        let receipt = match record.payload() {
-            crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(replay) => {
-                match &replay.target.progress {
-                    crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt)
-                    | crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt)
-                    | crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt)
-                    | crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt) => Some(receipt.clone()),
-                    crate::facade::stable::label_stats::OrderedEdgeBatchTargetProgressV1::CanonicalPending => None,
+            RouterMutationPayloadV1::OrderedEdgeBatch(replay) => match &replay.target.progress {
+                OrderedEdgeBatchTargetProgressV1::CanonicalCommitted(receipt)
+                | OrderedEdgeBatchTargetProgressV1::ProjectionPending(receipt)
+                | OrderedEdgeBatchTargetProgressV1::ProjectionAdvanced(receipt)
+                | OrderedEdgeBatchTargetProgressV1::RetirementPending(receipt) => {
+                    Some(BatchReceiptV1::edge(receipt.logical_edge_count))
                 }
+                OrderedEdgeBatchTargetProgressV1::CanonicalPending => None,
+            },
+            RouterMutationPayloadV1::CompletedOrderedEdgeBatch { receipt, .. } => {
+                Some(BatchReceiptV1::edge(receipt.logical_edge_count))
             }
-            crate::facade::stable::label_stats::RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
-                receipt,
-                ..
-            } => Some(receipt.clone()),
+            RouterMutationPayloadV1::OrderedVertexBatch(replay) => match &replay.target.progress {
+                OrderedVertexBatchTargetProgressV1::CanonicalCommitted(receipt)
+                | OrderedVertexBatchTargetProgressV1::ProjectionPending(receipt)
+                | OrderedVertexBatchTargetProgressV1::ProjectionAdvanced(receipt)
+                | OrderedVertexBatchTargetProgressV1::RetirementPending(receipt) => {
+                    Some(BatchReceiptV1::vertex(receipt.logical_vertex_count))
+                }
+                OrderedVertexBatchTargetProgressV1::CanonicalPending => None,
+            },
+            RouterMutationPayloadV1::CompletedOrderedVertexBatch { receipt, .. } => {
+                Some(BatchReceiptV1::vertex(receipt.logical_vertex_count))
+            }
+            RouterMutationPayloadV1::OrderedMixedBatch(replay) => match &replay.target.progress {
+                OrderedMixedBatchTargetProgressV1::CanonicalCommitted(receipt)
+                | OrderedMixedBatchTargetProgressV1::ProjectionPending(receipt)
+                | OrderedMixedBatchTargetProgressV1::ProjectionAdvanced(receipt)
+                | OrderedMixedBatchTargetProgressV1::RetirementPending(receipt) => {
+                    Some(BatchReceiptV1::mixed(
+                        receipt.logical_operation_count,
+                        receipt.logical_vertex_count,
+                        receipt.logical_edge_count,
+                    ))
+                }
+                OrderedMixedBatchTargetProgressV1::CanonicalPending => None,
+            },
+            RouterMutationPayloadV1::CompletedOrderedMixedBatch { receipt, .. } => {
+                Some(BatchReceiptV1::mixed(
+                    receipt.logical_operation_count,
+                    receipt.logical_vertex_count,
+                    receipt.logical_edge_count,
+                ))
+            }
             _ => None,
         };
         Self {
@@ -144,22 +125,319 @@ impl OrderedEdgeBatchResponse {
     }
 }
 
-/// Versioned public request for the order-preserving edge-insert API (ADR 0049).
+impl BatchReceiptV1 {
+    fn vertex(count: u64) -> Self {
+        Self {
+            logical_operation_count: count,
+            logical_vertex_count: count,
+            logical_edge_count: 0,
+        }
+    }
+
+    fn edge(count: u64) -> Self {
+        Self {
+            logical_operation_count: count,
+            logical_vertex_count: 0,
+            logical_edge_count: count,
+        }
+    }
+
+    fn mixed(operation_count: u64, vertex_count: u64, edge_count: u64) -> Self {
+        Self {
+            logical_operation_count: operation_count,
+            logical_vertex_count: vertex_count,
+            logical_edge_count: edge_count,
+        }
+    }
+}
+
+/// Versioned public request for Router-owned ordered batch mutation.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum OrderedEdgeBatchPublicRequest {
-    V1(OrderedEdgeBatchPublicRequestV1),
+pub enum BatchRequest {
+    V1(BatchRequestV1),
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct OrderedEdgeBatchPublicRequestV1 {
+pub struct BatchRequestV1 {
     /// Stable idempotency key supplied by the caller; retries must reuse it with identical data.
     pub client_mutation_key: String,
     pub logical_graph_name: String,
-    pub items: Vec<OrderedEdgeInsertPublicItemV1>,
+    pub operations: Vec<BatchOperationV1>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct OrderedEdgeInsertPublicItemV1 {
+pub enum BatchOperationV1 {
+    Vertex(BatchVertexInsertV1),
+    Edge(BatchEdgeInsertV1),
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BatchVertexInsertV1 {
+    pub vertex_labels: Vec<String>,
+    pub initial_properties: Vec<BatchPropertyV1>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BatchEdgeInsertV1 {
+    pub source: BatchEndpointV1,
+    pub target: BatchEndpointV1,
+    pub directed: bool,
+    pub edge_label_name: Option<String>,
+    pub inline_property: Option<Vec<u8>>,
+    pub initial_edge_properties: Vec<BatchPropertyV1>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum BatchEndpointV1 {
+    Existing(Vec<u8>),
+    /// Ordinal among vertex operations, not the position in the mixed operation array.
+    NewVertexOrdinal(u32),
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BatchPropertyV1 {
+    pub property_name: String,
+    pub value: Vec<u8>,
+}
+
+pub(crate) enum ClassifiedBatchRequest {
+    Edge(OrderedEdgeBatchRequest),
+    Vertex(OrderedVertexBatchRequest),
+    Mixed(OrderedMixedBatchRequest),
+}
+
+impl BatchRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        let Self::V1(request) = self;
+        if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
+            return Err("batch client mutation key must be 1..=256 bytes".into());
+        }
+        if request.logical_graph_name.is_empty() {
+            return Err("batch logical graph name must not be empty".into());
+        }
+        if request.operations.is_empty() || request.operations.len() > MAX_BATCH_OPERATIONS {
+            return Err(format!(
+                "batch operations must contain 1..={MAX_BATCH_OPERATIONS} entries"
+            ));
+        }
+        let vertex_count = request
+            .operations
+            .iter()
+            .filter(|operation| matches!(operation, BatchOperationV1::Vertex(_)))
+            .count() as u32;
+        for (ordinal, operation) in request.operations.iter().enumerate() {
+            match operation {
+                BatchOperationV1::Vertex(item) => {
+                    if item.vertex_labels.iter().any(String::is_empty) {
+                        return Err(format!(
+                            "batch operation {ordinal} contains an empty vertex label"
+                        ));
+                    }
+                    validate_batch_properties(ordinal, &item.initial_properties)?;
+                }
+                BatchOperationV1::Edge(item) => {
+                    validate_batch_endpoint(ordinal, "source", &item.source, vertex_count)?;
+                    validate_batch_endpoint(ordinal, "target", &item.target, vertex_count)?;
+                    if item.edge_label_name.as_deref() == Some("") {
+                        return Err(format!(
+                            "batch operation {ordinal} contains an empty edge label"
+                        ));
+                    }
+                    if let Some(inline) = &item.inline_property
+                        && inline.len() > gleaph_graph_kernel::entry::MAX_EDGE_INLINE_PROPERTY_BYTES
+                    {
+                        return Err(format!(
+                            "batch operation {ordinal} inline property exceeds the byte bound"
+                        ));
+                    }
+                    validate_batch_properties(ordinal, &item.initial_edge_properties)?;
+                }
+            }
+        }
+        let encoded = Encode!(self).map_err(|error| format!("batch request encode: {error}"))?;
+        if encoded.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+            return Err("batch request exceeds the safe payload bound".into());
+        }
+        Ok(())
+    }
+
+    /// Compute the Router-owned idempotency fingerprint without the client mutation key.
+    pub(crate) fn public_fingerprint(&self) -> Result<[u8; 32], String> {
+        self.validate()?;
+        let Self::V1(request) = self;
+        let mut operations = request.operations.clone();
+        for operation in &mut operations {
+            match operation {
+                BatchOperationV1::Vertex(item) => {
+                    item.vertex_labels
+                        .sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+                    item.initial_properties.sort_by(|left, right| {
+                        left.property_name
+                            .as_bytes()
+                            .cmp(right.property_name.as_bytes())
+                    });
+                }
+                BatchOperationV1::Edge(item) => {
+                    item.initial_edge_properties.sort_by(|left, right| {
+                        left.property_name
+                            .as_bytes()
+                            .cmp(right.property_name.as_bytes())
+                    });
+                }
+            }
+        }
+        let encoded = Encode!(&(request.logical_graph_name.clone(), operations))
+            .map_err(|error| format!("batch fingerprint encode: {error}"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"gleaph:batch-public:v1\0");
+        hasher.update(encoded);
+        Ok(hasher.finalize().into())
+    }
+
+    pub(crate) fn into_classified(self) -> Result<(ClassifiedBatchRequest, [u8; 32]), String> {
+        let public_fingerprint = self.public_fingerprint()?;
+        let Self::V1(request) = self;
+        let BatchRequestV1 {
+            client_mutation_key,
+            logical_graph_name,
+            operations,
+        } = request;
+        let has_vertex = operations
+            .iter()
+            .any(|operation| matches!(operation, BatchOperationV1::Vertex(_)));
+        let has_edge = operations
+            .iter()
+            .any(|operation| matches!(operation, BatchOperationV1::Edge(_)));
+        let classified = match (has_vertex, has_edge) {
+            (true, false) => {
+                let items = operations
+                    .into_iter()
+                    .map(|operation| match operation {
+                        BatchOperationV1::Vertex(item) => Ok(item),
+                        BatchOperationV1::Edge(_) => {
+                            Err("vertex-only batch contains an edge operation".to_string())
+                        }
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                ClassifiedBatchRequest::Vertex(OrderedVertexBatchRequest::V1(
+                    OrderedVertexBatchRequestV1 {
+                        client_mutation_key,
+                        logical_graph_name,
+                        items,
+                    },
+                ))
+            }
+            (false, true) => {
+                let items = operations
+                    .into_iter()
+                    .map(|operation| {
+                        let BatchOperationV1::Edge(item) = operation else {
+                            return Err("edge-only batch contains a vertex operation".to_string());
+                        };
+                        let BatchEndpointV1::Existing(source) = item.source else {
+                            return Err(
+                                "edge-only batch source must reference an existing vertex".into()
+                            );
+                        };
+                        let BatchEndpointV1::Existing(target) = item.target else {
+                            return Err(
+                                "edge-only batch target must reference an existing vertex".into()
+                            );
+                        };
+                        Ok(OrderedEdgeInsertRequestItemV1 {
+                            source,
+                            target,
+                            directed: item.directed,
+                            edge_label_name: item.edge_label_name,
+                            inline_property: item.inline_property,
+                            initial_edge_properties: item.initial_edge_properties,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                ClassifiedBatchRequest::Edge(OrderedEdgeBatchRequest::V1(
+                    OrderedEdgeBatchRequestV1 {
+                        client_mutation_key,
+                        logical_graph_name,
+                        items,
+                    },
+                ))
+            }
+            (true, true) => ClassifiedBatchRequest::Mixed(OrderedMixedBatchRequest::V1(
+                OrderedMixedBatchRequestV1 {
+                    client_mutation_key,
+                    logical_graph_name,
+                    operations,
+                },
+            )),
+            (false, false) => return Err("batch requires at least one operation".into()),
+        };
+        Ok((classified, public_fingerprint))
+    }
+}
+
+fn validate_batch_endpoint(
+    ordinal: usize,
+    name: &str,
+    endpoint: &BatchEndpointV1,
+    vertex_count: u32,
+) -> Result<(), String> {
+    match endpoint {
+        BatchEndpointV1::Existing(bytes)
+            if bytes.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES =>
+        {
+            Err(format!(
+                "batch operation {ordinal} {name} must be exactly {} bytes",
+                gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+            ))
+        }
+        BatchEndpointV1::NewVertexOrdinal(vertex_ordinal) if *vertex_ordinal >= vertex_count => {
+            Err(format!(
+                "batch operation {ordinal} {name} references unknown vertex ordinal {vertex_ordinal}"
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_batch_properties(ordinal: usize, properties: &[BatchPropertyV1]) -> Result<(), String> {
+    let mut names = BTreeSet::new();
+    for property in properties {
+        if property.property_name.is_empty() {
+            return Err(format!(
+                "batch operation {ordinal} contains an empty property name"
+            ));
+        }
+        if !names.insert(&property.property_name) {
+            return Err(format!(
+                "batch operation {ordinal} repeats property name {}",
+                property.property_name
+            ));
+        }
+        if property.value.len() > gleaph_graph_kernel::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+        {
+            return Err(format!(
+                "batch operation {ordinal} property value exceeds the payload bound"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Router-internal edge-only form selected from [`BatchRequest`].
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OrderedEdgeBatchRequest {
+    V1(OrderedEdgeBatchRequestV1),
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OrderedEdgeBatchRequestV1 {
+    pub client_mutation_key: String,
+    pub logical_graph_name: String,
+    pub items: Vec<OrderedEdgeInsertRequestItemV1>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OrderedEdgeInsertRequestItemV1 {
     /// Candid bytes for the encoded global vertex identifier.
     pub source: Vec<u8>,
     /// Candid bytes for the encoded global vertex identifier.
@@ -167,18 +445,12 @@ pub struct OrderedEdgeInsertPublicItemV1 {
     pub directed: bool,
     pub edge_label_name: Option<String>,
     pub inline_property: Option<Vec<u8>>,
-    pub initial_edge_properties: Vec<OrderedEdgePropertyPublicV1>,
+    pub initial_edge_properties: Vec<BatchPropertyV1>,
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct OrderedEdgePropertyPublicV1 {
-    pub property_name: String,
-    pub value: Vec<u8>,
-}
-
-impl OrderedEdgeBatchPublicRequest {
-    pub fn validate(&self) -> Result<(), String> {
-        let OrderedEdgeBatchPublicRequest::V1(request) = self;
+impl OrderedEdgeBatchRequest {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        let OrderedEdgeBatchRequest::V1(request) = self;
         if request.client_mutation_key.is_empty() {
             return Err("ordered edge batch client mutation key must not be empty".into());
         }
@@ -239,34 +511,11 @@ impl OrderedEdgeBatchPublicRequest {
         Ok(())
     }
 
-    /// Compute the Router-owned idempotency fingerprint without including the client key.
-    pub fn public_fingerprint(&self) -> Result<[u8; 32], String> {
-        self.validate()?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"gleaph:ordered-edge-public:v1\0");
-        let encoded = match self {
-            Self::V1(request) => {
-                let mut items = request.items.clone();
-                for item in &mut items {
-                    item.initial_edge_properties.sort_by(|left, right| {
-                        left.property_name
-                            .as_bytes()
-                            .cmp(right.property_name.as_bytes())
-                    });
-                }
-                Encode!(&(request.logical_graph_name.clone(), items))
-                    .map_err(|error| format!("ordered public request encode: {error}"))?
-            }
-        };
-        hasher.update(encoded);
-        Ok(hasher.finalize().into())
-    }
-
-    /// Decode every public endpoint and prove that the complete batch belongs to one shard.
+    /// Decode every classified endpoint and prove that the complete batch belongs to one shard.
     ///
     /// This is deliberately a read-only wire-boundary operation. Catalog resolution and the
     /// mutation reservation happen only after this proof succeeds.
-    pub fn decode_same_shard_endpoints(
+    pub(crate) fn decode_same_shard_endpoints(
         &self,
         key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
     ) -> Result<Vec<(GlobalVertexId, GlobalVertexId)>, String> {
@@ -308,8 +557,8 @@ impl OrderedEdgeBatchPublicRequest {
         Ok(decoded)
     }
 
-    /// Convert a resolved public request into the immutable Router → Graph request envelope.
-    pub fn into_graph_request(
+    /// Convert a resolved classified request into the immutable Router → Graph request envelope.
+    pub(crate) fn to_graph_request(
         &self,
         graph_id: GraphId,
         target_shard_id: ShardId,
@@ -321,7 +570,7 @@ impl OrderedEdgeBatchPublicRequest {
         self.validate()?;
         let Self::V1(request) = self;
         if endpoints.len() != request.items.len() {
-            return Err("ordered endpoint resolution count does not match public items".into());
+            return Err("ordered endpoint resolution count does not match classified items".into());
         }
         let items = request
             .items
@@ -396,27 +645,21 @@ impl OrderedEdgeBatchPublicRequest {
     }
 }
 
-/// Versioned public request for vertex-only bulk placement (ADR 0049).
+/// Router-internal vertex-only form selected from [`BatchRequest`].
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum OrderedVertexBatchPublicRequest {
-    V1(OrderedVertexBatchPublicRequestV1),
+pub(crate) enum OrderedVertexBatchRequest {
+    V1(OrderedVertexBatchRequestV1),
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct OrderedVertexBatchPublicRequestV1 {
+pub(crate) struct OrderedVertexBatchRequestV1 {
     pub client_mutation_key: String,
     pub logical_graph_name: String,
-    pub items: Vec<OrderedVertexInsertPublicItemV1>,
+    pub items: Vec<BatchVertexInsertV1>,
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct OrderedVertexInsertPublicItemV1 {
-    pub vertex_labels: Vec<String>,
-    pub initial_properties: Vec<OrderedEdgePropertyPublicV1>,
-}
-
-impl OrderedVertexBatchPublicRequest {
-    pub fn validate(&self) -> Result<(), String> {
+impl OrderedVertexBatchRequest {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         let Self::V1(request) = self;
         if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
             return Err("ordered vertex batch client mutation key must be 1..=256 bytes".into());
@@ -465,29 +708,7 @@ impl OrderedVertexBatchPublicRequest {
         Ok(())
     }
 
-    pub fn public_fingerprint(&self) -> Result<[u8; 32], String> {
-        self.validate()?;
-        let Self::V1(request) = self;
-        let mut items = request.items.clone();
-        for item in &mut items {
-            item.vertex_labels
-                .sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-            item.initial_properties.sort_by(|left, right| {
-                left.property_name
-                    .as_bytes()
-                    .cmp(right.property_name.as_bytes())
-            });
-        }
-        let mut hasher = Sha256::new();
-        hasher.update(b"gleaph:ordered-vertex-public:v1\0");
-        hasher.update(
-            Encode!(&(request.logical_graph_name.clone(), items))
-                .map_err(|error| format!("ordered vertex public request encode: {error}"))?,
-        );
-        Ok(hasher.finalize().into())
-    }
-
-    pub fn into_graph_request(
+    pub(crate) fn to_graph_request(
         &self,
         graph_id: GraphId,
         target_shard_id: ShardId,
@@ -561,45 +782,21 @@ impl OrderedVertexBatchPublicRequest {
     }
 }
 
-/// Versioned public request for the narrow mixed vertex/edge insertion follow-up (ADR 0049).
-/// The public update endpoint remains gated on the durable Router lifecycle; this type owns the
-/// validated public shape and its conversion into the immutable Graph two-phase envelope.
+/// Router-internal mixed form selected from [`BatchRequest`].
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum OrderedMixedBatchPublicRequest {
-    V1(OrderedMixedBatchPublicRequestV1),
+pub(crate) enum OrderedMixedBatchRequest {
+    V1(OrderedMixedBatchRequestV1),
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct OrderedMixedBatchPublicRequestV1 {
+pub(crate) struct OrderedMixedBatchRequestV1 {
     pub client_mutation_key: String,
     pub logical_graph_name: String,
-    pub operations: Vec<OrderedMixedBatchOperationV1>,
+    pub operations: Vec<BatchOperationV1>,
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum OrderedMixedBatchOperationV1 {
-    Vertex(OrderedVertexInsertPublicItemV1),
-    Edge(OrderedMixedEdgeInsertPublicItemV1),
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct OrderedMixedEdgeInsertPublicItemV1 {
-    pub source: OrderedMixedEndpointPublicV1,
-    pub target: OrderedMixedEndpointPublicV1,
-    pub directed: bool,
-    pub edge_label_name: Option<String>,
-    pub inline_property: Option<Vec<u8>>,
-    pub initial_edge_properties: Vec<OrderedEdgePropertyPublicV1>,
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum OrderedMixedEndpointPublicV1 {
-    Existing(Vec<u8>),
-    NewVertexOrdinal(u32),
-}
-
-impl OrderedMixedBatchPublicRequest {
-    pub fn validate(&self) -> Result<(), String> {
+impl OrderedMixedBatchRequest {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         let Self::V1(request) = self;
         if request.client_mutation_key.is_empty() || request.client_mutation_key.len() > 256 {
             return Err("ordered mixed batch client mutation key must be 1..=256 bytes".into());
@@ -613,22 +810,22 @@ impl OrderedMixedBatchPublicRequest {
         if !request
             .operations
             .iter()
-            .any(|operation| matches!(operation, OrderedMixedBatchOperationV1::Vertex(_)))
+            .any(|operation| matches!(operation, BatchOperationV1::Vertex(_)))
             || !request
                 .operations
                 .iter()
-                .any(|operation| matches!(operation, OrderedMixedBatchOperationV1::Edge(_)))
+                .any(|operation| matches!(operation, BatchOperationV1::Edge(_)))
         {
             return Err("ordered mixed batch requires at least one vertex and one edge".into());
         }
         let vertex_count = request
             .operations
             .iter()
-            .filter(|operation| matches!(operation, OrderedMixedBatchOperationV1::Vertex(_)))
+            .filter(|operation| matches!(operation, BatchOperationV1::Vertex(_)))
             .count() as u32;
         for (ordinal, operation) in request.operations.iter().enumerate() {
             match operation {
-                OrderedMixedBatchOperationV1::Vertex(item) => {
+                BatchOperationV1::Vertex(item) => {
                     for label in &item.vertex_labels {
                         if label.is_empty() {
                             return Err(format!(
@@ -636,9 +833,9 @@ impl OrderedMixedBatchPublicRequest {
                             ));
                         }
                     }
-                    validate_public_properties(ordinal, &item.initial_properties)?;
+                    validate_classified_properties(ordinal, &item.initial_properties)?;
                 }
-                OrderedMixedBatchOperationV1::Edge(item) => {
+                BatchOperationV1::Edge(item) => {
                     validate_mixed_endpoint(ordinal, "source", &item.source, vertex_count)?;
                     validate_mixed_endpoint(ordinal, "target", &item.target, vertex_count)?;
                     if let Some(label) = &item.edge_label_name
@@ -655,7 +852,7 @@ impl OrderedMixedBatchPublicRequest {
                             "mixed operation {ordinal} inline property exceeds the byte bound"
                         ));
                     }
-                    validate_public_properties(ordinal, &item.initial_edge_properties)?;
+                    validate_classified_properties(ordinal, &item.initial_edge_properties)?;
                 }
             }
         }
@@ -667,44 +864,10 @@ impl OrderedMixedBatchPublicRequest {
         Ok(())
     }
 
-    /// Compute the Router-owned idempotency fingerprint without including the client key.
-    pub fn public_fingerprint(&self) -> Result<[u8; 32], String> {
-        self.validate()?;
-        let Self::V1(request) = self;
-        let mut operations = request.operations.clone();
-        for operation in &mut operations {
-            match operation {
-                OrderedMixedBatchOperationV1::Vertex(item) => {
-                    item.vertex_labels
-                        .sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-                    item.initial_properties.sort_by(|left, right| {
-                        left.property_name
-                            .as_bytes()
-                            .cmp(right.property_name.as_bytes())
-                    });
-                }
-                OrderedMixedBatchOperationV1::Edge(item) => {
-                    item.initial_edge_properties.sort_by(|left, right| {
-                        left.property_name
-                            .as_bytes()
-                            .cmp(right.property_name.as_bytes())
-                    });
-                }
-            }
-        }
-        let mut hasher = Sha256::new();
-        hasher.update(b"gleaph:ordered-mixed-public:v1\0");
-        hasher.update(
-            Encode!(&(request.logical_graph_name.clone(), operations))
-                .map_err(|error| format!("ordered mixed public request encode: {error}"))?,
-        );
-        Ok(hasher.finalize().into())
-    }
-
-    /// Convert the public request into the immutable Graph envelope after Router has resolved
+    /// Convert the classified request into the immutable Graph envelope after Router has resolved
     /// the graph catalogs. Existing endpoints are decoded here so the selected shard is checked
     /// at the Router → Graph boundary; new-vertex ordinals remain request-local references.
-    pub fn into_graph_request(
+    pub(crate) fn to_graph_request(
         &self,
         graph_id: GraphId,
         target_shard_id: ShardId,
@@ -720,7 +883,7 @@ impl OrderedMixedBatchPublicRequest {
             .iter()
             .enumerate()
             .map(|(ordinal, operation)| match operation {
-                OrderedMixedBatchOperationV1::Vertex(item) => {
+                BatchOperationV1::Vertex(item) => {
                     let labels = item
                         .vertex_labels
                         .iter()
@@ -755,7 +918,7 @@ impl OrderedMixedBatchPublicRequest {
                         ),
                     )
                 }
-                OrderedMixedBatchOperationV1::Edge(item) => {
+                BatchOperationV1::Edge(item) => {
                     let source = decode_mixed_endpoint(
                         ordinal,
                         "source",
@@ -830,7 +993,7 @@ impl OrderedMixedBatchPublicRequest {
     /// Return the shard carried by existing endpoints, proving that all such endpoints agree.
     /// New-vertex-only requests return `None`; Router then applies the graph's latest-shard
     /// placement policy.
-    pub fn existing_endpoint_shard(
+    pub(crate) fn existing_endpoint_shard(
         &self,
         encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
     ) -> Result<Option<ShardId>, String> {
@@ -838,11 +1001,11 @@ impl OrderedMixedBatchPublicRequest {
         let Self::V1(request) = self;
         let mut target_shard = None;
         for (ordinal, operation) in request.operations.iter().enumerate() {
-            let OrderedMixedBatchOperationV1::Edge(item) = operation else {
+            let BatchOperationV1::Edge(item) = operation else {
                 continue;
             };
             for (name, endpoint) in [("source", &item.source), ("target", &item.target)] {
-                let OrderedMixedEndpointPublicV1::Existing(bytes) = endpoint else {
+                let BatchEndpointV1::Existing(bytes) = endpoint else {
                     continue;
                 };
                 let encoded: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
@@ -883,17 +1046,17 @@ fn resolved_initial_property(
 fn decode_mixed_endpoint(
     ordinal: usize,
     name: &str,
-    endpoint: &OrderedMixedEndpointPublicV1,
+    endpoint: &BatchEndpointV1,
     encoding_key: &gleaph_graph_kernel::federation::ElementIdEncodingKey,
     target_shard_id: ShardId,
 ) -> Result<gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1, String> {
     match endpoint {
-        OrderedMixedEndpointPublicV1::NewVertexOrdinal(vertex_ordinal) => Ok(
+        BatchEndpointV1::NewVertexOrdinal(vertex_ordinal) => Ok(
             gleaph_graph_kernel::plan_exec::OrderedMixedGraphEndpointV1::NewVertexOrdinal(
                 *vertex_ordinal,
             ),
         ),
-        OrderedMixedEndpointPublicV1::Existing(bytes) => {
+        BatchEndpointV1::Existing(bytes) => {
             let encoded: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
                 bytes.as_slice().try_into().map_err(|_| {
                     format!("mixed operation {ordinal} {name} endpoint has invalid width")
@@ -919,11 +1082,11 @@ fn decode_mixed_endpoint(
 fn validate_mixed_endpoint(
     ordinal: usize,
     name: &str,
-    endpoint: &OrderedMixedEndpointPublicV1,
+    endpoint: &BatchEndpointV1,
     vertex_count: u32,
 ) -> Result<(), String> {
     match endpoint {
-        OrderedMixedEndpointPublicV1::Existing(bytes)
+        BatchEndpointV1::Existing(bytes)
             if bytes.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES =>
         {
             Err(format!(
@@ -931,9 +1094,7 @@ fn validate_mixed_endpoint(
                 gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
             ))
         }
-        OrderedMixedEndpointPublicV1::NewVertexOrdinal(vertex_ordinal)
-            if *vertex_ordinal >= vertex_count =>
-        {
+        BatchEndpointV1::NewVertexOrdinal(vertex_ordinal) if *vertex_ordinal >= vertex_count => {
             Err(format!(
                 "mixed operation {ordinal} {name} references unknown vertex ordinal {vertex_ordinal}"
             ))
@@ -942,9 +1103,9 @@ fn validate_mixed_endpoint(
     }
 }
 
-fn validate_public_properties(
+fn validate_classified_properties(
     ordinal: usize,
-    properties: &[OrderedEdgePropertyPublicV1],
+    properties: &[BatchPropertyV1],
 ) -> Result<(), String> {
     let mut names = BTreeSet::new();
     for property in properties {
@@ -1773,74 +1934,138 @@ mod tests {
     }
 
     #[test]
-    fn ordered_public_request_round_trips_and_validates() {
-        let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+    fn batch_response_projects_graph_specific_receipts_to_common_counts() {
+        use gleaph_graph_kernel::plan_exec::{
+            GraphOrderedEdgeBatchReceiptV1, GraphOrderedMixedBatchReceiptV1,
+            GraphOrderedVertexBatchReceiptV1, MutationTokenShard,
+        };
+
+        let watermark = MutationTokenShard {
+            shard_id: ShardId::new(0),
+            label_stats_seq: None,
+        };
+        let mut record = record_with(Vec::new());
+        record.as_v1_mut().payload =
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::CompletedOrderedEdgeBatch {
+                receipt: GraphOrderedEdgeBatchReceiptV1 {
+                    logical_edge_count: 3,
+                    emitted_delta_first_seq: None,
+                    emitted_delta_last_seq: None,
+                    hot_forward_vertices: Vec::new(),
+                },
+                projection_watermark: watermark.clone(),
+            };
+        assert_eq!(
+            BatchResponse::from_record(&record).receipt,
+            Some(BatchReceiptV1 {
+                logical_operation_count: 3,
+                logical_vertex_count: 0,
+                logical_edge_count: 3,
+            })
+        );
+
+        record.as_v1_mut().payload = crate::facade::stable::label_stats::RouterMutationPayloadV1::
+            CompletedOrderedVertexBatch {
+                receipt: GraphOrderedVertexBatchReceiptV1 {
+                    logical_vertex_count: 2,
+                    emitted_delta_first_seq: None,
+                    emitted_delta_last_seq: None,
+                    hot_forward_vertices: Vec::new(),
+                },
+                projection_watermark: watermark.clone(),
+            };
+        assert_eq!(
+            BatchResponse::from_record(&record).receipt,
+            Some(BatchReceiptV1 {
+                logical_operation_count: 2,
+                logical_vertex_count: 2,
+                logical_edge_count: 0,
+            })
+        );
+
+        record.as_v1_mut().payload = crate::facade::stable::label_stats::RouterMutationPayloadV1::
+            CompletedOrderedMixedBatch {
+                receipt: GraphOrderedMixedBatchReceiptV1 {
+                    logical_operation_count: 5,
+                    logical_vertex_count: 2,
+                    logical_edge_count: 3,
+                    emitted_delta_first_seq: None,
+                    emitted_delta_last_seq: None,
+                    hot_forward_vertices: Vec::new(),
+                },
+                projection_watermark: watermark,
+            };
+        assert_eq!(
+            BatchResponse::from_record(&record).receipt,
+            Some(BatchReceiptV1 {
+                logical_operation_count: 5,
+                logical_vertex_count: 2,
+                logical_edge_count: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn batch_request_round_trips_fingerprints_without_client_key_and_classifies_edge() {
+        let request = BatchRequest::V1(BatchRequestV1 {
             client_mutation_key: "ordered-1".into(),
             logical_graph_name: "tenant.main".into(),
-            items: vec![OrderedEdgeInsertPublicItemV1 {
-                source: vec![1; 8],
-                target: vec![2; 8],
+            operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                source: BatchEndpointV1::Existing(vec![1; 8]),
+                target: BatchEndpointV1::Existing(vec![2; 8]),
                 directed: true,
                 edge_label_name: Some("KNOWS".into()),
                 inline_property: Some(vec![1, 2]),
-                initial_edge_properties: vec![OrderedEdgePropertyPublicV1 {
+                initial_edge_properties: vec![BatchPropertyV1 {
                     property_name: "weight".into(),
                     value: vec![3, 4],
                 }],
-            }],
+            })],
         });
-        request.validate().expect("valid ordered public request");
-        let fingerprint = request
-            .public_fingerprint()
-            .expect("fingerprint ordered public request");
-        let bytes = Encode!(&request).expect("encode ordered public request");
-        let decoded: OrderedEdgeBatchPublicRequest =
-            Decode!(&bytes, OrderedEdgeBatchPublicRequest).expect("decode ordered public request");
+        request.validate().expect("valid batch request");
+        let fingerprint = request.public_fingerprint().expect("batch fingerprint");
+        let bytes = Encode!(&request).expect("encode batch request");
+        let decoded: BatchRequest = Decode!(&bytes, BatchRequest).expect("decode batch request");
         assert_eq!(decoded, request);
         let mut retry = request.clone();
-        let OrderedEdgeBatchPublicRequest::V1(ref mut retry_request) = retry;
+        let BatchRequest::V1(ref mut retry_request) = retry;
         retry_request.client_mutation_key = "different-retry-key".into();
         assert_eq!(retry.public_fingerprint().unwrap(), fingerprint);
+        let (classified, classified_fingerprint) = request.into_classified().unwrap();
+        assert_eq!(classified_fingerprint, fingerprint);
+        assert!(matches!(classified, ClassifiedBatchRequest::Edge(_)));
     }
 
     #[test]
-    fn ordered_vertex_public_request_round_trips_and_fingerprints_without_client_key() {
-        let request = OrderedVertexBatchPublicRequest::V1(OrderedVertexBatchPublicRequestV1 {
+    fn batch_request_classifies_vertex_only_operations() {
+        let request = BatchRequest::V1(BatchRequestV1 {
             client_mutation_key: "vertex-1".into(),
             logical_graph_name: "tenant.main".into(),
-            items: vec![OrderedVertexInsertPublicItemV1 {
+            operations: vec![BatchOperationV1::Vertex(BatchVertexInsertV1 {
                 vertex_labels: vec!["Person".into(), "User".into()],
-                initial_properties: vec![OrderedEdgePropertyPublicV1 {
+                initial_properties: vec![BatchPropertyV1 {
                     property_name: "name".into(),
                     value: vec![1, 2],
                 }],
-            }],
+            })],
         });
-        request.validate().expect("valid ordered vertex request");
-        let fingerprint = request.public_fingerprint().expect("vertex fingerprint");
-        let bytes = Encode!(&request).expect("encode ordered vertex request");
-        let decoded: OrderedVertexBatchPublicRequest =
-            Decode!(&bytes, OrderedVertexBatchPublicRequest).expect("decode vertex request");
-        assert_eq!(decoded, request);
-        let mut retry = request.clone();
-        let OrderedVertexBatchPublicRequest::V1(ref mut retry_request) = retry;
-        retry_request.client_mutation_key = "different-retry-key".into();
-        assert_eq!(retry.public_fingerprint().unwrap(), fingerprint);
+        let (classified, _) = request.into_classified().unwrap();
+        assert!(matches!(classified, ClassifiedBatchRequest::Vertex(_)));
     }
 
     #[test]
-    fn ordered_mixed_public_request_round_trips_and_validates_local_vertex_ordinals() {
-        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+    fn batch_request_classifies_mixed_operations_and_validates_vertex_ordinals() {
+        let request = BatchRequest::V1(BatchRequestV1 {
             client_mutation_key: "mixed-1".into(),
             logical_graph_name: "tenant.main".into(),
             operations: vec![
-                OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+                BatchOperationV1::Vertex(BatchVertexInsertV1 {
                     vertex_labels: vec!["Person".into()],
                     initial_properties: Vec::new(),
                 }),
-                OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
-                    source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
-                    target: OrderedMixedEndpointPublicV1::Existing(vec![2; 8]),
+                BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                    source: BatchEndpointV1::NewVertexOrdinal(0),
+                    target: BatchEndpointV1::Existing(vec![2; 8]),
                     directed: true,
                     edge_label_name: None,
                     inline_property: None,
@@ -1848,16 +2073,8 @@ mod tests {
                 }),
             ],
         });
-        request.validate().expect("valid mixed request");
-        let fingerprint = request.public_fingerprint().expect("mixed fingerprint");
-        let bytes = Encode!(&request).expect("encode mixed request");
-        let decoded: OrderedMixedBatchPublicRequest =
-            Decode!(&bytes, OrderedMixedBatchPublicRequest).expect("decode mixed request");
-        assert_eq!(decoded, request);
-        let mut retry = request.clone();
-        let OrderedMixedBatchPublicRequest::V1(ref mut retry_request) = retry;
-        retry_request.client_mutation_key = "different-retry-key".into();
-        assert_eq!(retry.public_fingerprint().unwrap(), fingerprint);
+        let (classified, _) = request.into_classified().unwrap();
+        assert!(matches!(classified, ClassifiedBatchRequest::Mixed(_)));
     }
 
     #[test]
@@ -1867,17 +2084,17 @@ mod tests {
             &key,
             GlobalVertexId::new(ShardId::new(4), 11),
         );
-        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+        let request = OrderedMixedBatchRequest::V1(OrderedMixedBatchRequestV1 {
             client_mutation_key: "mixed-placement".into(),
             logical_graph_name: "tenant.main".into(),
             operations: vec![
-                OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+                BatchOperationV1::Vertex(BatchVertexInsertV1 {
                     vertex_labels: Vec::new(),
                     initial_properties: Vec::new(),
                 }),
-                OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
-                    source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
-                    target: OrderedMixedEndpointPublicV1::Existing(existing.0.to_vec()),
+                BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                    source: BatchEndpointV1::NewVertexOrdinal(0),
+                    target: BatchEndpointV1::Existing(existing.0.to_vec()),
                     directed: true,
                     edge_label_name: None,
                     inline_property: None,
@@ -1902,17 +2119,17 @@ mod tests {
             &key,
             GlobalVertexId::new(ShardId::new(5), 12),
         );
-        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+        let request = OrderedMixedBatchRequest::V1(OrderedMixedBatchRequestV1 {
             client_mutation_key: "mixed-placement-conflict".into(),
             logical_graph_name: "tenant.main".into(),
             operations: vec![
-                OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+                BatchOperationV1::Vertex(BatchVertexInsertV1 {
                     vertex_labels: Vec::new(),
                     initial_properties: Vec::new(),
                 }),
-                OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
-                    source: OrderedMixedEndpointPublicV1::Existing(first.0.to_vec()),
-                    target: OrderedMixedEndpointPublicV1::Existing(second.0.to_vec()),
+                BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                    source: BatchEndpointV1::Existing(first.0.to_vec()),
+                    target: BatchEndpointV1::Existing(second.0.to_vec()),
                     directed: true,
                     edge_label_name: None,
                     inline_property: None,
@@ -1924,18 +2141,18 @@ mod tests {
     }
 
     #[test]
-    fn ordered_mixed_public_request_converts_to_graph_operation_phases() {
-        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+    fn ordered_mixed_request_converts_to_graph_operation_phases() {
+        let request = OrderedMixedBatchRequest::V1(OrderedMixedBatchRequestV1 {
             client_mutation_key: "mixed-convert".into(),
             logical_graph_name: "tenant.main".into(),
             operations: vec![
-                OrderedMixedBatchOperationV1::Vertex(OrderedVertexInsertPublicItemV1 {
+                BatchOperationV1::Vertex(BatchVertexInsertV1 {
                     vertex_labels: Vec::new(),
                     initial_properties: Vec::new(),
                 }),
-                OrderedMixedBatchOperationV1::Edge(OrderedMixedEdgeInsertPublicItemV1 {
-                    source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
-                    target: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
+                BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                    source: BatchEndpointV1::NewVertexOrdinal(0),
+                    target: BatchEndpointV1::NewVertexOrdinal(0),
                     directed: false,
                     edge_label_name: None,
                     inline_property: Some(vec![7, 8]),
@@ -1944,7 +2161,7 @@ mod tests {
             ],
         });
         let graph_request = request
-            .into_graph_request(
+            .to_graph_request(
                 GraphId::from_raw(11),
                 ShardId::new(3),
                 Principal::from_slice(&[1]),
@@ -1952,7 +2169,7 @@ mod tests {
                 Default::default(),
                 Default::default(),
             )
-            .expect("convert mixed public request");
+            .expect("convert mixed request");
         let gleaph_graph_kernel::plan_exec::OrderedMixedBatchGraphRequest::V1(graph_request) =
             graph_request;
         assert_eq!(graph_request.operations.len(), 2);
@@ -1973,83 +2190,127 @@ mod tests {
     }
 
     #[test]
-    fn ordered_mixed_public_request_rejects_forward_vertex_ordinal() {
-        let request = OrderedMixedBatchPublicRequest::V1(OrderedMixedBatchPublicRequestV1 {
+    fn batch_request_rejects_unknown_vertex_ordinal() {
+        let request = BatchRequest::V1(BatchRequestV1 {
             client_mutation_key: "mixed-2".into(),
             logical_graph_name: "tenant.main".into(),
-            operations: vec![OrderedMixedBatchOperationV1::Edge(
-                OrderedMixedEdgeInsertPublicItemV1 {
-                    source: OrderedMixedEndpointPublicV1::NewVertexOrdinal(0),
-                    target: OrderedMixedEndpointPublicV1::Existing(vec![2; 8]),
-                    directed: true,
-                    edge_label_name: None,
-                    inline_property: None,
-                    initial_edge_properties: Vec::new(),
-                },
-            )],
+            operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                source: BatchEndpointV1::NewVertexOrdinal(0),
+                target: BatchEndpointV1::Existing(vec![2; 8]),
+                directed: true,
+                edge_label_name: None,
+                inline_property: None,
+                initial_edge_properties: Vec::new(),
+            })],
         });
         assert!(request.validate().is_err());
     }
 
     #[test]
-    fn ordered_public_fingerprint_canonicalizes_property_order_only() {
-        let mut request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+    fn batch_fingerprint_canonicalizes_property_order_only() {
+        let mut request = BatchRequest::V1(BatchRequestV1 {
             client_mutation_key: "ordered-property-order".into(),
             logical_graph_name: "tenant.main".into(),
-            items: vec![OrderedEdgeInsertPublicItemV1 {
-                source: vec![1; 8],
-                target: vec![2; 8],
+            operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                source: BatchEndpointV1::Existing(vec![1; 8]),
+                target: BatchEndpointV1::Existing(vec![2; 8]),
                 directed: true,
                 edge_label_name: None,
                 inline_property: None,
                 initial_edge_properties: vec![
-                    OrderedEdgePropertyPublicV1 {
+                    BatchPropertyV1 {
                         property_name: "zeta".into(),
                         value: vec![1],
                     },
-                    OrderedEdgePropertyPublicV1 {
+                    BatchPropertyV1 {
                         property_name: "alpha".into(),
                         value: vec![2],
                     },
                 ],
-            }],
+            })],
         });
         let fingerprint = request.public_fingerprint().expect("fingerprint");
         {
-            let OrderedEdgeBatchPublicRequest::V1(ref mut request_v1) = request;
-            request_v1.items[0].initial_edge_properties.swap(0, 1);
+            let BatchRequest::V1(ref mut request_v1) = request;
+            let BatchOperationV1::Edge(item) = &mut request_v1.operations[0] else {
+                panic!("operation must remain an edge");
+            };
+            item.initial_edge_properties.swap(0, 1);
         }
         assert_eq!(request.public_fingerprint().unwrap(), fingerprint);
 
         {
-            let OrderedEdgeBatchPublicRequest::V1(ref mut request_v1) = request;
-            request_v1.items[0].target = vec![3; 8];
+            let BatchRequest::V1(ref mut request_v1) = request;
+            let BatchOperationV1::Edge(item) = &mut request_v1.operations[0] else {
+                panic!("operation must remain an edge");
+            };
+            item.target = BatchEndpointV1::Existing(vec![3; 8]);
         }
         assert_ne!(request.public_fingerprint().unwrap(), fingerprint);
     }
 
     #[test]
-    fn ordered_public_request_rejects_empty_property_name() {
-        let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+    fn batch_request_rejects_empty_property_name() {
+        let request = BatchRequest::V1(BatchRequestV1 {
             client_mutation_key: "ordered-2".into(),
             logical_graph_name: "tenant.main".into(),
-            items: vec![OrderedEdgeInsertPublicItemV1 {
-                source: vec![1; 8],
-                target: vec![2; 8],
+            operations: vec![BatchOperationV1::Edge(BatchEdgeInsertV1 {
+                source: BatchEndpointV1::Existing(vec![1; 8]),
+                target: BatchEndpointV1::Existing(vec![2; 8]),
                 directed: true,
                 edge_label_name: None,
                 inline_property: None,
-                initial_edge_properties: vec![OrderedEdgePropertyPublicV1 {
+                initial_edge_properties: vec![BatchPropertyV1 {
                     property_name: String::new(),
                     value: Vec::new(),
                 }],
-            }],
+            })],
         });
         assert!(request.validate().is_err());
     }
 
     #[test]
-    fn ordered_public_request_decodes_and_requires_one_shard() {
+    fn batch_request_enforces_operation_and_property_name_bounds() {
+        let operation = BatchOperationV1::Vertex(BatchVertexInsertV1 {
+            vertex_labels: Vec::new(),
+            initial_properties: Vec::new(),
+        });
+        let empty = BatchRequest::V1(BatchRequestV1 {
+            client_mutation_key: "empty".into(),
+            logical_graph_name: "tenant.main".into(),
+            operations: Vec::new(),
+        });
+        assert!(empty.validate().is_err());
+
+        let oversized = BatchRequest::V1(BatchRequestV1 {
+            client_mutation_key: "oversized".into(),
+            logical_graph_name: "tenant.main".into(),
+            operations: vec![operation; MAX_BATCH_OPERATIONS + 1],
+        });
+        assert!(oversized.validate().is_err());
+
+        let duplicate = BatchRequest::V1(BatchRequestV1 {
+            client_mutation_key: "duplicate-property".into(),
+            logical_graph_name: "tenant.main".into(),
+            operations: vec![BatchOperationV1::Vertex(BatchVertexInsertV1 {
+                vertex_labels: Vec::new(),
+                initial_properties: vec![
+                    BatchPropertyV1 {
+                        property_name: "name".into(),
+                        value: vec![1],
+                    },
+                    BatchPropertyV1 {
+                        property_name: "name".into(),
+                        value: vec![2],
+                    },
+                ],
+            })],
+        });
+        assert!(duplicate.validate().is_err());
+    }
+
+    #[test]
+    fn ordered_edge_request_decodes_and_requires_one_shard() {
         use gleaph_graph_kernel::federation::{
             ElementIdEncodingKey, GlobalVertexId, encode_global_vertex_id,
         };
@@ -2057,16 +2318,16 @@ mod tests {
         let key = ElementIdEncodingKey::host_test_fixture();
         let source = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 11));
         let target = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 12));
-        let request = OrderedEdgeBatchPublicRequest::V1(OrderedEdgeBatchPublicRequestV1 {
+        let request = OrderedEdgeBatchRequest::V1(OrderedEdgeBatchRequestV1 {
             client_mutation_key: "ordered-3".into(),
             logical_graph_name: "tenant.main".into(),
-            items: vec![OrderedEdgeInsertPublicItemV1 {
+            items: vec![OrderedEdgeInsertRequestItemV1 {
                 source: source.0.to_vec(),
                 target: target.0.to_vec(),
                 directed: false,
                 edge_label_name: None,
                 inline_property: None,
-                initial_edge_properties: vec![OrderedEdgePropertyPublicV1 {
+                initial_edge_properties: vec![BatchPropertyV1 {
                     property_name: "weight".into(),
                     value: vec![7, 8],
                 }],
@@ -2081,7 +2342,7 @@ mod tests {
         );
 
         let graph_request = request
-            .into_graph_request(
+            .to_graph_request(
                 GraphId::from_raw(7),
                 ShardId::new(3),
                 Principal::self_authenticating([9; 32]),

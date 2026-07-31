@@ -43,38 +43,22 @@ export {
 } from "./helpers";
 export { GleaphCanisterError, GleaphSdkError } from "./errors";
 export { bytesToHex, encodeCanonicalGqlValue } from "./canonical-value";
-export { makeOrderedEdgeBatchPublicRequest } from "./ordered-edge-batch";
+export { makeBatchRequest } from "./batch";
 export type {
+  BatchEdgeInsert,
+  BatchEdgeInsertInput,
+  BatchEndpoint,
+  BatchEndpointInput,
+  BatchOperation,
+  BatchOperationInput,
+  BatchProperty,
+  BatchRequest,
+  BatchRequestInput,
+  BatchRequestV1,
+  BatchVertexInsert,
+  BatchVertexInsertInput,
   CandidOption,
-  OrderedEdgeBatchPublicRequest,
-  OrderedEdgeBatchPublicRequestInput,
-  OrderedEdgeBatchPublicRequestV1,
-  OrderedEdgeInsertPublicItem,
-  OrderedEdgeInsertPublicItemInput,
-  OrderedEdgePropertyPublic,
-} from "./ordered-edge-batch";
-export { makeOrderedVertexBatchPublicRequest } from "./ordered-vertex-batch";
-export type {
-  OrderedVertexBatchPublicRequest,
-  OrderedVertexBatchPublicRequestInput,
-  OrderedVertexBatchPublicRequestV1,
-  OrderedVertexInsertPublicItem,
-  OrderedVertexInsertPublicItemInput,
-} from "./ordered-vertex-batch";
-export { makeOrderedMixedBatchPublicRequest } from "./ordered-mixed-batch";
-export type {
-  OrderedMixedBatchOperation,
-  OrderedMixedBatchOperationInput,
-  OrderedMixedBatchPublicRequest,
-  OrderedMixedBatchPublicRequestInput,
-  OrderedMixedBatchPublicRequestV1,
-  OrderedMixedEdgeInsertPublicItem,
-  OrderedMixedEdgeInsertPublicItemInput,
-  OrderedMixedEndpoint,
-  OrderedMixedEndpointInput,
-  OrderedVertexInsertPublicItem as OrderedMixedVertexInsertPublicItem,
-  OrderedVertexInsertPublicItemInput as OrderedMixedVertexInsertPublicItemInput,
-} from "./ordered-mixed-batch";
+} from "./batch";
 export {
   fromApiValue,
   isApiValue,

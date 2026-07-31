@@ -12,8 +12,7 @@ use gleaph_provision::types::DeploymentBinding;
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingArgs, AdminRegisterShardArgs,
-    GqlExecuteIdempotentBatchItem, OrderedEdgeBatchPublicRequest, OrderedMixedBatchPublicRequest,
-    OrderedVertexBatchPublicRequest, RegisterVectorIndexArgs,
+    BatchRequest, BatchResponse, GqlExecuteIdempotentBatchItem, RegisterVectorIndexArgs,
 };
 use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
 use pocket_ic::{PocketIc, PocketIcBuilder};
@@ -1990,67 +1989,25 @@ pub fn mutation_status_as_admin(
     Decode!(&bytes, Result<MutationStatus, RouterError>).expect("decode mutation_status")
 }
 
-/// Execute one ADR 0049 ordered public edge batch as the bootstrap admin.
-pub fn execute_ordered_edge_batch_as_admin(
+/// Execute one Router batch as the bootstrap admin.
+pub fn execute_batch_as_admin(
     env: &FederationEnv,
-    request: OrderedEdgeBatchPublicRequest,
-) -> Result<
-    gleaph_router::types::OrderedEdgeBatchResponse,
-    gleaph_graph_kernel::federation::RouterError,
-> {
+    request: BatchRequest,
+) -> Result<BatchResponse, gleaph_graph_kernel::federation::RouterError> {
     let bytes = env
         .pic
         .update_call(
             env.router,
             env.admin,
-            "execute_ordered_edge_batch",
-            Encode!(&request).expect("encode execute_ordered_edge_batch"),
+            "batch",
+            Encode!(&request).expect("encode batch"),
         )
-        .unwrap_or_else(|e| panic!("execute_ordered_edge_batch on router: {e:?}"));
-    Decode!(&bytes, Result<gleaph_router::types::OrderedEdgeBatchResponse, gleaph_graph_kernel::federation::RouterError>)
-        .expect("decode execute_ordered_edge_batch")
-}
-
-/// Execute one ADR 0049 ordered public vertex batch as the bootstrap admin.
-pub fn execute_ordered_vertex_batch_as_admin(
-    env: &FederationEnv,
-    request: OrderedVertexBatchPublicRequest,
-) -> Result<
-    gleaph_router::types::OrderedVertexBatchResponse,
-    gleaph_graph_kernel::federation::RouterError,
-> {
-    let bytes = env
-        .pic
-        .update_call(
-            env.router,
-            env.admin,
-            "execute_ordered_vertex_batch",
-            Encode!(&request).expect("encode execute_ordered_vertex_batch"),
-        )
-        .unwrap_or_else(|e| panic!("execute_ordered_vertex_batch on router: {e:?}"));
-    Decode!(&bytes, Result<gleaph_router::types::OrderedVertexBatchResponse, gleaph_graph_kernel::federation::RouterError>)
-        .expect("decode execute_ordered_vertex_batch")
-}
-
-/// Execute one ADR 0049 ordered public mixed vertex/edge batch as the bootstrap admin.
-pub fn execute_ordered_mixed_batch_as_admin(
-    env: &FederationEnv,
-    request: OrderedMixedBatchPublicRequest,
-) -> Result<
-    gleaph_router::types::OrderedMixedBatchResponse,
-    gleaph_graph_kernel::federation::RouterError,
-> {
-    let bytes = env
-        .pic
-        .update_call(
-            env.router,
-            env.admin,
-            "execute_ordered_mixed_batch",
-            Encode!(&request).expect("encode execute_ordered_mixed_batch"),
-        )
-        .unwrap_or_else(|e| panic!("execute_ordered_mixed_batch on router: {e:?}"));
-    Decode!(&bytes, Result<gleaph_router::types::OrderedMixedBatchResponse, gleaph_graph_kernel::federation::RouterError>)
-        .expect("decode execute_ordered_mixed_batch")
+        .unwrap_or_else(|e| panic!("batch on router: {e:?}"));
+    Decode!(
+        &bytes,
+        Result<BatchResponse, gleaph_graph_kernel::federation::RouterError>
+    )
+    .expect("decode batch")
 }
 
 /// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga under `client_mutation_key`
