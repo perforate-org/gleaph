@@ -4,7 +4,8 @@ import type {
   ApiPrepareRequest,
   ApiPrepareResponse,
   ApiQueryRequest,
-  ApiQueryResponse,
+  GqlMutationResult,
+  GqlQueryResult,
   ApiExecutePreparedRequest,
   ApiValue,
   PreparedManifest,
@@ -14,33 +15,33 @@ import { makeExecutePreparedRequest } from "./values";
 
 export interface GraphTransport {
   plan(request: ApiQueryRequest): Promise<ApiPlanResponse>;
-  execute(request: ApiQueryRequest): Promise<ApiQueryResponse>;
+  execute(request: ApiQueryRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
   listPrepared(): Promise<ApiListPreparedResponse>;
   getPreparedManifest(graphName: string): Promise<PreparedManifest>;
-  executePreparedQuery(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse>;
-  executePreparedUpdate(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse>;
+  executePreparedQuery(request: ApiExecutePreparedRequest): Promise<GqlQueryResult>;
+  executePreparedUpdate(request: ApiExecutePreparedRequest): Promise<GqlMutationResult>;
   dropPrepared(name: string): Promise<boolean>;
 }
 
 export interface GraphClient {
   plan(request: ApiQueryRequest): Promise<ApiPlanResponse>;
-  execute(request: ApiQueryRequest): Promise<ApiQueryResponse>;
+  execute(request: ApiQueryRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
   listPrepared(): Promise<ApiListPreparedResponse>;
   getPreparedManifest(graphName: string): Promise<PreparedManifest>;
-  executePrepared(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse>;
+  executePrepared(request: ApiExecutePreparedRequest): Promise<GqlQueryResult>;
   executePrepared(
     name: string,
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
-  ): Promise<ApiQueryResponse>;
-  executePreparedMutation(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse>;
+  ): Promise<GqlQueryResult>;
+  executePreparedMutation(request: ApiExecutePreparedRequest): Promise<GqlMutationResult>;
   executePreparedMutation(
     name: string,
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
-  ): Promise<ApiQueryResponse>;
+  ): Promise<GqlMutationResult>;
   dropPrepared(name: string): Promise<boolean>;
 }
 
@@ -51,7 +52,7 @@ class TransportBackedGraphClient implements GraphClient {
     return this.transport.plan(request);
   }
 
-  execute(request: ApiQueryRequest): Promise<ApiQueryResponse> {
+  execute(request: ApiQueryRequest): Promise<GqlQueryResult> {
     return this.transport.execute(request);
   }
 
@@ -71,7 +72,7 @@ class TransportBackedGraphClient implements GraphClient {
     requestOrName: ApiExecutePreparedRequest | string,
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
-  ): Promise<ApiQueryResponse> {
+  ): Promise<GqlQueryResult> {
     const request =
       typeof requestOrName === "string"
         ? makeExecutePreparedRequest(requestOrName, params, sort)
@@ -83,7 +84,7 @@ class TransportBackedGraphClient implements GraphClient {
     requestOrName: ApiExecutePreparedRequest | string,
     params?: Record<string, unknown | ApiValue>,
     sort?: PreparedSortSpec[],
-  ): Promise<ApiQueryResponse> {
+  ): Promise<GqlMutationResult> {
     const request =
       typeof requestOrName === "string"
         ? makeExecutePreparedRequest(requestOrName, params, sort)

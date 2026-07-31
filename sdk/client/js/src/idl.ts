@@ -1,12 +1,7 @@
 import { IDL } from "@icp-sdk/core/candid";
 
-const ApiPathElement = IDL.Variant({
-  Vertex: IDL.Vec(IDL.Nat8),
-  Edge: IDL.Vec(IDL.Nat8),
-});
-
-const ApiValue: IDL.Type = IDL.Rec();
-const ApiValueVariant = IDL.Variant({
+const IcWireValue: IDL.Type = IDL.Rec();
+const IcWireValueVariant = IDL.Variant({
   Null: IDL.Null,
   Bool: IDL.Bool,
   Int8: IDL.Int8,
@@ -32,33 +27,59 @@ const ApiValueVariant = IDL.Variant({
   Date: IDL.Int32,
   Time: IDL.Nat64,
   LocalTime: IDL.Nat64,
-  DateTime: IDL.Record({
-    seconds: IDL.Int64,
-    nanos: IDL.Nat32,
-  }),
-  LocalDateTime: IDL.Record({
-    seconds: IDL.Int64,
-    nanos: IDL.Nat32,
-  }),
+  DateTime: IDL.Record({ seconds: IDL.Int64, nanos: IDL.Nat32 }),
+  LocalDateTime: IDL.Record({ seconds: IDL.Int64, nanos: IDL.Nat32 }),
   ZonedDateTime: IDL.Record({
     seconds: IDL.Int64,
     nanos: IDL.Nat32,
     offset_seconds: IDL.Int32,
   }),
-  ZonedTime: IDL.Record({
-    nanos: IDL.Nat64,
-    offset_seconds: IDL.Int32,
-  }),
-  Duration: IDL.Record({
-    months: IDL.Int32,
-    nanos: IDL.Int64,
-  }),
+  ZonedTime: IDL.Record({ nanos: IDL.Nat64, offset_seconds: IDL.Int32 }),
+  Duration: IDL.Record({ months: IDL.Int32, nanos: IDL.Int64 }),
   Principal: IDL.Principal,
-  List: IDL.Vec(ApiValue),
-  Path: IDL.Vec(ApiPathElement),
-  Record: IDL.Vec(IDL.Tuple(IDL.Text, ApiValue)),
+  ExtensionLeaf: IDL.Record({ type_name: IDL.Text, payload: IDL.Vec(IDL.Nat8) }),
+  ValueBinary: IDL.Vec(IDL.Nat8),
+  List: IDL.Vec(IcWireValue),
+  Path: IDL.Vec(IcWirePathElement),
+  Record: IDL.Vec(IDL.Tuple(IDL.Text, IcWireValue)),
 });
-(ApiValue as unknown as { fill: (value: IDL.Type) => void }).fill(ApiValueVariant);
+(IcWireValue as unknown as { fill: (value: IDL.Type) => void }).fill(IcWireValueVariant);
+
+const IcWirePlanQueryResult = IDL.Record({
+  rows: IDL.Vec(
+    IDL.Record({
+      columns: IDL.Vec(IDL.Tuple(IDL.Text, IcWireValue)),
+    }),
+  ),
+});
+
+const MutationLifecyclePhase = IDL.Variant({
+  Routing: IDL.Null,
+  CanonicalPending: IDL.Null,
+  CanonicalCommitted: IDL.Null,
+  ProjectionPending: IDL.Null,
+  Completed: IDL.Null,
+  Failed: IDL.Null,
+});
+
+const MutationToken = IDL.Record({
+  mutation_id: IDL.Nat64,
+  shards: IDL.Vec(
+    IDL.Record({
+      shard_id: IDL.Nat32,
+      label_stats_seq: IDL.Opt(IDL.Nat64),
+    }),
+  ),
+});
+
+export const GqlQueryResult = IDL.Record({
+  row_count: IDL.Nat64,
+  rows_blob: IDL.Opt(IDL.Vec(IDL.Nat8)),
+  phase: IDL.Opt(MutationLifecyclePhase),
+  token: IDL.Opt(MutationToken),
+});
+
+export const GqlQueryRows = IcWirePlanQueryResult;
 
 const ApiPlanSummary = IDL.Record({
   estimated_rows: IDL.Opt(IDL.Float64),
@@ -69,29 +90,10 @@ const ApiPlanSummary = IDL.Record({
   type_warning_count: IDL.Nat64,
 });
 
-const ApiExecutionSummary = IDL.Record({
-  row_count: IDL.Nat64,
-  warning_count: IDL.Nat64,
-  had_dml: IDL.Bool,
-});
-
-const ApiExecutionResult = IDL.Record({
-  rows: IDL.Vec(IDL.Vec(IDL.Tuple(IDL.Text, ApiValue))),
-  warnings: IDL.Vec(IDL.Text),
-  summary: ApiExecutionSummary,
-});
-
 const ApiUseGraphPushdownInfo = IDL.Record({
   graph_name: IDL.Text,
   supported: IDL.Bool,
   reason: IDL.Opt(IDL.Text),
-});
-
-const ApiQueryResponse = IDL.Record({
-  explain: IDL.Text,
-  plan_summary: ApiPlanSummary,
-  use_graph_pushdown: IDL.Vec(ApiUseGraphPushdownInfo),
-  execution: ApiExecutionResult,
 });
 
 const ApiPlanResponse = IDL.Record({
@@ -122,10 +124,7 @@ const ApiTypeDiagnostic = IDL.Record({
   message: IDL.Text,
   span_start: IDL.Nat32,
   span_end: IDL.Nat32,
-  severity: IDL.Variant({
-    Error: IDL.Null,
-    Warning: IDL.Null,
-  }),
+  severity: IDL.Variant({ Error: IDL.Null, Warning: IDL.Null }),
 });
 
 const ApiPreparedParameterInfo = IDL.Record({
@@ -144,10 +143,7 @@ const ApiPreparedColumnInfo = IDL.Record({
 
 const ApiPreparedQueryInfo = IDL.Record({
   name: IDL.Text,
-  kind: IDL.Variant({
-    Query: IDL.Null,
-    Update: IDL.Null,
-  }),
+  kind: IDL.Variant({ Query: IDL.Null, Update: IDL.Null }),
   requires_caller: IDL.Bool,
   extension_types: IDL.Vec(IDL.Text),
   source: IDL.Text,
@@ -257,50 +253,90 @@ const PreparedManifest = IDL.Record({
   ),
 });
 
+const VectorActivationBlockReason = IDL.Variant({
+  MissingEmbeddingIncarnationFence: IDL.Null,
+  DispatchNotActivated: IDL.Null,
+  ShardsNotVectorAttached: IDL.Null,
+});
+
+const RouterError = IDL.Variant({
+  NotAuthorized: IDL.Null,
+  Forbidden: IDL.Null,
+  NotFound: IDL.Text,
+  Conflict: IDL.Text,
+  InvalidArgument: IDL.Text,
+  ExecutionPathMismatch: IDL.Record({
+    entrypoint: IDL.Text,
+    program_kind: IDL.Text,
+    call_kind: IDL.Text,
+    remedy: IDL.Text,
+  }),
+  GraphUnavailable: IDL.Null,
+  GraphContextMismatch: IDL.Record({ api_graph: IDL.Text, resolved_graph: IDL.Text }),
+  ShardNotRegistered: IDL.Null,
+  ProjectionLag: IDL.Record({
+    shard_id: IDL.Nat32,
+    watermark: IDL.Text,
+    required: IDL.Nat64,
+    current: IDL.Nat64,
+  }),
+  UnsupportedMultiDmlBundle: IDL.Record({ dml_statements: IDL.Nat32, shard_count: IDL.Nat32 }),
+  ShardAlreadyRegistered: IDL.Null,
+  IdExhausted: IDL.Text,
+  UniquenessViolation: IDL.Text,
+  UniquenessReservationInFlight: IDL.Text,
+  NotImplemented: IDL.Text,
+  VectorDispatchActivationBlocked: VectorActivationBlockReason,
+  ProvisionCallFailed: IDL.Text,
+  ProvisionEncodingFailed: IDL.Text,
+  ProvisionConflict: IDL.Text,
+  ProvisionRejected: IDL.Text,
+  UnknownDeployment: IDL.Text,
+  AckConflict: IDL.Record({ stored: IDL.Nat64 }),
+  InvalidState: IDL.Text,
+  Internal: IDL.Text,
+});
+
 export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
   LocalIDL.Service({
     query: LocalIDL.Func(
-      [LocalIDL.Text, LocalIDL.Opt(LocalIDL.Vec(LocalIDL.Tuple(LocalIDL.Text, ApiValue)))],
-      [LocalIDL.Variant({ Ok: ApiQueryResponse, Err: LocalIDL.Text })],
+      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
+      [LocalIDL.Variant({ Ok: GqlQueryResult, Err: RouterError })],
       ["query"],
     ),
     explain: LocalIDL.Func(
       [LocalIDL.Text],
-      [LocalIDL.Variant({ Ok: ApiPlanResponse, Err: LocalIDL.Text })],
+      [LocalIDL.Variant({ Ok: ApiPlanResponse, Err: RouterError })],
       ["query"],
     ),
     update: LocalIDL.Func(
-      [LocalIDL.Text, LocalIDL.Opt(LocalIDL.Vec(LocalIDL.Tuple(LocalIDL.Text, ApiValue)))],
-      [LocalIDL.Variant({ Ok: ApiQueryResponse, Err: LocalIDL.Text })],
+      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
+      [LocalIDL.Variant({ Ok: LocalIDL.Nat64, Err: RouterError })],
       [],
     ),
     prepare: LocalIDL.Func(
       [LocalIDL.Text, LocalIDL.Text, LocalIDL.Opt(PreparedOptions)],
-      [LocalIDL.Variant({ Ok: ApiPrepareResponse, Err: LocalIDL.Text })],
+      [LocalIDL.Variant({ Ok: ApiPrepareResponse, Err: RouterError })],
       [],
     ),
     list_prepared_api: LocalIDL.Func(
       [],
-      [LocalIDL.Variant({ Ok: ApiListPreparedResponse, Err: LocalIDL.Text })],
+      [LocalIDL.Variant({ Ok: ApiListPreparedResponse, Err: RouterError })],
       ["query"],
     ),
     prepared_manifest: LocalIDL.Func(
       [LocalIDL.Text],
-      [LocalIDL.Variant({ Ok: PreparedManifest, Err: LocalIDL.Text })],
+      [LocalIDL.Variant({ Ok: PreparedManifest, Err: RouterError })],
       ["query"],
     ),
-    execute_prepared_query: LocalIDL.Func(
-      [
-        LocalIDL.Text,
-        LocalIDL.Vec(LocalIDL.Tuple(LocalIDL.Text, ApiValue)),
-        LocalIDL.Opt(LocalIDL.Vec(PreparedSortSpec)),
-      ],
-      [LocalIDL.Variant({ Ok: ApiQueryResponse, Err: LocalIDL.Text })],
+    prepared_execute_query: LocalIDL.Func(
+      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
+      [LocalIDL.Variant({ Ok: GqlQueryResult, Err: RouterError })],
       ["query"],
     ),
-    execute_prepared_update: LocalIDL.Func(
-      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Tuple(LocalIDL.Text, ApiValue))],
-      [LocalIDL.Variant({ Ok: ApiQueryResponse, Err: LocalIDL.Text })],
+    prepared_execute_update: LocalIDL.Func(
+      [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8)],
+      [LocalIDL.Variant({ Ok: LocalIDL.Nat64, Err: RouterError })],
       [],
     ),
     drop_prepared: LocalIDL.Func(
@@ -308,7 +344,7 @@ export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
       [
         LocalIDL.Variant({
           Ok: LocalIDL.Record({ dropped: LocalIDL.Bool }),
-          Err: LocalIDL.Text,
+          Err: RouterError,
         }),
       ],
       [],

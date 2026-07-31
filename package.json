@@ -13,6 +13,7 @@
     "sdk:build": "pnpm --filter @gleaph/sdk run build",
     "sdk:pack": "pnpm --filter @gleaph/sdk run pack",
     "codegen:check-fixtures": "sh scripts/check-codegen-fixtures.sh",
+    "codegen:e2e:local": "sh scripts/check-codegen-local-e2e.sh",
     "dashboard:dev": "pnpm --filter @gleaph/dashboard dev",
     "dashboard:check": "pnpm --filter @gleaph/dashboard run check",
     "dashboard:build": "pnpm --filter @gleaph/dashboard run build",

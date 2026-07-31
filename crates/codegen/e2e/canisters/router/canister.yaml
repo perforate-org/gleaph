@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v1.0.0/docs/schemas/canister-yaml-schema.json
+name: gleaph-codegen-e2e-router
+
+recipe:
+  type: "@dfinity/rust@v3.3.0"
+  configuration:
+    package: gleaph-router
+    features: batch-instr-log
+    shrink: true

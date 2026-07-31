@@ -1,10 +1,11 @@
 //! Command-line entrypoint for generating prepared-query client and canister adapters.
 
-use candid::{Decode, Encode, IDLValue, Principal};
+use candid::{Decode, Encode, IDLArgs, IDLValue, Principal};
 use gleaph_codegen::{
     RustFormatMode, format_rust, generate_javascript, generate_motoko, generate_rust,
     generate_rust_canister, generate_typescript, parse_manifest,
 };
+use ic_agent::identity::Secp256k1Identity;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -19,7 +20,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("gleaph-codegen: {message}");
             eprintln!(
-                "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [--format rust=<auto|rustfmt|never>] [-n <ic|local|url>] [--fetch-root-key]"
+                "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [--format rust=<auto|rustfmt|never>] [-n <ic|local|url>] [--identity <pem>] [--fetch-root-key]"
             );
             ExitCode::FAILURE
         }
@@ -32,6 +33,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let mut graph = None;
     let mut network = "ic".to_string();
     let mut fetch_root_key = false;
+    let mut identity_path = None;
     let mut target = None;
     let mut output = None;
     let mut rust_format = RustFormatMode::Auto;
@@ -49,6 +51,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "--canister" => canister = Some(value()?.clone()),
             "--graph" => graph = Some(value()?.clone()),
             "-n" | "--network" => network = value()?.clone(),
+            "--identity" => identity_path = Some(PathBuf::from(value()?.clone())),
             "--fetch-root-key" => {
                 fetch_root_key = true;
                 index += 1;
@@ -73,7 +76,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [--format rust=<auto|rustfmt|never>] [-n <ic|local|url>] [--fetch-root-key]"
+                    "usage: gleaph-codegen (--manifest <path> | --canister <principal> --graph <name>) --target <typescript|javascript|rust|rust-canister|motoko> [--output <path>] [--format rust=<auto|rustfmt|never>] [-n <ic|local|url>] [--identity <pem>] [--fetch-root-key]"
                 );
                 return Ok(());
             }
@@ -116,6 +119,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 &graph.expect("graph was validated"),
                 &network,
                 fetch_root_key,
+                identity_path.as_deref(),
             ))?
     } else {
         return Err("one manifest source is required: --manifest or --canister/--graph".into());
@@ -149,14 +153,25 @@ async fn fetch_manifest(
     graph: &str,
     network: &str,
     fetch_root_key_flag: bool,
+    identity_path: Option<&std::path::Path>,
 ) -> Result<String, String> {
     let (url, fetch_root_key) = resolve_network(network, fetch_root_key_flag)?;
     let canister_id = Principal::from_text(canister)
         .map_err(|error| format!("invalid canister principal {canister:?}: {error}"))?;
-    let agent = ic_agent::Agent::builder()
-        .with_url(url)
-        .build()
-        .map_err(|error| format!("create IC agent: {error}"))?;
+    let agent = if let Some(identity_path) = identity_path {
+        let identity = Secp256k1Identity::from_pem_file(identity_path)
+            .map_err(|error| format!("read identity {}: {error}", identity_path.display()))?;
+        ic_agent::Agent::builder()
+            .with_url(url)
+            .with_identity(identity)
+            .build()
+            .map_err(|error| format!("create IC agent: {error}"))?
+    } else {
+        ic_agent::Agent::builder()
+            .with_url(url)
+            .build()
+            .map_err(|error| format!("create IC agent: {error}"))?
+    };
     if fetch_root_key {
         agent
             .fetch_root_key()
@@ -194,14 +209,22 @@ fn resolve_network(network: &str, fetch_root_key_flag: bool) -> Result<(&str, bo
 }
 
 fn decode_manifest_response(response: &[u8]) -> Result<String, String> {
-    let result: Result<gleaph_prepared_api::PreparedManifest, IDLValue> =
-        Decode!(response, Result<gleaph_prepared_api::PreparedManifest, IDLValue>)
-            .map_err(|error| format!("decode prepared_manifest response: {error}"))?;
-    match result {
-        Ok(manifest) => serde_json::to_string(&manifest)
-            .map_err(|error| format!("serialize prepared manifest: {error}")),
-        Err(error) => Err(format!("Router rejected prepared_manifest: {error:?}")),
+    let args = IDLArgs::from_bytes(response)
+        .map_err(|error| format!("decode prepared_manifest response: {error}"))?;
+    let Some(IDLValue::Variant(result)) = args.args.first() else {
+        return Err("decode prepared_manifest response: expected Result variant".into());
+    };
+    let value = &result.0.val;
+    if result.0.id.get_id() != candid::idl_hash("Ok") {
+        return Err(format!("Router rejected prepared_manifest: {value:?}"));
     }
+    let payload = IDLArgs::new(std::slice::from_ref(value))
+        .to_bytes()
+        .map_err(|error| format!("decode prepared_manifest payload: {error}"))?;
+    let manifest = Decode!(&payload, gleaph_prepared_api::PreparedManifest)
+        .map_err(|error| format!("decode prepared_manifest payload: {error}"))?;
+    serde_json::to_string(&manifest)
+        .map_err(|error| format!("serialize prepared manifest: {error}"))
 }
 
 #[cfg(test)]

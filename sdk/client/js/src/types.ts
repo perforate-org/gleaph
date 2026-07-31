@@ -148,11 +148,35 @@ export interface ApiPrepareResponse {
   prepared: ApiPreparedQueryInfo;
 }
 
-export interface ApiQueryResponse {
-  explain: string;
-  plan_summary: ApiPlanSummary;
-  use_graph_pushdown: ApiUseGraphPushdownInfo[];
-  execution: ApiExecutionResult;
+export type MutationLifecyclePhase =
+  | "Routing"
+  | "CanonicalPending"
+  | "CanonicalCommitted"
+  | "ProjectionPending"
+  | "Completed"
+  | "Failed";
+
+export interface MutationTokenShard {
+  shard_id: number;
+  label_stats_seq?: bigint;
+}
+
+export interface MutationToken {
+  mutation_id: bigint;
+  shards: MutationTokenShard[];
+}
+
+/** Decoded result returned by Router GQL query and prepared-query calls. */
+export interface GqlQueryResult<Row = Record<string, ApiValue>> {
+  row_count: bigint;
+  rows: Row[];
+  phase: MutationLifecyclePhase | null;
+  token: MutationToken | null;
+}
+
+/** Result returned by Router update calls that expose only the affected row count. */
+export interface GqlMutationResult {
+  row_count: bigint;
 }
 
 export interface ApiListPreparedResponse {

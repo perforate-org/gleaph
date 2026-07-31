@@ -76,15 +76,19 @@ pub fn generate_javascript(manifest: &PreparedManifest) -> Result<String, Manife
                 ", sort"
             }
         ));
-        out.push_str("      return { ...response, execution: { ...response.execution, rows: response.execution.rows.map((row) => ({\n");
-        for column in &operation.result.columns {
-            out.push_str(&format!(
-                "        {}: fromApiValue(row[{}]),\n",
-                ts_property(&column.name),
-                json_string(&column.name)
-            ));
+        if operation.kind == OperationKind::Query {
+            out.push_str("      return { ...response, rows: response.rows.map((row) => ({\n");
+            for column in &operation.result.columns {
+                out.push_str(&format!(
+                    "        {}: fromApiValue(row[{}]),\n",
+                    ts_property(&column.name),
+                    json_string(&column.name)
+                ));
+            }
+            out.push_str("      })) };\n    },\n");
+        } else {
+            out.push_str("      return response;\n    },\n");
         }
-        out.push_str("      })) } };\n    },\n");
     }
     out.push_str("  };\n}\n");
     Ok(out)

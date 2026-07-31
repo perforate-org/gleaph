@@ -1,8 +1,9 @@
 import { Actor, HttpAgent, type ActorSubclass, type Identity } from "@icp-sdk/core/agent";
+import { IDL } from "@icp-sdk/core/candid";
 import { Principal } from "@icp-sdk/core/principal";
 import { createGraphClient, type GraphClient, type GraphTransport } from "./client";
 import { GleaphCanisterError } from "./errors";
-import { graphIdlFactory } from "./idl";
+import { GqlQueryRows, graphIdlFactory } from "./idl";
 import type {
   ApiExecutePreparedRequest,
   ApiListPreparedResponse,
@@ -10,20 +11,19 @@ import type {
   ApiPrepareRequest,
   ApiPrepareResponse,
   ApiQueryRequest,
-  ApiQueryResponse,
+  GqlMutationResult,
+  GqlQueryResult,
   PreparedManifest,
 } from "./types";
 import { toApiParams } from "./values";
+import { encodeCanonicalGqlValue } from "./canonical-value";
 
-type Result<T> = { Ok: T; Err?: never } | { Ok?: never; Err: string };
+type Result<T> = { Ok: T; Err?: never } | { Ok?: never; Err: Record<string, unknown> };
 type ActorInterfaceFactory = Parameters<typeof Actor.createActor>[0];
 
 interface GraphActorMethods {
   explain(query: string): Promise<Result<ApiPlanResponse>>;
-  query(
-    query: string,
-    params: [] | [[string, ReturnType<typeof toApiParams>[string]][]],
-  ): Promise<Result<ApiQueryResponse>>;
+  query(query: string, params: Uint8Array): Promise<Result<GqlQueryWireResult>>;
   prepare(
     name: string,
     query: string,
@@ -31,19 +31,74 @@ interface GraphActorMethods {
   ): Promise<Result<ApiPrepareResponse>>;
   list_prepared_api(): Promise<Result<ApiListPreparedResponse>>;
   prepared_manifest(graphName: string): Promise<Result<PreparedManifest>>;
-  execute_prepared_query(
-    name: string,
-    params: [string, ReturnType<typeof toApiParams>[string]][],
-    sort: [] | [NonNullable<ApiExecutePreparedRequest["sort"]>],
-  ): Promise<Result<ApiQueryResponse>>;
-  execute_prepared_update(
-    name: string,
-    params: [string, ReturnType<typeof toApiParams>[string]][],
-  ): Promise<Result<ApiQueryResponse>>;
+  prepared_execute_query(name: string, params: Uint8Array): Promise<Result<GqlQueryWireResult>>;
+  prepared_execute_update(name: string, params: Uint8Array): Promise<Result<bigint>>;
   drop_prepared(name: string): Promise<Result<{ dropped: boolean }>>;
 }
 
+type GqlQueryWireResult = {
+  row_count: bigint;
+  rows_blob: [] | [Uint8Array];
+  phase: [] | [Record<string, null>];
+  token:
+    | []
+    | [{ mutation_id: bigint; shards: { shard_id: number; label_stats_seq: [] | [bigint] }[] }];
+};
+
 type GraphActor = ActorSubclass<GraphActorMethods>;
+
+function decodeRows(result: GqlQueryWireResult): Record<string, import("./types").ApiValue>[] {
+  if (result.rows_blob.length === 0) {
+    return [];
+  }
+  const [decoded] = IDL.decode([GqlQueryRows], result.rows_blob[0]);
+  return (decoded as { rows: { columns: [string, unknown][] }[] }).rows.map(({ columns }) =>
+    Object.fromEntries(columns.map(([key, value]) => [key, fromWireValue(value)])),
+  );
+}
+
+function fromWireValue(value: unknown): import("./types").ApiValue {
+  if (!value || typeof value !== "object") {
+    throw new Error("invalid GQL wire value");
+  }
+  const record = value as Record<string, unknown>;
+  if ("Record" in record) {
+    return {
+      Record: Object.fromEntries(
+        (record.Record as [string, unknown][]).map(([key, nested]) => [key, fromWireValue(nested)]),
+      ),
+    };
+  }
+  if ("List" in record) {
+    return { List: (record.List as unknown[]).map(fromWireValue) };
+  }
+  if ("ExtensionLeaf" in record || "ValueBinary" in record) {
+    throw new Error("GQL extension values require a typed SDK decoder");
+  }
+  return value as import("./types").ApiValue;
+}
+
+function toGqlQueryResult(result: GqlQueryWireResult): GqlQueryResult {
+  const phase =
+    result.phase.length === 0 ? null : (Object.keys(result.phase[0])[0] as GqlQueryResult["phase"]);
+  const token =
+    result.token.length === 0
+      ? null
+      : {
+          mutation_id: result.token[0].mutation_id,
+          shards: result.token[0].shards.map((shard) => ({
+            shard_id: shard.shard_id,
+            label_stats_seq:
+              shard.label_stats_seq.length === 0 ? undefined : shard.label_stats_seq[0],
+          })),
+        };
+  return {
+    row_count: result.row_count,
+    rows: decodeRows(result),
+    phase,
+    token,
+  };
+}
 
 export interface IcGraphTransportOptions {
   canisterId: string | Principal;
@@ -56,17 +111,16 @@ function principalFrom(canisterId: string | Principal): Principal {
   return typeof canisterId === "string" ? Principal.fromText(canisterId) : canisterId;
 }
 
-function toCandidParams(
-  params: Record<string, ReturnType<typeof toApiParams>[string]>,
-): [string, ReturnType<typeof toApiParams>[string]][] {
-  return Object.entries(params);
+function encodeParams(params: Record<string, unknown>): Uint8Array {
+  return encodeCanonicalGqlValue({ Record: toApiParams(params) });
 }
 
 function unwrapResult<T>(result: Result<T>): T {
   if ("Ok" in result) {
     return result.Ok;
   }
-  throw new GleaphCanisterError(result.Err ?? "unknown Gleaph canister error", result);
+  const message = result.Err ? JSON.stringify(result.Err) : "unknown Gleaph canister error";
+  throw new GleaphCanisterError(message, result);
 }
 
 class IcGraphTransport implements GraphTransport {
@@ -76,9 +130,11 @@ class IcGraphTransport implements GraphTransport {
     return unwrapResult<ApiPlanResponse>(await this.actor.explain(request.query));
   }
 
-  async execute(request: ApiQueryRequest): Promise<ApiQueryResponse> {
-    return unwrapResult<ApiQueryResponse>(
-      await this.actor.query(request.query, [toCandidParams(toApiParams(request.params))]),
+  async execute(request: ApiQueryRequest): Promise<GqlQueryResult> {
+    return toGqlQueryResult(
+      unwrapResult<GqlQueryWireResult>(
+        await this.actor.query(request.query, encodeParams(request.params)),
+      ),
     );
   }
 
@@ -100,23 +156,22 @@ class IcGraphTransport implements GraphTransport {
     return unwrapResult<PreparedManifest>(await this.actor.prepared_manifest(graphName));
   }
 
-  async executePreparedQuery(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse> {
-    return unwrapResult<ApiQueryResponse>(
-      await this.actor.execute_prepared_query(
-        request.name,
-        toCandidParams(toApiParams(request.params)),
-        request.sort ? [request.sort] : [],
+  async executePreparedQuery(request: ApiExecutePreparedRequest): Promise<GqlQueryResult> {
+    if (request.sort !== undefined && request.sort.length > 0) {
+      throw new Error("prepared sort is not supported by the current Router wire API");
+    }
+    return toGqlQueryResult(
+      unwrapResult<GqlQueryWireResult>(
+        await this.actor.prepared_execute_query(request.name, encodeParams(request.params)),
       ),
     );
   }
 
-  async executePreparedUpdate(request: ApiExecutePreparedRequest): Promise<ApiQueryResponse> {
-    return unwrapResult<ApiQueryResponse>(
-      await this.actor.execute_prepared_update(
-        request.name,
-        toCandidParams(toApiParams(request.params)),
-      ),
+  async executePreparedUpdate(request: ApiExecutePreparedRequest): Promise<GqlMutationResult> {
+    const rowCount = unwrapResult<bigint>(
+      await this.actor.prepared_execute_update(request.name, encodeParams(request.params)),
     );
+    return { row_count: rowCount };
   }
 
   async dropPrepared(name: string): Promise<boolean> {

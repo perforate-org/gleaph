@@ -13,10 +13,10 @@ export function withPreparedQueries(client) {
       const encodedParams = {};
       encodedParams["route"] = { Path: params["route"] };
       const response = await client.executePrepared("find-related", encodedParams, sort);
-      return { ...response, execution: { ...response.execution, rows: response.execution.rows.map((row) => ({
+      return { ...response, rows: response.rows.map((row) => ({
         display_name: fromApiValue(row["display_name"]),
         next_route: fromApiValue(row["next_route"]),
-      })) } };
+      })) };
     },
   };
 }

@@ -11,9 +11,13 @@ export type {
   ApiPreparedParameterInfo,
   ApiPreparedQueryInfo,
   ApiQueryRequest,
-  ApiQueryResponse,
   ApiTypeDiagnostic,
   ApiUseGraphPushdownInfo,
+  GqlMutationResult,
+  GqlQueryResult,
+  MutationLifecyclePhase,
+  MutationToken,
+  MutationTokenShard,
   ApiValue,
   ApiPathElement,
   PreparedManifest,
@@ -35,7 +39,6 @@ export type { IcGraphTransportOptions } from "./ic";
 export {
   isUnsupportedUseGraphPushdown,
   unsupportedUseGraphPushdowns,
-  useGraphPushdownWarnings,
   USE_GRAPH_PUSHDOWN_WARNING_PREFIX,
 } from "./helpers";
 export { GleaphCanisterError, GleaphSdkError } from "./errors";

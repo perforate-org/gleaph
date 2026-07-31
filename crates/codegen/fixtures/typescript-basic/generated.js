@@ -13,9 +13,9 @@ export function withPreparedQueries(client) {
       const encodedParams = {};
       encodedParams["term"] = { Text: params["term"] };
       const response = await client.executePrepared("find-users", encodedParams);
-      return { ...response, execution: { ...response.execution, rows: response.execution.rows.map((row) => ({
+      return { ...response, rows: response.rows.map((row) => ({
         user_name: fromApiValue(row["user_name"]),
-      })) } };
+      })) };
     },
   };
 }

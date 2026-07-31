@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v1.0.0/docs/schemas/icp-yaml-schema.json
+
+# This project is intentionally separate from the repository root deployment project.
+# It owns only the smallest topology needed to exercise gleaph-codegen against a real
+# local IC network.
+canisters:
+  - canisters/*
+
+networks:
+  - name: local
+    mode: managed
+    image: ghcr.io/dfinity/icp-cli-network-launcher
+    port-mapping:
+      - 8000:4943
