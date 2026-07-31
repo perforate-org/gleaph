@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-07-29
-Anchor timestamp: 2026-07-29 13:19:19 UTC +0000
+Last updated: 2026-07-31
+Anchor timestamp: 2026-07-31 02:42:46 UTC +0000
 
 ## Status
 
@@ -221,6 +221,18 @@ defect from being rediscovered without its prior reasoning.
   ownership; a local bounded optimization needs only a plan plus design/benchmark sync.
 - **Related contracts:** [ADR 0001](adr/0001-labeled-segment-slide.md),
   [ADR 0022](adr/0022-degree-driven-hub-edge-storage.md), [storage/lara.md](storage/lara.md)
+
+### GAP-2026-07-31-001 - Prepared sort variants are not retained in the heap cache
+
+- **Status:** Open
+- **Severity:** P2 prepared-query performance gap
+- **Owner:** Router prepared-query heap cache
+- **Observed behavior:** The Router keeps the unsorted prepared plan in the heap cache. When a caller supplies a non-empty sort specification, the Router validates the metadata and rebuilds a derived plan for that invocation; equivalent sort specifications are not cached as separate heap entries.
+- **Expected or needed behavior:** Repeated executions of the same prepared operation with the same normalized sort specification should reuse a heap-cached derived plan while stable storage continues to retain only the query source and metadata.
+- **Evidence:** crates/router/src/prepared.rs::prepare_sorted_cache and the prepared query local E2E in crates/codegen/e2e/test.mjs.
+- **Impact:** Sort-enabled prepared queries pay the planning and plan-encoding cost on every execution. This preserves correctness and upgrade safety but can increase latency and instruction usage for frequently reused sort variants.
+- **Next decision:** Define a bounded cache key and eviction policy, including direction normalization, key ordering, metadata changes, and post-upgrade invalidation, then add hit/miss tests and a focused benchmark before introducing durable or unbounded derived state.
+- **Related contracts:** ADR 0053 and crates/prepared-api/src/lib.rs
 
 ### GAP-2026-07-04-001 — Prepared execution still requires graph visibility
 
