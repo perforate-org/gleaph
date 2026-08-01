@@ -16,6 +16,7 @@ mod property_postings;
 mod tests;
 
 use crate::state::IndexError;
+use candid::Encode;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexEqualSpec, PostingRangeRequest, validate_index_value_key_bytes,
@@ -86,6 +87,50 @@ pub(super) fn clamp_posting_page_limit(limit: u32) -> usize {
     usize::try_from(limit)
         .unwrap_or(DEFAULT_LOOKUP_PAGE_LIMIT)
         .clamp(1, DEFAULT_LOOKUP_PAGE_LIMIT)
+}
+
+/// Response payload budget for a batched lookup reply. Derived from the shared inter-canister
+/// sizing policy: the measured page bytes accumulate against the target (the ceiling minus the
+/// transport headroom), so the final reply stays below the portable response ceiling.
+pub(super) const LOOKUP_BATCH_RESPONSE_BUDGET_BYTES: usize =
+    gleaph_message_sizing::SizingPolicy::inter_canister().target_bytes;
+
+/// Answers `spec_count` buckets until the response payload budget or the canister instruction
+/// budget is reached. `answer(index)` materializes bucket `index`'s page; the page is admitted
+/// **atomically** — a page whose encoded size would overflow `budget_bytes` (measured against
+/// `base_bytes`, the encoded empty-result envelope) is not included and its index becomes the
+/// resume cursor. No bucket after the cursor is ever materialized, so the only wasted work per
+/// call is the single boundary bucket's page.
+pub(super) fn answer_batch_pages<P, F>(
+    spec_count: usize,
+    base_bytes: usize,
+    budget_bytes: usize,
+    mut answer: F,
+) -> Result<(Vec<P>, Option<u32>), IndexError>
+where
+    P: candid::CandidType,
+    F: FnMut(usize) -> Result<P, IndexError>,
+{
+    let mut pages = Vec::with_capacity(spec_count);
+    let mut acc = base_bytes;
+    let mut next = None;
+    for index in 0..spec_count {
+        if instruction_counter_near_budget(true) {
+            next = Some(index as u32);
+            break;
+        }
+        let page = answer(index)?;
+        let page_bytes = candid::Encode!(&page)
+            .map_err(|e| IndexError::BatchEncodeFailed(e.to_string()))?
+            .len();
+        if acc.saturating_add(page_bytes) > budget_bytes {
+            next = Some(index as u32);
+            break;
+        }
+        acc = acc.saturating_add(page_bytes);
+        pages.push(page);
+    }
+    Ok((pages, next))
 }
 
 /// Stateless facade over index stable structures initialized in [`super::stable`].

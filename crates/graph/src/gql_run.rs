@@ -182,87 +182,127 @@ fn revalidate_seed_rows_against_read_prefix(
     for op in plan
         .ops
         .iter()
-        .take_while(|op| is_seed_skippable_anchor_op(op))
+        .take_while(|op| is_seed_complete_prefix_element(op))
     {
         match op {
-            PlanOp::NodeScan {
-                variable,
-                label: Some(label_ref),
-                ..
-            } => {
-                let Some(label_id) = execution.resolved_vertex_label_id(label_ref.as_ref()) else {
-                    return Err(GqlRunError::Plan(format!(
-                        "resolved label id not found for {} in complete-prefix seed validation",
-                        label_ref.as_ref()
-                    )));
-                };
-                rows.retain(|row| {
-                    let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
-                        return false;
-                    };
-                    let Some(vertex) = store.vertex(*vid) else {
-                        return false;
-                    };
-                    store.vertex_labels(*vid, vertex).contains(&label_id)
-                });
+            PlanOp::CartesianProduct { left, right } => {
+                revalidate_seed_complete_arm(store, parameters, execution, rows, left)?;
+                revalidate_seed_complete_arm(store, parameters, execution, rows, right)?;
             }
-            PlanOp::IndexScan {
-                variable,
-                property,
-                value,
-                cmp,
-                ..
-            } if *cmp == CmpOp::Eq => {
-                let Some(property_id) = execution.resolved_property_id(property.as_ref()) else {
-                    return Err(GqlRunError::Plan(format!(
-                        "resolved property id not found for {} in complete-prefix seed validation",
-                        property.as_ref()
-                    )));
-                };
-                let expected = resolve_scan_value_to_value(value, parameters)?;
-                rows.retain(|row| {
-                    let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
-                        return false;
-                    };
-                    let actual = store.vertex_property(*vid, property_id);
-                    actual.as_ref() == Some(&expected)
-                });
-            }
-            PlanOp::IndexIntersection {
-                variable, scans, ..
-            } => {
-                rows.retain(|row| {
-                    let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
-                        return false;
-                    };
-                    scans.iter().all(|scan| {
-                        if scan.cmp != CmpOp::Eq {
-                            return true;
-                        }
-                        let Some(property_id) =
-                            execution.resolved_property_id(scan.property.as_ref())
-                        else {
-                            return false;
-                        };
-                        let Ok(expected) = resolve_scan_value_to_value(&scan.value, parameters)
-                        else {
-                            return false;
-                        };
-                        store.vertex_property(*vid, property_id).as_ref() == Some(&expected)
-                    })
-                });
-            }
-            PlanOp::NodeScan { label: None, .. } | PlanOp::EdgeIndexScan { .. } => {
-                // Non-equality scans and label-less scans do not impose a check beyond existence,
-                // which seed hydration already verified. Edge seeds are not produced by the current
-                // multi-variable path; equality range scans fall back to ordinary execution.
-            }
-            PlanOp::IndexScan { cmp, .. } if *cmp != CmpOp::Eq => {
-                // Non-equality index scans are not validated here; the executor handles them when
-                // they are not skipped.
-            }
-            _ => {}
+            op => revalidate_seed_anchor_op(store, parameters, execution, rows, op)?,
         }
+    }
+    Ok(())
+}
+
+/// Revalidate the leading anchor ops of one seed-complete arm (the ops the executor skips inside a
+/// CartesianProduct when complete rows are supplied). Nested seed-complete Cartesian products
+/// recurse; residual ops are evaluated by the normal executor and need no revalidation.
+fn revalidate_seed_complete_arm(
+    store: &GraphStore,
+    parameters: &BTreeMap<String, Value>,
+    execution: &GqlExecutionContext,
+    rows: &mut Vec<PlanQueryRow>,
+    ops: &[PlanOp],
+) -> Result<(), GqlRunError> {
+    for op in ops
+        .iter()
+        .take_while(|op| is_seed_complete_prefix_element(op))
+    {
+        match op {
+            PlanOp::CartesianProduct { left, right } => {
+                revalidate_seed_complete_arm(store, parameters, execution, rows, left)?;
+                revalidate_seed_complete_arm(store, parameters, execution, rows, right)?;
+            }
+            op => revalidate_seed_anchor_op(store, parameters, execution, rows, op)?,
+        }
+    }
+    Ok(())
+}
+
+fn revalidate_seed_anchor_op(
+    store: &GraphStore,
+    parameters: &BTreeMap<String, Value>,
+    execution: &GqlExecutionContext,
+    rows: &mut Vec<PlanQueryRow>,
+    op: &PlanOp,
+) -> Result<(), GqlRunError> {
+    match op {
+        PlanOp::NodeScan {
+            variable,
+            label: Some(label_ref),
+            ..
+        } => {
+            let Some(label_id) = execution.resolved_vertex_label_id(label_ref.as_ref()) else {
+                return Err(GqlRunError::Plan(format!(
+                    "resolved label id not found for {} in complete-prefix seed validation",
+                    label_ref.as_ref()
+                )));
+            };
+            rows.retain(|row| {
+                let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
+                    return false;
+                };
+                let Some(vertex) = store.vertex(*vid) else {
+                    return false;
+                };
+                store.vertex_labels(*vid, vertex).contains(&label_id)
+            });
+        }
+        PlanOp::IndexScan {
+            variable,
+            property,
+            value,
+            cmp,
+            ..
+        } if *cmp == CmpOp::Eq => {
+            let Some(property_id) = execution.resolved_property_id(property.as_ref()) else {
+                return Err(GqlRunError::Plan(format!(
+                    "resolved property id not found for {} in complete-prefix seed validation",
+                    property.as_ref()
+                )));
+            };
+            let expected = resolve_scan_value_to_value(value, parameters)?;
+            rows.retain(|row| {
+                let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
+                    return false;
+                };
+                let actual = store.vertex_property(*vid, property_id);
+                actual.as_ref() == Some(&expected)
+            });
+        }
+        PlanOp::IndexIntersection {
+            variable, scans, ..
+        } => {
+            rows.retain(|row| {
+                let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
+                    return false;
+                };
+                scans.iter().all(|scan| {
+                    if scan.cmp != CmpOp::Eq {
+                        return true;
+                    }
+                    let Some(property_id) = execution.resolved_property_id(scan.property.as_ref())
+                    else {
+                        return false;
+                    };
+                    let Ok(expected) = resolve_scan_value_to_value(&scan.value, parameters) else {
+                        return false;
+                    };
+                    store.vertex_property(*vid, property_id).as_ref() == Some(&expected)
+                })
+            });
+        }
+        PlanOp::NodeScan { label: None, .. } | PlanOp::EdgeIndexScan { .. } => {
+            // Non-equality scans and label-less scans do not impose a check beyond existence,
+            // which seed hydration already verified. Edge seeds are not produced by the current
+            // multi-variable path; equality range scans fall back to ordinary execution.
+        }
+        PlanOp::IndexScan { cmp, .. } if *cmp != CmpOp::Eq => {
+            // Non-equality index scans are not validated here; the executor handles them when
+            // they are not skipped.
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -275,6 +315,74 @@ fn is_seed_skippable_anchor_op(op: &PlanOp) -> bool {
             | PlanOp::IndexIntersection { .. }
             | PlanOp::EdgeIndexScan { .. }
     )
+}
+
+/// True when `ops` is a seed-complete prefix element: a single seedable anchor, or a
+/// CartesianProduct whose arms are each seed-complete (disconnected `MATCH (a {..}), (b {..})`
+/// paths planned as a leading CartesianProduct). The complete-row seed rows bind every variable of
+/// such an element, so Graph may skip it and revalidate its anchors against canonical state.
+///
+/// This mirrors the typed V1 plan contract in `gleaph_gql_integration::typed_batch`; the two must
+/// stay in sync so the Router never admits a bundle Graph cannot skip.
+fn is_seed_complete_prefix_element(op: &PlanOp) -> bool {
+    match op {
+        PlanOp::CartesianProduct { left, right } => {
+            is_seed_complete_arm(left) && is_seed_complete_arm(right)
+        }
+        _ => is_seed_skippable_anchor_op(op),
+    }
+}
+
+/// True when `ops` is a seed-complete arm: a leading sequence of seedable anchors (or nested
+/// seed-complete Cartesian products) followed by residual ops, with at least one anchor. Only the
+/// leading anchors are skipped/revalidated; residual filters still run on the supplied rows.
+fn is_seed_complete_arm(ops: &[PlanOp]) -> bool {
+    let mut in_prefix = true;
+    let mut anchor_count = 0usize;
+    for op in ops {
+        if in_prefix {
+            match op {
+                PlanOp::CartesianProduct { left, right } => {
+                    if is_seed_complete_arm(left) && is_seed_complete_arm(right) {
+                        anchor_count += 1;
+                        // The leading CartesianProduct ends this arm's anchor prefix.
+                        in_prefix = false;
+                        continue;
+                    }
+                    return false;
+                }
+                op if is_seed_skippable_anchor_op(op) => {
+                    anchor_count += 1;
+                    continue;
+                }
+                _ => in_prefix = false,
+            }
+        }
+        if is_seed_skippable_anchor_op(op) || matches!(op, PlanOp::CartesianProduct { .. }) {
+            return false;
+        }
+    }
+    anchor_count > 0
+}
+
+/// Rewrite a leading seed-complete prefix in place so the executor runs only residual ops on the
+/// supplied complete rows: remove leading seedable anchors and strip the arms of a leading
+/// seed-complete CartesianProduct (recursively, so nested multi-path plans stay covered).
+fn strip_complete_row_seed_prefix(ops: &mut Vec<PlanOp>) {
+    while let Some(first) = ops.first() {
+        if is_seed_skippable_anchor_op(first) {
+            ops.remove(0);
+        } else {
+            break;
+        }
+    }
+    let Some(PlanOp::CartesianProduct { left, right }) = ops.first_mut() else {
+        return;
+    };
+    if is_seed_complete_arm(left) && is_seed_complete_arm(right) {
+        strip_complete_row_seed_prefix(left);
+        strip_complete_row_seed_prefix(right);
+    }
 }
 
 fn resolve_scan_value_to_value(
@@ -307,11 +415,21 @@ async fn read_phase_seed_rows(
     if prefix_len == 0 {
         return Ok(None);
     }
-    let read_plan = read_prefix_plan(plan, prefix_len);
+    let mut read_plan = read_prefix_plan(plan, prefix_len);
+    // ADR 0046 Phase 2: complete rows cover every leading anchor, including disconnected MATCH
+    // paths planned as a leading CartesianProduct. Strip the covered anchors (inside the
+    // CartesianProduct arms, so residual filters still run) and let the executor operate only on
+    // the residual ops with the supplied rows. Revalidation below re-checks the stripped anchors.
+    // `router_seed.is_some()` requires non-empty hydrated rows: a seed dropped by hydration (e.g.
+    // every row referenced a tombstoned vertex) must fall back to ordinary read-prefix execution.
+    let rows_are_complete = complete_prefix_rows && router_seed.is_some();
     let (initial_rows, skip_leading) = match router_seed {
         Some((rows, skip)) => (rows, skip),
         None => (vec![crate::plan::empty_row_for_plan(&read_plan)], false),
     };
+    if rows_are_complete {
+        strip_complete_row_seed_prefix(&mut read_plan.ops);
+    }
     let mut rows = execute_plan_query_bindings_with_initial_rows(
         store,
         &read_plan,
@@ -319,7 +437,7 @@ async fn read_phase_seed_rows(
         index,
         execution.clone(),
         initial_rows,
-        skip_leading,
+        skip_leading && !rows_are_complete,
     )
     .await?;
 
@@ -3803,6 +3921,104 @@ mod wave_4_regression_tests {
             Some(1),
         ));
         result.expect("complete row seed must insert REPLY_TO edge");
+    }
+
+    #[test]
+    fn wave_4_complete_row_seed_skips_index_scan_prefix_without_index_client() {
+        // The production feed-edge plan has IndexScan arms (demo_id indexed). With complete rows
+        // the read phase must skip those scans entirely: no index client is attached, so the old
+        // path failed with `IndexScan(no index client)` instead of inserting the edge.
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use gleaph_gql_planner::plan::PlanOp;
+        use gleaph_gql_planner::stats::TableStats;
+        use gleaph_gql_planner::wire::encode_block_plans;
+        use gleaph_graph_kernel::plan_exec::{SeedBindingsWire, SeedRowWire, SeedVertexBinding};
+        use std::collections::BTreeMap;
+
+        let store = GraphStore::new();
+
+        let a_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(4284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post a");
+        let b_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", gleaph_gql::Value::Uint64(284)),
+                    ("demo_graph", gleaph_gql::Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post b");
+
+        let mut p = BTreeMap::new();
+        p.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(4284));
+        p.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(284));
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let mut stats = TableStats::default();
+        stats
+            .indexed_vertex_properties
+            .insert("demo_id".to_string());
+        let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema).unwrap();
+        assert!(
+            plan.ops.iter().any(|op| {
+                matches!(
+                    op,
+                    PlanOp::CartesianProduct { left, right }
+                        if left.iter().chain(right.iter()).any(|arm_op| {
+                            matches!(arm_op, PlanOp::IndexScan { .. })
+                        })
+                )
+            }),
+            "test plan must be a CartesianProduct with IndexScan arms"
+        );
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![
+                    SeedVertexBinding {
+                        variable: "a".into(),
+                        local_vertex_id: u32::try_from(u64::from(a_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                    SeedVertexBinding {
+                        variable: "b".into(),
+                        local_vertex_id: u32::try_from(u64::from(b_id)).unwrap(),
+                        required_vertex_label_ids: Vec::new(),
+                    },
+                ],
+                float64_bindings: Vec::new(),
+            }],
+            complete_prefix_rows: true,
+        };
+
+        let result = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &p,
+            GqlCanisterExecutionMode::Update,
+            None, // No index client: IndexScan arms must be skipped by the complete-row seed.
+            GqlExecutionContext::default(),
+            Some(seeds),
+            Some(1),
+        ));
+        result.expect("complete row seed must skip IndexScan arms and insert REPLY_TO edge");
     }
     #[test]
     fn wave_4_complete_row_seed_drops_stale_property_value() {

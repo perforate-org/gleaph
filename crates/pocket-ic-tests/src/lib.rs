@@ -540,6 +540,13 @@ pub fn install_single_shard_federation_with_gateway() -> (FederationEnv, Princip
         None,
     );
 
+    // ADR 0047: the Router registry keeps typed seed batch disabled until an admin refresh
+    // commits the Graph's advertised capability. The production deploy script refreshes it;
+    // do the same here so the social-demo seed waves use the typed V1 batch path (the scalar
+    // fallback processes each multi-anchor edge item one at a time and cannot finish the
+    // 33K-edge feed waves inside a reasonable budget).
+    refresh_shard_execution_capabilities(&pic, admin, router);
+
     let env = FederationEnv {
         pic,
         admin,
@@ -549,6 +556,26 @@ pub fn install_single_shard_federation_with_gateway() -> (FederationEnv, Princip
         graph_dest: Principal::anonymous(),
     };
     (env, gateway)
+}
+
+/// Commit the Graph shard's advertised typed-seed-batch capability into the Router registry.
+fn refresh_shard_execution_capabilities(pic: &PocketIc, admin: Principal, router: Principal) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = pic
+        .update_call(
+            router,
+            admin,
+            "admin_refresh_shard_execution_capabilities",
+            Encode!(&GRAPH_NAME.to_string(), &SOURCE_SHARD.raw()).expect("encode refresh"),
+        )
+        .unwrap_or_else(|e| panic!("admin_refresh_shard_execution_capabilities: {e:?}"));
+    let result: Result<bool, RouterError> =
+        Decode!(&bytes, Result<bool, RouterError>).expect("decode refresh result");
+    assert!(
+        result.unwrap_or_else(|e| panic!("capability refresh rejected: {e:?}")),
+        "Graph shard must advertise typed seed batch V1"
+    );
 }
 
 /// Router + index + one federated graph shard, with `graph_scoped_callers` added to

@@ -453,28 +453,39 @@ pub struct LookupEdgeEqualPageRequest {
     pub limit: u32,
 }
 /// Batch paginated equality export for many vertex `(property_id, value)` buckets in one call.
-/// Each bucket is answered independently; per-bucket results are paged under a shared limit.
+///
+/// Buckets are answered in `specs` order at **bucket granularity**: a bucket is either fully
+/// included in the response or left for the resume cursor — the response payload budget is never
+/// allowed to cut a bucket in half, so a caller can treat each returned page as a complete bucket
+/// page. Each bucket's page keeps the `done`/`next` semantics of [`LookupEqualPageRequest`], so a
+/// bucket with more hits than `limit` is continued through that existing per-bucket endpoint.
+/// All specs must target [`IndexSubject::VertexProperty`]; edge buckets belong to
+/// [`LookupEdgeEqualBatchRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LookupEqualBatchRequest {
     pub specs: Vec<IndexEqualSpec>,
-    pub after: Option<PropertyPostingCursor>,
+    /// Maximum hits per bucket per call (same producer-side bound as [`LookupEqualPageRequest`]).
     pub limit: u32,
 }
 
 /// Per-bucket page result for [`LookupEqualBatchRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LookupEqualBatchResult {
-    /// Pages in the same order as `specs`. Each page carries its own cursor/paging state.
+    /// Pages in the same order as the answered prefix of `specs`.
     pub pages: Vec<PostingHitPage>,
-    /// Smallest spec index not fully returned because the canister neared its instruction budget.
+    /// Index into `specs` of the first bucket not answered, because the response reached its
+    /// payload budget or the canister neared its instruction budget. `None` when every spec was
+    /// answered. Resume by re-sending `specs[next..]`.
     pub next: Option<u32>,
 }
 
 /// Batch paginated equality export for many edge `(property_id, value[, label_id])` buckets.
+/// Same bucket-granularity and resume contract as [`LookupEqualBatchRequest`]; every spec must
+/// target [`IndexSubject::EdgeProperty`].
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LookupEdgeEqualBatchRequest {
     pub specs: Vec<IndexEqualSpec>,
-    pub after: Option<EdgePostingCursor>,
+    /// Maximum hits per bucket per call (same producer-side bound as [`LookupEdgeEqualPageRequest`]).
     pub limit: u32,
 }
 
@@ -583,6 +594,53 @@ mod tests {
         let over = vec![0u8; MAX_INDEX_VALUE_KEY_BYTES + 1];
         let err = validate_index_value_key_bytes(&over).expect_err("over limit");
         assert_eq!(err.len, MAX_INDEX_VALUE_KEY_BYTES + 1);
+    }
+
+    #[test]
+    fn batched_lookup_requests_candid_roundtrip() {
+        let req = LookupEqualBatchRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(1, vec![1, 2]),
+                IndexEqualSpec::vertex(2, vec![3]),
+            ],
+            limit: 128,
+        };
+        let bytes = Encode!(&req).expect("encode equal batch");
+        assert_eq!(
+            Decode!(&bytes, LookupEqualBatchRequest).expect("decode equal batch"),
+            req
+        );
+
+        let result = LookupEqualBatchResult {
+            pages: vec![PostingHitPage {
+                hits: vec![PostingHit {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 7,
+                }],
+                next: Some(PropertyPostingCursor {
+                    value: vec![9],
+                    shard_id: ShardId::new(0),
+                    vertex_id: 8,
+                }),
+                done: false,
+            }],
+            next: Some(1),
+        };
+        let bytes = Encode!(&result).expect("encode equal batch result");
+        assert_eq!(
+            Decode!(&bytes, LookupEqualBatchResult).expect("decode equal batch result"),
+            result
+        );
+
+        let edge_req = LookupEdgeEqualBatchRequest {
+            specs: vec![IndexEqualSpec::edge(3, vec![5], Some(7))],
+            limit: 64,
+        };
+        let bytes = Encode!(&edge_req).expect("encode edge batch");
+        assert_eq!(
+            Decode!(&bytes, LookupEdgeEqualBatchRequest).expect("decode edge batch"),
+            edge_req
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Shared error type for the federation index API.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IndexError {
     NotAuthorized,
     UnknownShard,
@@ -26,6 +26,11 @@ pub enum IndexError {
     /// property equality sieves are supported by the streamed intersection paths.
     InvalidIntersectionSubject,
     InvalidIntersectionCursor,
+    /// A batched equality lookup request contained a subject that does not belong to the batch
+    /// kind: edge subjects in `lookup_equal_batch`, vertex subjects in `lookup_edge_equal_batch`.
+    InvalidBatchSubject,
+    /// A batched lookup page could not be encoded for response-size measurement.
+    BatchEncodeFailed(String),
 }
 
 impl std::fmt::Display for IndexError {
@@ -80,6 +85,15 @@ impl std::fmt::Display for IndexError {
             }
             Self::InvalidIntersectionCursor => {
                 write!(f, "intersection cursor does not match the walk arm")
+            }
+            Self::InvalidBatchSubject => {
+                write!(
+                    f,
+                    "batched equality lookup subject does not match the batch kind"
+                )
+            }
+            Self::BatchEncodeFailed(detail) => {
+                write!(f, "batched lookup page encode failed: {detail}")
             }
         }
     }

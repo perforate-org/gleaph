@@ -2714,6 +2714,128 @@ mod tests {
         );
     }
 
+    #[test]
+    fn typed_v1_batch_executes_feed_edge_cartesian_anchor_bundle() {
+        // The production feed-edge shape (`MATCH (a:Post {demo_id}), (b:User {user_id})
+        // INSERT (a)-[:IN_HOME_FEED]->(b)`) plans as a leading CartesianProduct of IndexScan
+        // arms. Complete rows must let the typed V1 endpoint skip both scans (no index client) and
+        // still insert the edge: the Graph revalidates the stripped anchors against canonical state.
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        use gleaph_gql_planner::plan::PlanOp;
+        use gleaph_gql_planner::stats::TableStats;
+        use gleaph_gql_planner::wire::encode_block_plans;
+        use gleaph_graph_kernel::plan_exec::{
+            ExecutePlanTypedOp, SeedBindingsWire, SeedRowWire, SeedVertexBinding,
+        };
+        use std::collections::BTreeMap;
+
+        attach_test_federation(TEST_SHARD_ID);
+        let store = GraphStore::new();
+        let a_id = store
+            .insert_vertex_named(
+                ["Post"],
+                [
+                    ("demo_id", Value::Uint64(4284)),
+                    ("demo_graph", Value::Text("social".into())),
+                ],
+            )
+            .expect("insert post a");
+        let b_id = store
+            .insert_vertex_named(
+                ["User"],
+                [
+                    ("user_id", Value::Text("alice".into())),
+                    ("demo_graph", Value::Text("social".into())),
+                ],
+            )
+            .expect("insert user b");
+
+        let mut params = BTreeMap::new();
+        params.insert("$a_demo_id".to_string(), Value::Uint64(4284));
+        params.insert("$b_user_id".to_string(), Value::Text("alice".into()));
+        let params_blob =
+            encode_gql_params_blob(params.into_iter().collect()).expect("encode params");
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:User {user_id: $b_user_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'e', demo_kind: 'feed'}]->(b)";
+        let program = parser::parse(gql).unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let mut stats = TableStats::default();
+        stats
+            .indexed_vertex_properties
+            .insert("demo_id".to_string());
+        stats
+            .indexed_vertex_properties
+            .insert("user_id".to_string());
+        let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema).unwrap();
+        assert!(
+            plan.ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::CartesianProduct { .. })),
+            "feed-edge plan must be a CartesianProduct of scans"
+        );
+        let plan_blob = encode_block_plans(&[plan], true).expect("encode plan");
+
+        let args = ExecutePlanBatchTypedArgs {
+            shared: ExecutePlanBatchTypedShared {
+                target_shard_id: TEST_SHARD_ID,
+                element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
+                mutation_id: 57,
+                plan_blob,
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+            },
+            operations: vec![ExecutePlanTypedOp {
+                params_blob,
+                seed: SeedBindingsWire {
+                    entries: Vec::new(),
+                    rows: vec![SeedRowWire {
+                        vertex_bindings: vec![
+                            SeedVertexBinding {
+                                variable: "a".into(),
+                                local_vertex_id: u32::try_from(u64::from(a_id)).unwrap(),
+                                required_vertex_label_ids: Vec::new(),
+                            },
+                            SeedVertexBinding {
+                                variable: "b".into(),
+                                local_vertex_id: u32::try_from(u64::from(b_id)).unwrap(),
+                                required_vertex_label_ids: Vec::new(),
+                            },
+                        ],
+                        float64_bindings: Vec::new(),
+                    }],
+                    complete_prefix_rows: true,
+                },
+            }],
+            batch_mode: ExecutePlanBatchMode::Dynamic,
+        };
+        let result = pollster::block_on(execute_plan_update_batch_typed_v1_impl(args))
+            .expect("typed V1 feed-edge bundle must execute");
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(
+            result.results[0].as_ref().expect("result").row_count,
+            0,
+            "edge inserts report no procedure rows"
+        );
+        // The edge must be durably inserted in the canonical store (slot 0 on the source vertex).
+        let label_id = crate::test_labels::edge_label_id_for_name("IN_HOME_FEED");
+        let handle = crate::facade::EdgeHandle {
+            owner_vertex_id: a_id,
+            label_id: ic_stable_lara::BucketLabelKey::from_raw(label_id.raw()),
+            slot_index: 0.into(),
+        };
+        assert!(
+            store.find_outgoing_edge_record(handle).is_ok(),
+            "IN_HOME_FEED edge must exist after typed V1 execution"
+        );
+    }
+
     fn label_intersection_plan_with_seeds(
         store: &GraphStore,
         person_label: &str,

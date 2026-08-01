@@ -111,19 +111,41 @@ fn is_typed_seeded_bundle(plan: &gleaph_gql_planner::PhysicalPlan) -> bool {
     if !plan.has_dml() {
         return false;
     }
+    is_typed_seeded_bundle_ops(&plan.ops)
+}
+
+/// True when `ops` is a contiguous seedable anchor prefix followed by no further seedable anchor:
+/// each prefix op is a single seedable anchor or a CartesianProduct whose arms are each seedable
+/// anchor prefixes. Disconnected `MATCH (a {..}), (b {..})` paths are planned as a leading
+/// CartesianProduct of independent scans; the complete-row seed rows bind every variable of the
+/// whole prefix, so Graph skips the entire prefix and revalidates the anchors against canonical
+/// state. At least one anchor is required.
+fn is_typed_seeded_bundle_ops(ops: &[gleaph_gql_planner::plan::PlanOp]) -> bool {
     let mut in_anchor_prefix = true;
     let mut anchor_count = 0usize;
-    for op in &plan.ops {
-        if in_anchor_prefix && is_typed_seedable_anchor(op) {
+    for op in ops {
+        if in_anchor_prefix && is_typed_seedable_prefix(op) {
             anchor_count += 1;
             continue;
         }
         in_anchor_prefix = false;
-        if is_typed_seedable_anchor(op) {
+        if is_typed_seedable_prefix(op) {
             return false;
         }
     }
     anchor_count > 0
+}
+
+/// A prefix element covered by a complete-row seed: a single seedable anchor, or a CartesianProduct
+/// whose arms are each seedable anchor prefixes (so nested/left-folded multi-path plans recurse).
+fn is_typed_seedable_prefix(op: &gleaph_gql_planner::plan::PlanOp) -> bool {
+    use gleaph_gql_planner::plan::PlanOp;
+    match op {
+        PlanOp::CartesianProduct { left, right } => {
+            is_typed_seeded_bundle_ops(left) && is_typed_seeded_bundle_ops(right)
+        }
+        _ => is_typed_seedable_anchor(op),
+    }
 }
 
 fn is_typed_seedable_anchor(op: &gleaph_gql_planner::plan::PlanOp) -> bool {
@@ -148,10 +170,25 @@ fn count_row_preserving_insert_edges(
     let mut count = 0usize;
     let mut in_anchor_prefix = true;
     for op in ops {
-        if in_anchor_prefix && is_typed_seedable_anchor(op) {
-            continue;
+        if in_anchor_prefix {
+            if is_typed_seedable_prefix(op) {
+                // A leading CartesianProduct combines independent seeded paths; each arm carries
+                // its own anchor prefix and residual ops. Recurse so per-arm edge inserts count
+                // against the same per-input-row bound and unsupported arm ops are rejected. The
+                // CartesianProduct ends the top-level anchor prefix (its arms hold all anchors).
+                if let PlanOp::CartesianProduct { left, right } = op {
+                    count = count
+                        .checked_add(count_row_preserving_insert_edges(left)?)
+                        .ok_or("typed V1 edge-insert bound overflow")?;
+                    count = count
+                        .checked_add(count_row_preserving_insert_edges(right)?)
+                        .ok_or("typed V1 edge-insert bound overflow")?;
+                    in_anchor_prefix = false;
+                }
+                continue;
+            }
+            in_anchor_prefix = false;
         }
-        in_anchor_prefix = false;
         match op {
             PlanOp::PropertyFilter { .. }
             | PlanOp::Filter { .. }
@@ -525,9 +562,10 @@ fn is_empty_optional_slice<T>(v: Option<&Vec<T>>) -> bool {
 mod tests {
     use super::*;
     use candid::Encode;
-    use gleaph_gql::ast::Expr;
+    use gleaph_gql::Value;
+    use gleaph_gql::ast::{CmpOp, Expr};
     use gleaph_gql_planner::plan::ProjectColumn;
-    use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
+    use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ScanValue};
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_graph_kernel::entry::ConstraintNameId;
     use gleaph_graph_kernel::federation::ShardId;
@@ -956,6 +994,137 @@ mod tests {
         let result = classify_typed_batch_eligibility(&[op]);
         assert!(
             matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("complete-row seeded bundle"))
+        );
+    }
+
+    #[test]
+    fn disconnected_cartesian_anchor_bundle_is_eligible() {
+        // `MATCH (a:Post {demo_id: $a}), (b:User {user_id: $b}) RETURN a NEXT INSERT
+        // (a)-[:IN_HOME_FEED]->(b)` plans as a leading CartesianProduct of independent scans, each
+        // followed by residual property filters. The complete-row seed binds both `a` and `b`, so
+        // the whole prefix is covered and typed V1 can skip + revalidate it.
+        let feed_plan = |a: u32, b: u32, edge_id: &str| {
+            PhysicalPlan::from_ops(vec![
+                PlanOp::CartesianProduct {
+                    left: vec![
+                        PlanOp::IndexScan {
+                            variable: Rc::from("a"),
+                            property: "demo_id".into(),
+                            value: ScanValue::Literal(Value::Uint64(a as u64)),
+                            cmp: CmpOp::Eq,
+                            property_projection: None,
+                        },
+                        PlanOp::PropertyFilter {
+                            predicates: vec![],
+                            stage: 0,
+                        },
+                    ],
+                    right: vec![
+                        PlanOp::IndexScan {
+                            variable: Rc::from("b"),
+                            property: "user_id".into(),
+                            value: ScanValue::Literal(Value::Text(b.to_string())),
+                            cmp: CmpOp::Eq,
+                            property_projection: None,
+                        },
+                        PlanOp::PropertyFilter {
+                            predicates: vec![],
+                            stage: 0,
+                        },
+                    ],
+                },
+                PlanOp::Project {
+                    columns: vec![],
+                    distinct: false,
+                },
+                PlanOp::InsertEdge {
+                    variable: None,
+                    src: Rc::from("a"),
+                    dst: Rc::from("b"),
+                    direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                    labels: vec!["IN_HOME_FEED".into()],
+                    properties: vec![gleaph_gql_planner::plan::PropertyAssignment {
+                        name: "demo_edge_id".into(),
+                        value: gleaph_gql::ast::Expr::new(gleaph_gql::ast::ExprKind::Literal(
+                            Value::Text(edge_id.into()),
+                        )),
+                    }],
+                },
+            ])
+        };
+
+        let blob = encode_block_plans(std::slice::from_ref(&feed_plan(7, 9, "e1")), true)
+            .expect("encode plan");
+        let mut op = base_op();
+        op.plan_blob = blob.clone();
+        let result = classify_typed_batch_eligibility(&[op]);
+        assert!(
+            matches!(result, TypedBatchEligibility::Eligible(_)),
+            "disconnected Cartesian anchor bundle must be typed-eligible, got {result:?}"
+        );
+
+        // The production builder (complete-row seeds) must accept the same shape.
+        let TypedBatchEligibility::Eligible(candidate) = result else {
+            unreachable!()
+        };
+        build_and_validate_typed_batch_args(
+            &candidate,
+            None,
+            None,
+            None,
+            &IndexedEmbeddingCatalog::default(),
+            ExecutePlanBatchMode::Dynamic,
+        )
+        .expect("production builder accepts Cartesian anchor bundle");
+
+        // The response bound must count one edge insert per complete row.
+        let bounds = validate_typed_batch_plan(&blob).expect("plan validates");
+        assert_eq!(bounds.insert_edges_per_input_row, 1);
+    }
+
+    #[test]
+    fn cartesian_anchor_bundle_with_unsupported_arm_op_is_ineligible() {
+        // An arm containing an unsupported residual operator is not admitted by the strict
+        // row-preserving classifier: the anchor-contiguity check passes (seed-complete prefix), but
+        // `count_row_preserving_insert_edges` recurses into the arm and rejects the HashJoin.
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::CartesianProduct {
+                left: vec![PlanOp::NodeScan {
+                    variable: Rc::from("a"),
+                    label: Some("Post".into()),
+                    property_projection: None,
+                }],
+                right: vec![
+                    PlanOp::IndexScan {
+                        variable: Rc::from("b"),
+                        property: "user_id".into(),
+                        value: ScanValue::Literal(Value::Text("alice".into())),
+                        cmp: CmpOp::Eq,
+                        property_projection: None,
+                    },
+                    PlanOp::HashJoin {
+                        left: vec![],
+                        right: vec![],
+                        join_keys: vec![],
+                    },
+                ],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: Rc::from("a"),
+                dst: Rc::from("b"),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                labels: vec!["MEMBER".into()],
+                properties: vec![],
+            },
+        ]);
+        let blob = encode_block_plans(std::slice::from_ref(&plan), true).expect("encode plan");
+        let mut op = base_op();
+        op.plan_blob = blob;
+        let result = classify_typed_batch_eligibility(&[op]);
+        assert!(
+            matches!(result, TypedBatchEligibility::Ineligible { reason } if reason.contains("unsupported operator")),
+            "HashJoin inside a CartesianProduct arm must reject the bundle, got {result:?}"
         );
     }
 

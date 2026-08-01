@@ -77,6 +77,8 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** Choose one bounded follow-up slice—label-only anchor reduction, edge-endpoint
   seed rows, or multi-shard typed replay—and define its owner boundary and acceptance benchmarks
   before changing typed V1 again. Do not add another envelope version solely to bypass this gap.
+  The disconnected-patterns (leading CartesianProduct) sub-case is resolved by
+  [GAP-2026-07-31-003](#gap-2026-07-31-003--typed-v1-rejected-disconnected-multi-pattern-seed-bundles).
 - **Related contracts:** [ADR 0046](adr/0046-complete-prefix-seed-rows.md), [ADR 0047](adr/0047-shared-typed-graph-bulk-envelope.md)
 
 ### GAP-2026-07-25-002 — Tombstone-heavy OFFSET scans lack a persistent skip structure
@@ -303,6 +305,30 @@ defect from being rediscovered without its prior reasoning.
 
 ## Resolved gaps
 
+### GAP-2026-07-31-003 — Typed V1 rejected disconnected multi-pattern seed bundles
+
+- **Status:** Resolved by the batched index-lookup slice
+- **Severity:** P2 bulk-throughput gap
+- **Owner:** Router typed-batch admission, `gleaph-gql-integration::typed_batch` plan classifier, and
+  Graph complete-row read-prefix execution
+- **Observed behavior:** social-demo feed edges (`MATCH (a:Post {demo_id}), (b:User {user_id})
+INSERT (a)-[:IN_HOME_FEED]->(b)`) are planned as a leading `CartesianProduct` of independent
+  scans. Typed V1 rejected that shape (`is_typed_seeded_bundle` only counted contiguous seedable
+  anchors), so every edge item fell back to the scalar path with one `lookup_equal` round trip per
+  anchor; the seed runner's effective page size collapsed from ~3000 items to ~120.
+- **Resolution:** `gleaph-gql-integration::typed_batch` now accepts a leading CartesianProduct
+  whose arms are each seedable-anchor prefixes followed by residual ops, and counts per-arm edge
+  inserts in the response bound. Graph skips the covered anchors inside the CartesianProduct arms
+  (residual filters still run) and revalidates them against canonical state, mirroring the existing
+  linear-prefix contract. Router resolves all items' anchors through chunked `lookup_equal_batch`
+  requests instead of one round trip per item.
+- **Evidence:** `typed_batch::tests::disconnected_cartesian_anchor_bundle_is_eligible`;
+  `gql_run::wave_4_regression_tests::wave_4_complete_row_seed_skips_index_scan_prefix_without_index_client`;
+  `canister::handlers::tests::typed_v1_batch_executes_feed_edge_cartesian_anchor_bundle`;
+  `gql::tests::resolve_complete_row_seed_relations_batches_all_items_in_one_call`.
+- **Related contracts:** [ADR 0046](adr/0046-complete-prefix-seed-rows.md), [ADR 0047](adr/0047-shared-typed-graph-bulk-envelope.md),
+  GAP-2026-07-31-002 (label-only / edge-anchor / multi-shard variants remain open)
+
 ### GAP-2026-07-04-003 — No application-facing vertex-embedding ingestion boundary
 
 - **Status:** Resolved by plan 0048 implementation
@@ -356,14 +382,14 @@ this section records only the remaining gaps and the boundary at which each one 
 
 ### Priority order
 
-| Priority | Work item | Current status |
-|---|---|---|
-| P0 | Backfill existing sidecar and INLINE values before advertising an index as active | Open — GAP-2026-07-29-001 |
-| P1 | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring | Planned/Open — GAP-2026-07-29-002, GAP-2026-07-29-004 |
-| P1 | Add edge range postings, Router seed planning, and execution support | Open — GAP-2026-07-29-003 |
-| P2 | Add vertex nested-record field indexes with a canonical dotted-path contract | Planned — GAP-2026-07-29-005 |
-| P2 | Add record/list index semantics and tests, after the scalar/leaf contract is fixed | Planned |
-| P3 | Decide edge-property uniqueness enforcement and multi-canister index sharding axes | Planned |
+| Priority | Work item                                                                                 | Current status                                        |
+| -------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| P0       | Backfill existing sidecar and INLINE values before advertising an index as active         | Open — GAP-2026-07-29-001                             |
+| P1       | Define INLINE removal/`NULL` transitions and complete vertex `MATCH` range planner wiring | Planned/Open — GAP-2026-07-29-002, GAP-2026-07-29-004 |
+| P1       | Add edge range postings, Router seed planning, and execution support                      | Open — GAP-2026-07-29-003                             |
+| P2       | Add vertex nested-record field indexes with a canonical dotted-path contract              | Planned — GAP-2026-07-29-005                          |
+| P2       | Add record/list index semantics and tests, after the scalar/leaf contract is fixed        | Planned                                               |
+| P3       | Decide edge-property uniqueness enforcement and multi-canister index sharding axes        | Planned                                               |
 
 The P0 item is a prerequisite for trusting any newly created index. The range premise is narrower:
 the ordered scan primitive already exists through `StableBTreeMap::range()`; the remaining work is
@@ -438,7 +464,7 @@ shapes. The missing pieces are planner coverage and edge symmetry, not the basic
   predicate on an edge property cannot use the existing ordered posting storage.
 - **Next decision:** Reuse the existing sortable encoded value and `StableBTreeMap::range()`
   primitive, adding an edge-specific cursor/request that preserves `(label_id, shard_id,
-  owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
+owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
 
 ### GAP-2026-07-29-004 — INLINE removal/NULL transitions need explicit posting semantics
 

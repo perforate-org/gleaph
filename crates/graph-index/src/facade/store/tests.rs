@@ -3,7 +3,7 @@ use crate::facade::stable::{INDEX_EDGE_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::facade::store::property_postings::equal_sieve_dense_threshold_met;
 use crate::init::IndexInitArgs;
 use crate::state::IndexError;
-use candid::Principal;
+use candid::{Encode, Principal};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::PrincipalValue;
 use gleaph_graph_kernel::entry::GraphId;
@@ -11,12 +11,13 @@ use gleaph_graph_kernel::federation::{IndexPurgeKind, ShardDetachStepResult, Sha
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
     IntersectionPostingCursor, LabelIntersectionPageRequest, LabelLookupPageRequest,
-    LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageForLabelRequest,
-    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LabelPostingCursor, LookupEdgeEqualBatchRequest, LookupEdgeEqualPageRequest,
+    LookupEqualBatchRequest, LookupEqualPageForLabelRequest, LookupEqualPageRequest,
+    LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
     LookupPropertyIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
     LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
-    LookupValuePostingCountPageRequest, PostingHit, PostingRangeRequest, PropertyPostingCursor,
-    ValuePostingCountCursor,
+    LookupValuePostingCountPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
+    PropertyPostingCursor, ValuePostingCountCursor,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -1919,6 +1920,147 @@ fn lookup_equal_page_paginates_and_resumes() {
     );
     assert!(page2.done);
     assert_eq!(page2.next, None);
+}
+
+#[test]
+fn lookup_equal_batch_answers_all_buckets_in_order() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    store
+        .posting_insert(shard_a, ShardId::new(0), 1, b"a".to_vec(), 10)
+        .expect("insert a");
+    store
+        .posting_insert(shard_a, ShardId::new(0), 2, b"b".to_vec(), 20)
+        .expect("insert b");
+    store
+        .posting_insert(shard_a, ShardId::new(0), 2, b"b".to_vec(), 21)
+        .expect("insert b2");
+    store
+        .posting_insert(shard_a, ShardId::new(0), 3, b"c".to_vec(), 30)
+        .expect("insert c");
+
+    let result = store
+        .lookup_equal_batch(&LookupEqualBatchRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(1, b"a".to_vec()),
+                IndexEqualSpec::vertex(2, b"b".to_vec()),
+                IndexEqualSpec::vertex(3, b"c".to_vec()),
+            ],
+            limit: 10,
+        })
+        .expect("batch");
+
+    assert_eq!(result.next, None);
+    assert_eq!(result.pages.len(), 3);
+    assert_eq!(
+        result.pages[0].hits,
+        vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 10,
+        }]
+    );
+    assert_eq!(
+        result.pages[1].hits,
+        vec![
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 20,
+            },
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 21,
+            },
+        ]
+    );
+    assert!(result.pages.iter().all(|p| p.done));
+}
+
+#[test]
+fn lookup_equal_batch_rejects_edge_subject() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    attach_shard_canister(&store, router, ShardId::new(0), Principal::from_slice(&[1]));
+
+    let err = store
+        .lookup_equal_batch(&LookupEqualBatchRequest {
+            specs: vec![IndexEqualSpec::edge(7, b"e".to_vec(), Some(3))],
+            limit: 10,
+        })
+        .expect_err("edge spec rejected");
+    assert_eq!(err, IndexError::InvalidBatchSubject);
+}
+
+#[test]
+fn lookup_edge_equal_batch_answers_edge_buckets_and_rejects_vertex_subject() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    store
+        .edge_posting_insert(shard_a, ShardId::new(0), 7, b"e".to_vec(), 3, 9, 0)
+        .expect("insert edge posting");
+
+    let result = store
+        .lookup_edge_equal_batch(&LookupEdgeEqualBatchRequest {
+            specs: vec![IndexEqualSpec::edge(7, b"e".to_vec(), Some(3))],
+            limit: 10,
+        })
+        .expect("batch");
+    assert_eq!(result.next, None);
+    assert_eq!(result.pages.len(), 1);
+    assert_eq!(result.pages[0].hits.len(), 1);
+    assert!(result.pages[0].done);
+
+    let err = store
+        .lookup_edge_equal_batch(&LookupEdgeEqualBatchRequest {
+            specs: vec![IndexEqualSpec::vertex(7, b"e".to_vec())],
+            limit: 10,
+        })
+        .expect_err("vertex spec rejected");
+    assert_eq!(err, IndexError::InvalidBatchSubject);
+}
+
+#[test]
+fn answer_batch_pages_stops_at_payload_boundary_without_touching_further_buckets() {
+    // Each page carries four hits; the budget admits exactly one page beyond the empty envelope.
+    let page_bytes = Encode!(&PostingHitPage {
+        hits: (0..4)
+            .map(|vertex_id| PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id,
+            })
+            .collect(),
+        next: None,
+        done: true,
+    })
+    .expect("encode page")
+    .len();
+
+    let mut calls = Vec::new();
+    let (pages, next) =
+        super::answer_batch_pages::<PostingHitPage, _>(5, 0, page_bytes + 1, |index| {
+            calls.push(index);
+            Ok(PostingHitPage {
+                hits: (0..4)
+                    .map(|vertex_id| PostingHit {
+                        shard_id: ShardId::new(0),
+                        vertex_id,
+                    })
+                    .collect(),
+                next: None,
+                done: true,
+            })
+        })
+        .expect("answer");
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(next, Some(1));
+    // Only the boundary bucket is measured beyond the admitted page; buckets 2..5 are untouched.
+    assert_eq!(calls, vec![0, 1]);
 }
 
 #[test]

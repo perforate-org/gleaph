@@ -2,23 +2,23 @@
 
 use super::{
     IndexStore, clamp_posting_page_limit, ensure_index_value_key, ensure_posting_range_request,
-    instruction_counter_near_budget, pack_posting_vertex,
+    pack_posting_vertex,
 };
 use crate::facade::stable::{INDEX_VERTEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::key::PostingKey;
 use crate::label_key::LabelPostingKey;
 use crate::posting_range::{posting_key_half_open_range, property_posting_bucket};
 use crate::state::IndexError;
-use candid::Principal;
+use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    IndexSubject, LookupEdgeEqualPageRequest, LookupEqualBatchRequest, LookupEqualBatchResult,
-    LookupEqualPageForLabelRequest, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
-    LookupIntersectionPageRequest, LookupRangeIntersectionPageForLabelRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageForLabelRequest, LookupRangePageRequest,
-    LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
-    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit, PostingHitPage, PostingRangeRequest,
-    PropertyPostingCursor, ValuePostingCount, ValuePostingCountCursor, ValuePostingCountPage,
+    IndexSubject, LookupEqualBatchRequest, LookupEqualBatchResult, LookupEqualPageForLabelRequest,
+    LookupEqualPageRequest, LookupIntersectionPageForLabelRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageForLabelRequest, LookupRangeIntersectionPageRequest,
+    LookupRangePageForLabelRequest, LookupRangePageRequest, LookupValuePostingCountPageRequest,
+    MAX_EQUALITY_INTERSECTION_ARMS, MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit,
+    PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+    ValuePostingCountCursor, ValuePostingCountPage,
 };
 use nohash_hasher::IntSet;
 use std::ops::Bound;
@@ -232,58 +232,45 @@ impl IndexStore {
         page.hits = self.filter_hits_by_label(req.vertex_label_id, &page.hits);
         Ok(page)
     }
-    /// Batch paginated equality export for many vertex `(property_id, value)` buckets.
-    /// Each bucket is answered with its own page; paging stops early if the canister nears its
-    /// instruction budget, returning `next` so the Router can resume.
+    /// Batch paginated equality export for many vertex `(property_id, value)` buckets in one call.
+    ///
+    /// Buckets are answered in `specs` order at bucket granularity: a bucket is either fully
+    /// included in the response or left for the resume cursor, so the response payload budget never
+    /// cuts a bucket in half. The response is bounded by the shared inter-canister payload policy;
+    /// the canister instruction budget stops the batch early. A bucket with more hits than `limit`
+    /// returns `done = false` plus its cursor and is continued through [`Self::lookup_equal_page`].
     pub fn lookup_equal_batch(
         &self,
         req: &LookupEqualBatchRequest,
     ) -> Result<LookupEqualBatchResult, IndexError> {
-        let limit = clamp_posting_page_limit(req.limit);
-        let mut pages = Vec::with_capacity(req.specs.len());
-        let mut next = None;
-        for (index, spec) in req.specs.iter().enumerate() {
-            if instruction_counter_near_budget(true) {
-                next = Some(index as u32);
-                break;
-            }
-            let page = match spec.subject {
-                IndexSubject::VertexProperty => {
-                    self.lookup_equal_page(&LookupEqualPageRequest {
-                        property_id: spec.property_id,
-                        value: spec.value.clone(),
-                        after: req.after.clone(),
-                        limit: limit as u32,
-                    })?
-                }
-                IndexSubject::EdgeProperty { label_id } => {
-                    let edge_page = self.lookup_edge_equal_page(&LookupEdgeEqualPageRequest {
-                        property_id: spec.property_id,
-                        value: spec.value.clone(),
-                        label_id,
-                        after: None,
-                        limit: limit as u32,
-                    })?;
-                    PostingHitPage {
-                        hits: edge_page
-                            .hits
-                            .into_iter()
-                            .map(|h| PostingHit {
-                                shard_id: h.shard_id,
-                                vertex_id: h.owner_vertex_id,
-                            })
-                            .collect(),
-                        next: edge_page.next.map(|c| PropertyPostingCursor {
-                            value: c.value,
-                            shard_id: c.shard_id,
-                            vertex_id: c.owner_vertex_id,
-                        }),
-                        done: edge_page.done,
-                    }
-                }
-            };
-            pages.push(page);
+        if req
+            .specs
+            .iter()
+            .any(|spec| !matches!(spec.subject, IndexSubject::VertexProperty))
+        {
+            return Err(IndexError::InvalidBatchSubject);
         }
+        let limit = clamp_posting_page_limit(req.limit);
+        let base_bytes = Encode!(&LookupEqualBatchResult {
+            pages: Vec::new(),
+            next: None,
+        })
+        .map_err(|e| IndexError::BatchEncodeFailed(e.to_string()))?
+        .len();
+        let (pages, next) = super::answer_batch_pages(
+            req.specs.len(),
+            base_bytes,
+            super::LOOKUP_BATCH_RESPONSE_BUDGET_BYTES,
+            |index| {
+                let spec = &req.specs[index];
+                self.lookup_equal_page(&LookupEqualPageRequest {
+                    property_id: spec.property_id,
+                    value: spec.value.clone(),
+                    after: None,
+                    limit: limit as u32,
+                })
+            },
+        )?;
         Ok(LookupEqualBatchResult { pages, next })
     }
 

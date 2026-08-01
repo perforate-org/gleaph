@@ -14,8 +14,8 @@ use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
-    IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog, PostingHit,
-    ValuePostingCount,
+    IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult, IndexedPropertyCatalog,
+    PostingHit, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanBatchMode, ExecutePlanBatchSharedV2, ExecutePlanBatchSharedV2Args,
@@ -872,6 +872,33 @@ pub(crate) async fn resolve_complete_row_seed_relation<I: IndexLookup + ?Sized>(
             crate::current_instruction_counter().saturating_sub(anchor_set_start);
     }
 
+    // Multi-variable fast path: when every variable is bound by exactly one equality `Equal`
+    // anchor, resolve all anchors in a single batched index call instead of one `lookup_equal`
+    // round trip per variable. The seed anchors (e.g. `MATCH (a {..}), (b {..})` feed edges) are
+    // distinct values per item, so the preflight cache would not hit anyway.
+    if set.variables.len() >= 2
+        && set
+            .variables
+            .iter()
+            .all(|var| matches!(var.anchors.as_slice(), [IndexAnchor::Equal(_)]))
+    {
+        let specs: Vec<IndexEqualSpec> = set
+            .variables
+            .iter()
+            .map(|var| {
+                let IndexAnchor::Equal(probe) = &var.anchors[0] else {
+                    unreachable!("filtered above")
+                };
+                IndexEqualSpec::vertex(probe.property_id, probe.payload_bytes.clone())
+            })
+            .collect();
+        let hit_lists = index
+            .lookup_equal_batch(specs)
+            .await
+            .map_err(RouterError::InvalidArgument)?;
+        return Ok(Some(relation_from_variable_hits(&set, hit_lists)?));
+    }
+
     if set.variables.len() == 1 {
         let var = &set.variables[0];
 
@@ -921,6 +948,120 @@ pub(crate) async fn resolve_complete_row_seed_relation<I: IndexLookup + ?Sized>(
     }
 
     Ok(Some(CompleteRowSeedRelation { variable_domains }))
+}
+
+/// Build a complete-row seed relation from one hit list per seed variable (in variable order),
+/// converting postings to local vertex ids and short-circuiting on the first empty domain.
+fn relation_from_variable_hits(
+    set: &SeedAnchorSet,
+    hit_lists: Vec<Vec<PostingHit>>,
+) -> Result<CompleteRowSeedRelation, RouterError> {
+    let mut variable_domains: Vec<(String, Vec<u32>)> = Vec::with_capacity(set.variables.len());
+    for (var, hits) in set.variables.iter().zip(hit_lists) {
+        let ids = hits_to_local_vertex_ids(SeedHits::Vertices(hits))?;
+        if ids.is_empty() {
+            // Empty domain short-circuits the Cartesian product to an empty row set while
+            // preserving the item ordinal for Graph.
+            return Ok(CompleteRowSeedRelation {
+                variable_domains: vec![(var.variable.clone(), Vec::new())],
+            });
+        }
+        variable_domains.push((var.variable.clone(), ids));
+    }
+    Ok(CompleteRowSeedRelation { variable_domains })
+}
+
+/// Extract one vertex `Equal` spec per variable when every variable is bound by exactly one
+/// equality anchor — the shape eligible for the cross-item batched fast path below.
+fn complete_row_equal_specs(set: &SeedAnchorSet) -> Option<Vec<IndexEqualSpec>> {
+    let mut specs = Vec::with_capacity(set.variables.len());
+    for var in &set.variables {
+        let [IndexAnchor::Equal(probe)] = var.anchors.as_slice() else {
+            return None;
+        };
+        specs.push(IndexEqualSpec::vertex(
+            probe.property_id,
+            probe.payload_bytes.clone(),
+        ));
+    }
+    Some(specs)
+}
+
+/// Resolve a complete-row seed relation for every item of a typed V1 bulk group, in item order.
+///
+/// When every item binds each seed variable with exactly one `Equal` vertex anchor (the seed
+/// shapes of the social demo, e.g. `MATCH (a:Post {demo_id: $a}), (b:User {user_id: $b})`), all
+/// anchors of all items are resolved through batched `lookup_equal_batch` requests (chunked to the
+/// inter-canister payload limit by the index client) instead of one round trip per item. Any item
+/// that does not qualify falls back to per-item resolution, preserving
+/// [`resolve_complete_row_seed_relation`]'s `Ok(None)` contract for non-selective seeds so the
+/// caller can reject the group exactly as before.
+pub(crate) async fn resolve_complete_row_seed_relations<I: IndexLookup + ?Sized>(
+    index: &I,
+    plans: &[PhysicalPlan],
+    item_params: &[(Vec<u8>, BTreeMap<String, gleaph_gql::Value>)],
+    store: &RouterStore,
+    stats: &RouterGraphStats,
+    shard_id: ShardId,
+    preflight: Option<&PreflightContext>,
+    metrics: &mut SeedResolutionMetrics,
+) -> Result<Vec<Option<CompleteRowSeedRelation>>, RouterError> {
+    let mut anchor_sets: Vec<Option<SeedAnchorSet>> = Vec::with_capacity(item_params.len());
+    let mut all_specs: Vec<IndexEqualSpec> = Vec::new();
+    let mut batchable = true;
+    for (_, pmap) in item_params {
+        let set = match SeedAnchorSet::from_plans(plans, pmap, store, stats)? {
+            Some(set) if set.is_selective_complete_row_seed() => set,
+            _ => {
+                batchable = false;
+                break;
+            }
+        };
+        match complete_row_equal_specs(&set) {
+            Some(specs) => all_specs.extend(specs),
+            None => {
+                batchable = false;
+                break;
+            }
+        }
+        anchor_sets.push(Some(set));
+    }
+    if !batchable {
+        let mut out = Vec::with_capacity(item_params.len());
+        for (_, pmap) in item_params {
+            out.push(
+                resolve_complete_row_seed_relation(
+                    index, plans, pmap, store, stats, shard_id, preflight, metrics,
+                )
+                .await?,
+            );
+        }
+        return Ok(out);
+    }
+
+    #[cfg(feature = "batch-instr-log")]
+    let batch_start = crate::current_instruction_counter();
+
+    let hit_lists = index
+        .lookup_equal_batch(all_specs)
+        .await
+        .map_err(RouterError::InvalidArgument)?;
+
+    #[cfg(feature = "batch-instr-log")]
+    {
+        metrics.remote_index_await +=
+            crate::current_instruction_counter().saturating_sub(batch_start);
+    }
+
+    let mut out = Vec::with_capacity(item_params.len());
+    let mut cursor = 0usize;
+    for set in anchor_sets.into_iter().flatten() {
+        let count = set.variables.len();
+        let per_variable: Vec<Vec<PostingHit>> = hit_lists[cursor..cursor + count].to_vec();
+        cursor += count;
+        out.push(Some(relation_from_variable_hits(&set, per_variable)?));
+    }
+    Ok(out)
 }
 
 fn hits_to_local_vertex_ids(hits: SeedHits) -> Result<Vec<u32>, RouterError> {
@@ -5233,15 +5374,6 @@ async fn execute_prepared_bulk_group_typed(
     let item_count = item_params.len();
 
     let stats = graph_stats_for(graph_id);
-    let complete_row_anchor_set =
-        match SeedAnchorSet::from_plans(&base.plans, &base.pmap, store, &stats) {
-            Ok(Some(set)) if set.is_selective_complete_row_seed() => set,
-            _ => {
-                log_router_typed_batch_decision("rejected", "non_selective_seed");
-                return Ok(None);
-            }
-        };
-    let _ = complete_row_anchor_set;
     let index = match RouterIndexLookup::from_shards(graph_id, std::slice::from_ref(&shard))
         .map_err(RouterError::InvalidArgument)
     {
@@ -5259,18 +5391,22 @@ async fn execute_prepared_bulk_group_typed(
     let mut seed_resolution_acc = SeedResolutionMetrics::default();
     let mut typed_operations = Vec::new();
     let mut logical_operation_chunk_counts = Vec::with_capacity(item_count);
-    for (params_blob, pmap) in &item_params {
-        let relation = resolve_complete_row_seed_relation(
-            &index,
-            &base.plans,
-            pmap,
-            store,
-            &stats,
-            dispatch.shard_id,
-            preflight,
-            &mut seed_resolution_acc,
-        )
-        .await?;
+    // Resolve every item's complete-row seed relation. When all items bind exactly one `Equal`
+    // anchor per variable (the seed shapes of the social demo), all anchors of all items are
+    // resolved through one batched `lookup_equal_batch` per request chunk instead of one round
+    // trip per item; otherwise each item resolves on its own exactly as before.
+    let relations = resolve_complete_row_seed_relations(
+        &index,
+        &base.plans,
+        &item_params,
+        store,
+        &stats,
+        dispatch.shard_id,
+        preflight,
+        &mut seed_resolution_acc,
+    )
+    .await?;
+    for ((params_blob, _), relation) in item_params.iter().zip(relations) {
         let Some(relation) = relation else {
             log_router_typed_batch_decision("rejected", "seed_relation_unavailable");
             return Ok(None);
@@ -6560,8 +6696,8 @@ mod tests {
     use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
     use gleaph_graph_kernel::federation::LocalVertexId;
     use gleaph_graph_kernel::index::{
-        EdgePostingHit, IndexLabelIntersectionRequest, LabelLookupPageResult, PostingHit,
-        ValuePostingCount,
+        EdgePostingHit, IndexEqualSpec, IndexLabelIntersectionRequest, LabelLookupPageResult,
+        PostingHit, ValuePostingCount,
     };
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphBulkMutationProgress,
@@ -8797,6 +8933,309 @@ mod tests {
         assert!(
             bulk_guard,
             "wave 4 plan should require per-item seed bindings"
+        );
+    }
+
+    /// Params for a wave-4-shaped REPLY_TO seed item with the given a/b demo ids.
+    fn params_for_seed(a_demo_id: u64, b_demo_id: u64) -> BTreeMap<String, gleaph_gql::Value> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "$a_demo_id".to_string(),
+            gleaph_gql::Value::Uint64(a_demo_id),
+        );
+        params.insert(
+            "$b_demo_id".to_string(),
+            gleaph_gql::Value::Uint64(b_demo_id),
+        );
+        params
+    }
+
+    /// Fake index that records batched lookup calls and returns pre-seeded complete hit lists.
+    #[derive(Clone)]
+    struct BatchCountingFakeIndex {
+        batch_calls: Rc<Cell<u32>>,
+        /// Specs count of the most recent `lookup_equal_batch` call.
+        batch_spec_count: Rc<Cell<usize>>,
+        /// One entry per `lookup_equal_batch` call; each entry is one hit list per spec.
+        batch_results: Rc<RefCell<Vec<Vec<Vec<PostingHit>>>>>,
+    }
+
+    impl BatchCountingFakeIndex {
+        fn new(batch_results: Vec<Vec<Vec<PostingHit>>>) -> Self {
+            Self {
+                batch_calls: Rc::new(Cell::new(0)),
+                batch_spec_count: Rc::new(Cell::new(0)),
+                batch_results: Rc::new(RefCell::new(batch_results)),
+            }
+        }
+
+        fn batch_calls(&self) -> u32 {
+            self.batch_calls.get()
+        }
+
+        fn batch_spec_count(&self) -> usize {
+            self.batch_spec_count.get()
+        }
+    }
+
+    impl IndexLookup for BatchCountingFakeIndex {
+        fn lookup_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_equal_batch(
+            &self,
+            specs: Vec<IndexEqualSpec>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<PostingHit>>, String>> + '_>> {
+            self.batch_calls.set(self.batch_calls.get() + 1);
+            self.batch_spec_count.set(specs.len());
+            let result = self.batch_results.borrow_mut().remove(0);
+            Box::pin(async move { Ok(result) })
+        }
+
+        fn lookup_intersection(
+            &self,
+            _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            gleaph_graph_kernel::index::IndexIntersectionResult,
+                            String,
+                        >,
+                    > + '_,
+            >,
+        > {
+            Box::pin(async move {
+                Ok(gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(Vec::new()))
+            })
+        }
+
+        fn lookup_edge_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _label_id: Option<u16>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn count_postings_by_value(
+            &self,
+            _property_id: u32,
+            _min_count: u64,
+            _vertex_filter_packed: Option<Vec<u64>>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_label_intersection(
+            &self,
+            _req: IndexLabelIntersectionRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_label_page(
+            &self,
+            _req: gleaph_graph_kernel::index::LabelLookupPageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
+            Box::pin(async move {
+                Ok(LabelLookupPageResult {
+                    hits: Vec::new(),
+                    next: None,
+                    done: true,
+                })
+            })
+        }
+
+        fn filter_hits_by_label(
+            &self,
+            _vertex_label_id: u32,
+            hits: Vec<PostingHit>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(hits) })
+        }
+
+        fn count_postings_by_value_for_label(
+            &self,
+            _property_id: u32,
+            _vertex_label_id: u32,
+            _min_count: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+    }
+
+    #[test]
+    fn resolve_complete_row_seed_relation_batches_two_variable_equal_anchors() {
+        use crate::gql::build_router_block_plan;
+        use crate::planner_stats::RouterGraphStats;
+        use gleaph_gql::type_check::NoSchema;
+        use std::collections::BTreeMap;
+
+        let store = store_with_one_shard();
+        let graph_id = tenant_main_graph_id();
+        let admin = Principal::from_slice(&[1; 29]);
+        store
+            .admin_intern_vertex_label(admin, "tenant.main", "Post")
+            .expect("intern Post");
+        store
+            .admin_intern_property(admin, "tenant.main", "demo_id")
+            .expect("intern demo_id");
+        store
+            .admin_intern_property(admin, "tenant.main", "demo_graph")
+            .expect("intern demo_graph");
+
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).expect("parse");
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["demo_id"]);
+        let plan = build_router_block_plan(block, &NoSchema, &stats).expect("plan indexed");
+        let mut params = BTreeMap::new();
+        params.insert("$a_demo_id".to_string(), gleaph_gql::Value::Uint64(1));
+        params.insert("$b_demo_id".to_string(), gleaph_gql::Value::Uint64(2));
+
+        let index = BatchCountingFakeIndex::new(vec![vec![
+            vec![PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 10,
+            }],
+            vec![PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 20,
+            }],
+        ]]);
+        let mut metrics = super::SeedResolutionMetrics::default();
+        let relation = pollster::block_on(super::resolve_complete_row_seed_relation(
+            &index,
+            std::slice::from_ref(&plan),
+            &params,
+            &store,
+            &stats,
+            ShardId::new(0),
+            None,
+            &mut metrics,
+        ))
+        .expect("resolve")
+        .expect("relation");
+
+        assert_eq!(
+            index.batch_calls(),
+            1,
+            "two variable equal anchors must be resolved in a single batched lookup call"
+        );
+        assert_eq!(relation.variable_domains.len(), 2);
+        assert_eq!(relation.variable_domains[0], ("a".to_string(), vec![10]));
+        assert_eq!(relation.variable_domains[1], ("b".to_string(), vec![20]));
+    }
+
+    #[test]
+    fn resolve_complete_row_seed_relations_batches_all_items_in_one_call() {
+        use crate::gql::build_router_block_plan;
+        use crate::planner_stats::RouterGraphStats;
+        use gleaph_gql::type_check::NoSchema;
+
+        let store = store_with_one_shard();
+        let graph_id = tenant_main_graph_id();
+        let admin = Principal::from_slice(&[1; 29]);
+        store
+            .admin_intern_vertex_label(admin, "tenant.main", "Post")
+            .expect("intern Post");
+        store
+            .admin_intern_property(admin, "tenant.main", "demo_id")
+            .expect("intern demo_id");
+        store
+            .admin_intern_property(admin, "tenant.main", "demo_graph")
+            .expect("intern demo_graph");
+
+        let gql = "MATCH (a:Post {demo_id: $a_demo_id, demo_graph: 'social'}), (b:Post {demo_id: $b_demo_id, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'r', demo_kind: 'reply'}]->(b)";
+        let program = parser::parse(gql).expect("parse");
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["demo_id"]);
+        let plan = build_router_block_plan(block, &NoSchema, &stats).expect("plan indexed");
+
+        // Three seed items, each with distinct a/b anchors; the index answers all six specs in one
+        // batch call, one posting per spec.
+        let item_params = vec![
+            (vec![0], params_for_seed(1, 2)),
+            (vec![1], params_for_seed(3, 4)),
+            (vec![2], params_for_seed(5, 6)),
+        ];
+        let index = BatchCountingFakeIndex::new(vec![vec![
+            vec![PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 11,
+            }],
+            vec![PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 21,
+            }],
+            vec![PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 31,
+            }],
+            vec![PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 41,
+            }],
+            vec![PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 51,
+            }],
+            vec![PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 61,
+            }],
+        ]]);
+        let mut metrics = super::SeedResolutionMetrics::default();
+        let relations = pollster::block_on(super::resolve_complete_row_seed_relations(
+            &index,
+            std::slice::from_ref(&plan),
+            &item_params,
+            &store,
+            &stats,
+            ShardId::new(0),
+            None,
+            &mut metrics,
+        ))
+        .expect("resolve");
+
+        assert_eq!(
+            index.batch_calls(),
+            1,
+            "all items' anchors must be resolved in a single batched lookup call"
+        );
+        assert_eq!(index.batch_spec_count(), 6, "three items x two anchors");
+        assert_eq!(relations.len(), 3);
+        assert_eq!(
+            relations[0].as_ref().expect("relation").variable_domains,
+            vec![("a".to_string(), vec![11]), ("b".to_string(), vec![21])]
+        );
+        assert_eq!(
+            relations[1].as_ref().expect("relation").variable_domains,
+            vec![("a".to_string(), vec![31]), ("b".to_string(), vec![41])]
+        );
+        assert_eq!(
+            relations[2].as_ref().expect("relation").variable_domains,
+            vec![("a".to_string(), vec![51]), ("b".to_string(), vec![61])]
         );
     }
 

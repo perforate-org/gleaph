@@ -4,16 +4,17 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use candid::Principal;
+use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, IndexSubject, LabelIntersectionPageRequest,
     LabelLookupPageRequest, LabelLookupPageResult, LookupEdgeEqualPageRequest,
-    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupPropertyIntersectionPageRequest,
-    LookupValuePostingCountPageRequest, MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS,
-    MAX_VALUE_POSTING_COUNT_PAGE_GROUPS, PostingHit, ValuePostingCount, ValuePostingCountPage,
+    LookupEqualBatchRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupPropertyIntersectionPageRequest, LookupValuePostingCountPageRequest,
+    MAX_EQUALITY_INTERSECTION_ARMS, MAX_POSTING_PAGE_HITS, MAX_VALUE_POSTING_COUNT_PAGE_GROUPS,
+    PostingHit, ValuePostingCount, ValuePostingCountPage,
 };
 
 use crate::facade::store::RouterStore;
@@ -143,6 +144,109 @@ async fn collect_equal_hits_paged(
         after = page.next;
     }
     Ok(hits)
+}
+
+/// Collect **complete** equality hits for every spec on one index canister by following the
+/// batched lookup's resume cursor (slicing `specs[next..]`) and continuing any bucket whose page
+/// returned `done = false` through the per-bucket [`RouterIndexClient::lookup_equal_page`]. The
+/// caller receives one complete hit list per spec, in `specs` order — the response payload budget
+/// never surfaces as a partial bucket.
+///
+/// The request is chunked with [`gleaph_message_sizing`] so a large spec list (e.g. one batch
+/// covering every seed item of a wave) never exceeds the inter-canister payload limit even though
+/// the index answers each chunk in bucket-granular pages.
+async fn collect_batch_equal_hits(
+    client: &RouterIndexClient,
+    specs: Vec<IndexEqualSpec>,
+) -> Result<Vec<Vec<PostingHit>>, String> {
+    use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
+
+    let mut out: Vec<Vec<PostingHit>> = Vec::with_capacity(specs.len());
+    let mut offset = 0usize;
+    let mut hint: Option<SizeHint> = None;
+    while offset < specs.len() {
+        let remaining = specs.len() - offset;
+        let fit =
+            adaptive_fitting_prefix(remaining, hint, SizingPolicy::inter_canister(), |count| {
+                let request = LookupEqualBatchRequest {
+                    specs: specs[offset..offset + count].to_vec(),
+                    limit: INDEX_LOOKUP_PAGE_LIMIT,
+                };
+                Encode!(&request)
+                    .map_err(|e| e.to_string())
+                    .map(|bytes| bytes.len())
+            })
+            .map_err(|err| match err {
+                FitError::NoEntryFits { .. } => {
+                    "lookup_equal_batch request exceeds the inter-canister payload limit"
+                        .to_string()
+                }
+                FitError::Measure(e) => e,
+            })?
+            .ok_or_else(|| "lookup_equal_batch spec list is empty".to_string())?;
+        let chunk_end = offset + fit.entry_count;
+        hint = Some(SizeHint::new(fit.entry_count));
+        let result = client
+            .lookup_equal_batch(LookupEqualBatchRequest {
+                specs: specs[offset..chunk_end].to_vec(),
+                limit: INDEX_LOOKUP_PAGE_LIMIT,
+            })
+            .await?;
+        let answered = result.pages.len();
+        for (i, page) in result.pages.iter().enumerate() {
+            let spec = &specs[offset + i];
+            let mut hits = page.hits.clone();
+            if !page.done {
+                let mut after = page.next.clone();
+                loop {
+                    let next_page = client
+                        .lookup_equal_page(LookupEqualPageRequest {
+                            property_id: spec.property_id,
+                            value: spec.value.clone(),
+                            after,
+                            limit: INDEX_LOOKUP_PAGE_LIMIT,
+                        })
+                        .await?;
+                    hits.extend(next_page.hits);
+                    if next_page.done {
+                        break;
+                    }
+                    after = next_page.next;
+                }
+            }
+            out.push(hits);
+        }
+        match result.next {
+            None => {
+                // The index answered the whole chunk.
+                if answered != fit.entry_count {
+                    return Err(format!(
+                        "lookup_equal_batch answered {answered} pages for {} specs",
+                        fit.entry_count
+                    ));
+                }
+                offset = chunk_end;
+            }
+            Some(next) => {
+                // `next` is relative to the re-sent chunk and must equal the number of answered
+                // pages; a mismatch means the index made no forward progress.
+                if next as usize != answered {
+                    return Err(format!(
+                        "lookup_equal_batch returned next={next} for {answered} pages"
+                    ));
+                }
+                if answered == 0 {
+                    return Err(
+                        "lookup_equal_batch made no forward progress on the resume cursor".into(),
+                    );
+                }
+                // Resume from the first bucket the index did not answer; the next iteration
+                // re-fits the remaining specs to the payload limit.
+                offset += answered;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Collect all edge equality hits for `(property_id, value[, label_id])` on one index canister by
@@ -333,6 +437,22 @@ pub(crate) trait IndexLookup {
         value: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
 
+    /// Resolve complete equality hits for every spec. The default implementation falls back to
+    /// one [`Self::lookup_equal`] round trip per spec; clients that can batch on the index
+    /// canister override this with a single batched call per chunk.
+    fn lookup_equal_batch(
+        &self,
+        specs: Vec<IndexEqualSpec>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<PostingHit>>, String>> + '_>> {
+        Box::pin(async move {
+            let mut out = Vec::with_capacity(specs.len());
+            for spec in specs {
+                out.push(self.lookup_equal(spec.property_id, spec.value).await?);
+            }
+            Ok(out)
+        })
+    }
+
     fn lookup_intersection(
         &self,
         req: IndexIntersectionRequest,
@@ -410,6 +530,13 @@ impl IndexLookup for RouterIndexClient {
         value: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
         Box::pin(collect_equal_hits_paged(self, property_id, value))
+    }
+
+    fn lookup_equal_batch(
+        &self,
+        specs: Vec<IndexEqualSpec>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<PostingHit>>, String>> + '_>> {
+        Box::pin(collect_batch_equal_hits(self, specs))
     }
 
     fn lookup_intersection(
@@ -517,6 +644,31 @@ impl IndexLookup for RouterIndexLookup {
                 );
             }
             Ok(merge_posting_hits(self.retain_live_vertex_hits(merged)))
+        })
+    }
+
+    fn lookup_equal_batch(
+        &self,
+        specs: Vec<IndexEqualSpec>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<PostingHit>>, String>> + '_>> {
+        let targets = self.targets.clone();
+        Box::pin(async move {
+            if targets.is_empty() {
+                return Err("no index canister registered for logical graph".into());
+            }
+            let mut merged: Vec<Vec<PostingHit>> = vec![Vec::new(); specs.len()];
+            for principal in targets {
+                let per_spec =
+                    collect_batch_equal_hits(&RouterIndexClient::new(principal), specs.clone())
+                        .await?;
+                for (group, hits) in merged.iter_mut().zip(per_spec) {
+                    group.extend(hits);
+                }
+            }
+            for group in merged.iter_mut() {
+                *group = merge_posting_hits(self.retain_live_vertex_hits(std::mem::take(group)));
+            }
+            Ok(merged)
         })
     }
 

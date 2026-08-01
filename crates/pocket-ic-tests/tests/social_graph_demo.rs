@@ -21,9 +21,9 @@ use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
     admin_fully_activate_social_vector_index, admin_ingest_social_embeddings,
     admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
-    execute_social_demo_scenario_as, gql_query_as, install_single_shard_federation_with_gateway,
-    install_vector_canister, prepared_upsert_as_admin,
-    seed_social_graph_and_assert_feed_edge_order, social_feed_post_ids,
+    create_vertex_property_index, execute_social_demo_scenario_as, gql_query_as,
+    install_single_shard_federation_with_gateway, install_vector_canister,
+    prepared_upsert_as_admin, seed_social_graph_and_assert_feed_edge_order, social_feed_post_ids,
 };
 use gleaph_social_demo_gateway::SocialDemoScenario;
 
@@ -470,6 +470,45 @@ fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {
     ] {
         admin_intern_property(env, prop);
     }
+    // The production deploy script registers the seed anchor properties as vertex indexes
+    // (`admin_set_indexed_vertex_property`). Without them the seed MATCH anchors plan as
+    // label scans, the selective complete-row seed relation is unavailable, and every
+    // multi-anchor edge item falls back to the scalar path (one round trip per anchor).
+    create_vertex_property_index(
+        env,
+        "idx_user_user_id",
+        "User",
+        "user_id",
+        "social-index-user-user-id",
+    );
+    create_vertex_property_index(
+        env,
+        "idx_post_demo_id",
+        "Post",
+        "demo_id",
+        "social-index-post-demo-id",
+    );
+    create_vertex_property_index(
+        env,
+        "idx_feed_demo_id",
+        "Feed",
+        "demo_id",
+        "social-index-feed-demo-id",
+    );
+    create_vertex_property_index(
+        env,
+        "idx_topic_demo_id",
+        "Topic",
+        "demo_id",
+        "social-index-topic-demo-id",
+    );
+    create_vertex_property_index(
+        env,
+        "idx_user_demo_id",
+        "User",
+        "demo_id",
+        "social-index-user-demo-id",
+    );
 }
 
 fn assert_author_name_is_text(row: &std::collections::BTreeMap<String, Value>, context: &str) {

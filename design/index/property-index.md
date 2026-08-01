@@ -112,6 +112,8 @@ An index canister holds postings for shards attached to **one graph's index clus
 | `lookup_equal_page` | Implemented | Paginated equality export (`after` + `limit`); the seed-routing read path |
 | `lookup_range_page` | Implemented | Paginated range export over encoded values (`after` + `limit`) |
 | `lookup_edge_equal_page` | Implemented | Paginated edge equality export (`after` + `limit`) |
+| `lookup_equal_batch` | Implemented | Batched equality export for many vertex buckets in one call: bucket-granular response admission under the shared inter-canister payload budget, `next` resume cursor (slice `specs[next..]`), per-bucket `done`/cursor continuation through `lookup_equal_page`; the seed-routing fast path for multi-anchor items |
+| `lookup_edge_equal_batch` | Implemented | Batched edge equality export with the same bucket-granular budget admission and `next` resume contract as `lookup_equal_batch` |
 | `lookup_intersection` | Implemented | Intersect multiple equality arms (edge/mixed; vertex-only is streamed via `lookup_intersection_page` — [lookup-intersection.md](lookup-intersection.md)) |
 | `lookup_intersection_page` | Implemented | Paginated all-vertex equality intersection (`after` + `limit`): server-side walk-arm page + in-heap merge-join sieve; the streamed vertex-intersection read path |
 | `lookup_range_intersection_page` | Implemented | Paginated range-walk plus one to eight equality sieves (`after` + `limit`): server-side finite range page filtered by up to eight vertex equality arms on distinct properties; the mixed equality-plus-range read path for ADR 0034 Slice 14 |
