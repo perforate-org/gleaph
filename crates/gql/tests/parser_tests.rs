@@ -5,12 +5,15 @@
 
 use gleaph_gql::ast::{
     BindingTypeAnnotation, CompositeQueryExpr, DurationQualifier, ExprKind, GraphTypeElement,
-    GraphTypeSpec, Keyword, ResultStatement, SchemaReference, SelectQuerySpecification,
-    SelectSource, Statement, ValueType,
+    GraphTypeSpec, Keyword, ResultStatement, ReturnBody, SchemaReference, SelectQuerySpecification,
+    SelectSource, SortDirection, Statement, ValueType,
 };
 use gleaph_gql::parser;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql::validate::validate;
+
+#[cfg(feature = "format")]
+use gleaph_gql::format::{FormatOptions, format_query};
 
 /// Parse and validate helper — panics with a useful message on failure.
 fn parse_ok(input: &str) {
@@ -271,6 +274,57 @@ fn order_by_asc_desc() {
 #[test]
 fn order_by_nulls_last() {
     parse_ok("MATCH (n) RETURN n.score ORDER BY n.score DESC NULLS LAST");
+}
+
+#[test]
+fn order_by_insertion_parses_as_generic_function_call_in_default_features() {
+    // ADR 0052 §3: `ORDER BY INSERTION(e)` is an ordinary one-argument function-call sort item.
+    // `INSERTION` is not a reserved keyword and the gql crate never interprets the key, so the
+    // syntax must parse and validate in default features without any Gleaph-specific gate.
+    let input = "MATCH (a:User)-[e:KNOWS]->(b:User) RETURN b ORDER BY INSERTION(e) DESC";
+    let program = parse_program_ok(input);
+    validate(&program).unwrap_or_else(|e| panic!("validate failed: {e}\ninput: {input}"));
+
+    let tx = program.transaction_activity.expect("tx");
+    let block = tx.body.expect("block");
+    let Statement::Query(composite) = &block.first else {
+        panic!("expected query");
+    };
+    let ResultStatement::Return(ret) = composite.left.result.as_ref().expect("result") else {
+        panic!("expected RETURN");
+    };
+    let ReturnBody::Items { order_by, .. } = &ret.body else {
+        panic!("expected RETURN items");
+    };
+    let [item] = order_by.as_ref().expect("order by").items.as_slice() else {
+        panic!("expected a single sort item");
+    };
+    assert_eq!(item.direction, Some(SortDirection::Desc));
+    assert!(item.null_order.is_none());
+    let ExprKind::FunctionCall {
+        name,
+        args,
+        distinct,
+    } = &item.expr.kind
+    else {
+        panic!("expected a function call sort key");
+    };
+    assert!(!distinct);
+    assert_eq!(name.parts, vec!["INSERTION"]);
+    let [arg] = args.as_slice() else {
+        panic!("expected a single function argument");
+    };
+    assert!(matches!(&arg.kind, ExprKind::Variable(v) if v == "e"));
+
+    #[cfg(feature = "format")]
+    {
+        let formatted = format_query(input, &FormatOptions::default()).expect("format");
+        assert!(formatted.contains("INSERTION(e)"), "{formatted}");
+        assert_eq!(
+            format_query(&formatted, &FormatOptions::default()).unwrap(),
+            formatted
+        );
+    }
 }
 
 #[test]

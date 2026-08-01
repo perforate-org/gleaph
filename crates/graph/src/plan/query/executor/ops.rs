@@ -30,7 +30,7 @@ use super::set_operation::execute_set_operation;
 use super::wcoj::execute_wcoj;
 use super::{
     PlanBinding, binding_to_value, dedup_rows, ensure_simple_expand, ensure_var_len_expand,
-    gleaph_sequence_order_after_expand, gleaph_sequence_sort, limit_value, plan_op_name,
+    insertion_order_after_expand, insertion_order_sort, limit_value, plan_op_name,
     previous_op_binds_edge, project_row, row_matches_all, sort_rows,
 };
 
@@ -679,11 +679,12 @@ pub(crate) fn execute_ops_from<'a>(
                         .await?
                     } else {
                         ensure_simple_expand(var_len)?;
-                        let sequence_order = gleaph_sequence_order_after_expand(
+                        let sequence_order = insertion_order_after_expand(
                             ops,
                             op_idx,
                             edge.as_ref(),
-                            label.is_some() && label_expr.is_none(),
+                            &ctx.execution,
+                            label.as_deref().filter(|_| label_expr.is_none()),
                         )?;
                         execute_expand(
                             ctx,
@@ -758,11 +759,12 @@ pub(crate) fn execute_ops_from<'a>(
                         .await?
                     } else {
                         ensure_simple_expand(var_len)?;
-                        let sequence_order = gleaph_sequence_order_after_expand(
+                        let sequence_order = insertion_order_after_expand(
                             ops,
                             op_idx,
                             edge.as_ref(),
-                            label.is_some() && label_expr.is_none(),
+                            &ctx.execution,
+                            label.as_deref().filter(|_| label_expr.is_none()),
                         )?;
                         execute_expand(
                             ctx,
@@ -863,7 +865,7 @@ pub(crate) fn execute_ops_from<'a>(
                         .collect()
                 }
                 PlanOp::Sort { order_by }
-                    if gleaph_sequence_sort(order_by).is_some_and(|(edge_var, _)| {
+                    if insertion_order_sort(order_by).is_some_and(|(edge_var, _)| {
                         previous_op_binds_edge(ops, op_idx, edge_var.as_str())
                     }) =>
                 {
@@ -874,7 +876,7 @@ pub(crate) fn execute_ops_from<'a>(
                     order_by,
                     k,
                     offset,
-                } if gleaph_sequence_sort(order_by).is_some_and(|(edge_var, _)| {
+                } if insertion_order_sort(order_by).is_some_and(|(edge_var, _)| {
                     previous_op_binds_edge(ops, op_idx, edge_var.as_str())
                 }) =>
                 {

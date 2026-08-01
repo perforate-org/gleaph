@@ -284,7 +284,7 @@ for (const post of posts) {
   const properties = {};
   // Posts carry a wall-clock timestamp from CURRENT_TIMESTAMP at seed execution
   // time so the frontend can render relative time. Deterministic feed ordering is
-  // declared in the prepared query with GLEAPH.SEQUENCE on the materialized feed
+  // declared in the prepared query with ORDER BY INSERTION on the materialized feed
   // edge rather than a synthetic ordering property.
   properties.created_at = { raw: "CURRENT_TIMESTAMP" };
   properties.is_public = post.isPublic;

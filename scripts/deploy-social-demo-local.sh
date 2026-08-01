@@ -367,6 +367,15 @@ ingest_social_embeddings() {
   fi
 }
 
+register_social_graph_type() {
+  log "Registering Social Graph Type with ORDER BY INSERTION feed labels"
+  # ADR 0052 slice 2: the prepared feed queries use ORDER BY INSERTION(e), so the materialized
+  # feed labels must be declared insertion-ordered in the Graph Type (IF NOT EXISTS keeps the
+  # step idempotent for redeploys). The Router interns the declared vocabulary idempotently.
+  icp_call_expect_ok "Register Social Graph Type" "" -e local gleaph-router gql_execute_idempotent \
+    "(\"CREATE GRAPH IF NOT EXISTS $GRAPH_NAME { NODE Feed, NODE Post, NODE User, DIRECTED EDGE FeedMembership LABEL IN_PUBLIC_FEED ORDER BY INSERTION CONNECTING (Post -> Feed), DIRECTED EDGE HomeFeedMembership LABEL IN_HOME_FEED ORDER BY INSERTION CONNECTING (Post -> User) }\", vec {}, \"social-graph-type\")"
+}
+
 register_social_prepared_queries() {
   log "Registering social demo prepared queries"
 
@@ -551,6 +560,7 @@ main() {
 
   build_social_config
   seed_social_graph
+  register_social_graph_type
   setup_vector_index "$vector_id"
   ingest_social_embeddings
   register_social_prepared_queries

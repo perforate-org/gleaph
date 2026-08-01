@@ -175,12 +175,12 @@ by hand:
   every User that follows that author. Recipient ids are de-duplicated, so a self-follow cannot
   create a duplicate home-feed edge.
 
-Both labels are materialized in deterministic author-mixed order. The Social Graph Type should
-declare these labels with `ORDER BY INSERTION`; the prepared queries then request the contract
-explicitly with `ORDER BY INSERTION(e) DESC`. Physical insertion order and the default
-`OutEdgeOrder::Descending` scan are not sufficient once ordinary labels use unordered tombstone
-reuse. If the labels are not declared insertion-ordered, the prepared queries must retain an
-ordinary property sort such as `ORDER BY e.created_at DESC`.
+Both labels are materialized in deterministic author-mixed order. The Social Graph Type declares
+these labels with `ORDER BY INSERTION` (ADR 0052 Slices 1+2); the prepared queries then request the
+contract explicitly with `ORDER BY INSERTION(e) DESC`. Physical insertion order and a default scan
+are not sufficient once ordinary labels use unordered tombstone reuse. If the labels are not
+declared insertion-ordered, the prepared queries must retain an ordinary property sort such as
+`ORDER BY e.created_at DESC`.
 
 The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
 to preserve the visible read contract and fail closed if the derivation rule ever changes.

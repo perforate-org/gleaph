@@ -10,7 +10,7 @@
 //! - `gleaph-gql-ic` owns `IC.PRINCIPAL` value encoding/decoding.
 //! - Graph execution owns `MSG_CALLER()` and runtime-function context.
 //! - Graph planner integration owns `GLEAPH.COST` and `GLEAPH.VECTOR.*` fusion helpers.
-//! - Graph execution owns `GLEAPH.SEQUENCE` edge ordering.
+//! - Graph execution owns `INSERTION(e)` edge ordering.
 //! - Graph mutation executor owns operational `GLEAPH.FINALIZE_*` / `GLEAPH.DRAIN_*` procedures.
 //! - Router owns planned `SEARCH`, `INLINE`, and `CREATE VECTOR INDEX` syntax.
 //!
@@ -132,8 +132,8 @@ pub const GLEAPH_COST: QualifiedName = QualifiedName::new(&["GLEAPH", "COST"]);
 /// `COST BY`
 pub const COST: QualifiedName = QualifiedName::new(&["COST"]);
 
-/// `GLEAPH.SEQUENCE`
-pub const GLEAPH_SEQUENCE: QualifiedName = QualifiedName::new(&["GLEAPH", "SEQUENCE"]);
+/// `INSERTION` — the query-time edge insertion-order key (`ORDER BY INSERTION(e)`, ADR 0052 §3).
+pub const INSERTION: QualifiedName = QualifiedName::new(&["INSERTION"]);
 
 /// `GLEAPH.VECTOR.L2_SQUARED`
 pub const GLEAPH_VECTOR_L2_SQUARED: QualifiedName =
@@ -205,11 +205,11 @@ pub const GLEAPH_DIALECT_EXTENSIONS: &[GqlDialectExtensionSpec] = &[
         doc_anchor: "design/gql/extension-syntax.md#edge-inline-properties",
     },
     GqlDialectExtensionSpec {
-        canonical_name: GLEAPH_SEQUENCE,
+        canonical_name: INSERTION,
         kind: GqlDialectExtensionKind::EdgeOrderingFunction,
-        status: GqlDialectExtensionStatus::Compatibility,
+        status: GqlDialectExtensionStatus::Implemented,
         owner: GqlDialectExtensionOwner::GraphExecution,
-        doc_anchor: "design/gql/extension-syntax.md#edge-insertion-order-sequence",
+        doc_anchor: "design/gql/extension-syntax.md#edge-insertion-order-capability",
     },
     GqlDialectExtensionSpec {
         canonical_name: GLEAPH_VECTOR_L2_SQUARED,
@@ -361,16 +361,17 @@ mod tests {
     }
 
     #[test]
-    fn sequence_is_edge_ordering_not_inline_property() {
+    fn insertion_is_edge_ordering_not_inline_property() {
         let spec = GLEAPH_DIALECT_EXTENSIONS
             .iter()
-            .find(|spec| spec.canonical_name == GLEAPH_SEQUENCE)
-            .expect("GLEAPH.SEQUENCE in manifest");
+            .find(|spec| spec.canonical_name == INSERTION)
+            .expect("INSERTION in manifest");
         assert_eq!(spec.kind, GqlDialectExtensionKind::EdgeOrderingFunction);
         assert_ne!(
             spec.kind,
             GqlDialectExtensionKind::EdgeInlinePropertyFunction
         );
+        assert_eq!(spec.status, GqlDialectExtensionStatus::Implemented);
     }
 
     #[test]

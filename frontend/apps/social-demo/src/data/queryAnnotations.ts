@@ -106,7 +106,7 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       description: "Return the post creation timestamp.",
     },
     {
-      queryText: "ORDER BY GLEAPH.SEQUENCE(e) DESC",
+      queryText: "ORDER BY INSERTION(e) DESC",
       label: "Newest-first ordering",
       description:
         "Sort by the insertion order of the feed edges in descending order, so the most recently inserted posts appear first.",
@@ -214,7 +214,7 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       description: "Return the post creation timestamp.",
     },
     {
-      queryText: "ORDER BY GLEAPH.SEQUENCE(e) DESC",
+      queryText: "ORDER BY INSERTION(e) DESC",
       label: "Newest-first ordering",
       description:
         "Sort by the insertion order of the home feed edges in descending order, so newest posts appear first.",
@@ -270,9 +270,10 @@ export const QUERY_ANNOTATIONS: Record<ScenarioId, QueryAnnotation[]> = {
       description: "Declare the post, author, and optional parent columns returned to the frontend.",
     },
     {
-      queryText: "ORDER BY GLEAPH.SEQUENCE(e) DESC",
+      queryText: "ORDER BY INSERTION(e) DESC",
       label: "Newest-first ordering",
-      description: "Use the materialized feed-edge sequence to return newer posts first.",
+      description: "Use the materialized feed-edge insertion order to return newer posts first.",
+    },
     },
     {
       queryText: "LIMIT 20",

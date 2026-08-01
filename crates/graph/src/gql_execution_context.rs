@@ -12,8 +12,8 @@ use gleaph_graph_kernel::entry::{
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::gql_dialect::MSG_CALLER;
 use gleaph_graph_kernel::plan_exec::{
-    ConstrainedPropertyDispatch, ResolvedInlineSchema, ResolvedLabelTable, ResolvedPropertyTable,
-    ResolvedSearchWire, UniqueClaimDispatch,
+    ConstrainedPropertyDispatch, EdgeOrderingPolicy, ResolvedInlineSchema, ResolvedLabelTable,
+    ResolvedPropertyTable, ResolvedSearchWire, UniqueClaimDispatch,
 };
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
@@ -122,6 +122,19 @@ impl GqlExecutionContext {
         {
             None
         }
+    }
+
+    pub fn resolved_edge_label_ordering(&self, name: &str) -> Option<EdgeOrderingPolicy> {
+        // No host-test fallback: the ordering policy is projected by the Router from the Graph
+        // Type declaration (ADR 0052 §1/§4), so an unknown label must read as `None` (and fail
+        // closed at the INSERTION(e) guard) rather than being invented from a test registry.
+        self.resolved_labels.as_ref().and_then(|labels| {
+            labels
+                .edge
+                .iter()
+                .find(|label| label.name == name)
+                .map(|label| label.ordering)
+        })
     }
 
     pub fn requires_resolved_labels(&self) -> bool {

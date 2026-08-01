@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-08-01
-Anchor timestamp: 2026-08-01 11:44:56 UTC +0000
+Anchor timestamp: 2026-08-01 14:41:58 UTC +0000
 
 ## Status
 
@@ -302,6 +302,33 @@ defect from being rediscovered without its prior reasoning.
   authorization.
 - **Related contracts:** [security/rbac-and-prepared.md](security/rbac-and-prepared.md),
   [demo/social-graph-rag.md](demo/social-graph-rag.md)
+
+### GAP-2026-08-01-001 — Social-demo seed artifacts are not reproducible from build-config.mjs
+
+- **Status:** Open
+- **Severity:** P2 demo-tooling drift; blocks trusting `pnpm run build:config` as an idempotent
+  regeneration step
+- **Owner:** `frontend/apps/social-demo/scripts/build-config.mjs` and the committed seed/avatar
+  artifacts
+- **Observed behavior:** Running `pnpm run build:config` (build-config.mjs) in the current tree
+  rewrites `social-seeds.json`, `social-graph.json`, `userAvatars.generated.ts`, and the
+  `demoIdMap`/scenario sections of `scenarios.generated.{json,ts}` with content that differs from
+  the committed artifacts: the regenerated seed set drops the `*_gen1`..`*_gen4` user variants
+  (e.g. `akari_gen1`) and reorders entries, producing a ~1.1M-line deletion diff. The committed
+  artifacts were therefore produced from a different source state than the current script inputs.
+- **Expected or needed behavior:** `pnpm run build:config` should be deterministic and
+  reproduce the committed artifacts exactly when inputs are unchanged, so prepared-query and seed
+  edits can be landed by regenerating rather than by hand-editing generated files.
+- **Evidence:** `pnpm run build:config` in `frontend/apps/social-demo` on commit `3cc747d1`;
+  `git diff` against `seeds/social-seeds.json` and `src/data/scenarios.generated.json`.
+- **Impact:** prepared-query text changes (e.g. ADR 0052 slice 2's `ORDER BY INSERTION(e)`) cannot
+  be applied through regeneration without silently changing the seed dataset, so the generated
+  files were updated in place for slice 2. Any future seed change risks landing a different
+  dataset than intended.
+- **Next decision:** reconcile the committed artifacts with the current build inputs (identify
+  which source changed: the posts/users authoring files or the generation script) and add a
+  deterministic-order guarantee (sorted iteration) plus a drift check, or regenerate and commit
+  the new dataset deliberately in its own change.
 
 ## Resolved gaps
 

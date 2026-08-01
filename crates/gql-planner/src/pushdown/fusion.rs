@@ -184,7 +184,7 @@ mod tests {
 
     fn sequence_expr(edge_var: &str) -> Expr {
         Expr::new(ExprKind::FunctionCall {
-            name: ObjectName::qualified(vec!["GLEAPH".into(), "SEQUENCE".into()]),
+            name: ObjectName::qualified(vec!["INSERTION".into()]),
             args: vec![Expr::new(ExprKind::Variable(edge_var.into()))],
             distinct: false,
         })

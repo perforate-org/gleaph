@@ -38,7 +38,8 @@ use gleaph_gql_planner::OutputSchema;
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
-use gleaph_graph_kernel::gql_dialect::GLEAPH_SEQUENCE;
+use gleaph_graph_kernel::gql_dialect::INSERTION;
+use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use std::collections::BTreeMap;
@@ -412,25 +413,39 @@ pub(crate) fn sort_rows(
     Ok(keyed_rows.into_iter().map(|(_, row)| row).collect())
 }
 
-pub(crate) fn gleaph_sequence_order_after_expand(
+pub(crate) fn insertion_order_after_expand(
     ops: &[PlanOp],
     expand_idx: usize,
     edge_var: &str,
-    has_single_fixed_label: bool,
+    execution: &GqlExecutionContext,
+    fixed_label: Option<&str>,
 ) -> Result<EdgeSequenceOrder, PlanQueryError> {
     for op in &ops[expand_idx + 1..] {
         match op {
             PlanOp::Sort { order_by } | PlanOp::TopK { order_by, .. } => {
-                let Some((sort_edge_var, order)) = gleaph_sequence_sort(order_by) else {
+                let Some((sort_edge_var, order)) = insertion_order_sort(order_by) else {
                     continue;
                 };
                 if sort_edge_var != edge_var {
                     continue;
                 }
-                if !has_single_fixed_label {
-                    return Err(PlanQueryError::GleaphSequence {
+                let Some(label) = fixed_label else {
+                    return Err(PlanQueryError::InsertionOrder {
                         message: format!(
-                            "ORDER BY GLEAPH.SEQUENCE({sort_edge_var}) requires a single fixed edge label"
+                            "ORDER BY INSERTION({sort_edge_var}) requires a single fixed edge label"
+                        ),
+                    });
+                };
+                // ADR 0052 §3: the capability must be declared in the Graph Type. A label whose
+                // resolved policy is not `Insertion` (including a label absent from the wire
+                // table) fails closed instead of silently using physical slot order.
+                if !matches!(
+                    execution.resolved_edge_label_ordering(label),
+                    Some(EdgeOrderingPolicy::Insertion)
+                ) {
+                    return Err(PlanQueryError::InsertionOrder {
+                        message: format!(
+                            "ORDER BY INSERTION({sort_edge_var}) requires edge label '{label}' to be declared ORDER BY INSERTION in its Graph Type"
                         ),
                     });
                 }
@@ -483,7 +498,7 @@ fn previous_op_binds_edge(ops: &[PlanOp], op_idx: usize, edge_var: &str) -> bool
 ///
 /// `OptionalMatch` executes its sub-plan against each input row and preserves that input row on a
 /// miss. It therefore does not invalidate an outer edge binding unless its sub-plan itself binds
-/// the same name. Sequence-order lowering uses this distinction so `GLEAPH.SEQUENCE(e)` remains
+/// the same name. Insertion-order lowering uses this distinction so `ORDER BY INSERTION(e)` remains
 /// Graph-owned ordering rather than falling through to generic expression evaluation.
 fn ops_bind_edge_variable(ops: &[PlanOp], edge_var: &str) -> bool {
     ops.iter().any(|op| op_binds_edge_variable(op, edge_var))
@@ -526,7 +541,7 @@ fn op_binds_edge_variable(op: &PlanOp, edge_var: &str) -> bool {
     }
 }
 
-pub(crate) fn gleaph_sequence_sort(
+pub(crate) fn insertion_order_sort(
     order_by: &OrderByClause,
 ) -> Option<(String, EdgeSequenceOrder)> {
     let [item] = order_by.items.as_slice() else {
@@ -548,14 +563,14 @@ pub(crate) fn gleaph_sequence_sort(
     else {
         return None;
     };
-    if !is_gleaph_sequence_call(name, *distinct) || args.len() != 1 {
+    if !is_insertion_call(name, *distinct) || args.len() != 1 {
         return None;
     }
     sequence_arg_edge_var(&args[0]).map(|edge_var| (edge_var, order))
 }
 
-fn is_gleaph_sequence_call(name: &ObjectName, distinct: bool) -> bool {
-    !distinct && GLEAPH_SEQUENCE.matches_ascii_case_insensitive(&name.parts)
+fn is_insertion_call(name: &ObjectName, distinct: bool) -> bool {
+    !distinct && INSERTION.matches_ascii_case_insensitive(&name.parts)
 }
 
 fn sequence_arg_edge_var(expr: &Expr) -> Option<String> {

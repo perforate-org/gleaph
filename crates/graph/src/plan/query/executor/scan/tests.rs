@@ -1,7 +1,44 @@
 use super::super::test_support::*;
 use crate::plan::query::executor::execute_plan_query_bindings_with_initial_rows;
+use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
+use gleaph_graph_kernel::plan_exec::{
+    EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
+};
 use ic_stable_lara::labeled::LabeledOrientation;
 use pollster;
+
+/// Builds an execution context with a Router-resolved label table. Vertex labels must be declared
+/// once `resolved_labels` is present (the executor stops using the host-test fallback), and each
+/// edge label carries the given policy so `ORDER BY INSERTION(e)` tests exercise the declared
+/// capability rather than the fail-closed path.
+fn resolved_execution_ctx(
+    vertices: &[&str],
+    edges: &[(&str, EdgeOrderingPolicy)],
+) -> GqlExecutionContext {
+    GqlExecutionContext {
+        resolved_labels: Some(ResolvedLabelTable {
+            vertex: vertices
+                .iter()
+                .map(|name| ResolvedVertexLabel {
+                    name: (*name).into(),
+                    id: crate::test_labels::vertex_label_id_for_name(name),
+                })
+                .collect(),
+            edge: edges
+                .iter()
+                .map(|(name, policy)| {
+                    ResolvedEdgeLabel::new(
+                        *name,
+                        crate::test_labels::edge_label_id_for_name(name),
+                        EdgeInlinePropertyProfile::no_inline_property(),
+                    )
+                    .with_ordering(*policy)
+                })
+                .collect(),
+        }),
+        ..GqlExecutionContext::default()
+    }
+}
 #[test]
 fn index_scan_skips_foreign_shard_hits_in_standalone_mode() {
     let store = GraphStore::new();
@@ -1158,7 +1195,7 @@ fn labeled_expand_limit_offset_pages_earliest_edges() {
 }
 
 #[test]
-fn gleaph_sequence_asc_pages_labeled_edges_in_insertion_order() {
+fn insertion_order_asc_pages_labeled_edges_in_insertion_order() {
     let store = GraphStore::new();
     let src = store
         .insert_vertex_named(["SeqAscPageSource"], Vec::<(&str, Value)>::new())
@@ -1182,11 +1219,18 @@ fn gleaph_sequence_asc_pages_labeled_edges_in_insertion_order() {
 
     let page = plan_gql(
         "MATCH (a:SeqAscPageSource)-[e:SeqAscPageRel]->(b) \
-             ORDER BY GLEAPH.SEQUENCE(e) ASC LIMIT 2 OFFSET 1 RETURN b.name",
+             ORDER BY INSERTION(e) ASC LIMIT 2 OFFSET 1 RETURN b.name",
     );
 
     let result = store
-        .execute_plan_query(&page, &params(), GqlExecutionContext::default())
+        .execute_plan_query(
+            &page,
+            &params(),
+            resolved_execution_ctx(
+                &["SeqAscPageSource", "SeqAscPageTarget"],
+                &[("SeqAscPageRel", EdgeOrderingPolicy::Insertion)],
+            ),
+        )
         .expect("execute asc page");
 
     assert_eq!(
@@ -1196,9 +1240,9 @@ fn gleaph_sequence_asc_pages_labeled_edges_in_insertion_order() {
 }
 
 #[test]
-fn gleaph_sequence_order_after_intermediate_unnamed_expand() {
+fn insertion_order_after_intermediate_unnamed_expand() {
     // Regression for social-demo-style queries: the edge variable used in
-    // `GLEAPH.SEQUENCE(e)` is bound by an earlier expand, while a later
+    // `ORDER BY INSERTION(e)` is bound by an earlier expand, while a later
     // unnamed expand walks a different relationship. The sort must skip the
     // intermediate expand and still recognize that `e` is bound.
     let store = GraphStore::new();
@@ -1232,11 +1276,21 @@ fn gleaph_sequence_order_after_intermediate_unnamed_expand() {
 
     let plan = plan_gql(
         "MATCH (feed:SeqFeed)<-[e:IN_FEED]-(p:SeqFeedPost)<-[:POSTED]-(author:SeqFeedAuthor) \
-             RETURN author.name AS author_name ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 2",
+             RETURN author.name AS author_name ORDER BY INSERTION(e) DESC LIMIT 2",
     );
 
     let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .execute_plan_query(
+            &plan,
+            &params(),
+            resolved_execution_ctx(
+                &["SeqFeed", "SeqFeedPost", "SeqFeedAuthor"],
+                &[
+                    ("IN_FEED", EdgeOrderingPolicy::Insertion),
+                    ("POSTED", EdgeOrderingPolicy::Unordered),
+                ],
+            ),
+        )
         .expect("execute sequence order after intermediate expand");
 
     assert_eq!(
@@ -1246,9 +1300,9 @@ fn gleaph_sequence_order_after_intermediate_unnamed_expand() {
 }
 
 #[test]
-fn gleaph_sequence_order_survives_non_rebinding_optional_match() {
+fn insertion_order_survives_non_rebinding_optional_match() {
     // Regression for the social-demo reply tree: `e` is bound by the materialized feed edge,
-    // then an OPTIONAL MATCH may bind a different reply edge before the final sequence order.
+    // then an OPTIONAL MATCH may bind a different reply edge before the final insertion order.
     let store = GraphStore::new();
     let feed = store
         .insert_vertex_named(["SeqOptionalFeed"], Vec::<(&str, Value)>::new())
@@ -1290,11 +1344,21 @@ fn gleaph_sequence_order_survives_non_rebinding_optional_match() {
         "MATCH (feed:SeqOptionalFeed)<-[e:IN_FEED]-(p:SeqOptionalPost) \
          OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:SeqOptionalPost) \
          RETURN p.name AS name, parent.name AS parent_name \
-         ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 2",
+         ORDER BY INSERTION(e) DESC LIMIT 2",
     );
 
     let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .execute_plan_query(
+            &plan,
+            &params(),
+            resolved_execution_ctx(
+                &["SeqOptionalFeed", "SeqOptionalPost"],
+                &[
+                    ("IN_FEED", EdgeOrderingPolicy::Insertion),
+                    ("REPLY_TO", EdgeOrderingPolicy::Unordered),
+                ],
+            ),
+        )
         .expect("execute sequence order after optional reply match");
 
     assert_eq!(text_column(&result, "name"), vec!["second", "first"]);
@@ -1327,7 +1391,7 @@ fn optional_match_edge_binding_detection_preserves_rebinding_boundary() {
 
 #[test]
 fn previous_op_binds_edge_uses_most_recent_binding_for_rebound_variable() {
-    // If the same edge variable is bound by a later expand, the sequence order
+    // If the same edge variable is bound by a later expand, the insertion order
     // must apply to the later binding, not the earlier one.
     let store = GraphStore::new();
     let a = store
@@ -1356,11 +1420,22 @@ fn previous_op_binds_edge_uses_most_recent_binding_for_rebound_variable() {
 
     let plan = plan_gql(
         "MATCH (a:SeqRebindA)-[e:First]->(b:SeqRebindB)-[e:Second]->(c:SeqRebindC)-[f:Third]->(d:SeqRebindD) \
-             RETURN d.name AS name ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 1",
+             RETURN d.name AS name ORDER BY INSERTION(e) DESC LIMIT 1",
     );
 
     let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .execute_plan_query(
+            &plan,
+            &params(),
+            resolved_execution_ctx(
+                &["SeqRebindA", "SeqRebindB", "SeqRebindC", "SeqRebindD"],
+                &[
+                    ("First", EdgeOrderingPolicy::Insertion),
+                    ("Second", EdgeOrderingPolicy::Insertion),
+                    ("Third", EdgeOrderingPolicy::Unordered),
+                ],
+            ),
+        )
         .expect("execute rebind sequence order");
 
     // There is only one path, and e is bound to the single Second edge.
@@ -1368,7 +1443,7 @@ fn previous_op_binds_edge_uses_most_recent_binding_for_rebound_variable() {
 }
 
 #[test]
-fn gleaph_sequence_desc_returns_newest_edges_first() {
+fn insertion_order_desc_returns_newest_edges_first() {
     let store = GraphStore::new();
     let src = store
         .insert_vertex_named(["SeqDescPageSource"], Vec::<(&str, Value)>::new())
@@ -1392,11 +1467,18 @@ fn gleaph_sequence_desc_returns_newest_edges_first() {
 
     let page = plan_gql(
         "MATCH (a:SeqDescPageSource)-[e:SeqDescPageRel]->(b) \
-             ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 2 RETURN b.name",
+             ORDER BY INSERTION(e) DESC LIMIT 2 RETURN b.name",
     );
 
     let result = store
-        .execute_plan_query(&page, &params(), GqlExecutionContext::default())
+        .execute_plan_query(
+            &page,
+            &params(),
+            resolved_execution_ctx(
+                &["SeqDescPageSource", "SeqDescPageTarget"],
+                &[("SeqDescPageRel", EdgeOrderingPolicy::Insertion)],
+            ),
+        )
         .expect("execute desc page");
 
     assert_eq!(
@@ -1406,7 +1488,7 @@ fn gleaph_sequence_desc_returns_newest_edges_first() {
 }
 
 #[test]
-fn gleaph_sequence_rejects_unlabeled_edge_pattern() {
+fn insertion_order_rejects_unlabeled_edge_pattern() {
     let store = GraphStore::new();
     let src = store
         .insert_vertex_named(["SeqNoLabelSource"], Vec::<(&str, Value)>::new())
@@ -1420,14 +1502,82 @@ fn gleaph_sequence_rejects_unlabeled_edge_pattern() {
 
     let page = plan_gql(
         "MATCH (a:SeqNoLabelSource)-[e]->(b) \
-             ORDER BY GLEAPH.SEQUENCE(e) ASC RETURN b",
+             ORDER BY INSERTION(e) ASC RETURN b",
     );
 
     let err = store
         .execute_plan_query(&page, &params(), GqlExecutionContext::default())
-        .expect_err("unlabeled sequence order should fail");
+        .expect_err("unlabeled insertion order should fail");
 
     assert!(err.to_string().contains("single fixed edge label"), "{err}");
+}
+
+#[test]
+fn insertion_order_rejects_unordered_label() {
+    // ADR 0052 §3: the capability must be declared in the Graph Type. A fixed label whose
+    // resolved policy is Unordered fails closed instead of silently using physical slot order.
+    let store = GraphStore::new();
+    let src = store
+        .insert_vertex_named(["SeqUnorderedSource"], Vec::<(&str, Value)>::new())
+        .expect("insert source");
+    let dst = store
+        .insert_vertex_named(["SeqUnorderedTarget"], Vec::<(&str, Value)>::new())
+        .expect("insert target");
+    store
+        .insert_directed_edge_named(
+            src,
+            dst,
+            Some("SeqUnorderedRel"),
+            Vec::<(&str, Value)>::new(),
+        )
+        .expect("insert edge");
+
+    let page = plan_gql(
+        "MATCH (a:SeqUnorderedSource)-[e:SeqUnorderedRel]->(b) \
+             ORDER BY INSERTION(e) ASC RETURN b",
+    );
+
+    let unordered_ctx = resolved_execution_ctx(
+        &["SeqUnorderedSource", "SeqUnorderedTarget"],
+        &[("SeqUnorderedRel", EdgeOrderingPolicy::Unordered)],
+    );
+    let err = store
+        .execute_plan_query(&page, &params(), unordered_ctx)
+        .expect_err("unordered label must fail closed");
+
+    assert!(err.to_string().contains("ORDER BY INSERTION"), "{err}");
+    assert!(err.to_string().contains("SeqUnorderedRel"), "{err}");
+}
+
+#[test]
+fn insertion_order_rejects_label_missing_from_resolved_table() {
+    // A label that is not in the Router-resolved label table has no declared policy and must
+    // fail closed rather than being invented from a test registry.
+    let store = GraphStore::new();
+    let src = store
+        .insert_vertex_named(["SeqMissingSource"], Vec::<(&str, Value)>::new())
+        .expect("insert source");
+    let dst = store
+        .insert_vertex_named(["SeqMissingTarget"], Vec::<(&str, Value)>::new())
+        .expect("insert target");
+    store
+        .insert_directed_edge_named(src, dst, Some("SeqMissingRel"), Vec::<(&str, Value)>::new())
+        .expect("insert edge");
+
+    let page = plan_gql(
+        "MATCH (a:SeqMissingSource)-[e:SeqMissingRel]->(b) \
+             ORDER BY INSERTION(e) ASC RETURN b",
+    );
+
+    // The table projects the vertex labels but not the edge label, mirroring a Router that
+    // resolved no policy for it.
+    let missing_ctx = resolved_execution_ctx(&["SeqMissingSource", "SeqMissingTarget"], &[]);
+    let err = store
+        .execute_plan_query(&page, &params(), missing_ctx)
+        .expect_err("label absent from resolved table must fail closed");
+
+    assert!(err.to_string().contains("ORDER BY INSERTION"), "{err}");
+    assert!(err.to_string().contains("SeqMissingRel"), "{err}");
 }
 
 #[test]
