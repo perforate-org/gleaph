@@ -21,7 +21,7 @@ use crate::index_sync;
 use crate::state::RouterError;
 use crate::types::{
     AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus,
-    ShardId,
+    ProvisioningState, ShardId,
 };
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use crate::vector_sync;
@@ -605,6 +605,59 @@ impl RouterStore {
         super::registry_invariants::check_registry_invariants()
     }
 
+    /// Data-plane gate: a graph whose provisioning is not `None` must not be resolvable for
+    /// dispatch. Enforced once here and shared by every `resolve_graph_id*` resolution path
+    /// (ADR 0056 §6 Slice A). No new `GraphStatus` variant; `GraphUnavailable` is the same
+    /// error the status gate uses.
+    fn assert_provisioning_complete(graph_id: GraphId) -> Result<(), RouterError> {
+        let entry = ROUTER_GRAPHS
+            .with_borrow(|graphs| graphs.get(&graph_id))
+            .ok_or_else(|| RouterError::NotFound("graph".to_owned()))?;
+        if !matches!(entry.provisioning_state, ProvisioningState::None) {
+            return Err(RouterError::GraphUnavailable);
+        }
+        Ok(())
+    }
+
+    /// Operator-facing graph entry read (ADR 0056 §4 `get_graph`): ACL-checked but NOT gated on
+    /// status or provisioning state, so operators can observe `Pending` / `Failed` / `Deprecated`
+    /// graphs during provisioning and teardown.
+    pub fn get_graph_operator(
+        &self,
+        graph_name: &str,
+        caller: Principal,
+    ) -> Result<GraphRegistryEntry, RouterError> {
+        let graph_id = lookup_graph_id(graph_name)
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
+        let entry = ROUTER_GRAPHS
+            .with_borrow(|graphs| graphs.get(&graph_id))
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
+        if !caller_may_access_graph(&entry, graph_id, caller) {
+            return Err(RouterError::NotFound(graph_name.to_owned()));
+        }
+        Ok(entry)
+    }
+
+    /// Admin-only: overwrite a graph's `ProvisioningState` (ADR 0056 §6 Slice A write path;
+    /// Slice B drives it from the ack handler). Read-modify-write on the registry entry.
+    pub fn admin_set_graph_provisioning_state(
+        &self,
+        caller: Principal,
+        graph_name: &str,
+        state: ProvisioningState,
+    ) -> Result<(), RouterError> {
+        auth::require_admin(&caller)?;
+        let graph_id = resolve_registered_graph_id(graph_name)?;
+        let mut entry = ROUTER_GRAPHS
+            .with_borrow(|graphs| graphs.get(&graph_id))
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
+        entry.provisioning_state = state;
+        ROUTER_GRAPHS.with_borrow_mut(|graphs| {
+            graphs.insert(graph_id, entry);
+        });
+        Ok(())
+    }
+
     pub fn resolve_graph(
         &self,
         graph_name: &str,
@@ -622,11 +675,15 @@ impl RouterStore {
         if !matches!(entry.status, GraphStatus::Active | GraphStatus::ReadOnly) {
             return Err(RouterError::GraphUnavailable);
         }
+        Self::assert_provisioning_complete(graph_id)?;
         Ok(entry)
     }
 
     pub fn resolve_graph_id(&self, graph_name: &str) -> Result<GraphId, RouterError> {
-        lookup_graph_id(graph_name).ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))
+        let graph_id = lookup_graph_id(graph_name)
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
+        Self::assert_provisioning_complete(graph_id)?;
+        Ok(graph_id)
     }
 
     /// Resolve `graph_name` to its `GraphId` only when `caller` may access the graph.
@@ -645,6 +702,7 @@ impl RouterStore {
             .with_borrow(|graphs| graphs.get(&graph_id))
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         if caller_may_access_graph(&entry, graph_id, caller) {
+            Self::assert_provisioning_complete(graph_id)?;
             Ok(graph_id)
         } else {
             Err(RouterError::NotFound(graph_name.to_owned()))

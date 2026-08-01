@@ -106,15 +106,28 @@ fn my_role() -> Result<String, RouterError> {
 }
 
 #[update]
-fn admin_grant_role(args: types::GrantRoleArgs) -> Result<(), RouterError> {
-    canister::admin_grant_role(args)
+fn grant_role(args: types::GrantRoleArgs) -> Result<(), RouterError> {
+    canister::grant_role(args)
 }
 
 #[query]
-fn resolve_graph(
+fn get_graph(
     graph_name: String,
 ) -> Result<gleaph_gql_ic::graph_registry::GraphRegistryEntry, RouterError> {
-    canister::resolve_graph(graph_name)
+    canister::get_graph(graph_name)
+}
+
+/// Registry-local summary rows for every graph visible to the caller (ADR 0056 §7).
+#[query]
+fn list_graphs() -> Result<Vec<types::GraphSummary>, RouterError> {
+    canister::list_graphs()
+}
+
+/// Intent-based graph creation (ADR 0056 §6 Slice A): dev mode registers the graph and its
+/// shards synchronously; provisioned mode is `NotImplemented` until Slice B.
+#[update]
+async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterError> {
+    canister::register_graph(args).await
 }
 
 #[query]
@@ -198,13 +211,6 @@ fn reverse_property_name(
 }
 
 #[update]
-async fn admin_register_graph(
-    entry: gleaph_gql_ic::graph_registry::GraphRegistryEntry,
-) -> Result<(), RouterError> {
-    canister::admin_register_graph(entry).await
-}
-
-#[update]
 fn admin_update_graph_status(
     graph_name: String,
     status: gleaph_gql_ic::graph_registry::GraphStatus,
@@ -214,8 +220,8 @@ fn admin_update_graph_status(
 }
 
 #[update]
-fn admin_unregister_graph(logical_graph_name: String) -> Result<(), RouterError> {
-    canister::admin_unregister_graph(logical_graph_name)
+fn unregister_graph(logical_graph_name: String) -> Result<(), RouterError> {
+    canister::unregister_graph(logical_graph_name)
 }
 
 #[update]
@@ -256,27 +262,27 @@ fn admin_take_batch_instr_log(offset: u32, limit: u32) -> Vec<String> {
 }
 
 #[update]
-fn admin_intern_vertex_label(
+fn ensure_vertex_label(
     logical_graph_name: String,
     name: String,
 ) -> Result<types::VertexLabelId, RouterError> {
-    canister::admin_intern_vertex_label(logical_graph_name, name)
+    canister::ensure_vertex_label(logical_graph_name, name)
 }
 
 #[update]
-fn admin_intern_edge_label(
+fn ensure_edge_label(
     logical_graph_name: String,
     name: String,
 ) -> Result<types::EdgeLabelId, RouterError> {
-    canister::admin_intern_edge_label(logical_graph_name, name)
+    canister::ensure_edge_label(logical_graph_name, name)
 }
 
 #[update]
-fn admin_intern_property(
+fn ensure_property(
     logical_graph_name: String,
     name: String,
 ) -> Result<types::PropertyId, RouterError> {
-    canister::admin_intern_property(logical_graph_name, name)
+    canister::ensure_property(logical_graph_name, name)
 }
 
 /// Read-only GQL: composite query (calls index + graph query endpoints) with an explicit
@@ -593,21 +599,21 @@ async fn execute_prepared_update(
 }
 
 #[update]
-async fn admin_set_indexed_vertex_property(
+async fn index_vertex_property(
     logical_graph_name: String,
     vertex_label: String,
     property: String,
 ) -> Result<(), RouterError> {
-    canister::admin_set_indexed_vertex_property(logical_graph_name, vertex_label, property).await
+    canister::index_vertex_property(logical_graph_name, vertex_label, property).await
 }
 
 #[update]
-async fn admin_set_indexed_edge_property(
+async fn index_edge_property(
     logical_graph_name: String,
     edge_label: String,
     property: String,
 ) -> Result<(), RouterError> {
-    canister::admin_set_indexed_edge_property(logical_graph_name, edge_label, property).await
+    canister::index_edge_property(logical_graph_name, edge_label, property).await
 }
 
 /// Register a derived vector index (ADR 0031 Slice 3; `authorize_index_ddl`). Returns whether the
@@ -738,10 +744,10 @@ async fn admin_vector_partition_health(
 
 /// Admin-only physical stable-memory inventory for every shard in a graph.
 #[query(composite = true)]
-async fn admin_graph_stable_memory_stats(
+async fn get_stable_memory_stats(
     graph_name: String,
 ) -> Result<Vec<types::GraphStableMemoryStats>, RouterError> {
-    canister::admin_graph_stable_memory_stats(graph_name).await
+    canister::get_stable_memory_stats(graph_name).await
 }
 
 #[cfg(feature = "batch-instr-log")]
@@ -982,8 +988,8 @@ async fn admin_label_backfill_step(
 /// Operator recovery: clear a stuck `in_progress` claim on a shard's backfill
 /// cursor (`Role::Admin`). Use only when no step is in flight for the shard.
 #[update]
-fn admin_reset_backfill_claim(args: types::AdminResetBackfillClaimArgs) -> Result<(), RouterError> {
-    canister::admin_reset_backfill_claim(args)
+fn reset_backfill_claim(args: types::AdminResetBackfillClaimArgs) -> Result<(), RouterError> {
+    canister::reset_backfill_claim(args)
 }
 
 /// List router-stable backfill cursors for all shards of a logical graph.
@@ -1014,10 +1020,10 @@ fn admin_list_vertex_property_backfill_status(
 /// `converged` before dispatching index-dependent waves; the backfill steps repair
 /// convergence when it stalls.
 #[update]
-async fn admin_index_sync_status(
+async fn get_graph_sync_status(
     args: types::AdminIndexSyncStatusArgs,
 ) -> Result<gleaph_graph_kernel::federation::IndexSyncStatus, RouterError> {
-    canister::admin_index_sync_status(args).await
+    canister::get_graph_sync_status(args).await
 }
 
 /// Advance edge property posting backfill for one graph shard (`Role::Admin`; call in a loop).
@@ -1044,7 +1050,11 @@ async fn admin_label_stats_projection_step(
     canister::admin_label_stats_projection_step(args).await
 }
 
-/// Admin-only: send a resolved provisioning envelope to the configured Provision canister.
+/// **Internal seam (ADR 0056 §6 Slice A): not a client API.** Sends a provisioning envelope to
+/// the configured Provision canister and records the `RouterProvisioningRequest`. `register_graph`
+/// is the public graph-creation surface; this endpoint is superseded by the `register_graph`
+/// provisioning fold in Slice B and is retained only so the `adr0035` outbound/ack E2E coverage
+/// keeps running. Admin-only.
 #[update]
 async fn provision_graph(
     args: types::ProvisionGraphArgs,

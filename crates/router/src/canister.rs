@@ -114,7 +114,7 @@ pub(crate) fn my_role() -> Result<String, RouterError> {
     Ok(auth::caller_role(&msg_caller()).to_string())
 }
 
-pub(crate) fn admin_grant_role(args: GrantRoleArgs) -> Result<(), RouterError> {
+pub(crate) fn grant_role(args: GrantRoleArgs) -> Result<(), RouterError> {
     let role = auth::parse_role(&args.role).map_err(RouterError::InvalidArgument)?;
     auth::admin_upsert_principal(&msg_caller(), args.target, role, args.manager_caps).map_err(|e| {
         if e.contains("required") {
@@ -125,8 +125,86 @@ pub(crate) fn admin_grant_role(args: GrantRoleArgs) -> Result<(), RouterError> {
     })
 }
 
-pub(crate) fn resolve_graph(graph_name: String) -> Result<GraphRegistryEntry, RouterError> {
-    RouterStore::new().resolve_graph(&graph_name, msg_caller())
+pub(crate) fn get_graph(graph_name: String) -> Result<GraphRegistryEntry, RouterError> {
+    RouterStore::new().get_graph_operator(&graph_name, msg_caller())
+}
+
+/// Intent-based graph creation (ADR 0056 §6 Slice A). Dev mode (no `provision_canister`
+/// configured) registers the graph entry and its shards synchronously; provisioned mode returns
+/// `NotImplemented` until Slice B.
+pub(crate) async fn register_graph(
+    args: crate::types::RegisterGraphArgs,
+) -> Result<(), RouterError> {
+    use gleaph_gql_ic::graph_registry::{GraphStatus, ProvisioningState};
+
+    auth::require_admin(&msg_caller())?;
+    if crate::provisioning::config::get().is_some() {
+        return Err(RouterError::NotImplemented(
+            "provisioned graph registration lands in ADR 0056 Slice B".into(),
+        ));
+    }
+    if args.shards.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "dev-mode register_graph requires at least one shard".into(),
+        ));
+    }
+    let caller = msg_caller();
+    let store = RouterStore::new();
+    let entry = GraphRegistryEntry {
+        graph_id: gleaph_graph_kernel::entry::GraphId::from_raw(0), // store assigns
+        graph_name: args.graph_name.clone(),
+        canister_id: args.shards[0].graph_canister,
+        owner: args.owner,
+        admins: args.admins,
+        status: GraphStatus::Active,
+        version: 1,
+        updated_at_ns: ic_cdk::api::time(),
+        provisioning_state: ProvisioningState::None,
+        is_home: false,
+    };
+    store
+        .admin_register_graph_with_random_key(caller, entry)
+        .await?;
+    for shard in args.shards {
+        store
+            .admin_register_shard(
+                caller,
+                crate::types::AdminRegisterShardArgs {
+                    shard_id: shard.shard_id,
+                    graph_canister: shard.graph_canister,
+                    index_canister: shard.index_canister,
+                    logical_graph_name: args.graph_name.clone(),
+                },
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// Registry-local summaries of every graph visible to the caller (ADR 0056 §7). No
+/// cross-canister calls, so UI/CLI polling stays cheap.
+pub(crate) fn list_graphs() -> Result<Vec<crate::types::GraphSummary>, RouterError> {
+    use crate::facade::stable::graph_catalog;
+    use crate::types::GraphSummary;
+
+    let store = RouterStore::new();
+    let graph_ids = store.list_visible_graph_ids(msg_caller())?;
+    let mut out = Vec::with_capacity(graph_ids.len());
+    for graph_id in graph_ids {
+        let entry = graph_catalog::graph_entry(graph_id).ok_or_else(|| {
+            RouterError::InvalidState(format!("graph {graph_id:?} missing registry entry"))
+        })?;
+        let shard_count = graph_catalog::list_shards_for_graph_id(graph_id)?.len() as u32;
+        out.push(GraphSummary {
+            graph_id,
+            graph_name: entry.graph_name,
+            status: entry.status,
+            provisioning_state: entry.provisioning_state,
+            shard_count,
+            updated_at_ns: entry.updated_at_ns,
+        });
+    }
+    Ok(out)
 }
 
 pub(crate) fn resolve_shard(
@@ -341,12 +419,6 @@ pub(crate) fn reverse_property_name(
     RouterStore::new().reverse_property_name(graph_id, property_id)
 }
 
-pub(crate) async fn admin_register_graph(entry: GraphRegistryEntry) -> Result<(), RouterError> {
-    RouterStore::new()
-        .admin_register_graph_with_random_key(msg_caller(), entry)
-        .await
-}
-
 pub(crate) fn admin_update_graph_status(
     graph_name: String,
     status: GraphStatus,
@@ -355,7 +427,7 @@ pub(crate) fn admin_update_graph_status(
     RouterStore::new().admin_update_graph_status(msg_caller(), &graph_name, status, version)
 }
 
-pub(crate) fn admin_unregister_graph(logical_graph_name: String) -> Result<(), RouterError> {
+pub(crate) fn unregister_graph(logical_graph_name: String) -> Result<(), RouterError> {
     RouterStore::new().admin_unregister_graph(msg_caller(), &logical_graph_name)
 }
 
@@ -396,28 +468,28 @@ pub(crate) fn admin_sweep_expired_client_mutation_keys(
     )
 }
 
-pub(crate) fn admin_intern_vertex_label(
+pub(crate) fn ensure_vertex_label(
     logical_graph_name: String,
     name: String,
 ) -> Result<VertexLabelId, RouterError> {
     RouterStore::new().admin_intern_vertex_label(msg_caller(), &logical_graph_name, &name)
 }
 
-pub(crate) fn admin_intern_edge_label(
+pub(crate) fn ensure_edge_label(
     logical_graph_name: String,
     name: String,
 ) -> Result<EdgeLabelId, RouterError> {
     RouterStore::new().admin_intern_edge_label(msg_caller(), &logical_graph_name, &name)
 }
 
-pub(crate) fn admin_intern_property(
+pub(crate) fn ensure_property(
     logical_graph_name: String,
     name: String,
 ) -> Result<PropertyId, RouterError> {
     RouterStore::new().admin_intern_property(msg_caller(), &logical_graph_name, &name)
 }
 
-pub(crate) fn admin_reset_backfill_claim(
+pub(crate) fn reset_backfill_claim(
     args: crate::types::AdminResetBackfillClaimArgs,
 ) -> Result<(), RouterError> {
     RouterStore::new().admin_reset_backfill_claim(msg_caller(), &args)
@@ -475,7 +547,7 @@ pub(crate) fn admin_list_vertex_property_backfill_status(
     )
 }
 
-pub(crate) async fn admin_index_sync_status(
+pub(crate) async fn get_graph_sync_status(
     args: AdminIndexSyncStatusArgs,
 ) -> Result<IndexSyncStatus, RouterError> {
     RouterStore::new()
@@ -526,7 +598,7 @@ pub(crate) async fn admin_label_stats_projection_step(
     .await
 }
 
-pub(crate) async fn admin_set_indexed_vertex_property(
+pub(crate) async fn index_vertex_property(
     logical_graph_name: String,
     vertex_label: String,
     property: String,
@@ -548,7 +620,7 @@ pub(crate) async fn admin_set_indexed_vertex_property(
     .await
 }
 
-pub(crate) async fn admin_set_indexed_edge_property(
+pub(crate) async fn index_edge_property(
     logical_graph_name: String,
     edge_label: String,
     property: String,
@@ -1189,7 +1261,7 @@ pub(crate) async fn admin_vector_partition_health(
 }
 
 /// Admin-only physical stable-memory inventory for every shard in a graph.
-pub(crate) async fn admin_graph_stable_memory_stats(
+pub(crate) async fn get_stable_memory_stats(
     graph_name: String,
 ) -> Result<Vec<GraphStableMemoryStats>, RouterError> {
     crate::rbac::authorize_stable_memory_diagnostics(&msg_caller())?;

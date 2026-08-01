@@ -4890,3 +4890,153 @@ mod provisioning_tests {
         assert_eq!(decoded.accepted_registry_version, None);
     }
 }
+
+mod register_graph_provisioning_guard {
+    use super::*;
+    use crate::init::RouterInitArgs;
+    use crate::types::ProvisioningState;
+
+    fn setup_store() -> (RouterStore, Principal) {
+        let store = RouterStore::new();
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: Principal::from_slice(&[1; 29]),
+            initial_admins: vec![],
+            provision_canister: None,
+        });
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        (store, admin)
+    }
+
+    #[test]
+    fn provisioning_guard_blocks_pending_and_failed_but_allows_none() {
+        let (store, admin) = setup_store();
+        register_test_graph(&store, admin, "tenant.main");
+
+        // None -> data-plane resolution succeeds.
+        store.resolve_graph_id("tenant.main").expect("None resolves");
+        store
+            .resolve_graph_id_authorized("tenant.main", admin)
+            .expect("None resolves authorized");
+
+        // Pending -> data-plane resolution rejected at every shared resolver.
+        store
+            .admin_set_graph_provisioning_state(
+                admin,
+                "tenant.main",
+                ProvisioningState::Pending {
+                    request_id: "r-1".into(),
+                },
+            )
+            .expect("set pending");
+        let err = store.resolve_graph_id("tenant.main").expect_err("pending blocked");
+        assert!(matches!(err, RouterError::GraphUnavailable));
+        let err = store
+            .resolve_graph_id_authorized("tenant.main", admin)
+            .expect_err("pending blocked authorized");
+        assert!(matches!(err, RouterError::GraphUnavailable));
+
+        // Failed -> still blocked.
+        store
+            .admin_set_graph_provisioning_state(
+                admin,
+                "tenant.main",
+                ProvisioningState::Failed {
+                    request_id: "r-1".into(),
+                    reason: "boom".into(),
+                },
+            )
+            .expect("set failed");
+        let err = store.resolve_graph_id("tenant.main").expect_err("failed blocked");
+        assert!(matches!(err, RouterError::GraphUnavailable));
+
+        // Pending -> None transition restores resolvability (the Slice B ack path).
+        store
+            .admin_set_graph_provisioning_state(admin, "tenant.main", ProvisioningState::None)
+            .expect("set none");
+        store.resolve_graph_id("tenant.main").expect("None resolves again");
+
+        // Operators still see the entry while blocked (get_graph path is not gated).
+        store
+            .admin_set_graph_provisioning_state(
+                admin,
+                "tenant.main",
+                ProvisioningState::Pending {
+                    request_id: "r-2".into(),
+                },
+            )
+            .expect("set pending");
+        let entry = store
+            .get_graph_operator("tenant.main", admin)
+            .expect("operator read sees pending graph");
+        assert_eq!(entry.graph_name, "tenant.main");
+    }
+
+    #[test]
+    fn duplicate_graph_name_is_conflict_and_existing_state_survives() {
+        let (store, admin) = setup_store();
+        register_test_graph(&store, admin, "tenant.main");
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(0),
+                graph_canister: Principal::from_slice(&[7; 29]),
+                index_canister: Principal::from_slice(&[8; 29]),
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register first shard");
+
+        let dup = GraphRegistryEntry {
+            graph_id: GraphId::from_raw(0),
+            graph_name: "tenant.main".to_owned(),
+            canister_id: Principal::from_slice(&[9; 29]),
+            owner: admin,
+            admins: BTreeSet::new(),
+            status: GraphStatus::Active,
+            version: 1,
+            updated_at_ns: 0,
+            provisioning_state: ProvisioningState::None,
+            is_home: false,
+        };
+        let err = store
+            .admin_register_graph(admin, dup)
+            .expect_err("duplicate graph name rejected");
+        assert!(matches!(err, RouterError::Conflict(_)));
+
+        // The pre-existing entry and its shard survive unchanged.
+        let entry = store
+            .get_graph_operator("tenant.main", admin)
+            .expect("original entry survives");
+        assert_eq!(entry.canister_id, Principal::management_canister());
+        assert_eq!(
+            store.list_shards_for_graph("tenant.main").expect("shards").len(),
+            1,
+            "the original shard registration survives the rejected duplicate"
+        );
+    }
+
+    #[test]
+    fn shard_id_must_match_router_dense_allocation() {
+        let (store, admin) = setup_store();
+        register_test_graph(&store, admin, "tenant.main");
+
+        // The Router allocates graph-local dense shard ids; a caller-chosen id that does not
+        // match the next allocation is rejected, not silently accepted.
+        let err = futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(3),
+                graph_canister: Principal::from_slice(&[7; 29]),
+                index_canister: Principal::from_slice(&[8; 29]),
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect_err("wrong shard id rejected");
+        assert!(matches!(err, RouterError::Conflict(_)));
+        assert!(
+            store.list_shards_for_graph("tenant.main").expect("shards").is_empty(),
+            "no shard is registered when allocation does not match"
+        );
+    }
+}
