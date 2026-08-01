@@ -543,7 +543,7 @@ owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
 
 ### GAP-2026-08-01-001 — gleaph-gql test harness: default-feature integration build broken, all-features suite hangs, clippy test lint fails
 
-- **Status:** Open
+- **Status:** Resolved 2026-08-01 (commit pending; fixes in the same patch as the resolution)
 - **Severity:** P3 test-harness
 - **Owner:** `gleaph-gql` crate test harness
 - **Observed behavior:**
@@ -557,15 +557,30 @@ owner_vertex_id, slot_index)` ordering and the existing direction subset rule.
   3. `cargo clippy -p gleaph-gql --all-targets --all-features -- -D warnings` fails on
      `clippy::items_after_test_module` in `type_check/phase_b.rs` (a `mod parameter_inference_tests`
      placed mid-file, followed by `pub fn infer_linear_query_binding_kinds`).
-- **Expected or needed behavior:** the default-feature test build compiles; the all-features suite
-  terminates; clippy `--all-targets --all-features -- -D warnings` passes.
-- **Evidence:** the three commands above; `crates/gql/tests/parser_tests.rs` L1378-1402;
-  `crates/gql/src/type_check/phase_b.rs` L56; `crates/gql/Cargo.toml` features.
-- **Impact:** default-feature test builds of the crate are broken; the all-features hang blocks
-  broad validation of the crate; test-target clippy cannot gate with `-D warnings`.
-- **Next decision:** gate the `.inline` test behind `#[cfg(feature = "gleaph")]` (one-line fix,
-  land with the query-syntax slice or a small housekeeping slice); investigate and fix the
-  `cypher`-feature test hang; move the `phase_b` test module below the module's items.
+- **Root cause of the hang (2):** the deeply nested `VALUE { RETURN ...` input recursed through
+  `Parser::recurse` until `MAX_RECURSION_DEPTH` (64), but the `cypher` build's enlarged
+  expression/parse frames exhausted the native stack first — `EXC_BAD_ACCESS` (stack overflow) on
+  the test worker thread, which the harness then waited on forever. Root cause confirmed by
+  lowering the limit (guard fires, test passes) and by lldb (`EXC_BAD_ACCESS` at a stack address).
+- **Resolution:**
+  1. Gate `create_graph_type_nested_record_inline_property_ast` behind
+     `#[cfg(feature = "gleaph")]` (the sibling `create_graph_type_edge_inline_property_ast` was
+     already gated).
+  2. Lower `Parser::MAX_RECURSION_DEPTH` from 64 to 32 with a doc note: the guard must fire at
+     roughly half the heaviest feature build's stack cost; legitimate queries nest far below the
+     bound. `cargo test -p gleaph-gql --all-features` now completes (all binaries pass, including
+     the cypher-gated 746-test lib suite).
+  3. Move `mod parameter_inference_tests` to the end of `type_check/phase_b.rs`;
+     `clippy --all-targets --all-features -- -D warnings` now passes.
+- **Evidence:** the three commands above before and after the fixes; `crates/gql/tests/parser_tests.rs`
+  L1378-1402; `crates/gql/src/type_check/phase_b.rs`; `crates/gql/src/parser/helpers.rs`
+  `MAX_RECURSION_DEPTH`; lldb backtrace showing `EXC_BAD_ACCESS (code=2)` at a stack address.
+- **Impact (resolved):** default-feature test builds compile; the all-features suite terminates;
+  test-target clippy gates with `-D warnings`.
+- **Regression coverage:** the existing `deeply_nested_subqueries_are_rejected_not_overflowing`,
+  `deeply_nested_parentheses_are_rejected_not_overflowing`, and
+  `deeply_nested_not_chain_is_rejected_not_overflowing` tests run under both default and
+  all-features builds and assert the depth error path.
 
 ## Review cadence
 

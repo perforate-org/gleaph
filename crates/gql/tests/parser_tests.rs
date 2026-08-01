@@ -1375,6 +1375,7 @@ fn create_graph_type_edge_inline_property_ast() {
     assert_eq!(edge.properties[0].name, "distance");
 }
 
+#[cfg(feature = "gleaph")]
 #[test]
 fn create_graph_type_nested_record_inline_property_ast() {
     let program = parse_program_ok(

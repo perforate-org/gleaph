@@ -26,7 +26,12 @@ impl<'a> Parser<'a> {
     /// one unit of depth. Legitimate queries nest far below this bound; the
     /// limit exists purely to convert an unbounded-recursion stack overflow
     /// (a denial-of-service trap on the canister) into a graceful parse error.
-    pub const MAX_RECURSION_DEPTH: usize = 64;
+    ///
+    /// The value leaves headroom for the largest frames of the heaviest
+    /// feature build (`cypher`), whose enlarged expression/parse frames
+    /// previously exhausted the native stack before a depth of 64 was reached;
+    /// 32 fires the guard at roughly half that stack cost.
+    pub const MAX_RECURSION_DEPTH: usize = 32;
 
     /// Creates a new parser over the given token stream.
     pub fn new(tokens: &'a [Spanned]) -> Self {

@@ -52,47 +52,6 @@ pub fn infer_parameter_types_with_schema(
     constraints.parameter_types().clone()
 }
 
-#[cfg(test)]
-mod parameter_inference_tests {
-    use super::*;
-    use crate::ast::{Keyword, ValueType};
-
-    struct UserSchema;
-
-    impl PropertySchema for UserSchema {
-        fn node_property_types(&self, labels: &[String]) -> Vec<(String, ValueType, bool)> {
-            if labels.iter().any(|label| label == "User") {
-                vec![(
-                    "age".into(),
-                    ValueType::Int32 {
-                        keyword: Keyword::new("INT32"),
-                    },
-                    true,
-                )]
-            } else {
-                vec![]
-            }
-        }
-
-        fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
-            vec![]
-        }
-    }
-
-    #[test]
-    fn infers_parameter_type_from_typed_node_property() {
-        let program = crate::parser::parse("MATCH (u:User) WHERE u.age = $age RETURN u.age")
-            .expect("query should parse");
-        let inferred = infer_parameter_types_with_schema(&program, &UserSchema);
-        assert_eq!(
-            inferred.get("age"),
-            Some(&Type::NonNull(Box::new(Type::Scalar(ValueType::Int32 {
-                keyword: Keyword::new("INT32"),
-            }))))
-        );
-    }
-}
-
 pub fn infer_linear_query_binding_kinds(
     query: &LinearQueryStatement,
 ) -> BTreeMap<String, BindingKind> {
@@ -237,5 +196,46 @@ fn type_from_binding_kind(kind: BindingKind) -> Type {
         BindingKind::Edge => Type::Edge(EdgeTypeInfo::from_label(None)),
         BindingKind::Path => Type::Path(PathTypeInfo::default()),
         BindingKind::Value | BindingKind::Unknown => Type::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod parameter_inference_tests {
+    use super::*;
+    use crate::ast::{Keyword, ValueType};
+
+    struct UserSchema;
+
+    impl PropertySchema for UserSchema {
+        fn node_property_types(&self, labels: &[String]) -> Vec<(String, ValueType, bool)> {
+            if labels.iter().any(|label| label == "User") {
+                vec![(
+                    "age".into(),
+                    ValueType::Int32 {
+                        keyword: Keyword::new("INT32"),
+                    },
+                    true,
+                )]
+            } else {
+                vec![]
+            }
+        }
+
+        fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn infers_parameter_type_from_typed_node_property() {
+        let program = crate::parser::parse("MATCH (u:User) WHERE u.age = $age RETURN u.age")
+            .expect("query should parse");
+        let inferred = infer_parameter_types_with_schema(&program, &UserSchema);
+        assert_eq!(
+            inferred.get("age"),
+            Some(&Type::NonNull(Box::new(Type::Scalar(ValueType::Int32 {
+                keyword: Keyword::new("INT32"),
+            }))))
+        );
     }
 }
