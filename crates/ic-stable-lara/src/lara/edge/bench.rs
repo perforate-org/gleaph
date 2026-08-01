@@ -7,17 +7,48 @@ use crate::{
     VertexId, bench as helper,
     lara::vertex::{Vertex, VertexStore},
     test_support::TestEdge,
+    traits::{CsrEdge, CsrEdgeTombstone},
 };
 
 /// Matches [`EdgeStore::new`] / [`EdgeStore::grow_segment_tree_to`] in this module.
 const BENCH_EDGE_SEGMENT_SIZE: u32 = 16;
 
-fn edge_store_with_vertices(
+/// 24-byte edge mirroring the production graph `Edge` row width, for measuring
+/// the byte-length component of the slab write path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WideEdge([u8; 24]);
+
+impl CsrEdge for WideEdge {
+    const BYTES: usize = 24;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        debug_assert_eq!(bytes.len(), Self::BYTES);
+        let mut row = [0u8; 24];
+        row.copy_from_slice(&bytes[..24]);
+        Self(row)
+    }
+
+    fn write_to(&self, bytes: &mut [u8]) {
+        bytes[..24].copy_from_slice(&self.0);
+    }
+
+    fn neighbor_vid(&self) -> VertexId {
+        VertexId::from(u32::from_le_bytes(self.0[..4].try_into().unwrap()))
+    }
+
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
+        let mut row = self.0;
+        row[..4].copy_from_slice(&u32::from(vid).to_le_bytes());
+        Self(row)
+    }
+}
+
+fn edge_store_with_vertices<E: CsrEdge>(
     vertex_count: u32,
     slot_stride: u32,
 ) -> (
     VertexStore<Vertex, helper::BenchMemory>,
-    EdgeStore<TestEdge, helper::BenchMemory>,
+    EdgeStore<E, helper::BenchMemory>,
 ) {
     // Deliberately below the production graph boundary: these benches measure
     // EdgeStore slab/log primitives with controlled row geometry. Production
@@ -208,5 +239,115 @@ fn bench_lara_edge_store_desc_out_edges_iter_log_backed_128() -> canbench_rs::Be
             count += 1;
         }
         black_box(count);
+    })
+}
+
+/// Slab-write micro benches for the Plan 0199 batch unordered placement threshold.
+///
+/// `write_slot` pays the grow-check + address-computation fixed cost once per slot while
+/// `write_slots_contiguous` pays it once for the whole window; `bench_lara_slab_patch_sparse_1`
+/// measures the whole-window read+patch+write competitor that rewrites an entire slot window
+/// to fill tombstones. Each fixture pre-grows the slab in setup so the measured closure
+/// contains pure write/read cost without memory-growth noise. The IC charging layer adds
+/// ~1 instruction per byte on top, which the 24-byte `WideEdge` variant isolates.
+#[bench(raw)]
+fn bench_lara_slab_write_single_1() -> canbench_rs::BenchResult {
+    let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
+    for i in 0..helper::MEDIUM_N {
+        edges
+            .write_slot(i, helper::test_edge(i))
+            .expect("pre-grow slot");
+    }
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_slab_write_single");
+        for i in 0..helper::MEDIUM_N {
+            let i = black_box(i);
+            edges
+                .write_slot(i, helper::test_edge(i))
+                .expect("write slot");
+        }
+        black_box(vertices.len());
+    })
+}
+
+/// One `write_slots_contiguous` call writing the same 1024 four-byte slots as
+/// [`bench_lara_slab_write_single_1`], isolating the per-call fixed cost of the batch path.
+#[bench(raw)]
+fn bench_lara_slab_write_contig_1() -> canbench_rs::BenchResult {
+    let (vertices, edges) = edge_store_with_vertices::<TestEdge>(1, helper::MEDIUM_N as u32);
+    let edge_bytes: Vec<u8> = {
+        let mut buf = vec![0u8; helper::MEDIUM_N as usize * TestEdge::BYTES];
+        for i in 0..helper::MEDIUM_N {
+            let off = i as usize * TestEdge::BYTES;
+            helper::test_edge(i).write_to(&mut buf[off..off + TestEdge::BYTES]);
+        }
+        buf
+    };
+    edges
+        .write_slots_contiguous(0, &edge_bytes)
+        .expect("pre-grow window");
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_slab_write_contig");
+        edges
+            .write_slots_contiguous(0, black_box(&edge_bytes))
+            .expect("write contiguous");
+        black_box(vertices.len());
+    })
+}
+
+/// Same contiguous one-call path as [`bench_lara_slab_write_contig_1`] but with the
+/// 24-byte `WideEdge` row width, isolating the byte-length component of the slab write.
+#[bench(raw)]
+fn bench_lara_slab_write_contig_24() -> canbench_rs::BenchResult {
+    let (vertices, edges) = edge_store_with_vertices::<WideEdge>(1, helper::MEDIUM_N as u32);
+    let base = WideEdge([0u8; 24]);
+    let edge_bytes: Vec<u8> = {
+        let mut buf = vec![0u8; helper::MEDIUM_N as usize * WideEdge::BYTES];
+        for i in 0..helper::MEDIUM_N {
+            let off = i as usize * WideEdge::BYTES;
+            base.with_neighbor_vid(VertexId::from(i as u32))
+                .write_to(&mut buf[off..off + WideEdge::BYTES]);
+        }
+        buf
+    };
+    edges
+        .write_slots_contiguous(0, &edge_bytes)
+        .expect("pre-grow window");
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_slab_write_contig_24b");
+        edges
+            .write_slots_contiguous(0, black_box(&edge_bytes))
+            .expect("write contiguous");
+        black_box(vertices.len());
+    })
+}
+
+/// Whole-window rewrite competitor: a half-deleted 1024-slot row (even slots tombstoned,
+/// odd slots live) is read into a buffer, the live slots are patched with fresh encodings,
+/// and the full window is written back in one contiguous call. This is the cost model for
+/// filling in-slab tombstones by rewriting a slab window instead of per-hole writes.
+#[bench(raw)]
+fn bench_lara_slab_patch_sparse_1() -> canbench_rs::BenchResult {
+    let (vertices, edges) = edge_store_with_vertices(1, helper::MEDIUM_N as u32);
+    for i in 0..helper::MEDIUM_N {
+        let edge = if i % 2 == 0 {
+            TestEdge::tombstone_edge()
+        } else {
+            helper::test_edge(i)
+        };
+        edges.write_slot(i, edge).expect("pre-fill slot");
+    }
+    let mut window = vec![0u8; helper::MEDIUM_N as usize * TestEdge::BYTES];
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_slab_patch_sparse");
+        edges.read_slots_contiguous(0, &mut window);
+        for i in (1..helper::MEDIUM_N).step_by(2) {
+            let off = i as usize * TestEdge::BYTES;
+            helper::test_edge(i).write_to(&mut window[off..off + TestEdge::BYTES]);
+        }
+        edges
+            .write_slots_contiguous(0, black_box(&window))
+            .expect("rewrite window");
+        black_box(vertices.len());
     })
 }
