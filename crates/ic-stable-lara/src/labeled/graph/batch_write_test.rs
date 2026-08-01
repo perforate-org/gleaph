@@ -112,6 +112,7 @@ mod tests {
                     VertexId::from(0),
                     label,
                     crate::labeled::graph::test_support::TestEdge { target: i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -121,6 +122,7 @@ mod tests {
                 VertexId::from(16),
                 label,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -187,6 +189,7 @@ mod tests {
                 VertexId::from(0),
                 label_a,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -194,6 +197,7 @@ mod tests {
                 VertexId::from(0),
                 label_b,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         // Pin a second leaf after leaf 0 to prevent tail-growth expansion.
@@ -202,6 +206,7 @@ mod tests {
                 VertexId::from(16),
                 label_a,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -315,6 +320,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::directed_from_index(1),
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -364,6 +370,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::directed_from_index(1),
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -411,6 +418,7 @@ mod tests {
                     VertexId::from(0),
                     label,
                     crate::labeled::graph::test_support::TestEdge { target: i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -773,6 +781,7 @@ mod tests {
                 VertexId::from(0),
                 label,
                 InlinePropertyTestEdge::with_i32(2, 200),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -979,6 +988,7 @@ mod tests {
                     VertexId::from(0),
                     label_a,
                     crate::labeled::graph::test_support::TestEdge { target: i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             graph
@@ -986,6 +996,7 @@ mod tests {
                     VertexId::from(0),
                     label_b,
                     crate::labeled::graph::test_support::TestEdge { target: 10 + i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1072,6 +1083,7 @@ mod tests {
                     VertexId::from(0),
                     label_a,
                     InlinePropertyTestEdge::with_bytes(i, &[1u8, 1, 1, 1]),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             graph
@@ -1079,6 +1091,7 @@ mod tests {
                     VertexId::from(0),
                     label_b,
                     InlinePropertyTestEdge::with_bytes(10 + i, &[2u8, 2, 2, 2]),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1177,6 +1190,7 @@ mod tests {
                     VertexId::from(0),
                     label_a,
                     crate::labeled::graph::test_support::TestEdge { target: i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1186,6 +1200,7 @@ mod tests {
                 VertexId::from(0),
                 label_b,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         // Pin a second leaf after leaf 0 to prevent tail-growth expansion.
@@ -1194,6 +1209,7 @@ mod tests {
                 VertexId::from(16),
                 label_a,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -1295,6 +1311,7 @@ mod tests {
                 VertexId::from(0),
                 label,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -1378,6 +1395,7 @@ mod tests {
                 VertexId::from(0),
                 label,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1486,6 +1504,7 @@ mod tests {
                 VertexId::from(0),
                 label_a,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1493,6 +1512,7 @@ mod tests {
                 VertexId::from(0),
                 label_b,
                 crate::labeled::graph::test_support::TestEdge { target: 2 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -1697,6 +1717,7 @@ mod tests {
                 VertexId::from(0),
                 other_label,
                 InlinePropertyTestEdge::with_bytes(1, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1704,6 +1725,7 @@ mod tests {
                 VertexId::from(0),
                 label,
                 InlinePropertyTestEdge::with_i32(1, 10),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1711,6 +1733,7 @@ mod tests {
                 VertexId::from(0),
                 later_inline_label,
                 InlinePropertyTestEdge::with_i32(2, 20),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -1864,6 +1887,7 @@ mod tests {
                 VertexId::from(0),
                 label,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1871,6 +1895,7 @@ mod tests {
                 VertexId::from(16),
                 label,
                 crate::labeled::graph::test_support::TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 

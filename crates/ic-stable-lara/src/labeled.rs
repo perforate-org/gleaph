@@ -144,6 +144,7 @@ pub use bucket_label_key::{
 pub use bucket_store::InitError as LabelBucketStoreInitError;
 pub use deferred::{DeferredError, DeferredLabeledLaraGraph, MaintenanceWorkItem};
 pub use graph::BucketEntryPosition;
+pub use graph::{EdgePlacementPolicy, ScalarInsertLocation, ScalarInsertStorage};
 pub use graph::{EdgeRemoval, EdgeSlotMove};
 pub use graph::{
     HybridOverflowEdgeReplay, InitError as LabeledGraphInitError, LabeledEdgeInlinePropertyBatch,
@@ -152,7 +153,6 @@ pub use graph::{
     LabeledOutEdgesIter, OutEdgeOrder,
 };
 pub use graph::{LabelBucketPlacementInfo, LeafBucketPlacementStats};
-pub use graph::{ScalarInsertLocation, ScalarInsertStorage};
 pub use record::{
     LabelBucket, LabeledVertex, LabeledVertexFieldError, MAX_VERTEX_LABEL_BUCKET_SLACK,
     MAX_VERTEX_LABEL_BUCKETS,

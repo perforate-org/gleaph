@@ -266,7 +266,14 @@ fn bench_traverse_next_visit_in_edges_dense() -> canbench_rs::BenchResult {
     let label = BucketLabelKey::from_raw(2);
     for i in 0..DENSE_DEGREE {
         graph
-            .insert_directed_edge(src, dst, label, BenchEdge(i + 10), BenchEdge(0))
+            .insert_directed_edge(
+                src,
+                dst,
+                label,
+                BenchEdge(i + 10),
+                BenchEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
     }
     bench_fn(|| {
@@ -301,6 +308,7 @@ fn bench_traverse_next_visit_in_edges_hybrid_inline_property() -> canbench_rs::B
                 label,
                 InlinePropertyBenchEdge::new(dst.into(), u64::from(i)),
                 InlinePropertyBenchEdge::new(src.into(), u64::from(i)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         black_box(value);
@@ -328,7 +336,14 @@ fn bench_traverse_next_visit_edges_dense_asc() -> canbench_rs::BenchResult {
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     for i in 0..DENSE_DEGREE {
-        graph.insert_edge(src, label, BenchEdge(i + 10)).unwrap();
+        graph
+            .insert_edge(
+                src,
+                label,
+                BenchEdge(i + 10),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
     }
     bench_fn(|| {
         let mut count = 0u32;
@@ -349,7 +364,14 @@ fn bench_traverse_next_visit_edges_sparse() -> canbench_rs::BenchResult {
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     for i in 0..DENSE_DEGREE {
-        graph.insert_edge(src, label, BenchEdge(i + 10)).unwrap();
+        graph
+            .insert_edge(
+                src,
+                label,
+                BenchEdge(i + 10),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
     }
     graph.compact_vertex_edge_span(src, 0).unwrap();
     for slot in (1..DENSE_DEGREE).step_by(3) {
@@ -374,7 +396,14 @@ fn bench_traverse_next_visit_edges_window() -> canbench_rs::BenchResult {
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     for i in 0..DENSE_DEGREE {
-        graph.insert_edge(src, label, BenchEdge(i + 10)).unwrap();
+        graph
+            .insert_edge(
+                src,
+                label,
+                BenchEdge(i + 10),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
     }
     let request = LabeledTraversalRequest {
         owner: src,
@@ -404,7 +433,14 @@ fn bench_traverse_next_visit_edges_dense_desc() -> canbench_rs::BenchResult {
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     for i in 0..DENSE_DEGREE {
-        graph.insert_edge(src, label, BenchEdge(i + 10)).unwrap();
+        graph
+            .insert_edge(
+                src,
+                label,
+                BenchEdge(i + 10),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
     }
     bench_fn(|| {
         let mut count = 0u32;
@@ -426,7 +462,12 @@ fn bench_traverse_next_visit_edges_bypass() -> canbench_rs::BenchResult {
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     for i in 0..BYPASS_DEGREE {
         graph
-            .insert_edge(src, default_label, BenchEdge(i + 10))
+            .insert_edge(
+                src,
+                default_label,
+                BenchEdge(i + 10),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
     }
     bench_fn(|| {
@@ -453,7 +494,14 @@ fn bench_traverse_next_visit_edges_early_break() -> canbench_rs::BenchResult {
     let src = graph.push_vertex(LabeledVertex::default()).unwrap();
     let label = BucketLabelKey::from_raw(2);
     for i in 0..DENSE_DEGREE {
-        graph.insert_edge(src, label, BenchEdge(i + 10)).unwrap();
+        graph
+            .insert_edge(
+                src,
+                label,
+                BenchEdge(i + 10),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .unwrap();
     }
     bench_fn(|| {
         let result = graph
@@ -484,6 +532,7 @@ fn bench_traverse_next_visit_edges_hybrid() -> canbench_rs::BenchResult {
                 src,
                 label,
                 InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
     }
@@ -514,6 +563,7 @@ fn bench_traverse_next_visit_edges_at_with_replay() -> canbench_rs::BenchResult 
                 src,
                 label,
                 InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
     }
@@ -565,6 +615,7 @@ fn bench_selected_inline_property_case(
                 src,
                 label,
                 InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
     }
@@ -661,6 +712,7 @@ fn bench_traverse_next_visit_edges_at_with_inline_property_filtered_reference()
                 src,
                 label,
                 InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
     }
@@ -706,6 +758,7 @@ fn bench_traverse_next_visit_edges_with_inline_property() -> canbench_rs::BenchR
                 src,
                 label,
                 InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
     }
@@ -748,6 +801,7 @@ fn bench_traverse_next_legacy_visit_edges_with_inline_property_same_fixture()
                 src,
                 label,
                 InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
     }
@@ -778,6 +832,7 @@ fn bench_traverse_next_property_first_then_selected() -> canbench_rs::BenchResul
                 src,
                 label,
                 InlinePropertyBenchEdge::new(i + 10, u64::from(i)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
     }

@@ -1064,11 +1064,21 @@ where
         match orientation {
             super::Orientation::Forward => self
                 .forward
-                .insert_edge(src, label_id, edge)
+                .insert_edge(
+                    src,
+                    label_id,
+                    edge,
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .map_err(DeferredBidirectionalLabeledError::Forward),
             super::Orientation::Reverse => self
                 .reverse
-                .insert_edge(src, label_id, edge)
+                .insert_edge(
+                    src,
+                    label_id,
+                    edge,
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .map_err(DeferredBidirectionalLabeledError::Reverse),
         }
     }
@@ -1247,6 +1257,7 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         forward_edge: E,
+        placement: crate::labeled::graph::EdgePlacementPolicy,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         let inline_property_bytes_compaction_needed =
             forward_edge.edge_inline_property_byte_width() != 0
@@ -1258,7 +1269,12 @@ where
                     .map_err(DeferredBidirectionalLabeledError::Forward)?;
 
         self.forward
-            .insert_edge_skip_leaf_cascade_deferred_inline_property(src, label_id, forward_edge)
+            .insert_edge_skip_leaf_cascade_deferred_inline_property(
+                src,
+                label_id,
+                forward_edge,
+                placement,
+            )
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         if inline_property_bytes_compaction_needed {
             self.mark_compact_inline_property_bytes_slab(Orientation::Forward)?;
@@ -1357,9 +1373,17 @@ where
         label_id: BucketLabelKey,
         forward_edge: E,
         reverse_edge: E,
+        placement: crate::labeled::graph::EdgePlacementPolicy,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
-        self.insert_directed_edge_with_locations(src, dst, label_id, forward_edge, reverse_edge)
-            .map(|_| ())
+        self.insert_directed_edge_with_locations(
+            src,
+            dst,
+            label_id,
+            forward_edge,
+            reverse_edge,
+            placement,
+        )
+        .map(|_| ())
     }
 
     /// Inserts one directed edge and returns the exact locations captured by both writes.
@@ -1374,6 +1398,7 @@ where
         label_id: BucketLabelKey,
         forward_edge: E,
         reverse_edge: E,
+        placement: crate::labeled::graph::EdgePlacementPolicy,
     ) -> Result<ScalarInsertPair, DeferredBidirectionalLabeledError> {
         // Storage-owned capacity preparation: before any canonical edge write, make
         // sure both orientations have room for a new label bucket.  This keeps
@@ -1406,6 +1431,7 @@ where
                 src,
                 label_id,
                 forward_edge,
+                placement,
             )
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         #[cfg(test)]
@@ -1417,6 +1443,7 @@ where
                     dst,
                     label_id,
                     reverse_edge,
+                    placement,
                 )
         };
         #[cfg(not(test))]
@@ -1426,6 +1453,7 @@ where
                 dst,
                 label_id,
                 reverse_edge,
+                placement,
             );
         let reverse_location = reverse_result.unwrap_or_else(|error| {
             panic!("reverse half failed after directed forward canonical write: {error}")
@@ -3573,8 +3601,9 @@ where
         label_id: BucketLabelKey,
         edge_uv: E,
         edge_vu: E,
+        placement: crate::labeled::graph::EdgePlacementPolicy,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
-        self.insert_undirected_deferred_with_locations(u, v, label_id, edge_uv, edge_vu)
+        self.insert_undirected_deferred_with_locations(u, v, label_id, edge_uv, edge_vu, placement)
             .map(|_| ())
     }
 
@@ -3590,6 +3619,7 @@ where
         label_id: BucketLabelKey,
         edge_uv: E,
         edge_vu: E,
+        placement: crate::labeled::graph::EdgePlacementPolicy,
     ) -> Result<ScalarInsertPair, DeferredBidirectionalLabeledError> {
         debug_assert!(
             label_id.is_undirected(),
@@ -3623,7 +3653,7 @@ where
         let forward_location = self
             .forward
             .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
-                u, label_id, edge_uv,
+                u, label_id, edge_uv, placement,
             )
             .map_err(DeferredBidirectionalLabeledError::Forward)?;
         let reverse_location = if u != v {
@@ -3633,14 +3663,14 @@ where
             } else {
                 self.forward
                     .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
-                        v, label_id, edge_vu,
+                        v, label_id, edge_vu, placement,
                     )
             };
             #[cfg(not(test))]
             let reverse_result = self
                 .forward
                 .insert_edge_skip_leaf_cascade_deferred_inline_property_with_location(
-                    v, label_id, edge_vu,
+                    v, label_id, edge_vu, placement,
                 );
             Some(reverse_result.unwrap_or_else(|error| {
                 panic!("undirected second half failed after first forward canonical write: {error}")
@@ -3835,6 +3865,7 @@ mod tests {
                 label,
                 TestEdge(1),
                 TestEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
         }));
         assert!(reverse_failure.is_err());
@@ -3850,6 +3881,7 @@ mod tests {
                 label,
                 TestEdge(1),
                 TestEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
         }));
         assert!(maintenance_failure.is_err());
@@ -3874,6 +3906,7 @@ mod tests {
                 label,
                 TestEdge(1),
                 TestEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
         }));
         assert!(reverse_failure.is_err());
@@ -3893,6 +3926,7 @@ mod tests {
                 label,
                 TestEdge(1),
                 TestEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
         }));
         assert!(maintenance_failure.is_err());
@@ -4092,6 +4126,7 @@ mod tests {
                 label,
                 TestEdge(u32::from(dst)),
                 TestEdge(u32::from(src)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("src -> dst");
         graph
@@ -4155,6 +4190,7 @@ mod tests {
                     label,
                     TestEdge(u32::from(neighbor)),
                     TestEdge(u32::from(hub)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .expect("hub -> neighbor");
         }
@@ -4167,6 +4203,7 @@ mod tests {
                 label,
                 TestEdge(u32::from(hub)),
                 TestEdge(u32::from(survivor)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("survivor -> hub");
         graph
@@ -4176,6 +4213,7 @@ mod tests {
                 label,
                 TestEdge(u32::from(survivor)),
                 TestEdge(u32::from(keeper)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("keeper -> survivor");
         let full = MaintenanceBudget {
@@ -4267,6 +4305,7 @@ mod tests {
                     label,
                     TestEdge(u32::from(n)),
                     TestEdge(u32::from(center)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .expect("center -> neighbor");
         }
@@ -4335,13 +4374,34 @@ mod tests {
         let hub = VertexId::from(0);
         let label = BucketLabelKey::UNLABELED_DIRECTED;
         graph
-            .insert_directed_edge(hub, VertexId::from(1), label, TestEdge(1), TestEdge(0))
+            .insert_directed_edge(
+                hub,
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("hub->1");
         graph
-            .insert_directed_edge(hub, VertexId::from(2), label, TestEdge(2), TestEdge(0))
+            .insert_directed_edge(
+                hub,
+                VertexId::from(2),
+                label,
+                TestEdge(2),
+                TestEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("hub->2");
         graph
-            .insert_directed_edge(VertexId::from(3), hub, label, TestEdge(0), TestEdge(3))
+            .insert_directed_edge(
+                VertexId::from(3),
+                hub,
+                label,
+                TestEdge(0),
+                TestEdge(3),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("3->hub");
 
         let full = MaintenanceBudget {
@@ -4459,7 +4519,14 @@ mod tests {
         let hub = VertexId::from(0);
         let label = BucketLabelKey::UNLABELED_DIRECTED;
         graph
-            .insert_directed_edge(hub, VertexId::from(1), label, TestEdge(1), TestEdge(0))
+            .insert_directed_edge(
+                hub,
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("hub->1");
         let full = MaintenanceBudget {
             max_instructions: 0,
@@ -4683,6 +4750,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(2, &10u16.to_le_bytes()),
                 rev(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -4692,6 +4760,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &5u16.to_le_bytes()),
                 rev(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -4701,6 +4770,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(2, &1u16.to_le_bytes()),
                 rev(1),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let mut weights = Vec::new();
@@ -4739,6 +4809,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &10u16.to_le_bytes()),
                 rev(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -4748,6 +4819,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 rev(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -4802,6 +4874,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &10u16.to_le_bytes()),
                 InlinePropertyTestEdge::with_bytes(0, &10u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -4811,6 +4884,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 InlinePropertyTestEdge::with_bytes(0, &20u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -4858,6 +4932,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(u32::from(hub), &10u16.to_le_bytes()),
                 InlinePropertyTestEdge::with_bytes(u32::from(source), &10u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -4867,6 +4942,7 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(u32::from(hub), &20u16.to_le_bytes()),
                 InlinePropertyTestEdge::with_bytes(u32::from(source), &20u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -4944,6 +5020,7 @@ mod tests {
                     road,
                     InlinePropertyTestEdge::with_bytes(u32::from(noise_dst), &bytes),
                     InlinePropertyTestEdge::with_bytes(u32::from(hub), &bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap_or_else(|error| panic!("noise edge {edge_index}: {error:?}"));
         }
@@ -4962,6 +5039,7 @@ mod tests {
                     road,
                     InlinePropertyTestEdge::with_bytes(u32::from(target_dst), &bytes),
                     InlinePropertyTestEdge::with_bytes(u32::from(hub), &bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap_or_else(|error| panic!("target edge {edge_index}: {error:?}"));
         }
@@ -4989,6 +5067,7 @@ mod tests {
                 label,
                 TestEdge(1),
                 TestEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let forward = locations.forward.expect("named forward bucket location");
@@ -5053,6 +5132,7 @@ mod tests {
                     label,
                     InlinePropertyTestEdge::with_bytes(u32::from(target), &bytes),
                     InlinePropertyTestEdge::with_bytes(u32::from(source), &bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             locations.push(pair.forward.expect("named forward location"));
@@ -5112,6 +5192,7 @@ mod tests {
                     label,
                     InlinePropertyTestEdge::with_bytes(u32::from(target), &bytes),
                     InlinePropertyTestEdge::with_bytes(u32::from(source), &bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             locations.push(pair.forward.expect("forward location").logical_slot);
@@ -5147,6 +5228,7 @@ mod tests {
                 label,
                 TestEdge(2),
                 TestEdge(0),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert!(pair.forward.is_some());
@@ -5159,9 +5241,102 @@ mod tests {
                 label,
                 TestEdge(1),
                 TestEdge(1),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert!(self_pair.forward.is_some());
         assert!(self_pair.reverse.is_none());
+    }
+
+    #[test]
+    fn directed_unordered_reuse_applies_to_both_orientations() {
+        let graph = valued_bidirectional_graph();
+        for _ in 0..2 {
+            graph.push_vertex().unwrap();
+        }
+        let road = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_directed_edge_inline_property_width(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                2u16,
+            )
+            .unwrap();
+        let insertion = crate::labeled::graph::EdgePlacementPolicy::Insertion;
+        let unordered = crate::labeled::graph::EdgePlacementPolicy::Unordered;
+        let rev =
+            |src: u32, bytes: u16| InlinePropertyTestEdge::with_bytes(src, &bytes.to_le_bytes());
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                InlinePropertyTestEdge::with_bytes(1, &10u16.to_le_bytes()),
+                rev(0, 10),
+                insertion,
+            )
+            .unwrap();
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
+                rev(0, 20),
+                insertion,
+            )
+            .unwrap();
+        // Fold both orientations onto the slab so the delete below leaves an
+        // in-slab tombstone that Unordered placement can reuse (a fresh
+        // segment-16 quota bucket would otherwise stay log-backed).
+        graph
+            .forward
+            .compact_vertex_edge_span(VertexId::from(0), 0)
+            .unwrap();
+        graph
+            .reverse
+            .compact_vertex_edge_span(VertexId::from(1), 0)
+            .unwrap();
+
+        // Remove the second parallel edge by its inline bytes: the reverse half
+        // carries the same bytes, so both orientations tombstone slot 1 exactly.
+        assert!(
+            graph
+                .remove_directed_deferred(
+                    VertexId::from(0),
+                    VertexId::from(1),
+                    InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
+                )
+                .unwrap()
+        );
+
+        // Unordered placement reuses the tombstone in both orientations.
+        let pair = graph
+            .insert_directed_edge_with_locations(
+                VertexId::from(0),
+                VertexId::from(1),
+                road,
+                InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
+                rev(0, 20),
+                unordered,
+            )
+            .unwrap();
+        assert_eq!(pair.forward.unwrap().logical_slot, 1);
+        assert_eq!(pair.reverse.unwrap().logical_slot, 1);
+        assert_eq!(
+            graph
+                .out_edges_for_label(VertexId::from(0), road)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            graph
+                .in_edges_for_label(VertexId::from(1), road)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }

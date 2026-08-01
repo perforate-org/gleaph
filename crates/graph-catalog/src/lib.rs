@@ -375,6 +375,21 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         }
     }
 
+    /// Returns the ids of property graphs whose binding references `type_id`.
+    ///
+    /// Used by the Router for DDL-time per-label policy-change validation
+    /// (ADR 0052 §10) before a named `CREATE OR REPLACE GRAPH TYPE` mutates the
+    /// catalog.
+    pub fn graphs_bound_to_type(&self, type_id: GraphTypeId) -> Vec<GraphId> {
+        let mut graph_ids = Vec::new();
+        for entry in self.binding_map.iter() {
+            if binding_type_ref_id(&entry.value()) == Some(type_id) {
+                graph_ids.push(*entry.key());
+            }
+        }
+        graph_ids
+    }
+
     fn definition_for_binding(
         &self,
         binding: &GraphSchemaBinding,

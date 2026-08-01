@@ -580,10 +580,20 @@ mod tests {
         label: BucketLabelKey,
     ) -> (CanonicalEdgeOccurrence, CanonicalEdgeOccurrence) {
         forward
-            .insert_edge(VertexId::from(src), label, TestEdge { target: tgt })
+            .insert_edge(
+                VertexId::from(src),
+                label,
+                TestEdge { target: tgt },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         reverse
-            .insert_edge(VertexId::from(tgt), label, TestEdge { target: src })
+            .insert_edge(
+                VertexId::from(tgt),
+                label,
+                TestEdge { target: src },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let fwd_slot =
             find_slot_for_target(forward, VertexId::from(src), label, VertexId::from(tgt))
@@ -615,10 +625,20 @@ mod tests {
     ) -> CanonicalEdgeOccurrence {
         let (high, low) = if a > b { (a, b) } else { (b, a) };
         forward
-            .insert_edge(VertexId::from(high), label, TestEdge { target: low })
+            .insert_edge(
+                VertexId::from(high),
+                label,
+                TestEdge { target: low },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         forward
-            .insert_edge(VertexId::from(low), label, TestEdge { target: high })
+            .insert_edge(
+                VertexId::from(low),
+                label,
+                TestEdge { target: high },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let slot = find_slot_for_target(forward, VertexId::from(high), label, VertexId::from(low))
             .expect("high-owner edge inserted");
@@ -718,7 +738,12 @@ mod tests {
         push_both_vertices(&forward, &reverse, 6);
         let slot = {
             forward
-                .insert_edge(VertexId::from(5), label, TestEdge { target: 5 })
+                .insert_edge(
+                    VertexId::from(5),
+                    label,
+                    TestEdge { target: 5 },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
             find_slot_for_target(&forward, VertexId::from(5), label, VertexId::from(5))
                 .expect("self-loop inserted")
@@ -860,10 +885,20 @@ mod tests {
         let (forward, reverse) = two_sided_graphs(label);
         push_both_vertices(&forward, &reverse, 3);
         forward
-            .insert_edge(VertexId::from(1), label, TestEdge { target: 2 })
+            .insert_edge(
+                VertexId::from(1),
+                label,
+                TestEdge { target: 2 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         forward
-            .insert_edge(VertexId::from(2), label, TestEdge { target: 1 })
+            .insert_edge(
+                VertexId::from(2),
+                label,
+                TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let slot = find_slot_for_target(&forward, VertexId::from(1), label, VertexId::from(2))
             .expect("edge inserted");

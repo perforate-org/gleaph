@@ -254,44 +254,13 @@ impl RouterStore {
         else {
             return Ok(EdgeOrderingPolicy::Unordered);
         };
-        let mut found: Option<EdgeOrderingPolicy> = None;
-        for element in &definition.elements {
-            let GraphTypeElement::Edge(edge) = element else {
-                continue;
-            };
-            let Some(label_set) = edge.label_set.as_ref() else {
-                continue;
-            };
-            if !label_set
-                .labels
-                .iter()
-                .any(|label| label == edge_label_name)
-            {
-                continue;
-            }
-            let policy = match edge
-                .storage_order
-                .as_ref()
-                .map(|clause| clause.key.as_str())
-            {
-                Some("INSERTION") => EdgeOrderingPolicy::Insertion,
-                Some(other) => {
-                    return Err(RouterError::InvalidArgument(format!(
-                        "edge label '{edge_label_name}' declares unsupported ORDER BY key '{other}'"
-                    )));
-                }
-                None => EdgeOrderingPolicy::Unordered,
-            };
-            if let Some(prev) = found
-                && prev != policy
-            {
-                return Err(RouterError::InvalidArgument(format!(
-                    "edge label '{edge_label_name}' is declared with conflicting ORDER BY policies"
-                )));
-            }
-            found = Some(policy);
-        }
-        Ok(found.unwrap_or(EdgeOrderingPolicy::Unordered))
+        Ok(
+            crate::facade::stable::graph_type_catalog::edge_ordering_policy_in_definition(
+                &definition,
+                edge_label_name,
+            )?
+            .unwrap_or(EdgeOrderingPolicy::Unordered),
+        )
     }
 
     pub(crate) fn commit_intern_graph_type_vocabulary(

@@ -1050,6 +1050,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1095,6 +1096,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::undirected_from_index(3),
                 TestEdge { target: 30 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1102,6 +1104,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::directed_from_index(2),
                 TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1109,6 +1112,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::directed_from_index(4),
                 TestEdge { target: 40 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -1174,6 +1178,7 @@ mod tests {
                     VertexId::from(0),
                     BucketLabelKey::from_raw(label),
                     TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1215,10 +1220,20 @@ mod tests {
         let new_tail = BucketLabelKey::from_raw(40);
 
         graph
-            .insert_edge(VertexId::from(0), low, TestEdge { target: 10 })
+            .insert_edge(
+                VertexId::from(0),
+                low,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), old_tail, TestEdge { target: 20 })
+            .insert_edge(
+                VertexId::from(0),
+                old_tail,
+                TestEdge { target: 20 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         // Populate `last_bucket_lookup` with the old tail label.
@@ -1238,7 +1253,12 @@ mod tests {
             .unwrap();
 
         graph
-            .insert_edge(VertexId::from(0), inserted, TestEdge { target: 30 })
+            .insert_edge(
+                VertexId::from(0),
+                inserted,
+                TestEdge { target: 30 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         let vertex = graph.vertices().get(VertexId::from(0));
@@ -1258,13 +1278,28 @@ mod tests {
         let high = BucketLabelKey::from_raw(4);
 
         graph
-            .insert_edge(VertexId::from(0), low, TestEdge { target: 10 })
+            .insert_edge(
+                VertexId::from(0),
+                low,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), middle, TestEdge { target: 20 })
+            .insert_edge(
+                VertexId::from(0),
+                middle,
+                TestEdge { target: 20 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), high, TestEdge { target: 30 })
+            .insert_edge(
+                VertexId::from(0),
+                high,
+                TestEdge { target: 30 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         assert!(
@@ -1327,6 +1362,7 @@ mod tests {
                     TestEdge {
                         target: label as u32,
                     },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1345,7 +1381,12 @@ mod tests {
         let graph = test_graph();
         let vid = VertexId::from(0);
         graph
-            .insert_edge(vid, BucketLabelKey::from_raw(99), TestEdge { target: 999 })
+            .insert_edge(
+                vid,
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         assert!(graph.labeled_leaf_physical_range(vid).is_some());
         let pma = graph.labeled_leaf_pma_density(vid);
@@ -1366,10 +1407,22 @@ mod tests {
         let anchor = BucketLabelKey::from_raw(99);
         let road = BucketLabelKey::from_raw(2);
         graph
-            .insert_edge(vid, anchor, TestEdge { target: 999 })
+            .insert_edge(
+                vid,
+                anchor,
+                TestEdge { target: 999 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         for target in 0..64u32 {
-            graph.insert_edge(vid, road, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    vid,
+                    road,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         let materialized = |label: BucketLabelKey| {
             graph
@@ -1391,12 +1444,22 @@ mod tests {
         let graph = test_graph();
         let vid = VertexId::from(0);
         graph
-            .insert_edge(vid, BucketLabelKey::from_raw(99), TestEdge { target: 999 })
+            .insert_edge(
+                vid,
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let road = BucketLabelKey::from_raw(2);
         let pma_before = graph.labeled_leaf_pma_density(vid);
         graph
-            .insert_edge_skip_leaf_cascade(vid, road, TestEdge { target: 1 })
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                road,
+                TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let pma_after = graph.labeled_leaf_pma_density(vid);
         assert!(

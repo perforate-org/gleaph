@@ -4445,7 +4445,14 @@ mod tests {
         let (graph, src) = bucket_graph();
         let label = BucketLabelKey::directed_from_index(2);
         for target in 1..=4u32 {
-            graph.insert_edge(src, label, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    src,
+                    label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         graph.compact_vertex_edge_span(src, 0).unwrap();
         // Logical slot 1 is live.
@@ -4486,7 +4493,14 @@ mod tests {
         let (graph, src) = bucket_graph();
         let label = BucketLabelKey::directed_from_index(2);
         for target in 1..=5u32 {
-            graph.insert_edge(src, label, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    src,
+                    label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
 
         let mut asc = Vec::new();
@@ -4515,7 +4529,14 @@ mod tests {
         let (graph, src) = bucket_graph();
         let label = BucketLabelKey::directed_from_index(2);
         for target in 1..=5u32 {
-            graph.insert_edge(src, label, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    src,
+                    label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
 
         let result = graph
@@ -4535,7 +4556,14 @@ mod tests {
         let (graph, src) = bucket_graph();
         let label = BucketLabelKey::directed_from_index(2);
         for target in 1..=5u32 {
-            graph.insert_edge(src, label, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    src,
+                    label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         let mut request = LabeledTraversalRequest {
             owner: src,
@@ -4618,7 +4646,14 @@ mod tests {
         let (graph, src) = bucket_graph();
         let label = BucketLabelKey::directed_from_index(2);
         for target in 1..=5u32 {
-            graph.insert_edge(src, label, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    src,
+                    label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         graph.compact_vertex_edge_span(src, 0).unwrap();
         graph.remove_edge_at_slot(src, label, 2).unwrap();
@@ -4648,7 +4683,14 @@ mod tests {
         let (graph, src) = bucket_graph();
         let label = BucketLabelKey::directed_from_index(2);
         for target in 1..=5u32 {
-            graph.insert_edge(src, label, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    src,
+                    label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         graph.compact_vertex_edge_span(src, 0).unwrap();
         graph.remove_edge_at_slot(src, label, 2).unwrap();
@@ -4682,7 +4724,12 @@ mod tests {
         let (graph, src, default_label) = bypass_graph();
         for target in 10..=41u32 {
             graph
-                .insert_edge(src, default_label, TestEdge { target })
+                .insert_edge(
+                    src,
+                    default_label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
@@ -4723,7 +4770,12 @@ mod tests {
         let (graph, src, default_label) = bypass_graph();
         for target in 10..=14u32 {
             graph
-                .insert_edge(src, default_label, TestEdge { target })
+                .insert_edge(
+                    src,
+                    default_label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
@@ -4762,6 +4814,7 @@ mod tests {
                     src,
                     label,
                     InlinePropertyTestEdge::with_bytes(7, &value.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -4834,6 +4887,7 @@ mod tests {
                     src,
                     label,
                     InlinePropertyTestEdge::with_bytes(target, &value),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -4972,6 +5026,7 @@ mod tests {
                     src,
                     label,
                     InlinePropertyTestEdge::with_bytes(target, &(target * 7).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -5048,6 +5103,7 @@ mod tests {
                     src,
                     label,
                     InlinePropertyTestEdge::with_bytes(target, &(target * 7).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -5118,7 +5174,14 @@ mod tests {
         let (graph, src) = bucket_graph();
         let label = BucketLabelKey::directed_from_index(2);
         for target in 1..=3u32 {
-            graph.insert_edge(src, label, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    src,
+                    label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
 
         let mut called = false;
@@ -5158,6 +5221,7 @@ mod tests {
                     a,
                     label,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             let bt = 1000 + target;
@@ -5166,6 +5230,7 @@ mod tests {
                     b,
                     label,
                     InlinePropertyTestEdge::with_bytes(bt, &(bt as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -5236,14 +5301,29 @@ mod tests {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 10 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 11 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let walk = BucketLabelKey::from_raw(3);
         graph
-            .insert_edge(VertexId::from(0), walk, TestEdge { target: 20 })
+            .insert_edge(
+                VertexId::from(0),
+                walk,
+                TestEdge { target: 20 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         let mut expected = graph.out_edges(VertexId::from(0)).unwrap();
@@ -5261,10 +5341,20 @@ mod tests {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 10 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 11 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         let mut expected = graph.out_edges(VertexId::from(0)).unwrap();
@@ -5284,10 +5374,20 @@ mod tests {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 10 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 11 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         let full: Vec<_> = graph
@@ -5328,6 +5428,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::undirected_from_index(3),
                 TestEdge { target: 30 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -5335,6 +5436,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::directed_from_index(2),
                 TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -5342,6 +5444,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::directed_from_index(4),
                 TestEdge { target: 40 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -5387,6 +5490,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::from_raw(2),
                 TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -5409,7 +5513,12 @@ mod tests {
         let graph = test_graph();
         let vid = VertexId::from(0);
         graph
-            .insert_edge(vid, BucketLabelKey::from_raw(99), TestEdge { target: 999 })
+            .insert_edge(
+                vid,
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let label = BucketLabelKey::from_raw(2);
         let header = graph.edges().header();
@@ -5422,6 +5531,7 @@ mod tests {
                     TestEdge {
                         target: target as u32,
                     },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -5446,23 +5556,43 @@ mod tests {
         let walk = BucketLabelKey::from_raw(3);
         for target in [10, 11] {
             graph
-                .insert_edge(VertexId::from(0), road, TestEdge { target })
+                .insert_edge(
+                    VertexId::from(0),
+                    road,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         graph
-            .insert_edge(VertexId::from(0), walk, TestEdge { target: 20 })
+            .insert_edge(
+                VertexId::from(0),
+                walk,
+                TestEdge { target: 20 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         for target in [100, 101] {
             graph
-                .insert_edge(bypass_tail, graph.default_label(), TestEdge { target })
+                .insert_edge(
+                    bypass_tail,
+                    graph.default_label(),
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
         let catalog = BucketLabelKey::from_raw(42);
         for target in [200, 201] {
             graph
-                .insert_edge(catalog_tail, catalog, TestEdge { target })
+                .insert_edge(
+                    catalog_tail,
+                    catalog,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
@@ -5561,6 +5691,7 @@ mod tests {
                     a,
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             let bt = 1000 + target;
@@ -5569,6 +5700,7 @@ mod tests {
                     b,
                     road,
                     InlinePropertyTestEdge::with_bytes(bt, &(bt as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -5672,6 +5804,7 @@ mod tests {
                     src,
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -5684,6 +5817,7 @@ mod tests {
                     src,
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -5740,6 +5874,7 @@ mod tests {
                     src,
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -5825,6 +5960,7 @@ mod tests {
                     src,
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }

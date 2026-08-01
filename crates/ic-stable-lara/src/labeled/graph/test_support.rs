@@ -287,6 +287,36 @@ pub fn inline_property_test_graph_with_capacity(
     .unwrap()
 }
 
+/// Segment-16 inline-property fixture with vertex 0 already pushed. The
+/// segment-16 initial bucket quota is nonzero, so the bucket is slab-backed and
+/// Unordered tombstone reuse with ordinal-aligned bytes is observable.
+pub fn inline_property_test_graph_segment16()
+-> LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory> {
+    let graph = LabeledLaraGraph::new_with_segment_size(
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        crate::labeled::InitialCapacities::uniform(256),
+        BucketLabelKey::directed_from_index(1),
+        16,
+    )
+    .unwrap();
+    graph.push_vertex(LabeledVertex::default()).unwrap();
+    graph
+}
+
 /// Dense multi-label hub fixture shared by span-release and hub regressions.
 pub fn build_mixed_label_hub(
     labels: u16,
@@ -328,6 +358,7 @@ pub fn build_mixed_label_hub(
                     TestEdge {
                         target: u32::from(dst),
                     },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
         }

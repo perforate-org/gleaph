@@ -1,12 +1,16 @@
 //! GQL graph type catalog on router stable memory (ADR 0013).
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
-use gleaph_gql::ast::{Statement, StatementBlock};
+use gleaph_gql::ast::{
+    GraphTypeDefinition, GraphTypeElement, GraphTypeSpec, Statement, StatementBlock,
+};
 use gleaph_gql::type_check::{GraphTypePropertySchema, NoSchema, PropertySchema};
 use gleaph_gql::validate::SessionGraphSeed;
 use gleaph_graph_catalog::{CatalogError, GraphNameLookup, object_name_key};
 use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
 
 use super::ROUTER_GQL_GRAPH_CATALOG;
 use super::ROUTER_GRAPH_TYPE_CATALOG;
@@ -72,6 +76,7 @@ pub(crate) fn apply_catalog_statement_block(
             _ => {}
         }
     }
+    enforce_policy_change_restrictions(block)?;
     ROUTER_GRAPH_TYPE_CATALOG.with_borrow_mut(|type_catalog| {
         ROUTER_GQL_GRAPH_CATALOG.with_borrow_mut(|catalog| {
             let mut type_lookup = RouterGraphTypeLookup::new(type_catalog);
@@ -138,6 +143,163 @@ pub(crate) fn validate_edge_ordering_policies(
         }
     }
     Ok(())
+}
+
+/// Resolves the ordering policy declared for `edge_label_name` inside
+/// `definition` (ADR 0052 §1/§4). Returns `None` for undeclared labels;
+/// unsupported `ORDER BY` keys and conflicting per-label declarations fail
+/// closed. Shared by [`crate::facade::store::RouterStore::lookup_edge_ordering_policy`]
+/// and the §10 DDL-time policy-change check.
+pub(crate) fn edge_ordering_policy_in_definition(
+    definition: &GraphTypeDefinition,
+    edge_label_name: &str,
+) -> Result<Option<EdgeOrderingPolicy>, RouterError> {
+    let mut found: Option<EdgeOrderingPolicy> = None;
+    for element in &definition.elements {
+        let GraphTypeElement::Edge(edge) = element else {
+            continue;
+        };
+        let Some(label_set) = edge.label_set.as_ref() else {
+            continue;
+        };
+        if !label_set
+            .labels
+            .iter()
+            .any(|label| label == edge_label_name)
+        {
+            continue;
+        }
+        let policy = match edge
+            .storage_order
+            .as_ref()
+            .map(|clause| clause.key.as_str())
+        {
+            Some("INSERTION") => EdgeOrderingPolicy::Insertion,
+            Some(other) => {
+                return Err(RouterError::InvalidArgument(format!(
+                    "edge label '{edge_label_name}' declares unsupported ORDER BY key '{other}'"
+                )));
+            }
+            None => EdgeOrderingPolicy::Unordered,
+        };
+        if let Some(prev) = found
+            && prev != policy
+        {
+            return Err(RouterError::InvalidArgument(format!(
+                "edge label '{edge_label_name}' is declared with conflicting ORDER BY policies"
+            )));
+        }
+        found = Some(policy);
+    }
+    Ok(found)
+}
+
+/// ADR 0052 §10: rejects a per-label ordering-policy change when the label has
+/// live edges (aggregated `ROUTER_EDGE_LABEL_STATS` live_count > 0). Runs before
+/// any catalog mutation so the DDL fails closed without partial state.
+///
+/// The label-stats projection is Telemetry-class event-sourced state, so a
+/// projection-lag window fails open in the initial implementation (recorded in
+/// ADR 0052 §10).
+fn enforce_policy_change_restrictions(block: &StatementBlock) -> Result<(), RouterError> {
+    let store = RouterStore::new();
+    for stmt in block.iter_statements() {
+        match stmt {
+            Statement::CreateGraph(create) => {
+                if !create.or_replace {
+                    continue;
+                }
+                let Some(GraphTypeSpec::Inline(new_definition)) = &create.graph_type else {
+                    continue;
+                };
+                let graph_name = object_name_key(&create.name);
+                let Some(graph_id) = lookup_graph_id(&graph_name) else {
+                    continue;
+                };
+                let Some(old_definition) = parsed_graph_type_definition_for_graph_id(graph_id)?
+                else {
+                    continue;
+                };
+                reject_changed_policies_with_live_edges(
+                    &store,
+                    graph_id,
+                    &old_definition,
+                    new_definition,
+                )?;
+            }
+            Statement::CreateGraphType(create) => {
+                if !create.or_replace {
+                    continue;
+                }
+                let type_name = object_name_key(&create.name);
+                let Some(type_id) =
+                    ROUTER_GRAPH_TYPE_CATALOG.with_borrow(|catalog| catalog.get_id(&type_name))
+                else {
+                    continue;
+                };
+                let graph_ids = ROUTER_GQL_GRAPH_CATALOG
+                    .with_borrow(|catalog| catalog.graphs_bound_to_type(type_id));
+                for graph_id in graph_ids {
+                    let Some(old_definition) = parsed_graph_type_definition_for_graph_id(graph_id)?
+                    else {
+                        continue;
+                    };
+                    reject_changed_policies_with_live_edges(
+                        &store,
+                        graph_id,
+                        &old_definition,
+                        &create.definition,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn reject_changed_policies_with_live_edges(
+    store: &RouterStore,
+    graph_id: GraphId,
+    old_definition: &GraphTypeDefinition,
+    new_definition: &GraphTypeDefinition,
+) -> Result<(), RouterError> {
+    let mut labels: BTreeSet<&str> = BTreeSet::new();
+    collect_edge_labels(old_definition, &mut labels);
+    collect_edge_labels(new_definition, &mut labels);
+    for label in labels {
+        let old = edge_ordering_policy_in_definition(old_definition, label)?
+            .unwrap_or(EdgeOrderingPolicy::Unordered);
+        let new = edge_ordering_policy_in_definition(new_definition, label)?
+            .unwrap_or(EdgeOrderingPolicy::Unordered);
+        if old == new {
+            continue;
+        }
+        // A label that was never interned for the graph cannot have live edges;
+        // only interned labels reach the live-count check.
+        let Ok(label_id) = store.lookup_edge_label_id(graph_id, label) else {
+            continue;
+        };
+        let live_count = store.edge_label_stats(graph_id, label_id).live_count;
+        if live_count > 0 {
+            return Err(RouterError::InvalidArgument(format!(
+                "edge label '{label}' changes its ORDER BY policy while it has {live_count} live edge(s); drop the edges first or keep the declared policy (ADR 0052 §10)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn collect_edge_labels<'a>(definition: &'a GraphTypeDefinition, out: &mut BTreeSet<&'a str>) {
+    for element in &definition.elements {
+        let GraphTypeElement::Edge(edge) = element else {
+            continue;
+        };
+        let Some(label_set) = edge.label_set.as_ref() else {
+            continue;
+        };
+        out.extend(label_set.labels.iter().map(|label| label.as_str()));
+    }
 }
 
 /// Returns the parsed Graph Type definition bound to the graph, if any.

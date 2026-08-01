@@ -3,7 +3,8 @@
 use gleaph_graph_kernel::entry::{
     Edge, EdgeInlinePropertyBytes, EdgeLabelId, EdgeSlotIndex, VertexRef,
 };
-use ic_stable_lara::{VertexId, traits::CsrEdge};
+use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
+use ic_stable_lara::{VertexId, labeled::EdgePlacementPolicy, traits::CsrEdge};
 
 use super::GraphStore;
 use super::adjacency::{EdgeInsertSpec, journal_edge_insert};
@@ -13,6 +14,17 @@ use super::helpers::{
     build_edge_to, canonical_undirected_owner, edge_matches_local_neighbor, edge_storage_label,
     lara_label, validate_edge_inline_property_bytes_for_label,
 };
+use crate::edge_inline_property_schema::resolved_edge_label_with;
+
+/// Maps the resolved ordering policy to the storage-owned LARA placement enum
+/// at the mutation boundary (ADR 0052 §4). An undeclared/unknown label resolves
+/// to the `Unordered` default (ADR 0052 §1).
+fn lara_edge_placement(ordering: Option<EdgeOrderingPolicy>) -> EdgePlacementPolicy {
+    match ordering {
+        None | Some(EdgeOrderingPolicy::Unordered) => EdgePlacementPolicy::Unordered,
+        Some(EdgeOrderingPolicy::Insertion) => EdgePlacementPolicy::Insertion,
+    }
+}
 
 impl GraphStore {
     fn edge_inline_property_width_u16(
@@ -63,6 +75,10 @@ impl GraphStore {
 
         let label = lara_label(edge_storage_label(catalog_label, false));
         let inline_property_width = Self::edge_inline_property_width_u16(inline_property_bytes)?;
+        let placement = lara_edge_placement(
+            catalog_label
+                .and_then(|label| resolved_edge_label_with(None, label).map(|l| l.ordering)),
+        );
         let forward = build_edge_to(target_vertex_id)
             .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
         let reverse = Edge {
@@ -87,6 +103,7 @@ impl GraphStore {
                 label,
                 forward,
                 reverse,
+                placement,
             )
         })?;
         let canonical = if let Some(location) = locations.forward {
@@ -140,6 +157,10 @@ impl GraphStore {
 
         let label = lara_label(edge_storage_label(catalog_label, true));
         let inline_property_width = Self::edge_inline_property_width_u16(inline_property_bytes)?;
+        let placement = lara_edge_placement(
+            catalog_label
+                .and_then(|label| resolved_edge_label_with(None, label).map(|l| l.ordering)),
+        );
         let edge_ab = build_edge_to(endpoint_b)
             .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
         let edge_ba = build_edge_to(endpoint_a)
@@ -154,7 +175,7 @@ impl GraphStore {
                 )?;
             }
             graph.insert_undirected_deferred_with_locations(
-                endpoint_a, endpoint_b, label, edge_ab, edge_ba,
+                endpoint_a, endpoint_b, label, edge_ab, edge_ba, placement,
             )
         })?;
         let owner_vertex_id = canonical_undirected_owner(endpoint_a, endpoint_b);

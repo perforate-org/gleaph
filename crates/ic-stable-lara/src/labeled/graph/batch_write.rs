@@ -3826,6 +3826,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::directed_from_index(1),
                 GraphTestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -3875,6 +3876,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::directed_from_index(1),
                 GraphTestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -3919,7 +3921,12 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         for i in 1..=3u32 {
             graph
-                .insert_edge(VertexId::from(0), label, GraphTestEdge { target: i })
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    GraphTestEdge { target: i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
@@ -3972,6 +3979,7 @@ mod tests {
                     VertexId::from(0),
                     label,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -4069,10 +4077,20 @@ mod tests {
         }
         let label = BucketLabelKey::directed_from_index(2);
         graph
-            .insert_edge(VertexId::from(0), label, GraphTestEdge { target: 1 })
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                GraphTestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(32), label, GraphTestEdge { target: 33 })
+            .insert_edge(
+                VertexId::from(32),
+                label,
+                GraphTestEdge { target: 33 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         let (old_start, old_len) = graph
@@ -4132,7 +4150,12 @@ mod tests {
         let label = BucketLabelKey::directed_from_index(1);
         for target in 1..=3 {
             graph
-                .insert_edge(VertexId::from(0), label, GraphTestEdge { target })
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    GraphTestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         graph
@@ -4179,13 +4202,23 @@ mod tests {
         // Create a bucket at vertex 0 and fill its slab window.
         for i in 1..=3u32 {
             graph
-                .insert_edge(VertexId::from(0), label, GraphTestEdge { target: i })
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    GraphTestEdge { target: i },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         // Pin a second leaf after leaf 0 so leaf 0 is not at the allocation tail
         // and cannot expand via tail growth.
         graph
-            .insert_edge(VertexId::from(32), label, GraphTestEdge { target: 1 })
+            .insert_edge(
+                VertexId::from(32),
+                label,
+                GraphTestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         // Fill the per-leaf edge overflow log to capacity (170 entries).
@@ -4251,13 +4284,28 @@ mod tests {
         let label_a = BucketLabelKey::directed_from_index(1);
         let label_b = BucketLabelKey::directed_from_index(2);
         graph
-            .insert_edge(VertexId::from(0), label_a, GraphTestEdge { target: 1 })
+            .insert_edge(
+                VertexId::from(0),
+                label_a,
+                GraphTestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), label_b, GraphTestEdge { target: 2 })
+            .insert_edge(
+                VertexId::from(0),
+                label_b,
+                GraphTestEdge { target: 2 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(16), label_a, GraphTestEdge { target: 33 })
+            .insert_edge(
+                VertexId::from(16),
+                label_a,
+                GraphTestEdge { target: 33 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         let header = graph.edges().header();
@@ -4417,6 +4465,7 @@ mod tests {
                 VertexId::from(0),
                 pin_label,
                 InlinePropertyTestEdge::with_bytes(2, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -4424,6 +4473,7 @@ mod tests {
                 VertexId::from(32),
                 pin_label,
                 InlinePropertyTestEdge::with_bytes(33, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -4611,6 +4661,7 @@ mod tests {
                 VertexId::from(0),
                 pin_label,
                 InlinePropertyTestEdge::with_bytes(2, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -4618,6 +4669,7 @@ mod tests {
                 VertexId::from(32),
                 pin_label,
                 InlinePropertyTestEdge::with_bytes(33, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 

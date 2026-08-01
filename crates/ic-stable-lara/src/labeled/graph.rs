@@ -72,7 +72,7 @@ mod values;
 pub(crate) use crate::traverse::EdgeSlotState;
 pub use bucket::{LabelBucketPlacementInfo, LeafBucketPlacementStats};
 pub use error::{InitError, LabeledOperationError, OutEdgeOrder};
-pub use insert::{ScalarInsertLocation, ScalarInsertStorage};
+pub use insert::{EdgePlacementPolicy, ScalarInsertLocation, ScalarInsertStorage};
 pub use iter::LabeledOutEdgesIter;
 pub use iter::{
     HybridOverflowEdgeReplay, LabeledEdgeInlinePropertyBatch,

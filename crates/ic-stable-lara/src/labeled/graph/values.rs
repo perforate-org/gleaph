@@ -1324,6 +1324,7 @@ mod tests {
                 src,
                 peer,
                 InlinePropertyTestEdge::with_bytes(0xFFFF, &peer_value),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let vertex = graph.vertices().get(src);
@@ -1337,6 +1338,7 @@ mod tests {
                 src,
                 road,
                 InlinePropertyTestEdge::with_bytes(last_target, &road_value),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
     }
@@ -1359,10 +1361,16 @@ mod tests {
                 src,
                 valued,
                 InlinePropertyTestEdge::with_bytes(1, &[7; 12]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
-            .insert_edge_skip_leaf_cascade(src, plain, InlinePropertyTestEdge::with_bytes(2, &[]))
+            .insert_edge_skip_leaf_cascade(
+                src,
+                plain,
+                InlinePropertyTestEdge::with_bytes(2, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         let vertex = graph.vertices().get(src);
@@ -1394,6 +1402,7 @@ mod tests {
                     src,
                     label,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1421,6 +1430,7 @@ mod tests {
                         src,
                         label,
                         InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
                     )
                     .unwrap();
             }
@@ -1468,6 +1478,7 @@ mod tests {
                         src,
                         label,
                         InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
                     )
                     .unwrap();
             }
@@ -1502,6 +1513,7 @@ mod tests {
                     src,
                     label,
                     InlinePropertyTestEdge::with_bytes(target, &bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1522,6 +1534,7 @@ mod tests {
                 src,
                 target,
                 InlinePropertyTestEdge::with_bytes(3, &[3u8; 6]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -1549,6 +1562,7 @@ mod tests {
                         src,
                         valued,
                         InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
                     )
                     .unwrap();
             }
@@ -1557,6 +1571,7 @@ mod tests {
                     src,
                     plain,
                     InlinePropertyTestEdge::with_bytes(100, &[]),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
 
@@ -1697,6 +1712,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &1u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1704,6 +1720,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(2, &100u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let vertex = graph.vertices().get(VertexId::from(0));
@@ -1773,6 +1790,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &1u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1780,6 +1798,7 @@ mod tests {
                 VertexId::from(1),
                 road,
                 InlinePropertyTestEdge::with_bytes(2, &1u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1787,6 +1806,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(2, &100u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let mut weights = Vec::new();
@@ -1830,6 +1850,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1881,6 +1902,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &42u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1888,6 +1910,7 @@ mod tests {
                 VertexId::from(0),
                 rail,
                 InlinePropertyTestEdge::with_bytes(2, &0u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let mut weights = Vec::new();
@@ -1931,6 +1954,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -1939,6 +1963,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(33, &320u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -1946,6 +1971,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(33, &330u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         force_inline_property_bytes_log(&graph, VertexId::from(0), road, 2, 33);
@@ -2005,6 +2031,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2059,6 +2086,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2138,6 +2166,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2194,6 +2223,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             if target == 32 {
@@ -2270,6 +2300,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2293,6 +2324,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             if target == 32 {
@@ -2322,6 +2354,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2384,6 +2417,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2474,6 +2508,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2534,6 +2569,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2609,6 +2645,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2664,6 +2701,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2755,6 +2793,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2810,6 +2849,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -2907,6 +2947,7 @@ mod tests {
                 VertexId::from(0),
                 tiny,
                 InlinePropertyTestEdge::with_bytes(1, &[7]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -2914,6 +2955,7 @@ mod tests {
                 VertexId::from(0),
                 wide,
                 InlinePropertyTestEdge::with_bytes(2, &[9; 16]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -2969,6 +3011,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3029,6 +3072,7 @@ mod tests {
                 VertexId::from(0),
                 default,
                 InlinePropertyTestEdge::with_bytes(1, &42u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -3079,6 +3123,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3115,6 +3160,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             if target == 32 {
@@ -3172,6 +3218,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3185,6 +3232,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(4, &40u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -3237,6 +3285,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3245,6 +3294,7 @@ mod tests {
                 VertexId::from(1),
                 road,
                 InlinePropertyTestEdge::with_bytes(2, &2u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -3252,6 +3302,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(2, &200u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -3303,6 +3354,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &inline_property_bytes),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let mut seen = Vec::new();
@@ -3347,6 +3399,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &inline_property_bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3355,6 +3408,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(33, &inline_property_bytes),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -3362,6 +3416,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(33, &inline_property_bytes),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         force_inline_property_bytes_log(&graph, VertexId::from(0), road, WIDTH, 33);
@@ -3420,6 +3475,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &inline_property_bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3466,6 +3522,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &inline_property_bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3524,6 +3581,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &10u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -3531,6 +3589,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(2, &20u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -3560,6 +3619,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_i32(target, cost),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3604,6 +3664,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &1u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert!(
@@ -3625,6 +3686,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &1u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect_err("inline property bytes edge must not infer bucket inline property schema");
         assert!(matches!(
@@ -3651,6 +3713,7 @@ mod tests {
                 VertexId::from(0),
                 default,
                 InlinePropertyTestEdge::with_bytes(1, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let before = graph.vertices().get(VertexId::from(0));
@@ -3661,6 +3724,7 @@ mod tests {
                 VertexId::from(0),
                 default,
                 InlinePropertyTestEdge::with_bytes(2, &2u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect_err("inline property bytes insert must not promote default bypass row");
         assert!(matches!(
@@ -3695,6 +3759,7 @@ mod tests {
                 VertexId::from(0),
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &[]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let err = graph
@@ -3719,6 +3784,7 @@ mod tests {
                 VertexId::from(0),
                 valued,
                 InlinePropertyTestEdge::with_bytes(2, &2u16.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
 
@@ -3727,7 +3793,12 @@ mod tests {
             (InlinePropertyTestEdge::with_i32(4, 4), 4u16),
         ] {
             let err = graph
-                .insert_edge_skip_leaf_cascade(VertexId::from(0), valued, edge)
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    valued,
+                    edge,
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect_err("inline property byte width must match existing bucket schema");
             assert!(matches!(
                 err,
@@ -3753,6 +3824,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3809,6 +3881,7 @@ mod tests {
                     src,
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3839,6 +3912,7 @@ mod tests {
                     VertexId::from(0),
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -3894,6 +3968,7 @@ mod tests {
                     src,
                     road,
                     InlinePropertyTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }

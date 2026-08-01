@@ -190,7 +190,12 @@ fn bench_labeled_batch_edge_only_expansion_existing_bucket() -> canbench_rs::Ben
     }
     let label = BucketLabelKey::from_raw(2);
     graph
-        .insert_edge(VertexId::from(0), label, BenchEdge(1))
+        .insert_edge(
+            VertexId::from(0),
+            label,
+            BenchEdge(1),
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+        )
         .expect("create labeled bucket");
     let leaf = u32::from(VertexId::from(0)) / graph.edges().header().segment_size.max(1);
     let log_capacity = graph.edges().read_overflow_log_state(leaf).1 as usize;
@@ -260,6 +265,7 @@ fn bench_labeled_batch_inline_property_expansion_existing_bucket() -> canbench_r
             VertexId::from(0),
             edge_only_label,
             InlinePropertyBenchEdge::with_inline_property(1, 0, &[]),
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
         )
         .expect("edge-only seed");
     graph
@@ -267,6 +273,7 @@ fn bench_labeled_batch_inline_property_expansion_existing_bucket() -> canbench_r
             VertexId::from(0),
             inline_property_label,
             InlinePropertyBenchEdge::with_inline_property(1, 8, &[1; 8]),
+            crate::labeled::graph::EdgePlacementPolicy::Insertion,
         )
         .expect("inline property seed");
 
@@ -421,6 +428,7 @@ fn seed_overflow_inline_property_hub(
                     inline_property_width,
                     &inline_property,
                 ),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("insert");
     }
@@ -457,7 +465,12 @@ fn seed_mixed_label_hub(
         let label = BucketLabelKey::from_raw(10_000 + label_idx);
         for edge_i in 0..edges_per_label {
             graph
-                .insert_edge_skip_leaf_cascade(hub, label, BenchEdge(edge_i))
+                .insert_edge_skip_leaf_cascade(
+                    hub,
+                    label,
+                    BenchEdge(edge_i),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("insert");
         }
     }
@@ -473,7 +486,12 @@ fn seed_single_label_parallel_edges(
     let label = BucketLabelKey::from_raw(2);
     for i in 0..edge_count {
         graph
-            .insert_edge(VertexId::from(0), label, BenchEdge(i))
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                BenchEdge(i),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("insert");
     }
     label
@@ -493,7 +511,12 @@ fn seed_single_label_hub(
     let label = BucketLabelKey::from_raw(2);
     for i in 0..edge_count {
         graph
-            .insert_edge_skip_leaf_cascade(vid, label, BenchEdge(i))
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                BenchEdge(i),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("hub insert");
     }
     (vid, label)
@@ -525,6 +548,7 @@ fn bench_labeled_capacity_sparse_leaf_32_vertices_1_edge() -> canbench_rs::Bench
                     VertexId::from(vertex),
                     BucketLabelKey::from_raw(2),
                     BenchEdge(vertex),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .expect("sparse edge");
         }
@@ -571,6 +595,7 @@ fn run_stable_sparse_capacity(vertex_count: u32, segment_size: u32) {
                 VertexId::from(vertex),
                 BucketLabelKey::from_raw(2),
                 BenchEdge(vertex),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("sparse edge");
     }
@@ -589,6 +614,7 @@ fn run_stable_hub_growth_capacity(edge_count: u32, segment_size: u32) {
                 VertexId::from(0),
                 BucketLabelKey::from_raw(2),
                 BenchEdge(edge),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("hub edge");
     }
@@ -654,7 +680,12 @@ fn seed_stage2_leaf(
         for v in 1..STAGE2_LEAF {
             for e in 0..leaf_mate_degree {
                 graph
-                    .insert_edge(VertexId::from(v), label, BenchEdge(v * 10_000 + e))
+                    .insert_edge(
+                        VertexId::from(v),
+                        label,
+                        BenchEdge(v * 10_000 + e),
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
                     .expect("leaf-mate seed");
             }
         }
@@ -783,7 +814,12 @@ fn bench_labeled_iter_edges_for_label_128() -> canbench_rs::BenchResult {
     let label = BucketLabelKey::from_raw(2);
     for i in 0..128u32 {
         graph
-            .insert_edge(VertexId::from(0), label, BenchEdge(i))
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                BenchEdge(i),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("insert");
     }
     bench_fn(|| {
@@ -809,7 +845,12 @@ fn bench_labeled_default_bypass_iter_128() -> canbench_rs::BenchResult {
         .expect("bypass");
     for i in 0..128u32 {
         graph
-            .insert_edge(VertexId::from(0), graph.default_label(), BenchEdge(i))
+            .insert_edge(
+                VertexId::from(0),
+                graph.default_label(),
+                BenchEdge(i),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("insert");
     }
     bench_fn(|| {
@@ -832,7 +873,12 @@ fn bench_labeled_insert_existing_bucket_128() -> canbench_rs::BenchResult {
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
             graph
-                .insert_edge(VertexId::from(0), label, BenchEdge(i))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    BenchEdge(i),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("insert");
         }
     })
@@ -847,7 +893,12 @@ fn bench_labeled_insert_single_bucket_1024() -> canbench_rs::BenchResult {
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
             graph
-                .insert_edge(VertexId::from(0), label, BenchEdge(i))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    BenchEdge(i),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("insert");
         }
         black_box(graph.vertex_count());
@@ -865,7 +916,12 @@ fn bench_labeled_insert_last_of_many_buckets_1024() -> canbench_rs::BenchResult 
     for k in 0..N_BUCKETS {
         let label = BucketLabelKey::from_raw(2 + k);
         graph
-            .insert_edge(vid, label, BenchEdge(u32::from(k)))
+            .insert_edge(
+                vid,
+                label,
+                BenchEdge(u32::from(k)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("seed insert");
     }
     let target = BucketLabelKey::from_raw(2 + N_BUCKETS - 1);
@@ -873,7 +929,12 @@ fn bench_labeled_insert_last_of_many_buckets_1024() -> canbench_rs::BenchResult 
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
             graph
-                .insert_edge(vid, target, BenchEdge(i))
+                .insert_edge(
+                    vid,
+                    target,
+                    BenchEdge(i),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("insert");
         }
         black_box(target.raw());
@@ -890,14 +951,26 @@ fn bench_labeled_insert_round_robin_64_labels_1024() -> canbench_rs::BenchResult
     for k in 0..N_LABELS {
         let label = BucketLabelKey::from_raw(10 + k);
         graph
-            .insert_edge(vid, label, BenchEdge(u32::from(k)))
+            .insert_edge(
+                vid,
+                label,
+                BenchEdge(u32::from(k)),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("seed insert");
     }
     bench_fn(|| {
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
             let label = BucketLabelKey::from_raw(10 + (i % u32::from(N_LABELS)) as u16);
-            graph.insert_edge(vid, label, BenchEdge(i)).expect("insert");
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    BenchEdge(i),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
         }
         black_box(N_LABELS);
     })
@@ -913,7 +986,12 @@ fn bench_labeled_insert_fresh_label_each_edge_256() -> canbench_rs::BenchResult 
         for i in 0u16..256 {
             let label = BucketLabelKey::from_raw(3000 + i);
             graph
-                .insert_edge(vid, label, BenchEdge(u32::from(i)))
+                .insert_edge(
+                    vid,
+                    label,
+                    BenchEdge(u32::from(i)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("insert");
         }
         black_box(graph.vertex_count());
@@ -934,7 +1012,12 @@ fn bench_labeled_insert_multi_vertex_leaf32_2048() -> canbench_rs::BenchResult {
     for v in 0..LEAF {
         for e in 0..SEED_PER_VERTEX {
             graph
-                .insert_edge(VertexId::from(v), label, BenchEdge(v * 10_000 + e))
+                .insert_edge(
+                    VertexId::from(v),
+                    label,
+                    BenchEdge(v * 10_000 + e),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("seed");
         }
     }
@@ -942,7 +1025,14 @@ fn bench_labeled_insert_multi_vertex_leaf32_2048() -> canbench_rs::BenchResult {
         for i in 0..2048u32 {
             let i = black_box(i);
             let vid = VertexId::from(i % LEAF);
-            graph.insert_edge(vid, label, BenchEdge(i)).expect("insert");
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    BenchEdge(i),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
         }
         black_box(LEAF);
     })
@@ -981,7 +1071,14 @@ fn bench_labeled_deferred_inserts_only_1024() -> canbench_rs::BenchResult {
         let label = BucketLabelKey::from_raw(2);
         for i in 0..helper::MEDIUM_N as u32 {
             let i = black_box(i);
-            graph.insert_edge(vid, label, BenchEdge(i)).expect("insert");
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    BenchEdge(i),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
         }
         black_box(graph.maintenance_queue_len());
     })
@@ -999,7 +1096,14 @@ fn bench_labeled_deferred_maintenance_compact_vertex_span_1() -> canbench_rs::Be
             .push_vertex(LabeledVertex::default())
             .expect("vertex");
         for t in 0..80u32 {
-            graph.insert_edge(vid, label, BenchEdge(t)).expect("insert");
+            graph
+                .insert_edge(
+                    vid,
+                    label,
+                    BenchEdge(t),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .expect("insert");
         }
         for t in 0..72u32 {
             graph
@@ -1072,6 +1176,7 @@ fn bench_labeled_inline_property_exact_growth_256() -> canbench_rs::BenchResult 
                         2,
                         &(target as u16).to_le_bytes(),
                     ),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .expect("inline property insert");
         }
@@ -1099,6 +1204,7 @@ fn seed_fragmented_inline_property_fixture(
                 vid,
                 label,
                 InlinePropertyBenchEdge::with_inline_property(target, width, &target.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("inline property insert");
     }
@@ -1129,6 +1235,7 @@ fn seed_inline_property_free_span_count(
                 vid,
                 label,
                 InlinePropertyBenchEdge::with_inline_property(index, 2, &[index as u8; 2]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("inline property insert");
         if index % 2 == 0 {
@@ -1194,6 +1301,7 @@ fn bench_labeled_inline_property_fragmented_first_span_6() -> canbench_rs::Bench
                 vid,
                 target,
                 InlinePropertyBenchEdge::with_inline_property(3, 6, &3u32.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("inline property insert");
         black_box(
@@ -1220,6 +1328,7 @@ fn bench_labeled_inline_property_fragmented_first_span_4_control() -> canbench_r
                 vid,
                 target,
                 InlinePropertyBenchEdge::with_inline_property(3, 4, &3u32.to_le_bytes()),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("inline property insert");
         black_box(
@@ -1269,6 +1378,7 @@ fn bench_labeled_deferred_inline_property_fragmented_enqueue_6() -> canbench_rs:
                 vid,
                 target,
                 InlinePropertyBenchEdge::with_inline_property(3, 6, &[3u8; 6]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("inline property insert");
         black_box(graph.maintenance_queue_len());
@@ -1293,6 +1403,7 @@ fn bench_labeled_deferred_inline_property_fragmented_maintenance_6() -> canbench
                 vid,
                 target,
                 InlinePropertyBenchEdge::with_inline_property(3, 6, &[3u8; 6]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .expect("inline property insert");
         let budget = MaintenanceBudget {
@@ -1349,7 +1460,12 @@ fn bench_labeled_direct_unlink_log_fold_maintenance() -> canbench_rs::BenchResul
         let label = BucketLabelKey::from_raw(2);
         for target in 1..=OVERFLOW_LOG_HUB_EDGES {
             graph
-                .insert_edge_skip_leaf_cascade(vid, label, BenchEdge(target))
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    BenchEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("insert");
         }
         for target in 1..=OVERFLOW_LOG_HUB_EDGES / 2 {
@@ -1431,6 +1547,77 @@ fn bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024() -> canbench_
     })
 }
 
+/// ADR 0052 Slice 3: Unordered scalar insert into a tombstone-heavy slab-backed
+/// hub bucket. The fixture folds the overflow log to the slab and deletes half
+/// the edges, so every measured re-insert reuses an in-slab tombstone (same
+/// `stored_slots`, degree + 1, ADR 0052 §5 step 1) instead of appending to the
+/// tail or overflow log.
+#[bench(raw)]
+fn bench_labeled_unordered_tombstone_reuse_half_deleted_1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph(1 << 20);
+    let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
+    compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
+    for slot in (0..STAGE2_HUB_DEGREE).step_by(2).rev() {
+        graph
+            .remove_edge_at_slot(vid, label, slot)
+            .expect("remove")
+            .expect("removed");
+    }
+    let next = Cell::new(0u32);
+    bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("labeled_unordered_tombstone_reuse_half_deleted");
+        let i = next.get();
+        if i >= STAGE2_HUB_DEGREE / 2 {
+            return;
+        }
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                BenchEdge(100_000 + i),
+                crate::labeled::graph::EdgePlacementPolicy::Unordered,
+            )
+            .expect("reuse insert");
+        next.set(i + 1);
+        black_box(graph.vertices().get(vid));
+    })
+}
+
+/// ADR 0052 Slice 3 control: the same tombstone-heavy fixture with Insertion
+/// placement, which must never reuse an interior tombstone (ADR 0052 §6) and
+/// instead appends. Keeps the Insertion scalar path regression-visible against
+/// the Unordered reuse path.
+#[bench(raw)]
+fn bench_labeled_insertion_append_on_tombstone_hub_1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph(1 << 20);
+    let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
+    compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
+    for slot in (0..STAGE2_HUB_DEGREE).step_by(2).rev() {
+        graph
+            .remove_edge_at_slot(vid, label, slot)
+            .expect("remove")
+            .expect("removed");
+    }
+    let next = Cell::new(0u32);
+    bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("labeled_insertion_append_on_tombstone_hub");
+        let i = next.get();
+        if i >= STAGE2_HUB_DEGREE / 2 {
+            return;
+        }
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                BenchEdge(100_000 + i),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("append insert");
+        next.set(i + 1);
+        black_box(graph.vertices().get(vid));
+    })
+}
+
 /// ADR 0022 Stage 2 baseline (point lookup): scan a 1024-edge skewed hub bucket in
 /// the hot descending order to locate one target. Today this is O(degree) (the
 /// `find_first_forward_handle_descending` walk); an optional `target -> seq`
@@ -1488,7 +1675,12 @@ fn bench_labeled_stage2_saturated_leaf_grow_one_256() -> canbench_rs::BenchResul
         for e in 0..STAGE2_GROW_DEGREE {
             let e = black_box(e);
             graph
-                .insert_edge(VertexId::from(0), label, BenchEdge(e))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    BenchEdge(e),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("saturated grow insert");
         }
         black_box(STAGE2_GROW_DEGREE);
@@ -1507,7 +1699,12 @@ fn bench_labeled_stage2_isolated_vertex_grow_one_256() -> canbench_rs::BenchResu
         for e in 0..STAGE2_GROW_DEGREE {
             let e = black_box(e);
             graph
-                .insert_edge(VertexId::from(0), label, BenchEdge(e))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    BenchEdge(e),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("isolated grow insert");
         }
         black_box(STAGE2_GROW_DEGREE);
@@ -1677,7 +1874,12 @@ fn bench_labeled_stage2_hub_insert_grow_1024() -> canbench_rs::BenchResult {
         for target in 0..STAGE2_HUB_DEGREE {
             let target = black_box(target);
             graph
-                .insert_edge(vid, label, BenchEdge(target))
+                .insert_edge(
+                    vid,
+                    label,
+                    BenchEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .expect("hub grow insert");
         }
         black_box(STAGE2_HUB_DEGREE);
@@ -1754,7 +1956,12 @@ macro_rules! stage2b_crossover_benches {
                 for target in 0..$deg {
                     let target = black_box(target);
                     graph
-                        .insert_edge(vid, label, BenchEdge(target))
+                        .insert_edge(
+                            vid,
+                            label,
+                            BenchEdge(target),
+                            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                        )
                         .expect("hub grow insert");
                 }
                 black_box::<u32>($deg);
@@ -1893,6 +2100,7 @@ macro_rules! detach_delete_hub_bench {
                         label,
                         BenchEdge(u32::from(neighbor)),
                         BenchEdge(u32::from(hub)),
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
                     )
                     .expect("insert directed");
             }
@@ -1928,6 +2136,7 @@ macro_rules! detach_delete_hub_stepped_bench {
                         label,
                         BenchEdge(u32::from(neighbor)),
                         BenchEdge(u32::from(hub)),
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
                     )
                     .expect("insert directed");
             }
@@ -1978,6 +2187,7 @@ macro_rules! detach_delete_satellite_bench {
                         label,
                         BenchEdge(u32::from(hub)),
                         BenchEdge(u32::from(source)),
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
                     )
                     .expect("source -> hub");
             }
@@ -1991,6 +2201,7 @@ macro_rules! detach_delete_satellite_bench {
                     label,
                     BenchEdge(u32::from(hub)),
                     BenchEdge(u32::from(satellite)),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .expect("satellite -> hub");
             let budget = MaintenanceBudget {
@@ -2051,7 +2262,12 @@ fn bench_labeled_bypass_promotion() -> canbench_rs::BenchResult {
             .push_vertex(LabeledVertex::default())
             .expect("push vertex");
         graph
-            .insert_edge(VertexId::from(i), default, BenchEdge(i))
+            .insert_edge(
+                VertexId::from(i),
+                default,
+                BenchEdge(i),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("default edge");
     }
 
@@ -2065,7 +2281,12 @@ fn bench_labeled_bypass_promotion() -> canbench_rs::BenchResult {
         let vid = VertexId::from(i);
         let road = BucketLabelKey::directed_from_index((i as u16).wrapping_add(1000));
         graph
-            .insert_edge(vid, road, BenchEdge(u32::MAX))
+            .insert_edge(
+                vid,
+                road,
+                BenchEdge(u32::MAX),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("promote bypass");
         next.set(i + 1);
         black_box(graph.vertices().get(vid));

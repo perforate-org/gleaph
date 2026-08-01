@@ -3247,6 +3247,135 @@ pub(crate) mod graph_type_catalog_vocabulary {
         );
     }
 
+    fn seed_edge_live_count(store: &RouterStore, graph_id: GraphId, label: &str, count: i64) {
+        let label_id = store
+            .lookup_edge_label_id(graph_id, label)
+            .expect("label id");
+        store.apply_label_stats_delta_payload(
+            graph_id,
+            ShardId::new(0),
+            &LabelStatsDelta {
+                vertex: vec![],
+                edge: vec![(label_id, count)],
+            },
+        );
+    }
+
+    const INLINE_GRAPH_UNORDERED: &str = "CREATE GRAPH g { NODE Person, DIRECTED EDGE FeedMembership LABEL IN_FEED CONNECTING (Person -> Person) }";
+    const INLINE_GRAPH_INSERTION: &str = "CREATE GRAPH g { NODE Person, DIRECTED EDGE FeedMembership LABEL IN_FEED ORDER BY INSERTION CONNECTING (Person -> Person) }";
+    const OR_REPLACE_GRAPH_INSERTION: &str = "CREATE OR REPLACE GRAPH g { NODE Person, DIRECTED EDGE FeedMembership LABEL IN_FEED ORDER BY INSERTION CONNECTING (Person -> Person) }";
+
+    #[test]
+    fn inline_policy_change_with_live_edges_rejected_at_ddl() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        apply_catalog_statement_block(
+            &catalog_block_from(INLINE_GRAPH_UNORDERED),
+            INLINE_GRAPH_UNORDERED,
+        )
+        .expect("apply initial graph");
+        seed_edge_live_count(&store, graph_id, "IN_FEED", 1);
+
+        let err = apply_catalog_statement_block(
+            &catalog_block_from(OR_REPLACE_GRAPH_INSERTION),
+            OR_REPLACE_GRAPH_INSERTION,
+        )
+        .expect_err("policy change on a live label must fail closed");
+        let msg = err.to_string();
+        assert!(msg.contains("IN_FEED"), "expected label mention: {msg}");
+        assert!(msg.contains("live"), "expected live-count mention: {msg}");
+        // The catalog binding must be untouched (still the Unordered definition).
+        assert_eq!(
+            store
+                .lookup_edge_ordering_policy(graph_id, "IN_FEED")
+                .expect("policy unchanged"),
+            gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Unordered
+        );
+    }
+
+    #[test]
+    fn inline_policy_change_with_zero_live_edges_accepted_at_ddl() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        apply_catalog_statement_block(
+            &catalog_block_from(INLINE_GRAPH_UNORDERED),
+            INLINE_GRAPH_UNORDERED,
+        )
+        .expect("apply initial graph");
+        seed_edge_live_count(&store, graph_id, "IN_FEED", 0);
+
+        apply_catalog_statement_block(
+            &catalog_block_from(OR_REPLACE_GRAPH_INSERTION),
+            OR_REPLACE_GRAPH_INSERTION,
+        )
+        .expect("zero-live-edge policy change must be accepted");
+        assert_eq!(
+            store
+                .lookup_edge_ordering_policy(graph_id, "IN_FEED")
+                .expect("policy"),
+            gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Insertion
+        );
+    }
+
+    #[test]
+    fn inline_unchanged_policy_with_live_edges_accepted_at_ddl() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        apply_catalog_statement_block(
+            &catalog_block_from(INLINE_GRAPH_INSERTION),
+            INLINE_GRAPH_INSERTION,
+        )
+        .expect("apply initial graph");
+        seed_edge_live_count(&store, graph_id, "IN_FEED", 5);
+
+        apply_catalog_statement_block(
+            &catalog_block_from(OR_REPLACE_GRAPH_INSERTION),
+            OR_REPLACE_GRAPH_INSERTION,
+        )
+        .expect("unchanged policy must be accepted even with live edges");
+    }
+
+    #[test]
+    fn named_type_policy_change_with_live_edges_rejected_at_ddl() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        let ddl = "CREATE GRAPH TYPE gt { NODE Person, DIRECTED EDGE FeedMembership LABEL IN_FEED CONNECTING (Person -> Person) } NEXT CREATE GRAPH g TYPED gt";
+        apply_catalog_statement_block(&catalog_block_from(ddl), ddl).expect("apply typed graph");
+        seed_edge_live_count(&store, graph_id, "IN_FEED", 1);
+
+        let ddl2 = "CREATE OR REPLACE GRAPH TYPE gt { NODE Person, DIRECTED EDGE FeedMembership LABEL IN_FEED ORDER BY INSERTION CONNECTING (Person -> Person) }";
+        let err = apply_catalog_statement_block(&catalog_block_from(ddl2), ddl2)
+            .expect_err("named type policy change on a live label must fail closed");
+        assert!(err.to_string().contains("IN_FEED"));
+        // The type replacement must not have been applied: graph still Unordered.
+        assert_eq!(
+            store
+                .lookup_edge_ordering_policy(graph_id, "IN_FEED")
+                .expect("policy unchanged"),
+            gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy::Unordered
+        );
+    }
+
     #[test]
     fn create_graph_typed_ddl_auto_interns_vocabulary() {
         let store = RouterStore::new();

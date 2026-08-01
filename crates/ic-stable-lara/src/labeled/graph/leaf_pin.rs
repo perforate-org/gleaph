@@ -608,6 +608,7 @@ mod tests {
                 TestEdge {
                     target: u32::from(dst),
                 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert_ne!(
@@ -634,6 +635,7 @@ mod tests {
                 TestEdge {
                     target: u32::from(neighbor),
                 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -643,6 +645,7 @@ mod tests {
                 TestEdge {
                     target: u32::from(hub),
                 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let (leaf_start, leaf_len) = graph
@@ -674,6 +677,7 @@ mod tests {
                     TestEdge {
                         target: u32::from(dst),
                     },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -731,6 +735,7 @@ mod tests {
                 TestEdge {
                     target: u32::from(dst),
                 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let (pin_start, pin_len) = graph.labeled_leaf_physical_range(hub).unwrap();
@@ -793,6 +798,7 @@ mod tests {
                         VertexId::from(vid_u),
                         label,
                         TestEdge { target: t },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
                     )
                     .unwrap();
             }
@@ -810,7 +816,12 @@ mod tests {
         let label = BucketLabelKey::from_raw(7);
         for vid_u in 0..2u32 {
             graph
-                .insert_edge_skip_leaf_cascade(VertexId::from(vid_u), label, TestEdge { target: 1 })
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(vid_u),
+                    label,
+                    TestEdge { target: 1 },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
             graph
                 .compact_vertex_edge_span(VertexId::from(vid_u), 0)
@@ -877,7 +888,12 @@ mod tests {
                 for i in 0..PER_LABEL {
                     let target = (vi as u32) * 100_000 + (li as u32) * 1_000 + i;
                     graph
-                        .insert_edge(vid, label, TestEdge { target })
+                        .insert_edge(
+                            vid,
+                            label,
+                            TestEdge { target },
+                            crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                        )
                         .unwrap_or_else(|e| panic!("insert v{vi} l{li} i{i}: {e:?}"));
                     targets.push(target);
                 }
@@ -929,7 +945,12 @@ mod tests {
             for (li, &label) in labels.iter().enumerate() {
                 let target = (vi as u32) * 100_000 + (li as u32) * 1_000 + PER_LABEL;
                 reopened
-                    .insert_edge(vid, label, TestEdge { target })
+                    .insert_edge(
+                        vid,
+                        label,
+                        TestEdge { target },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    )
                     .unwrap();
                 expected[vi][li].1.push(target);
             }
@@ -949,6 +970,7 @@ mod tests {
                 TestEdge {
                     target: u32::from(dst),
                 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let counts = graph.leaf_segment_counts_for_vid(hub);

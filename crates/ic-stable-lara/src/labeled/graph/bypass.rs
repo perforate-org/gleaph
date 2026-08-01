@@ -273,7 +273,12 @@ mod tests {
 
         for target in 0..4 {
             graph
-                .insert_edge(hub, default, TestEdge { target })
+                .insert_edge(
+                    hub,
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap_or_else(|e| panic!("insert target={target}: {e:?}"));
         }
 
@@ -293,6 +298,7 @@ mod tests {
                 VertexId::from(1),
                 graph.default_label(),
                 TestEdge { target: 9 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert!(
@@ -326,6 +332,7 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::from_raw(2),
                 TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph
@@ -333,6 +340,7 @@ mod tests {
                 VertexId::from(1),
                 graph.default_label(),
                 TestEdge { target: 2 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         graph.enable_default_edge_bypass(VertexId::from(1)).unwrap();
@@ -341,6 +349,7 @@ mod tests {
                 VertexId::from(1),
                 graph.default_label(),
                 TestEdge { target: 3 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         crate::labeled::invariants::assert_labeled_edge_store_pma_counts(
@@ -359,6 +368,7 @@ mod tests {
                 VertexId::from(0),
                 graph.default_label(),
                 TestEdge { target: 7 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let vertex = graph.vertices().get(VertexId::from(0));
@@ -411,6 +421,7 @@ mod tests {
                     TestEdge {
                         target: u32::from(hub),
                     },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -423,6 +434,7 @@ mod tests {
                     TestEdge {
                         target: u32::from(prefix),
                     },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
             let bucket_base = graph.vertices().get(prefix).base_slot_start();
@@ -443,6 +455,7 @@ mod tests {
                 TestEdge {
                     target: u32::from(dst),
                 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert!(!graph.vertices().get(hub).is_default_edge_labeled());
@@ -464,6 +477,7 @@ mod tests {
                 VertexId::from(1),
                 graph.default_label(),
                 TestEdge { target: 9 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let vertex = graph.vertices().get(VertexId::from(1));
@@ -483,15 +497,30 @@ mod tests {
         let graph = test_graph();
         let successor = graph.push_vertex(LabeledVertex::default()).unwrap();
         graph
-            .insert_edge(successor, graph.default_label(), TestEdge { target: 900 })
+            .insert_edge(
+                successor,
+                graph.default_label(),
+                TestEdge { target: 900 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         let road = BucketLabelKey::from_raw(2);
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 10 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 11 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         assert!(
@@ -522,10 +551,20 @@ mod tests {
         let graph = test_graph_with_default(BucketLabelKey::UNLABELED_DIRECTED);
         let undirected = BucketLabelKey::UNLABELED_UNDIRECTED;
         graph
-            .insert_edge(VertexId::from(0), undirected, TestEdge { target: 1 })
+            .insert_edge(
+                VertexId::from(0),
+                undirected,
+                TestEdge { target: 1 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), undirected, TestEdge { target: 2 })
+            .insert_edge(
+                VertexId::from(0),
+                undirected,
+                TestEdge { target: 2 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let vertex = graph.vertices().get(VertexId::from(0));
         assert!(vertex.is_default_edge_labeled());
@@ -539,7 +578,12 @@ mod tests {
 
         let road = BucketLabelKey::from_raw(2);
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 99 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 99 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let after = graph.vertices().get(VertexId::from(0));
         assert!(!after.is_default_edge_labeled());
@@ -567,7 +611,12 @@ mod tests {
         let total = 202u32;
         for target in 1..=total {
             graph
-                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .insert_edge(
+                    VertexId::from(0),
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
@@ -599,7 +648,12 @@ mod tests {
         let road = BucketLabelKey::from_raw(42);
 
         graph
-            .insert_edge(VertexId::from(0), default, TestEdge { target: 10 })
+            .insert_edge(
+                VertexId::from(0),
+                default,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         assert!(
             graph
@@ -614,7 +668,12 @@ mod tests {
         assert_eq!(vertex.stored_degree(), 1);
 
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 20 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 20 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         assert_eq!(
@@ -654,7 +713,12 @@ mod tests {
             // Give the vertex a single default-label bypass edge so the vertex is
             // eligible for bypass promotion.
             graph
-                .insert_edge(vid, default, TestEdge { target: next + 1 })
+                .insert_edge(
+                    vid,
+                    default,
+                    TestEdge { target: next + 1 },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
 
             // Try to promote the vertex directly with the next bucket-slab grow failed.
@@ -683,7 +747,12 @@ mod tests {
         let (graph, mems) = failpoint_labeled_graph(default);
         for target in 1..=4 {
             graph
-                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .insert_edge(
+                    VertexId::from(0),
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
@@ -724,7 +793,12 @@ mod tests {
         let (graph, mems) = failpoint_labeled_graph(default);
         for target in 1..=4 {
             graph
-                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .insert_edge(
+                    VertexId::from(0),
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
@@ -746,7 +820,12 @@ mod tests {
         // to show the promoted vertex is fully usable.
         let road = BucketLabelKey::directed_from_index(5001);
         graph
-            .insert_edge(source, road, TestEdge { target: 99 })
+            .insert_edge(
+                source,
+                road,
+                TestEdge { target: 99 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .expect("insert after successful promotion");
 
         let vertex = graph.vertices().get(source);
@@ -831,7 +910,12 @@ mod tests {
         let (graph, mems) = failpoint_labeled_graph(default);
         for target in 1..=4 {
             graph
-                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .insert_edge(
+                    VertexId::from(0),
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
@@ -842,7 +926,12 @@ mod tests {
         let road = BucketLabelKey::directed_from_index(2);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph
-            .insert_edge(VertexId::from(1), road, TestEdge { target: 100 })
+            .insert_edge(
+                VertexId::from(1),
+                road,
+                TestEdge { target: 100 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         fill_bucket_free_spans_to_next_records_grow(&graph, &mems);
@@ -907,14 +996,24 @@ mod tests {
         let (graph, mems) = failpoint_labeled_graph(default);
         for target in 1..=4 {
             graph
-                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .insert_edge(
+                    VertexId::from(0),
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 
         let road = BucketLabelKey::directed_from_index(2);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph
-            .insert_edge(VertexId::from(1), road, TestEdge { target: 100 })
+            .insert_edge(
+                VertexId::from(1),
+                road,
+                TestEdge { target: 100 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         fill_bucket_free_spans_to_next_records_grow(&graph, &mems);
@@ -972,7 +1071,12 @@ mod tests {
         let (graph, mems) = failpoint_labeled_graph(undirected_default);
         for target in 1..=3 {
             graph
-                .insert_edge(VertexId::from(0), undirected_default, TestEdge { target })
+                .insert_edge(
+                    VertexId::from(0),
+                    undirected_default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
 

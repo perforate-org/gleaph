@@ -1719,3 +1719,90 @@ fn edge_property_write_fails_before_mutation_on_missing_source() -> Result<(), G
     assert_eq!(format!("{:?}", repeated.unwrap_err()), format!("{:?}", err));
     Ok(())
 }
+
+#[test]
+fn unordered_default_reuses_tombstoned_slot() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    // No execution-resolved labels: undeclared labels resolve to the Unordered
+    // default (ADR 0052 §1), so a delete-then-insert reuses the tombstone slot.
+    let first = store
+        .insert_directed_edge(source, target, None)
+        .expect("first");
+    let second = store
+        .insert_directed_edge(source, target, None)
+        .expect("second");
+    let third = store
+        .insert_directed_edge(source, target, None)
+        .expect("third");
+    assert_eq!(first.slot_index.raw(), 0);
+    assert_eq!(second.slot_index.raw(), 1);
+    assert_eq!(third.slot_index.raw(), 2);
+    // Fold both orientations onto the slab (bulk-ingest finalize) so a delete
+    // leaves an in-slab tombstone that the Unordered default can reuse.
+    store
+        .finalize_bulk_ingest(&BulkIngestFinalizeSpec {
+            forward_vertices: vec![source],
+            reverse_vertices: vec![target],
+        })
+        .expect("fold log to slab");
+    store.delete_edge_by_handle(second).expect("delete middle");
+    let reused = store
+        .insert_directed_edge(source, target, None)
+        .expect("reused");
+    assert_eq!(
+        reused.slot_index.raw(),
+        1,
+        "Unordered default must reuse the in-slab tombstone before appending"
+    );
+    assert_eq!(store.directed_out_edges(source).expect("out").len(), 3);
+}
+
+#[test]
+fn resolved_insertion_policy_preserves_append_order() {
+    use gleaph_graph_kernel::plan_exec::{
+        EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable,
+    };
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let target = store.insert_vertex().expect("target");
+    let label_id = crate::test_labels::edge_label_id_for_name("OrderedInsertionBoundary");
+    let resolved = ResolvedLabelTable {
+        vertex: vec![],
+        edge: vec![
+            ResolvedEdgeLabel::new(
+                "OrderedInsertionBoundary".to_string(),
+                label_id,
+                gleaph_graph_kernel::entry::EdgeInlinePropertyProfile::no_inline_property(),
+            )
+            .with_ordering(EdgeOrderingPolicy::Insertion),
+        ],
+    };
+    crate::edge_inline_property_schema::set_execution_resolved_labels(Some(resolved));
+    let first = store
+        .insert_directed_edge(source, target, Some(label_id))
+        .expect("first");
+    let second = store
+        .insert_directed_edge(source, target, Some(label_id))
+        .expect("second");
+    let third = store
+        .insert_directed_edge(source, target, Some(label_id))
+        .expect("third");
+    assert_eq!(first.slot_index.raw(), 0);
+    assert_eq!(second.slot_index.raw(), 1);
+    assert_eq!(third.slot_index.raw(), 2);
+    store
+        .finalize_bulk_ingest(&BulkIngestFinalizeSpec {
+            forward_vertices: vec![source],
+            reverse_vertices: vec![target],
+        })
+        .expect("fold log to slab");
+    store.delete_edge_by_handle(second).expect("delete middle");
+    // Insertion placement appends past the interior tombstone (ADR 0052 §6).
+    let appended = store
+        .insert_directed_edge(source, target, Some(label_id))
+        .expect("appended");
+    assert_eq!(appended.slot_index.raw(), 3);
+    crate::edge_inline_property_schema::set_execution_resolved_labels(None);
+}

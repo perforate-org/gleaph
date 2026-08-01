@@ -219,7 +219,14 @@ mod tests {
             |edges: &[u32]| -> Vec<u32> { (1..=300u32).filter(|t| !edges.contains(t)).collect() };
 
         for target in 1..=300u32 {
-            graph.insert_edge(hub, label, TestEdge(target)).unwrap();
+            graph
+                .insert_edge(
+                    hub,
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         drain_vertex_edge_span_compact_queue(&graph);
         assert!(
@@ -232,7 +239,12 @@ mod tests {
         for mate in 1..=8u32 {
             let value = 10_000 + mate;
             graph
-                .insert_edge(VertexId::from(mate), label, TestEdge(value))
+                .insert_edge(
+                    VertexId::from(mate),
+                    label,
+                    TestEdge(value),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
             drain_vertex_edge_span_compact_queue(&graph);
 
@@ -273,7 +285,12 @@ mod tests {
         let mut target = 0;
         while graph.maintenance_queue_len() == 0 && target < 1024 {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
             target += 1;
         }
@@ -284,7 +301,12 @@ mod tests {
         );
         for target in target..target + 128 {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         assert_eq!(graph.maintenance_queue_len(), before);
@@ -303,7 +325,12 @@ mod tests {
         const EDGE_COUNT: u32 = 1024;
         for target in 0..EDGE_COUNT {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         let vertex = graph.inner().vertices().get(VertexId::from(0));
@@ -346,7 +373,12 @@ mod tests {
             .push_vertex(crate::labeled::record::LabeledVertex::default())
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), label, TestEdge(10))
+            .insert_edge(
+                VertexId::from(0),
+                label,
+                TestEdge(10),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let vertex = graph.inner().vertices().get(VertexId::from(0));
         let bucket = graph
@@ -371,7 +403,12 @@ mod tests {
         let mut target = 0;
         while graph.maintenance_queue_len() == 0 && target < 1024 {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
             target += 1;
         }
@@ -382,7 +419,12 @@ mod tests {
         );
         for target in target..target + 128 {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         assert_eq!(graph.maintenance_queue_len(), before);
@@ -400,13 +442,23 @@ mod tests {
         let label = BucketLabelKey::from_raw(2);
         for target in 0..1024u32 {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         assert_eq!(graph.maintenance_queue_len(), 1);
 
         graph
-            .insert_edge(VertexId::from(1), label, TestEdge(10_000))
+            .insert_edge(
+                VertexId::from(1),
+                label,
+                TestEdge(10_000),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         assert_eq!(graph.maintenance_queue_len(), 1);
 
@@ -439,10 +491,22 @@ mod tests {
         let label = BucketLabelKey::from_raw(2);
         let hub = VertexId::from(0);
         for target in 0..256u32 {
-            graph.insert_edge(hub, label, TestEdge(target)).unwrap();
+            graph
+                .insert_edge(
+                    hub,
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         graph
-            .insert_edge(VertexId::from(16), label, TestEdge(16_000))
+            .insert_edge(
+                VertexId::from(16),
+                label,
+                TestEdge(16_000),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         drain_vertex_edge_span_compact_queue(&graph);
 
@@ -465,7 +529,14 @@ mod tests {
             );
         }
         for target in 1_000..1_128u32 {
-            graph.insert_edge(hub, label, TestEdge(target)).unwrap();
+            graph
+                .insert_edge(
+                    hub,
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         drain_vertex_edge_span_compact_queue(&graph);
 
@@ -517,11 +588,17 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::from_raw(99),
                 TestEdge(999),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         for target in 0..30u32 {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         for target in 0..25u32 {
@@ -598,7 +675,12 @@ mod tests {
         let label = BucketLabelKey::from_raw(2);
         for target in 1..=120u32 {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         for target in 1..=115u32 {
@@ -653,11 +735,17 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::from_raw(99),
                 TestEdge(999),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         for target in 0..80u32 {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         graph
@@ -695,11 +783,17 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::from_raw(99),
                 TestEdge(999),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         for target in 0..1024u32 {
             graph
-                .insert_edge(VertexId::from(0), label, TestEdge(target))
+                .insert_edge(
+                    VertexId::from(0),
+                    label,
+                    TestEdge(target),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         assert!(
@@ -857,6 +951,7 @@ mod tests {
                     src,
                     label,
                     InlinePropertyTestEdge::with_bytes(target, &bytes),
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
                 )
                 .unwrap();
         }
@@ -899,6 +994,7 @@ mod tests {
                 src,
                 target_label,
                 InlinePropertyTestEdge::with_bytes(3, &[3u8; 6]),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         assert!(graph.maintenance_queue_len() > 0);
@@ -1155,6 +1251,7 @@ where
         src: VertexId,
         label_id: crate::labeled::BucketLabelKey,
         edge: E,
+        placement: crate::labeled::graph::EdgePlacementPolicy,
     ) -> Result<(), DeferredError> {
         let inline_property_bytes_compaction_needed = edge.edge_inline_property_byte_width() != 0
             && self
@@ -1164,7 +1261,7 @@ where
                 ))
                 .map_err(DeferredError::Inner)?;
         self.inner
-            .insert_edge_skip_leaf_cascade_deferred_inline_property(src, label_id, edge)
+            .insert_edge_skip_leaf_cascade_deferred_inline_property(src, label_id, edge, placement)
             .map_err(DeferredError::Inner)?;
         if inline_property_bytes_compaction_needed {
             self.mark_compact_inline_property_bytes_slab()?;

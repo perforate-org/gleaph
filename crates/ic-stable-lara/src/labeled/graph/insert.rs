@@ -47,6 +47,23 @@ pub enum ScalarInsertStorage {
     OverflowLog,
 }
 
+/// Storage-owned placement policy for scalar edge writes on a labeled bucket
+/// (ADR 0052 §5/§6).
+///
+/// The Graph layer maps its resolved ordering policy to this enum at the
+/// mutation boundary; LARA never parses GQL or reads Router catalogs and does
+/// not own a duplicate schema map (ADR 0052 §4).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EdgePlacementPolicy {
+    /// Order is not semantically meaningful: reuse an in-slab tombstone before
+    /// appending to the slab tail or the overflow log (ADR 0052 §5).
+    #[default]
+    Unordered,
+    /// Bucket-local live order is the semantic insertion order: append only,
+    /// never reuse an interior tombstone (ADR 0052 §6).
+    Insertion,
+}
+
 #[derive(Clone, Copy)]
 enum ScalarLocationCapture {
     Ignore,
@@ -159,11 +176,12 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         edge: E,
+        placement: EdgePlacementPolicy,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
-        self.insert_edge_skip_leaf_cascade(src, label_id, edge)?;
+        self.insert_edge_skip_leaf_cascade(src, label_id, edge, placement)?;
         if self.labeled_leaf_segment_is_dense(src) {
             self.rebalance_cascade_after_labeled_mutation(src)?;
         }
@@ -177,12 +195,19 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         edge: E,
+        placement: EdgePlacementPolicy,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
-        self.insert_edge_skip_leaf_cascade_impl(src, label_id, edge, ScalarLocationCapture::Ignore)
-            .map(|_| ())
+        self.insert_edge_skip_leaf_cascade_impl(
+            src,
+            label_id,
+            edge,
+            placement,
+            ScalarLocationCapture::Ignore,
+        )
+        .map(|_| ())
     }
 
     pub(crate) fn insert_edge_skip_leaf_cascade_with_location(
@@ -190,11 +215,18 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         edge: E,
+        placement: EdgePlacementPolicy,
     ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
-        self.insert_edge_skip_leaf_cascade_impl(src, label_id, edge, ScalarLocationCapture::Capture)
+        self.insert_edge_skip_leaf_cascade_impl(
+            src,
+            label_id,
+            edge,
+            placement,
+            ScalarLocationCapture::Capture,
+        )
     }
 
     fn insert_edge_skip_leaf_cascade_impl(
@@ -202,6 +234,7 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         edge: E,
+        placement: EdgePlacementPolicy,
         location_capture: ScalarLocationCapture,
     ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
     where
@@ -276,6 +309,21 @@ where
                         LaraOperationError::CollectAllocationOverflow
                     })?;
                 continue;
+            }
+            // Unordered placement (ADR 0052 §5 step 1): reuse an in-slab
+            // tombstone before appending to the slab tail or the overflow log.
+            // The helper keeps the dense fast path O(1) and falls back to the
+            // ordered path when the inline property bytes are log-backed
+            // (ADR 0052 §9).
+            if placement == EdgePlacementPolicy::Unordered
+                && let Some(location) = self.try_reuse_unordered_slab_tombstone(
+                    src,
+                    bucket_slot,
+                    bucket,
+                    &attempt_edge,
+                )?
+            {
+                return Ok(Some(location));
             }
             let successor_start = if vertex.degree() == 1 && !has_edge_inline_property {
                 self.bucket_successor_start_after_bucket(&vertex, bucket_index, &bucket)?
@@ -491,6 +539,7 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         edge: E,
+        placement: EdgePlacementPolicy,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -500,6 +549,7 @@ where
             src,
             label_id,
             edge,
+            placement,
             ScalarLocationCapture::Ignore,
         );
         self.inline_property_bytes_compaction_deferred
@@ -512,15 +562,125 @@ where
         src: VertexId,
         label_id: BucketLabelKey,
         edge: E,
+        placement: EdgePlacementPolicy,
     ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
         let was_deferred = self.inline_property_bytes_compaction_deferred.replace(true);
-        let result = self.insert_edge_skip_leaf_cascade_with_location(src, label_id, edge);
+        let result =
+            self.insert_edge_skip_leaf_cascade_with_location(src, label_id, edge, placement);
         self.inline_property_bytes_compaction_deferred
             .set(was_deferred);
         result
+    }
+
+    /// Attempts an Unordered in-slab tombstone reuse before the tail/log append
+    /// paths (ADR 0052 §5 step 1).
+    ///
+    /// Returns `None` without touching state when the bucket is dense (O(1) fast
+    /// path), when its inline property bytes are log-backed (ADR 0052 §9: the
+    /// reused middle ordinal cannot be synchronized with a bytes log), or when
+    /// the slab prefix holds no tombstone. On success the edge is written at the
+    /// reused physical slot, the bucket degree grows by one with `stored_slots`
+    /// unchanged, and slab-backed inline property bytes are inserted at the
+    /// reused slot's live ordinal with later bytes shifted up so their values
+    /// are preserved (ADR 0052 §9).
+    fn try_reuse_unordered_slab_tombstone(
+        &self,
+        src: VertexId,
+        bucket_slot: u64,
+        mut bucket: LabelBucket,
+        edge: &E,
+    ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        // O(1) fast path: a dense bucket has no slab tombstone to reuse. For a
+        // slab-only bucket, `stored_slots > degree` is exactly "a slab tombstone
+        // exists". For a log-backed bucket it is a sufficient condition (slab
+        // tombstones outnumber live overflow-log edges); the conservative miss
+        // (`log_live >= tombs`) defers those tombstones to fold/compaction,
+        // which is the pre-slice behavior and avoids an O(log-chain) walk on
+        // every insert (ADR 0052 §5, Slice 3 implementation note).
+        if bucket.stored_slots <= bucket.degree() {
+            return Ok(None);
+        }
+        if bucket.inline_property_bytes_log_head() >= 0 {
+            return Ok(None);
+        }
+        let mut ordinal_before = 0u32;
+        let mut reused_slot = None;
+        for slot_index in 0..bucket.stored_slots {
+            let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            if self.edges.read_slot(physical_slot).is_tombstone_edge() {
+                reused_slot = Some(slot_index);
+                break;
+            }
+            ordinal_before += 1;
+        }
+        let Some(reused_slot) = reused_slot else {
+            return Ok(None);
+        };
+        let width = bucket.inline_property_byte_width();
+        let has_inline_property = width != 0 && edge.edge_inline_property_byte_width() != 0;
+        if has_inline_property {
+            let old_offset = bucket.inline_property_bytes_offset();
+            let trailing_slots = bucket.degree().saturating_sub(ordinal_before);
+            let trailing_len = u64::from(trailing_slots)
+                .checked_mul(u64::from(width))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let mut trailing = vec![
+                0u8;
+                usize::try_from(trailing_len).map_err(|_| {
+                    LaraOperationError::CollectAllocationOverflow
+                })?
+            ];
+            if trailing_len > 0 {
+                let source = old_offset
+                    .checked_add(u64::from(ordinal_before) * u64::from(width))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                self.values.read_bytes(source, &mut trailing);
+            }
+            bucket = bucket.after_slab_insert_reuse_tail_tombstone();
+            let previous_slab_slots = bucket.inline_property_bytes_slab_slots();
+            bucket = self.ensure_bucket_inline_property_bytes_span(
+                src,
+                bucket_slot,
+                bucket,
+                previous_slab_slots,
+            )?;
+            if trailing_len > 0 {
+                let destination = (u64::from(ordinal_before) + 1)
+                    .checked_mul(u64::from(width))
+                    .and_then(|offset| bucket.inline_property_bytes_offset().checked_add(offset))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                self.values
+                    .write_bytes(destination, &trailing)
+                    .map_err(LabeledOperationError::from)?;
+            }
+            self.write_edge_inline_property_at_slot(&bucket, ordinal_before, edge)?;
+        } else {
+            bucket = bucket.after_slab_insert_reuse_tail_tombstone();
+        }
+        let physical_slot = checked_add_slot_index(bucket.edge_start(), u64::from(reused_slot))
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.edges.write_slot(physical_slot, edge.clone())?;
+        self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
+        let hdr = self.edges.header();
+        let next_num_edges = hdr
+            .num_edges
+            .checked_add(1)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        self.edges.set_num_edges(next_num_edges);
+        self.edges
+            .bump_vertex_segment_counts(src, 1, 0)
+            .map_err(LabeledOperationError::from)?;
+        Ok(Some(ScalarInsertLocation {
+            logical_slot: reused_slot,
+            storage: ScalarInsertStorage::Slab,
+        }))
     }
 
     pub(super) fn ensure_labeled_bucket_edge_span_room(
@@ -713,7 +873,12 @@ mod tests {
         }
         let high = VertexId::from(32);
         graph
-            .insert_edge(high, BucketLabelKey::from_raw(2), TestEdge { target: 0 })
+            .insert_edge(
+                high,
+                BucketLabelKey::from_raw(2),
+                TestEdge { target: 0 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         assert!(graph.edges().header().segment_count >= 2);
     }
@@ -723,14 +888,29 @@ mod tests {
         let graph = test_graph();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 10 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         graph
-            .insert_edge(VertexId::from(0), road, TestEdge { target: 11 })
+            .insert_edge(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 11 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let walk = BucketLabelKey::from_raw(3);
         graph
-            .insert_edge(VertexId::from(0), walk, TestEdge { target: 20 })
+            .insert_edge(
+                VertexId::from(0),
+                walk,
+                TestEdge { target: 20 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         assert_eq!(
@@ -766,7 +946,12 @@ mod tests {
         );
 
         graph
-            .insert_edge(VertexId::from(0), first_label, TestEdge { target: 10 })
+            .insert_edge(
+                VertexId::from(0),
+                first_label,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
 
         let vertex = graph.vertices().get(VertexId::from(0));
@@ -794,11 +979,17 @@ mod tests {
                 VertexId::from(0),
                 BucketLabelKey::from_raw(99),
                 TestEdge { target: 999 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let before = graph.leaf_segment_counts_for_vid(VertexId::from(0));
         graph
-            .insert_edge_skip_leaf_cascade(VertexId::from(0), road, TestEdge { target: 10 })
+            .insert_edge_skip_leaf_cascade(
+                VertexId::from(0),
+                road,
+                TestEdge { target: 10 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let after = graph.leaf_segment_counts_for_vid(VertexId::from(0));
         assert_eq!(after.actual, before.actual + 1);
@@ -813,14 +1004,26 @@ mod tests {
         let cap_before = graph.edges().header().elem_capacity;
         let anchor = BucketLabelKey::from_raw(99);
         graph
-            .insert_edge(vid, anchor, TestEdge { target: 999 })
+            .insert_edge(
+                vid,
+                anchor,
+                TestEdge { target: 999 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
             .unwrap();
         let cap_after_pin = graph.edges().header().elem_capacity;
         assert!(graph.labeled_leaf_physical_range(vid).is_some());
         // Growth label must sort after `anchor` so bucket layout stays in pinned-leaf order.
         let road = BucketLabelKey::from_raw(100);
         for target in 0..128u32 {
-            graph.insert_edge(vid, road, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    vid,
+                    road,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         let cap_after = graph.edges().header().elem_capacity;
         let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
@@ -874,6 +1077,7 @@ mod tests {
                 TestEdge {
                     target: u32::from(dst),
                 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let cap_after_pin = graph.edges().header().elem_capacity;
@@ -887,6 +1091,7 @@ mod tests {
                         TestEdge {
                             target: u32::from(dst),
                         },
+                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
                     )
                     .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
             }
@@ -921,11 +1126,19 @@ mod tests {
                 vid,
                 BucketLabelKey::from_raw(99),
                 TestEdge { target: 999 },
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
         let rewrites_before = rewrite_vertex_edge_span_calls();
         for target in 0..64u32 {
-            graph.insert_edge(vid, road, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    vid,
+                    road,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
         assert_eq!(
             rewrite_vertex_edge_span_calls().saturating_sub(rewrites_before),
@@ -944,7 +1157,14 @@ mod tests {
             .saturating_add(1) as u32;
 
         for target in 0..edge_count {
-            graph.insert_edge(vid, road, TestEdge { target }).unwrap();
+            graph
+                .insert_edge(
+                    vid,
+                    road,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
         }
 
         let vertex = graph.vertices().get(vid);
@@ -974,10 +1194,312 @@ mod tests {
             .expect("single-label row can enter bypass mode");
         for target in 10..20u32 {
             graph
-                .insert_edge(hub, default, TestEdge { target })
+                .insert_edge(
+                    hub,
+                    default,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
                 .unwrap();
         }
         assert_eq!(graph.out_edges(hub).unwrap().len(), 10);
         assert!(graph.vertices().get(hub).is_default_edge_labeled());
+    }
+
+    #[test]
+    fn unordered_scalar_insert_reuses_interior_slab_tombstone() {
+        let graph = test_graph();
+        let src = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        let insertion = crate::labeled::graph::EdgePlacementPolicy::Insertion;
+        let unordered = crate::labeled::graph::EdgePlacementPolicy::Unordered;
+        for target in [10u32, 20, 30] {
+            graph
+                .insert_edge(src, label, TestEdge { target }, insertion)
+                .unwrap();
+        }
+        // Fold the overflow log into the slab so the bucket is slab-backed
+        // (stored_slots == degree), matching a production bucket after
+        // maintenance.
+        graph.compact_vertex_edge_span(src, 0).unwrap();
+
+        // Delete the middle edge: slot 1 becomes a tombstone while stored_slots stays 3.
+        let removed = graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
+        assert_eq!(removed.target, 20);
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(
+                graph
+                    .find_bucket_slot(&graph.vertices.get(src), label)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(bucket.stored_slots, 3);
+        assert_eq!(bucket.degree(), 2);
+
+        // Unordered placement reuses the tombstone before appending.
+        let location = graph
+            .insert_edge_skip_leaf_cascade_with_location(
+                src,
+                label,
+                TestEdge { target: 21 },
+                unordered,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.logical_slot, 1);
+        assert_eq!(
+            location.storage,
+            crate::labeled::graph::ScalarInsertStorage::Slab
+        );
+
+        let bucket = graph
+            .buckets()
+            .read_label_bucket_slot(
+                graph
+                    .find_bucket_slot(&graph.vertices.get(src), label)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(bucket.stored_slots, 3);
+        assert_eq!(bucket.degree(), 3);
+        assert_eq!(
+            graph
+                .out_edges(src)
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![10, 21, 30]
+        );
+    }
+
+    #[test]
+    fn unordered_reuse_writes_inline_property_bytes_at_live_ordinal() {
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let src = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(src, label, 2)
+            .unwrap();
+        let insertion = crate::labeled::graph::EdgePlacementPolicy::Insertion;
+        let unordered = crate::labeled::graph::EdgePlacementPolicy::Unordered;
+        for target in [10u32, 20, 30] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    label,
+                    InlinePropertyTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                    insertion,
+                )
+                .unwrap();
+        }
+        graph.compact_vertex_edge_span(src, 0).unwrap();
+        // Delete the middle edge: edge slot 1 is tombstoned and the inline
+        // property bytes sequence compacts to [10, 30].
+        let removed = graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
+        assert_eq!(removed.target, 20);
+
+        // Unordered reuse writes the new bytes at the reused slot's live ordinal
+        // (1) and shifts the trailing bytes (30) up so they keep their value.
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyTestEdge::with_bytes(21, &21u16.to_le_bytes()),
+                unordered,
+            )
+            .unwrap();
+
+        let mut rows = Vec::new();
+        let _ = graph
+            .visit_edges_with_inline_property::<()>(
+                src,
+                label,
+                OutEdgeOrder::Ascending,
+                |slot, item| {
+                    rows.push((
+                        slot.raw(),
+                        item.edge.target,
+                        item.inline_property.bytes().to_vec(),
+                    ));
+                    std::ops::ControlFlow::Continue(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (0, 10, 10u16.to_le_bytes().to_vec()),
+                (1, 21, 21u16.to_le_bytes().to_vec()),
+                (2, 30, 30u16.to_le_bytes().to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn unordered_insert_appends_when_bucket_is_dense() {
+        let graph = test_graph();
+        let src = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        let insertion = crate::labeled::graph::EdgePlacementPolicy::Insertion;
+        let unordered = crate::labeled::graph::EdgePlacementPolicy::Unordered;
+        graph
+            .insert_edge(src, label, TestEdge { target: 10 }, insertion)
+            .unwrap();
+        graph
+            .insert_edge(src, label, TestEdge { target: 20 }, insertion)
+            .unwrap();
+        // No tombstone: the dense fast path keeps the append order.
+        let location = graph
+            .insert_edge_skip_leaf_cascade_with_location(
+                src,
+                label,
+                TestEdge { target: 30 },
+                unordered,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.logical_slot, 2);
+        assert_eq!(
+            graph
+                .out_edges(src)
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
+    }
+
+    #[test]
+    fn insertion_placement_never_reuses_interior_tombstone() {
+        let graph = test_graph();
+        let src = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        let insertion = crate::labeled::graph::EdgePlacementPolicy::Insertion;
+        for target in [10u32, 20, 30] {
+            graph
+                .insert_edge(src, label, TestEdge { target }, insertion)
+                .unwrap();
+        }
+        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph.remove_edge_at_slot(src, label, 1).unwrap().unwrap();
+
+        // Insertion placement appends after the surviving suffix and never fills
+        // the interior tombstone (ADR 0052 §6).
+        let location = graph
+            .insert_edge_skip_leaf_cascade_with_location(
+                src,
+                label,
+                TestEdge { target: 40 },
+                insertion,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.logical_slot, 3);
+        assert_eq!(
+            graph
+                .out_edges(src)
+                .unwrap()
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>(),
+            vec![10, 30, 40]
+        );
+    }
+
+    #[test]
+    fn unordered_reuse_skips_log_backed_inline_property_bytes_bucket() {
+        let graph = inline_property_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let src = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(src, label, 2)
+            .unwrap();
+        let insertion = crate::labeled::graph::EdgePlacementPolicy::Insertion;
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyTestEdge::with_bytes(1, &1u16.to_le_bytes()),
+                insertion,
+            )
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                label,
+                InlinePropertyTestEdge::with_bytes(2, &2u16.to_le_bytes()),
+                insertion,
+            )
+            .unwrap();
+        graph.compact_vertex_edge_span(src, 0).unwrap();
+        // Create a slab tombstone at slot 0, then craft the ADR 0052 §9
+        // fallback state: the bucket's inline property bytes are log-backed.
+        graph.remove_edge_at_slot(src, label, 0).unwrap().unwrap();
+        let bucket_slot = graph
+            .find_bucket_slot(&graph.vertices.get(src), label)
+            .unwrap()
+            .unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        let crafted = bucket.try_with_inline_property_bytes_log(1, 1).unwrap();
+        graph
+            .buckets()
+            .write_label_bucket_slot(bucket_slot, crafted)
+            .unwrap();
+
+        // The reuse helper must refuse without touching state.
+        let result = graph
+            .try_reuse_unordered_slab_tombstone(
+                src,
+                bucket_slot,
+                crafted,
+                &InlinePropertyTestEdge::with_bytes(3, &3u16.to_le_bytes()),
+            )
+            .unwrap();
+        assert!(result.is_none());
+        let after = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        assert_eq!(after, crafted);
+        assert_eq!(after.degree(), 1);
+        assert_eq!(after.stored_slots, 2);
+    }
+
+    #[test]
+    fn unordered_delete_insert_cycles_keep_stored_slots_bounded() {
+        let graph = test_graph();
+        let src = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        let insertion = crate::labeled::graph::EdgePlacementPolicy::Insertion;
+        let unordered = crate::labeled::graph::EdgePlacementPolicy::Unordered;
+        for target in 0..8u32 {
+            graph
+                .insert_edge(src, label, TestEdge { target }, insertion)
+                .unwrap();
+        }
+        graph.compact_vertex_edge_span(src, 0).unwrap();
+        // Interleave delete + unordered re-insert: every re-insert fills the
+        // tombstone it just created, so stored_slots never grows past 8.
+        for i in 0..8u32 {
+            graph.remove_edge_at_slot(src, label, i).unwrap().unwrap();
+            graph
+                .insert_edge(src, label, TestEdge { target: 100 + i }, unordered)
+                .unwrap();
+            let bucket = graph
+                .buckets()
+                .read_label_bucket_slot(
+                    graph
+                        .find_bucket_slot(&graph.vertices.get(src), label)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(bucket.stored_slots, 8);
+            assert_eq!(bucket.degree(), 8);
+        }
     }
 }

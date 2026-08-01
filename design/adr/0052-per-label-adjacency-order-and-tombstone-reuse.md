@@ -7,8 +7,11 @@ Anchor timestamp: 2026-08-01 14:41:58 UTC +0000
 Implementation status: Slice 1 (2026-08-01, Plan 0196) implements the Graph Type `ORDER BY
 INSERTION` declaration and the Router-side per-label `EdgeOrderingPolicy` resolution end-to-end.
 Slice 2 (2026-08-01, Plan 0197) implements the query syntax `ORDER BY INSERTION(e)` (replacing
-`GLEAPH.SEQUENCE`) with Graph-executor fail-closed acceptance (see below). LARA unordered
-placement, tombstone reuse, and compaction reordering remain planned.
+`GLEAPH.SEQUENCE`) with Graph-executor fail-closed acceptance (see below). Slice 3 (2026-08-01,
+Plan 0198) implements LARA `EdgePlacementPolicy` (Unordered default / Insertion), Unordered
+scalar in-slab tombstone reuse with ordinal-aligned inline property bytes (see below), the Graph
+boundary policy mapping, and the Router §10 policy-change rejection on labels with live edges.
+Unordered batch placement and compaction reordering remain planned.
 
 ## Context
 
@@ -47,16 +50,22 @@ descending as an explicit opt-in.
   `ORDER BY INSERTION(e) DESC` remains the explicit descending path.
 
 The ADR body below remains **planned** except for the parts implemented by Slice 1 (Plan 0196,
-2026-08-01) and Slice 2 (Plan 0197, 2026-08-01). Slice 1 delivered §1/§4's `EdgeOrderingPolicy`
-(Unordered default / Insertion) as a resolved wire field on `ResolvedEdgeLabel`, and §2's Graph
-Type `ORDER BY INSERTION` declaration parses (gql, opaque key) and resolves per label in the
-Router from the canonical Graph Type definition, fail-closed on unknown keys and conflicting
-declarations. Slice 2 delivered §3's query syntax: `GLEAPH.SEQUENCE(e)` is removed and
-`ORDER BY INSERTION(e)` executes only for a single fixed edge label whose resolved policy is
-`Insertion` (Unordered labels, ambiguous label expressions, and cross-boundary bindings fail
-closed in the Graph executor, which consumes the resolved wire policy). Unordered
-insertion/batch placement (§5), insertion-ordered placement (§6), policy-specific compaction
-(§7), and policy-change enforcement (§10) remain planned; no placement behavior changes yet.
+2026-08-01), Slice 2 (Plan 0197, 2026-08-01), and Slice 3 (Plan 0198, 2026-08-01). Slice 1
+delivered §1/§4's `EdgeOrderingPolicy` (Unordered default / Insertion) as a resolved wire field on
+`ResolvedEdgeLabel`, and §2's Graph Type `ORDER BY INSERTION` declaration parses (gql, opaque key)
+and resolves per label in the Router from the canonical Graph Type definition, fail-closed on
+unknown keys and conflicting declarations. Slice 2 delivered §3's query syntax: `GLEAPH.SEQUENCE(e)`
+is removed and `ORDER BY INSERTION(e)` executes only for a single fixed edge label whose resolved
+policy is `Insertion` (Unordered labels, ambiguous label expressions, and cross-boundary bindings
+fail closed in the Graph executor, which consumes the resolved wire policy). Slice 3 delivered
+§5's Unordered scalar placement (in-slab tombstone reuse before tail/log append) and §6's
+Insertion scalar placement (append only) through a storage-owned `EdgePlacementPolicy`
+(Unordered default / Insertion) threaded through every scalar insert entry point; §9's synchronized
+slab-backed inline property bytes (the reused slot's live ordinal, log-backed bytes fall back to
+the ordered path); the Graph mutation-boundary policy mapping; and §10's Router DDL-time rejection
+of a per-label policy change on labels with live edges (see below). Unordered batch placement
+(§5), policy-specific compaction reordering (§7), and policy-change migration/rebuild remain
+planned; no batch placement behavior changes yet.
 
 ## Problem
 
@@ -193,6 +202,14 @@ It may assign pending edges to holes in any physical order. Input logical ordina
 request-local metadata for replay, sidecar association, directed/reverse projection, undirected
 pairing, and exact returned locations; they are not a physical ordering contract.
 
+**Slice 3 implementation note (2026-08-01, Plan 0198):** the scalar reuse gate is O(1). The scan
+runs only when `stored_slots > degree` (a slab tombstone outnumbers the live overflow-log edges).
+For slab-only buckets this is exact. For log-backed buckets it is a sufficient condition, so a
+bucket whose live log edges at least cover its slab tombstones (`log_live >= tombs`) keeps the
+O(1) fast path and defers those tombstones to fold/compaction (the pre-slice behavior). This
+avoids an O(log-chain) walk on every insert; an exact log-backed reuse gate would need per-block
+tombstone accounting and is deferred with the unordered-compaction slice.
+
 ### 6. Insertion-ordered placement
 
 For an `Insertion` bucket:
@@ -263,6 +280,15 @@ Changing a label from `Unordered` to `Insertion` or vice versa while it has live
 in the initial implementation. Existing unordered physical order cannot prove insertion order.
 A later explicit maintenance migration may rebuild the bucket under a new policy, but that is not
 part of this ADR.
+
+**Slice 3 implementation note (2026-08-01, Plan 0198):** the Router enforces this at DDL commit,
+before any catalog mutation, for both inline `CREATE OR REPLACE GRAPH` bindings and named
+`CREATE OR REPLACE GRAPH TYPE` replacements on all TypeRef-bound graphs. The live-edge test uses
+the aggregated `ROUTER_EDGE_LABEL_STATS` projection (`live_count > 0`), which is Telemetry-class
+event-sourced state. The projection is eventually consistent, so a projection-lag window fails
+**open** (a policy change applied while the label stats have not yet caught up is accepted); this
+is an accepted limitation of the initial implementation and is not a correctness hole for the
+canonical edge store — it only means the DDL guard may be momentarily permissive.
 
 ### 11. Cross-canister and future inter-shard consistency
 
